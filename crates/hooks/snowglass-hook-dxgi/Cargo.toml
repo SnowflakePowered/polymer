@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-hook-dxgi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+snowglass-producer-d3d11 = { path = "../../producers/snowglass-producer-d3d11" }
+snowglass-producer-d3d12 = { path = "../../producers/snowglass-producer-d3d12" }

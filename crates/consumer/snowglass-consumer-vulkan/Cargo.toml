@@ -1,0 +1,9 @@
+[package]
+name = "snowglass-consumer-vulkan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-api.workspace = true
+snowglass-consumer-core = { path = "../snowglass-consumer-core" }

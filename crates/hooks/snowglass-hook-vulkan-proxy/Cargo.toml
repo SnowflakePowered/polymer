@@ -1,0 +1,11 @@
+[package]
+name = "snowglass-hook-vulkan-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+snowglass-producer-vulkan = { path = "../../producers/snowglass-producer-vulkan" }

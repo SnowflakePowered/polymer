@@ -1,0 +1,9 @@
+[package]
+name = "snowglass-inspect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-protocol.workspace = true
+

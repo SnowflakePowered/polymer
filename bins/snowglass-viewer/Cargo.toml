@@ -1,0 +1,10 @@
+[package]
+name = "snowglass-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-consumer-vulkan = { path = "../../crates/consumer/snowglass-consumer-vulkan" }
+snowglass-input-core.workspace = true
+snowglass-ipc.workspace = true

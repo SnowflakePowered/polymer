@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-protocol.workspace = true
+
+[lints]
+workspace = true
+

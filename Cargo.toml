@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/snowglass-api",
+    "crates/snowglass-protocol",
+    "crates/snowglass-ipc",
+    "crates/snowglass-platform-windows",
+    "crates/snowglass-input-core",
+    "crates/snowglass-runtime",
+    "crates/producers/*",
+    "crates/hooks/*",
+    "crates/consumer/*",
+    "bins/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/snowglass/snowglass"
+rust-version = "1.85"
+
+[workspace.dependencies]
+snowglass-api = { path = "crates/snowglass-api" }
+snowglass-protocol = { path = "crates/snowglass-protocol" }
+snowglass-ipc = { path = "crates/snowglass-ipc" }
+snowglass-platform-windows = { path = "crates/snowglass-platform-windows" }
+snowglass-input-core = { path = "crates/snowglass-input-core" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
