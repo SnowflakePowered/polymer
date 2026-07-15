@@ -37,6 +37,7 @@ fn connect_viewer(
     timeline: &ExportTimelineSemaphore,
     extent: vk::Extent2D,
     format: vk::Format,
+    source_window: isize,
 ) -> Option<LocalSocket> {
     let session = std::env::var("SNOWGLASS_SESSION").ok()?;
     let mut socket = match LocalSocket::connect(&session) {
@@ -84,6 +85,7 @@ fn connect_viewer(
     }
     let ready = StreamReady {
         producer_process_id: std::process::id(),
+        source_window: source_window as i64,
         width: extent.width,
         height: extent.height,
         format: format.as_raw() as u32,
@@ -238,6 +240,9 @@ static mut QUEUE: LazyCell<DashMap<vk::Queue, QueueDispatchTable>> =
 static mut SWAPCHAIN: LazyCell<DashMap<vk::SwapchainKHR, SwapchainState>> =
     LazyCell::new(Default::default);
 
+static mut SURFACE_WINDOW: LazyCell<DashMap<vk::SurfaceKHR, isize>> =
+    LazyCell::new(Default::default);
+
 static SWAPCHAINS_CREATED: AtomicU64 = AtomicU64::new(0);
 static PRESENTS_SEEN: AtomicU64 = AtomicU64::new(0);
 static COPIES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
@@ -381,6 +386,12 @@ pub unsafe extern "system" fn vkGetInstanceProcAddr(
         b"vkEnumeratePhysicalDevices" => {
             return Some(unsafe { mem::transmute(vkEnumeratePhysicalDevices as *const ()) });
         }
+        b"vkCreateWin32SurfaceKHR" => {
+            return Some(unsafe { mem::transmute(vkCreateWin32SurfaceKHR as *const ()) });
+        }
+        b"vkDestroySurfaceKHR" => {
+            return Some(unsafe { mem::transmute(vkDestroySurfaceKHR as *const ()) });
+        }
         b"vkGetDeviceProcAddr" => {
             return Some(unsafe { mem::transmute(vkGetDeviceProcAddr as *const ()) });
         }
@@ -408,6 +419,57 @@ pub unsafe extern "system" fn vk_layerGetPhysicalDeviceProcAddr(
             (entry.next_gipa)(instance, name)
         }
     })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCreateWin32SurfaceKHR(
+    instance: vk::Instance,
+    create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>,
+    allocator: *const vk::AllocationCallbacks<'_>,
+    surface: *mut vk::SurfaceKHR,
+) -> vk::Result {
+    let dispatch = unsafe { dispatch_key(instance) }
+        .and_then(|key| unsafe { INSTANCE.get(&key).map(|entry| *entry) });
+    let Some(function): Option<vk::PFN_vkCreateWin32SurfaceKHR> =
+        dispatch.and_then(|entry| unsafe {
+            instance_proc(entry.next_gipa, instance, c"vkCreateWin32SurfaceKHR")
+        })
+    else {
+        return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
+    };
+    let result = unsafe { function(instance, create_info, allocator, surface) };
+    if result == vk::Result::SUCCESS
+        && !create_info.is_null()
+        && !surface.is_null()
+        && unsafe { *surface } != vk::SurfaceKHR::null()
+    {
+        unsafe { SURFACE_WINDOW.insert(*surface, (*create_info).hwnd as isize) };
+        layer_log(format!(
+            "snowglass: associated Vulkan surface with HWND {:?}",
+            unsafe { (*create_info).hwnd }
+        ));
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkDestroySurfaceKHR(
+    instance: vk::Instance,
+    surface: vk::SurfaceKHR,
+    allocator: *const vk::AllocationCallbacks<'_>,
+) {
+    unsafe { SURFACE_WINDOW.remove(&surface) };
+    let dispatch = unsafe { dispatch_key(instance) }
+        .and_then(|key| unsafe { INSTANCE.get(&key).map(|entry| *entry) });
+    if let Some(function) = dispatch.and_then(|entry| unsafe {
+        instance_proc::<vk::PFN_vkDestroySurfaceKHR>(
+            entry.next_gipa,
+            instance,
+            c"vkDestroySurfaceKHR",
+        )
+    }) {
+        unsafe { function(instance, surface, allocator) };
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -914,7 +976,19 @@ pub unsafe extern "system" fn vkCreateSwapchainKHR(
                 .as_ref()
                 .zip(timeline.as_ref())
                 .and_then(|(ring, timeline)| {
-                    connect_viewer(ring, timeline, info.image_extent, info.image_format)
+                    let source_window = unsafe {
+                        SURFACE_WINDOW
+                            .get(&info.surface)
+                            .map(|entry| *entry)
+                            .unwrap_or(0)
+                    };
+                    connect_viewer(
+                        ring,
+                        timeline,
+                        info.image_extent,
+                        info.image_format,
+                        source_window,
+                    )
                 });
             unsafe {
                 SWAPCHAIN.insert(

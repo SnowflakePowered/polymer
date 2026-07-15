@@ -4,7 +4,9 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
-    ProcessId, hide_top_level_windows, performance_counter, performance_frequency,
+    NativeWindow, ProcessId, client_size, forward_character, forward_focus, forward_key,
+    forward_mouse_button, forward_mouse_move, forward_mouse_wheel, hide_top_level_windows,
+    performance_counter, performance_frequency,
 };
 use snowglass_protocol::{FrameReady, Handshake, PROTOCOL_VERSION};
 use std::{
@@ -14,15 +16,16 @@ use std::{
     process::{Child, Command},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicIsize, Ordering},
         mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::{
     dpi::LogicalSize,
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
@@ -60,6 +63,7 @@ struct DirectCompositor {
     swapchain_images: Vec<vk::Image>,
     swapchain_views: Vec<vk::ImageView>,
     swapchain_initialized: Vec<bool>,
+    surface_format: vk::SurfaceFormatKHR,
     extent: vk::Extent2D,
     render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
@@ -299,6 +303,7 @@ impl DirectCompositor {
                 swapchain_images,
                 swapchain_views,
                 swapchain_initialized: vec![false; initialized_count],
+                surface_format,
                 extent,
                 render_pass,
                 framebuffers,
@@ -331,11 +336,94 @@ impl DirectCompositor {
         self.latest = Some(frame);
     }
 
+    fn disconnect_stream(&mut self) -> Result<(), vk::Result> {
+        unsafe { self.device.device_wait_idle()? };
+        self.latest = None;
+        self.imported = None;
+        Ok(())
+    }
+
+    fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
+        let requested = window.inner_size();
+        if requested.width == 0 || requested.height == 0 {
+            return Ok(false);
+        }
+        // SAFETY: the device is idle before replacing every swapchain child;
+        // the old swapchain remains live until the replacement is created.
+        unsafe {
+            self.device.device_wait_idle()?;
+            let capabilities = self
+                .surface_loader
+                .get_physical_device_surface_capabilities(self.physical_device, self.surface)?;
+            let extent = if capabilities.current_extent.width != u32::MAX {
+                capabilities.current_extent
+            } else {
+                vk::Extent2D {
+                    width: requested.width.clamp(
+                        capabilities.min_image_extent.width,
+                        capabilities.max_image_extent.width,
+                    ),
+                    height: requested.height.clamp(
+                        capabilities.min_image_extent.height,
+                        capabilities.max_image_extent.height,
+                    ),
+                }
+            };
+            if extent.width == 0 || extent.height == 0 {
+                return Ok(false);
+            }
+            let image_count =
+                (capabilities.min_image_count + 1).min(if capabilities.max_image_count == 0 {
+                    u32::MAX
+                } else {
+                    capabilities.max_image_count
+                });
+            let replacement = self.swapchain_loader.create_swapchain(
+                &vk::SwapchainCreateInfoKHR::default()
+                    .surface(self.surface)
+                    .min_image_count(image_count)
+                    .image_format(self.surface_format.format)
+                    .image_color_space(self.surface_format.color_space)
+                    .image_extent(extent)
+                    .image_array_layers(1)
+                    .image_usage(
+                        vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                    )
+                    .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .pre_transform(capabilities.current_transform)
+                    .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+                    .present_mode(vk::PresentModeKHR::FIFO)
+                    .clipped(true)
+                    .old_swapchain(self.swapchain),
+                None,
+            )?;
+            let images = self.swapchain_loader.get_swapchain_images(replacement)?;
+            let views = create_swapchain_views(&self.device, &images, self.surface_format.format)?;
+            let framebuffers = create_framebuffers(&self.device, self.render_pass, &views, extent)?;
+
+            for framebuffer in self.framebuffers.drain(..) {
+                self.device.destroy_framebuffer(framebuffer, None);
+            }
+            for view in self.swapchain_views.drain(..) {
+                self.device.destroy_image_view(view, None);
+            }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+            self.swapchain = replacement;
+            self.swapchain_images = images;
+            self.swapchain_views = views;
+            self.framebuffers = framebuffers;
+            self.swapchain_initialized = vec![false; self.swapchain_images.len()];
+            self.extent = extent;
+            Ok(true)
+        }
+    }
+
     fn draw(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<bool, Box<dyn Error>> {
         // SAFETY: frame fences protect command and semaphore reuse; acquisition
         // owns the destination image; the external timeline gates source reads.
         unsafe {
@@ -346,17 +434,21 @@ impl DirectCompositor {
                 .as_mut()
                 .expect("egui renderer is live")
                 .free_textures(&output.textures_delta.free)?;
-            let (image_index, _) = self.swapchain_loader.acquire_next_image(
-                self.swapchain,
-                u64::MAX,
-                self.image_available[flight],
-                vk::Fence::null(),
-            )?;
-            self.device.reset_fences(&[self.fences[flight]])?;
             self.egui_renderer
                 .as_mut()
                 .expect("egui renderer is live")
                 .set_textures(self.queue, self.command_pool, &output.textures_delta.set)?;
+            let (image_index, acquire_suboptimal) = match self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                u64::MAX,
+                self.image_available[flight],
+                vk::Fence::null(),
+            ) {
+                Ok(acquired) => acquired,
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(false),
+                Err(error) => return Err(error.into()),
+            };
+            self.device.reset_fences(&[self.fences[flight]])?;
             let command = self.command_buffers[flight];
             self.device
                 .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())?;
@@ -543,16 +635,20 @@ impl DirectCompositor {
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
             let swapchains = [self.swapchain];
             let indices = [image_index];
-            self.swapchain_loader.queue_present(
+            let present_suboptimal = match self.swapchain_loader.queue_present(
                 self.queue,
                 &vk::PresentInfoKHR::default()
                     .wait_semaphores(&signals)
                     .swapchains(&swapchains)
                     .image_indices(&indices),
-            )?;
+            ) {
+                Ok(suboptimal) => suboptimal,
+                Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => true,
+                Err(error) => return Err(error.into()),
+            };
             self.swapchain_initialized[image_index as usize] = true;
             self.frame_index += 1;
-            Ok(())
+            Ok(!(acquire_suboptimal || present_suboptimal))
         }
     }
 }
@@ -600,6 +696,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let child = launch_target(&target, &executable_dir, &session)?;
     let process_id = ProcessId(child.id());
     let stop = Arc::new(AtomicBool::new(false));
+    let backing_window = Arc::new(AtomicIsize::new(0));
     let (target_done_tx, target_done_rx) = mpsc::channel();
     spawn_target_monitor(child, process_id, stop.clone(), target_done_tx);
     let (capture_tx, capture_rx) = mpsc::sync_channel(1);
@@ -611,7 +708,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Window::default_attributes()
             .with_title("Snowglass")
             .with_inner_size(LogicalSize::new(1280, 720))
-            .with_resizable(false),
+            .with_resizable(true),
     )?;
     let egui_context = egui::Context::default();
     let mut egui_state = egui_winit::State::new(
@@ -628,6 +725,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         sample_started: Some(Instant::now()),
         ..Default::default()
     };
+    let mut cursor_position = (0, 0);
 
     event_loop.run(move |event, target| match event {
         Event::AboutToWait => window.request_redraw(),
@@ -641,7 +739,97 @@ fn main() -> Result<(), Box<dyn Error>> {
                     stop.store(true, Ordering::Release);
                     target.exit();
                 }
+                WindowEvent::Resized(size) => {
+                    if size.width != 0
+                        && size.height != 0
+                        && let Err(error) = compositor.recreate_swapchain(&window)
+                    {
+                        eprintln!("snowglass: swapchain recreation failed: {error}");
+                        target.exit();
+                    }
+                }
+                WindowEvent::Focused(focused) => {
+                    if let Some(backing) = load_window(&backing_window) {
+                        forward_focus(backing, focused);
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if let Some(backing) = load_window(&backing_window) {
+                        if let PhysicalKey::Code(code) = event.physical_key
+                            && let Some(key) = virtual_key(code)
+                        {
+                            forward_key(
+                                backing,
+                                key,
+                                event.state == ElementState::Pressed,
+                                event.repeat,
+                            );
+                        }
+                        if event.state == ElementState::Pressed
+                            && let Some(text) = event.text
+                        {
+                            for character in text.chars() {
+                                if !character.is_control() {
+                                    forward_character(backing, character);
+                                }
+                            }
+                        }
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    if let Some(backing) = load_window(&backing_window) {
+                        let viewer_size = window.inner_size();
+                        let backing_size =
+                            client_size(backing).unwrap_or((viewer_size.width, viewer_size.height));
+                        cursor_position = (
+                            (position.x * backing_size.0 as f64 / viewer_size.width.max(1) as f64)
+                                .round() as i32,
+                            (position.y * backing_size.1 as f64 / viewer_size.height.max(1) as f64)
+                                .round() as i32,
+                        );
+                        forward_mouse_move(backing, cursor_position.0, cursor_position.1);
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    if let (Some(backing), Some(button)) =
+                        (load_window(&backing_window), mouse_button(button))
+                    {
+                        forward_mouse_button(
+                            backing,
+                            button,
+                            state == ElementState::Pressed,
+                            cursor_position.0,
+                            cursor_position.1,
+                        );
+                    }
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    if let Some(backing) = load_window(&backing_window) {
+                        match delta {
+                            MouseScrollDelta::LineDelta(horizontal, vertical) => {
+                                if vertical != 0.0 {
+                                    forward_mouse_wheel(backing, (vertical * 120.0) as i16, false);
+                                }
+                                if horizontal != 0.0 {
+                                    forward_mouse_wheel(backing, (horizontal * 120.0) as i16, true);
+                                }
+                            }
+                            MouseScrollDelta::PixelDelta(delta) => {
+                                if delta.y != 0.0 {
+                                    forward_mouse_wheel(backing, delta.y as i16, false);
+                                }
+                                if delta.x != 0.0 {
+                                    forward_mouse_wheel(backing, delta.x as i16, true);
+                                }
+                            }
+                        }
+                    }
+                }
                 WindowEvent::RedrawRequested => {
+                    let size = window.inner_size();
+                    if size.width == 0 || size.height == 0 {
+                        return;
+                    }
                     if target_done_rx.try_recv().is_ok() {
                         target.exit();
                         return;
@@ -649,6 +837,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     while let Ok(capture) = capture_rx.try_recv() {
                         match capture {
                             CaptureEvent::Stream(stream) => {
+                                if stream.source_window != 0 {
+                                    let source = NativeWindow(stream.source_window as isize);
+                                    backing_window.store(source.0, Ordering::Release);
+                                    forward_focus(source, true);
+                                }
                                 if let Err(error) = compositor.import_stream(&stream) {
                                     eprintln!("snowglass: direct import failed: {error}");
                                 }
@@ -671,7 +864,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     / frequency;
                                 compositor.set_latest(frame);
                             }
-                            CaptureEvent::Disconnected => {}
+                            CaptureEvent::Disconnected => {
+                                if let Err(error) = compositor.disconnect_stream() {
+                                    eprintln!("snowglass: stream disconnect failed: {error}");
+                                }
+                            }
                         }
                     }
                     if let Some(started) = stats.sample_started {
@@ -698,9 +895,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                     egui_state.handle_platform_output(&window, output.platform_output.clone());
                     let primitives =
                         egui_context.tessellate(output.shapes.clone(), output.pixels_per_point);
-                    if let Err(error) = compositor.draw(&output, &primitives) {
-                        eprintln!("snowglass: direct composition failed: {error}");
-                        target.exit();
+                    match compositor.draw(&output, &primitives) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            if let Err(error) = compositor.recreate_swapchain(&window) {
+                                eprintln!("snowglass: swapchain recreation failed: {error}");
+                                target.exit();
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("snowglass: direct composition failed: {error}");
+                            target.exit();
+                        }
                     }
                 }
                 _ => {}
@@ -713,31 +919,47 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEvent>) {
     thread::spawn(move || {
-        let result = (|| -> std::io::Result<()> {
-            let mut socket = listener.accept()?;
-            socket.send(Message::Hello(Handshake {
+        loop {
+            let mut socket = match listener.accept() {
+                Ok(socket) => socket,
+                Err(error) => {
+                    eprintln!("snowglass: IPC accept ended: {error}");
+                    return;
+                }
+            };
+            if let Err(error) = socket.send(Message::Hello(Handshake {
                 protocol_version: PROTOCOL_VERSION,
                 process_id: std::process::id(),
-            }))?;
-            loop {
-                match socket.receive()? {
-                    Message::StreamReady(stream) => {
-                        events.send(CaptureEvent::Stream(stream)).map_err(|_| {
-                            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "viewer closed")
-                        })?;
-                    }
-                    Message::FrameReady(frame) => {
-                        let _ = events.try_send(CaptureEvent::Frame(frame));
-                    }
-                    Message::Shutdown => return Ok(()),
-                    Message::Hello(_) => {}
-                }
+            })) {
+                eprintln!("snowglass: IPC handshake failed: {error}");
+                continue;
             }
-        })();
-        if let Err(error) = result {
-            eprintln!("snowglass: IPC ended: {error}");
+            let connection = (|| -> std::io::Result<()> {
+                loop {
+                    match socket.receive()? {
+                        Message::StreamReady(stream) => {
+                            events.send(CaptureEvent::Stream(stream)).map_err(|_| {
+                                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "viewer closed")
+                            })?;
+                        }
+                        Message::FrameReady(frame) => {
+                            let _ = events.try_send(CaptureEvent::Frame(frame));
+                        }
+                        Message::Shutdown => return Ok(()),
+                        Message::Hello(_) => {}
+                    }
+                }
+            })();
+            if let Err(error) = connection
+                && error.kind() != std::io::ErrorKind::UnexpectedEof
+                && error.kind() != std::io::ErrorKind::ConnectionReset
+            {
+                eprintln!("snowglass: IPC connection ended: {error}");
+            }
+            if events.send(CaptureEvent::Disconnected).is_err() {
+                return;
+            }
         }
-        let _ = events.try_send(CaptureEvent::Disconnected);
     });
 }
 
@@ -789,6 +1011,126 @@ fn launch_target(target: &[String], layer_dir: &Path, session: &str) -> std::io:
         .spawn()
 }
 
+fn load_window(window: &AtomicIsize) -> Option<NativeWindow> {
+    let value = window.load(Ordering::Acquire);
+    (value != 0).then_some(NativeWindow(value))
+}
+
+fn mouse_button(button: MouseButton) -> Option<u16> {
+    match button {
+        MouseButton::Left => Some(1),
+        MouseButton::Right => Some(2),
+        MouseButton::Middle => Some(3),
+        MouseButton::Back => Some(4),
+        MouseButton::Forward => Some(5),
+        MouseButton::Other(button) => Some(button.saturating_add(4)),
+    }
+}
+
+fn virtual_key(code: KeyCode) -> Option<u32> {
+    Some(match code {
+        KeyCode::Backspace => 0x08,
+        KeyCode::Tab => 0x09,
+        KeyCode::Enter | KeyCode::NumpadEnter => 0x0d,
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => 0x10,
+        KeyCode::ControlLeft | KeyCode::ControlRight => 0x11,
+        KeyCode::AltLeft | KeyCode::AltRight => 0x12,
+        KeyCode::Pause => 0x13,
+        KeyCode::CapsLock => 0x14,
+        KeyCode::Escape => 0x1b,
+        KeyCode::Space => 0x20,
+        KeyCode::PageUp => 0x21,
+        KeyCode::PageDown => 0x22,
+        KeyCode::End => 0x23,
+        KeyCode::Home => 0x24,
+        KeyCode::ArrowLeft => 0x25,
+        KeyCode::ArrowUp => 0x26,
+        KeyCode::ArrowRight => 0x27,
+        KeyCode::ArrowDown => 0x28,
+        KeyCode::Insert => 0x2d,
+        KeyCode::Delete => 0x2e,
+        KeyCode::Digit0 => 0x30,
+        KeyCode::Digit1 => 0x31,
+        KeyCode::Digit2 => 0x32,
+        KeyCode::Digit3 => 0x33,
+        KeyCode::Digit4 => 0x34,
+        KeyCode::Digit5 => 0x35,
+        KeyCode::Digit6 => 0x36,
+        KeyCode::Digit7 => 0x37,
+        KeyCode::Digit8 => 0x38,
+        KeyCode::Digit9 => 0x39,
+        KeyCode::KeyA => 0x41,
+        KeyCode::KeyB => 0x42,
+        KeyCode::KeyC => 0x43,
+        KeyCode::KeyD => 0x44,
+        KeyCode::KeyE => 0x45,
+        KeyCode::KeyF => 0x46,
+        KeyCode::KeyG => 0x47,
+        KeyCode::KeyH => 0x48,
+        KeyCode::KeyI => 0x49,
+        KeyCode::KeyJ => 0x4a,
+        KeyCode::KeyK => 0x4b,
+        KeyCode::KeyL => 0x4c,
+        KeyCode::KeyM => 0x4d,
+        KeyCode::KeyN => 0x4e,
+        KeyCode::KeyO => 0x4f,
+        KeyCode::KeyP => 0x50,
+        KeyCode::KeyQ => 0x51,
+        KeyCode::KeyR => 0x52,
+        KeyCode::KeyS => 0x53,
+        KeyCode::KeyT => 0x54,
+        KeyCode::KeyU => 0x55,
+        KeyCode::KeyV => 0x56,
+        KeyCode::KeyW => 0x57,
+        KeyCode::KeyX => 0x58,
+        KeyCode::KeyY => 0x59,
+        KeyCode::KeyZ => 0x5a,
+        KeyCode::SuperLeft => 0x5b,
+        KeyCode::SuperRight => 0x5c,
+        KeyCode::Numpad0 => 0x60,
+        KeyCode::Numpad1 => 0x61,
+        KeyCode::Numpad2 => 0x62,
+        KeyCode::Numpad3 => 0x63,
+        KeyCode::Numpad4 => 0x64,
+        KeyCode::Numpad5 => 0x65,
+        KeyCode::Numpad6 => 0x66,
+        KeyCode::Numpad7 => 0x67,
+        KeyCode::Numpad8 => 0x68,
+        KeyCode::Numpad9 => 0x69,
+        KeyCode::NumpadMultiply => 0x6a,
+        KeyCode::NumpadAdd => 0x6b,
+        KeyCode::NumpadSubtract => 0x6d,
+        KeyCode::NumpadDecimal => 0x6e,
+        KeyCode::NumpadDivide => 0x6f,
+        KeyCode::F1 => 0x70,
+        KeyCode::F2 => 0x71,
+        KeyCode::F3 => 0x72,
+        KeyCode::F4 => 0x73,
+        KeyCode::F5 => 0x74,
+        KeyCode::F6 => 0x75,
+        KeyCode::F7 => 0x76,
+        KeyCode::F8 => 0x77,
+        KeyCode::F9 => 0x78,
+        KeyCode::F10 => 0x79,
+        KeyCode::F11 => 0x7a,
+        KeyCode::F12 => 0x7b,
+        KeyCode::NumLock => 0x90,
+        KeyCode::ScrollLock => 0x91,
+        KeyCode::Semicolon => 0xba,
+        KeyCode::Equal => 0xbb,
+        KeyCode::Comma => 0xbc,
+        KeyCode::Minus => 0xbd,
+        KeyCode::Period => 0xbe,
+        KeyCode::Slash => 0xbf,
+        KeyCode::Backquote => 0xc0,
+        KeyCode::BracketLeft => 0xdb,
+        KeyCode::Backslash => 0xdc,
+        KeyCode::BracketRight => 0xdd,
+        KeyCode::Quote => 0xde,
+        _ => return None,
+    })
+}
+
 fn color_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -797,6 +1139,48 @@ fn color_range() -> vk::ImageSubresourceRange {
         base_array_layer: 0,
         layer_count: 1,
     }
+}
+
+unsafe fn create_swapchain_views(
+    device: &ash::Device,
+    images: &[vk::Image],
+    format: vk::Format,
+) -> Result<Vec<vk::ImageView>, vk::Result> {
+    images
+        .iter()
+        .map(|&image| unsafe {
+            device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(format)
+                    .subresource_range(color_range()),
+                None,
+            )
+        })
+        .collect()
+}
+
+unsafe fn create_framebuffers(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    views: &[vk::ImageView],
+    extent: vk::Extent2D,
+) -> Result<Vec<vk::Framebuffer>, vk::Result> {
+    views
+        .iter()
+        .map(|view| unsafe {
+            device.create_framebuffer(
+                &vk::FramebufferCreateInfo::default()
+                    .render_pass(render_pass)
+                    .attachments(std::slice::from_ref(view))
+                    .width(extent.width)
+                    .height(extent.height)
+                    .layers(1),
+                None,
+            )
+        })
+        .collect()
 }
 
 fn color_layers() -> vk::ImageSubresourceLayers {

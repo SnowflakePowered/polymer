@@ -35,6 +35,8 @@ static WINSOCK: OnceLock<i32> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamReady {
     pub producer_process_id: u32,
+    /// Win32 HWND used to create the source swapchain's Vulkan surface.
+    pub source_window: i64,
     pub width: u32,
     pub height: u32,
     pub format: u32,
@@ -70,6 +72,7 @@ struct WireHello {
 #[repr(C)]
 struct WireStreamReady {
     producer_process_id: U32,
+    source_window: I64,
     width: U32,
     height: U32,
     format: U32,
@@ -126,7 +129,7 @@ impl LocalSocketListener {
         Ok(Self { socket, path })
     }
 
-    pub fn accept(self) -> io::Result<LocalSocket> {
+    pub fn accept(&self) -> io::Result<LocalSocket> {
         // SAFETY: self.socket is a listening socket. Peer address information is
         // not needed for this local, single-client transport.
         let connected = unsafe { accept(self.socket, std::ptr::null_mut(), std::ptr::null_mut()) };
@@ -275,6 +278,7 @@ fn encode(message: Message) -> WireMessage {
                 MESSAGE_STREAM_READY,
                 &WireStreamReady {
                     producer_process_id: U32::new(value.producer_process_id),
+                    source_window: I64::new(value.source_window),
                     width: U32::new(value.width),
                     height: U32::new(value.height),
                     format: U32::new(value.format),
@@ -323,6 +327,7 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
             let value = payload::<WireStreamReady>(wire)?;
             Ok(Message::StreamReady(StreamReady {
                 producer_process_id: value.producer_process_id.get(),
+                source_window: value.source_window.get(),
                 width: value.width.get(),
                 height: value.height.get(),
                 format: value.format.get(),
@@ -373,6 +378,7 @@ mod tests {
             }),
             Message::StreamReady(StreamReady {
                 producer_process_id: 7,
+                source_window: 8,
                 width: 1920,
                 height: 1080,
                 format: 44,
@@ -418,6 +424,36 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(client.receive().unwrap(), Message::Shutdown);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn listener_accepts_replacement_connection() {
+        let name = format!("snowglass-reconnect-test-{}", std::process::id());
+        let listener = LocalSocketListener::bind(&name).unwrap();
+        let server = std::thread::spawn(move || {
+            for expected_process_id in [41, 42] {
+                let mut socket = listener.accept().unwrap();
+                assert_eq!(
+                    socket.receive().unwrap(),
+                    Message::Hello(Handshake {
+                        protocol_version: 1,
+                        process_id: expected_process_id,
+                    })
+                );
+                socket.send(Message::Shutdown).unwrap();
+            }
+        });
+        for process_id in [41, 42] {
+            let mut client = LocalSocket::connect(&name).unwrap();
+            client
+                .send(Message::Hello(Handshake {
+                    protocol_version: 1,
+                    process_id,
+                }))
+                .unwrap();
+            assert_eq!(client.receive().unwrap(), Message::Shutdown);
+        }
         server.join().unwrap();
     }
 }
