@@ -6,6 +6,8 @@
 mod environment;
 mod image_ring;
 mod swapchain;
+#[cfg(windows)]
+mod timeline;
 
 pub use environment::{
     REQUIRED_DEVICE_EXTENSIONS, VulkanAdapter, VulkanEnvironment, VulkanProbeError,
@@ -14,6 +16,8 @@ pub use environment::{
 pub use image_ring::ExportImageRingDesc;
 #[cfg(windows)]
 pub use image_ring::{ExportImageRing, ExportImageSlot};
-pub use swapchain::{SetDeviceLoaderData, SwapchainCopyEngine};
+pub use swapchain::{CopySubmission, SetDeviceLoaderData, SwapchainCopyEngine};
+#[cfg(windows)]
+pub use timeline::ExportTimelineSemaphore;
 
 pub const BACKEND_NAME: &str = "vulkan";

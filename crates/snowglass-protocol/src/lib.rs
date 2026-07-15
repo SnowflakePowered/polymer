@@ -3,6 +3,14 @@
 #![forbid(unsafe_code)]
 
 pub const PROTOCOL_VERSION: u32 = 1;
+pub const MAX_IMAGE_SLOTS: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct Handshake {
+    pub protocol_version: u32,
+    pub process_id: u32,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]

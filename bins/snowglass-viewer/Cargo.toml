@@ -5,6 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ash.workspace = true
+ash-window.workspace = true
+egui = "0.29.1"
+egui-ash-renderer = "0.6.0"
+egui-winit = "0.29.1"
+raw-window-handle.workspace = true
 snowglass-consumer-vulkan = { path = "../../crates/consumer/snowglass-consumer-vulkan" }
 snowglass-input-core.workspace = true
 snowglass-ipc.workspace = true
+snowglass-platform-windows.workspace = true
+snowglass-protocol.workspace = true
+winit = "0.30.13"

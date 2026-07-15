@@ -1,8 +1,14 @@
-use crate::ExportImageRing;
+use crate::{ExportImageRing, ExportTimelineSemaphore};
 use ash::{vk, vk::Handle};
 use std::ffi::c_void;
 
 pub type SetDeviceLoaderData = unsafe extern "system" fn(vk::Device, *mut c_void) -> vk::Result;
+
+pub struct CopySubmission {
+    pub present_ready: vk::Semaphore,
+    pub slot: u32,
+    pub sync_value: u64,
+}
 
 struct CopySlot {
     command_buffer: vk::CommandBuffer,
@@ -15,18 +21,21 @@ struct CopySlot {
 pub struct SwapchainCopyEngine {
     device: ash::Device,
     ring: ExportImageRing,
+    timeline: ExportTimelineSemaphore,
     source_images: Vec<vk::Image>,
     extent: vk::Extent2D,
     command_pool: vk::CommandPool,
     slots: Vec<CopySlot>,
     present_ready: Vec<vk::Semaphore>,
     next_slot: usize,
+    next_sync_value: u64,
 }
 
 impl SwapchainCopyEngine {
     pub fn create(
         device: ash::Device,
         ring: ExportImageRing,
+        timeline: ExportTimelineSemaphore,
         source_images: Vec<vk::Image>,
         extent: vk::Extent2D,
         queue_family_index: u32,
@@ -99,12 +108,14 @@ impl SwapchainCopyEngine {
             Ok(Self {
                 device,
                 ring,
+                timeline,
                 source_images,
                 extent,
                 command_pool,
                 slots,
                 present_ready,
                 next_slot: 0,
+                next_sync_value: 1,
             })
         }
     }
@@ -115,13 +126,15 @@ impl SwapchainCopyEngine {
         queue: vk::Queue,
         source_image_index: u32,
         application_waits: &[vk::Semaphore],
-    ) -> Result<vk::Semaphore, vk::Result> {
+    ) -> Result<CopySubmission, vk::Result> {
         let Some(&source_image) = self.source_images.get(source_image_index as usize) else {
             return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
         };
         let ready = self.present_ready[source_image_index as usize];
         let slot_index = self.next_slot;
         self.next_slot = (self.next_slot + 1) % self.slots.len();
+        let sync_value = self.next_sync_value;
+        self.next_sync_value += 1;
         let slot = &mut self.slots[slot_index];
         let destination_image = self.ring.slots()[slot_index].image();
 
@@ -229,15 +242,23 @@ impl SwapchainCopyEngine {
 
             let wait_stages = vec![vk::PipelineStageFlags::TRANSFER; application_waits.len()];
             let command_buffers = [slot.command_buffer];
-            let signals = [ready];
+            let signals = [ready, self.timeline.semaphore()];
+            let signal_values = [0, sync_value];
+            let mut timeline_submit =
+                vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
             let submit = vk::SubmitInfo::default()
+                .push_next(&mut timeline_submit)
                 .wait_semaphores(application_waits)
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&command_buffers)
                 .signal_semaphores(&signals);
             self.device.queue_submit(queue, &[submit], slot.fence)?;
             slot.initialized = true;
-            Ok(ready)
+            Ok(CopySubmission {
+                present_ready: ready,
+                slot: slot_index as u32,
+                sync_value,
+            })
         }
     }
 }

@@ -3,9 +3,13 @@
 
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
+use snowglass_ipc::{LocalSocket, Message, StreamReady};
+use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_producer_vulkan::{
-    ExportImageRing, ExportImageRingDesc, SetDeviceLoaderData, SwapchainCopyEngine,
+    ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, SetDeviceLoaderData,
+    SwapchainCopyEngine,
 };
+use snowglass_protocol::{FrameReady, MAX_IMAGE_SLOTS, PROTOCOL_VERSION, StreamId};
 use std::{
     cell::LazyCell,
     ffi::{CStr, c_char, c_void},
@@ -26,6 +30,86 @@ fn layer_log(message: impl std::fmt::Display) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{message}");
     }
+}
+
+fn connect_viewer(
+    ring: &ExportImageRing,
+    timeline: &ExportTimelineSemaphore,
+    extent: vk::Extent2D,
+    format: vk::Format,
+) -> Option<LocalSocket> {
+    let session = std::env::var("SNOWGLASS_SESSION").ok()?;
+    let mut socket = match LocalSocket::connect(&session) {
+        Ok(socket) => socket,
+        Err(error) => {
+            layer_log(format!(
+                "snowglass: viewer socket connection failed: {error}"
+            ));
+            return None;
+        }
+    };
+    let viewer_pid = match socket.receive() {
+        Ok(Message::Hello(hello)) if hello.protocol_version == PROTOCOL_VERSION => hello.process_id,
+        Ok(Message::Hello(hello)) => {
+            layer_log(format!(
+                "snowglass: viewer protocol {} is incompatible with {}",
+                hello.protocol_version, PROTOCOL_VERSION
+            ));
+            return None;
+        }
+        Ok(_) => {
+            layer_log("snowglass: viewer did not begin with a Hello message");
+            return None;
+        }
+        Err(error) => {
+            layer_log(format!("snowglass: viewer handshake failed: {error}"));
+            return None;
+        }
+    };
+    if ring.slots().len() > MAX_IMAGE_SLOTS {
+        layer_log("snowglass: export ring exceeds protocol slot capacity");
+        return None;
+    }
+    let mut handles = [0; MAX_IMAGE_SLOTS];
+    for (destination, slot) in handles.iter_mut().zip(ring.slots()) {
+        match duplicate_handle_into_process(slot.raw_handle(), ProcessId(viewer_pid)) {
+            Ok(handle) => *destination = handle as i64,
+            Err(error) => {
+                layer_log(format!(
+                    "snowglass: image handle duplication failed: {error}"
+                ));
+                return None;
+            }
+        }
+    }
+    let ready = StreamReady {
+        producer_process_id: std::process::id(),
+        width: extent.width,
+        height: extent.height,
+        format: format.as_raw() as u32,
+        slot_count: ring.slots().len() as u32,
+        image_handles: handles,
+        timeline_semaphore_handle: match duplicate_handle_into_process(
+            timeline.raw_handle(),
+            ProcessId(viewer_pid),
+        ) {
+            Ok(handle) => handle as i64,
+            Err(error) => {
+                layer_log(format!(
+                    "snowglass: timeline handle duplication failed: {error}"
+                ));
+                return None;
+            }
+        },
+    };
+    if let Err(error) = socket.send(Message::StreamReady(ready)) {
+        layer_log(format!("snowglass: StreamReady send failed: {error}"));
+        return None;
+    }
+    layer_log(format!(
+        "snowglass: connected export ring to viewer process {viewer_pid}"
+    ));
+    Some(socket)
 }
 
 const LOADER_LAYER_INTERFACE_VERSION: u32 = 2;
@@ -110,7 +194,10 @@ struct SwapchainState {
     extent: vk::Extent2D,
     images: Vec<vk::Image>,
     ring: Option<ExportImageRing>,
+    timeline: Option<ExportTimelineSemaphore>,
     copy_engine: Option<SwapchainCopyEngine>,
+    ipc: Option<LocalSocket>,
+    frame_number: u64,
 }
 
 #[derive(Clone)]
@@ -124,6 +211,7 @@ struct CaptureDevice {
     device: ash::Device,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
     get_memory_win32_handle: vk::PFN_vkGetMemoryWin32HandleKHR,
+    get_semaphore_win32_handle: vk::PFN_vkGetSemaphoreWin32HandleKHR,
     set_loader_data: Option<SetDeviceLoaderData>,
 }
 
@@ -536,25 +624,41 @@ pub unsafe extern "system" fn vkCreateDevice(
                 .to_vec()
             }
         };
-    let external_memory_enabled = extension_names.iter().any(|name| {
-        !name.is_null() && unsafe { CStr::from_ptr(*name) } == ash::khr::external_memory_win32::NAME
-    });
-    let inject_external_memory = !external_memory_enabled
-        && physical_state.is_some_and(|state| unsafe {
-            device_supports_extension(
-                state,
-                physical_device,
-                ash::khr::external_memory_win32::NAME,
-            )
-        });
-    if inject_external_memory {
-        extension_names.push(ash::khr::external_memory_win32::NAME.as_ptr());
+    let capture_extensions = [
+        ash::khr::external_memory_win32::NAME,
+        ash::khr::external_semaphore_win32::NAME,
+        ash::khr::timeline_semaphore::NAME,
+    ];
+    let mut injected_extensions = Vec::new();
+    for required in capture_extensions {
+        let enabled = extension_names
+            .iter()
+            .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == required);
+        if !enabled
+            && physical_state.is_some_and(|state| unsafe {
+                device_supports_extension(state, physical_device, required)
+            })
+        {
+            extension_names.push(required.as_ptr());
+            injected_extensions.push(required);
+        }
     }
+    let capture_supported = capture_extensions.iter().all(|required| {
+        extension_names
+            .iter()
+            .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == *required)
+    });
     let mut modified_create_info = (!create_info.is_null()).then(|| unsafe { *create_info });
+    let mut timeline_features = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
+        .timeline_semaphore(capture_supported);
     if let Some(info) = modified_create_info.as_mut() {
-        if inject_external_memory {
+        if !injected_extensions.is_empty() {
             info.enabled_extension_count = extension_names.len() as u32;
             info.pp_enabled_extension_names = extension_names.as_ptr();
+        }
+        if capture_supported {
+            timeline_features.p_next = info.p_next as *mut c_void;
+            info.p_next = (&timeline_features as *const _) as *const c_void;
         }
     }
     let forwarded_create_info = modified_create_info
@@ -575,8 +679,13 @@ pub unsafe extern "system" fn vkCreateDevice(
         unsafe { device_proc(next_gdpa, created, c"vkGetSwapchainImagesKHR") };
     let queue_present = unsafe { device_proc(next_gdpa, created, c"vkQueuePresentKHR") };
     let capture = physical_state.and_then(|state| {
+        if !capture_supported {
+            return None;
+        }
         let get_memory_win32_handle =
             unsafe { device_proc(next_gdpa, created, c"vkGetMemoryWin32HandleKHR") }?;
+        let get_semaphore_win32_handle =
+            unsafe { device_proc(next_gdpa, created, c"vkGetSemaphoreWin32HandleKHR") }?;
         let get_memory_properties: vk::PFN_vkGetPhysicalDeviceMemoryProperties = unsafe {
             instance_proc(
                 state.next_gipa,
@@ -600,11 +709,15 @@ pub unsafe extern "system" fn vkCreateDevice(
             device: ash_device,
             memory_properties,
             get_memory_win32_handle,
+            get_semaphore_win32_handle,
             set_loader_data,
         }))
     });
-    if inject_external_memory {
-        layer_log("snowglass: enabled VK_KHR_external_memory_win32 for captured device");
+    if !injected_extensions.is_empty() {
+        layer_log(format!(
+            "snowglass: enabled {} capture device extensions",
+            injected_extensions.len()
+        ));
     }
     if let Some(key) = unsafe { dispatch_key(created) } {
         unsafe {
@@ -782,6 +895,27 @@ pub unsafe extern "system" fn vkCreateSwapchainKHR(
                         }
                     }
                 });
+            let timeline = ring.as_ref().and_then(|_| {
+                let capture = dispatch.as_ref()?.capture.as_ref()?;
+                match ExportTimelineSemaphore::create_with_function(
+                    capture.device.clone(),
+                    capture.get_semaphore_win32_handle,
+                ) {
+                    Ok(timeline) => Some(timeline),
+                    Err(error) => {
+                        layer_log(format!(
+                            "snowglass: export timeline semaphore creation failed: {error}"
+                        ));
+                        None
+                    }
+                }
+            });
+            let ipc = ring
+                .as_ref()
+                .zip(timeline.as_ref())
+                .and_then(|(ring, timeline)| {
+                    connect_viewer(ring, timeline, info.image_extent, info.image_format)
+                });
             unsafe {
                 SWAPCHAIN.insert(
                     *swapchain,
@@ -791,7 +925,10 @@ pub unsafe extern "system" fn vkCreateSwapchainKHR(
                         extent: info.image_extent,
                         images: Vec::new(),
                         ring,
+                        timeline,
                         copy_engine: None,
+                        ipc,
+                        frame_number: 0,
                     },
                 );
             }
@@ -886,9 +1023,11 @@ pub unsafe extern "system" fn vkQueuePresentKHR(
             let copy_ready = unsafe { SWAPCHAIN.get_mut(&swapchain) }.and_then(|mut state| {
                 if state.copy_engine.is_none() {
                     let ring = state.ring.take()?;
+                    let timeline = state.timeline.take()?;
                     match SwapchainCopyEngine::create(
                         queue_state.dispatch.capture.as_ref()?.device.clone(),
                         ring,
+                        timeline,
                         state.images.clone(),
                         state.extent,
                         queue_state.queue_family_index,
@@ -910,14 +1049,31 @@ pub unsafe extern "system" fn vkQueuePresentKHR(
                     .as_mut()?
                     .submit_copy(queue, image_index, waits)
                 {
-                    Ok(semaphore) => {
+                    Ok(submission) => {
                         let count = COPIES_SUBMITTED.fetch_add(1, Ordering::Relaxed) + 1;
+                        state.frame_number += 1;
+                        let notification = Message::FrameReady(FrameReady {
+                            stream_id: StreamId(swapchain.as_raw()),
+                            slot: submission.slot,
+                            _reserved: 0,
+                            frame_number: state.frame_number,
+                            sync_value: submission.sync_value,
+                            timestamp_qpc: performance_counter().unwrap_or(0),
+                        });
+                        if state
+                            .ipc
+                            .as_mut()
+                            .is_some_and(|socket| socket.send(notification).is_err())
+                        {
+                            layer_log("snowglass: viewer socket disconnected");
+                            state.ipc = None;
+                        }
                         if count == 1 || count % 120 == 0 {
                             layer_log(format!(
                                 "snowglass: submitted swapchain copy (count={count})"
                             ));
                         }
-                        Some(semaphore)
+                        Some(submission.present_ready)
                     }
                     Err(error) => {
                         layer_log(format!("snowglass: swapchain copy failed: {error}"));

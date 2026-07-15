@@ -26,6 +26,15 @@ ash-window = "0.13.0"
 dashmap = "6.1.0"
 raw-window-handle = "0.6.2"
 winit = "0.29.15"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_System_Performance",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+zerocopy = { version = "0.8.52", features = ["derive"] }
 snowglass-api = { path = "crates/snowglass-api" }
 snowglass-protocol = { path = "crates/snowglass-protocol" }
 snowglass-ipc = { path = "crates/snowglass-ipc" }
