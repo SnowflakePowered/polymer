@@ -21,6 +21,11 @@ repository = "https://github.com/snowglass/snowglass"
 rust-version = "1.85"
 
 [workspace.dependencies]
+ash = { version = "0.38.0", default-features = false, features = ["loaded", "std"] }
+ash-window = "0.13.0"
+dashmap = "6.1.0"
+raw-window-handle = "0.6.2"
+winit = "0.29.15"
 snowglass-api = { path = "crates/snowglass-api" }
 snowglass-protocol = { path = "crates/snowglass-protocol" }
 snowglass-ipc = { path = "crates/snowglass-ipc" }

@@ -1,0 +1,18 @@
+snowglass: vkCreateInstance entered
+snowglass: downstream vkCreateInstance returned Command completed successfully
+snowglass: vkCreateInstance entered
+snowglass: downstream vkCreateInstance returned Command completed successfully
+snowglass: enabled VK_KHR_external_memory_win32 for captured device
+snowglass: attached 3-slot export ring [2964, 2972, 2980]
+snowglass: intercepted vkCreateSwapchainKHR (count=1)
+snowglass: associated 3 swapchain images (944x736, format=64)
+snowglass: submitted swapchain copy (count=1)
+snowglass: intercepted vkQueuePresentKHR (count=1)
+snowglass: submitted swapchain copy (count=120)
+snowglass: intercepted vkQueuePresentKHR (count=120)
+snowglass: submitted swapchain copy (count=240)
+snowglass: intercepted vkQueuePresentKHR (count=240)
+snowglass: submitted swapchain copy (count=360)
+snowglass: intercepted vkQueuePresentKHR (count=360)
+snowglass: submitted swapchain copy (count=480)
+snowglass: intercepted vkQueuePresentKHR (count=480)

@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-vulkan-info"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ash.workspace = true
+snowglass-producer-vulkan = { path = "../../crates/producers/snowglass-producer-vulkan" }
+
+[lints]
+workspace = true
