@@ -2032,13 +2032,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snowglass-hook-vulkan-proxy"
-version = "0.1.0"
-dependencies = [
- "snowglass-producer-vulkan",
-]
-
-[[package]]
 name = "snowglass-input-core"
 version = "0.1.0"
 

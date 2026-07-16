@@ -635,6 +635,33 @@ pub fn forward_key(window: NativeWindow, virtual_key: u32, pressed: bool, repeat
     unsafe { PostMessageW(window.0 as _, message, virtual_key as usize, lparam) };
 }
 
+/// Forwards a physical keyboard transition without losing the scan-code prefix
+/// supplied by Raw Input. This is important for navigation keys, whose E0
+/// prefix distinguishes them from their numeric-keypad counterparts.
+#[cfg(windows)]
+pub fn forward_raw_key(
+    window: NativeWindow,
+    virtual_key: u32,
+    scan_code: u16,
+    extended: bool,
+    pressed: bool,
+    repeat: bool,
+) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN, WM_KEYUP};
+    let message = if pressed { WM_KEYDOWN } else { WM_KEYUP };
+    let mut lparam = 1isize | (((scan_code & 0xff) as isize) << 16);
+    if extended {
+        lparam |= 1 << 24;
+    }
+    if repeat || !pressed {
+        lparam |= 1 << 30;
+    }
+    if !pressed {
+        lparam |= 1 << 31;
+    }
+    unsafe { PostMessageW(window.0 as _, message, virtual_key as usize, lparam) };
+}
+
 #[cfg(windows)]
 pub fn forward_character(window: NativeWindow, character: char) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CHAR};

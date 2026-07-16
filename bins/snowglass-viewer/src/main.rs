@@ -5,9 +5,9 @@ use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_input_core::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
-    NativeWindow, ProcessId, client_size, forward_character, forward_key, forward_mouse_button,
-    forward_mouse_move, forward_mouse_wheel, hide_top_level_windows, inject_library_before_resume,
-    performance_counter, performance_frequency,
+    NativeWindow, ProcessId, client_size, forward_character, forward_mouse_button,
+    forward_mouse_move, forward_mouse_wheel, forward_raw_key, hide_top_level_windows,
+    inject_library_before_resume, performance_counter, performance_frequency,
 };
 use snowglass_protocol::{FrameReady, Handshake, PROTOCOL_VERSION};
 use std::{
@@ -36,8 +36,10 @@ const FRAMES_IN_FLIGHT: usize = 2;
 
 struct RawKeyboardContext {
     sender: mpsc::Sender<DirectInputData>,
+    backing_window: Arc<AtomicIsize>,
     sequence: AtomicU32,
     started: Instant,
+    pressed: [bool; 256],
 }
 
 struct RawKeyboardForwarder {
@@ -49,6 +51,7 @@ impl RawKeyboardForwarder {
     fn install(
         window: NativeWindow,
         sender: mpsc::Sender<DirectInputData>,
+        backing_window: Arc<AtomicIsize>,
     ) -> std::io::Result<Self> {
         use windows_sys::Win32::UI::{
             Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices},
@@ -56,8 +59,10 @@ impl RawKeyboardForwarder {
         };
         let context = Box::into_raw(Box::new(RawKeyboardContext {
             sender,
+            backing_window,
             sequence: AtomicU32::new(0),
             started: Instant::now(),
+            pressed: [false; 256],
         }));
         let device = RAWINPUTDEVICE {
             usUsagePage: 1,
@@ -132,19 +137,29 @@ unsafe extern "system" fn raw_keyboard_subclass(
             if keyboard.MakeCode != 0 {
                 let extended = keyboard.Flags & (RI_KEY_E0 | RI_KEY_E1) as u16 != 0;
                 let offset = u32::from(keyboard.MakeCode) | u32::from(extended) * 0x80;
-                let context = unsafe { &*(context as *const RawKeyboardContext) };
+                let context = unsafe { &mut *(context as *mut RawKeyboardContext) };
+                let pressed = keyboard.Flags & RI_KEY_BREAK as u16 == 0;
+                let repeat = pressed && context.pressed[offset as usize];
+                context.pressed[offset as usize] = pressed;
                 let sequence = context.sequence.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = context.sender.send(DirectInputData {
                     device: DirectInputDevice::Keyboard,
                     offset,
-                    data: if keyboard.Flags & RI_KEY_BREAK as u16 == 0 {
-                        0x80
-                    } else {
-                        0
-                    },
+                    data: if pressed { 0x80 } else { 0 },
                     timestamp: context.started.elapsed().as_millis() as u32,
                     sequence,
                 });
+                let backing = context.backing_window.load(Ordering::Acquire);
+                if backing != 0 {
+                    forward_raw_key(
+                        NativeWindow(backing),
+                        u32::from(keyboard.VKey),
+                        keyboard.MakeCode,
+                        extended,
+                        pressed,
+                        repeat,
+                    );
+                }
             }
         }
     }
@@ -855,7 +870,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .with_resizable(true),
     )?;
     let viewer_window = native_window(&window)?;
-    let _raw_keyboard = RawKeyboardForwarder::install(viewer_window, input_tx.clone())?;
+    let _raw_keyboard =
+        RawKeyboardForwarder::install(viewer_window, input_tx.clone(), backing_window.clone())?;
     let egui_context = egui::Context::default();
     let mut egui_state = egui_winit::State::new(
         egui_context.clone(),
@@ -914,16 +930,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     if let Some(backing) = load_window(&backing_window) {
-                        if let PhysicalKey::Code(code) = event.physical_key
-                            && let Some(key) = virtual_key(code)
-                        {
-                            forward_key(
-                                backing,
-                                key,
-                                event.state == ElementState::Pressed,
-                                event.repeat,
-                            );
-                        }
                         if event.state == ElementState::Pressed
                             && let Some(text) = event.text
                         {
