@@ -9,6 +9,7 @@ name = "dinput8"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+snowglass-hook.workspace = true
 snowglass-input-core.workspace = true
 snowglass-ipc.workspace = true
 windows-sys.workspace = true

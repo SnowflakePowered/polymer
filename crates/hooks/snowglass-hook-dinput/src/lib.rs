@@ -2,7 +2,6 @@
 #![allow(unsafe_code)]
 
 mod install;
-mod interception;
 mod sys;
 
 pub use sys::SnowglassInstallDinputHook;

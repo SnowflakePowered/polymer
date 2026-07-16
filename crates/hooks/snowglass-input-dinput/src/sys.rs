@@ -8,22 +8,40 @@ use windows_sys::{
 };
 
 macro_rules! com_trampoline {
-    ($name:ident($($arg:ident: $ty:ty),* $(,)?) -> $result:ty) => {
+    ($name:ident($($arg:ident: $ty:ty),* $(,)?) -> $result:ty => $dispatch:path) => {
         pub(crate) unsafe extern "system" fn $name($($arg: $ty),*) -> $result {
-            unsafe { crate::runtime::$name($($arg),*) }
+            unsafe { $dispatch($($arg),*) }
         }
     };
 }
 
-com_trampoline!(direct_input_release(this: *mut c_void) -> u32);
-com_trampoline!(create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT);
-com_trampoline!(device_release(this: *mut c_void) -> u32);
-com_trampoline!(acquire(this: *mut c_void) -> HRESULT);
-com_trampoline!(get_device_state(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT);
-com_trampoline!(get_device_data(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT);
-com_trampoline!(set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT);
-com_trampoline!(set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT);
-com_trampoline!(set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT);
+com_trampoline!(direct_input_release(this: *mut c_void) -> u32 => crate::hook::dispatch_direct_input_release);
+com_trampoline!(create_device(
+    this: *mut c_void,
+    class: *const GUID,
+    output: *mut *mut c_void,
+    outer: *mut c_void,
+) -> HRESULT => crate::hook::dispatch_create_device);
+com_trampoline!(device_release(this: *mut c_void) -> u32 => crate::hook::dispatch_device_release);
+com_trampoline!(acquire(this: *mut c_void) -> HRESULT => crate::hook::dispatch_acquire);
+com_trampoline!(get_device_state(
+    this: *mut c_void,
+    size: u32,
+    output: *mut c_void,
+) -> HRESULT => crate::hook::dispatch_get_device_state);
+com_trampoline!(get_device_data(
+    this: *mut c_void,
+    object_size: u32,
+    output: *mut DIDEVICEOBJECTDATA,
+    count: *mut u32,
+    flags: u32,
+) -> HRESULT => crate::hook::dispatch_get_device_data);
+com_trampoline!(set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT => crate::hook::dispatch_set_data_format);
+com_trampoline!(set_event_notification(
+    this: *mut c_void,
+    event: *mut c_void,
+) -> HRESULT => crate::hook::dispatch_set_event_notification);
+com_trampoline!(set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT => crate::hook::dispatch_set_cooperative_level);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DirectInput8Create(
@@ -37,18 +55,18 @@ pub unsafe extern "system" fn DirectInput8Create(
 }
 
 macro_rules! proxy_export {
-    ($name:ident() -> $result:ty) => {
+    ($name:ident() -> $result:ty => $target:path) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "system" fn $name() -> $result {
-            unsafe { crate::runtime::$name() }
+            unsafe { $target() }
         }
     };
 }
 
-proxy_export!(DllCanUnloadNow() -> HRESULT);
-proxy_export!(DllRegisterServer() -> HRESULT);
-proxy_export!(DllUnregisterServer() -> HRESULT);
-proxy_export!(GetdfDIJoystick() -> *const c_void);
+proxy_export!(DllCanUnloadNow() -> HRESULT => crate::loader::dll_can_unload_now);
+proxy_export!(DllRegisterServer() -> HRESULT => crate::loader::dll_register_server);
+proxy_export!(DllUnregisterServer() -> HRESULT => crate::loader::dll_unregister_server);
+proxy_export!(GetdfDIJoystick() -> *const c_void => crate::loader::get_df_di_joystick);
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllGetClassObject(
@@ -56,5 +74,5 @@ pub unsafe extern "system" fn DllGetClassObject(
     interface_id: *const GUID,
     output: *mut *mut c_void,
 ) -> HRESULT {
-    unsafe { crate::runtime::DllGetClassObject(class_id, interface_id, output) }
+    unsafe { crate::loader::dll_get_class_object(class_id, interface_id, output) }
 }

@@ -49,6 +49,7 @@ snowglass-protocol = { path = "crates/snowglass-protocol" }
 snowglass-ipc = { path = "crates/snowglass-ipc" }
 snowglass-platform-windows = { path = "crates/snowglass-platform-windows" }
 snowglass-input-core = { path = "crates/snowglass-input-core" }
+snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

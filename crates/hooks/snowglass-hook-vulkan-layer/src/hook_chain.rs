@@ -4,9 +4,7 @@
 //! needs. The chain owns continuation through every observer; handlers only
 //! receive the arguments declared when they are registered.
 
-pub(crate) trait HookChain<'a, T: 'a> {
-    fn fp_next(&mut self) -> Option<&'a T>;
-}
+pub(crate) use snowglass_hook::HookChain;
 
 macro_rules! resolve_proc {
     (command_buffer, $handle:expr, $name:expr, $ty:ty) => {{
@@ -33,7 +31,7 @@ pub(crate) use resolve_proc;
 macro_rules! observer_chain {
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -64,7 +62,7 @@ macro_rules! observer_chain {
     };
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -109,7 +107,7 @@ macro_rules! observer_chain {
 
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -139,7 +137,7 @@ macro_rules! observer_chain {
     };
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -176,7 +174,7 @@ pub(crate) use observer_chain as __observer_chain;
 macro_rules! post_chain {
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -206,7 +204,7 @@ macro_rules! post_chain {
     };
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -233,7 +231,7 @@ macro_rules! post_chain {
     };
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -264,7 +262,7 @@ macro_rules! post_chain {
     };
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($hook_arg:ident: $hook_arg_ty:ty),* $(,)?);
         abi ($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?);
@@ -298,7 +296,7 @@ pub(crate) use post_chain as __post_chain;
 macro_rules! around_chain {
     (
         $vis:vis $dispatch:ident, $register:ident;
-        export $export:ident;
+        target $export:ident;
         chain $chain:ident, context $context:ident;
         hook $hook_ty:ident($($abi_arg:ident: $abi_arg_ty:ty),* $(,)?; next: $next_ty:ty);
         result $result:ty;
@@ -325,34 +323,11 @@ macro_rules! around_chain {
 }
 pub(crate) use around_chain as __around_chain;
 
-macro_rules! chain {
-    ($vis:vis $dispatch:ident, $register:ident; observe $export:ident; $($tokens:tt)*) => {
-        $crate::hook_chain::__observer_chain! {
-            $vis $dispatch, $register;
-            export $export;
-            $($tokens)*
-        }
-    };
-    ($vis:vis $dispatch:ident, $register:ident; observes $export:ident; $($tokens:tt)*) => {
-        $crate::hook_chain::__observer_chain! {
-            $vis $dispatch, $register;
-            export $export;
-            $($tokens)*
-        }
-    };
-    ($vis:vis $dispatch:ident, $register:ident; after $export:ident; $($tokens:tt)*) => {
-        $crate::hook_chain::__post_chain! {
-            $vis $dispatch, $register;
-            export $export;
-            $($tokens)*
-        }
-    };
-    ($vis:vis $dispatch:ident, $register:ident; around $export:ident; $($tokens:tt)*) => {
-        $crate::hook_chain::__around_chain! {
-            $vis $dispatch, $register;
-            export $export;
-            $($tokens)*
-        }
-    };
+snowglass_hook::define_chain_macro! {
+    pub(crate) chain => {
+        observer: crate::hook_chain::__observer_chain,
+        post: crate::hook_chain::__post_chain,
+        around: crate::hook_chain::__around_chain,
+    },
+    $
 }
-pub(crate) use chain;

@@ -5,6 +5,7 @@
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
 
+use crate::hook::HookChain;
 use snowglass_input_core::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocket, Message};
 use std::{
@@ -13,7 +14,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     sync::{
-        LazyLock, Mutex, Once, OnceLock,
+        LazyLock, Mutex, Once,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -23,29 +24,11 @@ use windows_sys::{
         Devices::HumanInterfaceDevice::{
             DIDEVICEOBJECTDATA, DIGDD_PEEK, GUID_SysKeyboard, GUID_SysMouse,
         },
-        Foundation::{HINSTANCE, HMODULE},
-        System::{
-            LibraryLoader::{GetProcAddress, LoadLibraryExW},
-            SystemInformation::GetSystemDirectoryW,
-        },
+        Foundation::HINSTANCE,
     },
-    core::{GUID, HRESULT, PCSTR},
+    core::{GUID, HRESULT},
 };
 
-pub type DirectInput8CreateFn = unsafe extern "system" fn(
-    HINSTANCE,
-    u32,
-    *const GUID,
-    *mut *mut c_void,
-    *mut c_void,
-) -> HRESULT;
-type DllCanUnloadNowFn = unsafe extern "system" fn() -> HRESULT;
-type DllGetClassObjectFn =
-    unsafe extern "system" fn(*const GUID, *const GUID, *mut *mut c_void) -> HRESULT;
-type DllRegistrationFn = unsafe extern "system" fn() -> HRESULT;
-type GetdfDIJoystickFn = unsafe extern "system" fn() -> *const c_void;
-
-static SYSTEM_DINPUT8: OnceLock<Result<SystemDinput8, u32>> = OnceLock::new();
 static START_INPUT: Once = Once::new();
 static INPUT_CONNECTED: AtomicBool = AtomicBool::new(false);
 static LOGGED_DELIVERY: AtomicBool = AtomicBool::new(false);
@@ -80,31 +63,61 @@ type GetDeviceDataFn =
 type SetEventNotificationFn = unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT;
 type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
 
-struct DirectInputHook {
+pub(crate) struct DirectInputHook {
     _vtable: Box<[usize; DIRECT_INPUT_VTABLE_LEN]>,
     original_vtable: usize,
     original_release: ReleaseFn,
-    original_create_device: CreateDeviceFn,
+    pub(crate) original_create_device: CreateDeviceFn,
 }
 
 // Function addresses and immutable vtable storage remain valid for the process lifetime.
 unsafe impl Send for DirectInputHook {}
 
-struct DeviceHook {
+pub(crate) struct DeviceHook {
     _vtable: Box<[usize; DEVICE_VTABLE_LEN]>,
     original_vtable: usize,
     original_release: ReleaseFn,
-    original_acquire: AcquireFn,
-    original_get_device_state: GetDeviceStateFn,
-    original_get_device_data: GetDeviceDataFn,
-    original_set_data_format: SetDataFormatFn,
-    original_set_event_notification: SetEventNotificationFn,
-    original_set_cooperative_level: SetCooperativeLevelFn,
+    pub(crate) original_acquire: AcquireFn,
+    pub(crate) original_get_device_state: GetDeviceStateFn,
+    pub(crate) original_get_device_data: GetDeviceDataFn,
+    pub(crate) original_set_data_format: SetDataFormatFn,
+    pub(crate) original_set_event_notification: SetEventNotificationFn,
+    pub(crate) original_set_cooperative_level: SetCooperativeLevelFn,
     device: DirectInputDevice,
     event_handle: usize,
 }
 
 unsafe impl Send for DeviceHook {}
+
+pub(crate) fn direct_input_method<T: Copy>(
+    this: *mut c_void,
+    select: impl FnOnce(&DirectInputHook) -> T,
+) -> Option<crate::vtable::OriginalMethod<T>> {
+    let hooks = DIRECT_INPUT_HOOKS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let hook = hooks.get(&(this as usize))?;
+    Some(crate::vtable::OriginalMethod {
+        original_vtable: hook.original_vtable as *const usize,
+        intercepted_vtable: hook._vtable.as_ptr(),
+        function: select(hook),
+    })
+}
+
+pub(crate) fn device_method<T: Copy>(
+    this: *mut c_void,
+    select: impl FnOnce(&DeviceHook) -> T,
+) -> Option<crate::vtable::OriginalMethod<T>> {
+    let hooks = DEVICE_HOOKS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let hook = hooks.get(&(this as usize))?;
+    Some(crate::vtable::OriginalMethod {
+        original_vtable: hook.original_vtable as *const usize,
+        intercepted_vtable: hook._vtable.as_ptr(),
+        function: select(hook),
+    })
+}
 
 struct InputQueues {
     keyboard: VecDeque<DirectInputData>,
@@ -159,64 +172,6 @@ fn dinput_log(message: impl std::fmt::Display) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{message}");
     }
-}
-
-struct SystemDinput8 {
-    _module: HMODULE,
-    direct_input_8_create: DirectInput8CreateFn,
-    dll_can_unload_now: DllCanUnloadNowFn,
-    dll_get_class_object: DllGetClassObjectFn,
-    dll_register_server: DllRegistrationFn,
-    dll_unregister_server: DllRegistrationFn,
-    get_df_di_joystick: GetdfDIJoystickFn,
-}
-
-// The module remains loaded for the process lifetime and all function pointers
-// refer to immutable executable memory in that module.
-unsafe impl Send for SystemDinput8 {}
-unsafe impl Sync for SystemDinput8 {}
-
-impl SystemDinput8 {
-    fn load() -> Result<Self, u32> {
-        let mut system_path = vec![0u16; 32_768];
-        let length = unsafe {
-            GetSystemDirectoryW(
-                system_path.as_mut_ptr(),
-                system_path.len().try_into().unwrap(),
-            )
-        } as usize;
-        if length == 0 || length >= system_path.len() {
-            return Err(unsafe { windows_sys::Win32::Foundation::GetLastError() });
-        }
-        system_path.truncate(length);
-        system_path.extend("\\dinput8.dll\0".encode_utf16());
-        // SAFETY: the absolute, NUL-terminated path distinguishes the system
-        // module from this already-loaded application-local proxy.
-        let module = unsafe { LoadLibraryExW(system_path.as_ptr(), std::ptr::null_mut(), 0) };
-        if module.is_null() {
-            return Err(unsafe { windows_sys::Win32::Foundation::GetLastError() });
-        }
-        Ok(Self {
-            _module: module,
-            direct_input_8_create: unsafe { resolve(module, c"DirectInput8Create")? },
-            dll_can_unload_now: unsafe { resolve(module, c"DllCanUnloadNow")? },
-            dll_get_class_object: unsafe { resolve(module, c"DllGetClassObject")? },
-            dll_register_server: unsafe { resolve(module, c"DllRegisterServer")? },
-            dll_unregister_server: unsafe { resolve(module, c"DllUnregisterServer")? },
-            get_df_di_joystick: unsafe { resolve(module, c"GetdfDIJoystick")? },
-        })
-    }
-}
-
-fn system_dinput8() -> Result<&'static SystemDinput8, HRESULT> {
-    SYSTEM_DINPUT8
-        .get_or_init(SystemDinput8::load)
-        .as_ref()
-        .map_err(|error| HRESULT_FROM_WIN32(*error))
-}
-
-pub fn system_direct_input8_create() -> Result<DirectInput8CreateFn, HRESULT> {
-    system_dinput8().map(|system| system.direct_input_8_create)
 }
 
 fn start_input_receiver() {
@@ -316,7 +271,10 @@ unsafe fn hook_direct_input(interface: *mut c_void) {
     );
 }
 
-pub(crate) unsafe fn direct_input_release(this: *mut c_void) -> u32 {
+pub(crate) unsafe fn direct_input_release(
+    this: *mut c_void,
+    _next: crate::hook::DirectInputReleaseContext<'_>,
+) -> u32 {
     let (original_vtable, patched_vtable, original_release) = {
         let hooks = DIRECT_INPUT_HOOKS
             .lock()
@@ -345,11 +303,12 @@ pub(crate) unsafe fn direct_input_release(this: *mut c_void) -> u32 {
 }
 
 pub(crate) unsafe fn create_device(
-    this: *mut c_void,
+    _this: *mut c_void,
     class: *const GUID,
     output: *mut *mut c_void,
-    outer: *mut c_void,
-) -> HRESULT {
+    _outer: *mut c_void,
+    result: HRESULT,
+) {
     if !class.is_null() {
         let class = unsafe { &*class };
         dinput_log(format!(
@@ -357,23 +316,6 @@ pub(crate) unsafe fn create_device(
             class.data1, class.data2, class.data3
         ));
     }
-    let (original_vtable, patched_vtable, original) = {
-        let hooks = DIRECT_INPUT_HOOKS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
-        };
-        (
-            hook.original_vtable as *const usize,
-            hook._vtable.as_ptr(),
-            hook.original_create_device,
-        )
-    };
-    let object_vtable = this.cast::<*const usize>();
-    unsafe { *object_vtable = original_vtable };
-    let result = unsafe { original(this, class, output, outer) };
-    unsafe { *object_vtable = patched_vtable };
     dinput_log(format!(
         "snowglass: DirectInput CreateDevice returned {result:#x} interface={:#x}",
         if output.is_null() {
@@ -397,7 +339,6 @@ pub(crate) unsafe fn create_device(
             ));
         }
     }
-    result
 }
 
 fn guid_eq(left: &GUID, right: &GUID) -> bool {
@@ -466,89 +407,26 @@ unsafe fn hook_device(interface: *mut c_void, device: DirectInputDevice) {
     );
 }
 
-pub(crate) unsafe fn acquire(this: *mut c_void) -> HRESULT {
-    let (original_vtable, patched_vtable, original) = {
-        let hooks = DEVICE_HOOKS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
-        };
-        (
-            hook.original_vtable as *const usize,
-            hook._vtable.as_ptr(),
-            hook.original_acquire,
-        )
-    };
-    let slot = this.cast::<*const usize>();
-    unsafe { *slot = original_vtable };
-    let result = unsafe { original(this) };
-    unsafe { *slot = patched_vtable };
-    result
-}
-
-pub(crate) unsafe fn set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT {
-    let (original_vtable, patched_vtable, original) = {
-        let hooks = DEVICE_HOOKS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
-        };
-        (
-            hook.original_vtable as *const usize,
-            hook._vtable.as_ptr(),
-            hook.original_set_data_format,
-        )
-    };
-    let slot = this.cast::<*const usize>();
-    unsafe { *slot = original_vtable };
-    let result = unsafe { original(this, format) };
-    unsafe { *slot = patched_vtable };
-    result
-}
-
-pub(crate) unsafe fn set_cooperative_level(
-    this: *mut c_void,
-    window: *mut c_void,
-    flags: u32,
-) -> HRESULT {
-    let (original_vtable, patched_vtable, original) = {
-        let hooks = DEVICE_HOOKS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
-        };
-        (
-            hook.original_vtable as *const usize,
-            hook._vtable.as_ptr(),
-            hook.original_set_cooperative_level,
-        )
-    };
-    let slot = this.cast::<*const usize>();
-    unsafe { *slot = original_vtable };
-    let result = unsafe { original(this, window, flags) };
-    unsafe { *slot = patched_vtable };
-    result
-}
-
 pub(crate) unsafe fn get_device_state(
     this: *mut c_void,
     size: u32,
     output: *mut c_void,
+    mut next: crate::hook::GetDeviceStateContext<'_>,
 ) -> HRESULT {
-    let (original, device) = {
+    let device = {
         let hooks = DEVICE_HOOKS
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get(&(this as usize)) else {
             return 0x8000_4005u32 as i32;
         };
-        (hook.original_get_device_state, hook.device)
+        hook.device
     };
     if !INPUT_CONNECTED.load(Ordering::Acquire) {
-        return unsafe { original(this, size, output) };
+        let continuation = *next
+            .fp_next()
+            .expect("DirectInput hook chains always have a terminal");
+        return unsafe { continuation(this, size, output, next) };
     }
     if output.is_null() {
         return 0x8007_0057u32 as i32;
@@ -601,7 +479,10 @@ pub(crate) unsafe fn get_device_state(
     0
 }
 
-pub(crate) unsafe fn device_release(this: *mut c_void) -> u32 {
+pub(crate) unsafe fn device_release(
+    this: *mut c_void,
+    _next: crate::hook::DeviceReleaseContext<'_>,
+) -> u32 {
     let (original_vtable, patched_vtable, original_release) = {
         let hooks = DEVICE_HOOKS
             .lock()
@@ -629,18 +510,16 @@ pub(crate) unsafe fn device_release(this: *mut c_void) -> u32 {
     remaining
 }
 
-pub(crate) unsafe fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT {
-    let original = {
+pub(crate) unsafe fn set_event_notification(this: *mut c_void, event: *mut c_void) {
+    {
         let mut hooks = DEVICE_HOOKS
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get_mut(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
+            return;
         };
         hook.event_handle = event as usize;
-        hook.original_set_event_notification
-    };
-    unsafe { original(this, event) }
+    }
 }
 
 pub(crate) unsafe fn get_device_data(
@@ -649,18 +528,22 @@ pub(crate) unsafe fn get_device_data(
     output: *mut DIDEVICEOBJECTDATA,
     count: *mut u32,
     flags: u32,
+    mut next: crate::hook::GetDeviceDataContext<'_>,
 ) -> HRESULT {
-    let (original, device) = {
+    let device = {
         let hooks = DEVICE_HOOKS
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get(&(this as usize)) else {
             return 0x8000_4005u32 as i32;
         };
-        (hook.original_get_device_data, hook.device)
+        hook.device
     };
     if !INPUT_CONNECTED.load(Ordering::Acquire) {
-        return unsafe { original(this, object_size, output, count, flags) };
+        let continuation = *next
+            .fp_next()
+            .expect("DirectInput hook chains always have a terminal");
+        return unsafe { continuation(this, object_size, output, count, flags, next) };
     }
     if count.is_null() {
         return 0x8007_0057u32 as i32;
@@ -709,25 +592,6 @@ pub(crate) unsafe fn get_device_data(
     0
 }
 
-unsafe fn resolve<T: Copy>(module: HMODULE, name: &'static std::ffi::CStr) -> Result<T, u32> {
-    let address = unsafe { GetProcAddress(module, name.as_ptr().cast::<u8>() as PCSTR) };
-    let Some(address) = address else {
-        return Err(unsafe { windows_sys::Win32::Foundation::GetLastError() });
-    };
-    // SAFETY: every caller supplies the ABI signature of the named dinput8
-    // export, verified against the Windows SDK declarations.
-    Ok(unsafe { std::mem::transmute_copy(&address) })
-}
-
-#[allow(non_snake_case)]
-const fn HRESULT_FROM_WIN32(error: u32) -> HRESULT {
-    if error == 0 {
-        0
-    } else {
-        ((error & 0x0000_ffff) | 0x8007_0000) as i32
-    }
-}
-
 pub unsafe extern "system" fn DirectInput8Create(
     instance: HINSTANCE,
     version: u32,
@@ -735,13 +599,13 @@ pub unsafe extern "system" fn DirectInput8Create(
     output: *mut *mut c_void,
     outer: *mut c_void,
 ) -> HRESULT {
-    let system = match system_dinput8() {
+    let original = match crate::loader::system_direct_input8_create() {
         Ok(system) => system,
         Err(error) => return error,
     };
     unsafe {
-        intercept_direct_input8_create(
-            system.direct_input_8_create,
+        crate::hook::dispatch_direct_input_8_create(
+            original,
             instance,
             version,
             interface_id,
@@ -751,21 +615,42 @@ pub unsafe extern "system" fn DirectInput8Create(
     }
 }
 
-/// Shared interception entry used by both the legacy proxy and an installed
-/// in-process detour. `original` must be the unhooked function or trampoline.
-pub unsafe fn intercept_direct_input8_create(
-    original: DirectInput8CreateFn,
+pub(crate) unsafe fn direct_input_8_create(
     instance: HINSTANCE,
     version: u32,
     interface_id: *const GUID,
     output: *mut *mut c_void,
     outer: *mut c_void,
-) -> HRESULT {
+    result: HRESULT,
+) {
+    start_input_receiver();
+    dinput_log(format!(
+        "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
+    ));
+    if result >= 0 && !output.is_null() {
+        unsafe { hook_direct_input(*output) };
+    }
+    let _ = (instance, outer);
+}
+
+/// Shared interception entry used by both the legacy proxy and an installed
+/// in-process detour. `original` must be the unhooked function or trampoline.
+pub unsafe fn intercept_direct_input8_create<F>(
+    original: F,
+    instance: HINSTANCE,
+    version: u32,
+    interface_id: *const GUID,
+    output: *mut *mut c_void,
+    outer: *mut c_void,
+) -> HRESULT
+where
+    F: FnOnce(HINSTANCE, u32, *const GUID, *mut *mut c_void, *mut c_void) -> HRESULT,
+{
     start_input_receiver();
     dinput_log(format!(
         "snowglass: forwarding DirectInput8Create version={version:#x} iid={interface_id:p}"
     ));
-    let result = unsafe { original(instance, version, interface_id, output, outer) };
+    let result = original(instance, version, interface_id, output, outer);
     dinput_log(format!(
         "snowglass: DirectInput8Create returned {result:#x}"
     ));
@@ -773,45 +658,6 @@ pub unsafe fn intercept_direct_input8_create(
         unsafe { hook_direct_input(*output) };
     }
     result
-}
-
-pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
-    match system_dinput8() {
-        Ok(system) => unsafe { (system.dll_can_unload_now)() },
-        Err(error) => error,
-    }
-}
-
-pub unsafe extern "system" fn DllGetClassObject(
-    class_id: *const GUID,
-    interface_id: *const GUID,
-    output: *mut *mut c_void,
-) -> HRESULT {
-    match system_dinput8() {
-        Ok(system) => unsafe { (system.dll_get_class_object)(class_id, interface_id, output) },
-        Err(error) => error,
-    }
-}
-
-pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
-    match system_dinput8() {
-        Ok(system) => unsafe { (system.dll_register_server)() },
-        Err(error) => error,
-    }
-}
-
-pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
-    match system_dinput8() {
-        Ok(system) => unsafe { (system.dll_unregister_server)() },
-        Err(error) => error,
-    }
-}
-
-pub unsafe extern "system" fn GetdfDIJoystick() -> *const c_void {
-    match system_dinput8() {
-        Ok(system) => unsafe { (system.get_df_di_joystick)() },
-        Err(_) => std::ptr::null(),
-    }
 }
 
 #[cfg(test)]
@@ -847,8 +693,7 @@ mod tests {
 
     #[test]
     fn resolves_every_system_export() {
-        let system = system_dinput8().expect("system dinput8.dll should load");
-        assert!(!system._module.is_null());
+        crate::loader::system_direct_input8_create().expect("system dinput8.dll should load");
     }
 
     #[test]

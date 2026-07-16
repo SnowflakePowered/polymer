@@ -19,6 +19,13 @@ pub(crate) unsafe extern "system" fn direct_input_8_create(
     outer: *mut c_void,
 ) -> HRESULT {
     unsafe {
-        crate::interception::direct_input_8_create(instance, version, interface_id, output, outer)
+        dinput8::dispatch_direct_input_8_create(
+            crate::install::call_original,
+            instance,
+            version,
+            interface_id,
+            output,
+            outer,
+        )
     }
 }

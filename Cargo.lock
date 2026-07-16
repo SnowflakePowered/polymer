@@ -1974,6 +1974,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-hook"
+version = "0.1.0"
+
+[[package]]
 name = "snowglass-hook-d3d11-proxy"
 version = "0.1.0"
 dependencies = [
@@ -2024,6 +2028,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "dashmap",
+ "snowglass-hook",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-producer-vulkan",
@@ -2038,6 +2043,7 @@ version = "0.1.0"
 name = "snowglass-input-dinput"
 version = "0.1.0"
 dependencies = [
+ "snowglass-hook",
  "snowglass-input-core",
  "snowglass-ipc",
  "windows-sys 0.61.2",

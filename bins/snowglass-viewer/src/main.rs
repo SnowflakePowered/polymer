@@ -18,7 +18,7 @@ use std::{
     process::{Child, Command},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -167,9 +167,9 @@ unsafe extern "system" fn raw_keyboard_subclass(
 }
 
 enum CaptureEvent {
-    Stream(StreamReady),
-    Frame(FrameReady),
-    Disconnected,
+    Stream(u64, StreamReady),
+    Frame(u64, FrameReady),
+    Disconnected(u64),
 }
 
 #[derive(Default)]
@@ -888,6 +888,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
     let mut cursor_position = (0, 0);
+    let mut active_capture_connection = 0u64;
     let input_started = Instant::now();
     let mut input_sequence = 0u32;
     let mut pressed_keys = HashSet::<KeyCode>::new();
@@ -1027,7 +1028,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     while let Ok(capture) = capture_rx.try_recv() {
                         match capture {
-                            CaptureEvent::Stream(stream) => {
+                            CaptureEvent::Stream(connection, stream) => {
+                                active_capture_connection = connection;
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
@@ -1036,7 +1038,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     eprintln!("snowglass: direct import failed: {error}");
                                 }
                             }
-                            CaptureEvent::Frame(frame) => {
+                            CaptureEvent::Frame(connection, frame) => {
+                                if connection != active_capture_connection {
+                                    continue;
+                                }
                                 if let Some(previous) = stats.previous_timestamp_qpc {
                                     let frame_count = frame
                                         .frame_number
@@ -1072,7 +1077,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     / frequency;
                                 compositor.set_latest(frame);
                             }
-                            CaptureEvent::Disconnected => {
+                            CaptureEvent::Disconnected(connection) => {
+                                if connection != active_capture_connection {
+                                    continue;
+                                }
                                 if let Err(error) = compositor.disconnect_stream() {
                                     eprintln!("snowglass: stream disconnect failed: {error}");
                                 }
@@ -1192,6 +1200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEvent>) {
     thread::spawn(move || {
+        let newest_connection = Arc::new(AtomicU64::new(0));
         loop {
             let mut socket = match listener.accept() {
                 Ok(socket) => socket,
@@ -1200,6 +1209,7 @@ fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEven
                     return;
                 }
             };
+            let connection = newest_connection.fetch_add(1, Ordering::AcqRel) + 1;
             if let Err(error) = socket.send(Message::Hello(Handshake {
                 protocol_version: PROTOCOL_VERSION,
                 process_id: std::process::id(),
@@ -1207,32 +1217,41 @@ fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEven
                 eprintln!("snowglass: IPC handshake failed: {error}");
                 continue;
             }
-            let connection = (|| -> std::io::Result<()> {
-                loop {
-                    match socket.receive()? {
-                        Message::StreamReady(stream) => {
-                            events.send(CaptureEvent::Stream(stream)).map_err(|_| {
-                                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "viewer closed")
-                            })?;
+            let events = events.clone();
+            let newest_connection = newest_connection.clone();
+            thread::spawn(move || {
+                let result = (|| -> std::io::Result<()> {
+                    loop {
+                        match socket.receive()? {
+                            Message::StreamReady(stream) => {
+                                events
+                                    .send(CaptureEvent::Stream(connection, stream))
+                                    .map_err(|_| {
+                                        std::io::Error::new(
+                                            std::io::ErrorKind::BrokenPipe,
+                                            "viewer closed",
+                                        )
+                                    })?;
+                            }
+                            Message::FrameReady(frame) => {
+                                if newest_connection.load(Ordering::Acquire) == connection {
+                                    let _ = events.try_send(CaptureEvent::Frame(connection, frame));
+                                }
+                            }
+                            Message::Shutdown => return Ok(()),
+                            Message::DirectInputData(_) => {}
+                            Message::Hello(_) => {}
                         }
-                        Message::FrameReady(frame) => {
-                            let _ = events.try_send(CaptureEvent::Frame(frame));
-                        }
-                        Message::Shutdown => return Ok(()),
-                        Message::DirectInputData(_) => {}
-                        Message::Hello(_) => {}
                     }
+                })();
+                if let Err(error) = result
+                    && error.kind() != std::io::ErrorKind::UnexpectedEof
+                    && error.kind() != std::io::ErrorKind::ConnectionReset
+                {
+                    eprintln!("snowglass: IPC connection ended: {error}");
                 }
-            })();
-            if let Err(error) = connection
-                && error.kind() != std::io::ErrorKind::UnexpectedEof
-                && error.kind() != std::io::ErrorKind::ConnectionReset
-            {
-                eprintln!("snowglass: IPC connection ended: {error}");
-            }
-            if events.send(CaptureEvent::Disconnected).is_err() {
-                return;
-            }
+                let _ = events.send(CaptureEvent::Disconnected(connection));
+            });
         }
     });
 }
