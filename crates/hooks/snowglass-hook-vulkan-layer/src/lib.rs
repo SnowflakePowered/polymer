@@ -17,10 +17,12 @@ use std::{
     io::Write,
     mem, ptr,
     sync::{
-        Arc,
+        Arc, Once,
         atomic::{AtomicU64, Ordering},
     },
 };
+
+static INSTALL_DINPUT_HOOK: Once = Once::new();
 
 fn layer_log(message: impl std::fmt::Display) {
     eprintln!("{message}");
@@ -30,6 +32,50 @@ fn layer_log(message: impl std::fmt::Display) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{message}");
     }
+}
+
+fn install_dinput_hook() {
+    INSTALL_DINPUT_HOOK.call_once(|| {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+        let Ok(path) = std::env::var("SNOWGLASS_HOOK_DINPUT") else {
+            layer_log("snowglass: SNOWGLASS_HOOK_DINPUT was not configured");
+            return;
+        };
+        let wide = std::ffi::OsStr::new(&path)
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let module = unsafe { LoadLibraryW(wide.as_ptr()) };
+        if module.is_null() {
+            layer_log(format!(
+                "snowglass: failed to load DirectInput hook {path}: {}",
+                std::io::Error::last_os_error()
+            ));
+            return;
+        }
+        let Some(address) =
+            (unsafe { GetProcAddress(module, c"SnowglassInstallDinputHook".as_ptr().cast()) })
+        else {
+            layer_log("snowglass: DirectInput hook install export was missing");
+            return;
+        };
+        let install = unsafe {
+            std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                unsafe extern "system" fn() -> i32,
+            >(address)
+        };
+        let result = unsafe { install() };
+        if result < 0 {
+            layer_log(format!(
+                "snowglass: DirectInput detour installation failed: {result:#x}"
+            ));
+        } else {
+            layer_log("snowglass: DirectInput detour installed");
+        }
+    });
 }
 
 fn connect_viewer(
@@ -202,6 +248,47 @@ struct SwapchainState {
     frame_number: u64,
 }
 
+#[derive(Clone, Copy)]
+struct RenderTargetCandidate {
+    image: vk::Image,
+    extent: vk::Extent2D,
+    layout: vk::ImageLayout,
+    score: u64,
+    cohort_size: u32,
+}
+
+impl RenderTargetCandidate {
+    fn is_better_than(self, other: Self) -> bool {
+        (self.score, self.cohort_size) > (other.score, other.cohort_size)
+    }
+}
+
+fn image_cohort_size(image: vk::Image, extent: vk::Extent2D) -> u32 {
+    let Some(info) = (unsafe { IMAGE_INFO.get(&image).map(|entry| *entry) }) else {
+        return 0;
+    };
+    unsafe {
+        IMAGE_INFO
+            .iter()
+            .filter(|entry| {
+                *entry.value() == info
+                    && IMAGE_EXTENT
+                        .get(entry.key())
+                        .is_some_and(|candidate| *candidate == extent)
+            })
+            .count() as u32
+    }
+}
+
+#[derive(Clone, Default)]
+struct CommandTrackingState {
+    framebuffer: Option<vk::Framebuffer>,
+    descriptor_sets: Vec<vk::DescriptorSet>,
+    pushed_images: Vec<(vk::Image, vk::ImageLayout)>,
+    viewport: Option<vk::Viewport>,
+    scissor: Option<vk::Rect2D>,
+}
+
 #[derive(Clone)]
 struct QueueDispatchTable {
     device: vk::Device,
@@ -242,6 +329,29 @@ static mut SWAPCHAIN: LazyCell<DashMap<vk::SwapchainKHR, SwapchainState>> =
 
 static mut SURFACE_WINDOW: LazyCell<DashMap<vk::SurfaceKHR, isize>> =
     LazyCell::new(Default::default);
+
+static mut SWAPCHAIN_IMAGE: LazyCell<DashMap<vk::Image, vk::SwapchainKHR>> =
+    LazyCell::new(Default::default);
+static mut RENDER_TARGET: LazyCell<DashMap<vk::Image, RenderTargetCandidate>> =
+    LazyCell::new(Default::default);
+static mut PRESENT_RECT: LazyCell<DashMap<vk::Image, (vk::Rect2D, u64)>> =
+    LazyCell::new(Default::default);
+static mut IMAGE_EXTENT: LazyCell<DashMap<vk::Image, vk::Extent2D>> =
+    LazyCell::new(Default::default);
+static mut IMAGE_INFO: LazyCell<DashMap<vk::Image, (vk::Format, vk::ImageUsageFlags)>> =
+    LazyCell::new(Default::default);
+static mut IMAGE_VIEW: LazyCell<DashMap<vk::ImageView, vk::Image>> =
+    LazyCell::new(Default::default);
+static mut FRAMEBUFFER_IMAGES: LazyCell<DashMap<vk::Framebuffer, Vec<vk::Image>>> =
+    LazyCell::new(Default::default);
+static mut DESCRIPTOR_IMAGES: LazyCell<
+    DashMap<(vk::DescriptorSet, u32, u32), (vk::Image, vk::ImageLayout)>,
+> = LazyCell::new(Default::default);
+static mut COMMAND_TRACKING: LazyCell<DashMap<vk::CommandBuffer, CommandTrackingState>> =
+    LazyCell::new(Default::default);
+static mut COMMAND_CANDIDATE: LazyCell<
+    DashMap<vk::CommandBuffer, (vk::Image, RenderTargetCandidate)>,
+> = LazyCell::new(Default::default);
 
 static SWAPCHAINS_CREATED: AtomicU64 = AtomicU64::new(0);
 static PRESENTS_SEEN: AtomicU64 = AtomicU64::new(0);
@@ -500,6 +610,61 @@ pub unsafe extern "system" fn vkGetDeviceProcAddr(
         b"vkQueuePresentKHR" => {
             return Some(unsafe { mem::transmute(vkQueuePresentKHR as *const ()) });
         }
+        b"vkQueueSubmit" if track_render_target_enabled() => {
+            return layer_fn(vkQueueSubmit as *const ());
+        }
+        b"vkCmdBlitImage" if track_render_target_enabled() => {
+            return Some(unsafe { mem::transmute(vkCmdBlitImage as *const ()) });
+        }
+        b"vkCmdCopyImage" if track_render_target_enabled() => {
+            return Some(unsafe { mem::transmute(vkCmdCopyImage as *const ()) });
+        }
+        b"vkCreateImage" if track_render_target_enabled() => {
+            return layer_fn(vkCreateImage as *const ());
+        }
+        b"vkDestroyImage" if track_render_target_enabled() => {
+            return layer_fn(vkDestroyImage as *const ());
+        }
+        b"vkCreateImageView" if track_render_target_enabled() => {
+            return layer_fn(vkCreateImageView as *const ());
+        }
+        b"vkDestroyImageView" if track_render_target_enabled() => {
+            return layer_fn(vkDestroyImageView as *const ());
+        }
+        b"vkCreateFramebuffer" if track_render_target_enabled() => {
+            return layer_fn(vkCreateFramebuffer as *const ());
+        }
+        b"vkDestroyFramebuffer" if track_render_target_enabled() => {
+            return layer_fn(vkDestroyFramebuffer as *const ());
+        }
+        b"vkUpdateDescriptorSets" if track_render_target_enabled() => {
+            return layer_fn(vkUpdateDescriptorSets as *const ());
+        }
+        b"vkCmdPushDescriptorSetKHR" if track_render_target_enabled() => {
+            return layer_fn(vkCmdPushDescriptorSetKHR as *const ());
+        }
+        b"vkCmdBeginRenderPass" if track_render_target_enabled() => {
+            return layer_fn(vkCmdBeginRenderPass as *const ());
+        }
+        b"vkCmdEndRenderPass" if track_render_target_enabled() => {
+            return layer_fn(vkCmdEndRenderPass as *const ());
+        }
+        b"vkCmdBindDescriptorSets" if track_render_target_enabled() => {
+            return layer_fn(vkCmdBindDescriptorSets as *const ());
+        }
+        b"vkCmdSetViewport" if track_render_target_enabled() => {
+            return layer_fn(vkCmdSetViewport as *const ());
+        }
+        b"vkCmdSetScissor" if track_render_target_enabled() => {
+            return layer_fn(vkCmdSetScissor as *const ());
+        }
+        b"vkCmdDraw" if track_render_target_enabled() => return layer_fn(vkCmdDraw as *const ()),
+        b"vkCmdDrawIndexed" if track_render_target_enabled() => {
+            return layer_fn(vkCmdDrawIndexed as *const ());
+        }
+        b"vkBeginCommandBuffer" if track_render_target_enabled() => {
+            return layer_fn(vkBeginCommandBuffer as *const ());
+        }
         b"vkGetDeviceQueue" => {
             return Some(unsafe { mem::transmute(vkGetDeviceQueue as *const ()) });
         }
@@ -513,6 +678,10 @@ pub unsafe extern "system" fn vkGetDeviceProcAddr(
     dispatch.and_then(|entry| unsafe { (entry.next_gdpa)(device, name.as_ptr()) })
 }
 
+fn layer_fn(pointer: *const ()) -> vk::PFN_vkVoidFunction {
+    Some(unsafe { mem::transmute(pointer) })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn vkCreateInstance(
     create_info: *const vk::InstanceCreateInfo<'_>,
@@ -520,6 +689,7 @@ pub unsafe extern "system" fn vkCreateInstance(
     instance: *mut vk::Instance,
 ) -> vk::Result {
     layer_log("snowglass: vkCreateInstance entered");
+    install_dinput_hook();
     let Some(chain_info) = (unsafe { find_instance_link(create_info) }) else {
         layer_log("snowglass: loader instance link was not present");
         return vk::Result::ERROR_INITIALIZATION_FAILED;
@@ -817,6 +987,755 @@ pub unsafe extern "system" fn vkDestroyDevice(
     }
 }
 
+fn track_render_target_enabled() -> bool {
+    std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_some()
+}
+
+fn clamp_capture_rect(rect: vk::Rect2D, bounds: vk::Extent2D) -> Option<vk::Rect2D> {
+    let x = rect.offset.x.max(0) as u32;
+    let y = rect.offset.y.max(0) as u32;
+    if x >= bounds.width || y >= bounds.height {
+        return None;
+    }
+    let width = rect.extent.width.min(bounds.width - x);
+    let height = rect.extent.height.min(bounds.height - y);
+    (width != 0 && height != 0).then_some(vk::Rect2D {
+        offset: vk::Offset2D {
+            x: x as i32,
+            y: y as i32,
+        },
+        extent: vk::Extent2D { width, height },
+    })
+}
+
+unsafe fn command_dispatch(command_buffer: vk::CommandBuffer) -> Option<DeviceDispatchTable> {
+    unsafe { dispatch_key(command_buffer) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) })
+}
+
+fn dispatch_device(dispatch: &DeviceDispatchTable) -> vk::Device {
+    dispatch
+        .capture
+        .as_ref()
+        .map_or(vk::Device::null(), |capture| capture.device.handle())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkBeginCommandBuffer(
+    command_buffer: vk::CommandBuffer,
+    begin_info: *const vk::CommandBufferBeginInfo<'_>,
+) -> vk::Result {
+    unsafe {
+        COMMAND_TRACKING.remove(&command_buffer);
+        COMMAND_CANDIDATE.remove(&command_buffer);
+    }
+    let Some(dispatch) = (unsafe { command_dispatch(command_buffer) }) else {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    };
+    let Some(function): Option<vk::PFN_vkBeginCommandBuffer> = (unsafe {
+        device_proc(
+            dispatch.next_gdpa,
+            dispatch_device(&dispatch),
+            c"vkBeginCommandBuffer",
+        )
+    }) else {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    };
+    unsafe { function(command_buffer, begin_info) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCreateImage(
+    device: vk::Device,
+    create_info: *const vk::ImageCreateInfo<'_>,
+    allocator: *const vk::AllocationCallbacks<'_>,
+    image: *mut vk::Image,
+) -> vk::Result {
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    let Some(function): Option<vk::PFN_vkCreateImage> = dispatch
+        .and_then(|entry| unsafe { device_proc(entry.next_gdpa, device, c"vkCreateImage") })
+    else {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    };
+    let mut modified = (!create_info.is_null()).then(|| unsafe { *create_info });
+    if let Some(info) = modified.as_mut() {
+        info.usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+    let result = unsafe {
+        function(
+            device,
+            modified.as_ref().map_or(create_info, |info| info),
+            allocator,
+            image,
+        )
+    };
+    if result == vk::Result::SUCCESS
+        && !image.is_null()
+        && let Some(info) = modified
+    {
+        unsafe {
+            IMAGE_EXTENT.insert(
+                *image,
+                vk::Extent2D {
+                    width: info.extent.width,
+                    height: info.extent.height,
+                },
+            );
+            IMAGE_INFO.insert(*image, (info.format, info.usage));
+        };
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkDestroyImage(
+    device: vk::Device,
+    image: vk::Image,
+    allocator: *const vk::AllocationCallbacks<'_>,
+) {
+    unsafe { IMAGE_EXTENT.remove(&image) };
+    unsafe { IMAGE_INFO.remove(&image) };
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    if let Some(function) = dispatch.and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkDestroyImage>(entry.next_gdpa, device, c"vkDestroyImage")
+    }) {
+        unsafe { function(device, image, allocator) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCreateImageView(
+    device: vk::Device,
+    create_info: *const vk::ImageViewCreateInfo<'_>,
+    allocator: *const vk::AllocationCallbacks<'_>,
+    view: *mut vk::ImageView,
+) -> vk::Result {
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    let Some(function) = dispatch.and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCreateImageView>(entry.next_gdpa, device, c"vkCreateImageView")
+    }) else {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    };
+    let result = unsafe { function(device, create_info, allocator, view) };
+    if result == vk::Result::SUCCESS && !create_info.is_null() && !view.is_null() {
+        unsafe { IMAGE_VIEW.insert(*view, (*create_info).image) };
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkDestroyImageView(
+    device: vk::Device,
+    view: vk::ImageView,
+    allocator: *const vk::AllocationCallbacks<'_>,
+) {
+    unsafe { IMAGE_VIEW.remove(&view) };
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    if let Some(function) = dispatch.and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkDestroyImageView>(entry.next_gdpa, device, c"vkDestroyImageView")
+    }) {
+        unsafe { function(device, view, allocator) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCreateFramebuffer(
+    device: vk::Device,
+    create_info: *const vk::FramebufferCreateInfo<'_>,
+    allocator: *const vk::AllocationCallbacks<'_>,
+    framebuffer: *mut vk::Framebuffer,
+) -> vk::Result {
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    let Some(function) = dispatch.and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCreateFramebuffer>(entry.next_gdpa, device, c"vkCreateFramebuffer")
+    }) else {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    };
+    let result = unsafe { function(device, create_info, allocator, framebuffer) };
+    if result == vk::Result::SUCCESS && !create_info.is_null() && !framebuffer.is_null() {
+        let info = unsafe { &*create_info };
+        let views = if info.attachment_count == 0 {
+            &[][..]
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(info.p_attachments, info.attachment_count as usize)
+            }
+        };
+        let images = views
+            .iter()
+            .filter_map(|view| unsafe { IMAGE_VIEW.get(view).map(|entry| *entry) })
+            .collect();
+        unsafe { FRAMEBUFFER_IMAGES.insert(*framebuffer, images) };
+    }
+    result
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkDestroyFramebuffer(
+    device: vk::Device,
+    framebuffer: vk::Framebuffer,
+    allocator: *const vk::AllocationCallbacks<'_>,
+) {
+    unsafe { FRAMEBUFFER_IMAGES.remove(&framebuffer) };
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    if let Some(function) = dispatch.and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkDestroyFramebuffer>(
+            entry.next_gdpa,
+            device,
+            c"vkDestroyFramebuffer",
+        )
+    }) {
+        unsafe { function(device, framebuffer, allocator) }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkUpdateDescriptorSets(
+    device: vk::Device,
+    write_count: u32,
+    writes: *const vk::WriteDescriptorSet<'_>,
+    copy_count: u32,
+    copies: *const vk::CopyDescriptorSet<'_>,
+) {
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkUpdateDescriptorSets>(
+            entry.next_gdpa,
+            device,
+            c"vkUpdateDescriptorSets",
+        )
+    }) {
+        unsafe { function(device, write_count, writes, copy_count, copies) };
+    }
+    if write_count == 0 || writes.is_null() {
+        return;
+    }
+    for write in unsafe { std::slice::from_raw_parts(writes, write_count as usize) } {
+        if !matches!(
+            write.descriptor_type,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER | vk::DescriptorType::SAMPLED_IMAGE
+        ) || write.p_image_info.is_null()
+        {
+            continue;
+        }
+        for (index, info) in unsafe {
+            std::slice::from_raw_parts(write.p_image_info, write.descriptor_count as usize)
+        }
+        .iter()
+        .enumerate()
+        {
+            if let Some(image) = unsafe { IMAGE_VIEW.get(&info.image_view).map(|entry| *entry) } {
+                unsafe {
+                    DESCRIPTOR_IMAGES.insert(
+                        (
+                            write.dst_set,
+                            write.dst_binding,
+                            write.dst_array_element + index as u32,
+                        ),
+                        (image, info.image_layout),
+                    )
+                };
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdPushDescriptorSetKHR(
+    command_buffer: vk::CommandBuffer,
+    bind_point: vk::PipelineBindPoint,
+    layout: vk::PipelineLayout,
+    set: u32,
+    write_count: u32,
+    writes: *const vk::WriteDescriptorSet<'_>,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdPushDescriptorSetKHR>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdPushDescriptorSetKHR",
+        )
+    }) {
+        unsafe { function(command_buffer, bind_point, layout, set, write_count, writes) };
+    }
+    if write_count == 0 || writes.is_null() {
+        return;
+    }
+    let mut pushed_images = Vec::new();
+    for write in unsafe { std::slice::from_raw_parts(writes, write_count as usize) } {
+        if !matches!(
+            write.descriptor_type,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER | vk::DescriptorType::SAMPLED_IMAGE
+        ) || write.p_image_info.is_null()
+        {
+            continue;
+        }
+        for info in unsafe {
+            std::slice::from_raw_parts(write.p_image_info, write.descriptor_count as usize)
+        } {
+            if let Some(image) = unsafe { IMAGE_VIEW.get(&info.image_view).map(|entry| *entry) } {
+                pushed_images.push((image, info.image_layout));
+            }
+        }
+    }
+    unsafe {
+        COMMAND_TRACKING
+            .entry(command_buffer)
+            .or_default()
+            .pushed_images = pushed_images
+    };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdBeginRenderPass(
+    command_buffer: vk::CommandBuffer,
+    begin: *const vk::RenderPassBeginInfo<'_>,
+    contents: vk::SubpassContents,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdBeginRenderPass>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdBeginRenderPass",
+        )
+    }) {
+        unsafe { function(command_buffer, begin, contents) };
+    }
+    if !begin.is_null() {
+        unsafe {
+            COMMAND_TRACKING
+                .entry(command_buffer)
+                .or_default()
+                .framebuffer = Some((*begin).framebuffer)
+        };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdEndRenderPass(command_buffer: vk::CommandBuffer) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdEndRenderPass>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdEndRenderPass",
+        )
+    }) {
+        unsafe { function(command_buffer) };
+    }
+    if let Some(mut state) = unsafe { COMMAND_TRACKING.get_mut(&command_buffer) } {
+        state.framebuffer = None;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdBindDescriptorSets(
+    command_buffer: vk::CommandBuffer,
+    bind_point: vk::PipelineBindPoint,
+    layout: vk::PipelineLayout,
+    first_set: u32,
+    set_count: u32,
+    sets: *const vk::DescriptorSet,
+    dynamic_offset_count: u32,
+    dynamic_offsets: *const u32,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdBindDescriptorSets>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdBindDescriptorSets",
+        )
+    }) {
+        unsafe {
+            function(
+                command_buffer,
+                bind_point,
+                layout,
+                first_set,
+                set_count,
+                sets,
+                dynamic_offset_count,
+                dynamic_offsets,
+            )
+        };
+    }
+    if bind_point != vk::PipelineBindPoint::GRAPHICS || set_count == 0 || sets.is_null() {
+        return;
+    }
+    let bound = unsafe { std::slice::from_raw_parts(sets, set_count as usize) };
+    let mut state = unsafe { COMMAND_TRACKING.entry(command_buffer).or_default() };
+    let required = first_set as usize + bound.len();
+    state
+        .descriptor_sets
+        .resize(required, vk::DescriptorSet::null());
+    state.descriptor_sets[first_set as usize..required].copy_from_slice(bound);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdSetViewport(
+    command_buffer: vk::CommandBuffer,
+    first: u32,
+    count: u32,
+    viewports: *const vk::Viewport,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdSetViewport>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdSetViewport",
+        )
+    }) {
+        unsafe { function(command_buffer, first, count, viewports) };
+    }
+    if first == 0 && count != 0 && !viewports.is_null() {
+        unsafe { COMMAND_TRACKING.entry(command_buffer).or_default().viewport = Some(*viewports) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdSetScissor(
+    command_buffer: vk::CommandBuffer,
+    first: u32,
+    count: u32,
+    scissors: *const vk::Rect2D,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdSetScissor>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdSetScissor",
+        )
+    }) {
+        unsafe { function(command_buffer, first, count, scissors) };
+    }
+    if first == 0 && count != 0 && !scissors.is_null() {
+        unsafe { COMMAND_TRACKING.entry(command_buffer).or_default().scissor = Some(*scissors) };
+    }
+}
+
+fn observe_draw(command_buffer: vk::CommandBuffer) {
+    let Some(state) = (unsafe {
+        COMMAND_TRACKING
+            .get(&command_buffer)
+            .map(|entry| entry.clone())
+    }) else {
+        return;
+    };
+    let Some(framebuffer) = state.framebuffer else {
+        return;
+    };
+    let Some(images) = (unsafe { FRAMEBUFFER_IMAGES.get(&framebuffer) }) else {
+        return;
+    };
+    let Some(destination) = images
+        .iter()
+        .find(|image| unsafe { SWAPCHAIN_IMAGE.contains_key(image) })
+        .copied()
+    else {
+        return;
+    };
+    let draw_area = state
+        .scissor
+        .map(|rect| u64::from(rect.extent.width) * u64::from(rect.extent.height))
+        .or_else(|| {
+            state
+                .viewport
+                .map(|vp| (vp.width.abs() as u64) * (vp.height.abs() as u64))
+        })
+        .unwrap_or(0);
+    if draw_area == 0 {
+        return;
+    }
+    let mut best = None;
+    for entry in unsafe { DESCRIPTOR_IMAGES.iter() } {
+        let ((set, _, _), (image, layout)) = (*entry.key(), *entry.value());
+        if !state.descriptor_sets.contains(&set) || image == destination {
+            continue;
+        }
+        let Some(extent) = (unsafe { IMAGE_EXTENT.get(&image).map(|entry| *entry) }) else {
+            continue;
+        };
+        let pixels = u64::from(extent.width) * u64::from(extent.height);
+        if pixels < 64 * 64 {
+            continue;
+        }
+        if best.is_none_or(|candidate: RenderTargetCandidate| {
+            let cohort = image_cohort_size(image, extent);
+            cohort > candidate.cohort_size
+                || (cohort == candidate.cohort_size
+                    && pixels
+                        > u64::from(candidate.extent.width) * u64::from(candidate.extent.height))
+        }) {
+            best = Some(RenderTargetCandidate {
+                image,
+                extent,
+                layout,
+                score: draw_area,
+                cohort_size: image_cohort_size(image, extent),
+            });
+        }
+    }
+    for &(image, layout) in &state.pushed_images {
+        if image == destination {
+            continue;
+        }
+        let Some(extent) = (unsafe { IMAGE_EXTENT.get(&image).map(|entry| *entry) }) else {
+            continue;
+        };
+        let pixels = u64::from(extent.width) * u64::from(extent.height);
+        if pixels < 64 * 64 {
+            continue;
+        }
+        let cohort = image_cohort_size(image, extent);
+        if best.is_none_or(|candidate: RenderTargetCandidate| {
+            cohort > candidate.cohort_size
+                || (cohort == candidate.cohort_size
+                    && pixels
+                        > u64::from(candidate.extent.width) * u64::from(candidate.extent.height))
+        }) {
+            best = Some(RenderTargetCandidate {
+                image,
+                extent,
+                layout,
+                score: draw_area,
+                cohort_size: cohort,
+            });
+        }
+    }
+    if let Some(candidate) = best {
+        let rect = state.scissor.or_else(|| {
+            state.viewport.map(|viewport| vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: viewport.x.max(0.0).round() as i32,
+                    y: viewport.y.max(0.0).round() as i32,
+                },
+                extent: vk::Extent2D {
+                    width: viewport.width.abs().round() as u32,
+                    height: viewport.height.abs().round() as u32,
+                },
+            })
+        });
+        if let Some(rect) = rect {
+            let replace = unsafe {
+                PRESENT_RECT
+                    .get(&destination)
+                    .is_none_or(|old| draw_area >= old.1)
+            };
+            if replace {
+                unsafe { PRESENT_RECT.insert(destination, (rect, draw_area)) };
+            }
+        }
+        let replace = unsafe {
+            RENDER_TARGET
+                .get(&destination)
+                .is_none_or(|old| candidate.is_better_than(*old))
+        };
+        if replace {
+            unsafe { RENDER_TARGET.insert(destination, candidate) };
+        }
+        let replace_command = unsafe {
+            COMMAND_CANDIDATE
+                .get(&command_buffer)
+                .is_none_or(|old| candidate.is_better_than(old.1))
+        };
+        if replace_command {
+            unsafe { COMMAND_CANDIDATE.insert(command_buffer, (destination, candidate)) };
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdDraw(
+    command_buffer: vk::CommandBuffer,
+    vertex_count: u32,
+    instance_count: u32,
+    first_vertex: u32,
+    first_instance: u32,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdDraw>(entry.next_gdpa, dispatch_device(entry), c"vkCmdDraw")
+    }) {
+        unsafe {
+            function(
+                command_buffer,
+                vertex_count,
+                instance_count,
+                first_vertex,
+                first_instance,
+            )
+        };
+    }
+    observe_draw(command_buffer);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdDrawIndexed(
+    command_buffer: vk::CommandBuffer,
+    index_count: u32,
+    instance_count: u32,
+    first_index: u32,
+    vertex_offset: i32,
+    first_instance: u32,
+) {
+    let dispatch = unsafe { command_dispatch(command_buffer) };
+    if let Some(function) = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc::<vk::PFN_vkCmdDrawIndexed>(
+            entry.next_gdpa,
+            dispatch_device(entry),
+            c"vkCmdDrawIndexed",
+        )
+    }) {
+        unsafe {
+            function(
+                command_buffer,
+                index_count,
+                instance_count,
+                first_index,
+                vertex_offset,
+                first_instance,
+            )
+        };
+    }
+    observe_draw(command_buffer);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdBlitImage(
+    command_buffer: vk::CommandBuffer,
+    source_image: vk::Image,
+    source_layout: vk::ImageLayout,
+    destination_image: vk::Image,
+    destination_layout: vk::ImageLayout,
+    region_count: u32,
+    regions: *const vk::ImageBlit,
+    filter: vk::Filter,
+) {
+    let dispatch = unsafe { dispatch_key(command_buffer) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    let function: Option<vk::PFN_vkCmdBlitImage> = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc(
+            entry.next_gdpa,
+            command_buffer_device(entry, command_buffer),
+            c"vkCmdBlitImage",
+        )
+    });
+    if let Some(function) = function {
+        unsafe {
+            function(
+                command_buffer,
+                source_image,
+                source_layout,
+                destination_image,
+                destination_layout,
+                region_count,
+                regions,
+                filter,
+            )
+        };
+    }
+    if region_count != 0
+        && !regions.is_null()
+        && source_image != destination_image
+        && unsafe { SWAPCHAIN_IMAGE.contains_key(&destination_image) }
+    {
+        let region = unsafe { &*regions };
+        let width = (region.src_offsets[1].x - region.src_offsets[0].x).unsigned_abs();
+        let height = (region.src_offsets[1].y - region.src_offsets[0].y).unsigned_abs();
+        if width != 0 && height != 0 {
+            unsafe {
+                RENDER_TARGET.insert(
+                    destination_image,
+                    RenderTargetCandidate {
+                        image: source_image,
+                        extent: vk::Extent2D { width, height },
+                        layout: source_layout,
+                        score: u64::MAX,
+                        cohort_size: u32::MAX,
+                    },
+                )
+            };
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkCmdCopyImage(
+    command_buffer: vk::CommandBuffer,
+    source_image: vk::Image,
+    source_layout: vk::ImageLayout,
+    destination_image: vk::Image,
+    destination_layout: vk::ImageLayout,
+    region_count: u32,
+    regions: *const vk::ImageCopy,
+) {
+    let dispatch = unsafe { dispatch_key(command_buffer) }
+        .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
+    let function: Option<vk::PFN_vkCmdCopyImage> = dispatch.as_ref().and_then(|entry| unsafe {
+        device_proc(
+            entry.next_gdpa,
+            command_buffer_device(entry, command_buffer),
+            c"vkCmdCopyImage",
+        )
+    });
+    if let Some(function) = function {
+        unsafe {
+            function(
+                command_buffer,
+                source_image,
+                source_layout,
+                destination_image,
+                destination_layout,
+                region_count,
+                regions,
+            )
+        };
+    }
+    if region_count != 0
+        && !regions.is_null()
+        && source_image != destination_image
+        && unsafe { SWAPCHAIN_IMAGE.contains_key(&destination_image) }
+    {
+        let extent = unsafe { (*regions).extent };
+        if extent.width != 0 && extent.height != 0 {
+            unsafe {
+                RENDER_TARGET.insert(
+                    destination_image,
+                    RenderTargetCandidate {
+                        image: source_image,
+                        extent: vk::Extent2D {
+                            width: extent.width,
+                            height: extent.height,
+                        },
+                        layout: source_layout,
+                        score: u64::MAX,
+                        cohort_size: u32::MAX,
+                    },
+                )
+            };
+        }
+    }
+}
+
+fn command_buffer_device(dispatch: &DeviceDispatchTable, _: vk::CommandBuffer) -> vk::Device {
+    dispatch
+        .capture
+        .as_ref()
+        .map_or(vk::Device::null(), |capture| capture.device.handle())
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn vkGetDeviceQueue(
     device: vk::Device,
@@ -889,6 +1808,131 @@ pub unsafe extern "system" fn vkGetDeviceQueue2(
             };
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkQueueSubmit(
+    queue: vk::Queue,
+    submit_count: u32,
+    submits: *const vk::SubmitInfo<'_>,
+    fence: vk::Fence,
+) -> vk::Result {
+    let Some(queue_state) = (unsafe { QUEUE.get(&queue).map(|entry| entry.clone()) }) else {
+        return vk::Result::ERROR_DEVICE_LOST;
+    };
+    let Some(function): Option<vk::PFN_vkQueueSubmit> = (unsafe {
+        device_proc(
+            queue_state.dispatch.next_gdpa,
+            queue_state.device,
+            c"vkQueueSubmit",
+        )
+    }) else {
+        return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
+    };
+    let result = unsafe { function(queue, submit_count, submits, fence) };
+    if result != vk::Result::SUCCESS || submit_count == 0 || submits.is_null() {
+        return result;
+    }
+    if track_render_target_enabled() {
+        return result;
+    }
+
+    let mut selected: Option<(vk::SwapchainKHR, RenderTargetCandidate)> = None;
+    for submit in unsafe { std::slice::from_raw_parts(submits, submit_count as usize) } {
+        if submit.command_buffer_count == 0 || submit.p_command_buffers.is_null() {
+            continue;
+        }
+        for command in unsafe {
+            std::slice::from_raw_parts(
+                submit.p_command_buffers,
+                submit.command_buffer_count as usize,
+            )
+        } {
+            let Some(candidate) = (unsafe { COMMAND_CANDIDATE.get(command).map(|entry| *entry) })
+            else {
+                continue;
+            };
+            let Some(swapchain) =
+                (unsafe { SWAPCHAIN_IMAGE.get(&candidate.0).map(|entry| *entry) })
+            else {
+                continue;
+            };
+            if selected.is_none_or(|old| candidate.1.is_better_than(old.1)) {
+                selected = Some((swapchain, candidate.1));
+            }
+        }
+    }
+
+    if let Some((swapchain, candidate)) = selected
+        && let Some(mut state) = unsafe { SWAPCHAIN.get_mut(&swapchain) }
+    {
+        if state.copy_engine.is_none()
+            && let (Some(ring), Some(timeline)) = (state.ring.take(), state.timeline.take())
+        {
+            let Some(capture) = queue_state.dispatch.capture.as_ref() else {
+                return result;
+            };
+            match SwapchainCopyEngine::create(
+                capture.device.clone(),
+                ring,
+                timeline,
+                state.images.clone(),
+                state.extent,
+                queue_state.queue_family_index,
+                queue_state
+                    .dispatch
+                    .capture
+                    .as_ref()
+                    .and_then(|capture| capture.set_loader_data),
+            ) {
+                Ok(engine) => state.copy_engine = Some(engine),
+                Err(error) => layer_log(format!(
+                    "snowglass: tracked copy engine creation failed: {error}"
+                )),
+            }
+        }
+        if let Some(engine) = state.copy_engine.as_mut() {
+            match engine.submit_tracked_copy(
+                queue,
+                candidate.image,
+                candidate.extent,
+                candidate.layout,
+            ) {
+                Ok(submission) => {
+                    let count = COPIES_SUBMITTED.fetch_add(1, Ordering::Relaxed) + 1;
+                    state.frame_number += 1;
+                    let notification = Message::FrameReady(FrameReady {
+                        stream_id: StreamId(swapchain.as_raw()),
+                        slot: submission.slot,
+                        render_width: candidate.extent.width,
+                        render_height: candidate.extent.height,
+                        capture_x: 0,
+                        capture_y: 0,
+                        capture_width: candidate.extent.width,
+                        capture_height: candidate.extent.height,
+                        frame_number: state.frame_number,
+                        sync_value: submission.sync_value,
+                        timestamp_qpc: performance_counter().unwrap_or(0),
+                    });
+                    if state
+                        .ipc
+                        .as_mut()
+                        .is_some_and(|socket| socket.send(notification).is_err())
+                    {
+                        state.ipc = None;
+                    }
+                    if count == 1 || count % 120 == 0 {
+                        layer_log(format!(
+                            "snowglass: submitted graphics-queue capture {}x{} (count={count})",
+                            candidate.extent.width, candidate.extent.height
+                        ));
+                    }
+                }
+                Err(error) => layer_log(format!("snowglass: tracked copy failed: {error}")),
+            }
+        }
+    }
+    result
 }
 
 #[unsafe(no_mangle)]
@@ -1020,6 +2064,15 @@ pub unsafe extern "system" fn vkDestroySwapchainKHR(
     swapchain: vk::SwapchainKHR,
     allocator: *const vk::AllocationCallbacks<'_>,
 ) {
+    if let Some(state) = unsafe { SWAPCHAIN.get(&swapchain) } {
+        for image in &state.images {
+            unsafe {
+                SWAPCHAIN_IMAGE.remove(image);
+                RENDER_TARGET.remove(image);
+                PRESENT_RECT.remove(image);
+            }
+        }
+    }
     unsafe { SWAPCHAIN.remove(&swapchain) };
     let dispatch = unsafe { dispatch_key(device) }
         .and_then(|key| unsafe { DEVICE.get(&key).map(|entry| entry.clone()) });
@@ -1050,6 +2103,11 @@ pub unsafe extern "system" fn vkGetSwapchainImagesKHR(
             unsafe { std::slice::from_raw_parts(images, *image_count as usize).to_vec() };
         if let Some(mut state) = unsafe { SWAPCHAIN.get_mut(&swapchain) } {
             state.images = captured;
+            if track_render_target_enabled() {
+                for image in &state.images {
+                    unsafe { SWAPCHAIN_IMAGE.insert(*image, swapchain) };
+                }
+            }
             layer_log(format!(
                 "snowglass: associated {} swapchain images ({}x{}, format={})",
                 state.images.len(),
@@ -1118,18 +2176,58 @@ pub unsafe extern "system" fn vkQueuePresentKHR(
                         }
                     }
                 }
-                match state
-                    .copy_engine
-                    .as_mut()?
-                    .submit_copy(queue, image_index, waits)
-                {
+                let presented_image = state.images.get(image_index as usize).copied()?;
+                let capture_rect = track_render_target_enabled()
+                    .then(|| unsafe { PRESENT_RECT.get(&presented_image).map(|entry| entry.0) })
+                    .flatten()
+                    .and_then(|rect| clamp_capture_rect(rect, state.extent));
+                let rect_is_content = capture_rect.is_some_and(|rect| rect.extent != state.extent);
+                let presentation_source = (track_render_target_enabled() && !rect_is_content)
+                    .then(|| unsafe { RENDER_TARGET.get(&presented_image).map(|entry| *entry) })
+                    .flatten();
+                let render_extent = presentation_source.map_or_else(
+                    || capture_rect.map_or(state.extent, |rect| rect.extent),
+                    |candidate| candidate.extent,
+                );
+                let submission = if rect_is_content {
+                    let rect = capture_rect?;
+                    state.copy_engine.as_mut()?.submit_region_copy(
+                        queue,
+                        image_index,
+                        rect.offset,
+                        rect.extent,
+                        waits,
+                    )
+                } else if let Some(candidate) = presentation_source {
+                    state.copy_engine.as_mut()?.submit_image_copy(
+                        queue,
+                        image_index,
+                        candidate.image,
+                        candidate.extent,
+                        candidate.layout,
+                        waits,
+                    )
+                } else {
+                    state
+                        .copy_engine
+                        .as_mut()?
+                        .submit_copy(queue, image_index, waits)
+                };
+                match submission {
                     Ok(submission) => {
                         let count = COPIES_SUBMITTED.fetch_add(1, Ordering::Relaxed) + 1;
                         state.frame_number += 1;
                         let notification = Message::FrameReady(FrameReady {
                             stream_id: StreamId(swapchain.as_raw()),
                             slot: submission.slot,
-                            _reserved: 0,
+                            render_width: render_extent.width,
+                            render_height: render_extent.height,
+                            capture_x: capture_rect.map_or(0, |rect| rect.offset.x as u32),
+                            capture_y: capture_rect.map_or(0, |rect| rect.offset.y as u32),
+                            capture_width: capture_rect
+                                .map_or(state.extent.width, |r| r.extent.width),
+                            capture_height: capture_rect
+                                .map_or(state.extent.height, |r| r.extent.height),
                             frame_number: state.frame_number,
                             sync_value: submission.sync_value,
                             timestamp_qpc: performance_counter().unwrap_or(0),
@@ -1144,7 +2242,10 @@ pub unsafe extern "system" fn vkQueuePresentKHR(
                         }
                         if count == 1 || count % 120 == 0 {
                             layer_log(format!(
-                                "snowglass: submitted swapchain copy (count={count})"
+                                "snowglass: submitted capture {}x{} (count={count}, cropped={})",
+                                render_extent.width,
+                                render_extent.height,
+                                rect_is_content || presentation_source.is_some()
                             ));
                         }
                         Some(submission.present_ready)

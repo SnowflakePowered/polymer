@@ -1,0 +1,17 @@
+[package]
+name = "snowglass-input-dinput"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "dinput8"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+snowglass-input-core.workspace = true
+snowglass-ipc.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true

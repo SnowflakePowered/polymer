@@ -1,22 +1,24 @@
 use ash::{Entry, vk};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
+use snowglass_input_core::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
-    NativeWindow, ProcessId, client_size, forward_character, forward_focus, forward_key,
-    forward_mouse_button, forward_mouse_move, forward_mouse_wheel, hide_top_level_windows,
+    NativeWindow, ProcessId, client_size, forward_character, forward_key, forward_mouse_button,
+    forward_mouse_move, forward_mouse_wheel, hide_top_level_windows, inject_library_before_resume,
     performance_counter, performance_frequency,
 };
 use snowglass_protocol::{FrameReady, Handshake, PROTOCOL_VERSION};
 use std::{
+    collections::{HashSet, VecDeque},
     env,
     error::Error,
     path::Path,
     process::{Child, Command},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicIsize, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
         mpsc,
     },
     thread,
@@ -25,12 +27,129 @@ use std::{
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::{
     dpi::LogicalSize,
-    event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
 
 const FRAMES_IN_FLIGHT: usize = 2;
+
+struct RawKeyboardContext {
+    sender: mpsc::Sender<DirectInputData>,
+    sequence: AtomicU32,
+    started: Instant,
+}
+
+struct RawKeyboardForwarder {
+    window: isize,
+    context: *mut RawKeyboardContext,
+}
+
+impl RawKeyboardForwarder {
+    fn install(
+        window: NativeWindow,
+        sender: mpsc::Sender<DirectInputData>,
+    ) -> std::io::Result<Self> {
+        use windows_sys::Win32::UI::{
+            Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices},
+            Shell::SetWindowSubclass,
+        };
+        let context = Box::into_raw(Box::new(RawKeyboardContext {
+            sender,
+            sequence: AtomicU32::new(0),
+            started: Instant::now(),
+        }));
+        let device = RAWINPUTDEVICE {
+            usUsagePage: 1,
+            usUsage: 6,
+            dwFlags: RIDEV_INPUTSINK,
+            hwndTarget: window.0 as _,
+        };
+        if unsafe {
+            RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32)
+        } == 0
+            || unsafe {
+                SetWindowSubclass(
+                    window.0 as _,
+                    Some(raw_keyboard_subclass),
+                    context as usize,
+                    context as usize,
+                )
+            } == 0
+        {
+            unsafe { drop(Box::from_raw(context)) };
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            window: window.0,
+            context,
+        })
+    }
+}
+
+impl Drop for RawKeyboardForwarder {
+    fn drop(&mut self) {
+        use windows_sys::Win32::UI::Shell::RemoveWindowSubclass;
+        unsafe {
+            RemoveWindowSubclass(
+                self.window as _,
+                Some(raw_keyboard_subclass),
+                self.context as usize,
+            );
+            drop(Box::from_raw(self.context));
+        }
+    }
+}
+
+unsafe extern "system" fn raw_keyboard_subclass(
+    window: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+    _id: usize,
+    context: usize,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::{
+        Input::{GetRawInputData, RAWINPUT, RID_INPUT, RIM_TYPEKEYBOARD},
+        Shell::DefSubclassProc,
+        WindowsAndMessaging::{RI_KEY_BREAK, RI_KEY_E0, RI_KEY_E1, WM_INPUT},
+    };
+    if message == WM_INPUT {
+        let mut input = RAWINPUT::default();
+        let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+        if unsafe {
+            GetRawInputData(
+                lparam as _,
+                RID_INPUT,
+                (&mut input as *mut RAWINPUT).cast(),
+                &mut size,
+                std::mem::size_of_val(&input.header) as u32,
+            )
+        } != u32::MAX
+            && input.header.dwType == RIM_TYPEKEYBOARD
+        {
+            let keyboard = unsafe { input.data.keyboard };
+            if keyboard.MakeCode != 0 {
+                let extended = keyboard.Flags & (RI_KEY_E0 | RI_KEY_E1) as u16 != 0;
+                let offset = u32::from(keyboard.MakeCode) | u32::from(extended) * 0x80;
+                let context = unsafe { &*(context as *const RawKeyboardContext) };
+                let sequence = context.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+                let _ = context.sender.send(DirectInputData {
+                    device: DirectInputDevice::Keyboard,
+                    offset,
+                    data: if keyboard.Flags & RI_KEY_BREAK as u16 == 0 {
+                        0x80
+                    } else {
+                        0
+                    },
+                    timestamp: context.started.elapsed().as_millis() as u32,
+                    sequence,
+                });
+            }
+        }
+    }
+    unsafe { DefSubclassProc(window, message, wparam, lparam) }
+}
 
 enum CaptureEvent {
     Stream(StreamReady),
@@ -42,12 +161,28 @@ enum CaptureEvent {
 struct Statistics {
     frame_number: u64,
     slot: u32,
+    render_width: u32,
+    render_height: u32,
+    capture_x: u32,
+    capture_y: u32,
+    capture_width: u32,
+    capture_height: u32,
     fps: f64,
     latency_ms: f64,
+    frame_interval_ms: f64,
+    previous_timestamp_qpc: Option<u64>,
     received: u64,
     dropped: u64,
     frames_since_sample: u64,
     sample_started: Option<Instant>,
+    history: VecDeque<StatisticsSample>,
+}
+
+#[derive(Clone, Copy)]
+struct StatisticsSample {
+    fps: f32,
+    latency_ms: f32,
+    frame_interval_ms: f32,
 }
 
 struct DirectCompositor {
@@ -484,7 +619,7 @@ impl DirectCompositor {
                 destination,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
+                    float32: [1.0, 0.0, 1.0, 1.0],
                 },
                 &[color_range()],
             );
@@ -506,9 +641,15 @@ impl DirectCompositor {
                         &[],
                         &[to_source],
                     );
-                    let (offset_x, offset_y, width, height) = fit_extent(
+                    let (content_width, content_height) = fit_inside(
+                        frame.render_width,
+                        frame.render_height,
                         imported.width,
                         imported.height,
+                    );
+                    let (offset_x, offset_y, width, height) = fit_extent(
+                        content_width,
+                        content_height,
                         self.extent.width,
                         self.extent.height,
                     );
@@ -523,8 +664,8 @@ impl DirectCompositor {
                             .src_offsets([
                                 vk::Offset3D::default(),
                                 vk::Offset3D {
-                                    x: imported.width as i32,
-                                    y: imported.height as i32,
+                                    x: content_width as i32,
+                                    y: content_height as i32,
                                     z: 1,
                                 },
                             ])
@@ -686,14 +827,17 @@ impl Drop for DirectCompositor {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let target = parse_target()?;
+    let (target, track_render_target) = parse_target()?;
     let executable_dir = env::current_exe()?
         .parent()
         .ok_or("viewer executable has no parent directory")?
         .to_path_buf();
     let session = format!("snowglass-{}", std::process::id());
     let listener = LocalSocketListener::bind(&session)?;
-    let child = launch_target(&target, &executable_dir, &session)?;
+    let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
+    let (input_tx, input_rx) = mpsc::channel();
+    spawn_input_ipc(input_listener, input_rx);
+    let child = launch_target(&target, &executable_dir, &session, track_render_target)?;
     let process_id = ProcessId(child.id());
     let stop = Arc::new(AtomicBool::new(false));
     let backing_window = Arc::new(AtomicIsize::new(0));
@@ -710,6 +854,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .with_inner_size(LogicalSize::new(1280, 720))
             .with_resizable(true),
     )?;
+    let viewer_window = native_window(&window)?;
+    let _raw_keyboard = RawKeyboardForwarder::install(viewer_window, input_tx.clone())?;
     let egui_context = egui::Context::default();
     let mut egui_state = egui_winit::State::new(
         egui_context.clone(),
@@ -726,6 +872,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
     let mut cursor_position = (0, 0);
+    let input_started = Instant::now();
+    let mut input_sequence = 0u32;
+    let mut pressed_keys = HashSet::<KeyCode>::new();
 
     event_loop.run(move |event, target| match event {
         Event::AboutToWait => window.request_redraw(),
@@ -749,11 +898,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::Focused(focused) => {
-                    if let Some(backing) = load_window(&backing_window) {
-                        forward_focus(backing, focused);
+                    if !focused {
+                        pressed_keys.clear();
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        match event.state {
+                            ElementState::Pressed => {
+                                pressed_keys.insert(code);
+                            }
+                            ElementState::Released => {
+                                pressed_keys.remove(&code);
+                            }
+                        }
+                    }
                     if let Some(backing) = load_window(&backing_window) {
                         if let PhysicalKey::Code(code) = event.physical_key
                             && let Some(key) = virtual_key(code)
@@ -791,19 +950,45 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
-                    if let (Some(backing), Some(button)) =
-                        (load_window(&backing_window), mouse_button(button))
-                    {
-                        forward_mouse_button(
-                            backing,
-                            button,
-                            state == ElementState::Pressed,
-                            cursor_position.0,
-                            cursor_position.1,
+                    if let Some(button) = mouse_button(button) {
+                        if let Some(backing) = load_window(&backing_window) {
+                            forward_mouse_button(
+                                backing,
+                                button,
+                                state == ElementState::Pressed,
+                                cursor_position.0,
+                                cursor_position.1,
+                            );
+                        }
+                        send_direct_input(
+                            &input_tx,
+                            &mut input_sequence,
+                            input_started,
+                            DirectInputDevice::Mouse,
+                            12 + u32::from(button.saturating_sub(1)),
+                            if state == ElementState::Pressed {
+                                0x80
+                            } else {
+                                0
+                            },
                         );
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
+                    let vertical = match delta {
+                        MouseScrollDelta::LineDelta(_, vertical) => (vertical * 120.0) as i32,
+                        MouseScrollDelta::PixelDelta(delta) => delta.y as i32,
+                    };
+                    if vertical != 0 {
+                        send_direct_input(
+                            &input_tx,
+                            &mut input_sequence,
+                            input_started,
+                            DirectInputDevice::Mouse,
+                            8,
+                            vertical as u32,
+                        );
+                    }
                     if let Some(backing) = load_window(&backing_window) {
                         match delta {
                             MouseScrollDelta::LineDelta(horizontal, vertical) => {
@@ -840,13 +1025,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
-                                    forward_focus(source, true);
                                 }
                                 if let Err(error) = compositor.import_stream(&stream) {
                                     eprintln!("snowglass: direct import failed: {error}");
                                 }
                             }
                             CaptureEvent::Frame(frame) => {
+                                if let Some(previous) = stats.previous_timestamp_qpc {
+                                    let frame_count = frame
+                                        .frame_number
+                                        .saturating_sub(stats.frame_number)
+                                        .max(1);
+                                    stats.frame_interval_ms =
+                                        frame.timestamp_qpc.saturating_sub(previous) as f64
+                                            * 1000.0
+                                            / frequency
+                                            / frame_count as f64;
+                                }
+                                stats.previous_timestamp_qpc = Some(frame.timestamp_qpc);
                                 if stats.received != 0
                                     && frame.frame_number > stats.frame_number + 1
                                 {
@@ -856,6 +1052,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 stats.frames_since_sample += 1;
                                 stats.frame_number = frame.frame_number;
                                 stats.slot = frame.slot;
+                                stats.render_width = frame.render_width;
+                                stats.render_height = frame.render_height;
+                                stats.capture_x = frame.capture_x;
+                                stats.capture_y = frame.capture_y;
+                                stats.capture_width = frame.capture_width;
+                                stats.capture_height = frame.capture_height;
                                 stats.latency_ms = performance_counter()
                                     .unwrap_or(frame.timestamp_qpc)
                                     .saturating_sub(frame.timestamp_qpc)
@@ -877,6 +1079,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 stats.frames_since_sample as f64 / started.elapsed().as_secs_f64();
                             stats.frames_since_sample = 0;
                             stats.sample_started = Some(Instant::now());
+                            stats.history.push_back(StatisticsSample {
+                                fps: stats.fps as f32,
+                                latency_ms: stats.latency_ms as f32,
+                                frame_interval_ms: stats.frame_interval_ms as f32,
+                            });
+                            if stats.history.len() > 240 {
+                                stats.history.pop_front();
+                            }
                         }
                     }
                     let input = egui_state.take_egui_input(&window);
@@ -886,11 +1096,51 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 ui.strong("Snowglass Vulkan Direct");
                                 ui.label(format!("Frame {}", stats.frame_number));
                                 ui.label(format!("Slot {}", stats.slot));
+                                ui.label(format!(
+                                    "Render target {}x{}",
+                                    stats.render_width, stats.render_height
+                                ));
+                                ui.label(format!(
+                                    "Scissor ({}, {}) {}x{}",
+                                    stats.capture_x,
+                                    stats.capture_y,
+                                    stats.capture_width,
+                                    stats.capture_height
+                                ));
                                 ui.label(format!("{:.1} FPS", stats.fps));
                                 ui.label(format!("Latency {:.2} ms", stats.latency_ms));
+                                ui.label(format!(
+                                    "Frame-to-frame {:.2} ms",
+                                    stats.frame_interval_ms
+                                ));
                                 ui.label(format!("Dropped {}", stats.dropped));
+                                let mut keys = pressed_keys
+                                    .iter()
+                                    .map(|key| format!("{key:?}"))
+                                    .collect::<Vec<_>>();
+                                keys.sort_unstable();
+                                ui.label(if keys.is_empty() {
+                                    "Keys: none".to_owned()
+                                } else {
+                                    format!("Keys: {}", keys.join(" + "))
+                                });
                             });
                         });
+                        let statistics_frame = egui::Frame::window(&context.style())
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::new(
+                                1.0_f32,
+                                egui::Color32::from_white_alpha(48),
+                            ))
+                            .shadow(egui::epaint::Shadow::NONE);
+                        egui::Window::new("Frame Graph")
+                            .default_pos(egui::pos2(12.0, 48.0))
+                            .resizable(false)
+                            .collapsible(true)
+                            .frame(statistics_frame)
+                            .show(context, |ui| {
+                                draw_statistics_graph(ui, &stats.history);
+                            });
                     });
                     egui_state.handle_platform_output(&window, output.platform_output.clone());
                     let primitives =
@@ -910,6 +1160,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 _ => {}
+            }
+        }
+        Event::DeviceEvent {
+            event: DeviceEvent::MouseMotion { delta },
+            ..
+        } => {
+            for (offset, value) in [(0, delta.0), (4, delta.1)] {
+                if value != 0.0 {
+                    send_direct_input(
+                        &input_tx,
+                        &mut input_sequence,
+                        input_started,
+                        DirectInputDevice::Mouse,
+                        offset,
+                        (value as i32) as u32,
+                    );
+                }
             }
         }
         _ => {}
@@ -946,6 +1213,7 @@ fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEven
                             let _ = events.try_send(CaptureEvent::Frame(frame));
                         }
                         Message::Shutdown => return Ok(()),
+                        Message::DirectInputData(_) => {}
                         Message::Hello(_) => {}
                     }
                 }
@@ -958,6 +1226,39 @@ fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEven
             }
             if events.send(CaptureEvent::Disconnected).is_err() {
                 return;
+            }
+        }
+    });
+}
+
+fn spawn_input_ipc(listener: LocalSocketListener, input: mpsc::Receiver<DirectInputData>) {
+    thread::spawn(move || {
+        let mut pending = None;
+        loop {
+            let mut socket = match listener.accept() {
+                Ok(socket) => socket,
+                Err(error) => {
+                    eprintln!("snowglass: DirectInput IPC accept ended: {error}");
+                    return;
+                }
+            };
+            loop {
+                let event = match pending.take() {
+                    Some(event) => event,
+                    None => match input.recv() {
+                        Ok(event) => event,
+                        Err(_) => return,
+                    },
+                };
+                if let Err(error) = socket.send(Message::DirectInputData(event)) {
+                    pending = Some(event);
+                    if error.kind() != std::io::ErrorKind::BrokenPipe
+                        && error.kind() != std::io::ErrorKind::ConnectionReset
+                    {
+                        eprintln!("snowglass: DirectInput IPC send failed: {error}");
+                    }
+                    break;
+                }
             }
         }
     });
@@ -989,31 +1290,81 @@ fn spawn_target_monitor(
     });
 }
 
-fn parse_target() -> Result<Vec<String>, Box<dyn Error>> {
-    let mut arguments = env::args().skip(1);
+fn parse_target() -> Result<(Vec<String>, bool), Box<dyn Error>> {
+    let mut arguments = env::args().skip(1).peekable();
+    let track_render_target = arguments
+        .next_if(|argument| argument == "--track-render-target")
+        .is_some();
     if arguments.next().as_deref() != Some("--") {
-        return Err("usage: snowglass-viewer -- <program> [arguments...]".into());
+        return Err(
+            "usage: snowglass-viewer [--track-render-target] -- <program> [arguments...]".into(),
+        );
     }
     let target = arguments.collect::<Vec<_>>();
     if target.is_empty() {
         return Err("target program is required".into());
     }
-    Ok(target)
+    Ok((target, track_render_target))
 }
 
-fn launch_target(target: &[String], layer_dir: &Path, session: &str) -> std::io::Result<Child> {
-    Command::new(&target[0])
+fn launch_target(
+    target: &[String],
+    layer_dir: &Path,
+    session: &str,
+    track_render_target: bool,
+) -> std::io::Result<Child> {
+    use std::os::windows::{io::AsRawHandle, process::CommandExt};
+    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+    let hook = layer_dir.join("snowglass_hook_dinput.dll");
+    if !hook.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("DirectInput hook is missing at {}", hook.display()),
+        ));
+    }
+    let mut command = Command::new(&target[0]);
+    command
         .args(&target[1..])
         .env("VK_LAYER_PATH", layer_dir)
         .env("VK_INSTANCE_LAYERS", "VK_LAYER_SNOWGLASS_capture")
         .env("SNOWGLASS_SESSION", session)
-        .env("SNOWGLASS_LOG_FILE", layer_dir.join("snowglass-layer.log"))
-        .spawn()
+        .env(
+            "SNOWGLASS_HOOK_DINPUT",
+            layer_dir.join("snowglass_hook_dinput.dll"),
+        )
+        .env("SNOWGLASS_LOG_FILE", layer_dir.join("snowglass-layer.log"));
+    command.env(
+        "SNOWGLASS_DINPUT_LOG_FILE",
+        layer_dir.join("snowglass-dinput.log"),
+    );
+    if track_render_target {
+        command.env("SNOWGLASS_TRACK_RENDER_TARGET", "1");
+    }
+    command.creation_flags(CREATE_SUSPENDED);
+    let mut child = command.spawn()?;
+    let process_id = ProcessId(child.id());
+    let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    if let Err(error) =
+        inject_library_before_resume(process, process_id, &hook, c"SnowglassInstallDinputHook")
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    Ok(child)
 }
 
 fn load_window(window: &AtomicIsize) -> Option<NativeWindow> {
     let value = window.load(Ordering::Acquire);
     (value != 0).then_some(NativeWindow(value))
+}
+
+fn native_window(window: &Window) -> Result<NativeWindow, Box<dyn Error>> {
+    match window.window_handle()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Ok(NativeWindow(handle.hwnd.get() as isize)),
+        _ => Err("Snowglass viewer requires a Win32 window".into()),
+    }
 }
 
 fn mouse_button(button: MouseButton) -> Option<u16> {
@@ -1025,6 +1376,24 @@ fn mouse_button(button: MouseButton) -> Option<u16> {
         MouseButton::Forward => Some(5),
         MouseButton::Other(button) => Some(button.saturating_add(4)),
     }
+}
+
+fn send_direct_input(
+    sender: &mpsc::Sender<DirectInputData>,
+    sequence: &mut u32,
+    started: Instant,
+    device: DirectInputDevice,
+    offset: u32,
+    data: u32,
+) {
+    *sequence = sequence.wrapping_add(1);
+    let _ = sender.send(DirectInputData {
+        device,
+        offset,
+        data,
+        timestamp: started.elapsed().as_millis() as u32,
+        sequence: *sequence,
+    });
 }
 
 fn virtual_key(code: KeyCode) -> Option<u32> {
@@ -1192,6 +1561,82 @@ fn color_layers() -> vk::ImageSubresourceLayers {
     }
 }
 
+fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSample>) {
+    const GRAPH_WIDTH: f32 = 420.0;
+    const GRAPH_HEIGHT: f32 = 90.0;
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(GRAPH_WIDTH, GRAPH_HEIGHT), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(48));
+    for division in 1..4 {
+        let y = egui::lerp(rect.top()..=rect.bottom(), division as f32 / 4.0);
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(55)),
+        );
+    }
+    if history.len() >= 2 {
+        let fps_max = history
+            .iter()
+            .map(|sample| sample.fps)
+            .fold(60.0_f32, f32::max)
+            .max(1.0);
+        let latency_max = history
+            .iter()
+            .map(|sample| sample.latency_ms)
+            .fold(16.67_f32, f32::max)
+            .max(1.0);
+        let frame_interval_max = history
+            .iter()
+            .map(|sample| sample.frame_interval_ms)
+            .fold(16.67_f32, f32::max)
+            .max(1.0);
+        let points = |value: fn(&StatisticsSample) -> f32, maximum: f32| {
+            history
+                .iter()
+                .enumerate()
+                .map(|(index, sample)| {
+                    let x = egui::lerp(
+                        rect.left()..=rect.right(),
+                        index as f32 / (history.len() - 1) as f32,
+                    );
+                    let normalized = (value(sample) / maximum).clamp(0.0, 1.0);
+                    egui::pos2(x, egui::lerp(rect.bottom()..=rect.top(), normalized))
+                })
+                .collect::<Vec<_>>()
+        };
+        painter.add(egui::Shape::line(
+            points(|sample| sample.fps, fps_max),
+            egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_GREEN),
+        ));
+        painter.add(egui::Shape::line(
+            points(|sample| sample.latency_ms, latency_max),
+            egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_RED),
+        ));
+        painter.add(egui::Shape::line(
+            points(|sample| sample.frame_interval_ms, frame_interval_max),
+            egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_BLUE),
+        ));
+        painter.text(
+            rect.left_top() + egui::vec2(5.0, 4.0),
+            egui::Align2::LEFT_TOP,
+            format!(
+                "FPS green {fps_max:.0}   latency red {latency_max:.1} ms   frame Δ blue {frame_interval_max:.1} ms"
+            ),
+            egui::FontId::monospace(10.0),
+            egui::Color32::WHITE,
+        );
+    } else {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Collecting frame statistics…",
+            egui::FontId::monospace(10.0),
+            egui::Color32::GRAY,
+        );
+    }
+}
+
 fn fit_extent(
     source_width: u32,
     source_height: u32,
@@ -1207,5 +1652,22 @@ fn fit_extent(
         ((target_height as i32 - height) / 2),
         width,
         height,
+    )
+}
+
+fn fit_inside(
+    source_width: u32,
+    source_height: u32,
+    bounds_width: u32,
+    bounds_height: u32,
+) -> (u32, u32) {
+    if source_width <= bounds_width && source_height <= bounds_height {
+        return (source_width.max(1), source_height.max(1));
+    }
+    let scale = (bounds_width as f64 / source_width.max(1) as f64)
+        .min(bounds_height as f64 / source_height.max(1) as f64);
+    (
+        (source_width as f64 * scale).floor().max(1.0) as u32,
+        (source_height as f64 * scale).floor().max(1.0) as u32,
     )
 }

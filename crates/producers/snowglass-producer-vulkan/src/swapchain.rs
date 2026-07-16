@@ -130,7 +130,102 @@ impl SwapchainCopyEngine {
         let Some(&source_image) = self.source_images.get(source_image_index as usize) else {
             return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
         };
-        let ready = self.present_ready[source_image_index as usize];
+        self.submit_image_copy(
+            queue,
+            source_image_index,
+            source_image,
+            self.extent,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            application_waits,
+        )
+    }
+
+    /// Copies an identified presentation source into a top-left, aspect-preserving
+    /// region of the export image. The allocation remains swapchain-sized so the
+    /// transport does not need to be rebuilt for changing internal resolutions.
+    pub fn submit_image_copy(
+        &mut self,
+        queue: vk::Queue,
+        source_image_index: u32,
+        source_image: vk::Image,
+        source_extent: vk::Extent2D,
+        source_layout: vk::ImageLayout,
+        application_waits: &[vk::Semaphore],
+    ) -> Result<CopySubmission, vk::Result> {
+        self.submit_image_copy_inner(
+            queue,
+            source_image_index,
+            source_image,
+            source_extent,
+            source_layout,
+            application_waits,
+            true,
+            vk::Offset2D::default(),
+        )
+    }
+
+    pub fn submit_region_copy(
+        &mut self,
+        queue: vk::Queue,
+        source_image_index: u32,
+        source_offset: vk::Offset2D,
+        source_extent: vk::Extent2D,
+        application_waits: &[vk::Semaphore],
+    ) -> Result<CopySubmission, vk::Result> {
+        let Some(&source_image) = self.source_images.get(source_image_index as usize) else {
+            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+        };
+        self.submit_image_copy_inner(
+            queue,
+            source_image_index,
+            source_image,
+            source_extent,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            application_waits,
+            true,
+            source_offset,
+        )
+    }
+
+    /// Captures a render target on its graphics queue without participating in
+    /// the application's presentation semaphore chain.
+    pub fn submit_tracked_copy(
+        &mut self,
+        queue: vk::Queue,
+        source_image: vk::Image,
+        source_extent: vk::Extent2D,
+        source_layout: vk::ImageLayout,
+    ) -> Result<CopySubmission, vk::Result> {
+        self.submit_image_copy_inner(
+            queue,
+            0,
+            source_image,
+            source_extent,
+            source_layout,
+            &[],
+            false,
+            vk::Offset2D::default(),
+        )
+    }
+
+    fn submit_image_copy_inner(
+        &mut self,
+        queue: vk::Queue,
+        source_image_index: u32,
+        source_image: vk::Image,
+        source_extent: vk::Extent2D,
+        source_layout: vk::ImageLayout,
+        application_waits: &[vk::Semaphore],
+        signal_present: bool,
+        source_offset: vk::Offset2D,
+    ) -> Result<CopySubmission, vk::Result> {
+        if source_extent.width == 0 || source_extent.height == 0 {
+            return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
+        }
+        let ready = signal_present
+            .then(|| self.present_ready.get(source_image_index as usize).copied())
+            .flatten()
+            .unwrap_or(vk::Semaphore::null());
         let slot_index = self.next_slot;
         self.next_slot = (self.next_slot + 1) % self.slots.len();
         let sync_value = self.next_sync_value;
@@ -161,7 +256,7 @@ impl SwapchainCopyEngine {
             let source_to_transfer = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::MEMORY_READ)
                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .old_layout(source_layout)
                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                 .image(source_image)
                 .subresource_range(color_range);
@@ -189,7 +284,20 @@ impl SwapchainCopyEngine {
                 &[],
                 &[source_to_transfer, destination_to_transfer],
             );
-            let copy_region = vk::ImageCopy::default()
+            let tracked_source = source_layout != vk::ImageLayout::PRESENT_SRC_KHR;
+            if tracked_source {
+                self.device.cmd_clear_color_image(
+                    slot.command_buffer,
+                    destination_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &vk::ClearColorValue {
+                        float32: [1.0, 0.0, 1.0, 1.0],
+                    },
+                    &[color_range],
+                );
+            }
+            let destination_extent = fit_inside(source_extent, self.extent);
+            let blit_region = vk::ImageBlit::default()
                 .src_subresource(vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     mip_level: 0,
@@ -202,24 +310,59 @@ impl SwapchainCopyEngine {
                     base_array_layer: 0,
                     layer_count: 1,
                 })
-                .extent(vk::Extent3D {
-                    width: self.extent.width,
-                    height: self.extent.height,
-                    depth: 1,
-                });
-            self.device.cmd_copy_image(
-                slot.command_buffer,
-                source_image,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                destination_image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[copy_region],
-            );
+                .src_offsets([
+                    vk::Offset3D {
+                        x: source_offset.x,
+                        y: source_offset.y,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: source_offset.x + source_extent.width as i32,
+                        y: source_offset.y + source_extent.height as i32,
+                        z: 1,
+                    },
+                ])
+                .dst_offsets([
+                    vk::Offset3D::default(),
+                    vk::Offset3D {
+                        x: destination_extent.width as i32,
+                        y: destination_extent.height as i32,
+                        z: 1,
+                    },
+                ]);
+            if tracked_source {
+                self.device.cmd_blit_image(
+                    slot.command_buffer,
+                    source_image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    destination_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[blit_region],
+                    vk::Filter::LINEAR,
+                );
+            } else {
+                self.device.cmd_copy_image(
+                    slot.command_buffer,
+                    source_image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    destination_image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[vk::ImageCopy::default()
+                        .src_subresource(blit_region.src_subresource)
+                        .src_offset(blit_region.src_offsets[0])
+                        .dst_subresource(blit_region.dst_subresource)
+                        .extent(vk::Extent3D {
+                            width: source_extent.width.min(self.extent.width),
+                            height: source_extent.height.min(self.extent.height),
+                            depth: 1,
+                        })],
+                );
+            }
             let source_to_present = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_READ)
                 .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                 .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .new_layout(source_layout)
                 .image(source_image)
                 .subresource_range(color_range);
             let destination_to_general = vk::ImageMemoryBarrier::default()
@@ -242,8 +385,12 @@ impl SwapchainCopyEngine {
 
             let wait_stages = vec![vk::PipelineStageFlags::TRANSFER; application_waits.len()];
             let command_buffers = [slot.command_buffer];
-            let signals = [ready, self.timeline.semaphore()];
-            let signal_values = [0, sync_value];
+            let mut signals = vec![self.timeline.semaphore()];
+            let mut signal_values = vec![sync_value];
+            if signal_present {
+                signals.insert(0, ready);
+                signal_values.insert(0, 0);
+            }
             let mut timeline_submit =
                 vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
             let submit = vk::SubmitInfo::default()
@@ -260,6 +407,18 @@ impl SwapchainCopyEngine {
                 sync_value,
             })
         }
+    }
+}
+
+fn fit_inside(source: vk::Extent2D, bounds: vk::Extent2D) -> vk::Extent2D {
+    if source.width <= bounds.width && source.height <= bounds.height {
+        return source;
+    }
+    let scale = (bounds.width as f64 / source.width as f64)
+        .min(bounds.height as f64 / source.height as f64);
+    vk::Extent2D {
+        width: (source.width as f64 * scale).floor().max(1.0) as u32,
+        height: (source.height as f64 * scale).floor().max(1.0) as u32,
     }
 }
 

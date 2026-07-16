@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +65,12 @@ pub struct ExternalImageDesc {
 pub struct FrameReady {
     pub stream_id: StreamId,
     pub slot: u32,
-    pub _reserved: u32,
+    pub render_width: u32,
+    pub render_height: u32,
+    pub capture_x: u32,
+    pub capture_y: u32,
+    pub capture_width: u32,
+    pub capture_height: u32,
     pub frame_number: u64,
     pub sync_value: u64,
     pub timestamp_qpc: u64,

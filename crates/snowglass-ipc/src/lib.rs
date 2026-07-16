@@ -1,5 +1,6 @@
 //! Framed Snowglass IPC over a Windows AF_UNIX stream socket.
 
+use snowglass_input_core::{DirectInputData, DirectInputDevice};
 use snowglass_protocol::{FrameReady, Handshake, MAX_IMAGE_SLOTS, StreamId};
 use std::{
     fs,
@@ -28,6 +29,7 @@ const MESSAGE_HELLO: u32 = 1;
 const MESSAGE_STREAM_READY: u32 = 2;
 const MESSAGE_FRAME_READY: u32 = 3;
 const MESSAGE_SHUTDOWN: u32 = 4;
+const MESSAGE_DIRECT_INPUT_DATA: u32 = 5;
 const PAYLOAD_SIZE: usize = mem::size_of::<WireStreamReady>();
 
 static WINSOCK: OnceLock<i32> = OnceLock::new();
@@ -52,6 +54,7 @@ pub enum Message {
     StreamReady(StreamReady),
     FrameReady(FrameReady),
     Shutdown,
+    DirectInputData(DirectInputData),
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -86,9 +89,25 @@ struct WireStreamReady {
 struct WireFrameReady {
     stream_id: U64,
     slot: U32,
+    render_width: U32,
+    render_height: U32,
+    capture_x: U32,
+    capture_y: U32,
+    capture_width: U32,
+    capture_height: U32,
     frame_number: U64,
     sync_value: U64,
     timestamp_qpc: U64,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireDirectInputData {
+    device: U32,
+    offset: U32,
+    data: U32,
+    timestamp: U32,
+    sequence: U32,
 }
 
 pub struct LocalSocketListener {
@@ -295,6 +314,12 @@ fn encode(message: Message) -> WireMessage {
                 &WireFrameReady {
                     stream_id: U64::new(value.stream_id.0),
                     slot: U32::new(value.slot),
+                    render_width: U32::new(value.render_width),
+                    render_height: U32::new(value.render_height),
+                    capture_x: U32::new(value.capture_x),
+                    capture_y: U32::new(value.capture_y),
+                    capture_width: U32::new(value.capture_width),
+                    capture_height: U32::new(value.capture_height),
                     frame_number: U64::new(value.frame_number),
                     sync_value: U64::new(value.sync_value),
                     timestamp_qpc: U64::new(value.timestamp_qpc),
@@ -303,6 +328,19 @@ fn encode(message: Message) -> WireMessage {
         }
         Message::Shutdown => {
             wire.kind = U32::new(MESSAGE_SHUTDOWN);
+        }
+        Message::DirectInputData(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_DIRECT_INPUT_DATA,
+                &WireDirectInputData {
+                    device: U32::new(value.device as u32),
+                    offset: U32::new(value.offset),
+                    data: U32::new(value.data),
+                    timestamp: U32::new(value.timestamp),
+                    sequence: U32::new(value.sequence),
+                },
+            );
         }
     }
     wire
@@ -341,13 +379,33 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
             Ok(Message::FrameReady(FrameReady {
                 stream_id: StreamId(value.stream_id.get()),
                 slot: value.slot.get(),
-                _reserved: 0,
+                render_width: value.render_width.get(),
+                render_height: value.render_height.get(),
+                capture_x: value.capture_x.get(),
+                capture_y: value.capture_y.get(),
+                capture_width: value.capture_width.get(),
+                capture_height: value.capture_height.get(),
                 frame_number: value.frame_number.get(),
                 sync_value: value.sync_value.get(),
                 timestamp_qpc: value.timestamp_qpc.get(),
             }))
         }
         MESSAGE_SHUTDOWN => Ok(Message::Shutdown),
+        MESSAGE_DIRECT_INPUT_DATA => {
+            let value = payload::<WireDirectInputData>(wire)?;
+            let device = match value.device.get() {
+                1 => DirectInputDevice::Keyboard,
+                2 => DirectInputDevice::Mouse,
+                _ => return Err(invalid_data("unknown DirectInput device class")),
+            };
+            Ok(Message::DirectInputData(DirectInputData {
+                device,
+                offset: value.offset.get(),
+                data: value.data.get(),
+                timestamp: value.timestamp.get(),
+                sequence: value.sequence.get(),
+            }))
+        }
         _ => Err(invalid_data("unknown message type")),
     }
 }
@@ -389,12 +447,24 @@ mod tests {
             Message::FrameReady(FrameReady {
                 stream_id: StreamId(9),
                 slot: 2,
-                _reserved: 0,
+                render_width: 640,
+                render_height: 528,
+                capture_x: 10,
+                capture_y: 20,
+                capture_width: 620,
+                capture_height: 488,
                 frame_number: 100,
                 sync_value: 101,
                 timestamp_qpc: 102,
             }),
             Message::Shutdown,
+            Message::DirectInputData(DirectInputData {
+                device: DirectInputDevice::Keyboard,
+                offset: 30,
+                data: 0x80,
+                timestamp: 123,
+                sequence: 456,
+            }),
         ];
         for message in messages {
             assert_eq!(decode(&encode(message)).unwrap(), message);
