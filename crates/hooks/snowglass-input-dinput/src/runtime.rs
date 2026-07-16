@@ -5,7 +5,7 @@
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
 
-use crate::hook::HookChain;
+use snowglass_hook::HookChain;
 use snowglass_input_core::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocket, Message};
 use std::{
@@ -273,7 +273,7 @@ unsafe fn hook_direct_input(interface: *mut c_void) {
 
 pub(crate) unsafe fn direct_input_release(
     this: *mut c_void,
-    _next: crate::hook::DirectInputReleaseContext<'_>,
+    _next: crate::hooks::DirectInputReleaseContext<'_>,
 ) -> u32 {
     let (original_vtable, patched_vtable, original_release) = {
         let hooks = DIRECT_INPUT_HOOKS
@@ -411,7 +411,7 @@ pub(crate) unsafe fn get_device_state(
     this: *mut c_void,
     size: u32,
     output: *mut c_void,
-    mut next: crate::hook::GetDeviceStateContext<'_>,
+    mut next: crate::hooks::GetDeviceStateContext<'_>,
 ) -> HRESULT {
     let device = {
         let hooks = DEVICE_HOOKS
@@ -481,7 +481,7 @@ pub(crate) unsafe fn get_device_state(
 
 pub(crate) unsafe fn device_release(
     this: *mut c_void,
-    _next: crate::hook::DeviceReleaseContext<'_>,
+    _next: crate::hooks::DeviceReleaseContext<'_>,
 ) -> u32 {
     let (original_vtable, patched_vtable, original_release) = {
         let hooks = DEVICE_HOOKS
@@ -528,7 +528,7 @@ pub(crate) unsafe fn get_device_data(
     output: *mut DIDEVICEOBJECTDATA,
     count: *mut u32,
     flags: u32,
-    mut next: crate::hook::GetDeviceDataContext<'_>,
+    mut next: crate::hooks::GetDeviceDataContext<'_>,
 ) -> HRESULT {
     let device = {
         let hooks = DEVICE_HOOKS
@@ -604,7 +604,7 @@ pub unsafe extern "system" fn DirectInput8Create(
         Err(error) => return error,
     };
     unsafe {
-        crate::hook::dispatch_direct_input_8_create(
+        crate::hooks::dispatch_direct_input_8_create(
             original,
             instance,
             version,

@@ -4,6 +4,7 @@ use crate::layer::*;
 use crate::tracking::RenderTargetCandidate;
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
+use snowglass_hook::HookChain;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_producer_vulkan::{
@@ -157,8 +158,11 @@ pub(crate) fn connect_viewer(
 pub(crate) unsafe fn handle_queue_present(
     queue: vk::Queue,
     present_info: *const vk::PresentInfoKHR<'_>,
-    present_function: vk::PFN_vkQueuePresentKHR,
+    mut next: crate::hooks::QueuePresentContext<'_>,
 ) -> vk::Result {
+    let continuation = *next
+        .fp_next()
+        .expect("Vulkan around chains always have a terminal");
     let queue_state = { QUEUE.get(&queue).map(|entry| entry.clone()) };
     let result = if let Some(queue_state) = queue_state {
         if !present_info.is_null()
@@ -286,12 +290,12 @@ pub(crate) unsafe fn handle_queue_present(
                 let mut modified = *original;
                 modified.wait_semaphore_count = 1;
                 modified.p_wait_semaphores = copy_waits.as_ptr();
-                unsafe { present_function(queue, &modified) }
+                unsafe { continuation(queue, &modified, next) }
             } else {
-                unsafe { present_function(queue, present_info) }
+                unsafe { continuation(queue, present_info, next) }
             }
         } else {
-            unsafe { present_function(queue, present_info) }
+            unsafe { continuation(queue, present_info, next) }
         }
     } else {
         vk::Result::ERROR_DEVICE_LOST

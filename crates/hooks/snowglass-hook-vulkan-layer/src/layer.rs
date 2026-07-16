@@ -3,6 +3,7 @@
 
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
+use snowglass_hook::HookChain;
 use snowglass_producer_vulkan::SetDeviceLoaderData;
 use std::{
     ffi::{c_char, c_void},
@@ -242,15 +243,18 @@ pub(crate) fn register_instance_dispatch(created: vk::Instance, bootstrap: Insta
 pub(crate) unsafe fn handle_destroy_instance(
     instance: vk::Instance,
     allocator: *const vk::AllocationCallbacks<'_>,
-    next: vk::PFN_vkDestroyInstance,
+    mut next: crate::hooks::DestroyInstanceContext<'_>,
 ) {
+    let continuation = *next
+        .fp_next()
+        .expect("Vulkan around chains always have a terminal");
     {
         PHYSICAL_DEVICE.retain(|_, state| state.instance != instance)
     };
     let dispatch = unsafe { dispatch_key(instance) }
         .and_then(|key| INSTANCE.remove(&key).map(|(_, dispatch)| dispatch));
     let _ = dispatch;
-    unsafe { next(instance, allocator) };
+    unsafe { continuation(instance, allocator, next) };
 }
 
 pub(crate) struct DeviceBootstrap {
@@ -300,8 +304,11 @@ pub(crate) fn observe_create_device(injected_extension_count: usize) {
 pub(crate) unsafe fn handle_destroy_device(
     device: vk::Device,
     allocator: *const vk::AllocationCallbacks<'_>,
-    next: vk::PFN_vkDestroyDevice,
+    mut next: crate::hooks::DestroyDeviceContext<'_>,
 ) {
+    let continuation = *next
+        .fp_next()
+        .expect("Vulkan around chains always have a terminal");
     let dispatch = unsafe { dispatch_key(device) }
         .and_then(|key| DEVICE.remove(&key).map(|(_, dispatch)| dispatch));
     if let Some(capture) = dispatch.as_ref().and_then(|entry| entry.capture.as_ref()) {
@@ -311,7 +318,7 @@ pub(crate) unsafe fn handle_destroy_device(
         QUEUE.retain(|_, dispatch| dispatch.device != device)
     };
     crate::swapchain::destroy_device(device);
-    unsafe { next(device, allocator) };
+    unsafe { continuation(device, allocator, next) };
 }
 
 pub(crate) fn command_dispatch_data(

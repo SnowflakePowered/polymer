@@ -1,6 +1,9 @@
 //! Declarations for typed Vulkan hook chains.
 
-use crate::hook_chain::{HookChain, chain};
+use crate::hook_chain::{
+    __resolve_around_terminal, __resolve_observer_terminal, around_chain, chain, observer_chain,
+    post_chain,
+};
 use ash::vk;
 
 chain! {
@@ -32,7 +35,6 @@ chain! {
     after vkGetDeviceQueue2;
     chain GET_DEVICE_QUEUE2_CHAIN, context GetDeviceQueue2Context;
     hook GetDeviceQueue2Hook(device: vk::Device, queue_info: *const vk::DeviceQueueInfo2<'_>, queue: *mut vk::Queue);
-    abi (device: vk::Device, queue_info: *const vk::DeviceQueueInfo2<'_>, queue: *mut vk::Queue);
     resolve with device, c"vkGetDeviceQueue2": vk::PFN_vkGetDeviceQueue2;
 }
 
@@ -40,9 +42,8 @@ chain! {
     pub(crate) dispatch_queue_submit, register_queue_submit;
     after vkQueueSubmit;
     chain QUEUE_SUBMIT_CHAIN, context QueueSubmitContext;
-    hook QueueSubmitHook(queue: vk::Queue, submit_count: u32, submits: *const vk::SubmitInfo<'_>);
+    hook QueueSubmitHook(queue: vk::Queue, submit_count: u32, submits: *const vk::SubmitInfo<'_>) -> result: vk::Result;
     abi (queue: vk::Queue, submit_count: u32, submits: *const vk::SubmitInfo<'_>, fence: vk::Fence);
-    result vk::Result, result;
     resolve with queue, c"vkQueueSubmit": vk::PFN_vkQueueSubmit -> vk::Result::ERROR_DEVICE_LOST;
 }
 
@@ -50,9 +51,8 @@ chain! {
     pub(crate) dispatch_create_swapchain, register_create_swapchain;
     after vkCreateSwapchainKHR;
     chain CREATE_SWAPCHAIN_CHAIN, context CreateSwapchainContext;
-    hook CreateSwapchainHook(device: vk::Device, create_info: *const vk::SwapchainCreateInfoKHR<'_>, swapchain: *mut vk::SwapchainKHR);
+    hook CreateSwapchainHook(device: vk::Device, create_info: *const vk::SwapchainCreateInfoKHR<'_>, swapchain: *mut vk::SwapchainKHR) -> result: vk::Result;
     abi (device: vk::Device, create_info: *const vk::SwapchainCreateInfoKHR<'_>, allocator: *const vk::AllocationCallbacks<'_>, swapchain: *mut vk::SwapchainKHR);
-    result vk::Result, result;
     resolve with crate::terminal::create_swapchain;
 }
 chain! {
@@ -67,9 +67,8 @@ chain! {
     pub(crate) dispatch_get_swapchain_images, register_get_swapchain_images;
     after vkGetSwapchainImagesKHR;
     chain GET_SWAPCHAIN_IMAGES_CHAIN, context GetSwapchainImagesContext;
-    hook GetSwapchainImagesHook(swapchain: vk::SwapchainKHR, image_count: *mut u32, images: *mut vk::Image);
+    hook GetSwapchainImagesHook(swapchain: vk::SwapchainKHR, image_count: *mut u32, images: *mut vk::Image) -> result: vk::Result;
     abi (device: vk::Device, swapchain: vk::SwapchainKHR, image_count: *mut u32, images: *mut vk::Image);
-    result vk::Result, result;
     resolve with device, c"vkGetSwapchainImagesKHR": vk::PFN_vkGetSwapchainImagesKHR -> vk::Result::ERROR_EXTENSION_NOT_PRESENT;
 }
 
@@ -77,8 +76,7 @@ chain! {
     pub(crate) dispatch_queue_present, register_queue_present;
     around vkQueuePresentKHR;
     chain QUEUE_PRESENT_CHAIN, context QueuePresentContext;
-    hook QueuePresentHook(queue: vk::Queue, present_info: *const vk::PresentInfoKHR<'_>; next: vk::PFN_vkQueuePresentKHR);
-    result vk::Result;
+    hook QueuePresentHook(queue: vk::Queue, present_info: *const vk::PresentInfoKHR<'_>) -> vk::Result;
     resolve with queue, c"vkQueuePresentKHR": vk::PFN_vkQueuePresentKHR -> vk::Result::ERROR_EXTENSION_NOT_PRESENT;
 }
 
@@ -86,9 +84,8 @@ chain! {
     pub(crate) dispatch_create_win32_surface, register_create_win32_surface;
     after vkCreateWin32SurfaceKHR;
     chain CREATE_WIN32_SURFACE_CHAIN, context CreateWin32SurfaceContext;
-    hook CreateWin32SurfaceHook(create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>, surface: *mut vk::SurfaceKHR);
+    hook CreateWin32SurfaceHook(create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>, surface: *mut vk::SurfaceKHR) -> result: vk::Result;
     abi (instance: vk::Instance, create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>, allocator: *const vk::AllocationCallbacks<'_>, surface: *mut vk::SurfaceKHR);
-    result vk::Result, result;
     resolve with instance, c"vkCreateWin32SurfaceKHR": vk::PFN_vkCreateWin32SurfaceKHR -> vk::Result::ERROR_EXTENSION_NOT_PRESENT;
 }
 chain! {
@@ -103,79 +100,69 @@ chain! {
     pub(crate) dispatch_enumerate_physical_devices, register_enumerate_physical_devices;
     after vkEnumeratePhysicalDevices;
     chain ENUMERATE_PHYSICAL_DEVICES_CHAIN, context EnumeratePhysicalDevicesContext;
-    hook EnumeratePhysicalDevicesHook(instance: vk::Instance, count: *mut u32, devices: *mut vk::PhysicalDevice);
-    abi (instance: vk::Instance, count: *mut u32, devices: *mut vk::PhysicalDevice);
-    result vk::Result, result;
+    hook EnumeratePhysicalDevicesHook(instance: vk::Instance, count: *mut u32, devices: *mut vk::PhysicalDevice) -> result: vk::Result;
     resolve with instance, c"vkEnumeratePhysicalDevices": vk::PFN_vkEnumeratePhysicalDevices -> vk::Result::ERROR_INITIALIZATION_FAILED;
 }
 chain! {
     pub(crate) dispatch_destroy_instance, register_destroy_instance;
     around vkDestroyInstance;
     chain DESTROY_INSTANCE_CHAIN, context DestroyInstanceContext;
-    hook DestroyInstanceHook(instance: vk::Instance, allocator: *const vk::AllocationCallbacks<'_>; next: vk::PFN_vkDestroyInstance);
-    result ();
+    hook DestroyInstanceHook(instance: vk::Instance, allocator: *const vk::AllocationCallbacks<'_>) -> ();
     resolve with instance, c"vkDestroyInstance": vk::PFN_vkDestroyInstance -> ();
 }
 chain! {
     pub(crate) dispatch_create_instance, register_create_instance;
     after vkCreateInstance;
     chain CREATE_INSTANCE_CHAIN, context CreateInstanceContext;
-    hook CreateInstanceHook();
+    hook CreateInstanceHook() -> result: vk::Result;
     abi (create_info: *const vk::InstanceCreateInfo<'_>, allocator: *const vk::AllocationCallbacks<'_>, instance: *mut vk::Instance);
-    result vk::Result, result;
     resolve with crate::terminal::create_instance;
 }
 chain! {
     pub(crate) dispatch_create_device, register_create_device;
     observes vkCreateDevice;
     chain CREATE_DEVICE_CHAIN, context CreateDeviceContext;
-    hook CreateDeviceHook();
+    hook CreateDeviceHook() -> vk::Result;
     abi (physical_device: vk::PhysicalDevice, create_info: *const vk::DeviceCreateInfo<'_>, allocator: *const vk::AllocationCallbacks<'_>, device: *mut vk::Device);
-    result vk::Result;
     resolve with crate::terminal::create_device;
 }
 chain! {
     pub(crate) dispatch_negotiate, register_negotiate;
     observes vkNegotiateLoaderLayerInterfaceVersion;
     chain NEGOTIATE_CHAIN, context NegotiateContext;
-    hook NegotiateHook();
+    hook NegotiateHook() -> vk::Result;
     abi (interface: *mut crate::layer::VkNegotiateLayerInterface);
-    result vk::Result;
     resolve with crate::terminal::negotiate;
 }
 chain! {
     pub(crate) dispatch_get_instance_proc_addr, register_get_instance_proc_addr;
     observes vkGetInstanceProcAddr;
     chain GET_INSTANCE_PROC_ADDR_CHAIN, context GetInstanceProcAddrContext;
-    hook GetInstanceProcAddrHook();
+    hook GetInstanceProcAddrHook() -> vk::PFN_vkVoidFunction;
     abi (instance: vk::Instance, name: *const std::ffi::c_char);
-    result vk::PFN_vkVoidFunction;
     resolve with crate::terminal::get_instance_proc_addr;
 }
 chain! {
     pub(crate) dispatch_get_physical_device_proc_addr, register_get_physical_device_proc_addr;
     observes vk_layerGetPhysicalDeviceProcAddr;
     chain GET_PHYSICAL_DEVICE_PROC_ADDR_CHAIN, context GetPhysicalDeviceProcAddrContext;
-    hook GetPhysicalDeviceProcAddrHook();
+    hook GetPhysicalDeviceProcAddrHook() -> vk::PFN_vkVoidFunction;
     abi (instance: vk::Instance, name: *const std::ffi::c_char);
-    result vk::PFN_vkVoidFunction;
     resolve with crate::terminal::get_physical_device_proc_addr;
 }
 chain! {
     pub(crate) dispatch_get_device_proc_addr, register_get_device_proc_addr;
     observes vkGetDeviceProcAddr;
     chain GET_DEVICE_PROC_ADDR_CHAIN, context GetDeviceProcAddrContext;
-    hook GetDeviceProcAddrHook();
+    hook GetDeviceProcAddrHook() -> vk::PFN_vkVoidFunction;
     abi (device: vk::Device, name: *const std::ffi::c_char);
-    result vk::PFN_vkVoidFunction;
     resolve with crate::terminal::get_device_proc_addr;
 }
 chain! {
     pub(crate) dispatch_destroy_device, register_destroy_device;
     around vkDestroyDevice;
     chain DESTROY_DEVICE_CHAIN, context DestroyDeviceContext;
-    hook DestroyDeviceHook(device: vk::Device, allocator: *const vk::AllocationCallbacks<'_>; next: vk::PFN_vkDestroyDevice);
-    result ();
+    hook DestroyDeviceHook(device: vk::Device, allocator: *const vk::AllocationCallbacks<'_>) -> ();
     resolve with device, c"vkDestroyDevice": vk::PFN_vkDestroyDevice -> ();
 }
 
@@ -183,9 +170,8 @@ chain! {
     pub(crate) dispatch_begin_command_buffer, register_begin_command_buffer;
     observes vkBeginCommandBuffer;
     chain BEGIN_COMMAND_BUFFER_CHAIN, context BeginCommandBufferContext;
-    hook BeginCommandBufferHook(command_buffer: vk::CommandBuffer);
+    hook BeginCommandBufferHook(command_buffer: vk::CommandBuffer) -> vk::Result;
     abi (command_buffer: vk::CommandBuffer, begin_info: *const vk::CommandBufferBeginInfo<'_>);
-    result vk::Result;
     resolve with command_buffer, c"vkBeginCommandBuffer": vk::PFN_vkBeginCommandBuffer -> vk::Result::ERROR_INITIALIZATION_FAILED;
 }
 
@@ -210,7 +196,6 @@ chain! {
     observes vkCmdSetViewport;
     chain CMD_SET_VIEWPORT_CHAIN, context CmdSetViewportContext;
     hook CmdSetViewportHook(command_buffer: vk::CommandBuffer, first: u32, count: u32, viewports: *const vk::Viewport);
-    abi (command_buffer: vk::CommandBuffer, first: u32, count: u32, viewports: *const vk::Viewport);
     resolve with command_buffer, c"vkCmdSetViewport": vk::PFN_vkCmdSetViewport;
 }
 
@@ -219,7 +204,6 @@ chain! {
     observes vkCmdSetScissor;
     chain CMD_SET_SCISSOR_CHAIN, context CmdSetScissorContext;
     hook CmdSetScissorHook(command_buffer: vk::CommandBuffer, first: u32, count: u32, scissors: *const vk::Rect2D);
-    abi (command_buffer: vk::CommandBuffer, first: u32, count: u32, scissors: *const vk::Rect2D);
     resolve with command_buffer, c"vkCmdSetScissor": vk::PFN_vkCmdSetScissor;
 }
 
@@ -228,7 +212,6 @@ chain! {
     observes vkCmdEndRenderPass;
     chain CMD_END_RENDER_PASS_CHAIN, context CmdEndRenderPassContext;
     hook CmdEndRenderPassHook(command_buffer: vk::CommandBuffer);
-    abi (command_buffer: vk::CommandBuffer);
     resolve with command_buffer, c"vkCmdEndRenderPass": vk::PFN_vkCmdEndRenderPass;
 }
 
@@ -237,7 +220,6 @@ chain! {
     observes vkCmdBeginRenderPass;
     chain CMD_BEGIN_RENDER_PASS_CHAIN, context CmdBeginRenderPassContext;
     hook CmdBeginRenderPassHook(command_buffer: vk::CommandBuffer, begin: *const vk::RenderPassBeginInfo<'_>, contents: vk::SubpassContents);
-    abi (command_buffer: vk::CommandBuffer, begin: *const vk::RenderPassBeginInfo<'_>, contents: vk::SubpassContents);
     resolve with command_buffer, c"vkCmdBeginRenderPass": vk::PFN_vkCmdBeginRenderPass;
 }
 
@@ -246,7 +228,6 @@ chain! {
     observes vkCmdBindDescriptorSets;
     chain CMD_BIND_DESCRIPTOR_SETS_CHAIN, context CmdBindDescriptorSetsContext;
     hook CmdBindDescriptorSetsHook(command_buffer: vk::CommandBuffer, bind_point: vk::PipelineBindPoint, layout: vk::PipelineLayout, first_set: u32, set_count: u32, sets: *const vk::DescriptorSet, dynamic_offset_count: u32, dynamic_offsets: *const u32);
-    abi (command_buffer: vk::CommandBuffer, bind_point: vk::PipelineBindPoint, layout: vk::PipelineLayout, first_set: u32, set_count: u32, sets: *const vk::DescriptorSet, dynamic_offset_count: u32, dynamic_offsets: *const u32);
     resolve with command_buffer, c"vkCmdBindDescriptorSets": vk::PFN_vkCmdBindDescriptorSets;
 }
 
@@ -255,7 +236,6 @@ chain! {
     observes vkCmdPushDescriptorSetKHR;
     chain CMD_PUSH_DESCRIPTOR_SET_CHAIN, context CmdPushDescriptorSetContext;
     hook CmdPushDescriptorSetHook(command_buffer: vk::CommandBuffer, bind_point: vk::PipelineBindPoint, layout: vk::PipelineLayout, set: u32, write_count: u32, writes: *const vk::WriteDescriptorSet<'_>);
-    abi (command_buffer: vk::CommandBuffer, bind_point: vk::PipelineBindPoint, layout: vk::PipelineLayout, set: u32, write_count: u32, writes: *const vk::WriteDescriptorSet<'_>);
     resolve with command_buffer, c"vkCmdPushDescriptorSetKHR": vk::PFN_vkCmdPushDescriptorSetKHR;
 }
 
@@ -264,7 +244,6 @@ chain! {
     observes vkCmdBlitImage;
     chain CMD_BLIT_IMAGE_CHAIN, context CmdBlitImageContext;
     hook CmdBlitImageHook(command_buffer: vk::CommandBuffer, source_image: vk::Image, source_layout: vk::ImageLayout, destination_image: vk::Image, destination_layout: vk::ImageLayout, region_count: u32, regions: *const vk::ImageBlit, filter: vk::Filter);
-    abi (command_buffer: vk::CommandBuffer, source_image: vk::Image, source_layout: vk::ImageLayout, destination_image: vk::Image, destination_layout: vk::ImageLayout, region_count: u32, regions: *const vk::ImageBlit, filter: vk::Filter);
     resolve with command_buffer, c"vkCmdBlitImage": vk::PFN_vkCmdBlitImage;
 }
 
@@ -273,7 +252,6 @@ chain! {
     observes vkCmdCopyImage;
     chain CMD_COPY_IMAGE_CHAIN, context CmdCopyImageContext;
     hook CmdCopyImageHook(command_buffer: vk::CommandBuffer, source_image: vk::Image, source_layout: vk::ImageLayout, destination_image: vk::Image, destination_layout: vk::ImageLayout, region_count: u32, regions: *const vk::ImageCopy);
-    abi (command_buffer: vk::CommandBuffer, source_image: vk::Image, source_layout: vk::ImageLayout, destination_image: vk::Image, destination_layout: vk::ImageLayout, region_count: u32, regions: *const vk::ImageCopy);
     resolve with command_buffer, c"vkCmdCopyImage": vk::PFN_vkCmdCopyImage;
 }
 
@@ -281,9 +259,8 @@ chain! {
     pub(crate) dispatch_create_image, register_create_image;
     after vkCreateImage;
     chain CREATE_IMAGE_CHAIN, context CreateImageContext;
-    hook CreateImageHook(create_info: *const vk::ImageCreateInfo<'_>, image: *mut vk::Image);
+    hook CreateImageHook(create_info: *const vk::ImageCreateInfo<'_>, image: *mut vk::Image) -> result: vk::Result;
     abi (device: vk::Device, create_info: *const vk::ImageCreateInfo<'_>, allocator: *const vk::AllocationCallbacks<'_>, image: *mut vk::Image);
-    result vk::Result, result;
     resolve with crate::terminal::create_image;
 }
 
@@ -291,9 +268,8 @@ chain! {
     pub(crate) dispatch_create_image_view, register_create_image_view;
     after vkCreateImageView;
     chain CREATE_IMAGE_VIEW_CHAIN, context CreateImageViewContext;
-    hook CreateImageViewHook(create_info: *const vk::ImageViewCreateInfo<'_>, view: *mut vk::ImageView);
+    hook CreateImageViewHook(create_info: *const vk::ImageViewCreateInfo<'_>, view: *mut vk::ImageView) -> result: vk::Result;
     abi (device: vk::Device, create_info: *const vk::ImageViewCreateInfo<'_>, allocator: *const vk::AllocationCallbacks<'_>, view: *mut vk::ImageView);
-    result vk::Result, result;
     resolve with device, c"vkCreateImageView": vk::PFN_vkCreateImageView -> vk::Result::ERROR_INITIALIZATION_FAILED;
 }
 
@@ -301,9 +277,8 @@ chain! {
     pub(crate) dispatch_create_framebuffer, register_create_framebuffer;
     after vkCreateFramebuffer;
     chain CREATE_FRAMEBUFFER_CHAIN, context CreateFramebufferContext;
-    hook CreateFramebufferHook(create_info: *const vk::FramebufferCreateInfo<'_>, framebuffer: *mut vk::Framebuffer);
+    hook CreateFramebufferHook(create_info: *const vk::FramebufferCreateInfo<'_>, framebuffer: *mut vk::Framebuffer) -> result: vk::Result;
     abi (device: vk::Device, create_info: *const vk::FramebufferCreateInfo<'_>, allocator: *const vk::AllocationCallbacks<'_>, framebuffer: *mut vk::Framebuffer);
-    result vk::Result, result;
     resolve with device, c"vkCreateFramebuffer": vk::PFN_vkCreateFramebuffer -> vk::Result::ERROR_INITIALIZATION_FAILED;
 }
 
