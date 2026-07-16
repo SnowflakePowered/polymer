@@ -1335,10 +1335,6 @@ fn launch_target(
         .env("VK_LAYER_PATH", layer_dir)
         .env("VK_INSTANCE_LAYERS", "VK_LAYER_SNOWGLASS_capture")
         .env("SNOWGLASS_SESSION", session)
-        .env(
-            "SNOWGLASS_HOOK_DINPUT",
-            layer_dir.join("snowglass_hook_dinput.dll"),
-        )
         .env("SNOWGLASS_LOG_FILE", layer_dir.join("snowglass-layer.log"));
     command.env(
         "SNOWGLASS_DINPUT_LOG_FILE",

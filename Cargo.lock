@@ -2028,7 +2028,6 @@ dependencies = [
  "snowglass-platform-windows",
  "snowglass-producer-vulkan",
  "snowglass-protocol",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

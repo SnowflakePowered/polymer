@@ -1,82 +1,17 @@
-//! In-process DirectInput interception installed with a trampoline detour.
+//! Early-process DirectInput detour installer.
 #![allow(unsafe_code)]
 
-use dinput8::{DirectInput8CreateFn, intercept_direct_input8_create, system_direct_input8_create};
-use retour::GenericDetour;
-use std::{ffi::c_void, sync::OnceLock};
-use windows_sys::{
-    Win32::Foundation::HINSTANCE,
-    core::{GUID, HRESULT},
-};
+mod install;
+mod interception;
+mod sys;
 
-static DIRECT_INPUT_8_CREATE: OnceLock<GenericDetour<DirectInput8CreateFn>> = OnceLock::new();
-
-unsafe extern "system" fn call_original(
-    instance: HINSTANCE,
-    version: u32,
-    interface_id: *const GUID,
-    output: *mut *mut c_void,
-    outer: *mut c_void,
-) -> HRESULT {
-    match DIRECT_INPUT_8_CREATE.get() {
-        Some(detour) => unsafe { detour.call(instance, version, interface_id, output, outer) },
-        None => 0x8000_4005u32 as i32,
-    }
-}
-
-unsafe extern "system" fn direct_input_8_create_detour(
-    instance: HINSTANCE,
-    version: u32,
-    interface_id: *const GUID,
-    output: *mut *mut c_void,
-    outer: *mut c_void,
-) -> HRESULT {
-    unsafe {
-        intercept_direct_input8_create(
-            call_original,
-            instance,
-            version,
-            interface_id,
-            output,
-            outer,
-        )
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn SnowglassInstallDinputHook() -> HRESULT {
-    if let Some(detour) = DIRECT_INPUT_8_CREATE.get() {
-        return if detour.is_enabled() {
-            0
-        } else {
-            0x8000_4005u32 as i32
-        };
-    }
-    let target = match system_direct_input8_create() {
-        Ok(target) => target,
-        Err(error) => return error,
-    };
-    let detour = match unsafe { GenericDetour::new(target, direct_input_8_create_detour) } {
-        Ok(detour) => detour,
-        Err(_) => return 0x8000_4005u32 as i32,
-    };
-    if DIRECT_INPUT_8_CREATE.set(detour).is_err() {
-        return 0x8000_4005u32 as i32;
-    }
-    match unsafe {
-        DIRECT_INPUT_8_CREATE
-            .get()
-            .expect("detour was set")
-            .enable()
-    } {
-        Ok(()) => 0,
-        Err(_) => 0x8000_4005u32 as i32,
-    }
-}
+pub use sys::SnowglassInstallDinputHook;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_void;
+    use windows_sys::core::GUID;
 
     #[test]
     fn installation_is_idempotent_and_intercepts_the_system_export() {
@@ -84,7 +19,7 @@ mod tests {
         assert_eq!(unsafe { SnowglassInstallDinputHook() }, 0);
         assert_eq!(unsafe { SnowglassInstallDinputHook() }, 0);
 
-        let target = system_direct_input8_create().unwrap();
+        let target = dinput8::system_direct_input8_create().unwrap();
         let instance = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null())
         };
