@@ -6,7 +6,7 @@
 #![allow(non_snake_case)]
 
 use snowglass_hook::HookChain;
-use snowglass_input_core::{DirectInputData, DirectInputDevice};
+use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocket, Message};
 use std::{
     collections::{HashMap, VecDeque},

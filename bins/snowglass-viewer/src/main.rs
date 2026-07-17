@@ -2,7 +2,7 @@ use ash::{Entry, vk};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
-use snowglass_input_core::{DirectInputData, DirectInputDevice};
+use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
     NativeWindow, ProcessId, client_size, forward_character, forward_mouse_button,

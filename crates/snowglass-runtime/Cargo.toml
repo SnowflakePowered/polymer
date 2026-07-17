@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 snowglass-api.workspace = true
-snowglass-input-core.workspace = true
+snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 
 [lints]

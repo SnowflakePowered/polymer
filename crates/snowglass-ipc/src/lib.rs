@@ -1,6 +1,6 @@
 //! Framed Snowglass IPC over a Windows AF_UNIX stream socket.
 
-use snowglass_input_core::{DirectInputData, DirectInputDevice};
+use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_protocol::{FrameReady, Handshake, MAX_IMAGE_SLOTS, StreamId};
 use std::{
     fs,

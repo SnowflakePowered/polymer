@@ -1978,14 +1978,14 @@ name = "snowglass-hook"
 version = "0.1.0"
 
 [[package]]
-name = "snowglass-hook-d3d11-proxy"
+name = "snowglass-hook-d3d11"
 version = "0.1.0"
 dependencies = [
  "snowglass-producer-d3d11",
 ]
 
 [[package]]
-name = "snowglass-hook-d3d12-proxy"
+name = "snowglass-hook-d3d12"
 version = "0.1.0"
 dependencies = [
  "snowglass-producer-d3d12",
@@ -2012,11 +2012,11 @@ dependencies = [
 name = "snowglass-hook-input"
 version = "0.1.0"
 dependencies = [
- "snowglass-input-core",
+ "snowglass-input",
 ]
 
 [[package]]
-name = "snowglass-hook-opengl32-proxy"
+name = "snowglass-hook-opengl32"
 version = "0.1.0"
 dependencies = [
  "snowglass-producer-opengl",
@@ -2036,7 +2036,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "snowglass-input-core"
+name = "snowglass-input"
 version = "0.1.0"
 
 [[package]]
@@ -2044,7 +2044,7 @@ name = "snowglass-input-dinput"
 version = "0.1.0"
 dependencies = [
  "snowglass-hook",
- "snowglass-input-core",
+ "snowglass-input",
  "snowglass-ipc",
  "windows-sys 0.61.2",
 ]
@@ -2060,7 +2060,7 @@ dependencies = [
 name = "snowglass-ipc"
 version = "0.1.0"
 dependencies = [
- "snowglass-input-core",
+ "snowglass-input",
  "snowglass-protocol",
  "windows-sys 0.61.2",
  "zerocopy",
@@ -2071,14 +2071,6 @@ name = "snowglass-latency-test"
 version = "0.1.0"
 dependencies = [
  "snowglass-protocol",
-]
-
-[[package]]
-name = "snowglass-launcher"
-version = "0.1.0"
-dependencies = [
- "snowglass-ipc",
- "snowglass-platform-windows",
 ]
 
 [[package]]
@@ -2128,7 +2120,7 @@ name = "snowglass-runtime"
 version = "0.1.0"
 dependencies = [
  "snowglass-api",
- "snowglass-input-core",
+ "snowglass-input",
  "snowglass-ipc",
 ]
 
@@ -2143,7 +2135,7 @@ dependencies = [
  "egui-winit",
  "raw-window-handle",
  "snowglass-consumer-vulkan",
- "snowglass-input-core",
+ "snowglass-input",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",

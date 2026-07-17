@@ -5,11 +5,11 @@ members = [
     "crates/snowglass-protocol",
     "crates/snowglass-ipc",
     "crates/snowglass-platform-windows",
-    "crates/snowglass-input-core",
     "crates/snowglass-runtime",
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
+    "crates/input/*",
     "bins/*",
 ]
 
@@ -48,7 +48,7 @@ snowglass-api = { path = "crates/snowglass-api" }
 snowglass-protocol = { path = "crates/snowglass-protocol" }
 snowglass-ipc = { path = "crates/snowglass-ipc" }
 snowglass-platform-windows = { path = "crates/snowglass-platform-windows" }
-snowglass-input-core = { path = "crates/snowglass-input-core" }
+snowglass-input = { path = "crates/input/snowglass-input" }
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
 [workspace.lints.rust]

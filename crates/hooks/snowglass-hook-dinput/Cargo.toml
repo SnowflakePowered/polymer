@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 retour.workspace = true
-snowglass-input-dinput = { path = "../snowglass-input-dinput" }
+snowglass-input-dinput = { path = "../../input/snowglass-input-dinput" }
 windows-sys.workspace = true
 
 [lints]

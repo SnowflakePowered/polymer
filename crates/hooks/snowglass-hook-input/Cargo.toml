@@ -8,5 +8,5 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-snowglass-input-core.workspace = true
+snowglass-input.workspace = true
 

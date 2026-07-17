@@ -1,5 +1,5 @@
 [package]
-name = "snowglass-hook-d3d12-proxy"
+name = "snowglass-hook-d3d11"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,4 +8,4 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-snowglass-producer-d3d12 = { path = "../../producers/snowglass-producer-d3d12" }
+snowglass-producer-d3d11 = { path = "../../producers/snowglass-producer-d3d11" }

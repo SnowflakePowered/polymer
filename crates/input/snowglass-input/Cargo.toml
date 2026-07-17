@@ -1,5 +1,5 @@
 [package]
-name = "snowglass-input-core"
+name = "snowglass-input"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
