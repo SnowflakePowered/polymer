@@ -1,10 +1,33 @@
-//! Early-process DirectInput detour installer.
+//! Early-process DirectInput detour and COM device interception.
 #![allow(unsafe_code)]
 
+mod hook_chain;
+mod hooks;
 mod install;
+mod runtime;
 mod sys;
+mod vtable;
+
+pub(crate) type DirectInput8CreateFn = unsafe extern "system" fn(
+    windows_sys::Win32::Foundation::HINSTANCE,
+    u32,
+    *const windows_sys::core::GUID,
+    *mut *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+) -> windows_sys::core::HRESULT;
 
 pub use sys::SnowglassInstallDinputHook;
+
+fn register_hooks() {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        hooks::register_direct_input_8_create(runtime::direct_input_8_create);
+        hooks::register_create_device(runtime::create_device);
+        hooks::register_get_device_state(runtime::get_device_state);
+        hooks::register_get_device_data(runtime::get_device_data);
+        hooks::register_set_event_notification(runtime::set_event_notification);
+    });
+}
 
 #[cfg(test)]
 mod tests {
@@ -18,7 +41,7 @@ mod tests {
         assert_eq!(unsafe { SnowglassInstallDinputHook() }, 0);
         assert_eq!(unsafe { SnowglassInstallDinputHook() }, 0);
 
-        let target = dinput8::system_direct_input8_create().unwrap();
+        let target = windows_sys::Win32::Devices::HumanInterfaceDevice::DirectInput8Create;
         let instance = unsafe {
             windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null())
         };

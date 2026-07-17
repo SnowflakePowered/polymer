@@ -1,4 +1,4 @@
-//! `d3d11.dll` proxy and D3D11 device bootstrap.
+//! D3D11 export detours and COM device bootstrap.
 #![allow(unsafe_code)]
 
 mod capture;
@@ -6,11 +6,9 @@ mod device;
 mod hook_chain;
 mod hooks;
 mod install;
-mod loader;
 mod sys;
 mod tracking;
 
-pub use hooks::{D3D11CreateDevice, D3D11CreateDeviceAndSwapChain};
 pub use sys::SnowglassInstallD3d11Hook;
 
 pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
@@ -92,13 +90,13 @@ mod tests {
     }
 
     #[test]
-    fn proxies_system_create_device() {
+    fn detours_system_create_device() {
         let _test_lock = test_lock();
         let mut device = std::ptr::null_mut();
         let mut context = std::ptr::null_mut();
         let mut level = 0;
         let result = unsafe {
-            D3D11CreateDevice(
+            install::system_create_device(
                 std::ptr::null_mut(),
                 5,
                 std::ptr::null_mut(),
@@ -237,7 +235,7 @@ mod tests {
         let mut context = std::ptr::null_mut();
         let mut level = 0;
         let result = unsafe {
-            D3D11CreateDevice(
+            install::system_create_device(
                 adapter.as_raw(),
                 0,
                 std::ptr::null_mut(),

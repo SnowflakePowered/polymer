@@ -1,4 +1,13 @@
 macro_rules! resolve_terminal {
+    (($($argument:ident),*); resolve with detour $detours:path, $field:ident -> $fallback:expr;) => {
+        || {
+            snowglass_platform_windows::call_original(
+                $detours.get().map(|detours| &detours.$field),
+                $fallback,
+                |detour| unsafe { detour.call($($argument),*) },
+            )
+        }
+    };
     (($($argument:ident),*); resolve with $terminal:path;) => {
         || unsafe { $terminal($($argument),*) }
     };
@@ -40,7 +49,7 @@ snowglass_hook::define_chain_macro! {
             order snowglass_hook::ChainOrder::Reverse;
             resolve with __resolve_terminal;
         }
-        extern post {
+        post {
             order snowglass_hook::ChainOrder::Reverse;
             resolve with __resolve_terminal;
         }

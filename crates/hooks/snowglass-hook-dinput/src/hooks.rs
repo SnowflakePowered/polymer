@@ -1,11 +1,11 @@
 //! Concrete DirectInput hook-chain declarations.
 
 use crate::{
+    DirectInput8CreateFn,
     hook_chain::{
         __resolve_around_terminal, __resolve_observer_terminal, around_chain, chain,
         observer_chain, post_chain,
     },
-    loader::DirectInput8CreateFn,
 };
 use std::ffi::c_void;
 use windows_sys::{

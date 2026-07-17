@@ -1,5 +1,21 @@
 //! Windows-specific handle, adapter, process, and window utilities.
 
+/// Calls an installed detour's original trampoline, or returns `fallback` if
+/// the detour is absent or disabled.
+pub fn call_original<T, R>(
+    detour: Option<&retour::GenericDetour<T>>,
+    fallback: R,
+    call: impl FnOnce(&retour::GenericDetour<T>) -> R,
+) -> R
+where
+    T: retour::Function,
+{
+    match detour {
+        Some(detour) if detour.is_enabled() => call(detour),
+        Some(_) | None => fallback,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct ProcessId(pub u32);

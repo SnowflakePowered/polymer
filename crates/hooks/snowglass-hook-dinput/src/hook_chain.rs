@@ -1,5 +1,17 @@
 //! DirectInput-specific terminal resolution for shared typed hook chains.
 
+macro_rules! invoke_original_method {
+    ($this:expr, $method:expr $(, $argument:expr)* $(,)?) => {{
+        let method = $method;
+        let slot = $this.cast::<*const usize>();
+        unsafe { *slot = method.original_vtable };
+        let result = unsafe { (method.function)($this $(, $argument)*) };
+        unsafe { *slot = method.intercepted_vtable };
+        result
+    }};
+}
+pub(crate) use invoke_original_method as __invoke_original_method;
+
 macro_rules! resolve_proc {
     (direct_input, $this:expr, $field:ident) => {
         crate::runtime::direct_input_method($this, |context| context.$field)
@@ -22,12 +34,7 @@ macro_rules! resolve_observer_terminal {
             let Some(method) = crate::hook_chain::__resolve_proc!($domain, $this, $field) else {
                 return $fallback;
             };
-            let function = method.function;
-            unsafe {
-                crate::vtable::call_original($this, method, || {
-                    function($this $(, $argument)*)
-                })
-            }
+            crate::hook_chain::__invoke_original_method!($this, method $(, $argument)*)
         }
     };
 }
@@ -53,14 +60,11 @@ macro_rules! resolve_around_terminal {
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
             fields {}
-            terminal |$this, $($argument,)* _context: $context<'_>| unsafe {
+            terminal |$this, $($argument,)* _context: $context<'_>| {
                 let Some(method) = crate::hook_chain::__resolve_proc!($domain, $this, $field) else {
                     return $fallback;
                 };
-                let function = method.function;
-                crate::vtable::call_original($this, method, || {
-                    function($this $(, $argument)*)
-                })
+                crate::hook_chain::__invoke_original_method!($this, method $(, $argument)*)
             };
             export $export;
         }

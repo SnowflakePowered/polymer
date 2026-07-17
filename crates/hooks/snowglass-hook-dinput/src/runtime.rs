@@ -1,7 +1,4 @@
-//! DirectInput proxy loading, device interception, and forwarded input state.
-//!
-//! The proxy deliberately resolves the real DLL from `System32`; using the
-//! ordinary DLL search path here would recursively load this proxy.
+//! DirectInput device interception and forwarded input state.
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
 
@@ -592,29 +589,6 @@ pub(crate) unsafe fn get_device_data(
     0
 }
 
-pub unsafe extern "system" fn DirectInput8Create(
-    instance: HINSTANCE,
-    version: u32,
-    interface_id: *const GUID,
-    output: *mut *mut c_void,
-    outer: *mut c_void,
-) -> HRESULT {
-    let original = match crate::loader::system_direct_input8_create() {
-        Ok(system) => system,
-        Err(error) => return error,
-    };
-    unsafe {
-        crate::hooks::dispatch_direct_input_8_create(
-            original,
-            instance,
-            version,
-            interface_id,
-            output,
-            outer,
-        )
-    }
-}
-
 pub(crate) unsafe fn direct_input_8_create(
     instance: HINSTANCE,
     version: u32,
@@ -631,33 +605,6 @@ pub(crate) unsafe fn direct_input_8_create(
         unsafe { hook_direct_input(*output) };
     }
     let _ = (instance, outer);
-}
-
-/// Shared interception entry used by both the legacy proxy and an installed
-/// in-process detour. `original` must be the unhooked function or trampoline.
-pub unsafe fn intercept_direct_input8_create<F>(
-    original: F,
-    instance: HINSTANCE,
-    version: u32,
-    interface_id: *const GUID,
-    output: *mut *mut c_void,
-    outer: *mut c_void,
-) -> HRESULT
-where
-    F: FnOnce(HINSTANCE, u32, *const GUID, *mut *mut c_void, *mut c_void) -> HRESULT,
-{
-    start_input_receiver();
-    dinput_log(format!(
-        "snowglass: forwarding DirectInput8Create version={version:#x} iid={interface_id:p}"
-    ));
-    let result = original(instance, version, interface_id, output, outer);
-    dinput_log(format!(
-        "snowglass: DirectInput8Create returned {result:#x}"
-    ));
-    if result >= 0 && !output.is_null() {
-        unsafe { hook_direct_input(*output) };
-    }
-    result
 }
 
 #[cfg(test)]
@@ -689,11 +636,6 @@ mod tests {
         _event: *mut c_void,
     ) -> HRESULT {
         0
-    }
-
-    #[test]
-    fn resolves_every_system_export() {
-        crate::loader::system_direct_input8_create().expect("system dinput8.dll should load");
     }
 
     #[test]
