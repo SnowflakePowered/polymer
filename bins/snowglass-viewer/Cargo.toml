@@ -12,6 +12,7 @@ egui-ash-renderer = "0.6.0"
 egui-winit = "0.29.1"
 raw-window-handle.workspace = true
 snowglass-consumer-vulkan = { path = "../../crates/consumer/snowglass-consumer-vulkan" }
+snowglass-consumer-d3d12 = { path = "../../crates/consumer/snowglass-consumer-d3d12" }
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true

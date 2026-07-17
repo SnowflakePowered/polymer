@@ -8,10 +8,11 @@ use snowglass_hook::HookChain;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_producer_vulkan::{
-    ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, SwapchainCopyEngine,
+    ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, ExternalHandleMode,
+    SwapchainCopyEngine,
 };
 use snowglass_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, StreamId,
 };
 use std::sync::{
@@ -25,7 +26,8 @@ struct SwapchainState {
     extent: vk::Extent2D,
     images: Vec<vk::Image>,
     ring: Option<ExportImageRing>,
-    timeline: Option<ExportTimelineSemaphore>,
+    producer_timeline: Option<ExportTimelineSemaphore>,
+    consumer_timeline: Option<ExportTimelineSemaphore>,
     copy_engine: Option<SwapchainCopyEngine>,
     ipc: Option<LocalSocket>,
     frame_number: u64,
@@ -39,6 +41,12 @@ static SWAPCHAIN_IMAGE: LazyLock<DashMap<vk::Image, vk::SwapchainKHR>> =
 static SWAPCHAINS_CREATED: AtomicU64 = AtomicU64::new(0);
 static PRESENTS_SEEN: AtomicU64 = AtomicU64::new(0);
 static COPIES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
+
+struct ViewerConnection {
+    socket: LocalSocket,
+    process_id: u32,
+    preferred_consumer: ConsumerApi,
+}
 
 pub(crate) fn destroy_device(device: vk::Device) {
     {
@@ -76,13 +84,7 @@ pub(crate) fn destroy_surface(surface: vk::SurfaceKHR) {
     };
 }
 
-pub(crate) fn connect_viewer(
-    ring: &ExportImageRing,
-    timeline: &ExportTimelineSemaphore,
-    extent: vk::Extent2D,
-    format: vk::Format,
-    source_window: isize,
-) -> Option<LocalSocket> {
+fn begin_viewer_connection() -> Option<ViewerConnection> {
     let session = std::env::var("SNOWGLASS_SESSION").ok()?;
     let mut socket = match LocalSocket::connect(&session) {
         Ok(socket) => socket,
@@ -93,24 +95,43 @@ pub(crate) fn connect_viewer(
             return None;
         }
     };
-    let viewer_pid = match socket.receive() {
-        Ok(Message::Hello(hello)) if hello.protocol_version == PROTOCOL_VERSION => hello.process_id,
+    match socket.receive() {
+        Ok(Message::Hello(hello)) if hello.protocol_version == PROTOCOL_VERSION => {
+            Some(ViewerConnection {
+                socket,
+                process_id: hello.process_id,
+                preferred_consumer: hello.preferred_consumer,
+            })
+        }
         Ok(Message::Hello(hello)) => {
             layer_log(format!(
                 "snowglass: viewer protocol {} is incompatible with {}",
                 hello.protocol_version, PROTOCOL_VERSION
             ));
-            return None;
+            None
         }
         Ok(_) => {
             layer_log("snowglass: viewer did not begin with a Hello message");
-            return None;
+            None
         }
         Err(error) => {
             layer_log(format!("snowglass: viewer handshake failed: {error}"));
-            return None;
+            None
         }
-    };
+    }
+}
+
+fn publish_stream(
+    mut connection: ViewerConnection,
+    ring: &ExportImageRing,
+    producer_timeline: &ExportTimelineSemaphore,
+    consumer_timeline: Option<&ExportTimelineSemaphore>,
+    adapter_luid: AdapterLuid,
+    extent: vk::Extent2D,
+    format: vk::Format,
+    source_window: isize,
+) -> Option<LocalSocket> {
+    let viewer_pid = connection.process_id;
     if ring.slots().len() > MAX_IMAGE_SLOTS {
         layer_log("snowglass: export ring exceeds protocol slot capacity");
         return None;
@@ -127,22 +148,42 @@ pub(crate) fn connect_viewer(
             }
         }
     }
+    let d3d12 = ring.desc().handle_mode == ExternalHandleMode::D3d12;
+    let stream_format = if d3d12 {
+        match dxgi_format(format) {
+            Some(format) => format,
+            None => {
+                layer_log(format!(
+                    "snowglass: Vulkan format {} has no D3D12 interop mapping",
+                    format.as_raw()
+                ));
+                return None;
+            }
+        }
+    } else {
+        format.as_raw() as u32
+    };
     let ready = StreamReady {
         producer_process_id: std::process::id(),
-        adapter_luid: AdapterLuid {
-            low_part: 0,
-            high_part: 0,
-        },
+        adapter_luid,
         source_window: source_window as i64,
         width: extent.width,
         height: extent.height,
-        format: format.as_raw() as u32,
-        image_kind: ExternalImageKind::VulkanOpaqueWin32,
-        sync_kind: ExternalSyncKind::VulkanTimelineSemaphore,
+        format: stream_format,
+        image_kind: if d3d12 {
+            ExternalImageKind::VulkanD3d12Resource
+        } else {
+            ExternalImageKind::VulkanOpaqueWin32
+        },
+        sync_kind: if d3d12 {
+            ExternalSyncKind::D3d12Fence
+        } else {
+            ExternalSyncKind::VulkanTimelineSemaphore
+        },
         slot_count: ring.slots().len() as u32,
         image_handles: handles,
         timeline_semaphore_handle: match duplicate_handle_into_process(
-            timeline.raw_handle(),
+            producer_timeline.raw_handle(),
             ProcessId(viewer_pid),
         ) {
             Ok(handle) => handle as i64,
@@ -153,16 +194,46 @@ pub(crate) fn connect_viewer(
                 return None;
             }
         },
-        consumer_semaphore_handle: 0,
+        consumer_semaphore_handle: match consumer_timeline {
+            Some(timeline) => {
+                match duplicate_handle_into_process(timeline.raw_handle(), ProcessId(viewer_pid)) {
+                    Ok(handle) => handle as i64,
+                    Err(error) => {
+                        layer_log(format!(
+                            "snowglass: consumer fence duplication failed: {error}"
+                        ));
+                        return None;
+                    }
+                }
+            }
+            None => 0,
+        },
     };
-    if let Err(error) = socket.send(Message::StreamReady(ready)) {
+    if let Err(error) = connection.socket.send(Message::StreamReady(ready)) {
         layer_log(format!("snowglass: StreamReady send failed: {error}"));
         return None;
     }
     layer_log(format!(
         "snowglass: connected export ring to viewer process {viewer_pid}"
     ));
-    Some(socket)
+    Some(connection.socket)
+}
+
+fn dxgi_format(format: vk::Format) -> Option<u32> {
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+    };
+    Some(match format {
+        vk::Format::R8G8B8A8_UNORM => DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
+        vk::Format::R8G8B8A8_SRGB => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB.0 as u32,
+        vk::Format::B8G8R8A8_UNORM => DXGI_FORMAT_B8G8R8A8_UNORM.0 as u32,
+        vk::Format::B8G8R8A8_SRGB => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB.0 as u32,
+        vk::Format::A2B10G10R10_UNORM_PACK32 => DXGI_FORMAT_R10G10B10A2_UNORM.0 as u32,
+        vk::Format::R16G16B16A16_SFLOAT => DXGI_FORMAT_R16G16B16A16_FLOAT.0 as u32,
+        _ => return None,
+    })
 }
 
 pub(crate) unsafe fn handle_queue_present(
@@ -196,11 +267,13 @@ pub(crate) unsafe fn handle_queue_present(
             let copy_ready = { SWAPCHAIN.get_mut(&swapchain) }.and_then(|mut state| {
                 if state.copy_engine.is_none() {
                     let ring = state.ring.take()?;
-                    let timeline = state.timeline.take()?;
+                    let timeline = state.producer_timeline.take()?;
+                    let consumer_timeline = state.consumer_timeline.take();
                     match SwapchainCopyEngine::create(
                         queue_state.dispatch.capture.as_ref()?.device.clone(),
                         ring,
                         timeline,
+                        consumer_timeline,
                         state.images.clone(),
                         state.extent,
                         queue_state.queue_family_index,
@@ -363,8 +436,10 @@ pub(crate) fn queue_submit(
         && let Some(mut state) = { SWAPCHAIN.get_mut(&swapchain) }
     {
         if state.copy_engine.is_none()
-            && let (Some(ring), Some(timeline)) = (state.ring.take(), state.timeline.take())
+            && let (Some(ring), Some(timeline)) =
+                (state.ring.take(), state.producer_timeline.take())
         {
+            let consumer_timeline = state.consumer_timeline.take();
             let Some(capture) = queue_state.dispatch.capture.as_ref() else {
                 return;
             };
@@ -372,6 +447,7 @@ pub(crate) fn queue_submit(
                 capture.device.clone(),
                 ring,
                 timeline,
+                consumer_timeline,
                 state.images.clone(),
                 state.extent,
                 queue_state.queue_family_index,
@@ -453,6 +529,28 @@ pub(crate) fn create_swapchain(
             let info = modified_create_info
                 .as_ref()
                 .unwrap_or_else(|| unsafe { &*create_info });
+            let connection = begin_viewer_connection();
+            let capture = dispatch.as_ref().and_then(|entry| entry.capture.as_ref());
+            let handle_mode = if connection
+                .as_ref()
+                .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
+                && capture.is_some_and(|capture| {
+                    capture.supports_foreign_queue
+                        && (capture.adapter_luid.low_part != 0
+                            || capture.adapter_luid.high_part != 0)
+                }) {
+                ExternalHandleMode::D3d12
+            } else {
+                if connection
+                    .as_ref()
+                    .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
+                {
+                    layer_log(
+                        "snowglass: Vulkan device cannot provide D3D12 interop; using Vulkan opaque handles",
+                    );
+                }
+                ExternalHandleMode::VulkanOpaque
+            };
             let ring = dispatch
                 .as_ref()
                 .and_then(|entry| entry.capture.as_ref())
@@ -460,11 +558,14 @@ pub(crate) fn create_swapchain(
                     match ExportImageRing::create_with_function(
                         capture.device.clone(),
                         capture.get_memory_win32_handle,
+                        capture.get_memory_win32_handle_properties,
                         &capture.memory_properties,
+                        capture.adapter_luid,
                         ExportImageRingDesc {
                             extent: info.image_extent,
                             format: info.image_format,
                             slots: 3,
+                            handle_mode,
                         },
                     ) {
                         Ok(ring) => {
@@ -486,11 +587,14 @@ pub(crate) fn create_swapchain(
                         }
                     }
                 });
-            let timeline = ring.as_ref().and_then(|_| {
+            let producer_timeline = ring.as_ref().and_then(|_| {
                 let capture = dispatch.as_ref()?.capture.as_ref()?;
                 match ExportTimelineSemaphore::create_with_function(
                     capture.device.clone(),
                     capture.get_semaphore_win32_handle,
+                    capture.import_semaphore_win32_handle,
+                    capture.adapter_luid,
+                    handle_mode,
                 ) {
                     Ok(timeline) => Some(timeline),
                     Err(error) => {
@@ -501,24 +605,53 @@ pub(crate) fn create_swapchain(
                     }
                 }
             });
-            let ipc = ring
-                .as_ref()
-                .zip(timeline.as_ref())
-                .and_then(|(ring, timeline)| {
-                    let source_window = {
-                        SURFACE_WINDOW
-                            .get(&info.surface)
-                            .map(|entry| *entry)
-                            .unwrap_or(0)
-                    };
-                    connect_viewer(
-                        ring,
-                        timeline,
-                        info.image_extent,
-                        info.image_format,
-                        source_window,
+            let consumer_timeline = (handle_mode == ExternalHandleMode::D3d12)
+                .then(|| {
+                    let capture = dispatch.as_ref()?.capture.as_ref()?;
+                    ExportTimelineSemaphore::create_with_function(
+                        capture.device.clone(),
+                        capture.get_semaphore_win32_handle,
+                        capture.import_semaphore_win32_handle,
+                        capture.adapter_luid,
+                        handle_mode,
                     )
-                });
+                    .map_err(|error| {
+                        layer_log(format!(
+                            "snowglass: consumer timeline semaphore creation failed: {error}"
+                        ));
+                        error
+                    })
+                    .ok()
+                })
+                .flatten();
+            let ipc = connection.and_then(|connection| {
+                ring.as_ref()
+                    .zip(producer_timeline.as_ref())
+                    .and_then(|(ring, timeline)| {
+                        let source_window = {
+                            SURFACE_WINDOW
+                                .get(&info.surface)
+                                .map(|entry| *entry)
+                                .unwrap_or(0)
+                        };
+                        publish_stream(
+                            connection,
+                            ring,
+                            timeline,
+                            consumer_timeline.as_ref(),
+                            capture.map_or(
+                                AdapterLuid {
+                                    low_part: 0,
+                                    high_part: 0,
+                                },
+                                |capture| capture.adapter_luid,
+                            ),
+                            info.image_extent,
+                            info.image_format,
+                            source_window,
+                        )
+                    })
+            });
             unsafe {
                 SWAPCHAIN.insert(
                     *swapchain,
@@ -528,7 +661,8 @@ pub(crate) fn create_swapchain(
                         extent: info.image_extent,
                         images: Vec::new(),
                         ring,
-                        timeline,
+                        producer_timeline,
+                        consumer_timeline,
                         copy_engine: None,
                         ipc,
                         frame_number: 0,

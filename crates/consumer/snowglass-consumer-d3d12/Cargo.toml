@@ -1,0 +1,13 @@
+[package]
+name = "snowglass-consumer-d3d12"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-ipc.workspace = true
+snowglass-protocol.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

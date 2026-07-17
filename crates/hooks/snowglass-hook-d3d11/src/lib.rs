@@ -176,6 +176,7 @@ mod tests {
                     .send(Message::Hello(Handshake {
                         protocol_version: PROTOCOL_VERSION,
                         process_id: std::process::id(),
+                        preferred_consumer: snowglass_protocol::ConsumerApi::Vulkan,
                     }))
                     .unwrap();
                 let ready = socket.receive().unwrap();

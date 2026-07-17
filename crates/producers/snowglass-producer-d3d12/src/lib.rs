@@ -18,6 +18,7 @@ pub struct D3d12SharedSlot {
     handle: isize,
     allocator: ID3D12CommandAllocator,
     list: ID3D12GraphicsCommandList,
+    enhanced_list: Option<ID3D12GraphicsCommandList7>,
     release_value: u64,
 }
 
@@ -53,6 +54,16 @@ pub struct D3d12CopySubmission {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum D3d12CaptureSourceState {
+    Legacy(D3D12_RESOURCE_STATES),
+    Enhanced {
+        sync: D3D12_BARRIER_SYNC,
+        access: D3D12_BARRIER_ACCESS,
+        layout: D3D12_BARRIER_LAYOUT,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct D3d12CaptureRegion {
     pub x: u32,
     pub y: u32,
@@ -85,6 +96,7 @@ impl D3d12SwapchainCapture {
         queue: *mut c_void,
         slot_count: u32,
         capture_source: Option<&ID3D12Resource>,
+        use_enhanced_barriers: bool,
     ) -> windows::core::Result<Self> {
         if swapchain.is_null() || queue.is_null() || slot_count == 0 {
             return Err(windows::core::Error::from_hresult(E_INVALIDARG));
@@ -148,12 +160,18 @@ impl D3d12SwapchainCapture {
                     &allocator,
                     None::<&ID3D12PipelineState>,
                 )?;
+                let enhanced_list = if use_enhanced_barriers {
+                    Some(list.cast::<ID3D12GraphicsCommandList7>()?)
+                } else {
+                    None
+                };
                 list.Close()?;
                 slots.push(D3d12SharedSlot {
                     resource,
                     handle: handle.0 as isize,
                     allocator,
                     list,
+                    enhanced_list,
                     release_value: 0,
                 });
             }
@@ -214,11 +232,12 @@ impl D3d12SwapchainCapture {
     /// Records and submits the selected backbuffer region on the presenting queue.
     ///
     /// # Safety
-    /// The application must have submitted rendering in PRESENT-compatible state.
+    /// The application must have submitted rendering before this call. A tracked
+    /// source state must describe the resource state after that submitted work.
     pub unsafe fn copy_frame(
         &mut self,
         tracked_region: Option<D3d12CaptureRegion>,
-        tracked_source: Option<&ID3D12Resource>,
+        tracked_source: Option<(&ID3D12Resource, D3d12CaptureSourceState)>,
     ) -> windows::core::Result<Option<D3d12CopySubmission>> {
         unsafe {
             let raw_swapchain = self.swapchain as *mut c_void;
@@ -226,7 +245,7 @@ impl D3d12SwapchainCapture {
                 .ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?;
             let index = swapchain.GetCurrentBackBufferIndex();
             let source: ID3D12Resource = match tracked_source {
-                Some(source) => source.clone(),
+                Some((source, _)) => source.clone(),
                 None => swapchain.GetBuffer(index)?,
             };
             let source_desc = source.GetDesc();
@@ -259,26 +278,82 @@ impl D3d12SwapchainCapture {
             slot.list
                 .Reset(&slot.allocator, None::<&ID3D12PipelineState>)?;
 
-            let source_state = if tracked_source.is_some() {
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+            let source_state = tracked_source.map_or(
+                D3d12CaptureSourceState::Legacy(D3D12_RESOURCE_STATE_PRESENT),
+                |(_, state)| state,
+            );
+            let enhanced_source = if tracked_source.is_some() {
+                enhanced_state(source_state)
             } else {
-                D3D12_RESOURCE_STATE_PRESENT
+                Some(EnhancedState::present())
             };
-            let to_copy = transition(&source, source_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
-            let destination_to_copy = transition(
-                &slot.resource,
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-            );
-            record_barriers(&slot.list, [to_copy, destination_to_copy]);
+            // The swapchain state at Present is authoritative. A tracked guest
+            // intermediate can be recorded and submitted on command lists in a
+            // different order, so keep its exact legacy transition path rather
+            // than translating that state into an enhanced layout here.
+            let use_enhanced = tracked_source.is_none()
+                && slot.enhanced_list.is_some()
+                && enhanced_source.is_some();
+            if use_enhanced {
+                let list = slot.enhanced_list.as_ref().expect("checked above");
+                record_texture_barriers(
+                    list,
+                    [
+                        texture_barrier(
+                            &source,
+                            enhanced_source.expect("checked above"),
+                            EnhancedState::copy_source(),
+                        ),
+                        texture_barrier(
+                            &slot.resource,
+                            EnhancedState::common(),
+                            EnhancedState::copy_dest(),
+                        ),
+                    ],
+                );
+            } else {
+                let D3d12CaptureSourceState::Legacy(source_state) = source_state else {
+                    return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+                };
+                let to_copy = transition(&source, source_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                let destination_to_copy = transition(
+                    &slot.resource,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                );
+                record_barriers(&slot.list, [to_copy, destination_to_copy]);
+            }
             copy_region(&slot.list, &slot.resource, &source, region);
-            let to_present = transition(&source, D3D12_RESOURCE_STATE_COPY_SOURCE, source_state);
-            let destination_to_common = transition(
-                &slot.resource,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_COMMON,
-            );
-            record_barriers(&slot.list, [to_present, destination_to_common]);
+            if use_enhanced {
+                let list = slot.enhanced_list.as_ref().expect("checked above");
+                record_texture_barriers(
+                    list,
+                    [
+                        texture_barrier(
+                            &source,
+                            EnhancedState::copy_source(),
+                            enhanced_source.expect("checked above"),
+                        ),
+                        texture_barrier(
+                            &slot.resource,
+                            EnhancedState::copy_dest(),
+                            EnhancedState::common(),
+                        ),
+                    ],
+                );
+            } else {
+                let D3d12CaptureSourceState::Legacy(source_state) = source_state else {
+                    return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+                };
+                let to_present =
+                    transition(&source, D3D12_RESOURCE_STATE_COPY_SOURCE, source_state);
+                let destination_to_common = transition(
+                    &slot.resource,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_COMMON,
+                );
+                record_barriers(&slot.list, [to_present, destination_to_common]);
+            }
 
             slot.list.Close()?;
             let command: ID3D12CommandList = slot.list.cast()?;
@@ -401,6 +476,137 @@ fn transition(
                 StateAfter: after,
             }),
         },
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EnhancedState {
+    sync: D3D12_BARRIER_SYNC,
+    access: D3D12_BARRIER_ACCESS,
+    layout: D3D12_BARRIER_LAYOUT,
+}
+
+impl EnhancedState {
+    fn common() -> Self {
+        Self {
+            sync: D3D12_BARRIER_SYNC_NONE,
+            access: D3D12_BARRIER_ACCESS_NO_ACCESS,
+            layout: D3D12_BARRIER_LAYOUT_COMMON,
+        }
+    }
+
+    fn present() -> Self {
+        Self {
+            layout: D3D12_BARRIER_LAYOUT_PRESENT,
+            ..Self::common()
+        }
+    }
+
+    fn copy_source() -> Self {
+        Self {
+            sync: D3D12_BARRIER_SYNC_COPY,
+            access: D3D12_BARRIER_ACCESS_COPY_SOURCE,
+            layout: D3D12_BARRIER_LAYOUT_COPY_SOURCE,
+        }
+    }
+
+    fn copy_dest() -> Self {
+        Self {
+            sync: D3D12_BARRIER_SYNC_COPY,
+            access: D3D12_BARRIER_ACCESS_COPY_DEST,
+            layout: D3D12_BARRIER_LAYOUT_COPY_DEST,
+        }
+    }
+}
+
+fn enhanced_state(state: D3d12CaptureSourceState) -> Option<EnhancedState> {
+    match state {
+        D3d12CaptureSourceState::Enhanced {
+            sync,
+            access,
+            layout,
+        } => Some(EnhancedState {
+            sync,
+            access,
+            layout,
+        }),
+        D3d12CaptureSourceState::Legacy(state)
+            if state == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                || state == D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                || state
+                    == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                        | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE =>
+        {
+            let mut sync = D3D12_BARRIER_SYNC_NONE;
+            if state.contains(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+                sync |= D3D12_BARRIER_SYNC_PIXEL_SHADING;
+            }
+            if state.contains(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
+                sync |= D3D12_BARRIER_SYNC_NON_PIXEL_SHADING;
+            }
+            Some(EnhancedState {
+                sync,
+                access: D3D12_BARRIER_ACCESS_SHADER_RESOURCE,
+                layout: D3D12_BARRIER_LAYOUT_SHADER_RESOURCE,
+            })
+        }
+        D3d12CaptureSourceState::Legacy(state) if state == D3D12_RESOURCE_STATE_RENDER_TARGET => {
+            Some(EnhancedState {
+                sync: D3D12_BARRIER_SYNC_RENDER_TARGET,
+                access: D3D12_BARRIER_ACCESS_RENDER_TARGET,
+                layout: D3D12_BARRIER_LAYOUT_RENDER_TARGET,
+            })
+        }
+        D3d12CaptureSourceState::Legacy(state) if state == D3D12_RESOURCE_STATE_COPY_SOURCE => {
+            Some(EnhancedState::copy_source())
+        }
+        D3d12CaptureSourceState::Legacy(state) if state == D3D12_RESOURCE_STATE_COPY_DEST => {
+            Some(EnhancedState::copy_dest())
+        }
+        D3d12CaptureSourceState::Legacy(state) if state == D3D12_RESOURCE_STATE_COMMON => {
+            Some(EnhancedState::common())
+        }
+        _ => None,
+    }
+}
+
+fn texture_barrier(
+    resource: &ID3D12Resource,
+    before: EnhancedState,
+    after: EnhancedState,
+) -> D3D12_TEXTURE_BARRIER {
+    D3D12_TEXTURE_BARRIER {
+        SyncBefore: before.sync,
+        SyncAfter: after.sync,
+        AccessBefore: before.access,
+        AccessAfter: after.access,
+        LayoutBefore: before.layout,
+        LayoutAfter: after.layout,
+        pResource: ManuallyDrop::new(Some(resource.clone())),
+        Subresources: D3D12_BARRIER_SUBRESOURCE_RANGE {
+            IndexOrFirstMipLevel: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+            ..Default::default()
+        },
+        Flags: D3D12_TEXTURE_BARRIER_FLAG_NONE,
+    }
+}
+
+unsafe fn record_texture_barriers<const N: usize>(
+    list: &ID3D12GraphicsCommandList7,
+    mut barriers: [D3D12_TEXTURE_BARRIER; N],
+) {
+    let group = D3D12_BARRIER_GROUP {
+        Type: D3D12_BARRIER_TYPE_TEXTURE,
+        NumBarriers: N as u32,
+        Anonymous: D3D12_BARRIER_GROUP_0 {
+            pTextureBarriers: barriers.as_ptr(),
+        },
+    };
+    unsafe {
+        list.Barrier(std::slice::from_ref(&group));
+        for barrier in &mut barriers {
+            ManuallyDrop::drop(&mut barrier.pResource);
+        }
     }
 }
 

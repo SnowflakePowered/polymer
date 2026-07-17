@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -10,6 +10,28 @@ pub const MAX_IMAGE_SLOTS: usize = 4;
 pub struct Handshake {
     pub protocol_version: u32,
     pub process_id: u32,
+    pub preferred_consumer: ConsumerApi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum ConsumerApi {
+    Unspecified = 0,
+    Vulkan = 1,
+    D3d12 = 2,
+}
+
+impl TryFrom<u32> for ConsumerApi {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unspecified),
+            1 => Ok(Self::Vulkan),
+            2 => Ok(Self::D3d12),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -36,6 +58,8 @@ pub enum ExternalImageKind {
     D3d12Heap = 4,
     /// D3D12 shared resource owned and written through OpenGL EXT external objects.
     OpenGlD3d12Resource = 5,
+    /// D3D12 shared resource owned by D3D12 and written through Vulkan external memory.
+    VulkanD3d12Resource = 6,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -48,6 +72,7 @@ impl TryFrom<u32> for ExternalImageKind {
             3 => Ok(Self::D3d12Resource),
             4 => Ok(Self::D3d12Heap),
             5 => Ok(Self::OpenGlD3d12Resource),
+            6 => Ok(Self::VulkanD3d12Resource),
             _ => Err(()),
         }
     }

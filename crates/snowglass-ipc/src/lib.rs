@@ -77,6 +77,7 @@ struct WireMessage {
 struct WireHello {
     protocol_version: U32,
     process_id: U32,
+    preferred_consumer: U32,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -301,6 +302,7 @@ fn encode(message: Message) -> WireMessage {
                 &WireHello {
                     protocol_version: U32::new(value.protocol_version),
                     process_id: U32::new(value.process_id),
+                    preferred_consumer: U32::new(value.preferred_consumer as u32),
                 },
             );
         }
@@ -374,9 +376,13 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
     match wire.kind.get() {
         MESSAGE_HELLO => {
             let value = payload::<WireHello>(wire)?;
+            let preferred_consumer =
+                snowglass_protocol::ConsumerApi::try_from(value.preferred_consumer.get())
+                    .map_err(|()| invalid_data("invalid preferred consumer API"))?;
             Ok(Message::Hello(Handshake {
                 protocol_version: value.protocol_version.get(),
                 process_id: value.process_id.get(),
+                preferred_consumer,
             }))
         }
         MESSAGE_STREAM_READY => {
@@ -462,6 +468,7 @@ mod tests {
             Message::Hello(Handshake {
                 protocol_version: 1,
                 process_id: 42,
+                preferred_consumer: snowglass_protocol::ConsumerApi::D3d12,
             }),
             Message::StreamReady(StreamReady {
                 producer_process_id: 7,
@@ -518,6 +525,7 @@ mod tests {
                 Message::Hello(Handshake {
                     protocol_version: 1,
                     process_id: 42,
+                    preferred_consumer: snowglass_protocol::ConsumerApi::Vulkan,
                 })
             );
             socket.send(Message::Shutdown).unwrap();
@@ -527,6 +535,7 @@ mod tests {
             .send(Message::Hello(Handshake {
                 protocol_version: 1,
                 process_id: 42,
+                preferred_consumer: snowglass_protocol::ConsumerApi::Vulkan,
             }))
             .unwrap();
         assert_eq!(client.receive().unwrap(), Message::Shutdown);
@@ -545,6 +554,7 @@ mod tests {
                     Message::Hello(Handshake {
                         protocol_version: 1,
                         process_id: expected_process_id,
+                        preferred_consumer: snowglass_protocol::ConsumerApi::Vulkan,
                     })
                 );
                 socket.send(Message::Shutdown).unwrap();
@@ -556,6 +566,7 @@ mod tests {
                 .send(Message::Hello(Handshake {
                     protocol_version: 1,
                     process_id,
+                    preferred_consumer: snowglass_protocol::ConsumerApi::Vulkan,
                 }))
                 .unwrap();
             assert_eq!(client.receive().unwrap(), Message::Shutdown);

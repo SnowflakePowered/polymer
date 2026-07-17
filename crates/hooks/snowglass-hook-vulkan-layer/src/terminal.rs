@@ -191,6 +191,7 @@ pub(crate) unsafe fn create_device(
         ash::khr::external_semaphore_win32::NAME,
         ash::khr::timeline_semaphore::NAME,
     ];
+    let foreign_queue_extension = ash::ext::queue_family_foreign::NAME;
     let mut injected_extensions = Vec::new();
     for required in capture_extensions {
         let enabled = extension_names
@@ -205,6 +206,16 @@ pub(crate) unsafe fn create_device(
             injected_extensions.push(required);
         }
     }
+    let foreign_queue_enabled = extension_names
+        .iter()
+        .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == foreign_queue_extension)
+        || (physical_state.is_some_and(|state| unsafe {
+            device_supports_extension(state, physical_device, foreign_queue_extension)
+        }) && {
+            extension_names.push(foreign_queue_extension.as_ptr());
+            injected_extensions.push(foreign_queue_extension);
+            true
+        });
     let capture_supported = capture_extensions.iter().all(|required| {
         extension_names
             .iter()
@@ -248,6 +259,20 @@ pub(crate) unsafe fn create_device(
                 c"vkGetSemaphoreWin32HandleKHR",
             )
         }?;
+        let get_memory_win32_handle_properties = unsafe {
+            device_proc(
+                bootstrap.next_gdpa,
+                created,
+                c"vkGetMemoryWin32HandlePropertiesKHR",
+            )
+        }?;
+        let import_semaphore_win32_handle = unsafe {
+            device_proc(
+                bootstrap.next_gdpa,
+                created,
+                c"vkImportSemaphoreWin32HandleKHR",
+            )
+        }?;
         let get_memory_properties: vk::PFN_vkGetPhysicalDeviceMemoryProperties = unsafe {
             instance_proc(
                 state.next_gipa,
@@ -267,12 +292,39 @@ pub(crate) unsafe fn create_device(
                 created,
             )
         };
+        let adapter_luid = unsafe {
+            instance_proc::<vk::PFN_vkGetPhysicalDeviceProperties2>(
+                state.next_gipa,
+                state.instance,
+                c"vkGetPhysicalDeviceProperties2",
+            )
+        }
+        .and_then(|get_properties2| {
+            let mut id = vk::PhysicalDeviceIDProperties::default();
+            let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+            unsafe { get_properties2(physical_device, &mut properties) };
+            (id.device_luid_valid == vk::TRUE).then(|| {
+                let bytes = id.device_luid;
+                snowglass_protocol::AdapterLuid {
+                    low_part: u32::from_le_bytes(bytes[0..4].try_into().expect("LUID size")),
+                    high_part: i32::from_le_bytes(bytes[4..8].try_into().expect("LUID size")),
+                }
+            })
+        })
+        .unwrap_or(snowglass_protocol::AdapterLuid {
+            low_part: 0,
+            high_part: 0,
+        });
         Some(Arc::new(crate::layer::CaptureDevice {
             device: ash_device,
             memory_properties,
             get_memory_win32_handle,
+            get_memory_win32_handle_properties,
             get_semaphore_win32_handle,
+            import_semaphore_win32_handle,
             set_loader_data: bootstrap.set_loader_data,
+            supports_foreign_queue: foreign_queue_enabled,
+            adapter_luid,
         }))
     });
     crate::layer::observe_create_device(injected_extensions.len());

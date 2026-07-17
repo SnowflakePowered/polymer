@@ -5,11 +5,13 @@ use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
-    NativeWindow, ProcessId, client_size, forward_character, forward_mouse_button,
+    KillOnCloseJob, NativeWindow, ProcessId, client_size, forward_character, forward_mouse_button,
     forward_mouse_move, forward_mouse_wheel, forward_raw_key, hide_top_level_windows,
     inject_libraries_before_resume, performance_counter, performance_frequency,
 };
-use snowglass_protocol::{AdapterLuid, ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION};
+use snowglass_protocol::{
+    AdapterLuid, ConsumerApi, ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION,
+};
 use std::{
     collections::{HashSet, VecDeque},
     env,
@@ -31,6 +33,8 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
+
+mod d3d12;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 
@@ -229,6 +233,135 @@ struct DirectCompositor {
     last_released_frame: u64,
     keyed_mutex_enabled: bool,
     egui_renderer: Option<EguiRenderer>,
+}
+
+enum ViewerCompositor {
+    Vulkan(Box<DirectCompositor>),
+    D3d12(Box<d3d12::D3d12Compositor>),
+    Empty,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ViewerApi {
+    #[default]
+    D3d12,
+    Vulkan,
+}
+
+impl ViewerApi {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value.to_ascii_lowercase().as_str() {
+            "d3d12" => Ok(Self::D3d12),
+            "vulkan" => Ok(Self::Vulkan),
+            _ => Err(format!("unsupported viewer API '{value}'; expected d3d12 or vulkan").into()),
+        }
+    }
+}
+
+impl ViewerCompositor {
+    fn new(window: &Window, api: ViewerApi) -> Result<Self, Box<dyn Error>> {
+        match api {
+            // D3D12 device selection requires the source adapter LUID, which arrives
+            // with StreamReady. Avoid creating and immediately replacing a Vulkan surface.
+            ViewerApi::D3d12 => Ok(Self::Empty),
+            ViewerApi::Vulkan => Ok(Self::Vulkan(Box::new(DirectCompositor::new(
+                window, None, true,
+            )?))),
+        }
+    }
+
+    fn import_stream(
+        &mut self,
+        window: &Window,
+        stream: &StreamReady,
+        api: ViewerApi,
+    ) -> Result<(), Box<dyn Error>> {
+        if api == ViewerApi::D3d12
+            && matches!(
+                stream.image_kind,
+                ExternalImageKind::D3d12Resource
+                    | ExternalImageKind::OpenGlD3d12Resource
+                    | ExternalImageKind::VulkanD3d12Resource
+            )
+        {
+            let matches =
+                matches!(self, Self::D3d12(value) if value.adapter_luid() == stream.adapter_luid);
+            if !matches {
+                drop(std::mem::replace(self, Self::Empty));
+                *self = Self::D3d12(Box::new(d3d12::D3d12Compositor::new(
+                    window,
+                    stream.adapter_luid,
+                )?));
+            }
+            let Self::D3d12(value) = self else {
+                unreachable!()
+            };
+            return value.import_stream(stream);
+        }
+
+        let needs_keyed_mutex = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
+        let adapter = stream.adapter_luid;
+        let matches = matches!(self, Self::Vulkan(value)
+            if (!needs_keyed_mutex || value.keyed_mutex_enabled)
+                && ((adapter.low_part == 0 && adapter.high_part == 0) || value.matches_adapter(adapter)));
+        if !matches {
+            drop(std::mem::replace(self, Self::Empty));
+            let preferred = (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
+            *self = Self::Vulkan(Box::new(DirectCompositor::new(
+                window,
+                preferred,
+                needs_keyed_mutex,
+            )?));
+        }
+        let Self::Vulkan(value) = self else {
+            unreachable!()
+        };
+        value.import_stream(stream)
+    }
+
+    fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
+        match self {
+            Self::Vulkan(value) => value.recreate_swapchain(window),
+            Self::D3d12(value) => value.resize(window),
+            Self::Empty => Ok(false),
+        }
+    }
+
+    fn set_latest(&mut self, frame: FrameReady) {
+        match self {
+            Self::Vulkan(value) => value.set_latest(frame),
+            Self::D3d12(value) => value.set_latest(frame),
+            Self::Empty => {}
+        }
+    }
+
+    fn has_pending_frame(&self) -> bool {
+        match self {
+            Self::Vulkan(value) => value.has_pending_frame(),
+            Self::D3d12(value) => value.has_pending_frame(),
+            Self::Empty => false,
+        }
+    }
+
+    fn disconnect_stream(&mut self) -> Result<(), Box<dyn Error>> {
+        match self {
+            Self::Vulkan(value) => value.disconnect_stream().map_err(Into::into),
+            Self::D3d12(value) => value.disconnect_stream(),
+            Self::Empty => Ok(()),
+        }
+    }
+
+    fn draw(
+        &mut self,
+        output: &egui::FullOutput,
+        primitives: &[egui::ClippedPrimitive],
+    ) -> Result<bool, Box<dyn Error>> {
+        match self {
+            Self::Vulkan(value) => value.draw(output, primitives),
+            Self::D3d12(value) => value.draw(output, primitives),
+            Self::Empty => Ok(false),
+        }
+    }
 }
 
 impl DirectCompositor {
@@ -945,24 +1078,38 @@ impl Drop for DirectCompositor {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (target, track_render_target) = parse_target()?;
+    let options = parse_target()?;
+    let target = options.target;
+    let track_render_target = options.track_render_target;
+    let viewer_api = options.api;
     let executable_dir = env::current_exe()?
         .parent()
         .ok_or("viewer executable has no parent directory")?
         .to_path_buf();
-    let session = format!("snowglass-{}", std::process::id());
+    // Include a monotonic nonce so a stale AF_UNIX path left by a forcibly
+    // terminated viewer can never collide with a subsequently reused PID.
+    let session = format!(
+        "snowglass-{}-{:x}",
+        std::process::id(),
+        performance_counter().unwrap_or_else(|_| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        })
+    );
     let listener = LocalSocketListener::bind(&session)?;
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
     let (input_tx, input_rx) = mpsc::channel();
     spawn_input_ipc(input_listener, input_rx);
-    let child = launch_target(&target, &executable_dir, &session, track_render_target)?;
-    let process_id = ProcessId(child.id());
+    let target_process = launch_target(&target, &executable_dir, &session, track_render_target)?;
+    let process_id = ProcessId(target_process.child.id());
     let stop = Arc::new(AtomicBool::new(false));
     let backing_window = Arc::new(AtomicIsize::new(0));
     let (target_done_tx, target_done_rx) = mpsc::channel();
-    spawn_target_monitor(child, process_id, stop.clone(), target_done_tx);
+    spawn_target_monitor(target_process, process_id, stop.clone(), target_done_tx);
     let (capture_tx, capture_rx) = mpsc::channel();
-    spawn_ipc(listener, capture_tx);
+    spawn_ipc(listener, capture_tx, viewer_api);
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -975,7 +1122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let viewer_window = native_window(&window)?;
     let _raw_keyboard =
         RawKeyboardForwarder::install(viewer_window, input_tx.clone(), backing_window.clone())?;
-    let egui_context = egui::Context::default();
+    let mut egui_context = egui::Context::default();
     let mut egui_state = egui_winit::State::new(
         egui_context.clone(),
         egui::ViewportId::ROOT,
@@ -984,7 +1131,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         window.theme(),
         None,
     );
-    let mut compositor = DirectCompositor::new(&window, None, true)?;
+    let mut compositor = ViewerCompositor::new(&window, viewer_api)?;
     let frequency = performance_frequency().unwrap_or(1) as f64;
     let mut stats = Statistics {
         sample_started: Some(Instant::now()),
@@ -993,6 +1140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut cursor_position = (0, 0);
     let mut active_capture_connection = 0u64;
     let mut active_backend = "Waiting";
+    let mut active_consumer = "Waiting";
     let input_started = Instant::now();
     let mut input_sequence = 0u32;
     let mut pressed_keys = HashSet::<KeyCode>::new();
@@ -1139,42 +1287,49 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     ExternalImageKind::VulkanOpaqueWin32 => "Vulkan",
                                     ExternalImageKind::D3d12Resource
                                     | ExternalImageKind::D3d12Heap => "D3D12",
+                                    ExternalImageKind::OpenGlD3d12Resource => "OpenGL",
+                                    ExternalImageKind::VulkanD3d12Resource => "Vulkan",
                                 };
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
                                 }
-                                let adapter = stream.adapter_luid;
-                                let needs_keyed_mutex = stream.image_kind
-                                    == ExternalImageKind::D3d11SharedResourceNt;
-                                let adapter_mismatch =
-                                    (adapter.low_part != 0 || adapter.high_part != 0)
-                                        && !compositor.matches_adapter(adapter);
-                                if adapter_mismatch
-                                    || (needs_keyed_mutex && !compositor.keyed_mutex_enabled)
-                                {
-                                    let preferred = (adapter.low_part != 0
-                                        || adapter.high_part != 0)
-                                        .then_some(adapter);
-                                    match DirectCompositor::new(
-                                        &window,
-                                        preferred,
-                                        needs_keyed_mutex,
-                                    ) {
-                                        Ok(replacement) => compositor = replacement,
-                                        Err(error) => {
-                                            eprintln!(
-                                                "snowglass: no Vulkan compositor for source adapter: {error}"
-                                            );
-                                            continue;
-                                        }
+                                match compositor.import_stream(&window, &stream, viewer_api) {
+                                    Ok(()) => {
+                                        // A deferred or replaced graphics backend has no copy
+                                        // of textures emitted to its predecessor. A fresh egui
+                                        // context guarantees that Managed(0) is emitted as a full
+                                        // font atlas before this backend's first draw.
+                                        egui_context = egui::Context::default();
+                                        egui_state = egui_winit::State::new(
+                                            egui_context.clone(),
+                                            egui::ViewportId::ROOT,
+                                            &window,
+                                            Some(window.scale_factor() as f32),
+                                            window.theme(),
+                                            None,
+                                        );
+                                        active_consumer = match viewer_api {
+                                            ViewerApi::D3d12
+                                                if matches!(
+                                                    stream.image_kind,
+                                                    ExternalImageKind::D3d12Resource
+                                                        | ExternalImageKind::OpenGlD3d12Resource
+                                                        | ExternalImageKind::VulkanD3d12Resource
+                                                ) =>
+                                            {
+                                                "D3D12/DXGI"
+                                            }
+                                            _ => "Vulkan",
+                                        };
+                                        eprintln!(
+                                            "snowglass: imported {active_backend} stream {}x{} with {} slots using {}",
+                                            stream.width,
+                                            stream.height,
+                                            stream.slot_count,
+                                            active_consumer,
+                                        );
                                     }
-                                }
-                                match compositor.import_stream(&stream) {
-                                    Ok(()) => eprintln!(
-                                        "snowglass: imported {active_backend} stream {}x{} with {} slots",
-                                        stream.width, stream.height, stream.slot_count
-                                    ),
                                     Err(error) => {
                                         eprintln!("snowglass: direct import failed: {error}")
                                     }
@@ -1183,6 +1338,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                             CaptureEvent::Frame(connection, frame) => {
                                 if connection != active_capture_connection {
                                     continue;
+                                }
+                                if frame.frame_number == 1 {
+                                    eprintln!(
+                                        "snowglass: received first {active_backend} frame on connection {connection}"
+                                    );
                                 }
                                 if let Some(previous) = stats.previous_timestamp_qpc {
                                     let frame_count = frame
@@ -1260,7 +1420,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
                             ui.horizontal(|ui| {
-                                ui.strong(format!("Snowglass {active_backend} Direct"));
+                                ui.strong(format!(
+                                    "Snowglass {active_backend} via {active_consumer}"
+                                ));
                                 ui.label(format!("Frame {}", stats.frame_number));
                                 ui.label(format!("Slot {}", stats.slot));
                                 ui.label(format!(
@@ -1363,7 +1525,11 @@ fn physical_device_matches_luid(
     id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
 }
 
-fn spawn_ipc(listener: LocalSocketListener, events: mpsc::Sender<CaptureEvent>) {
+fn spawn_ipc(
+    listener: LocalSocketListener,
+    events: mpsc::Sender<CaptureEvent>,
+    viewer_api: ViewerApi,
+) {
     thread::spawn(move || {
         let newest_connection = Arc::new(AtomicU64::new(0));
         loop {
@@ -1378,6 +1544,10 @@ fn spawn_ipc(listener: LocalSocketListener, events: mpsc::Sender<CaptureEvent>) 
             if let Err(error) = socket.send(Message::Hello(Handshake {
                 protocol_version: PROTOCOL_VERSION,
                 process_id: std::process::id(),
+                preferred_consumer: match viewer_api {
+                    ViewerApi::D3d12 => ConsumerApi::D3d12,
+                    ViewerApi::Vulkan => ConsumerApi::Vulkan,
+                },
             })) {
                 eprintln!("snowglass: IPC handshake failed: {error}");
                 continue;
@@ -1575,7 +1745,7 @@ fn launch_target(
     layer_dir: &Path,
     session: &str,
     track_render_target: bool,
-) -> std::io::Result<Child> {
+) -> std::io::Result<TargetProcess> {
     use std::os::windows::{io::AsRawHandle, process::CommandExt};
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
@@ -1624,9 +1794,15 @@ fn launch_target(
         command.env("SNOWGLASS_TRACK_RENDER_TARGET", "1");
     }
     command.creation_flags(CREATE_SUSPENDED);
+    let job = KillOnCloseJob::new()?;
     let mut child = command.spawn()?;
     let process_id = ProcessId(child.id());
     let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    if let Err(error) = job.assign_process(process) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
     let libraries = [
         (
             d3d11_hook.as_path(),
@@ -1650,7 +1826,7 @@ fn launch_target(
         let _ = child.wait();
         return Err(error);
     }
-    Ok(child)
+    Ok(TargetProcess { child, job })
 }
 
 fn load_window(window: &AtomicIsize) -> Option<NativeWindow> {

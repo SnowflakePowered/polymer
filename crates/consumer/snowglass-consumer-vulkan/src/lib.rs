@@ -10,17 +10,18 @@ pub const BACKEND_NAME: &str = "vulkan";
 fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
     let format = match stream.image_kind {
         ExternalImageKind::VulkanOpaqueWin32 => vk::Format::from_raw(stream.format as i32),
-        ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d12Resource => {
-            match stream.format {
-                10 => vk::Format::R16G16B16A16_SFLOAT,
-                24 => vk::Format::A2B10G10R10_UNORM_PACK32,
-                28 => vk::Format::R8G8B8A8_UNORM,
-                29 => vk::Format::R8G8B8A8_SRGB,
-                87 => vk::Format::B8G8R8A8_UNORM,
-                91 => vk::Format::B8G8R8A8_SRGB,
-                _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
-            }
-        }
+        ExternalImageKind::D3d11SharedResourceNt
+        | ExternalImageKind::D3d12Resource
+        | ExternalImageKind::OpenGlD3d12Resource
+        | ExternalImageKind::VulkanD3d12Resource => match stream.format {
+            10 => vk::Format::R16G16B16A16_SFLOAT,
+            24 => vk::Format::A2B10G10R10_UNORM_PACK32,
+            28 => vk::Format::R8G8B8A8_UNORM,
+            29 => vk::Format::R8G8B8A8_SRGB,
+            87 => vk::Format::B8G8R8A8_UNORM,
+            91 => vk::Format::B8G8R8A8_SRGB,
+            _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
+        },
         _ => {
             return Err(ImportError::InvalidStream(
                 "unsupported external image kind",
@@ -98,7 +99,12 @@ impl ImportedImageRing {
     }
 
     pub fn uses_external_queue_family(&self) -> bool {
-        self.image_kind == ExternalImageKind::D3d12Resource
+        matches!(
+            self.image_kind,
+            ExternalImageKind::D3d12Resource
+                | ExternalImageKind::OpenGlD3d12Resource
+                | ExternalImageKind::VulkanD3d12Resource
+        )
     }
 
     pub fn wait_for(&self, value: u64, timeout_ns: u64) -> Result<(), vk::Result> {
@@ -303,7 +309,12 @@ impl ImportedStream {
                         &images,
                         stream.width,
                         stream.height,
-                        stream.image_kind == ExternalImageKind::D3d12Resource,
+                        matches!(
+                            stream.image_kind,
+                            ExternalImageKind::D3d12Resource
+                                | ExternalImageKind::OpenGlD3d12Resource
+                                | ExternalImageKind::VulkanD3d12Resource
+                        ),
                     )?
                 };
                 Ok((
@@ -433,8 +444,12 @@ impl Drop for ImportedStream {
 }
 
 fn validate_consumer_semaphore(stream: &StreamReady) -> Result<(), ImportError> {
-    if stream.image_kind == ExternalImageKind::D3d12Resource
-        && stream.consumer_semaphore_handle == 0
+    if matches!(
+        stream.image_kind,
+        ExternalImageKind::D3d12Resource
+            | ExternalImageKind::OpenGlD3d12Resource
+            | ExternalImageKind::VulkanD3d12Resource
+    ) && stream.consumer_semaphore_handle == 0
     {
         Err(ImportError::InvalidStream(
             "D3D12 consumer semaphore handle is missing",
@@ -711,7 +726,11 @@ unsafe fn import_resources(
         ExternalImageKind::D3d11SharedResourceNt => {
             vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE
         }
-        ExternalImageKind::D3d12Resource => vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE,
+        ExternalImageKind::D3d12Resource
+        | ExternalImageKind::OpenGlD3d12Resource
+        | ExternalImageKind::VulkanD3d12Resource => {
+            vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE
+        }
         _ => return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED),
     };
     let semaphore_handle_type = match stream.sync_kind {
@@ -729,6 +748,10 @@ unsafe fn import_resources(
     for raw_handle in stream.image_handles.iter().take(stream.slot_count as usize) {
         let mut external =
             vk::ExternalMemoryImageCreateInfo::default().handle_types(memory_handle_type);
+        let mut usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED;
+        if stream.image_kind == ExternalImageKind::OpenGlD3d12Resource {
+            usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST;
+        }
         let image_info = vk::ImageCreateInfo::default()
             .push_next(&mut external)
             .image_type(vk::ImageType::TYPE_2D)
@@ -742,7 +765,7 @@ unsafe fn import_resources(
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED)
+            .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         let image = unsafe { device.create_image(&image_info, None)? };

@@ -5,6 +5,7 @@ use ash::{vk, vk::Handle};
 use dashmap::DashMap;
 use snowglass_hook::HookChain;
 use snowglass_producer_vulkan::SetDeviceLoaderData;
+use snowglass_protocol::AdapterLuid;
 use std::{
     ffi::{c_char, c_void},
     fs::OpenOptions,
@@ -104,8 +105,12 @@ pub(crate) struct CaptureDevice {
     pub device: ash::Device,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub get_memory_win32_handle: vk::PFN_vkGetMemoryWin32HandleKHR,
+    pub get_memory_win32_handle_properties: vk::PFN_vkGetMemoryWin32HandlePropertiesKHR,
     pub get_semaphore_win32_handle: vk::PFN_vkGetSemaphoreWin32HandleKHR,
+    pub import_semaphore_win32_handle: vk::PFN_vkImportSemaphoreWin32HandleKHR,
     pub set_loader_data: Option<SetDeviceLoaderData>,
+    pub supports_foreign_queue: bool,
+    pub adapter_luid: AdapterLuid,
 }
 
 #[derive(Clone, Copy)]

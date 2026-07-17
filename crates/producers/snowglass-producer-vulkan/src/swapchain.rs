@@ -1,4 +1,4 @@
-use crate::{ExportImageRing, ExportTimelineSemaphore};
+use crate::{ExportImageRing, ExportTimelineSemaphore, ExternalHandleMode};
 use ash::{vk, vk::Handle};
 use std::ffi::c_void;
 
@@ -14,6 +14,7 @@ struct CopySlot {
     command_buffer: vk::CommandBuffer,
     fence: vk::Fence,
     initialized: bool,
+    release_value: u64,
 }
 
 /// Records and submits swapchain-to-export-ring copies on an application's
@@ -21,7 +22,8 @@ struct CopySlot {
 pub struct SwapchainCopyEngine {
     device: ash::Device,
     ring: ExportImageRing,
-    timeline: ExportTimelineSemaphore,
+    producer_timeline: ExportTimelineSemaphore,
+    consumer_timeline: Option<ExportTimelineSemaphore>,
     source_images: Vec<vk::Image>,
     extent: vk::Extent2D,
     command_pool: vk::CommandPool,
@@ -29,13 +31,15 @@ pub struct SwapchainCopyEngine {
     present_ready: Vec<vk::Semaphore>,
     next_slot: usize,
     next_sync_value: u64,
+    queue_family_index: u32,
 }
 
 impl SwapchainCopyEngine {
     pub fn create(
         device: ash::Device,
         ring: ExportImageRing,
-        timeline: ExportTimelineSemaphore,
+        producer_timeline: ExportTimelineSemaphore,
+        consumer_timeline: Option<ExportTimelineSemaphore>,
         source_images: Vec<vk::Image>,
         extent: vk::Extent2D,
         queue_family_index: u32,
@@ -90,6 +94,7 @@ impl SwapchainCopyEngine {
                     command_buffer,
                     fence,
                     initialized: false,
+                    release_value: 0,
                 });
             }
             let mut present_ready = Vec::with_capacity(source_images.len());
@@ -108,7 +113,8 @@ impl SwapchainCopyEngine {
             Ok(Self {
                 device,
                 ring,
-                timeline,
+                producer_timeline,
+                consumer_timeline,
                 source_images,
                 extent,
                 command_pool,
@@ -116,6 +122,7 @@ impl SwapchainCopyEngine {
                 present_ready,
                 next_slot: 0,
                 next_sync_value: 1,
+                queue_family_index,
             })
         }
     }
@@ -232,6 +239,7 @@ impl SwapchainCopyEngine {
         self.next_sync_value += 1;
         let slot = &mut self.slots[slot_index];
         let destination_image = self.ring.slots()[slot_index].image();
+        let d3d12_handoff = self.ring.desc().handle_mode == ExternalHandleMode::D3d12;
 
         // SAFETY: the slot fence protects command-buffer reuse; swapchain image
         // ownership remains on this queue and the caller supplies valid waits.
@@ -267,12 +275,22 @@ impl SwapchainCopyEngine {
                     vk::AccessFlags::empty()
                 })
                 .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(if slot.initialized {
+                .old_layout(if slot.initialized || d3d12_handoff {
                     vk::ImageLayout::GENERAL
                 } else {
                     vk::ImageLayout::UNDEFINED
                 })
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(if d3d12_handoff {
+                    vk::QUEUE_FAMILY_FOREIGN_EXT
+                } else {
+                    vk::QUEUE_FAMILY_IGNORED
+                })
+                .dst_queue_family_index(if d3d12_handoff {
+                    self.queue_family_index
+                } else {
+                    vk::QUEUE_FAMILY_IGNORED
+                })
                 .image(destination_image)
                 .subresource_range(color_range);
             self.device.cmd_pipeline_barrier(
@@ -370,6 +388,16 @@ impl SwapchainCopyEngine {
                 .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                 .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                 .new_layout(vk::ImageLayout::GENERAL)
+                .src_queue_family_index(if d3d12_handoff {
+                    self.queue_family_index
+                } else {
+                    vk::QUEUE_FAMILY_IGNORED
+                })
+                .dst_queue_family_index(if d3d12_handoff {
+                    vk::QUEUE_FAMILY_FOREIGN_EXT
+                } else {
+                    vk::QUEUE_FAMILY_IGNORED
+                })
                 .image(destination_image)
                 .subresource_range(color_range);
             self.device.cmd_pipeline_barrier(
@@ -383,24 +411,34 @@ impl SwapchainCopyEngine {
             );
             self.device.end_command_buffer(slot.command_buffer)?;
 
-            let wait_stages = vec![vk::PipelineStageFlags::TRANSFER; application_waits.len()];
+            let mut waits = application_waits.to_vec();
+            let mut wait_values = vec![0; waits.len()];
+            if slot.release_value != 0 {
+                if let Some(consumer) = self.consumer_timeline.as_ref() {
+                    waits.push(consumer.semaphore());
+                    wait_values.push(slot.release_value);
+                }
+            }
+            let wait_stages = vec![vk::PipelineStageFlags::TRANSFER; waits.len()];
             let command_buffers = [slot.command_buffer];
-            let mut signals = vec![self.timeline.semaphore()];
+            let mut signals = vec![self.producer_timeline.semaphore()];
             let mut signal_values = vec![sync_value];
             if signal_present {
                 signals.insert(0, ready);
                 signal_values.insert(0, 0);
             }
-            let mut timeline_submit =
-                vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
+            let mut timeline_submit = vk::TimelineSemaphoreSubmitInfo::default()
+                .wait_semaphore_values(&wait_values)
+                .signal_semaphore_values(&signal_values);
             let submit = vk::SubmitInfo::default()
                 .push_next(&mut timeline_submit)
-                .wait_semaphores(application_waits)
+                .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&command_buffers)
                 .signal_semaphores(&signals);
             self.device.queue_submit(queue, &[submit], slot.fence)?;
             slot.initialized = true;
+            slot.release_value = sync_value;
             Ok(CopySubmission {
                 present_ready: ready,
                 slot: slot_index as u32,

@@ -3,6 +3,8 @@
 //! Unsafe Vulkan calls are contained in this backend instead of leaking into
 //! the API-neutral Snowglass crates.
 
+#[cfg(windows)]
+mod d3d12_interop;
 mod environment;
 mod image_ring;
 mod swapchain;
@@ -13,9 +15,9 @@ pub use environment::{
     REQUIRED_DEVICE_EXTENSIONS, VulkanAdapter, VulkanEnvironment, VulkanProbeError,
     format_api_version,
 };
-pub use image_ring::ExportImageRingDesc;
 #[cfg(windows)]
 pub use image_ring::{ExportImageRing, ExportImageSlot};
+pub use image_ring::{ExportImageRingDesc, ExternalHandleMode};
 pub use swapchain::{CopySubmission, SetDeviceLoaderData, SwapchainCopyEngine};
 #[cfg(windows)]
 pub use timeline::ExportTimelineSemaphore;

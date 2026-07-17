@@ -8,6 +8,7 @@ license.workspace = true
 ash.workspace = true
 snowglass-api.workspace = true
 snowglass-protocol.workspace = true
+windows.workspace = true
 
 [lints]
 workspace = true

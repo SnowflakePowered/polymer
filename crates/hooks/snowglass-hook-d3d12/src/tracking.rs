@@ -2,7 +2,7 @@
 
 use dashmap::DashMap;
 use retour::GenericDetour;
-use snowglass_producer_d3d12::D3d12CaptureRegion;
+use snowglass_producer_d3d12::{D3d12CaptureRegion, D3d12CaptureSourceState};
 use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
@@ -17,6 +17,7 @@ use windows::{
                 D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_CPU_DESCRIPTOR_HANDLE,
                 D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
                 D3D12_DESCRIPTOR_HEAP_TYPE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                D3D12_FEATURE_D3D12_OPTIONS12, D3D12_FEATURE_DATA_D3D12_OPTIONS12,
                 D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RESOURCE_BARRIER,
                 D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
                 D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT, ID3D12CommandAllocator,
@@ -116,6 +117,7 @@ pub(crate) struct TrackedResource {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) format: u32,
+    pub(crate) state: Option<D3d12CaptureSourceState>,
 }
 
 #[derive(Clone, Copy)]
@@ -149,8 +151,15 @@ static COMMANDS: LazyLock<DashMap<usize, CommandState>> = LazyLock::new(Default:
 static PRESENT_REGIONS: LazyLock<DashMap<usize, Candidate>> = LazyLock::new(Default::default);
 static CPU_DESCRIPTORS: LazyLock<DashMap<usize, TrackedResource>> = LazyLock::new(Default::default);
 static RTV_DESCRIPTORS: LazyLock<DashMap<usize, TrackedTarget>> = LazyLock::new(Default::default);
+static RESOURCE_STATES: LazyLock<DashMap<usize, D3d12CaptureSourceState>> =
+    LazyLock::new(Default::default);
 static GPU_HEAPS: LazyLock<DashMap<u64, HeapInfo>> = LazyLock::new(Default::default);
 static DESCRIPTOR_INCREMENT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+static ENHANCED_BARRIERS_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn enhanced_barriers_supported() -> bool {
+    ENHANCED_BARRIERS_SUPPORTED.get().copied().unwrap_or(false)
+}
 
 pub(crate) unsafe fn install_device(output: *mut *mut c_void) {
     if std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_none()
@@ -191,6 +200,27 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<(), String> {
     let _keep_allocator_alive = allocator;
     let vtable = Interface::vtable(&list);
     let device_vtable = Interface::vtable(&device);
+    let mut options12 = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
+    let enhanced_barriers_advertised = unsafe {
+        device
+            .CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS12,
+                (&raw mut options12).cast(),
+                std::mem::size_of_val(&options12) as u32,
+            )
+            .is_ok()
+            && options12.EnhancedBarriersSupported.as_bool()
+    };
+    let enhanced_list = enhanced_barriers_advertised
+        .then(|| list.cast::<ID3D12GraphicsCommandList7>().ok())
+        .flatten();
+    let enhanced_barriers_supported = enhanced_list.is_some();
+    let _ = ENHANCED_BARRIERS_SUPPORTED.set(enhanced_barriers_supported);
+    crate::d3d12_log(if enhanced_barriers_supported {
+        "snowglass: D3D12 enhanced capture barriers enabled"
+    } else {
+        "snowglass: D3D12 capture using legacy resource barriers"
+    });
     let _ = DESCRIPTOR_INCREMENT.set(unsafe {
         device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
     });
@@ -250,7 +280,7 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<(), String> {
     if DETOURS.set(detours).is_err() {
         return Ok(());
     }
-    if let Ok(list7) = list.cast::<ID3D12GraphicsCommandList7>() {
+    if let Some(list7) = enhanced_list {
         let detour = unsafe {
             GenericDetour::new(Interface::vtable(&list7).Barrier, enhanced_barrier)
                 .map_err(|error| error.to_string())?
@@ -654,6 +684,22 @@ unsafe extern "system" fn resource_barrier(
             .resource_barrier
             .call(this, count, barriers)
     };
+    if count == 0 || barriers.is_null() {
+        return;
+    }
+    let barriers = unsafe { std::slice::from_raw_parts(barriers, count as usize) };
+    for barrier in barriers {
+        if barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
+            continue;
+        }
+        let transition = unsafe { &*barrier.Anonymous.Transition };
+        if let Some(resource) = transition.pResource.as_ref() {
+            RESOURCE_STATES.insert(
+                identity_key(resource),
+                D3d12CaptureSourceState::Legacy(transition.StateAfter),
+            );
+        }
+    }
     let Some(candidate) = COMMANDS.get(&(this as usize)).and_then(|state| {
         state
             .render_target
@@ -663,10 +709,7 @@ unsafe extern "system" fn resource_barrier(
     }) else {
         return;
     };
-    if count == 0 || barriers.is_null() {
-        return;
-    }
-    for barrier in unsafe { std::slice::from_raw_parts(barriers, count as usize) } {
+    for barrier in barriers {
         if barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
             continue;
         }
@@ -696,6 +739,33 @@ unsafe extern "system" fn enhanced_barrier(
             .expect("enhanced barrier detour is installed")
             .call(this, count, groups)
     };
+    if count == 0 || groups.is_null() {
+        return;
+    }
+    let groups = unsafe { std::slice::from_raw_parts(groups, count as usize) };
+    for group in groups {
+        if group.Type != D3D12_BARRIER_TYPE_TEXTURE {
+            continue;
+        }
+        let texture_barriers = unsafe { group.Anonymous.pTextureBarriers };
+        if texture_barriers.is_null() {
+            continue;
+        }
+        for barrier in
+            unsafe { std::slice::from_raw_parts(texture_barriers, group.NumBarriers as usize) }
+        {
+            if let Some(resource) = barrier.pResource.as_ref() {
+                RESOURCE_STATES.insert(
+                    identity_key(resource),
+                    D3d12CaptureSourceState::Enhanced {
+                        sync: barrier.SyncAfter,
+                        access: barrier.AccessAfter,
+                        layout: barrier.LayoutAfter,
+                    },
+                );
+            }
+        }
+    }
     let Some(candidate) = COMMANDS.get(&(this as usize)).and_then(|state| {
         state
             .render_target
@@ -705,10 +775,7 @@ unsafe extern "system" fn enhanced_barrier(
     }) else {
         return;
     };
-    if count == 0 || groups.is_null() {
-        return;
-    }
-    for group in unsafe { std::slice::from_raw_parts(groups, count as usize) } {
+    for group in groups {
         if group.Type != D3D12_BARRIER_TYPE_TEXTURE {
             continue;
         }
@@ -741,11 +808,18 @@ pub(crate) unsafe fn swapchain_presentation(swapchain: *mut c_void) -> Option<Pr
     let candidate = PRESENT_REGIONS.get(&identity_key(&resource))?;
     let region_is_content = (candidate.region.x, candidate.region.y) != (0, 0)
         || (candidate.region.width, candidate.region.height) != candidate.target_extent;
+    let source = (!region_is_content)
+        .then(|| candidate.source.clone())
+        .flatten()
+        .map(|mut source| {
+            source.state = RESOURCE_STATES
+                .get(&identity_key(&source.resource))
+                .map(|entry| *entry);
+            source
+        });
     Some(Presentation {
         region: region_is_content.then_some(candidate.region),
-        source: (!region_is_content)
-            .then(|| candidate.source.clone())
-            .flatten(),
+        source,
     })
 }
 
@@ -766,6 +840,7 @@ unsafe fn tracked_resource(raw: *mut c_void) -> Option<TrackedResource> {
         width: desc.Width.try_into().ok()?,
         height: desc.Height,
         format: desc.Format.0 as u32,
+        state: None,
     })
 }
 

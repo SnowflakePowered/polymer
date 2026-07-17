@@ -1,6 +1,6 @@
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
-use snowglass_producer_d3d12::D3d12SwapchainCapture;
+use snowglass_producer_d3d12::{D3d12CaptureSourceState, D3d12SwapchainCapture};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, StreamId,
@@ -19,6 +19,7 @@ struct CaptureState {
     capture: D3d12SwapchainCapture,
     ipc: Option<LocalSocket>,
     frame: u64,
+    copy_errors: u64,
 }
 static QUEUES: OnceLock<Mutex<HashMap<usize, ID3D12CommandQueue>>> = OnceLock::new();
 static CAPTURES: OnceLock<Mutex<HashMap<usize, CaptureState>>> = OnceLock::new();
@@ -80,7 +81,12 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
     let tracked_region = presentation.as_ref().and_then(|value| value.region);
     let tracked_source = presentation
         .as_ref()
-        .and_then(|value| value.source.as_ref());
+        .and_then(|value| value.source.as_ref())
+        .filter(|source| {
+            source
+                .state
+                .is_some_and(|state| matches!(state, D3d12CaptureSourceState::Legacy(_)))
+        });
     let mut states = captures().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(source) = tracked_source
         && states.get(&key).is_some_and(|state| {
@@ -98,6 +104,7 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
                 queue.as_raw(),
                 3,
                 tracked_source.map(|source| &source.resource),
+                crate::tracking::enhanced_barriers_supported(),
             )
         } {
             Ok(value) => value,
@@ -117,18 +124,35 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
             capture,
             ipc,
             frame: 0,
+            copy_errors: 0,
         });
     }
     let Some(state) = states.get_mut(&key) else {
         return;
     };
-    let Ok(Some(submission)) = (unsafe {
+    let submission = match unsafe {
         state.capture.copy_frame(
             tracked_region,
-            tracked_source.map(|source| &source.resource),
+            tracked_source.map(|source| {
+                (
+                    &source.resource,
+                    source.state.expect("tracked source state was filtered"),
+                )
+            }),
         )
-    }) else {
-        return;
+    } {
+        Ok(Some(submission)) => submission,
+        Ok(None) => return,
+        Err(error) => {
+            state.copy_errors = state.copy_errors.wrapping_add(1);
+            if state.copy_errors == 1 || state.copy_errors % 120 == 0 {
+                crate::d3d12_log(format!(
+                    "snowglass: D3D12 capture copy failed: {error} (count={})",
+                    state.copy_errors
+                ));
+            }
+            return;
+        }
     };
     state.frame = state.frame.wrapping_add(1);
     if state.frame == 1 || state.frame % 120 == 0 {
