@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,6 +34,8 @@ pub enum ExternalImageKind {
     D3d11SharedResourceNt = 2,
     D3d12Resource = 3,
     D3d12Heap = 4,
+    /// D3D12 shared resource owned and written through OpenGL EXT external objects.
+    OpenGlD3d12Resource = 5,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -45,6 +47,7 @@ impl TryFrom<u32> for ExternalImageKind {
             2 => Ok(Self::D3d11SharedResourceNt),
             3 => Ok(Self::D3d12Resource),
             4 => Ok(Self::D3d12Heap),
+            5 => Ok(Self::OpenGlD3d12Resource),
             _ => Err(()),
         }
     }

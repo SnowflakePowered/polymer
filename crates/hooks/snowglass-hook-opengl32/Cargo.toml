@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+retour.workspace = true
 snowglass-producer-opengl = { path = "../../producers/snowglass-producer-opengl" }
+windows-sys.workspace = true

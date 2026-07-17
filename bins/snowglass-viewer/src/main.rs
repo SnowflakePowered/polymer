@@ -1508,10 +1508,12 @@ fn launch_target(
 
     let d3d11_hook = layer_dir.join("snowglass_hook_d3d11.dll");
     let d3d12_hook = layer_dir.join("snowglass_hook_d3d12.dll");
+    let opengl_hook = layer_dir.join("snowglass_hook_opengl32.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
     for (name, hook) in [
         ("D3D11", &d3d11_hook),
         ("D3D12", &d3d12_hook),
+        ("OpenGL", &opengl_hook),
         ("DirectInput", &dinput_hook),
     ] {
         if hook.is_file() {
@@ -1541,6 +1543,10 @@ fn launch_target(
         "SNOWGLASS_D3D12_LOG_FILE",
         layer_dir.join("snowglass-d3d12.log"),
     );
+    command.env(
+        "SNOWGLASS_OPENGL_LOG_FILE",
+        layer_dir.join("snowglass-opengl.log"),
+    );
     if track_render_target {
         command.env("SNOWGLASS_TRACK_RENDER_TARGET", "1");
     }
@@ -1556,6 +1562,10 @@ fn launch_target(
         (
             d3d12_hook.as_path(),
             c"SnowglassInstallD3d12Hook" as &std::ffi::CStr,
+        ),
+        (
+            opengl_hook.as_path(),
+            c"SnowglassInstallOpenGlHook" as &std::ffi::CStr,
         ),
         (
             dinput_hook.as_path(),
