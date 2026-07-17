@@ -233,8 +233,28 @@ impl SwapchainCopyEngine {
             .then(|| self.present_ready.get(source_image_index as usize).copied())
             .flatten()
             .unwrap_or(vk::Semaphore::null());
-        let slot_index = self.next_slot;
-        self.next_slot = (self.next_slot + 1) % self.slots.len();
+        let consumer_completed = self
+            .consumer_timeline
+            .as_ref()
+            .map(|timeline| unsafe {
+                self.device
+                    .get_semaphore_counter_value(timeline.semaphore())
+            })
+            .transpose()?;
+        let Some(slot_index) = (0..self.slots.len())
+            .map(|offset| (self.next_slot + offset) % self.slots.len())
+            .find(|&index| {
+                let slot = &self.slots[index];
+                let consumer_released = consumer_completed.is_none_or(|completed| {
+                    slot.release_value == 0 || slot.release_value <= completed
+                });
+                consumer_released
+                    && unsafe { self.device.get_fence_status(slot.fence) }.unwrap_or(false)
+            })
+        else {
+            return Err(vk::Result::NOT_READY);
+        };
+        self.next_slot = (slot_index + 1) % self.slots.len();
         let sync_value = self.next_sync_value;
         self.next_sync_value += 1;
         let slot = &mut self.slots[slot_index];
@@ -411,14 +431,8 @@ impl SwapchainCopyEngine {
             );
             self.device.end_command_buffer(slot.command_buffer)?;
 
-            let mut waits = application_waits.to_vec();
-            let mut wait_values = vec![0; waits.len()];
-            if slot.release_value != 0 {
-                if let Some(consumer) = self.consumer_timeline.as_ref() {
-                    waits.push(consumer.semaphore());
-                    wait_values.push(slot.release_value);
-                }
-            }
+            let waits = application_waits.to_vec();
+            let wait_values = vec![0; waits.len()];
             let wait_stages = vec![vk::PipelineStageFlags::TRANSFER; waits.len()];
             let command_buffers = [slot.command_buffer];
             let mut signals = vec![self.producer_timeline.semaphore()];

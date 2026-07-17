@@ -361,6 +361,7 @@ pub(crate) unsafe fn handle_queue_present(
                         }
                         Some(submission.present_ready)
                     }
+                    Err(vk::Result::NOT_READY) => None,
                     Err(error) => {
                         layer_log(format!("snowglass: swapchain copy failed: {error}"));
                         None
@@ -500,6 +501,7 @@ pub(crate) fn queue_submit(
                         ));
                     }
                 }
+                Err(vk::Result::NOT_READY) => {}
                 Err(error) => layer_log(format!("snowglass: tracked copy failed: {error}")),
             }
         }

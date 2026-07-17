@@ -4,6 +4,8 @@
 
 pub const PROTOCOL_VERSION: u32 = 7;
 pub const MAX_IMAGE_SLOTS: usize = 4;
+/// Terminal consumer-fence value used when abandoning an entire image ring.
+pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]

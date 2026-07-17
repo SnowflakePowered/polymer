@@ -13,7 +13,7 @@ use egui::{ClippedPrimitive, TextureId, epaint::Primitive};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
 use snowglass_ipc::StreamReady;
-use snowglass_protocol::{AdapterLuid, FrameReady};
+use snowglass_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, RECT},
@@ -198,7 +198,7 @@ impl D3d12Compositor {
     }
 
     pub(crate) fn import_stream(&mut self, stream: &StreamReady) -> Result<(), Box<dyn Error>> {
-        self.wait_idle()?;
+        self.release_imported_stream()?;
         let imported = self.consumer.import(stream)?;
         // The private texture decouples viewer redraws from producer slot reuse.
         let cache = unsafe {
@@ -235,10 +235,21 @@ impl D3d12Compositor {
     }
 
     pub(crate) fn disconnect_stream(&mut self) -> Result<(), Box<dyn Error>> {
-        self.wait_idle()?;
+        self.release_imported_stream()?;
         self.latest = None;
         self.display_frame = None;
         self.cache = None;
+        Ok(())
+    }
+
+    fn release_imported_stream(&mut self) -> windows::core::Result<()> {
+        if let Some(imported) = self.imported.as_ref() {
+            // This signal is ordered after every queued read from the old ring.
+            // It also releases producer submissions whose FrameReady messages
+            // were still buffered when a replacement stream arrived.
+            imported.signal_release(self.consumer.queue(), RELEASE_ALL_SYNC_VALUE)?;
+        }
+        self.wait_idle()?;
         self.imported = None;
         Ok(())
     }
@@ -623,7 +634,7 @@ impl D3d12Compositor {
 
 impl Drop for D3d12Compositor {
     fn drop(&mut self) {
-        let _ = self.wait_idle();
+        let _ = self.release_imported_stream();
         unsafe {
             let _ = CloseHandle(self.fence_event);
         }
