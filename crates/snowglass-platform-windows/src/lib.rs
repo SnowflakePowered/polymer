@@ -25,6 +25,63 @@ pub struct ProcessId(pub u32);
 pub struct NativeWindow(pub isize);
 
 #[cfg(windows)]
+pub struct KillOnCloseJob {
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl KillOnCloseJob {
+    pub fn new() -> std::io::Result<Self> {
+        use std::os::windows::io::FromRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = Self {
+            handle: unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle) },
+        };
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if unsafe {
+            SetInformationJobObject(
+                job.raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(job)
+    }
+
+    pub fn assign_process(
+        &self,
+        process: windows_sys::Win32::Foundation::HANDLE,
+    ) -> std::io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        if unsafe { AssignProcessToJobObject(self.raw_handle(), process) } == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        use std::os::windows::io::AsRawHandle;
+        self.handle.as_raw_handle()
+    }
+}
+
+#[cfg(windows)]
 pub fn mark_vulkan_capture_active() -> std::io::Result<()> {
     use windows_sys::Win32::System::Environment::SetEnvironmentVariableW;
     let name = "SNOWGLASS_VULKAN_CAPTURE_ACTIVE\0"

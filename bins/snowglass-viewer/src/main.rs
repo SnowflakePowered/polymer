@@ -1455,46 +1455,119 @@ fn spawn_input_ipc(listener: LocalSocketListener, input: mpsc::Receiver<DirectIn
 }
 
 fn spawn_target_monitor(
-    mut child: Child,
+    target_process: TargetProcess,
     process_id: ProcessId,
     stop: Arc<AtomicBool>,
     done: mpsc::Sender<()>,
 ) {
     thread::spawn(move || {
+        let TargetProcess { mut child, job } = target_process;
         loop {
             if stop.load(Ordering::Acquire) {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = done.send(());
-                return;
+                break;
             }
             let _ = hide_top_level_windows(process_id);
             match child.try_wait() {
-                Ok(Some(_)) | Err(_) => {
-                    let _ = done.send(());
-                    return;
-                }
+                Ok(Some(_)) | Err(_) => break,
                 Ok(None) => thread::sleep(Duration::from_millis(8)),
             }
         }
+        // Closing the job terminates the root and every descendant before the
+        // viewer is notified that the target has finished.
+        drop(job);
+        let _ = child.wait();
+        let _ = done.send(());
     });
 }
 
-fn parse_target() -> Result<(Vec<String>, bool), Box<dyn Error>> {
-    let mut arguments = env::args().skip(1).peekable();
-    let track_render_target = arguments
-        .next_if(|argument| argument == "--track-render-target")
-        .is_some();
-    if arguments.next().as_deref() != Some("--") {
+struct ViewerOptions {
+    target: Vec<String>,
+    track_render_target: bool,
+    api: ViewerApi,
+}
+
+fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
+    parse_arguments(env::args().skip(1))
+}
+
+fn parse_arguments(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<ViewerOptions, Box<dyn Error>> {
+    let mut arguments = arguments.into_iter();
+    let mut track_render_target = false;
+    let mut api = ViewerApi::default();
+    let mut found_separator = false;
+    while let Some(argument) = arguments.next() {
+        if argument == "--" {
+            found_separator = true;
+            break;
+        }
+        if argument == "--track-render-target" {
+            track_render_target = true;
+        } else if argument == "--api" {
+            api = ViewerApi::parse(&arguments.next().ok_or("--api requires d3d12 or vulkan")?)?;
+        } else if let Some(value) = argument.strip_prefix("--api=") {
+            api = ViewerApi::parse(value)?;
+        } else {
+            return Err(format!(
+                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] -- <program> [arguments...]"
+            )
+            .into());
+        }
+    }
+    if !found_separator {
         return Err(
-            "usage: snowglass-viewer [--track-render-target] -- <program> [arguments...]".into(),
+            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] -- <program> [arguments...]".into(),
         );
     }
     let target = arguments.collect::<Vec<_>>();
     if target.is_empty() {
         return Err("target program is required".into());
     }
-    Ok((target, track_render_target))
+    Ok(ViewerOptions {
+        target,
+        track_render_target,
+        api,
+    })
+}
+
+#[cfg(test)]
+mod argument_tests {
+    use super::*;
+
+    fn arguments(values: &[&str]) -> Result<ViewerOptions, Box<dyn Error>> {
+        parse_arguments(values.iter().map(|value| (*value).to_owned()))
+    }
+
+    #[test]
+    fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
+        let options = arguments(&["--", "game.exe"])?;
+        assert_eq!(options.api, ViewerApi::D3d12);
+        assert!(!options.track_render_target);
+        assert_eq!(options.target, ["game.exe"]);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn Error>> {
+        let options = arguments(&[
+            "--track-render-target",
+            "--api=vulkan",
+            "--",
+            "game.exe",
+            "--api",
+            "target-argument",
+        ])?;
+        assert_eq!(options.api, ViewerApi::Vulkan);
+        assert!(options.track_render_target);
+        assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
+        Ok(())
+    }
+}
+
+struct TargetProcess {
+    child: Child,
+    job: KillOnCloseJob,
 }
 
 fn launch_target(
