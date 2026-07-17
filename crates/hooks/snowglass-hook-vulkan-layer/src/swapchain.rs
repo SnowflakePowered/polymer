@@ -11,7 +11,8 @@ use snowglass_producer_vulkan::{
     ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, SwapchainCopyEngine,
 };
 use snowglass_protocol::{
-    ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS, PROTOCOL_VERSION, StreamId,
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
+    PROTOCOL_VERSION, StreamId,
 };
 use std::sync::{
     LazyLock,
@@ -128,6 +129,10 @@ pub(crate) fn connect_viewer(
     }
     let ready = StreamReady {
         producer_process_id: std::process::id(),
+        adapter_luid: AdapterLuid {
+            low_part: 0,
+            high_part: 0,
+        },
         source_window: source_window as i64,
         width: extent.width,
         height: extent.height,
@@ -148,6 +153,7 @@ pub(crate) fn connect_viewer(
                 return None;
             }
         },
+        consumer_semaphore_handle: 0,
     };
     if let Err(error) = socket.send(Message::StreamReady(ready)) {
         layer_log(format!("snowglass: StreamReady send failed: {error}"));

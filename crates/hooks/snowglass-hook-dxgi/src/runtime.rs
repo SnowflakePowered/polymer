@@ -3,14 +3,15 @@ use crate::{
     vtable::{
         FACTORY_VTABLE_LEN, FACTORY1_VTABLE_LEN, FACTORY2_VTABLE_LEN, FACTORY3_VTABLE_LEN,
         FACTORY4_VTABLE_LEN, FACTORY5_VTABLE_LEN, FACTORY6_VTABLE_LEN, FACTORY7_VTABLE_LEN,
-        FactoryVtable, SwapchainVtable,
+        FactoryVtable, SWAPCHAIN_VTABLE_LEN, SWAPCHAIN1_VTABLE_LEN, SWAPCHAIN2_VTABLE_LEN,
+        SWAPCHAIN3_VTABLE_LEN, SWAPCHAIN4_VTABLE_LEN, SwapchainVtable,
     },
 };
 use snowglass_hook::HookChain;
 use std::{
     collections::HashMap,
     ffi::c_void,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, LazyLock, OnceLock, RwLock},
 };
 use windows::{
     Win32::Graphics::Dxgi::{
@@ -21,15 +22,18 @@ use windows::{
     core::{GUID, Interface},
 };
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct SwapchainCallbacks {
+    pub claim: unsafe fn(*mut c_void, *mut c_void) -> bool,
     pub before_present: Option<unsafe fn(*mut c_void)>,
     pub before_resize: Option<unsafe fn(*mut c_void)>,
     pub after_resize: Option<unsafe fn(*mut c_void, i32)>,
     pub destroyed: Option<unsafe fn(*mut c_void)>,
 }
 
-static CALLBACKS: OnceLock<SwapchainCallbacks> = OnceLock::new();
+static CALLBACKS: LazyLock<RwLock<Vec<SwapchainCallbacks>>> = LazyLock::new(Default::default);
+static OWNERS: LazyLock<RwLock<HashMap<usize, SwapchainCallbacks>>> =
+    LazyLock::new(Default::default);
 static SWAPCHAINS: OnceLock<RwLock<HashMap<usize, Arc<SwapchainVtable>>>> = OnceLock::new();
 static FACTORIES: OnceLock<RwLock<HashMap<usize, Arc<FactoryVtable>>>> = OnceLock::new();
 
@@ -41,19 +45,65 @@ fn factories() -> &'static RwLock<HashMap<usize, Arc<FactoryVtable>>> {
     FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-pub fn set_callbacks(callbacks: SwapchainCallbacks) -> Result<(), SwapchainCallbacks> {
-    CALLBACKS.set(callbacks)
+pub fn register_callbacks(callbacks: SwapchainCallbacks) {
+    let mut registered = CALLBACKS.write().unwrap_or_else(|error| error.into_inner());
+    if !registered
+        .iter()
+        .any(|existing| existing.claim as usize == callbacks.claim as usize)
+    {
+        registered.push(callbacks);
+    }
 }
 
 pub unsafe fn install_swapchain(swapchain: *mut c_void) -> bool {
-    unsafe { install_swapchain_kind(swapchain, false) }
+    unsafe { install_swapchain_len(swapchain, SWAPCHAIN_VTABLE_LEN) }
 }
 
 pub unsafe fn install_swapchain1(swapchain: *mut c_void) -> bool {
-    unsafe { install_swapchain_kind(swapchain, true) }
+    unsafe { install_swapchain_len(swapchain, SWAPCHAIN1_VTABLE_LEN) }
 }
 
-unsafe fn install_swapchain_kind(swapchain: *mut c_void, swapchain1: bool) -> bool {
+/// Installs interception and assigns the swapchain to the first backend that
+/// claims its DXGI creation object.
+pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
+    if swapchain.is_null() {
+        return false;
+    }
+    let extended = unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }.and_then(|swapchain| {
+        if let Ok(interface) = swapchain.cast::<IDXGISwapChain4>() {
+            Some((interface.as_raw(), SWAPCHAIN4_VTABLE_LEN))
+        } else if let Ok(interface) = swapchain.cast::<IDXGISwapChain3>() {
+            Some((interface.as_raw(), SWAPCHAIN3_VTABLE_LEN))
+        } else if let Ok(interface) = swapchain.cast::<IDXGISwapChain2>() {
+            Some((interface.as_raw(), SWAPCHAIN2_VTABLE_LEN))
+        } else {
+            swapchain
+                .cast::<IDXGISwapChain1>()
+                .ok()
+                .map(|interface| (interface.as_raw(), SWAPCHAIN1_VTABLE_LEN))
+        }
+    });
+    let mut installed = unsafe { install_swapchain(swapchain) };
+    if let Some((extended, length)) = extended {
+        installed |= unsafe { install_swapchain_len(extended, length) };
+    }
+    let owner = CALLBACKS
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .copied()
+        .find(|callbacks| unsafe { (callbacks.claim)(swapchain, creation_device) });
+    if let Some(owner) = owner {
+        let mut owners = OWNERS.write().unwrap_or_else(|error| error.into_inner());
+        owners.insert(swapchain as usize, owner);
+        if let Some((extended, _)) = extended {
+            owners.insert(extended as usize, owner);
+        }
+    }
+    installed
+}
+
+unsafe fn install_swapchain_len(swapchain: *mut c_void, length: usize) -> bool {
     if swapchain.is_null() {
         return false;
     }
@@ -64,19 +114,17 @@ unsafe fn install_swapchain_kind(swapchain: *mut c_void, swapchain1: bool) -> bo
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *swapchain.cast::<*const usize>() };
         if current == existing.patched.as_ptr() {
-            if !swapchain1 || existing.present1.is_some() {
+            if existing.patched.len() >= length {
                 return true;
             }
-            unsafe { SwapchainVtable::clone_from(existing.original as *const usize, true) }
-        } else if swapchain1 {
-            unsafe { SwapchainVtable::clone_and_patch_swapchain1(swapchain) }
+            unsafe { SwapchainVtable::clone_from(existing.original as *const usize, length) }
         } else {
-            unsafe { SwapchainVtable::clone_and_patch(swapchain) }
+            let original = unsafe { *swapchain.cast::<*const usize>() };
+            unsafe { SwapchainVtable::clone_from(original, length) }
         }
-    } else if swapchain1 {
-        unsafe { SwapchainVtable::clone_and_patch_swapchain1(swapchain) }
     } else {
-        unsafe { SwapchainVtable::clone_and_patch(swapchain) }
+        let original = unsafe { *swapchain.cast::<*const usize>() };
+        unsafe { SwapchainVtable::clone_from(original, length) }
     };
     let Some(vtable) = vtable else {
         return false;
@@ -89,6 +137,18 @@ unsafe fn install_swapchain_kind(swapchain: *mut c_void, swapchain1: bool) -> bo
 
 pub unsafe fn install_factory(factory: *mut c_void) -> bool {
     unsafe { install_factory_len(factory, FACTORY_VTABLE_LEN) }
+}
+
+/// Seeds process-wide Factory2-compatible method detours without modifying the
+/// supplied factory object. This is suitable for a short-lived helper factory.
+pub unsafe fn install_factory_detours(factory: *mut c_void) -> bool {
+    let Some(factory) = (unsafe { IDXGIFactory::from_raw_borrowed(&factory) }) else {
+        return false;
+    };
+    let Ok(factory2) = factory.cast::<IDXGIFactory2>() else {
+        return false;
+    };
+    unsafe { crate::detour::install_create_swapchain_for_hwnd(factory2.as_raw()) }
 }
 
 /// Installs per-object hooks for every factory interface supported by a DXGI
@@ -215,7 +275,11 @@ pub(crate) fn query_method(
     factory_method(factory_or_swapchain, |vtable| Some(vtable.query_interface))
 }
 
-pub(crate) unsafe fn factory_created_swapchain(swapchain: *mut *mut c_void, result: i32) {
+pub(crate) unsafe fn factory_created_swapchain(
+    device: *mut c_void,
+    swapchain: *mut *mut c_void,
+    result: i32,
+) {
     crate::dxgi_log(format!(
         "snowglass: DXGI swapchain creation returned {result:#x}"
     ));
@@ -226,12 +290,7 @@ pub(crate) unsafe fn factory_created_swapchain(swapchain: *mut *mut c_void, resu
     if swapchain.is_null() {
         return;
     }
-    let swapchain1 = unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }
-        .and_then(|swapchain| swapchain.cast::<IDXGISwapChain1>().ok());
-    unsafe { install_swapchain(swapchain) };
-    if let Some(swapchain1) = swapchain1 {
-        unsafe { install_swapchain1(swapchain1.as_raw()) };
-    }
+    unsafe { register_swapchain(swapchain, device) };
 }
 
 pub(crate) unsafe fn query_interface(
@@ -248,18 +307,23 @@ pub(crate) unsafe fn query_interface(
         let interface_id = unsafe { &*interface_id.cast::<GUID>() };
         let swapchain = unsafe { *output };
         if !swapchain.is_null() {
+            let owner = OWNERS
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&(this as usize))
+                .copied();
             if interface_id == &IDXGISwapChain::IID {
                 unsafe { install_swapchain(swapchain) };
-            } else if [
-                &IDXGISwapChain1::IID,
-                &IDXGISwapChain2::IID,
-                &IDXGISwapChain3::IID,
-                &IDXGISwapChain4::IID,
+            } else if let Some(length) = [
+                (&IDXGISwapChain1::IID, SWAPCHAIN1_VTABLE_LEN),
+                (&IDXGISwapChain2::IID, SWAPCHAIN2_VTABLE_LEN),
+                (&IDXGISwapChain3::IID, SWAPCHAIN3_VTABLE_LEN),
+                (&IDXGISwapChain4::IID, SWAPCHAIN4_VTABLE_LEN),
             ]
             .into_iter()
-            .any(|candidate| interface_id == candidate)
+            .find_map(|(candidate, length)| (interface_id == candidate).then_some(length))
             {
-                unsafe { install_swapchain1(swapchain) };
+                unsafe { install_swapchain_len(swapchain, length) };
             } else {
                 unsafe {
                     install_factory_interface(
@@ -267,6 +331,12 @@ pub(crate) unsafe fn query_interface(
                         (interface_id as *const GUID).cast::<c_void>(),
                     )
                 };
+            }
+            if let Some(owner) = owner {
+                OWNERS
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(swapchain as usize, owner);
             }
         }
     }
@@ -279,10 +349,13 @@ pub(crate) unsafe fn present(
     flags: u32,
     mut next: hooks::PresentContext<'_>,
 ) -> i32 {
-    if let Some(callback) = CALLBACKS
-        .get()
-        .and_then(|callbacks| callbacks.before_present)
-    {
+    let callback = {
+        let owners = OWNERS.read().unwrap_or_else(|error| error.into_inner());
+        owners
+            .get(&(this as usize))
+            .and_then(|callbacks| callbacks.before_present)
+    };
+    if let Some(callback) = callback {
         unsafe { callback(this) };
     }
     let Some(continuation) = next.fp_next().copied() else {
@@ -298,10 +371,13 @@ pub(crate) unsafe fn present1(
     parameters: *const c_void,
     mut next: hooks::Present1Context<'_>,
 ) -> i32 {
-    if let Some(callback) = CALLBACKS
-        .get()
-        .and_then(|callbacks| callbacks.before_present)
-    {
+    let callback = {
+        let owners = OWNERS.read().unwrap_or_else(|error| error.into_inner());
+        owners
+            .get(&(this as usize))
+            .and_then(|callbacks| callbacks.before_present)
+    };
+    if let Some(callback) = callback {
         unsafe { callback(this) };
     }
     let Some(continuation) = next.fp_next().copied() else {
@@ -319,17 +395,19 @@ pub(crate) unsafe fn resize_buffers(
     flags: u32,
     mut next: hooks::ResizeBuffersContext<'_>,
 ) -> i32 {
-    if let Some(callback) = CALLBACKS
-        .get()
-        .and_then(|callbacks| callbacks.before_resize)
-    {
+    let owner = OWNERS
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&(this as usize))
+        .copied();
+    if let Some(callback) = owner.and_then(|callbacks| callbacks.before_resize) {
         unsafe { callback(this) };
     }
     let Some(continuation) = next.fp_next().copied() else {
         return DXGI_ERROR_INVALID_CALL.0;
     };
     let result = unsafe { continuation(this, buffer_count, width, height, format, flags, next) };
-    if let Some(callback) = CALLBACKS.get().and_then(|callbacks| callbacks.after_resize) {
+    if let Some(callback) = owner.and_then(|callbacks| callbacks.after_resize) {
         unsafe { callback(this, result) };
     }
     result
@@ -349,7 +427,11 @@ pub(crate) unsafe fn release(this: *mut c_void, _next: hooks::ReleaseContext<'_>
                 .write()
                 .unwrap_or_else(|error| error.into_inner())
                 .remove(&(this as usize));
-            if let Some(callback) = CALLBACKS.get().and_then(|callbacks| callbacks.destroyed) {
+            let owner = OWNERS
+                .write()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&(this as usize));
+            if let Some(callback) = owner.and_then(|callbacks| callbacks.destroyed) {
                 unsafe { callback(this) };
             }
         }

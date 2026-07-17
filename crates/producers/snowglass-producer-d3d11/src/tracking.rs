@@ -1,7 +1,7 @@
 //! Draw-time render-region tracking for D3D11 swapchain backbuffers.
 
+use crate::D3d11CaptureRegion;
 use dashmap::DashMap;
-use snowglass_producer_d3d11::D3d11CaptureRegion;
 use std::{ffi::c_void, sync::LazyLock};
 use windows::{
     Win32::Graphics::{
@@ -38,7 +38,7 @@ struct Candidate {
 static CONTEXTS: LazyLock<DashMap<usize, ContextState>> = LazyLock::new(Default::default);
 static CANDIDATES: LazyLock<DashMap<usize, Candidate>> = LazyLock::new(Default::default);
 
-pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
+pub unsafe fn install_immediate_context(output: *mut *mut c_void) {
     if std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_none() || output.is_null() {
         return;
     }
@@ -58,31 +58,31 @@ pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
     }
 
     let mut patched = unsafe { std::slice::from_raw_parts(current, CONTEXT_VTABLE_LEN) }.to_vec();
-    let draw_indexed =
+    let original_draw_indexed =
         unsafe { std::mem::transmute::<usize, DrawIndexedFn>(patched[DRAW_INDEXED_SLOT]) };
-    let draw = unsafe { std::mem::transmute::<usize, DrawFn>(patched[DRAW_SLOT]) };
-    patched[DRAW_INDEXED_SLOT] = crate::sys::draw_indexed as *const () as usize;
-    patched[DRAW_SLOT] = crate::sys::draw as *const () as usize;
+    let original_draw = unsafe { std::mem::transmute::<usize, DrawFn>(patched[DRAW_SLOT]) };
+    patched[DRAW_INDEXED_SLOT] = draw_indexed as *const () as usize;
+    patched[DRAW_SLOT] = draw as *const () as usize;
     let state = ContextState {
         patched: patched.into_boxed_slice(),
-        draw_indexed,
-        draw,
+        draw_indexed: original_draw_indexed,
+        draw: original_draw,
     };
     unsafe { *context.cast::<*const usize>() = state.patched.as_ptr() };
     CONTEXTS.insert(context as usize, state);
 }
 
-pub(crate) fn draw_indexed_original(context: *mut c_void) -> Option<DrawIndexedFn> {
+fn draw_indexed_original(context: *mut c_void) -> Option<DrawIndexedFn> {
     CONTEXTS
         .get(&(context as usize))
         .map(|state| state.draw_indexed)
 }
 
-pub(crate) fn draw_original(context: *mut c_void) -> Option<DrawFn> {
+fn draw_original(context: *mut c_void) -> Option<DrawFn> {
     CONTEXTS.get(&(context as usize)).map(|state| state.draw)
 }
 
-pub(crate) fn record_draw(raw_context: *mut c_void) {
+fn record_draw(raw_context: *mut c_void) {
     let Some(context) = (unsafe { ID3D11DeviceContext::from_raw_borrowed(&raw_context) }) else {
         return;
     };
@@ -107,6 +107,25 @@ pub(crate) fn record_draw(raw_context: *mut c_void) {
             }
         })
         .or_insert(Candidate { region, area });
+}
+
+unsafe extern "system" fn draw_indexed(
+    this: *mut c_void,
+    index_count: u32,
+    start_index: u32,
+    base_vertex: i32,
+) {
+    if let Some(original) = draw_indexed_original(this) {
+        unsafe { original(this, index_count, start_index, base_vertex) };
+    }
+    record_draw(this);
+}
+
+unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32) {
+    if let Some(original) = draw_original(this) {
+        unsafe { original(this, vertex_count, start_vertex) };
+    }
+    record_draw(this);
 }
 
 pub(crate) fn take_swapchain_region(swapchain: *mut c_void) -> Option<D3d11CaptureRegion> {

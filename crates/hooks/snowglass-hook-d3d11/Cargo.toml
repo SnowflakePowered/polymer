@@ -9,11 +9,9 @@ name = "snowglass_hook_d3d11"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-dashmap.workspace = true
 retour.workspace = true
 snowglass-hook.workspace = true
 snowglass-hook-dxgi = { path = "../snowglass-hook-dxgi" }
-snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-producer-d3d11 = { path = "../../producers/snowglass-producer-d3d11" }
 snowglass-protocol.workspace = true
@@ -22,6 +20,7 @@ windows.workspace = true
 
 [dev-dependencies]
 snowglass-consumer-vulkan = { path = "../../consumer/snowglass-consumer-vulkan" }
+snowglass-ipc.workspace = true
 
 [lints]
 workspace = true

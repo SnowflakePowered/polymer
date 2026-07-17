@@ -2,7 +2,7 @@
 
 use ash::{Entry, vk};
 use snowglass_ipc::StreamReady;
-use snowglass_protocol::{ExternalImageKind, ExternalSyncKind};
+use snowglass_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind};
 use std::{ffi::CStr, fmt};
 
 pub const BACKEND_NAME: &str = "vulkan";
@@ -10,15 +10,17 @@ pub const BACKEND_NAME: &str = "vulkan";
 fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
     let format = match stream.image_kind {
         ExternalImageKind::VulkanOpaqueWin32 => vk::Format::from_raw(stream.format as i32),
-        ExternalImageKind::D3d11SharedResourceNt => match stream.format {
-            10 => vk::Format::R16G16B16A16_SFLOAT,
-            24 => vk::Format::A2B10G10R10_UNORM_PACK32,
-            28 => vk::Format::R8G8B8A8_UNORM,
-            29 => vk::Format::R8G8B8A8_SRGB,
-            87 => vk::Format::B8G8R8A8_UNORM,
-            91 => vk::Format::B8G8R8A8_SRGB,
-            _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
-        },
+        ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d12Resource => {
+            match stream.format {
+                10 => vk::Format::R16G16B16A16_SFLOAT,
+                24 => vk::Format::A2B10G10R10_UNORM_PACK32,
+                28 => vk::Format::R8G8B8A8_UNORM,
+                29 => vk::Format::R8G8B8A8_SRGB,
+                87 => vk::Format::B8G8R8A8_UNORM,
+                91 => vk::Format::B8G8R8A8_SRGB,
+                _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
+            }
+        }
         _ => {
             return Err(ImportError::InvalidStream(
                 "unsupported external image kind",
@@ -35,6 +37,7 @@ pub struct ImportedImageRing {
     images: Vec<vk::Image>,
     memories: Vec<vk::DeviceMemory>,
     timeline: vk::Semaphore,
+    consumer_timeline: Option<vk::Semaphore>,
     image_kind: ExternalImageKind,
     pub width: u32,
     pub height: u32,
@@ -51,15 +54,22 @@ impl ImportedImageRing {
         if stream.slot_count == 0 || stream.slot_count as usize > stream.image_handles.len() {
             return Err(ImportError::InvalidStream("invalid slot count"));
         }
+        validate_consumer_semaphore(stream)?;
+        if let Some(adapter_luid) = requested_adapter(stream)
+            && !unsafe { physical_device_matches_luid(instance, physical_device, adapter_luid) }
+        {
+            return Err(ImportError::NoCompatibleDevice);
+        }
         // SAFETY: the caller-owned instance/device are live, and this object
         // owns every imported child resource until Drop.
-        let (images, memories, timeline) =
+        let (images, memories, timeline, consumer_timeline) =
             unsafe { import_resources(instance, &device, physical_device, stream)? };
         Ok(Self {
             device,
             images,
             memories,
             timeline,
+            consumer_timeline,
             image_kind: stream.image_kind,
             width: stream.width,
             height: stream.height,
@@ -75,12 +85,20 @@ impl ImportedImageRing {
         self.timeline
     }
 
+    pub fn consumer_timeline(&self) -> Option<vk::Semaphore> {
+        self.consumer_timeline
+    }
+
     pub fn memory(&self, slot: u32) -> Option<vk::DeviceMemory> {
         self.memories.get(slot as usize).copied()
     }
 
     pub fn uses_keyed_mutex(&self) -> bool {
         self.image_kind == ExternalImageKind::D3d11SharedResourceNt
+    }
+
+    pub fn uses_external_queue_family(&self) -> bool {
+        self.image_kind == ExternalImageKind::D3d12Resource
     }
 
     pub fn wait_for(&self, value: u64, timeout_ns: u64) -> Result<(), vk::Result> {
@@ -97,6 +115,9 @@ impl Drop for ImportedImageRing {
     fn drop(&mut self) {
         unsafe {
             self.device.destroy_semaphore(self.timeline, None);
+            if let Some(semaphore) = self.consumer_timeline.take() {
+                self.device.destroy_semaphore(semaphore, None);
+            }
             for image in self.images.drain(..) {
                 self.device.destroy_image(image, None);
             }
@@ -144,6 +165,7 @@ pub struct ImportedStream {
     images: Vec<vk::Image>,
     memories: Vec<vk::DeviceMemory>,
     timeline: vk::Semaphore,
+    consumer_timeline: Option<vk::Semaphore>,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     readbacks: Vec<ReadbackSlot>,
@@ -172,6 +194,7 @@ impl ImportedStream {
                 "timeline semaphore handle is missing",
             ));
         }
+        validate_consumer_semaphore(stream)?;
         // SAFETY: all Vulkan objects are owned by the returned stream and are
         // destroyed in reverse order by Drop.
         unsafe { Self::import_unsafe(stream) }
@@ -195,6 +218,7 @@ impl ImportedStream {
                 images,
                 memories,
                 timeline,
+                consumer_timeline,
                 physical_device,
                 queue_family_index,
                 queue,
@@ -206,6 +230,7 @@ impl ImportedStream {
                 images,
                 memories,
                 timeline,
+                consumer_timeline,
                 queue,
                 command_pool,
                 readbacks,
@@ -232,6 +257,7 @@ impl ImportedStream {
             Vec<vk::Image>,
             Vec<vk::DeviceMemory>,
             vk::Semaphore,
+            Option<vk::Semaphore>,
             vk::PhysicalDevice,
             u32,
             vk::Queue,
@@ -241,8 +267,10 @@ impl ImportedStream {
         ImportError,
     > {
         let d3d11 = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
-        let (physical_device, queue_family_index) =
-            unsafe { select_device(instance, d3d11).ok_or(ImportError::NoCompatibleDevice)? };
+        let (physical_device, queue_family_index) = unsafe {
+            select_device(instance, d3d11, requested_adapter(stream))
+                .ok_or(ImportError::NoCompatibleDevice)?
+        };
         let mut extensions = vec![
             ash::khr::external_memory_win32::NAME.as_ptr(),
             ash::khr::external_semaphore_win32::NAME.as_ptr(),
@@ -264,7 +292,7 @@ impl ImportedStream {
         let device = unsafe { instance.create_device(physical_device, &create_info, None)? };
         let result = unsafe { import_resources(instance, &device, physical_device, stream) };
         match result {
-            Ok((images, memories, timeline)) => {
+            Ok((images, memories, timeline, consumer_timeline)) => {
                 let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
                 let (command_pool, readbacks) = unsafe {
                     create_readbacks(
@@ -275,6 +303,7 @@ impl ImportedStream {
                         &images,
                         stream.width,
                         stream.height,
+                        stream.image_kind == ExternalImageKind::D3d12Resource,
                     )?
                 };
                 Ok((
@@ -282,6 +311,7 @@ impl ImportedStream {
                     images,
                     memories,
                     timeline,
+                    consumer_timeline,
                     physical_device,
                     queue_family_index,
                     queue,
@@ -338,6 +368,15 @@ impl ImportedStream {
             if self.image_kind == ExternalImageKind::D3d11SharedResourceNt {
                 submit = submit.push_next(&mut keyed_mutex);
             }
+            let consumer_signals = [self.consumer_timeline.unwrap_or(vk::Semaphore::null())];
+            let consumer_values = [value];
+            let mut consumer_timeline = vk::TimelineSemaphoreSubmitInfo::default()
+                .signal_semaphore_values(&consumer_values);
+            if self.consumer_timeline.is_some() {
+                submit = submit
+                    .push_next(&mut consumer_timeline)
+                    .signal_semaphores(&consumer_signals);
+            }
             self.device
                 .queue_submit(self.queue, &[submit], readback.fence)?;
             self.device
@@ -366,7 +405,11 @@ impl ImportedStream {
 impl Drop for ImportedStream {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.device.device_wait_idle();
+            // Every validation submission is synchronously completed by
+            // read_frame_rgba before it returns. Some Windows drivers can
+            // indefinitely block vkDeviceWaitIdle while an imported D3D12
+            // fence remains associated with the device, so teardown relies on
+            // those per-slot fences instead of an unnecessary global idle.
             for readback in self.readbacks.drain(..) {
                 self.device.destroy_fence(readback.fence, None);
                 self.device.destroy_buffer(readback.buffer, None);
@@ -374,6 +417,9 @@ impl Drop for ImportedStream {
             }
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_semaphore(self.timeline, None);
+            if let Some(semaphore) = self.consumer_timeline.take() {
+                self.device.destroy_semaphore(semaphore, None);
+            }
             for image in self.images.drain(..) {
                 self.device.destroy_image(image, None);
             }
@@ -386,9 +432,22 @@ impl Drop for ImportedStream {
     }
 }
 
+fn validate_consumer_semaphore(stream: &StreamReady) -> Result<(), ImportError> {
+    if stream.image_kind == ExternalImageKind::D3d12Resource
+        && stream.consumer_semaphore_handle == 0
+    {
+        Err(ImportError::InvalidStream(
+            "D3D12 consumer semaphore handle is missing",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 unsafe fn select_device(
     instance: &ash::Instance,
     d3d11: bool,
+    adapter_luid: Option<AdapterLuid>,
 ) -> Option<(vk::PhysicalDevice, u32)> {
     let mut required = vec![
         ash::khr::external_memory_win32::NAME,
@@ -401,6 +460,11 @@ unsafe fn select_device(
     unsafe { instance.enumerate_physical_devices().ok()? }
         .into_iter()
         .find_map(|physical| {
+            if adapter_luid.is_some_and(|luid| unsafe {
+                !physical_device_matches_luid(instance, physical, luid)
+            }) {
+                return None;
+            }
             let extensions = unsafe {
                 instance
                     .enumerate_device_extension_properties(physical)
@@ -420,6 +484,23 @@ unsafe fn select_device(
         })
 }
 
+fn requested_adapter(stream: &StreamReady) -> Option<AdapterLuid> {
+    (stream.adapter_luid.low_part != 0 || stream.adapter_luid.high_part != 0)
+        .then_some(stream.adapter_luid)
+}
+
+unsafe fn physical_device_matches_luid(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    luid: AdapterLuid,
+) -> bool {
+    let mut id = vk::PhysicalDeviceIDProperties::default();
+    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+    unsafe { instance.get_physical_device_properties2(physical_device, &mut properties) };
+    let expected = [luid.low_part.to_le_bytes(), luid.high_part.to_le_bytes()].concat();
+    id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
+}
+
 unsafe fn create_readbacks(
     instance: &ash::Instance,
     device: &ash::Device,
@@ -428,6 +509,7 @@ unsafe fn create_readbacks(
     images: &[vk::Image],
     width: u32,
     height: u32,
+    external_ownership: bool,
 ) -> Result<(vk::CommandPool, Vec<ReadbackSlot>), vk::Result> {
     let properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
     let pool = unsafe {
@@ -493,13 +575,18 @@ unsafe fn create_readbacks(
                 base_array_layer: 0,
                 layer_count: 1,
             };
-            let to_source = vk::ImageMemoryBarrier::default()
+            let mut to_source = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
                 .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                 .image(image)
                 .subresource_range(range);
+            if external_ownership {
+                to_source = to_source
+                    .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                    .dst_queue_family_index(queue_family_index);
+            }
             device.cmd_pipeline_barrier(
                 command,
                 vk::PipelineStageFlags::ALL_COMMANDS,
@@ -527,13 +614,18 @@ unsafe fn create_readbacks(
                         depth: 1,
                     })],
             );
-            let to_general = vk::ImageMemoryBarrier::default()
+            let mut to_general = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_READ)
                 .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                 .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(image)
                 .subresource_range(range);
+            if external_ownership {
+                to_general = to_general
+                    .src_queue_family_index(queue_family_index)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
+            }
             let to_host = vk::BufferMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                 .dst_access_mask(vk::AccessFlags::HOST_READ)
@@ -604,13 +696,22 @@ unsafe fn import_resources(
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     stream: &StreamReady,
-) -> Result<(Vec<vk::Image>, Vec<vk::DeviceMemory>, vk::Semaphore), vk::Result> {
+) -> Result<
+    (
+        Vec<vk::Image>,
+        Vec<vk::DeviceMemory>,
+        vk::Semaphore,
+        Option<vk::Semaphore>,
+    ),
+    vk::Result,
+> {
     let format = format_for_stream(stream).map_err(|_| vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
     let memory_handle_type = match stream.image_kind {
         ExternalImageKind::VulkanOpaqueWin32 => vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
         ExternalImageKind::D3d11SharedResourceNt => {
             vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE
         }
+        ExternalImageKind::D3d12Resource => vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE,
         _ => return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED),
     };
     let semaphore_handle_type = match stream.sync_kind {
@@ -618,6 +719,7 @@ unsafe fn import_resources(
             vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
         }
         ExternalSyncKind::D3d11Fence => vk::ExternalSemaphoreHandleTypeFlags::D3D11_FENCE,
+        ExternalSyncKind::D3d12Fence => vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE,
         _ => return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT),
     };
     let memory_properties =
@@ -661,11 +763,43 @@ unsafe fn import_resources(
             .push_next(&mut dedicated)
             .allocation_size(requirements.size)
             .memory_type_index(memory_type_index);
-        let memory = unsafe { device.allocate_memory(&allocation, None)? };
+        let allocation_result = unsafe { device.allocate_memory(&allocation, None) };
+        close_win32_handle(*raw_handle);
+        let memory = allocation_result?;
         unsafe { device.bind_image_memory(image, memory, 0)? };
         images.push(image);
         memories.push(memory);
     }
+    let importer = ash::khr::external_semaphore_win32::Device::new(instance, device);
+    let timeline = unsafe {
+        import_timeline(
+            device,
+            &importer,
+            semaphore_handle_type,
+            stream.timeline_semaphore_handle,
+        )?
+    };
+    let consumer_timeline = if stream.consumer_semaphore_handle != 0 {
+        Some(unsafe {
+            import_timeline(
+                device,
+                &importer,
+                semaphore_handle_type,
+                stream.consumer_semaphore_handle,
+            )?
+        })
+    } else {
+        None
+    };
+    Ok((images, memories, timeline, consumer_timeline))
+}
+
+unsafe fn import_timeline(
+    device: &ash::Device,
+    importer: &ash::khr::external_semaphore_win32::Device,
+    handle_type: vk::ExternalSemaphoreHandleTypeFlags,
+    handle: i64,
+) -> Result<vk::Semaphore, vk::Result> {
     let mut timeline_type =
         vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
     let semaphore = unsafe {
@@ -674,11 +808,21 @@ unsafe fn import_resources(
             None,
         )?
     };
-    let importer = ash::khr::external_semaphore_win32::Device::new(instance, device);
     let import = vk::ImportSemaphoreWin32HandleInfoKHR::default()
         .semaphore(semaphore)
-        .handle_type(semaphore_handle_type)
-        .handle(stream.timeline_semaphore_handle as isize);
-    unsafe { importer.import_semaphore_win32_handle(&import)? };
-    Ok((images, memories, semaphore))
+        .handle_type(handle_type)
+        .handle(handle as isize);
+    let import_result = unsafe { importer.import_semaphore_win32_handle(&import) };
+    close_win32_handle(handle);
+    if let Err(error) = import_result {
+        unsafe { device.destroy_semaphore(semaphore, None) };
+        return Err(error);
+    }
+    Ok(semaphore)
+}
+
+fn close_win32_handle(handle: i64) {
+    if handle != 0 && handle != -1 {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle as _) };
+    }
 }

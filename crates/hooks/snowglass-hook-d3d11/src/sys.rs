@@ -45,26 +45,3 @@ snowglass_hook::trampoline! {
         immediate_context: *mut *mut c_void,
     ) -> i32 => crate::hooks::dispatch_create_device_and_swapchain;
 }
-
-pub(crate) unsafe extern "system" fn draw_indexed(
-    this: *mut std::ffi::c_void,
-    index_count: u32,
-    start_index: u32,
-    base_vertex: i32,
-) {
-    if let Some(original) = crate::tracking::draw_indexed_original(this) {
-        unsafe { original(this, index_count, start_index, base_vertex) };
-    }
-    crate::tracking::record_draw(this);
-}
-
-pub(crate) unsafe extern "system" fn draw(
-    this: *mut std::ffi::c_void,
-    vertex_count: u32,
-    start_vertex: u32,
-) {
-    if let Some(original) = crate::tracking::draw_original(this) {
-        unsafe { original(this, vertex_count, start_vertex) };
-    }
-    crate::tracking::record_draw(this);
-}

@@ -31,7 +31,7 @@ chain! {
     pub(crate) dispatch_factory_create_swapchain, register_factory_create_swapchain;
     after CreateSwapChain;
     chain FACTORY_CREATE_SWAPCHAIN_CHAIN, context FactoryCreateSwapchainContext;
-    hook FactoryCreateSwapchainHook(swapchain: *mut *mut c_void) -> result: i32;
+    hook FactoryCreateSwapchainHook(device: *mut c_void, swapchain: *mut *mut c_void) -> result: i32;
     abi (this: *mut c_void, device: *mut c_void, desc: *const c_void, swapchain: *mut *mut c_void);
     resolve with factory, create_swapchain -> windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0;
 }
@@ -40,7 +40,7 @@ chain! {
     pub(crate) dispatch_factory_create_swapchain_for_hwnd, register_factory_create_swapchain_for_hwnd;
     after CreateSwapChainForHwnd;
     chain FACTORY_CREATE_SWAPCHAIN_FOR_HWND_CHAIN, context FactoryCreateSwapchainForHwndContext;
-    hook FactoryCreateSwapchainForHwndHook(swapchain: *mut *mut c_void) -> result: i32;
+    hook FactoryCreateSwapchainForHwndHook(device: *mut c_void, swapchain: *mut *mut c_void) -> result: i32;
     abi (this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, fullscreen_desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void);
     resolve with factory, create_swapchain_for_hwnd -> windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0;
 }
@@ -49,7 +49,7 @@ chain! {
     pub(crate) dispatch_factory_create_swapchain_for_core_window, register_factory_create_swapchain_for_core_window;
     after CreateSwapChainForCoreWindow;
     chain FACTORY_CREATE_SWAPCHAIN_FOR_CORE_WINDOW_CHAIN, context FactoryCreateSwapchainForCoreWindowContext;
-    hook FactoryCreateSwapchainForCoreWindowHook(swapchain: *mut *mut c_void) -> result: i32;
+    hook FactoryCreateSwapchainForCoreWindowHook(device: *mut c_void, swapchain: *mut *mut c_void) -> result: i32;
     abi (this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void);
     resolve with factory, create_swapchain_for_core_window -> windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0;
 }
@@ -58,7 +58,7 @@ chain! {
     pub(crate) dispatch_factory_create_swapchain_for_composition, register_factory_create_swapchain_for_composition;
     after CreateSwapChainForComposition;
     chain FACTORY_CREATE_SWAPCHAIN_FOR_COMPOSITION_CHAIN, context FactoryCreateSwapchainForCompositionContext;
-    hook FactoryCreateSwapchainForCompositionHook(swapchain: *mut *mut c_void) -> result: i32;
+    hook FactoryCreateSwapchainForCompositionHook(device: *mut c_void, swapchain: *mut *mut c_void) -> result: i32;
     abi (this: *mut c_void, device: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void);
     resolve with factory, create_swapchain_for_composition -> windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0;
 }

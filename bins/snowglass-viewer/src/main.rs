@@ -9,7 +9,7 @@ use snowglass_platform_windows::{
     forward_mouse_move, forward_mouse_wheel, forward_raw_key, hide_top_level_windows,
     inject_libraries_before_resume, performance_counter, performance_frequency,
 };
-use snowglass_protocol::{ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION};
+use snowglass_protocol::{AdapterLuid, ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION};
 use std::{
     collections::{HashSet, VecDeque},
     env,
@@ -208,6 +208,7 @@ struct DirectCompositor {
     physical_device: vk::PhysicalDevice,
     device: ash::Device,
     queue: vk::Queue,
+    queue_family: u32,
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
@@ -225,11 +226,17 @@ struct DirectCompositor {
     frame_index: u64,
     imported: Option<ImportedImageRing>,
     latest: Option<FrameReady>,
+    last_released_frame: u64,
+    keyed_mutex_enabled: bool,
     egui_renderer: Option<EguiRenderer>,
 }
 
 impl DirectCompositor {
-    fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
+    fn new(
+        window: &Window,
+        preferred_adapter: Option<AdapterLuid>,
+        enable_keyed_mutex: bool,
+    ) -> Result<Self, Box<dyn Error>> {
         // SAFETY: all Vulkan children are owned by Self and destroyed in reverse
         // dependency order after the device becomes idle.
         unsafe {
@@ -249,17 +256,24 @@ impl DirectCompositor {
             let surface =
                 ash_window::create_surface(&entry, &instance, display, window_handle, None)?;
             let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-            let required = [
+            let mut required = vec![
                 ash::khr::swapchain::NAME,
                 ash::khr::external_memory_win32::NAME,
                 ash::khr::external_semaphore_win32::NAME,
                 ash::khr::timeline_semaphore::NAME,
-                ash::khr::win32_keyed_mutex::NAME,
             ];
+            if enable_keyed_mutex {
+                required.push(ash::khr::win32_keyed_mutex::NAME);
+            }
             let (physical_device, queue_family) = instance
                 .enumerate_physical_devices()?
                 .into_iter()
                 .find_map(|physical| {
+                    if preferred_adapter.is_some_and(|luid| {
+                        !physical_device_matches_luid(&instance, physical, luid)
+                    }) {
+                        return None;
+                    }
                     let available = instance
                         .enumerate_device_extension_properties(physical)
                         .ok()?;
@@ -294,7 +308,10 @@ impl DirectCompositor {
             let queue_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family)
                 .queue_priorities(&priorities);
-            let extension_names = required.map(|name| name.as_ptr());
+            let extension_names = required
+                .iter()
+                .map(|name| name.as_ptr())
+                .collect::<Vec<_>>();
             let mut timeline_features =
                 vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
             let device = instance.create_device(
@@ -449,6 +466,7 @@ impl DirectCompositor {
                 physical_device,
                 device,
                 queue,
+                queue_family,
                 swapchain_loader,
                 swapchain,
                 swapchain_images,
@@ -466,6 +484,8 @@ impl DirectCompositor {
                 frame_index: 0,
                 imported: None,
                 latest: None,
+                last_released_frame: 0,
+                keyed_mutex_enabled: enable_keyed_mutex,
                 egui_renderer: Some(egui_renderer),
             })
         }
@@ -480,7 +500,12 @@ impl DirectCompositor {
             stream,
         )?);
         self.latest = None;
+        self.last_released_frame = 0;
         Ok(())
+    }
+
+    fn matches_adapter(&self, adapter: AdapterLuid) -> bool {
+        physical_device_matches_luid(&self.instance, self.physical_device, adapter)
     }
 
     fn set_latest(&mut self, frame: FrameReady) {
@@ -494,6 +519,7 @@ impl DirectCompositor {
     fn disconnect_stream(&mut self) -> Result<(), vk::Result> {
         unsafe { self.device.device_wait_idle()? };
         self.latest = None;
+        self.last_released_frame = 0;
         self.imported = None;
         Ok(())
     }
@@ -656,13 +682,18 @@ impl DirectCompositor {
             }
             if let (Some(imported), Some(frame)) = (&self.imported, self.latest) {
                 if let Some(source) = imported.image(frame.slot) {
-                    let to_source = vk::ImageMemoryBarrier::default()
+                    let mut to_source = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
                         .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
                         .old_layout(vk::ImageLayout::GENERAL)
                         .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                         .image(source)
                         .subresource_range(color_range());
+                    if imported.uses_external_queue_family() {
+                        to_source = to_source
+                            .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
+                            .dst_queue_family_index(self.queue_family);
+                    }
                     self.device.cmd_pipeline_barrier(
                         command,
                         vk::PipelineStageFlags::ALL_COMMANDS,
@@ -715,13 +746,18 @@ impl DirectCompositor {
                             ])],
                         vk::Filter::LINEAR,
                     );
-                    let source_to_general = vk::ImageMemoryBarrier::default()
+                    let mut source_to_general = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::TRANSFER_READ)
                         .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                         .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                         .new_layout(vk::ImageLayout::GENERAL)
                         .image(source)
                         .subresource_range(color_range());
+                    if imported.uses_external_queue_family() {
+                        source_to_general = source_to_general
+                            .src_queue_family_index(self.queue_family)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
+                    }
                     self.device.cmd_pipeline_barrier(
                         command,
                         vk::PipelineStageFlags::TRANSFER,
@@ -794,8 +830,25 @@ impl DirectCompositor {
                 wait_stages.push(vk::PipelineStageFlags::TRANSFER);
             }
             let commands = [command];
-            let signals = [self.render_finished[flight]];
-            let signal_values = [0];
+            let mut signals = vec![self.render_finished[flight]];
+            let mut signal_values = vec![0];
+            let release = self
+                .imported
+                .as_ref()
+                .zip(self.latest)
+                .and_then(|(imported, frame)| {
+                    (frame.frame_number > self.last_released_frame)
+                        .then(|| {
+                            imported
+                                .consumer_timeline()
+                                .map(|semaphore| (semaphore, frame))
+                        })
+                        .flatten()
+                });
+            if let Some((semaphore, frame)) = release {
+                signals.push(semaphore);
+                signal_values.push(frame.sync_value);
+            }
             let mut timeline_submit = vk::TimelineSemaphoreSubmitInfo::default()
                 .wait_semaphore_values(&wait_values)
                 .signal_semaphore_values(&signal_values);
@@ -832,12 +885,15 @@ impl DirectCompositor {
             }
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
+            if let Some((_, frame)) = release {
+                self.last_released_frame = frame.frame_number;
+            }
             let swapchains = [self.swapchain];
             let indices = [image_index];
             let present_suboptimal = match self.swapchain_loader.queue_present(
                 self.queue,
                 &vk::PresentInfoKHR::default()
-                    .wait_semaphores(&signals)
+                    .wait_semaphores(&signals[..1])
                     .swapchains(&swapchains)
                     .image_indices(&indices),
             ) {
@@ -858,8 +914,9 @@ impl DirectCompositor {
 impl Drop for DirectCompositor {
     fn drop(&mut self) {
         unsafe {
-            let _ = self.device.device_wait_idle();
+            let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
             self.imported = None;
+            let _ = self.device.device_wait_idle();
             self.egui_renderer = None;
             for fence in self.fences.drain(..) {
                 self.device.destroy_fence(fence, None);
@@ -927,7 +984,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         window.theme(),
         None,
     );
-    let mut compositor = DirectCompositor::new(&window)?;
+    let mut compositor = DirectCompositor::new(&window, None, true)?;
     let frequency = performance_frequency().unwrap_or(1) as f64;
     let mut stats = Statistics {
         sample_started: Some(Instant::now()),
@@ -1087,8 +1144,40 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
                                 }
-                                if let Err(error) = compositor.import_stream(&stream) {
-                                    eprintln!("snowglass: direct import failed: {error}");
+                                let adapter = stream.adapter_luid;
+                                let needs_keyed_mutex = stream.image_kind
+                                    == ExternalImageKind::D3d11SharedResourceNt;
+                                let adapter_mismatch =
+                                    (adapter.low_part != 0 || adapter.high_part != 0)
+                                        && !compositor.matches_adapter(adapter);
+                                if adapter_mismatch
+                                    || (needs_keyed_mutex && !compositor.keyed_mutex_enabled)
+                                {
+                                    let preferred = (adapter.low_part != 0
+                                        || adapter.high_part != 0)
+                                        .then_some(adapter);
+                                    match DirectCompositor::new(
+                                        &window,
+                                        preferred,
+                                        needs_keyed_mutex,
+                                    ) {
+                                        Ok(replacement) => compositor = replacement,
+                                        Err(error) => {
+                                            eprintln!(
+                                                "snowglass: no Vulkan compositor for source adapter: {error}"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                match compositor.import_stream(&stream) {
+                                    Ok(()) => eprintln!(
+                                        "snowglass: imported {active_backend} stream {}x{} with {} slots",
+                                        stream.width, stream.height, stream.slot_count
+                                    ),
+                                    Err(error) => {
+                                        eprintln!("snowglass: direct import failed: {error}")
+                                    }
                                 }
                             }
                             CaptureEvent::Frame(connection, frame) => {
@@ -1262,6 +1351,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn physical_device_matches_luid(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    luid: AdapterLuid,
+) -> bool {
+    let mut id = vk::PhysicalDeviceIDProperties::default();
+    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+    unsafe { instance.get_physical_device_properties2(physical_device, &mut properties) };
+    let expected = [luid.low_part.to_le_bytes(), luid.high_part.to_le_bytes()].concat();
+    id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
+}
+
 fn spawn_ipc(listener: LocalSocketListener, events: mpsc::Sender<CaptureEvent>) {
     thread::spawn(move || {
         let newest_connection = Arc::new(AtomicU64::new(0));
@@ -1406,8 +1507,13 @@ fn launch_target(
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
     let d3d11_hook = layer_dir.join("snowglass_hook_d3d11.dll");
+    let d3d12_hook = layer_dir.join("snowglass_hook_d3d12.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
-    for (name, hook) in [("D3D11", &d3d11_hook), ("DirectInput", &dinput_hook)] {
+    for (name, hook) in [
+        ("D3D11", &d3d11_hook),
+        ("D3D12", &d3d12_hook),
+        ("DirectInput", &dinput_hook),
+    ] {
         if hook.is_file() {
             continue;
         }
@@ -1431,6 +1537,10 @@ fn launch_target(
         "SNOWGLASS_D3D11_LOG_FILE",
         layer_dir.join("snowglass-d3d11.log"),
     );
+    command.env(
+        "SNOWGLASS_D3D12_LOG_FILE",
+        layer_dir.join("snowglass-d3d12.log"),
+    );
     if track_render_target {
         command.env("SNOWGLASS_TRACK_RENDER_TARGET", "1");
     }
@@ -1442,6 +1552,10 @@ fn launch_target(
         (
             d3d11_hook.as_path(),
             c"SnowglassInstallD3d11Hook" as &std::ffi::CStr,
+        ),
+        (
+            d3d12_hook.as_path(),
+            c"SnowglassInstallD3d12Hook" as &std::ffi::CStr,
         ),
         (
             dinput_hook.as_path(),

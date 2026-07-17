@@ -10,3 +10,4 @@ snowglass-api.workspace = true
 snowglass-consumer-core = { path = "../snowglass-consumer-core" }
 snowglass-ipc.workspace = true
 snowglass-protocol.workspace = true
+windows-sys.workspace = true

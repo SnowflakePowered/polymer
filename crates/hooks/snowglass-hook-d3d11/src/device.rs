@@ -9,10 +9,21 @@ use windows::{
         Direct3D11::ID3D11Device,
         Dxgi::{IDXGIAdapter, IDXGIDevice, IDXGIFactory},
     },
-    core::Interface,
+    core::{IUnknown, Interface},
 };
 
 static FACTORY_OWNERS: OnceLock<Mutex<Vec<IDXGIFactory>>> = OnceLock::new();
+
+pub(crate) unsafe fn claim_swapchain(
+    _swapchain: *mut c_void,
+    creation_device: *mut c_void,
+) -> bool {
+    if snowglass_platform_windows::vulkan_capture_active() || creation_device.is_null() {
+        return false;
+    }
+    unsafe { IUnknown::from_raw_borrowed(&creation_device) }
+        .is_some_and(|unknown| unknown.cast::<ID3D11Device>().is_ok())
+}
 
 fn retain_factory(factory: IDXGIFactory) {
     let mut owners = FACTORY_OWNERS
@@ -40,7 +51,7 @@ pub(crate) unsafe fn create_device(
         if !installed {
             unsafe { install_factory_from_device(device) };
         }
-        unsafe { crate::tracking::install_immediate_context(immediate_context) };
+        unsafe { snowglass_producer_d3d11::install_immediate_context(immediate_context) };
     }
 }
 
@@ -60,10 +71,15 @@ pub(crate) unsafe fn create_device_and_swapchain(
     if !installed {
         unsafe { install_factory_from_device(device) };
     }
-    unsafe { crate::tracking::install_immediate_context(immediate_context) };
+    unsafe { snowglass_producer_d3d11::install_immediate_context(immediate_context) };
     let swapchain = unsafe { *swapchain };
     if !swapchain.is_null() {
-        unsafe { snowglass_hook_dxgi::install_swapchain(swapchain) };
+        let creation_device = if device.is_null() {
+            std::ptr::null_mut()
+        } else {
+            unsafe { *device }
+        };
+        unsafe { snowglass_hook_dxgi::register_swapchain(swapchain, creation_device) };
     }
 }
 

@@ -1,13 +1,11 @@
 //! D3D11 export detours and COM device bootstrap.
 #![allow(unsafe_code)]
 
-mod capture;
 mod device;
 mod hook_chain;
 mod hooks;
 mod install;
 mod sys;
-mod tracking;
 
 pub use sys::SnowglassInstallD3d11Hook;
 
@@ -31,11 +29,12 @@ pub(crate) fn register_hooks() {
     REGISTER.call_once(|| {
         hooks::register_create_device(device::create_device);
         hooks::register_create_device_and_swapchain(device::create_device_and_swapchain);
-        let _ = snowglass_hook_dxgi::set_callbacks(snowglass_hook_dxgi::SwapchainCallbacks {
-            before_present: Some(capture::before_present),
-            before_resize: Some(capture::before_resize),
+        snowglass_hook_dxgi::register_callbacks(snowglass_hook_dxgi::SwapchainCallbacks {
+            claim: device::claim_swapchain,
+            before_present: Some(snowglass_producer_d3d11::before_present),
+            before_resize: Some(snowglass_producer_d3d11::before_resize),
             after_resize: None,
-            destroyed: Some(capture::destroyed),
+            destroyed: Some(snowglass_producer_d3d11::destroyed),
         });
     });
 }

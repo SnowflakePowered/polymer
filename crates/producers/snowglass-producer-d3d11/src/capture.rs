@@ -1,10 +1,11 @@
 //! Swapchain capture state and viewer handoff.
 
+use crate::D3d11SwapchainCapture;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
-use snowglass_producer_d3d11::D3d11SwapchainCapture;
 use snowglass_protocol::{
-    ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS, PROTOCOL_VERSION, StreamId,
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
+    PROTOCOL_VERSION, StreamId,
 };
 use std::{
     collections::HashMap,
@@ -25,7 +26,7 @@ fn captures() -> &'static Mutex<HashMap<usize, CaptureState>> {
     CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
+pub unsafe fn before_present(swapchain: *mut c_void) {
     if snowglass_platform_windows::vulkan_capture_active() {
         return;
     }
@@ -104,7 +105,7 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
     }
 }
 
-pub(crate) unsafe fn before_resize(swapchain: *mut c_void) {
+pub unsafe fn before_resize(swapchain: *mut c_void) {
     if captures()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -115,7 +116,7 @@ pub(crate) unsafe fn before_resize(swapchain: *mut c_void) {
     }
 }
 
-pub(crate) unsafe fn destroyed(swapchain: *mut c_void) {
+pub unsafe fn destroyed(swapchain: *mut c_void) {
     unsafe { before_resize(swapchain) };
 }
 
@@ -151,6 +152,10 @@ fn connect_viewer(capture: &D3d11SwapchainCapture) -> std::io::Result<LocalSocke
     let desc = ring.desc();
     socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),
+        adapter_luid: AdapterLuid {
+            low_part: 0,
+            high_part: 0,
+        },
         source_window: capture.source_window() as i64,
         width: desc.width,
         height: desc.height,
@@ -160,6 +165,7 @@ fn connect_viewer(capture: &D3d11SwapchainCapture) -> std::io::Result<LocalSocke
         slot_count: desc.slots,
         image_handles,
         timeline_semaphore_handle: fence,
+        consumer_semaphore_handle: 0,
     }))?;
     crate::d3d11_log(format!(
         "snowglass: connected D3D11 ring to viewer process {viewer_pid}"

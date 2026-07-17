@@ -21,7 +21,7 @@ pub(crate) unsafe extern "system" fn detoured_create_swapchain_for_hwnd(
             swapchain,
         )
     };
-    unsafe { crate::runtime::factory_created_swapchain(swapchain, result) };
+    unsafe { crate::runtime::factory_created_swapchain(device, swapchain, result) };
     result
 }
 

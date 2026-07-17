@@ -3,7 +3,8 @@ use windows::{
     Win32::Graphics::Dxgi::{
         IDXGIFactory_Vtbl, IDXGIFactory1_Vtbl, IDXGIFactory2_Vtbl, IDXGIFactory3_Vtbl,
         IDXGIFactory4_Vtbl, IDXGIFactory5_Vtbl, IDXGIFactory6_Vtbl, IDXGIFactory7_Vtbl,
-        IDXGISwapChain_Vtbl, IDXGISwapChain1_Vtbl,
+        IDXGISwapChain_Vtbl, IDXGISwapChain1_Vtbl, IDXGISwapChain2_Vtbl, IDXGISwapChain3_Vtbl,
+        IDXGISwapChain4_Vtbl,
     },
     core::IUnknown_Vtbl,
 };
@@ -14,6 +15,12 @@ pub(crate) const SWAPCHAIN_VTABLE_LEN: usize =
     std::mem::size_of::<IDXGISwapChain_Vtbl>() / SLOT_SIZE;
 pub(crate) const SWAPCHAIN1_VTABLE_LEN: usize =
     std::mem::size_of::<IDXGISwapChain1_Vtbl>() / SLOT_SIZE;
+pub(crate) const SWAPCHAIN2_VTABLE_LEN: usize =
+    std::mem::size_of::<IDXGISwapChain2_Vtbl>() / SLOT_SIZE;
+pub(crate) const SWAPCHAIN3_VTABLE_LEN: usize =
+    std::mem::size_of::<IDXGISwapChain3_Vtbl>() / SLOT_SIZE;
+pub(crate) const SWAPCHAIN4_VTABLE_LEN: usize =
+    std::mem::size_of::<IDXGISwapChain4_Vtbl>() / SLOT_SIZE;
 pub(crate) const FACTORY_VTABLE_LEN: usize = std::mem::size_of::<IDXGIFactory_Vtbl>() / SLOT_SIZE;
 pub(crate) const FACTORY1_VTABLE_LEN: usize = std::mem::size_of::<IDXGIFactory1_Vtbl>() / SLOT_SIZE;
 pub(crate) const FACTORY2_VTABLE_LEN: usize = std::mem::size_of::<IDXGIFactory2_Vtbl>() / SLOT_SIZE;
@@ -168,37 +175,11 @@ impl FactoryVtable {
 }
 
 impl SwapchainVtable {
-    pub(crate) unsafe fn clone_and_patch(object: *mut c_void) -> Option<Self> {
-        if object.is_null() {
+    pub(crate) unsafe fn clone_from(original: *const usize, length: usize) -> Option<Self> {
+        if original.is_null() || length < SWAPCHAIN_VTABLE_LEN {
             return None;
         }
-        let original = unsafe { *object.cast::<*const usize>() };
-        if original.is_null() {
-            return None;
-        }
-        unsafe { Self::clone_from(original, false) }
-    }
-
-    pub(crate) unsafe fn clone_and_patch_swapchain1(object: *mut c_void) -> Option<Self> {
-        if object.is_null() {
-            return None;
-        }
-        let original = unsafe { *object.cast::<*const usize>() };
-        if original.is_null() {
-            return None;
-        }
-        unsafe { Self::clone_from(original, true) }
-    }
-
-    pub(crate) unsafe fn clone_from(original: *const usize, swapchain1: bool) -> Option<Self> {
-        if original.is_null() {
-            return None;
-        }
-        let length = if swapchain1 {
-            SWAPCHAIN1_VTABLE_LEN
-        } else {
-            SWAPCHAIN_VTABLE_LEN
-        };
+        let swapchain1 = length >= SWAPCHAIN1_VTABLE_LEN;
         let mut patched = unsafe { std::slice::from_raw_parts(original, length) }
             .to_vec()
             .into_boxed_slice();

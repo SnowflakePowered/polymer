@@ -1972,6 +1972,7 @@ dependencies = [
  "snowglass-consumer-core",
  "snowglass-ipc",
  "snowglass-protocol",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1982,7 +1983,6 @@ version = "0.1.0"
 name = "snowglass-hook-d3d11"
 version = "0.1.0"
 dependencies = [
- "dashmap",
  "retour",
  "snowglass-consumer-vulkan",
  "snowglass-hook",
@@ -1999,7 +1999,17 @@ dependencies = [
 name = "snowglass-hook-d3d12"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
+ "retour",
+ "snowglass-consumer-vulkan",
+ "snowglass-hook",
+ "snowglass-hook-dxgi",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
  "snowglass-producer-d3d12",
+ "snowglass-protocol",
+ "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2091,7 +2101,10 @@ dependencies = [
 name = "snowglass-producer-d3d11"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "snowglass-api",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
  "snowglass-protocol",
  "windows",
 ]
@@ -2100,7 +2113,8 @@ dependencies = [
 name = "snowglass-producer-d3d12"
 version = "0.1.0"
 dependencies = [
- "snowglass-api",
+ "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

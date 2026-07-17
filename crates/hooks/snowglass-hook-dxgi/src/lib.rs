@@ -9,8 +9,9 @@ mod sys;
 mod vtable;
 
 pub use runtime::{
-    SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
-    install_swapchain, install_swapchain1, set_callbacks,
+    SwapchainCallbacks, install_factory, install_factory_detours, install_factory_interface,
+    install_factory_interfaces, install_swapchain, install_swapchain1, register_callbacks,
+    register_swapchain,
 };
 
 pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
