@@ -1,7 +1,9 @@
 //! Framed Snowglass IPC over a Windows AF_UNIX stream socket.
 
 use snowglass_input::{DirectInputData, DirectInputDevice};
-use snowglass_protocol::{FrameReady, Handshake, MAX_IMAGE_SLOTS, StreamId};
+use snowglass_protocol::{
+    ExternalImageKind, ExternalSyncKind, FrameReady, Handshake, MAX_IMAGE_SLOTS, StreamId,
+};
 use std::{
     fs,
     io::{self, Read, Write},
@@ -42,6 +44,8 @@ pub struct StreamReady {
     pub width: u32,
     pub height: u32,
     pub format: u32,
+    pub image_kind: ExternalImageKind,
+    pub sync_kind: ExternalSyncKind,
     pub slot_count: u32,
     /// Handles already duplicated into the viewer process.
     pub image_handles: [i64; MAX_IMAGE_SLOTS],
@@ -79,6 +83,8 @@ struct WireStreamReady {
     width: U32,
     height: U32,
     format: U32,
+    image_kind: U32,
+    sync_kind: U32,
     slot_count: U32,
     image_handles: [I64; MAX_IMAGE_SLOTS],
     timeline_semaphore_handle: I64,
@@ -301,6 +307,8 @@ fn encode(message: Message) -> WireMessage {
                     width: U32::new(value.width),
                     height: U32::new(value.height),
                     format: U32::new(value.format),
+                    image_kind: U32::new(value.image_kind as u32),
+                    sync_kind: U32::new(value.sync_kind as u32),
                     slot_count: U32::new(value.slot_count),
                     image_handles: value.image_handles.map(I64::new),
                     timeline_semaphore_handle: I64::new(value.timeline_semaphore_handle),
@@ -363,12 +371,18 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
         }
         MESSAGE_STREAM_READY => {
             let value = payload::<WireStreamReady>(wire)?;
+            let image_kind = ExternalImageKind::try_from(value.image_kind.get())
+                .map_err(|()| io::Error::new(io::ErrorKind::InvalidData, "invalid image kind"))?;
+            let sync_kind = ExternalSyncKind::try_from(value.sync_kind.get())
+                .map_err(|()| io::Error::new(io::ErrorKind::InvalidData, "invalid sync kind"))?;
             Ok(Message::StreamReady(StreamReady {
                 producer_process_id: value.producer_process_id.get(),
                 source_window: value.source_window.get(),
                 width: value.width.get(),
                 height: value.height.get(),
                 format: value.format.get(),
+                image_kind,
+                sync_kind,
                 slot_count: value.slot_count.get(),
                 image_handles: value.image_handles.map(I64::get),
                 timeline_semaphore_handle: value.timeline_semaphore_handle.get(),
@@ -440,6 +454,8 @@ mod tests {
                 width: 1920,
                 height: 1080,
                 format: 44,
+                image_kind: ExternalImageKind::VulkanOpaqueWin32,
+                sync_kind: ExternalSyncKind::VulkanTimelineSemaphore,
                 slot_count: 3,
                 image_handles: [11, 12, 13, 0],
                 timeline_semaphore_handle: 14,

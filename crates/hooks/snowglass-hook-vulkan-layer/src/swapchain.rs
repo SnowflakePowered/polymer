@@ -10,7 +10,9 @@ use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, perfo
 use snowglass_producer_vulkan::{
     ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, SwapchainCopyEngine,
 };
-use snowglass_protocol::{FrameReady, MAX_IMAGE_SLOTS, PROTOCOL_VERSION, StreamId};
+use snowglass_protocol::{
+    ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS, PROTOCOL_VERSION, StreamId,
+};
 use std::sync::{
     LazyLock,
     atomic::{AtomicU64, Ordering},
@@ -130,6 +132,8 @@ pub(crate) fn connect_viewer(
         width: extent.width,
         height: extent.height,
         format: format.as_raw() as u32,
+        image_kind: ExternalImageKind::VulkanOpaqueWin32,
+        sync_kind: ExternalSyncKind::VulkanTimelineSemaphore,
         slot_count: ring.slots().len() as u32,
         image_handles: handles,
         timeline_semaphore_handle: match duplicate_handle_into_process(

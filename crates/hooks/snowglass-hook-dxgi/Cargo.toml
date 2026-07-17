@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["rlib"]
 
 [dependencies]
-snowglass-producer-d3d11 = { path = "../../producers/snowglass-producer-d3d11" }
-snowglass-producer-d3d12 = { path = "../../producers/snowglass-producer-d3d12" }
+retour.workspace = true
+snowglass-hook.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

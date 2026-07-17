@@ -7,9 +7,9 @@ use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
     NativeWindow, ProcessId, client_size, forward_character, forward_mouse_button,
     forward_mouse_move, forward_mouse_wheel, forward_raw_key, hide_top_level_windows,
-    inject_library_before_resume, performance_counter, performance_frequency,
+    inject_libraries_before_resume, performance_counter, performance_frequency,
 };
-use snowglass_protocol::{FrameReady, Handshake, PROTOCOL_VERSION};
+use snowglass_protocol::{ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION};
 use std::{
     collections::{HashSet, VecDeque},
     env,
@@ -254,6 +254,7 @@ impl DirectCompositor {
                 ash::khr::external_memory_win32::NAME,
                 ash::khr::external_semaphore_win32::NAME,
                 ash::khr::timeline_semaphore::NAME,
+                ash::khr::win32_keyed_mutex::NAME,
             ];
             let (physical_device, queue_family) = instance
                 .enumerate_physical_devices()?
@@ -486,6 +487,10 @@ impl DirectCompositor {
         self.latest = Some(frame);
     }
 
+    fn has_pending_frame(&self) -> bool {
+        self.latest.is_some()
+    }
+
     fn disconnect_stream(&mut self) -> Result<(), vk::Result> {
         unsafe { self.device.device_wait_idle()? };
         self.latest = None;
@@ -580,6 +585,15 @@ impl DirectCompositor {
             let flight = self.frame_index as usize % FRAMES_IN_FLIGHT;
             self.device
                 .wait_for_fences(&[self.fences[flight]], true, u64::MAX)?;
+            if let (Some(imported), Some(frame)) = (&self.imported, self.latest)
+                && imported.uses_keyed_mutex()
+            {
+                // A D3D11 shared texture is made visible by both its fence and
+                // its keyed mutex. Waiting for the fence before submission
+                // avoids asking the Vulkan driver to resolve both primitives
+                // inside the same queue operation.
+                imported.wait_for(frame.sync_value, u64::MAX)?;
+            }
             self.egui_renderer
                 .as_mut()
                 .expect("egui renderer is live")
@@ -629,15 +643,17 @@ impl DirectCompositor {
                 &[],
                 &[to_destination],
             );
-            self.device.cmd_clear_color_image(
-                command,
-                destination,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &vk::ClearColorValue {
-                    float32: [1.0, 0.0, 1.0, 1.0],
-                },
-                &[color_range()],
-            );
+            if self.latest.is_some() || !self.swapchain_initialized[image_index as usize] {
+                self.device.cmd_clear_color_image(
+                    command,
+                    destination,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &vk::ClearColorValue {
+                        float32: [1.0, 0.0, 1.0, 1.0],
+                    },
+                    &[color_range()],
+                );
+            }
             if let (Some(imported), Some(frame)) = (&self.imported, self.latest) {
                 if let Some(source) = imported.image(frame.slot) {
                     let to_source = vk::ImageMemoryBarrier::default()
@@ -770,7 +786,9 @@ impl DirectCompositor {
             let mut waits = vec![self.image_available[flight]];
             let mut wait_values = vec![0];
             let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-            if let (Some(imported), Some(frame)) = (&self.imported, self.latest) {
+            if let (Some(imported), Some(frame)) = (&self.imported, self.latest)
+                && !imported.uses_keyed_mutex()
+            {
                 waits.push(imported.timeline());
                 wait_values.push(frame.sync_value);
                 wait_stages.push(vk::PipelineStageFlags::TRANSFER);
@@ -781,12 +799,37 @@ impl DirectCompositor {
             let mut timeline_submit = vk::TimelineSemaphoreSubmitInfo::default()
                 .wait_semaphore_values(&wait_values)
                 .signal_semaphore_values(&signal_values);
-            let submit = vk::SubmitInfo::default()
+            let keyed_memory =
+                self.imported
+                    .as_ref()
+                    .zip(self.latest)
+                    .and_then(|(imported, frame)| {
+                        imported
+                            .uses_keyed_mutex()
+                            .then(|| imported.memory(frame.slot))
+                            .flatten()
+                            .map(|memory| memory)
+                    });
+            let acquire_syncs = keyed_memory.map_or([vk::DeviceMemory::null()], |memory| [memory]);
+            let acquire_keys = keyed_memory.map_or([0], |_| [1]);
+            let acquire_timeouts = [u32::MAX];
+            let release_syncs = acquire_syncs;
+            let release_keys = [0];
+            let mut keyed_mutex = vk::Win32KeyedMutexAcquireReleaseInfoKHR::default()
+                .acquire_syncs(&acquire_syncs)
+                .acquire_keys(&acquire_keys)
+                .acquire_timeouts(&acquire_timeouts)
+                .release_syncs(&release_syncs)
+                .release_keys(&release_keys);
+            let mut submit = vk::SubmitInfo::default()
                 .push_next(&mut timeline_submit)
                 .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
+            if keyed_memory.is_some() {
+                submit = submit.push_next(&mut keyed_mutex);
+            }
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
             let swapchains = [self.swapchain];
@@ -803,6 +846,9 @@ impl DirectCompositor {
                 Err(error) => return Err(error.into()),
             };
             self.swapchain_initialized[image_index as usize] = true;
+            if keyed_memory.is_some() {
+                self.latest = None;
+            }
             self.frame_index += 1;
             Ok(!(acquire_suboptimal || present_suboptimal))
         }
@@ -858,7 +904,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backing_window = Arc::new(AtomicIsize::new(0));
     let (target_done_tx, target_done_rx) = mpsc::channel();
     spawn_target_monitor(child, process_id, stop.clone(), target_done_tx);
-    let (capture_tx, capture_rx) = mpsc::sync_channel(1);
+    let (capture_tx, capture_rx) = mpsc::channel();
     spawn_ipc(listener, capture_tx);
 
     let event_loop = EventLoop::new()?;
@@ -889,6 +935,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut cursor_position = (0, 0);
     let mut active_capture_connection = 0u64;
+    let mut active_backend = "Waiting";
     let input_started = Instant::now();
     let mut input_sequence = 0u32;
     let mut pressed_keys = HashSet::<KeyCode>::new();
@@ -1030,6 +1077,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         match capture {
                             CaptureEvent::Stream(connection, stream) => {
                                 active_capture_connection = connection;
+                                active_backend = match stream.image_kind {
+                                    ExternalImageKind::D3d11SharedResourceNt => "D3D11",
+                                    ExternalImageKind::VulkanOpaqueWin32 => "Vulkan",
+                                    ExternalImageKind::D3d12Resource
+                                    | ExternalImageKind::D3d12Heap => "D3D12",
+                                };
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
@@ -1076,6 +1129,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     * 1000.0
                                     / frequency;
                                 compositor.set_latest(frame);
+                                if active_backend == "D3D11" {
+                                    // Keyed-mutex frames must be consumed and released in order;
+                                    // do not overwrite one with a newer socket message.
+                                    break;
+                                }
                             }
                             CaptureEvent::Disconnected(connection) => {
                                 if connection != active_capture_connection {
@@ -1086,6 +1144,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
+                    }
+                    if active_backend == "D3D11" && !compositor.has_pending_frame() {
+                        // Each viewer swapchain image contains a different historical capture.
+                        // Without a new keyed-mutex frame, presenting another image would rotate
+                        // an older capture back onto the screen and look like temporal ghosting.
+                        return;
                     }
                     if let Some(started) = stats.sample_started {
                         if started.elapsed() >= Duration::from_millis(500) {
@@ -1107,7 +1171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
                             ui.horizontal(|ui| {
-                                ui.strong("Snowglass Vulkan Direct");
+                                ui.strong(format!("Snowglass {active_backend} Direct"));
                                 ui.label(format!("Frame {}", stats.frame_number));
                                 ui.label(format!("Slot {}", stats.slot));
                                 ui.label(format!(
@@ -1198,7 +1262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEvent>) {
+fn spawn_ipc(listener: LocalSocketListener, events: mpsc::Sender<CaptureEvent>) {
     thread::spawn(move || {
         let newest_connection = Arc::new(AtomicU64::new(0));
         loop {
@@ -1235,7 +1299,7 @@ fn spawn_ipc(listener: LocalSocketListener, events: mpsc::SyncSender<CaptureEven
                             }
                             Message::FrameReady(frame) => {
                                 if newest_connection.load(Ordering::Acquire) == connection {
-                                    let _ = events.try_send(CaptureEvent::Frame(connection, frame));
+                                    let _ = events.send(CaptureEvent::Frame(connection, frame));
                                 }
                             }
                             Message::Shutdown => return Ok(()),
@@ -1341,11 +1405,15 @@ fn launch_target(
     use std::os::windows::{io::AsRawHandle, process::CommandExt};
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-    let hook = layer_dir.join("snowglass_hook_dinput.dll");
-    if !hook.is_file() {
+    let d3d11_hook = layer_dir.join("snowglass_hook_d3d11.dll");
+    let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
+    for (name, hook) in [("D3D11", &d3d11_hook), ("DirectInput", &dinput_hook)] {
+        if hook.is_file() {
+            continue;
+        }
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            format!("DirectInput hook is missing at {}", hook.display()),
+            format!("{name} hook is missing at {}", hook.display()),
         ));
     }
     let mut command = Command::new(&target[0]);
@@ -1359,6 +1427,10 @@ fn launch_target(
         "SNOWGLASS_DINPUT_LOG_FILE",
         layer_dir.join("snowglass-dinput.log"),
     );
+    command.env(
+        "SNOWGLASS_D3D11_LOG_FILE",
+        layer_dir.join("snowglass-d3d11.log"),
+    );
     if track_render_target {
         command.env("SNOWGLASS_TRACK_RENDER_TARGET", "1");
     }
@@ -1366,9 +1438,17 @@ fn launch_target(
     let mut child = command.spawn()?;
     let process_id = ProcessId(child.id());
     let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-    if let Err(error) =
-        inject_library_before_resume(process, process_id, &hook, c"SnowglassInstallDinputHook")
-    {
+    let libraries = [
+        (
+            d3d11_hook.as_path(),
+            c"SnowglassInstallD3d11Hook" as &std::ffi::CStr,
+        ),
+        (
+            dinput_hook.as_path(),
+            c"SnowglassInstallDinputHook" as &std::ffi::CStr,
+        ),
+    ];
+    if let Err(error) = inject_libraries_before_resume(process, process_id, &libraries) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(error);

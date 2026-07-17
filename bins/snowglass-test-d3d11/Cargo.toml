@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-test-d3d11"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+windows.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true

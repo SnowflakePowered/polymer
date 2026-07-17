@@ -1,3 +1,10 @@
-//! D3D11 swapchain capture backend.
-#![forbid(unsafe_code)]
+//! D3D11 swapchain capture and shared NT-handle texture export.
+#![allow(unsafe_code)]
+
+mod image_ring;
+mod swapchain;
+
+pub use image_ring::{D3d11ImageRing, D3d11ImageRingDesc, D3d11ImageSlot};
+pub use swapchain::{D3d11CaptureRegion, D3d11CopySubmission, D3d11SwapchainCapture};
+
 pub const BACKEND_NAME: &str = "d3d11";

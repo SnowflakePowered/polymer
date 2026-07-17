@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +36,20 @@ pub enum ExternalImageKind {
     D3d12Heap = 4,
 }
 
+impl TryFrom<u32> for ExternalImageKind {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::VulkanOpaqueWin32),
+            2 => Ok(Self::D3d11SharedResourceNt),
+            3 => Ok(Self::D3d12Resource),
+            4 => Ok(Self::D3d12Heap),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ExternalSyncKind {
@@ -44,6 +58,21 @@ pub enum ExternalSyncKind {
     D3d11Fence = 3,
     D3d11KeyedMutex = 4,
     D3d12Fence = 5,
+}
+
+impl TryFrom<u32> for ExternalSyncKind {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::VulkanBinarySemaphore),
+            2 => Ok(Self::VulkanTimelineSemaphore),
+            3 => Ok(Self::D3d11Fence),
+            4 => Ok(Self::D3d11KeyedMutex),
+            5 => Ok(Self::D3d12Fence),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

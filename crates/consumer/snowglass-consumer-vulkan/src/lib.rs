@@ -2,9 +2,31 @@
 
 use ash::{Entry, vk};
 use snowglass_ipc::StreamReady;
+use snowglass_protocol::{ExternalImageKind, ExternalSyncKind};
 use std::{ffi::CStr, fmt};
 
 pub const BACKEND_NAME: &str = "vulkan";
+
+fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
+    let format = match stream.image_kind {
+        ExternalImageKind::VulkanOpaqueWin32 => vk::Format::from_raw(stream.format as i32),
+        ExternalImageKind::D3d11SharedResourceNt => match stream.format {
+            10 => vk::Format::R16G16B16A16_SFLOAT,
+            24 => vk::Format::A2B10G10R10_UNORM_PACK32,
+            28 => vk::Format::R8G8B8A8_UNORM,
+            29 => vk::Format::R8G8B8A8_SRGB,
+            87 => vk::Format::B8G8R8A8_UNORM,
+            91 => vk::Format::B8G8R8A8_SRGB,
+            _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
+        },
+        _ => {
+            return Err(ImportError::InvalidStream(
+                "unsupported external image kind",
+            ));
+        }
+    };
+    Ok(format)
+}
 
 /// Imported capture resources that use a caller-owned Vulkan device. This is
 /// the direct-composition path used by the viewer swapchain.
@@ -13,6 +35,7 @@ pub struct ImportedImageRing {
     images: Vec<vk::Image>,
     memories: Vec<vk::DeviceMemory>,
     timeline: vk::Semaphore,
+    image_kind: ExternalImageKind,
     pub width: u32,
     pub height: u32,
     pub format: vk::Format,
@@ -37,9 +60,10 @@ impl ImportedImageRing {
             images,
             memories,
             timeline,
+            image_kind: stream.image_kind,
             width: stream.width,
             height: stream.height,
-            format: vk::Format::from_raw(stream.format as i32),
+            format: format_for_stream(stream)?,
         })
     }
 
@@ -49,6 +73,23 @@ impl ImportedImageRing {
 
     pub fn timeline(&self) -> vk::Semaphore {
         self.timeline
+    }
+
+    pub fn memory(&self, slot: u32) -> Option<vk::DeviceMemory> {
+        self.memories.get(slot as usize).copied()
+    }
+
+    pub fn uses_keyed_mutex(&self) -> bool {
+        self.image_kind == ExternalImageKind::D3d11SharedResourceNt
+    }
+
+    pub fn wait_for(&self, value: u64, timeout_ns: u64) -> Result<(), vk::Result> {
+        let semaphores = [self.timeline];
+        let values = [value];
+        let wait = vk::SemaphoreWaitInfo::default()
+            .semaphores(&semaphores)
+            .values(&values);
+        unsafe { self.device.wait_semaphores(&wait, timeout_ns) }
     }
 }
 
@@ -109,6 +150,7 @@ pub struct ImportedStream {
     width: u32,
     height: u32,
     format: vk::Format,
+    image_kind: ExternalImageKind,
     pub physical_device: vk::PhysicalDevice,
     pub queue_family_index: u32,
 }
@@ -169,7 +211,8 @@ impl ImportedStream {
                 readbacks,
                 width: stream.width,
                 height: stream.height,
-                format: vk::Format::from_raw(stream.format as i32),
+                format: format_for_stream(stream)?,
+                image_kind: stream.image_kind,
                 physical_device,
                 queue_family_index,
             }),
@@ -197,13 +240,17 @@ impl ImportedStream {
         ),
         ImportError,
     > {
+        let d3d11 = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
         let (physical_device, queue_family_index) =
-            unsafe { select_device(instance).ok_or(ImportError::NoCompatibleDevice)? };
-        let extensions = [
+            unsafe { select_device(instance, d3d11).ok_or(ImportError::NoCompatibleDevice)? };
+        let mut extensions = vec![
             ash::khr::external_memory_win32::NAME.as_ptr(),
             ash::khr::external_semaphore_win32::NAME.as_ptr(),
             ash::khr::timeline_semaphore::NAME.as_ptr(),
         ];
+        if d3d11 {
+            extensions.push(ash::khr::win32_keyed_mutex::NAME.as_ptr());
+        }
         let priorities = [1.0];
         let queue = vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
@@ -276,7 +323,21 @@ impl ImportedStream {
                 .wait_for_fences(&[readback.fence], true, u64::MAX)?;
             self.device.reset_fences(&[readback.fence])?;
             let commands = [readback.command];
-            let submit = vk::SubmitInfo::default().command_buffers(&commands);
+            let acquire_syncs = [self.memories[slot as usize]];
+            let acquire_keys = [1];
+            let acquire_timeouts = [u32::MAX];
+            let release_syncs = acquire_syncs;
+            let release_keys = [0];
+            let mut keyed_mutex = vk::Win32KeyedMutexAcquireReleaseInfoKHR::default()
+                .acquire_syncs(&acquire_syncs)
+                .acquire_keys(&acquire_keys)
+                .acquire_timeouts(&acquire_timeouts)
+                .release_syncs(&release_syncs)
+                .release_keys(&release_keys);
+            let mut submit = vk::SubmitInfo::default().command_buffers(&commands);
+            if self.image_kind == ExternalImageKind::D3d11SharedResourceNt {
+                submit = submit.push_next(&mut keyed_mutex);
+            }
             self.device
                 .queue_submit(self.queue, &[submit], readback.fence)?;
             self.device
@@ -325,12 +386,18 @@ impl Drop for ImportedStream {
     }
 }
 
-unsafe fn select_device(instance: &ash::Instance) -> Option<(vk::PhysicalDevice, u32)> {
-    let required = [
+unsafe fn select_device(
+    instance: &ash::Instance,
+    d3d11: bool,
+) -> Option<(vk::PhysicalDevice, u32)> {
+    let mut required = vec![
         ash::khr::external_memory_win32::NAME,
         ash::khr::external_semaphore_win32::NAME,
         ash::khr::timeline_semaphore::NAME,
     ];
+    if d3d11 {
+        required.push(ash::khr::win32_keyed_mutex::NAME);
+    }
     unsafe { instance.enumerate_physical_devices().ok()? }
         .into_iter()
         .find_map(|physical| {
@@ -538,17 +605,32 @@ unsafe fn import_resources(
     physical_device: vk::PhysicalDevice,
     stream: &StreamReady,
 ) -> Result<(Vec<vk::Image>, Vec<vk::DeviceMemory>, vk::Semaphore), vk::Result> {
+    let format = format_for_stream(stream).map_err(|_| vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
+    let memory_handle_type = match stream.image_kind {
+        ExternalImageKind::VulkanOpaqueWin32 => vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
+        ExternalImageKind::D3d11SharedResourceNt => {
+            vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE
+        }
+        _ => return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED),
+    };
+    let semaphore_handle_type = match stream.sync_kind {
+        ExternalSyncKind::VulkanTimelineSemaphore => {
+            vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
+        }
+        ExternalSyncKind::D3d11Fence => vk::ExternalSemaphoreHandleTypeFlags::D3D11_FENCE,
+        _ => return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT),
+    };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(physical_device) };
     let mut images = Vec::new();
     let mut memories = Vec::new();
     for raw_handle in stream.image_handles.iter().take(stream.slot_count as usize) {
-        let mut external = vk::ExternalMemoryImageCreateInfo::default()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
+        let mut external =
+            vk::ExternalMemoryImageCreateInfo::default().handle_types(memory_handle_type);
         let image_info = vk::ImageCreateInfo::default()
             .push_next(&mut external)
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::from_raw(stream.format as i32))
+            .format(format)
             .extent(vk::Extent3D {
                 width: stream.width,
                 height: stream.height,
@@ -571,10 +653,12 @@ unsafe fn import_resources(
             .map(|(index, _)| index as u32)
             .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
         let mut import = vk::ImportMemoryWin32HandleInfoKHR::default()
-            .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32)
+            .handle_type(memory_handle_type)
             .handle(*raw_handle as isize);
+        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
         let allocation = vk::MemoryAllocateInfo::default()
             .push_next(&mut import)
+            .push_next(&mut dedicated)
             .allocation_size(requirements.size)
             .memory_type_index(memory_type_index);
         let memory = unsafe { device.allocate_memory(&allocation, None)? };
@@ -593,7 +677,7 @@ unsafe fn import_resources(
     let importer = ash::khr::external_semaphore_win32::Device::new(instance, device);
     let import = vk::ImportSemaphoreWin32HandleInfoKHR::default()
         .semaphore(semaphore)
-        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32)
+        .handle_type(semaphore_handle_type)
         .handle(stream.timeline_semaphore_handle as isize);
     unsafe { importer.import_semaphore_win32_handle(&import)? };
     Ok((images, memories, semaphore))

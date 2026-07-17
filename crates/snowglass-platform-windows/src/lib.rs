@@ -9,7 +9,68 @@ pub struct ProcessId(pub u32);
 pub struct NativeWindow(pub isize);
 
 #[cfg(windows)]
+pub fn mark_vulkan_capture_active() -> std::io::Result<()> {
+    use windows_sys::Win32::System::Environment::SetEnvironmentVariableW;
+    let name = "SNOWGLASS_VULKAN_CAPTURE_ACTIVE\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let value = "1\0".encode_utf16().collect::<Vec<_>>();
+    if unsafe { SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub fn vulkan_capture_active() -> bool {
+    use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
+    let name = "SNOWGLASS_VULKAN_CAPTURE_ACTIVE\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let mut value = [0u16; 2];
+    (unsafe { GetEnvironmentVariableW(name.as_ptr(), value.as_mut_ptr(), value.len() as u32) }) != 0
+}
+
+#[cfg(windows)]
 pub fn inject_library_before_resume(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    process_id: ProcessId,
+    library: &std::path::Path,
+    install_export: &std::ffi::CStr,
+) -> std::io::Result<()> {
+    inject_libraries_before_resume(process, process_id, &[(library, install_export)])
+}
+
+#[cfg(windows)]
+pub fn inject_libraries_before_resume(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    process_id: ProcessId,
+    libraries: &[(&std::path::Path, &std::ffi::CStr)],
+) -> std::io::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+    };
+
+    let initial_thread = first_process_thread(process_id)?;
+    for &(library, install_export) in libraries {
+        inject_library(process, process_id, library, install_export)?;
+    }
+    let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, initial_thread) };
+    if thread.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let resume = unsafe { ResumeThread(thread) };
+    unsafe { CloseHandle(thread) };
+    if resume == u32::MAX {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn inject_library(
     process: windows_sys::Win32::Foundation::HANDLE,
     process_id: ProcessId,
     library: &std::path::Path,
@@ -17,7 +78,7 @@ pub fn inject_library_before_resume(
 ) -> std::io::Result<()> {
     use std::{mem, os::windows::ffi::OsStrExt};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, FreeLibrary},
+        Foundation::FreeLibrary,
         System::{
             LibraryLoader::{
                 DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW,
@@ -25,11 +86,10 @@ pub fn inject_library_before_resume(
             Memory::{
                 MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
             },
-            Threading::{CreateRemoteThread, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+            Threading::CreateRemoteThread,
         },
     };
 
-    let initial_thread = first_process_thread(process_id)?;
     let mut wide = library
         .as_os_str()
         .encode_wide()
@@ -125,15 +185,6 @@ pub fn inject_library_before_resume(
             )));
         }
 
-        let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, initial_thread) };
-        if thread.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let resume = unsafe { ResumeThread(thread) };
-        unsafe { CloseHandle(thread) };
-        if resume == u32::MAX {
-            return Err(std::io::Error::last_os_error());
-        }
         Ok(())
     })();
     unsafe { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE) };
