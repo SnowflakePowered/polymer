@@ -5,17 +5,19 @@ use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
-    KillOnCloseJob, NativeWindow, ProcessId, client_size, forward_character, forward_mouse_button,
-    forward_mouse_move, forward_mouse_wheel, forward_raw_key, hide_top_level_windows,
+    KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, client_size, forward_character,
+    forward_mouse_button, forward_mouse_move, forward_mouse_wheel, forward_raw_key,
     inject_libraries_before_resume, performance_counter, performance_frequency,
 };
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION,
+    RELEASE_ALL_SYNC_VALUE,
 };
 use std::{
     collections::{HashSet, VecDeque},
     env,
     error::Error,
+    ffi::{OsStr, OsString},
     path::Path,
     process::{Child, Command},
     sync::{
@@ -625,7 +627,7 @@ impl DirectCompositor {
     }
 
     fn import_stream(&mut self, stream: &StreamReady) -> Result<(), Box<dyn Error>> {
-        unsafe { self.device.device_wait_idle()? };
+        self.release_imported_stream()?;
         self.imported = Some(ImportedImageRing::import_into(
             &self.instance,
             self.device.clone(),
@@ -650,9 +652,27 @@ impl DirectCompositor {
     }
 
     fn disconnect_stream(&mut self) -> Result<(), vk::Result> {
-        unsafe { self.device.device_wait_idle()? };
+        self.release_imported_stream()?;
         self.latest = None;
         self.last_released_frame = 0;
+        Ok(())
+    }
+
+    fn release_imported_stream(&mut self) -> Result<(), vk::Result> {
+        unsafe {
+            self.device.device_wait_idle()?;
+            if let Some(semaphore) = self
+                .imported
+                .as_ref()
+                .and_then(ImportedImageRing::consumer_timeline)
+            {
+                self.device.signal_semaphore(
+                    &vk::SemaphoreSignalInfo::default()
+                        .semaphore(semaphore)
+                        .value(RELEASE_ALL_SYNC_VALUE),
+                )?;
+            }
+        }
         self.imported = None;
         Ok(())
     }
@@ -1046,9 +1066,9 @@ impl DirectCompositor {
 
 impl Drop for DirectCompositor {
     fn drop(&mut self) {
+        let _ = self.release_imported_stream();
         unsafe {
             let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
-            self.imported = None;
             let _ = self.device.device_wait_idle();
             self.egui_renderer = None;
             for fence in self.fences.drain(..) {
@@ -1081,6 +1101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_target()?;
     let target = options.target;
     let track_render_target = options.track_render_target;
+    let isolate = options.isolate;
     let viewer_api = options.api;
     let executable_dir = env::current_exe()?
         .parent()
@@ -1102,12 +1123,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
     let (input_tx, input_rx) = mpsc::channel();
     spawn_input_ipc(input_listener, input_rx);
-    let target_process = launch_target(&target, &executable_dir, &session, track_render_target)?;
-    let process_id = ProcessId(target_process.child.id());
+    let target_process = launch_target(
+        &target,
+        &executable_dir,
+        &session,
+        track_render_target,
+        isolate,
+    )?;
     let stop = Arc::new(AtomicBool::new(false));
     let backing_window = Arc::new(AtomicIsize::new(0));
     let (target_done_tx, target_done_rx) = mpsc::channel();
-    spawn_target_monitor(target_process, process_id, stop.clone(), target_done_tx);
+    spawn_target_monitor(target_process, stop.clone(), target_done_tx);
     let (capture_tx, capture_rx) = mpsc::channel();
     spawn_ipc(listener, capture_tx, viewer_api);
 
@@ -1626,17 +1652,19 @@ fn spawn_input_ipc(listener: LocalSocketListener, input: mpsc::Receiver<DirectIn
 
 fn spawn_target_monitor(
     target_process: TargetProcess,
-    process_id: ProcessId,
     stop: Arc<AtomicBool>,
     done: mpsc::Sender<()>,
 ) {
     thread::spawn(move || {
-        let TargetProcess { mut child, job } = target_process;
+        let TargetProcess {
+            mut child,
+            job,
+            desktop,
+        } = target_process;
         loop {
             if stop.load(Ordering::Acquire) {
                 break;
             }
-            let _ = hide_top_level_windows(process_id);
             match child.try_wait() {
                 Ok(Some(_)) | Err(_) => break,
                 Ok(None) => thread::sleep(Duration::from_millis(8)),
@@ -1646,6 +1674,7 @@ fn spawn_target_monitor(
         // viewer is notified that the target has finished.
         drop(job);
         let _ = child.wait();
+        drop(desktop);
         let _ = done.send(());
     });
 }
@@ -1653,6 +1682,7 @@ fn spawn_target_monitor(
 struct ViewerOptions {
     target: Vec<String>,
     track_render_target: bool,
+    isolate: bool,
     api: ViewerApi,
 }
 
@@ -1665,6 +1695,7 @@ fn parse_arguments(
 ) -> Result<ViewerOptions, Box<dyn Error>> {
     let mut arguments = arguments.into_iter();
     let mut track_render_target = false;
+    let mut isolate = true;
     let mut api = ViewerApi::default();
     let mut found_separator = false;
     while let Some(argument) = arguments.next() {
@@ -1674,20 +1705,24 @@ fn parse_arguments(
         }
         if argument == "--track-render-target" {
             track_render_target = true;
+        } else if argument == "--isolate" {
+            isolate = true;
+        } else if argument == "--no-isolate" {
+            isolate = false;
         } else if argument == "--api" {
             api = ViewerApi::parse(&arguments.next().ok_or("--api requires d3d12 or vulkan")?)?;
         } else if let Some(value) = argument.strip_prefix("--api=") {
             api = ViewerApi::parse(value)?;
         } else {
             return Err(format!(
-                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] -- <program> [arguments...]"
+                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--no-isolate] -- <program> [arguments...]"
             )
             .into());
         }
     }
     if !found_separator {
         return Err(
-            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] -- <program> [arguments...]".into(),
+            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--no-isolate] -- <program> [arguments...]".into(),
         );
     }
     let target = arguments.collect::<Vec<_>>();
@@ -1697,6 +1732,7 @@ fn parse_arguments(
     Ok(ViewerOptions {
         target,
         track_render_target,
+        isolate,
         api,
     })
 }
@@ -1714,6 +1750,7 @@ mod argument_tests {
         let options = arguments(&["--", "game.exe"])?;
         assert_eq!(options.api, ViewerApi::D3d12);
         assert!(!options.track_render_target);
+        assert!(options.isolate);
         assert_eq!(options.target, ["game.exe"]);
         Ok(())
     }
@@ -1722,6 +1759,7 @@ mod argument_tests {
     fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn Error>> {
         let options = arguments(&[
             "--track-render-target",
+            "--no-isolate",
             "--api=vulkan",
             "--",
             "game.exe",
@@ -1730,14 +1768,247 @@ mod argument_tests {
         ])?;
         assert_eq!(options.api, ViewerApi::Vulkan);
         assert!(options.track_render_target);
+        assert!(!options.isolate);
         assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
         Ok(())
     }
 }
 
+enum TargetChild {
+    Standard(Child),
+    Isolated(IsolatedChild),
+}
+
+struct IsolatedChild {
+    process: std::os::windows::io::OwnedHandle,
+    process_id: u32,
+}
+
+impl TargetChild {
+    fn id(&self) -> u32 {
+        match self {
+            Self::Standard(child) => child.id(),
+            Self::Isolated(child) => child.process_id,
+        }
+    }
+
+    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        use std::os::windows::io::AsRawHandle;
+
+        match self {
+            Self::Standard(child) => child.as_raw_handle() as _,
+            Self::Isolated(child) => child.process.as_raw_handle(),
+        }
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+
+        match self {
+            Self::Standard(child) => child.kill(),
+            Self::Isolated(child) => {
+                if unsafe {
+                    windows_sys::Win32::System::Threading::TerminateProcess(
+                        child.process.as_raw_handle(),
+                        1,
+                    )
+                } == 0
+                {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<()>> {
+        match self {
+            Self::Standard(child) => child.try_wait().map(|status| status.map(drop)),
+            Self::Isolated(child) => {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::{
+                    Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+                    System::Threading::WaitForSingleObject,
+                };
+
+                match unsafe { WaitForSingleObject(child.process.as_raw_handle(), 0) } {
+                    WAIT_OBJECT_0 => Ok(Some(())),
+                    WAIT_TIMEOUT => Ok(None),
+                    WAIT_FAILED => Err(std::io::Error::last_os_error()),
+                    result => Err(std::io::Error::other(format!(
+                        "unexpected process wait result {result}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    fn wait(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Standard(child) => child.wait().map(drop),
+            Self::Isolated(child) => {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::{
+                    Foundation::{WAIT_FAILED, WAIT_OBJECT_0},
+                    System::Threading::{INFINITE, WaitForSingleObject},
+                };
+
+                match unsafe { WaitForSingleObject(child.process.as_raw_handle(), INFINITE) } {
+                    WAIT_OBJECT_0 => Ok(()),
+                    WAIT_FAILED => Err(std::io::Error::last_os_error()),
+                    result => Err(std::io::Error::other(format!(
+                        "unexpected process wait result {result}"
+                    ))),
+                }
+            }
+        }
+    }
+}
+
+fn append_windows_argument(
+    command_line: &mut Vec<u16>,
+    value: &OsStr,
+    always_quote: bool,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let value = value.encode_wide().collect::<Vec<_>>();
+    if value.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "process argument contains a null character",
+        ));
+    }
+    let quote = always_quote
+        || value.is_empty()
+        || value
+            .iter()
+            .any(|unit| *unit == b' ' as u16 || *unit == b'\t' as u16);
+    if !quote {
+        command_line.extend_from_slice(&value);
+        return Ok(());
+    }
+
+    command_line.push(b'"' as u16);
+    let mut backslashes = 0;
+    for unit in value {
+        if unit == b'\\' as u16 {
+            backslashes += 1;
+        } else if unit == b'"' as u16 {
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+            command_line.push(unit);
+            backslashes = 0;
+        } else {
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+            command_line.push(unit);
+            backslashes = 0;
+        }
+    }
+    command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    command_line.push(b'"' as u16);
+    Ok(())
+}
+
+fn windows_command_line(target: &[String]) -> std::io::Result<Vec<u16>> {
+    let mut command_line = Vec::new();
+    append_windows_argument(&mut command_line, OsStr::new(&target[0]), true)?;
+    for argument in &target[1..] {
+        command_line.push(b' ' as u16);
+        append_windows_argument(&mut command_line, OsStr::new(argument), false)?;
+    }
+    command_line.push(0);
+    Ok(command_line)
+}
+
+fn windows_environment(overrides: &[(OsString, OsString)]) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut environment = env::vars_os().collect::<Vec<_>>();
+    for (name, value) in overrides {
+        if let Some(existing) = environment.iter_mut().find(|(existing, _)| {
+            existing
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&name.to_string_lossy())
+        }) {
+            existing.1.clone_from(value);
+        } else {
+            environment.push((name.clone(), value.clone()));
+        }
+    }
+    environment.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_lowercase());
+
+    let mut block = Vec::new();
+    for (name, value) in environment {
+        let name = name.encode_wide().collect::<Vec<_>>();
+        let value = value.encode_wide().collect::<Vec<_>>();
+        if name.contains(&0) || value.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "environment contains a null character",
+            ));
+        }
+        block.extend(name);
+        block.push(b'=' as u16);
+        block.extend(value);
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
+}
+
+fn spawn_isolated_target(
+    target: &[String],
+    environment: &[(OsString, OsString)],
+    desktop: &str,
+) -> std::io::Result<IsolatedChild> {
+    use std::{os::windows::io::FromRawHandle, ptr};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, PROCESS_INFORMATION,
+        STARTUPINFOW,
+    };
+
+    let mut command_line = windows_command_line(target)?;
+    let environment = windows_environment(environment)?;
+    let mut desktop = desktop.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        lpDesktop: desktop.as_mut_ptr(),
+        ..Default::default()
+    };
+    let mut process_info = PROCESS_INFORMATION::default();
+    if unsafe {
+        CreateProcessW(
+            ptr::null(),
+            command_line.as_mut_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+            environment.as_ptr().cast(),
+            ptr::null(),
+            &raw const startup,
+            &raw mut process_info,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let process =
+        unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(process_info.hProcess) };
+    let initial_thread =
+        unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(process_info.hThread) };
+    drop(initial_thread);
+    Ok(IsolatedChild {
+        process,
+        process_id: process_info.dwProcessId,
+    })
+}
+
 struct TargetProcess {
-    child: Child,
+    child: TargetChild,
     job: KillOnCloseJob,
+    desktop: Option<PrivateDesktop>,
 }
 
 fn launch_target(
@@ -1745,8 +2016,9 @@ fn launch_target(
     layer_dir: &Path,
     session: &str,
     track_render_target: bool,
+    isolate: bool,
 ) -> std::io::Result<TargetProcess> {
-    use std::os::windows::{io::AsRawHandle, process::CommandExt};
+    use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
     let d3d11_hook = layer_dir.join("snowglass_hook_d3d11.dll");
@@ -1768,36 +2040,59 @@ fn launch_target(
         ));
     }
     let mut command = Command::new(&target[0]);
-    command
-        .args(&target[1..])
-        .env("VK_LAYER_PATH", layer_dir)
-        .env("VK_INSTANCE_LAYERS", "VK_LAYER_SNOWGLASS_capture")
-        .env("SNOWGLASS_SESSION", session)
-        .env("SNOWGLASS_LOG_FILE", layer_dir.join("snowglass-layer.log"));
-    command.env(
-        "SNOWGLASS_DINPUT_LOG_FILE",
-        layer_dir.join("snowglass-dinput.log"),
-    );
-    command.env(
-        "SNOWGLASS_D3D11_LOG_FILE",
-        layer_dir.join("snowglass-d3d11.log"),
-    );
-    command.env(
-        "SNOWGLASS_D3D12_LOG_FILE",
-        layer_dir.join("snowglass-d3d12.log"),
-    );
-    command.env(
-        "SNOWGLASS_OPENGL_LOG_FILE",
-        layer_dir.join("snowglass-opengl.log"),
-    );
+    command.args(&target[1..]);
+    let mut environment = vec![
+        (
+            OsString::from("VK_LAYER_PATH"),
+            layer_dir.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("VK_INSTANCE_LAYERS"),
+            OsString::from("VK_LAYER_SNOWGLASS_capture"),
+        ),
+        (OsString::from("SNOWGLASS_SESSION"), OsString::from(session)),
+        (
+            OsString::from("SNOWGLASS_LOG_FILE"),
+            layer_dir.join("snowglass-layer.log").into_os_string(),
+        ),
+        (
+            OsString::from("SNOWGLASS_DINPUT_LOG_FILE"),
+            layer_dir.join("snowglass-dinput.log").into_os_string(),
+        ),
+        (
+            OsString::from("SNOWGLASS_D3D11_LOG_FILE"),
+            layer_dir.join("snowglass-d3d11.log").into_os_string(),
+        ),
+        (
+            OsString::from("SNOWGLASS_D3D12_LOG_FILE"),
+            layer_dir.join("snowglass-d3d12.log").into_os_string(),
+        ),
+        (
+            OsString::from("SNOWGLASS_OPENGL_LOG_FILE"),
+            layer_dir.join("snowglass-opengl.log").into_os_string(),
+        ),
+    ];
     if track_render_target {
-        command.env("SNOWGLASS_TRACK_RENDER_TARGET", "1");
+        environment.push((
+            OsString::from("SNOWGLASS_TRACK_RENDER_TARGET"),
+            OsString::from("1"),
+        ));
+    }
+    for (name, value) in &environment {
+        command.env(name, value);
     }
     command.creation_flags(CREATE_SUSPENDED);
     let job = KillOnCloseJob::new()?;
-    let mut child = command.spawn()?;
+    let (desktop, mut child) = if isolate {
+        let (desktop, mut attachment) = PrivateDesktop::create_and_attach_current_thread(session)?;
+        attachment.restore()?;
+        let child = spawn_isolated_target(target, &environment, session)?;
+        (Some(desktop), TargetChild::Isolated(child))
+    } else {
+        (None, TargetChild::Standard(command.spawn()?))
+    };
     let process_id = ProcessId(child.id());
-    let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let process = child.raw_handle();
     if let Err(error) = job.assign_process(process) {
         let _ = child.kill();
         let _ = child.wait();
@@ -1826,7 +2121,11 @@ fn launch_target(
         let _ = child.wait();
         return Err(error);
     }
-    Ok(TargetProcess { child, job })
+    Ok(TargetProcess {
+        child,
+        job,
+        desktop,
+    })
 }
 
 fn load_window(window: &AtomicIsize) -> Option<NativeWindow> {

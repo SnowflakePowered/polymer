@@ -82,6 +82,151 @@ impl KillOnCloseJob {
 }
 
 #[cfg(windows)]
+pub struct PrivateDesktop {
+    handle: windows_sys::Win32::System::StationsAndDesktops::HDESK,
+}
+
+#[cfg(windows)]
+pub struct DesktopThreadAttachment {
+    original: windows_sys::Win32::System::StationsAndDesktops::HDESK,
+    restored: bool,
+}
+
+// SAFETY: A desktop handle is not thread-affine once no thread is attached to it. The
+// launch thread is restored before PrivateDesktop moves to the monitor thread,
+// which only retains and eventually closes the handle.
+#[cfg(windows)]
+unsafe impl Send for PrivateDesktop {}
+
+#[cfg(windows)]
+impl PrivateDesktop {
+    pub fn create_and_attach_current_thread(
+        name: &str,
+    ) -> std::io::Result<(Self, DesktopThreadAttachment)> {
+        use windows_sys::Win32::{
+            Foundation::GENERIC_ALL,
+            Security::SECURITY_ATTRIBUTES,
+            System::{
+                StationsAndDesktops::{
+                    CloseDesktop, CreateDesktopW, GetThreadDesktop, SetThreadDesktop,
+                },
+                Threading::GetCurrentThreadId,
+            },
+        };
+
+        if name.encode_utf16().any(|unit| unit == 0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "desktop name contains a null character",
+            ));
+        }
+        let name = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+        if original.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: 0,
+        };
+        let handle = unsafe {
+            CreateDesktopW(
+                name.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                GENERIC_ALL,
+                &raw const attributes,
+            )
+        };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        if unsafe { SetThreadDesktop(handle) } == 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                SetThreadDesktop(original);
+                CloseDesktop(handle);
+            }
+            return Err(error);
+        }
+        Ok((
+            Self { handle },
+            DesktopThreadAttachment {
+                original,
+                restored: false,
+            },
+        ))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PrivateDesktop {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::System::StationsAndDesktops::CloseDesktop(self.handle) };
+    }
+}
+
+#[cfg(windows)]
+impl DesktopThreadAttachment {
+    pub fn restore(&mut self) -> std::io::Result<()> {
+        if self.restored {
+            return Ok(());
+        }
+        if unsafe {
+            windows_sys::Win32::System::StationsAndDesktops::SetThreadDesktop(self.original)
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.restored = true;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DesktopThreadAttachment {
+    fn drop(&mut self) {
+        if !self.restored {
+            unsafe {
+                windows_sys::Win32::System::StationsAndDesktops::SetThreadDesktop(self.original)
+            };
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod desktop_tests {
+    use super::*;
+
+    #[test]
+    fn private_desktop_attaches_and_restores() -> std::io::Result<()> {
+        use windows_sys::Win32::System::{
+            StationsAndDesktops::GetThreadDesktop, Threading::GetCurrentThreadId,
+        };
+
+        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+        let name = format!(
+            "snowglass-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let (desktop, mut attachment) = PrivateDesktop::create_and_attach_current_thread(&name)?;
+        assert_eq!(
+            unsafe { GetThreadDesktop(GetCurrentThreadId()) },
+            desktop.handle
+        );
+        attachment.restore()?;
+        assert_eq!(unsafe { GetThreadDesktop(GetCurrentThreadId()) }, original);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 pub fn mark_vulkan_capture_active() -> std::io::Result<()> {
     use windows_sys::Win32::System::Environment::SetEnvironmentVariableW;
     let name = "SNOWGLASS_VULKAN_CAPTURE_ACTIVE\0"
@@ -572,44 +717,6 @@ pub fn duplicate_handle_into_process(
             Ok(duplicated as isize)
         }
     }
-}
-
-#[cfg(windows)]
-pub fn hide_top_level_windows(process_id: ProcessId) -> std::io::Result<u32> {
-    use windows_sys::Win32::{
-        Foundation::{HWND, LPARAM},
-        UI::WindowsAndMessaging::{
-            EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SW_HIDE, ShowWindow,
-        },
-    };
-
-    struct Context {
-        process_id: u32,
-        hidden: u32,
-    }
-
-    unsafe extern "system" fn callback(window: HWND, parameter: LPARAM) -> i32 {
-        // SAFETY: EnumWindows supplies the pointer passed below for the complete
-        // duration of enumeration.
-        let context = unsafe { &mut *(parameter as *mut Context) };
-        let mut owner = 0;
-        unsafe { GetWindowThreadProcessId(window, &mut owner) };
-        if owner == context.process_id && unsafe { IsWindowVisible(window) } != 0 {
-            unsafe { ShowWindow(window, SW_HIDE) };
-            context.hidden += 1;
-        }
-        1
-    }
-
-    let mut context = Context {
-        process_id: process_id.0,
-        hidden: 0,
-    };
-    // SAFETY: callback and context remain valid until EnumWindows returns.
-    if unsafe { EnumWindows(Some(callback), (&mut context as *mut Context) as LPARAM) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(context.hidden)
 }
 
 #[cfg(windows)]
