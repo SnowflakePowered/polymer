@@ -1,4 +1,5 @@
 use ash::{Entry, vk};
+use clap::{ArgAction, Parser, ValueEnum};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
@@ -248,21 +249,11 @@ enum ViewerCompositor {
     Empty,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 enum ViewerApi {
     #[default]
     D3d12,
     Vulkan,
-}
-
-impl ViewerApi {
-    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
-        match value.to_ascii_lowercase().as_str() {
-            "d3d12" => Ok(Self::D3d12),
-            "vulkan" => Ok(Self::Vulkan),
-            _ => Err(format!("unsupported viewer API '{value}'; expected d3d12 or vulkan").into()),
-        }
-    }
 }
 
 /// A capture backend the viewer can install into the target process.
@@ -275,6 +266,30 @@ enum HookBackend {
     Gdi,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum HookChoice {
+    Auto,
+    Vulkan,
+    #[value(name = "opengl")]
+    OpenGl,
+    D3d12,
+    D3d11,
+    Gdi,
+}
+
+impl HookChoice {
+    fn backend(self) -> Option<HookBackend> {
+        match self {
+            Self::Auto => None,
+            Self::Vulkan => Some(HookBackend::Vulkan),
+            Self::OpenGl => Some(HookBackend::OpenGl),
+            Self::D3d12 => Some(HookBackend::D3d12),
+            Self::D3d11 => Some(HookBackend::D3d11),
+            Self::Gdi => Some(HookBackend::Gdi),
+        }
+    }
+}
+
 /// The `--hook auto` selection: every backend except GDI, ranked by how
 /// likely each is to be the real renderer rather than a probe or GUI shell.
 const AUTO_HOOKS: [HookBackend; 4] = [
@@ -285,20 +300,6 @@ const AUTO_HOOKS: [HookBackend; 4] = [
 ];
 
 impl HookBackend {
-    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
-        match value.to_ascii_lowercase().as_str() {
-            "vulkan" => Ok(Self::Vulkan),
-            "opengl" => Ok(Self::OpenGl),
-            "d3d12" => Ok(Self::D3d12),
-            "d3d11" => Ok(Self::D3d11),
-            "gdi" => Ok(Self::Gdi),
-            _ => Err(format!(
-                "unsupported hook '{value}'; expected auto, vulkan, d3d11, d3d12, opengl, or gdi"
-            )
-            .into()),
-        }
-    }
-
     fn class(self) -> u8 {
         match self {
             Self::Gdi => 0,
@@ -310,11 +311,14 @@ impl HookBackend {
     }
 }
 
-/// Appends comma-separated `--hook` tokens in submission order; `auto`
-/// expands to [`AUTO_HOOKS`], skipping backends that are already listed.
-fn parse_hook_list(hooks: &mut Vec<HookBackend>, value: &str) -> Result<(), Box<dyn Error>> {
-    for token in value.split(',') {
-        if token.eq_ignore_ascii_case("auto") {
+/// Expands submitted hook choices in order. `auto` appends [`AUTO_HOOKS`],
+/// skipping backends that are already listed.
+fn expand_hook_choices(
+    hooks: &mut Vec<HookBackend>,
+    choices: impl IntoIterator<Item = HookChoice>,
+) -> Result<(), Box<dyn Error>> {
+    for choice in choices {
+        if matches!(choice, HookChoice::Auto) {
             for &hook in &AUTO_HOOKS {
                 if !hooks.contains(&hook) {
                     hooks.push(hook);
@@ -322,9 +326,9 @@ fn parse_hook_list(hooks: &mut Vec<HookBackend>, value: &str) -> Result<(), Box<
             }
             continue;
         }
-        let hook = HookBackend::parse(token)?;
+        let hook = choice.backend().expect("non-auto hook choice has a backend");
         if hooks.contains(&hook) {
-            return Err(format!("hook '{token}' is listed more than once").into());
+            return Err(format!("hook '{choice:?}' is listed more than once").into());
         }
         hooks.push(hook);
     }
@@ -2038,132 +2042,126 @@ struct ViewerOptions {
     hooks: Vec<HookBackend>,
 }
 
-fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
-    parse_arguments(env::args().skip(1))
+#[derive(Parser)]
+#[command(name = "snowglass-viewer", version, about)]
+struct ViewerArguments {
+    /// Graphics API used to render the viewer window.
+    #[arg(long, value_enum, default_value_t)]
+    api: ViewerApi,
+
+    /// Track render targets, optionally retaining up to COUNT candidates.
+    #[arg(
+        long,
+        visible_alias = "track-render-target",
+        num_args = 0..=1,
+        default_missing_value = "1",
+        value_parser = parse_render_target_count
+    )]
+    track_render_targets: Option<u32>,
+
+    /// Maximum number of capture surfaces to display.
+    #[arg(
+        long,
+        default_value_t = 1,
+        num_args = 0..=1,
+        default_missing_value = "1",
+        value_parser = parse_surface_count
+    )]
+    surfaces: u32,
+
+    /// Number of matching capture surfaces to skip.
+    #[arg(
+        long,
+        visible_aliases = ["skip-surface", "skip-window", "skip-windows"],
+        default_value_t = 0,
+        num_args = 0..=1,
+        default_missing_value = "1",
+        value_parser = parse_skip_count
+    )]
+    skip_surfaces: u32,
+
+    /// Explicitly enable target process isolation (the default).
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
+    isolate: bool,
+
+    /// Run the target on the current desktop without process isolation.
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_isolate: bool,
+
+    /// Force keyed-mutex synchronization for compatible capture backends.
+    #[arg(long = "force-km")]
+    force_keyed_mutex: bool,
+
+    /// Capture hooks to install, as an ordered comma-separated list.
+    #[arg(
+        long = "hook",
+        action = ArgAction::Append,
+        value_enum,
+        value_delimiter = ',',
+        value_name = "HOOKS"
+    )]
+    hook_choices: Vec<HookChoice>,
+
+    /// Target program and its arguments. Must follow `--`.
+    #[arg(last = true, required = true, num_args = 1.., value_name = "COMMAND")]
+    target: Vec<String>,
 }
 
+impl ViewerArguments {
+    fn into_options(self) -> Result<ViewerOptions, Box<dyn Error>> {
+        let mut hooks = Vec::new();
+        expand_hook_choices(&mut hooks, self.hook_choices)?;
+        if hooks.is_empty() {
+            hooks.extend(AUTO_HOOKS);
+        }
+        Ok(ViewerOptions {
+            target: self.target,
+            track_render_targets: self.track_render_targets,
+            surfaces: self.surfaces,
+            skip_surfaces: self.skip_surfaces,
+            isolate: !self.no_isolate,
+            api: self.api,
+            force_keyed_mutex: self.force_keyed_mutex,
+            hooks,
+        })
+    }
+}
+
+fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
+    ViewerArguments::parse().into_options()
+}
+
+#[cfg(test)]
 fn parse_arguments(
     arguments: impl IntoIterator<Item = String>,
 ) -> Result<ViewerOptions, Box<dyn Error>> {
-    let mut arguments = arguments.into_iter().peekable();
-    let mut track_render_targets = None;
-    let mut surfaces = 1;
-    let mut skip_surfaces = 0;
-    let mut isolate = true;
-    let mut api = ViewerApi::default();
-    let mut force_keyed_mutex = false;
-    let mut hooks = Vec::new();
-    let mut found_separator = false;
-    while let Some(argument) = arguments.next() {
-        if argument == "--" {
-            found_separator = true;
-            break;
-        }
-        if argument == "--track-render-target" {
-            track_render_targets = Some(1);
-        } else if argument == "--track-render-targets" {
-            track_render_targets = Some(match arguments.peek() {
-                Some(value) if value != "--" => parse_render_target_count(
-                    &arguments.next().expect("peeked render-target count"),
-                )?,
-                _ => 1,
-            });
-        } else if let Some(value) = argument.strip_prefix("--track-render-targets=") {
-            track_render_targets = Some(parse_render_target_count(value)?);
-        } else if argument == "--surfaces" {
-            surfaces = match arguments.peek() {
-                Some(value) if value != "--" => parse_bounded_count(
-                    &arguments.next().expect("peeked surface count"),
-                    "surface",
-                )?,
-                _ => 1,
-            };
-        } else if let Some(value) = argument.strip_prefix("--surfaces=") {
-            surfaces = parse_bounded_count(value, "surface")?;
-        } else if matches!(
-            argument.as_str(),
-            "--skip-surface" | "--skip-surfaces" | "--skip-window" | "--skip-windows"
-        ) {
-            skip_surfaces = match arguments.peek() {
-                Some(value) if value != "--" => {
-                    parse_skip_count(&arguments.next().expect("peeked surface skip count"))?
-                }
-                _ => 1,
-            };
-        } else if let Some(value) = argument
-            .strip_prefix("--skip-surfaces=")
-            .or_else(|| argument.strip_prefix("--skip-surface="))
-            .or_else(|| argument.strip_prefix("--skip-windows="))
-            .or_else(|| argument.strip_prefix("--skip-window="))
-        {
-            skip_surfaces = parse_skip_count(value)?;
-        } else if argument == "--isolate" {
-            isolate = true;
-        } else if argument == "--no-isolate" {
-            isolate = false;
-        } else if argument == "--force-km" {
-            force_keyed_mutex = true;
-        } else if argument == "--hook" {
-            parse_hook_list(
-                &mut hooks,
-                &arguments
-                    .next()
-                    .ok_or("--hook requires auto or a comma-separated list of hooks")?,
-            )?;
-        } else if let Some(value) = argument.strip_prefix("--hook=") {
-            parse_hook_list(&mut hooks, value)?;
-        } else if argument == "--api" {
-            api = ViewerApi::parse(&arguments.next().ok_or("--api requires d3d12 or vulkan")?)?;
-        } else if let Some(value) = argument.strip_prefix("--api=") {
-            api = ViewerApi::parse(value)?;
-        } else {
-            return Err(format!(
-                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--skip-surfaces [COUNT]] [--surfaces [COUNT]] [--force-km] [--hook auto|vulkan,d3d11,d3d12,opengl,gdi] [--no-isolate] -- <program> [arguments...]"
-            )
-            .into());
-        }
-    }
-    if !found_separator {
-        return Err(
-            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--skip-surfaces [COUNT]] [--surfaces [COUNT]] [--force-km] [--hook auto|vulkan,d3d11,d3d12,opengl,gdi] [--no-isolate] -- <program> [arguments...]".into(),
-        );
-    }
-    let target = arguments.collect::<Vec<_>>();
-    if target.is_empty() {
-        return Err("target program is required".into());
-    }
-    if hooks.is_empty() {
-        hooks.extend(AUTO_HOOKS);
-    }
-    Ok(ViewerOptions {
-        target,
-        track_render_targets,
-        surfaces,
-        skip_surfaces,
-        isolate,
-        api,
-        force_keyed_mutex,
-        hooks,
-    })
+    ViewerArguments::try_parse_from(
+        std::iter::once("snowglass-viewer".to_owned()).chain(arguments),
+    )?
+    .into_options()
 }
 
-fn parse_render_target_count(value: &str) -> Result<u32, Box<dyn Error>> {
+fn parse_render_target_count(value: &str) -> Result<u32, String> {
     parse_bounded_count(value, "render-target")
 }
 
-fn parse_bounded_count(value: &str, name: &str) -> Result<u32, Box<dyn Error>> {
+fn parse_surface_count(value: &str) -> Result<u32, String> {
+    parse_bounded_count(value, "surface")
+}
+
+fn parse_bounded_count(value: &str, name: &str) -> Result<u32, String> {
     let count = value
         .parse::<u32>()
         .map_err(|_| format!("invalid {name} count '{value}'; expected 1..=16"))?;
     if !(1..=16).contains(&count) {
-        return Err(format!("invalid {name} count '{value}'; expected 1..=16").into());
+        return Err(format!("invalid {name} count '{value}'; expected 1..=16"));
     }
     Ok(count)
 }
 
-fn parse_skip_count(value: &str) -> Result<u32, Box<dyn Error>> {
+fn parse_skip_count(value: &str) -> Result<u32, String> {
     value.parse::<u32>().map_err(|_| {
-        format!("invalid surface skip count '{value}'; expected a non-negative integer").into()
+        format!("invalid surface skip count '{value}'; expected a non-negative integer")
     })
 }
 
