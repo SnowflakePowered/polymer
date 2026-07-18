@@ -1865,6 +1865,7 @@ name = "snowglass-hook-opengl32"
 version = "0.1.0"
 dependencies = [
  "retour",
+ "snowglass-hook",
  "snowglass-producer-opengl",
  "windows-sys 0.61.2",
 ]
