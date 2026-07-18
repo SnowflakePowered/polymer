@@ -1108,7 +1108,7 @@ impl Drop for DirectCompositor {
 fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_target()?;
     let target = options.target;
-    let track_render_target = options.track_render_target;
+    let track_render_targets = options.track_render_targets;
     let isolate = options.isolate;
     let viewer_api = options.api;
     let executable_dir = env::current_exe()?
@@ -1135,7 +1135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &target,
         &executable_dir,
         &session,
-        track_render_target,
+        track_render_targets,
         options.force_keyed_mutex,
         isolate,
     )?;
@@ -1694,7 +1694,7 @@ fn spawn_target_monitor(
 
 struct ViewerOptions {
     target: Vec<String>,
-    track_render_target: bool,
+    track_render_targets: Option<u32>,
     isolate: bool,
     api: ViewerApi,
     force_keyed_mutex: bool,
@@ -1707,8 +1707,8 @@ fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
 fn parse_arguments(
     arguments: impl IntoIterator<Item = String>,
 ) -> Result<ViewerOptions, Box<dyn Error>> {
-    let mut arguments = arguments.into_iter();
-    let mut track_render_target = false;
+    let mut arguments = arguments.into_iter().peekable();
+    let mut track_render_targets = None;
     let mut isolate = true;
     let mut api = ViewerApi::default();
     let mut force_keyed_mutex = false;
@@ -1719,7 +1719,16 @@ fn parse_arguments(
             break;
         }
         if argument == "--track-render-target" {
-            track_render_target = true;
+            track_render_targets = Some(1);
+        } else if argument == "--track-render-targets" {
+            track_render_targets = Some(match arguments.peek() {
+                Some(value) if value != "--" => parse_render_target_count(
+                    &arguments.next().expect("peeked render-target count"),
+                )?,
+                _ => 1,
+            });
+        } else if let Some(value) = argument.strip_prefix("--track-render-targets=") {
+            track_render_targets = Some(parse_render_target_count(value)?);
         } else if argument == "--isolate" {
             isolate = true;
         } else if argument == "--no-isolate" {
@@ -1732,14 +1741,14 @@ fn parse_arguments(
             api = ViewerApi::parse(value)?;
         } else {
             return Err(format!(
-                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--force-km] [--no-isolate] -- <program> [arguments...]"
+                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--force-km] [--no-isolate] -- <program> [arguments...]"
             )
             .into());
         }
     }
     if !found_separator {
         return Err(
-            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--force-km] [--no-isolate] -- <program> [arguments...]".into(),
+            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--force-km] [--no-isolate] -- <program> [arguments...]".into(),
         );
     }
     let target = arguments.collect::<Vec<_>>();
@@ -1748,11 +1757,21 @@ fn parse_arguments(
     }
     Ok(ViewerOptions {
         target,
-        track_render_target,
+        track_render_targets,
         isolate,
         api,
         force_keyed_mutex,
     })
+}
+
+fn parse_render_target_count(value: &str) -> Result<u32, Box<dyn Error>> {
+    let count = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid render-target count '{value}'; expected 1..=16"))?;
+    if !(1..=16).contains(&count) {
+        return Err(format!("invalid render-target count '{value}'; expected 1..=16").into());
+    }
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -1767,7 +1786,7 @@ mod argument_tests {
     fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
         let options = arguments(&["--", "game.exe"])?;
         assert_eq!(options.api, ViewerApi::D3d12);
-        assert!(!options.track_render_target);
+        assert_eq!(options.track_render_targets, None);
         assert!(options.isolate);
         assert!(!options.force_keyed_mutex);
         assert_eq!(options.target, ["game.exe"]);
@@ -1787,11 +1806,34 @@ mod argument_tests {
             "target-argument",
         ])?;
         assert_eq!(options.api, ViewerApi::Vulkan);
-        assert!(options.track_render_target);
+        assert_eq!(options.track_render_targets, Some(1));
         assert!(!options.isolate);
         assert!(options.force_keyed_mutex);
         assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
         Ok(())
+    }
+
+    #[test]
+    fn accepts_a_render_target_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            arguments(&["--track-render-targets", "2", "--", "game.exe"])?.track_render_targets,
+            Some(2)
+        );
+        assert_eq!(
+            arguments(&["--track-render-targets", "--", "game.exe"])?.track_render_targets,
+            Some(1)
+        );
+        assert_eq!(
+            arguments(&["--track-render-targets=3", "--", "game.exe"])?.track_render_targets,
+            Some(3)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_invalid_render_target_count() {
+        assert!(arguments(&["--track-render-targets", "0", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--track-render-targets=17", "--", "game.exe"]).is_err());
     }
 }
 
@@ -2036,7 +2078,7 @@ fn launch_target(
     target: &[String],
     layer_dir: &Path,
     session: &str,
-    track_render_target: bool,
+    track_render_targets: Option<u32>,
     force_keyed_mutex: bool,
     isolate: bool,
 ) -> std::io::Result<TargetProcess> {
@@ -2106,10 +2148,14 @@ fn launch_target(
             layer_dir.join("snowglass-gdi.log").into_os_string(),
         ),
     ];
-    if track_render_target {
+    if let Some(count) = track_render_targets {
         environment.push((
             OsString::from("SNOWGLASS_TRACK_RENDER_TARGET"),
             OsString::from("1"),
+        ));
+        environment.push((
+            OsString::from("SNOWGLASS_TRACK_RENDER_TARGETS"),
+            OsString::from(count.to_string()),
         ));
     }
     if force_keyed_mutex {

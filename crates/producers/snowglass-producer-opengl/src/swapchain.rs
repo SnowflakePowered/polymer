@@ -10,7 +10,7 @@ use crate::{
     },
     log,
     timeline::Timeline,
-    tracking::{DrawCandidate, QuadBounds, take_draw_candidate},
+    tracking::{DrawCandidate, QuadBounds, take_draw_candidates, tracked_render_target_count},
 };
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
@@ -67,6 +67,7 @@ struct Capture {
     sync_value: u64,
     frame_number: u64,
     deferred_frames: u64,
+    tracked_sources: Vec<DrawCandidate>,
 }
 
 unsafe impl Send for Capture {}
@@ -97,15 +98,27 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
     }
     let window_width = (rect.right - rect.left).max(0) as u32;
     let window_height = (rect.bottom - rect.top).max(0) as u32;
-    let tracked = take_draw_candidate(context as usize);
-    let (width, height) = tracked.map_or((window_width, window_height), |value| {
-        (value.width, value.height)
+    let observed = take_draw_candidates(context as usize);
+    let key = (hdc as usize, context as usize);
+    let mut map = captures().lock().unwrap_or_else(|error| error.into_inner());
+    let tracked = map.get(&key).map_or(observed.clone(), |capture| {
+        merge_tracked_sources(
+            &capture.tracked_sources,
+            observed,
+            tracked_render_target_count().unwrap_or(1),
+        )
     });
+    let (width, height) = if let Some(first) = tracked.first() {
+        let Some(height) = first.height.checked_mul(tracked.len() as u32) else {
+            return;
+        };
+        (first.width, height)
+    } else {
+        (window_width, window_height)
+    };
     if width == 0 || height == 0 {
         return;
     }
-    let key = (hdc as usize, context as usize);
-    let mut map = captures().lock().unwrap_or_else(|error| error.into_inner());
     let recreate = map.get(&key).is_none_or(|capture| {
         capture.width != width
             || capture.height != height
@@ -114,6 +127,19 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
     });
     if recreate {
         map.remove(&key);
+        if !tracked.is_empty() {
+            log(format!(
+                "snowglass: selected OpenGL render targets {}",
+                tracked
+                    .iter()
+                    .map(|source| format!(
+                        "texture {} layer {} ({:#x}, {}x{})",
+                        source.texture, source.layer, source.target, source.width, source.height
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         match unsafe { Capture::new(hwnd as isize, width, height, window_width, window_height) } {
             Ok(capture) => {
                 map.insert(key, capture);
@@ -127,7 +153,8 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         }
     }
     if let Some(capture) = map.get_mut(&key) {
-        if let Err(error) = unsafe { capture.copy_frame(StreamId(key.1 as u64), tracked) } {
+        capture.tracked_sources.clone_from(&tracked);
+        if let Err(error) = unsafe { capture.copy_frame(StreamId(key.1 as u64), &tracked) } {
             capture.deferred_frames = capture.deferred_frames.wrapping_add(1);
             if capture.deferred_frames == 1 || capture.deferred_frames % 600 == 0 {
                 log(format!(
@@ -214,13 +241,14 @@ impl Capture {
             sync_value: 0,
             frame_number: 0,
             deferred_frames: 0,
+            tracked_sources: Vec::new(),
         })
     }
 
     unsafe fn copy_frame(
         &mut self,
         stream_id: StreamId,
-        source: Option<DrawCandidate>,
+        sources: &[DrawCandidate],
     ) -> Result<(), String> {
         let completed = unsafe { self.consumer.completed_value() };
         let Some(slot_index) = (0..self.slots.len())
@@ -239,25 +267,8 @@ impl Capture {
         unsafe {
             glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &mut old_read);
             glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &mut old_draw);
-            if let Some(source) = source {
+            if !sources.is_empty() {
                 (self.functions.bind_framebuffer)(GL_READ_FRAMEBUFFER, self.read_framebuffer);
-                if source.target == GL_TEXTURE_2D_ARRAY {
-                    (self.functions.framebuffer_texture_layer)(
-                        GL_READ_FRAMEBUFFER,
-                        GL_COLOR_ATTACHMENT0,
-                        source.texture,
-                        0,
-                        0,
-                    );
-                } else {
-                    (self.functions.framebuffer_texture_2d)(
-                        GL_READ_FRAMEBUFFER,
-                        GL_COLOR_ATTACHMENT0,
-                        source.target,
-                        source.texture,
-                        0,
-                    );
-                }
             } else {
                 (self.functions.bind_framebuffer)(GL_READ_FRAMEBUFFER, 0);
             }
@@ -272,18 +283,56 @@ impl Capture {
             if scissor_enabled {
                 glDisable(GL_SCISSOR_TEST);
             }
-            (self.functions.blit_framebuffer)(
-                0,
-                0,
-                self.width as i32,
-                self.height as i32,
-                0,
-                self.height as i32,
-                self.width as i32,
-                0,
-                GL_COLOR_BUFFER_BIT,
-                GL_NEAREST,
-            );
+            if sources.is_empty() {
+                (self.functions.blit_framebuffer)(
+                    0,
+                    0,
+                    self.width as i32,
+                    self.height as i32,
+                    0,
+                    self.height as i32,
+                    self.width as i32,
+                    0,
+                    GL_COLOR_BUFFER_BIT,
+                    GL_NEAREST,
+                );
+            } else {
+                let mut top = 0u32;
+                for source in sources {
+                    if source.target == GL_TEXTURE_2D_ARRAY {
+                        (self.functions.framebuffer_texture_layer)(
+                            GL_READ_FRAMEBUFFER,
+                            GL_COLOR_ATTACHMENT0,
+                            source.texture,
+                            0,
+                            source.layer,
+                        );
+                    } else {
+                        (self.functions.framebuffer_texture_2d)(
+                            GL_READ_FRAMEBUFFER,
+                            GL_COLOR_ATTACHMENT0,
+                            source.target,
+                            source.texture,
+                            0,
+                        );
+                    }
+                    (self.functions.blit_framebuffer)(
+                        0,
+                        0,
+                        source.width as i32,
+                        source.height as i32,
+                        0,
+                        self.height.saturating_sub(top) as i32,
+                        source.width as i32,
+                        self.height
+                            .saturating_sub(top.saturating_add(source.height))
+                            as i32,
+                        GL_COLOR_BUFFER_BIT,
+                        GL_NEAREST,
+                    );
+                    top = top.saturating_add(source.height);
+                }
+            }
             if scissor_enabled {
                 glEnable(GL_SCISSOR_TEST);
             }
@@ -299,7 +348,7 @@ impl Capture {
         self.sync_value = sync_value;
         self.next_slot = (slot_index + 1) % self.slots.len();
         self.frame_number = self.frame_number.wrapping_add(1);
-        let bounds = source.map_or(
+        let bounds = sources.first().map_or(
             QuadBounds {
                 x: 0,
                 y: 0,
@@ -330,8 +379,9 @@ impl Capture {
         });
         if self.frame_number <= self.slots.len() as u64 || self.frame_number % 120 == 0 {
             log(format!(
-                "snowglass: submitted OpenGL EXT frame {} from {}x{} into slot {} (quad {},{} {}x{})",
+                "snowglass: submitted OpenGL EXT frame {} from {} target(s) at {}x{} into slot {} (quad {},{} {}x{})",
                 self.frame_number,
+                sources.len().max(1),
                 self.width,
                 self.height,
                 slot_index,
@@ -350,6 +400,52 @@ impl Capture {
         }
         Ok(())
     }
+}
+
+fn merge_tracked_sources(
+    previous: &[DrawCandidate],
+    observed: Vec<DrawCandidate>,
+    limit: usize,
+) -> Vec<DrawCandidate> {
+    if previous.is_empty() || observed.len() >= limit {
+        return observed;
+    }
+    let Some(extent) = observed
+        .first()
+        .map(|candidate| (candidate.width, candidate.height))
+    else {
+        return previous.to_vec();
+    };
+    let mut merged = previous
+        .iter()
+        .filter(|candidate| (candidate.width, candidate.height) == extent)
+        .copied()
+        .collect::<Vec<_>>();
+    if merged.is_empty() {
+        return observed;
+    }
+    let mut updated = vec![false; merged.len()];
+    for candidate in observed {
+        let exact = merged.iter().position(|old| {
+            (old.texture, old.target, old.layer)
+                == (candidate.texture, candidate.target, candidate.layer)
+        });
+        let compatible = merged.iter().enumerate().position(|(index, old)| {
+            !updated[index]
+                && old.target == candidate.target
+                && old.layer == candidate.layer
+                && (old.width, old.height) == (candidate.width, candidate.height)
+        });
+        if let Some(index) = exact.or(compatible) {
+            merged[index] = candidate;
+            updated[index] = true;
+        } else if merged.len() < limit {
+            merged.push(candidate);
+            updated.push(true);
+        }
+    }
+    merged.truncate(limit);
+    merged
 }
 
 impl Drop for Capture {
