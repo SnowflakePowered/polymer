@@ -19,8 +19,8 @@ pub use hooks::{
 };
 pub use hooks::{
     vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBlitImage,
-    vkCmdCopyImage, vkCmdDraw, vkCmdDrawIndexed, vkCmdEndRenderPass, vkCmdPushDescriptorSetKHR,
-    vkCmdSetScissor, vkCmdSetViewport,
+    vkCmdCopyImage, vkCmdDraw, vkCmdDrawIndexed, vkCmdEndRenderPass, vkCmdPushConstants,
+    vkCmdPushDescriptorSetKHR, vkCmdSetScissor, vkCmdSetViewport,
 };
 pub use hooks::{
     vkCreateFramebuffer, vkCreateImage, vkCreateImageView, vkDestroyFramebuffer, vkDestroyImage,
@@ -38,6 +38,7 @@ snowglass_hook::register_hooks! {
     hooks::register_cmd_draw_indexed -> tracking::cmd_draw;
     hooks::register_cmd_set_viewport -> tracking::cmd_set_viewport;
     hooks::register_cmd_set_scissor -> tracking::cmd_set_scissor;
+    hooks::register_cmd_push_constants -> tracking::cmd_push_constants;
     hooks::register_cmd_end_render_pass -> tracking::cmd_end_render_pass;
     hooks::register_cmd_begin_render_pass -> tracking::cmd_begin_render_pass;
     hooks::register_cmd_bind_descriptor_sets -> tracking::cmd_bind_descriptor_sets;
@@ -121,6 +122,7 @@ pub(crate) fn registered_device_hook(name: &[u8], tracking: bool) -> vk::PFN_vkV
             b"vkCmdBindDescriptorSets" => hook(hooks::vkCmdBindDescriptorSets as *const ()),
             b"vkCmdSetViewport" => hook(hooks::vkCmdSetViewport as *const ()),
             b"vkCmdSetScissor" => hook(hooks::vkCmdSetScissor as *const ()),
+            b"vkCmdPushConstants" => hook(hooks::vkCmdPushConstants as *const ()),
             b"vkCmdDraw" => hook(hooks::vkCmdDraw as *const ()),
             b"vkCmdDrawIndexed" => hook(hooks::vkCmdDrawIndexed as *const ()),
             b"vkCmdBlitImage" => hook(hooks::vkCmdBlitImage as *const ()),
@@ -137,6 +139,7 @@ mod tests {
         assert!(super::registered_instance_hook(b"vkCreateInstance").is_some());
         assert!(super::registered_device_hook(b"vkQueuePresentKHR", false).is_some());
         assert!(super::registered_device_hook(b"vkCmdSetScissor", true).is_some());
+        assert!(super::registered_device_hook(b"vkCmdPushConstants", true).is_some());
         assert!(super::registered_device_hook(b"vkCmdSetScissor", false).is_none());
         assert!(super::registered_device_hook(b"vkNotARealCommand", true).is_none());
     }

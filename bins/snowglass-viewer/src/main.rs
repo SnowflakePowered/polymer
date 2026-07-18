@@ -14,14 +14,14 @@ use snowglass_protocol::{
     PROTOCOL_VERSION, RELEASE_ALL_SYNC_VALUE,
 };
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     error::Error,
     ffi::{OsStr, OsString},
     path::Path,
     process::{Child, Command},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering},
         mpsc,
     },
@@ -206,6 +206,13 @@ struct StatisticsSample {
     frame_interval_ms: f32,
 }
 
+struct ImportedVulkanSurface {
+    connection: u64,
+    imported: ImportedImageRing,
+    latest: Option<FrameReady>,
+    last_released_frame: u64,
+}
+
 struct DirectCompositor {
     _entry: Entry,
     instance: ash::Instance,
@@ -230,9 +237,7 @@ struct DirectCompositor {
     render_finished: Vec<vk::Semaphore>,
     fences: Vec<vk::Fence>,
     frame_index: u64,
-    imported: Option<ImportedImageRing>,
-    latest: Option<FrameReady>,
-    last_released_frame: u64,
+    surfaces: Vec<ImportedVulkanSurface>,
     keyed_mutex_enabled: bool,
     egui_renderer: Option<EguiRenderer>,
 }
@@ -260,6 +265,78 @@ impl ViewerApi {
     }
 }
 
+/// A capture backend the viewer can install into the target process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HookBackend {
+    Vulkan,
+    OpenGl,
+    D3d12,
+    D3d11,
+    Gdi,
+}
+
+/// The `--hook auto` selection: every backend except GDI, ranked by how
+/// likely each is to be the real renderer rather than a probe or GUI shell.
+const AUTO_HOOKS: [HookBackend; 4] = [
+    HookBackend::Vulkan,
+    HookBackend::OpenGl,
+    HookBackend::D3d12,
+    HookBackend::D3d11,
+];
+
+impl HookBackend {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value.to_ascii_lowercase().as_str() {
+            "vulkan" => Ok(Self::Vulkan),
+            "opengl" => Ok(Self::OpenGl),
+            "d3d12" => Ok(Self::D3d12),
+            "d3d11" => Ok(Self::D3d11),
+            "gdi" => Ok(Self::Gdi),
+            _ => Err(format!(
+                "unsupported hook '{value}'; expected auto, vulkan, d3d11, d3d12, opengl, or gdi"
+            )
+            .into()),
+        }
+    }
+
+    fn class(self) -> u8 {
+        match self {
+            Self::Gdi => 0,
+            Self::D3d11 => 1,
+            Self::D3d12 => 2,
+            Self::OpenGl => 3,
+            Self::Vulkan => 4,
+        }
+    }
+}
+
+/// Appends comma-separated `--hook` tokens in submission order; `auto`
+/// expands to [`AUTO_HOOKS`], skipping backends that are already listed.
+fn parse_hook_list(hooks: &mut Vec<HookBackend>, value: &str) -> Result<(), Box<dyn Error>> {
+    for token in value.split(',') {
+        if token.eq_ignore_ascii_case("auto") {
+            for &hook in &AUTO_HOOKS {
+                if !hooks.contains(&hook) {
+                    hooks.push(hook);
+                }
+            }
+            continue;
+        }
+        let hook = HookBackend::parse(token)?;
+        if hooks.contains(&hook) {
+            return Err(format!("hook '{token}' is listed more than once").into());
+        }
+        hooks.push(hook);
+    }
+    Ok(())
+}
+
+/// Returns the preemption rank of a backend class under the configured hook
+/// order: lower is higher priority, `None` means the backend is not enabled.
+fn class_priority(hooks: &[HookBackend], class: u8) -> Option<usize> {
+    hooks.iter().position(|hook| hook.class() == class)
+}
+
 /// Whether the native D3D12 consumer can import this stream: either a
 /// fence-synchronized D3D12-shareable resource, or a keyed-mutex D3D11
 /// resource acquired through D3D11On12 (which needs the adapter LUID).
@@ -270,9 +347,40 @@ fn d3d12_consumable(stream: &StreamReady) -> bool {
             | ExternalImageKind::OpenGlD3d12Resource
             | ExternalImageKind::VulkanD3d12Resource
             | ExternalImageKind::D3d11D3d12Resource
+            | ExternalImageKind::GdiD3d12Resource
     ) || (stream.image_kind == ExternalImageKind::D3d11SharedResourceNt
         && stream.sync_kind == ExternalSyncKind::D3d11KeyedMutex
         && (stream.adapter_luid.low_part != 0 || stream.adapter_luid.high_part != 0))
+}
+
+fn stream_backend_class(kind: ExternalImageKind) -> u8 {
+    match kind {
+        ExternalImageKind::GdiD3d12Resource => HookBackend::Gdi.class(),
+        ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d11D3d12Resource => {
+            HookBackend::D3d11.class()
+        }
+        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => {
+            HookBackend::D3d12.class()
+        }
+        ExternalImageKind::OpenGlD3d12Resource => HookBackend::OpenGl.class(),
+        ExternalImageKind::VulkanOpaqueWin32 | ExternalImageKind::VulkanD3d12Resource => {
+            HookBackend::Vulkan.class()
+        }
+    }
+}
+
+/// A stream replaces an earlier stream for the same window when its backend
+/// ranks at least as high in the configured hook order; a recreated surface
+/// from the same backend always replaces its predecessor.
+fn should_replace_same_window_backend(hooks: &[HookBackend], existing: u8, incoming: u8) -> bool {
+    match (
+        class_priority(hooks, incoming),
+        class_priority(hooks, existing),
+    ) {
+        (Some(incoming), Some(existing)) => incoming <= existing,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 impl ViewerCompositor {
@@ -290,6 +398,7 @@ impl ViewerCompositor {
     fn import_stream(
         &mut self,
         window: &Window,
+        connection: u64,
         stream: &StreamReady,
         api: ViewerApi,
     ) -> Result<(), Box<dyn Error>> {
@@ -306,7 +415,7 @@ impl ViewerCompositor {
             let Self::D3d12(value) = self else {
                 unreachable!()
             };
-            return value.import_stream(stream);
+            return value.import_stream(connection, stream);
         }
 
         let needs_keyed_mutex = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
@@ -326,7 +435,7 @@ impl ViewerCompositor {
         let Self::Vulkan(value) = self else {
             unreachable!()
         };
-        value.import_stream(stream)
+        value.import_stream(connection, stream)
     }
 
     fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
@@ -337,10 +446,10 @@ impl ViewerCompositor {
         }
     }
 
-    fn set_latest(&mut self, frame: FrameReady) {
+    fn set_latest(&mut self, connection: u64, frame: FrameReady) {
         match self {
-            Self::Vulkan(value) => value.set_latest(frame),
-            Self::D3d12(value) => value.set_latest(frame),
+            Self::Vulkan(value) => value.set_latest(connection, frame),
+            Self::D3d12(value) => value.set_latest(connection, frame),
             Self::Empty => {}
         }
     }
@@ -353,10 +462,10 @@ impl ViewerCompositor {
         }
     }
 
-    fn disconnect_stream(&mut self) -> Result<(), Box<dyn Error>> {
+    fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
         match self {
-            Self::Vulkan(value) => value.disconnect_stream().map_err(Into::into),
-            Self::D3d12(value) => value.disconnect_stream(),
+            Self::Vulkan(value) => value.disconnect_stream(connection).map_err(Into::into),
+            Self::D3d12(value) => value.disconnect_stream(connection),
             Self::Empty => Ok(()),
         }
     }
@@ -625,25 +734,31 @@ impl DirectCompositor {
                 render_finished,
                 fences,
                 frame_index: 0,
-                imported: None,
-                latest: None,
-                last_released_frame: 0,
+                surfaces: Vec::new(),
                 keyed_mutex_enabled: enable_keyed_mutex,
                 egui_renderer: Some(egui_renderer),
             })
         }
     }
 
-    fn import_stream(&mut self, stream: &StreamReady) -> Result<(), Box<dyn Error>> {
-        self.release_imported_stream()?;
-        self.imported = Some(ImportedImageRing::import_into(
+    fn import_stream(
+        &mut self,
+        connection: u64,
+        stream: &StreamReady,
+    ) -> Result<(), Box<dyn Error>> {
+        self.disconnect_stream(connection)?;
+        let imported = ImportedImageRing::import_into(
             &self.instance,
             self.device.clone(),
             self.physical_device,
             stream,
-        )?);
-        self.latest = None;
-        self.last_released_frame = 0;
+        )?;
+        self.surfaces.push(ImportedVulkanSurface {
+            connection,
+            imported,
+            latest: None,
+            last_released_frame: 0,
+        });
         Ok(())
     }
 
@@ -651,29 +766,31 @@ impl DirectCompositor {
         physical_device_matches_luid(&self.instance, self.physical_device, adapter)
     }
 
-    fn set_latest(&mut self, frame: FrameReady) {
-        self.latest = Some(frame);
+    fn set_latest(&mut self, connection: u64, frame: FrameReady) {
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.connection == connection)
+        {
+            surface.latest = Some(frame);
+        }
     }
 
     fn has_pending_frame(&self) -> bool {
-        self.latest.is_some()
+        self.surfaces.iter().any(|surface| surface.latest.is_some())
     }
 
-    fn disconnect_stream(&mut self) -> Result<(), vk::Result> {
-        self.release_imported_stream()?;
-        self.latest = None;
-        self.last_released_frame = 0;
-        Ok(())
-    }
-
-    fn release_imported_stream(&mut self) -> Result<(), vk::Result> {
+    fn disconnect_stream(&mut self, connection: u64) -> Result<(), vk::Result> {
+        let Some(index) = self
+            .surfaces
+            .iter()
+            .position(|surface| surface.connection == connection)
+        else {
+            return Ok(());
+        };
         unsafe {
             self.device.device_wait_idle()?;
-            if let Some(semaphore) = self
-                .imported
-                .as_ref()
-                .and_then(ImportedImageRing::consumer_timeline)
-            {
+            if let Some(semaphore) = self.surfaces[index].imported.consumer_timeline() {
                 self.device.signal_semaphore(
                     &vk::SemaphoreSignalInfo::default()
                         .semaphore(semaphore)
@@ -681,7 +798,24 @@ impl DirectCompositor {
                 )?;
             }
         }
-        self.imported = None;
+        self.surfaces.remove(index);
+        Ok(())
+    }
+
+    fn release_imported_streams(&mut self) -> Result<(), vk::Result> {
+        unsafe {
+            self.device.device_wait_idle()?;
+            for surface in &self.surfaces {
+                if let Some(semaphore) = surface.imported.consumer_timeline() {
+                    self.device.signal_semaphore(
+                        &vk::SemaphoreSignalInfo::default()
+                            .semaphore(semaphore)
+                            .value(RELEASE_ALL_SYNC_VALUE),
+                    )?;
+                }
+            }
+        }
+        self.surfaces.clear();
         Ok(())
     }
 
@@ -772,14 +906,18 @@ impl DirectCompositor {
             let flight = self.frame_index as usize % FRAMES_IN_FLIGHT;
             self.device
                 .wait_for_fences(&[self.fences[flight]], true, u64::MAX)?;
-            if let (Some(imported), Some(frame)) = (&self.imported, self.latest)
-                && imported.uses_keyed_mutex()
+            for surface in self
+                .surfaces
+                .iter()
+                .filter(|surface| surface.latest.is_some() && surface.imported.uses_keyed_mutex())
             {
                 // A D3D11 shared texture is made visible by both its fence and
                 // its keyed mutex. Waiting for the fence before submission
                 // avoids asking the Vulkan driver to resolve both primitives
                 // inside the same queue operation.
-                imported.wait_for(frame.sync_value, u64::MAX)?;
+                surface
+                    .imported
+                    .wait_for(surface.latest.unwrap().sync_value, u64::MAX)?;
             }
             self.egui_renderer
                 .as_mut()
@@ -830,7 +968,7 @@ impl DirectCompositor {
                 &[],
                 &[to_destination],
             );
-            if self.latest.is_some() || !self.swapchain_initialized[image_index as usize] {
+            if self.has_pending_frame() || !self.swapchain_initialized[image_index as usize] {
                 self.device.cmd_clear_color_image(
                     command,
                     destination,
@@ -841,7 +979,18 @@ impl DirectCompositor {
                     &[color_range()],
                 );
             }
-            if let (Some(imported), Some(frame)) = (&self.imported, self.latest) {
+            let visible_count = self
+                .surfaces
+                .iter()
+                .filter(|surface| surface.latest.is_some())
+                .count() as u32;
+            let cell_height = self.extent.height / visible_count.max(1);
+            let mut visible_index = 0;
+            for surface in &self.surfaces {
+                let imported = &surface.imported;
+                let Some(frame) = surface.latest else {
+                    continue;
+                };
                 if let Some(source) = imported.image(frame.slot) {
                     let mut to_source = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
@@ -874,8 +1023,9 @@ impl DirectCompositor {
                         content_width,
                         content_height,
                         self.extent.width,
-                        self.extent.height,
+                        cell_height,
                     );
+                    let offset_y = offset_y + (visible_index * cell_height) as i32;
                     self.device.cmd_blit_image(
                         command,
                         source,
@@ -929,6 +1079,7 @@ impl DirectCompositor {
                         &[source_to_general],
                     );
                 }
+                visible_index += 1;
             }
             let to_color = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -983,52 +1134,48 @@ impl DirectCompositor {
             let mut waits = vec![self.image_available[flight]];
             let mut wait_values = vec![0];
             let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-            if let (Some(imported), Some(frame)) = (&self.imported, self.latest)
-                && !imported.uses_keyed_mutex()
-            {
-                waits.push(imported.timeline());
-                wait_values.push(frame.sync_value);
-                wait_stages.push(vk::PipelineStageFlags::TRANSFER);
+            for surface in &self.surfaces {
+                if let Some(frame) = surface.latest
+                    && !surface.imported.uses_keyed_mutex()
+                {
+                    waits.push(surface.imported.timeline());
+                    wait_values.push(frame.sync_value);
+                    wait_stages.push(vk::PipelineStageFlags::TRANSFER);
+                }
             }
             let commands = [command];
             let mut signals = vec![self.render_finished[flight]];
             let mut signal_values = vec![0];
-            let release = self
-                .imported
-                .as_ref()
-                .zip(self.latest)
-                .and_then(|(imported, frame)| {
-                    (frame.frame_number > self.last_released_frame)
-                        .then(|| {
-                            imported
-                                .consumer_timeline()
-                                .map(|semaphore| (semaphore, frame))
-                        })
-                        .flatten()
-                });
-            if let Some((semaphore, frame)) = release {
-                signals.push(semaphore);
-                signal_values.push(frame.sync_value);
+            let mut releases = Vec::new();
+            for (index, surface) in self.surfaces.iter().enumerate() {
+                if let Some(frame) = surface.latest
+                    && frame.frame_number > surface.last_released_frame
+                    && let Some(semaphore) = surface.imported.consumer_timeline()
+                {
+                    signals.push(semaphore);
+                    signal_values.push(frame.sync_value);
+                    releases.push((index, frame.frame_number));
+                }
             }
             let mut timeline_submit = vk::TimelineSemaphoreSubmitInfo::default()
                 .wait_semaphore_values(&wait_values)
                 .signal_semaphore_values(&signal_values);
-            let keyed_memory =
-                self.imported
-                    .as_ref()
-                    .zip(self.latest)
-                    .and_then(|(imported, frame)| {
-                        imported
-                            .uses_keyed_mutex()
-                            .then(|| imported.memory(frame.slot))
-                            .flatten()
-                            .map(|memory| memory)
-                    });
-            let acquire_syncs = keyed_memory.map_or([vk::DeviceMemory::null()], |memory| [memory]);
-            let acquire_keys = keyed_memory.map_or([0], |_| [1]);
-            let acquire_timeouts = [u32::MAX];
-            let release_syncs = acquire_syncs;
-            let release_keys = [0];
+            let acquire_syncs: Vec<_> = self
+                .surfaces
+                .iter()
+                .filter_map(|surface| {
+                    let frame = surface.latest?;
+                    surface
+                        .imported
+                        .uses_keyed_mutex()
+                        .then(|| surface.imported.memory(frame.slot))
+                        .flatten()
+                })
+                .collect();
+            let acquire_keys = vec![1; acquire_syncs.len()];
+            let acquire_timeouts = vec![u32::MAX; acquire_syncs.len()];
+            let release_syncs = acquire_syncs.clone();
+            let release_keys = vec![0; release_syncs.len()];
             let mut keyed_mutex = vk::Win32KeyedMutexAcquireReleaseInfoKHR::default()
                 .acquire_syncs(&acquire_syncs)
                 .acquire_keys(&acquire_keys)
@@ -1041,13 +1188,13 @@ impl DirectCompositor {
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
-            if keyed_memory.is_some() {
+            if !acquire_syncs.is_empty() {
                 submit = submit.push_next(&mut keyed_mutex);
             }
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
-            if let Some((_, frame)) = release {
-                self.last_released_frame = frame.frame_number;
+            for (index, frame_number) in releases {
+                self.surfaces[index].last_released_frame = frame_number;
             }
             let swapchains = [self.swapchain];
             let indices = [image_index];
@@ -1063,8 +1210,10 @@ impl DirectCompositor {
                 Err(error) => return Err(error.into()),
             };
             self.swapchain_initialized[image_index as usize] = true;
-            if keyed_memory.is_some() {
-                self.latest = None;
+            for surface in &mut self.surfaces {
+                if surface.imported.uses_keyed_mutex() {
+                    surface.latest = None;
+                }
             }
             self.frame_index += 1;
             Ok(!(acquire_suboptimal || present_suboptimal))
@@ -1074,7 +1223,7 @@ impl DirectCompositor {
 
 impl Drop for DirectCompositor {
     fn drop(&mut self) {
-        let _ = self.release_imported_stream();
+        let _ = self.release_imported_streams();
         unsafe {
             let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
             let _ = self.device.device_wait_idle();
@@ -1109,6 +1258,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_target()?;
     let target = options.target;
     let track_render_targets = options.track_render_targets;
+    let surface_limit = options.surfaces;
+    let mut remaining_surface_skips = options.skip_surfaces;
     let isolate = options.isolate;
     let viewer_api = options.api;
     let executable_dir = env::current_exe()?
@@ -1131,12 +1282,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
     let (input_tx, input_rx) = mpsc::channel();
     spawn_input_ipc(input_listener, input_rx);
+    let hooks = options.hooks;
     let target_process = launch_target(
         &target,
         &executable_dir,
         &session,
         track_render_targets,
         options.force_keyed_mutex,
+        &hooks,
         isolate,
     )?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -1144,7 +1297,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (target_done_tx, target_done_rx) = mpsc::channel();
     spawn_target_monitor(target_process, stop.clone(), target_done_tx);
     let (capture_tx, capture_rx) = mpsc::channel();
-    spawn_ipc(listener, capture_tx, viewer_api);
+    // Connections the event loop has evicted (preempted or replaced). The IPC
+    // threads close these sockets so the producer stops capturing.
+    let revoked_connections = Arc::new(Mutex::new(HashSet::<u64>::new()));
+    spawn_ipc(
+        listener,
+        capture_tx,
+        viewer_api,
+        revoked_connections.clone(),
+    );
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -1173,7 +1334,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
     let mut cursor_position = (0, 0);
-    let mut active_capture_connection = 0u64;
+    let mut active_capture_connections = HashMap::<u64, (i64, u8)>::new();
+    let mut skipped_surface_windows = HashSet::<(i64, u8)>::new();
+    let mut skipped_surface_backends = HashSet::<u8>::new();
     let mut active_backend = "Waiting";
     let mut active_consumer = "Waiting";
     let input_started = Instant::now();
@@ -1316,6 +1479,153 @@ fn main() -> Result<(), Box<dyn Error>> {
                     while let Ok(capture) = capture_rx.try_recv() {
                         match capture {
                             CaptureEvent::Stream(connection, stream, accepted) => {
+                                let surface_identity = (
+                                    stream.source_window,
+                                    stream_backend_class(stream.image_kind),
+                                );
+                                let Some(stream_rank) =
+                                    class_priority(&hooks, surface_identity.1)
+                                else {
+                                    eprintln!(
+                                        "snowglass: ignored {:?} surface window {:#x}; its backend is not hooked",
+                                        stream.image_kind, stream.source_window
+                                    );
+                                    let _ = accepted.send(false);
+                                    continue;
+                                };
+                                let previously_skipped = stream.source_window != 0
+                                    && skipped_surface_windows.contains(&surface_identity);
+                                if previously_skipped
+                                    || (!active_capture_connections.contains_key(&connection)
+                                        && remaining_surface_skips != 0)
+                                {
+                                    if !previously_skipped {
+                                        remaining_surface_skips -= 1;
+                                        if stream.source_window != 0 {
+                                            skipped_surface_windows.insert(surface_identity);
+                                        }
+                                        skipped_surface_backends.insert(surface_identity.1);
+                                        eprintln!(
+                                            "snowglass: skipped {:?} surface window {:#x}; {} initial surface(s) still to skip",
+                                            stream.image_kind,
+                                            stream.source_window,
+                                            remaining_surface_skips
+                                        );
+                                    }
+                                    let _ = accepted.send(false);
+                                    continue;
+                                }
+                                if !active_capture_connections.contains_key(&connection) {
+                                    let replaced = (stream.source_window != 0)
+                                        .then(|| {
+                                            active_capture_connections.iter().find_map(
+                                                |(&existing, &(window, backend))| {
+                                                    (window == stream.source_window)
+                                                        .then_some((existing, backend))
+                                                },
+                                            )
+                                        })
+                                        .flatten();
+                                    if let Some((existing, backend)) = replaced {
+                                        if !should_replace_same_window_backend(
+                                            &hooks,
+                                            backend,
+                                            surface_identity.1,
+                                        ) {
+                                            eprintln!(
+                                                "snowglass: ignored lower-priority {:?} duplicate for window {:#x}",
+                                                stream.image_kind, stream.source_window
+                                            );
+                                            let _ = accepted.send(false);
+                                            continue;
+                                        }
+                                        active_capture_connections.remove(&existing);
+                                        revoked_connections
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner())
+                                            .insert(existing);
+                                        if let Err(error) = compositor.disconnect_stream(existing) {
+                                            eprintln!(
+                                                "snowglass: failed to replace prior stream for window: {error}"
+                                            );
+                                        }
+                                    }
+                                }
+                                if !active_capture_connections.contains_key(&connection)
+                                    && active_capture_connections.len() >= surface_limit as usize
+                                    && !skipped_surface_backends.contains(&surface_identity.1)
+                                {
+                                    let provisional = active_capture_connections.iter().find_map(
+                                        |(&existing, &(_, backend))| {
+                                            skipped_surface_backends
+                                                .contains(&backend)
+                                                .then_some(existing)
+                                        },
+                                    );
+                                    if let Some(existing) = provisional {
+                                        active_capture_connections.remove(&existing);
+                                        revoked_connections
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner())
+                                            .insert(existing);
+                                        if let Err(error) = compositor.disconnect_stream(existing) {
+                                            eprintln!(
+                                                "snowglass: failed to replace provisional skipped-backend stream: {error}"
+                                            );
+                                        }
+                                        eprintln!(
+                                            "snowglass: replaced provisional skipped-backend surface with {:?} window {:#x}",
+                                            stream.image_kind, stream.source_window
+                                        );
+                                    }
+                                }
+                                if !active_capture_connections.contains_key(&connection)
+                                    && active_capture_connections.len() >= surface_limit as usize
+                                    && !skipped_surface_backends.contains(&surface_identity.1)
+                                {
+                                    // Probe swapchains and GUI shells (GDI blits, a
+                                    // frontend's D3D11 surface) must not hold the slot
+                                    // once the real renderer attaches: a stream from a
+                                    // higher-priority backend preempts the lowest-ranked,
+                                    // oldest surface.
+                                    let victim = active_capture_connections
+                                        .iter()
+                                        .filter_map(|(&existing, &(_, backend))| {
+                                            class_priority(&hooks, backend)
+                                                .filter(|&rank| rank > stream_rank)
+                                                .map(|rank| (existing, rank))
+                                        })
+                                        .max_by_key(|&(existing, rank)| {
+                                            (rank, std::cmp::Reverse(existing))
+                                        })
+                                        .map(|(existing, _)| existing);
+                                    if let Some(existing) = victim {
+                                        active_capture_connections.remove(&existing);
+                                        revoked_connections
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner())
+                                            .insert(existing);
+                                        if let Err(error) = compositor.disconnect_stream(existing) {
+                                            eprintln!(
+                                                "snowglass: failed to preempt lower-priority stream: {error}"
+                                            );
+                                        }
+                                        eprintln!(
+                                            "snowglass: preempted lower-priority surface for {:?} window {:#x}",
+                                            stream.image_kind, stream.source_window
+                                        );
+                                    }
+                                }
+                                if !active_capture_connections.contains_key(&connection)
+                                    && active_capture_connections.len() >= surface_limit as usize
+                                {
+                                    eprintln!(
+                                        "snowglass: ignored {:?} surface window {:#x}; surface limit {} is full",
+                                        stream.image_kind, stream.source_window, surface_limit
+                                    );
+                                    let _ = accepted.send(false);
+                                    continue;
+                                }
                                 active_backend = match stream.image_kind {
                                     ExternalImageKind::D3d11SharedResourceNt
                                     | ExternalImageKind::D3d11D3d12Resource => "D3D11",
@@ -1324,14 +1634,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     | ExternalImageKind::D3d12Heap => "D3D12",
                                     ExternalImageKind::OpenGlD3d12Resource => "OpenGL",
                                     ExternalImageKind::VulkanD3d12Resource => "Vulkan",
+                                    ExternalImageKind::GdiD3d12Resource => "GDI",
                                 };
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
                                 }
-                                match compositor.import_stream(&window, &stream, viewer_api) {
+                                match compositor.import_stream(
+                                    &window,
+                                    connection,
+                                    &stream,
+                                    viewer_api,
+                                ) {
                                     Ok(()) => {
-                                        active_capture_connection = connection;
+                                        active_capture_connections
+                                            .insert(connection, surface_identity);
                                         // A deferred or replaced graphics backend has no copy
                                         // of textures emitted to its predecessor. A fresh egui
                                         // context guarantees that Managed(0) is emitted as a full
@@ -1353,9 +1670,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             "Vulkan"
                                         };
                                         eprintln!(
-                                            "snowglass: imported {active_backend} stream {}x{} with {} slots using {}",
+                                            "snowglass: imported {active_backend} stream {}x{} for window {:#x} with {} slots using {}",
                                             stream.width,
                                             stream.height,
+                                            stream.source_window,
                                             stream.slot_count,
                                             active_consumer,
                                         );
@@ -1368,7 +1686,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             CaptureEvent::Frame(connection, frame) => {
-                                if connection != active_capture_connection {
+                                if !active_capture_connections.contains_key(&connection) {
                                     continue;
                                 }
                                 if frame.frame_number == 1 {
@@ -1409,7 +1727,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     as f64
                                     * 1000.0
                                     / frequency;
-                                compositor.set_latest(frame);
+                                compositor.set_latest(connection, frame);
                                 if active_backend == "D3D11" {
                                     // Keyed-mutex frames must be consumed and released in order;
                                     // do not overwrite one with a newer socket message.
@@ -1417,10 +1735,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             CaptureEvent::Disconnected(connection) => {
-                                if connection != active_capture_connection {
+                                revoked_connections
+                                    .lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .remove(&connection);
+                                if active_capture_connections.remove(&connection).is_none() {
                                     continue;
                                 }
-                                if let Err(error) = compositor.disconnect_stream() {
+                                if let Err(error) = compositor.disconnect_stream(connection) {
                                     eprintln!("snowglass: stream disconnect failed: {error}");
                                 }
                             }
@@ -1561,10 +1883,10 @@ fn spawn_ipc(
     listener: LocalSocketListener,
     events: mpsc::Sender<CaptureEvent>,
     viewer_api: ViewerApi,
+    revoked: Arc<Mutex<HashSet<u64>>>,
 ) {
     thread::spawn(move || {
         let next_connection = Arc::new(AtomicU64::new(0));
-        let active_connection = Arc::new(AtomicU64::new(0));
         loop {
             let mut socket = match listener.accept() {
                 Ok(socket) => socket,
@@ -1586,11 +1908,22 @@ fn spawn_ipc(
                 continue;
             }
             let events = events.clone();
-            let active_connection = active_connection.clone();
+            let revoked = revoked.clone();
             thread::spawn(move || {
                 let result = (|| -> std::io::Result<()> {
+                    let mut accepted = false;
                     loop {
-                        match socket.receive()? {
+                        let message = socket.receive()?;
+                        if revoked
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .contains(&connection)
+                        {
+                            // The event loop evicted this stream; drop the
+                            // socket so the producer parks its capture.
+                            return Ok(());
+                        }
+                        match message {
                             Message::StreamReady(stream) => {
                                 let (accepted_tx, accepted_rx) = mpsc::sync_channel(0);
                                 events
@@ -1601,13 +1934,15 @@ fn spawn_ipc(
                                             "viewer closed",
                                         )
                                     })?;
-                                if accepted_rx.recv().unwrap_or(false) {
-                                    active_connection.store(connection, Ordering::Release);
+                                accepted = accepted_rx.recv().unwrap_or(false);
+                                if accepted {
                                     socket.send(Message::StreamAccepted)?;
+                                } else {
+                                    return Ok(());
                                 }
                             }
                             Message::FrameReady(frame) => {
-                                if active_connection.load(Ordering::Acquire) == connection {
+                                if accepted {
                                     let _ = events.send(CaptureEvent::Frame(connection, frame));
                                 }
                             }
@@ -1695,9 +2030,12 @@ fn spawn_target_monitor(
 struct ViewerOptions {
     target: Vec<String>,
     track_render_targets: Option<u32>,
+    surfaces: u32,
+    skip_surfaces: u32,
     isolate: bool,
     api: ViewerApi,
     force_keyed_mutex: bool,
+    hooks: Vec<HookBackend>,
 }
 
 fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
@@ -1709,9 +2047,12 @@ fn parse_arguments(
 ) -> Result<ViewerOptions, Box<dyn Error>> {
     let mut arguments = arguments.into_iter().peekable();
     let mut track_render_targets = None;
+    let mut surfaces = 1;
+    let mut skip_surfaces = 0;
     let mut isolate = true;
     let mut api = ViewerApi::default();
     let mut force_keyed_mutex = false;
+    let mut hooks = Vec::new();
     let mut found_separator = false;
     while let Some(argument) = arguments.next() {
         if argument == "--" {
@@ -1729,49 +2070,101 @@ fn parse_arguments(
             });
         } else if let Some(value) = argument.strip_prefix("--track-render-targets=") {
             track_render_targets = Some(parse_render_target_count(value)?);
+        } else if argument == "--surfaces" {
+            surfaces = match arguments.peek() {
+                Some(value) if value != "--" => parse_bounded_count(
+                    &arguments.next().expect("peeked surface count"),
+                    "surface",
+                )?,
+                _ => 1,
+            };
+        } else if let Some(value) = argument.strip_prefix("--surfaces=") {
+            surfaces = parse_bounded_count(value, "surface")?;
+        } else if matches!(
+            argument.as_str(),
+            "--skip-surface" | "--skip-surfaces" | "--skip-window" | "--skip-windows"
+        ) {
+            skip_surfaces = match arguments.peek() {
+                Some(value) if value != "--" => {
+                    parse_skip_count(&arguments.next().expect("peeked surface skip count"))?
+                }
+                _ => 1,
+            };
+        } else if let Some(value) = argument
+            .strip_prefix("--skip-surfaces=")
+            .or_else(|| argument.strip_prefix("--skip-surface="))
+            .or_else(|| argument.strip_prefix("--skip-windows="))
+            .or_else(|| argument.strip_prefix("--skip-window="))
+        {
+            skip_surfaces = parse_skip_count(value)?;
         } else if argument == "--isolate" {
             isolate = true;
         } else if argument == "--no-isolate" {
             isolate = false;
         } else if argument == "--force-km" {
             force_keyed_mutex = true;
+        } else if argument == "--hook" {
+            parse_hook_list(
+                &mut hooks,
+                &arguments
+                    .next()
+                    .ok_or("--hook requires auto or a comma-separated list of hooks")?,
+            )?;
+        } else if let Some(value) = argument.strip_prefix("--hook=") {
+            parse_hook_list(&mut hooks, value)?;
         } else if argument == "--api" {
             api = ViewerApi::parse(&arguments.next().ok_or("--api requires d3d12 or vulkan")?)?;
         } else if let Some(value) = argument.strip_prefix("--api=") {
             api = ViewerApi::parse(value)?;
         } else {
             return Err(format!(
-                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--force-km] [--no-isolate] -- <program> [arguments...]"
+                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--skip-surfaces [COUNT]] [--surfaces [COUNT]] [--force-km] [--hook auto|vulkan,d3d11,d3d12,opengl,gdi] [--no-isolate] -- <program> [arguments...]"
             )
             .into());
         }
     }
     if !found_separator {
         return Err(
-            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--force-km] [--no-isolate] -- <program> [arguments...]".into(),
+            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-targets [COUNT]] [--skip-surfaces [COUNT]] [--surfaces [COUNT]] [--force-km] [--hook auto|vulkan,d3d11,d3d12,opengl,gdi] [--no-isolate] -- <program> [arguments...]".into(),
         );
     }
     let target = arguments.collect::<Vec<_>>();
     if target.is_empty() {
         return Err("target program is required".into());
     }
+    if hooks.is_empty() {
+        hooks.extend(AUTO_HOOKS);
+    }
     Ok(ViewerOptions {
         target,
         track_render_targets,
+        surfaces,
+        skip_surfaces,
         isolate,
         api,
         force_keyed_mutex,
+        hooks,
     })
 }
 
 fn parse_render_target_count(value: &str) -> Result<u32, Box<dyn Error>> {
+    parse_bounded_count(value, "render-target")
+}
+
+fn parse_bounded_count(value: &str, name: &str) -> Result<u32, Box<dyn Error>> {
     let count = value
         .parse::<u32>()
-        .map_err(|_| format!("invalid render-target count '{value}'; expected 1..=16"))?;
+        .map_err(|_| format!("invalid {name} count '{value}'; expected 1..=16"))?;
     if !(1..=16).contains(&count) {
-        return Err(format!("invalid render-target count '{value}'; expected 1..=16").into());
+        return Err(format!("invalid {name} count '{value}'; expected 1..=16").into());
     }
     Ok(count)
+}
+
+fn parse_skip_count(value: &str) -> Result<u32, Box<dyn Error>> {
+    value.parse::<u32>().map_err(|_| {
+        format!("invalid surface skip count '{value}'; expected a non-negative integer").into()
+    })
 }
 
 #[cfg(test)]
@@ -1787,10 +2180,55 @@ mod argument_tests {
         let options = arguments(&["--", "game.exe"])?;
         assert_eq!(options.api, ViewerApi::D3d12);
         assert_eq!(options.track_render_targets, None);
+        assert_eq!(options.surfaces, 1);
+        assert_eq!(options.skip_surfaces, 0);
         assert!(options.isolate);
         assert!(!options.force_keyed_mutex);
+        assert_eq!(options.hooks, AUTO_HOOKS);
         assert_eq!(options.target, ["game.exe"]);
         Ok(())
+    }
+
+    #[test]
+    fn hook_selection_defaults_to_auto_without_gdi() -> Result<(), Box<dyn Error>> {
+        assert_eq!(arguments(&["--hook", "auto", "--", "game.exe"])?.hooks, AUTO_HOOKS);
+        assert!(!AUTO_HOOKS.contains(&HookBackend::Gdi));
+        Ok(())
+    }
+
+    #[test]
+    fn hook_order_defines_priority() -> Result<(), Box<dyn Error>> {
+        let options = arguments(&["--hook", "gdi,d3d11", "--hook", "vulkan", "--", "game.exe"])?;
+        assert_eq!(
+            options.hooks,
+            [HookBackend::Gdi, HookBackend::D3d11, HookBackend::Vulkan]
+        );
+        let gdi = HookBackend::Gdi.class();
+        let vulkan = HookBackend::Vulkan.class();
+        assert!(class_priority(&options.hooks, gdi) < class_priority(&options.hooks, vulkan));
+        assert_eq!(class_priority(&options.hooks, HookBackend::OpenGl.class()), None);
+        Ok(())
+    }
+
+    #[test]
+    fn hook_auto_appends_the_remaining_backends() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            arguments(&["--hook=gdi,auto", "--", "game.exe"])?.hooks,
+            [
+                HookBackend::Gdi,
+                HookBackend::Vulkan,
+                HookBackend::OpenGl,
+                HookBackend::D3d12,
+                HookBackend::D3d11,
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unknown_and_repeated_hooks() {
+        assert!(arguments(&["--hook", "metal", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--hook", "vulkan,vulkan", "--", "game.exe"]).is_err());
     }
 
     #[test]
@@ -1834,6 +2272,64 @@ mod argument_tests {
     fn rejects_an_invalid_render_target_count() {
         assert!(arguments(&["--track-render-targets", "0", "--", "game.exe"]).is_err());
         assert!(arguments(&["--track-render-targets=17", "--", "game.exe"]).is_err());
+    }
+
+    #[test]
+    fn accepts_a_surface_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            arguments(&["--surfaces", "2", "--", "game.exe"])?.surfaces,
+            2
+        );
+        assert_eq!(arguments(&["--surfaces", "--", "game.exe"])?.surfaces, 1);
+        assert_eq!(arguments(&["--surfaces=3", "--", "game.exe"])?.surfaces, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_invalid_surface_count() {
+        assert!(arguments(&["--surfaces", "0", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--surfaces=17", "--", "game.exe"]).is_err());
+    }
+
+    #[test]
+    fn accepts_a_surface_skip_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            arguments(&["--skip-surfaces", "2", "--", "game.exe"])?.skip_surfaces,
+            2
+        );
+        assert_eq!(
+            arguments(&["--skip-surfaces", "--", "game.exe"])?.skip_surfaces,
+            1
+        );
+        assert_eq!(
+            arguments(&["--skip-windows=3", "--", "game.exe"])?.skip_surfaces,
+            3
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_invalid_surface_skip_count() {
+        assert!(arguments(&["--skip-surfaces=menu", "--", "game.exe"]).is_err());
+    }
+
+    #[test]
+    fn originating_api_stream_wins_same_window_duplicates() {
+        let d3d11 = stream_backend_class(ExternalImageKind::D3d11D3d12Resource);
+        let d3d12 = stream_backend_class(ExternalImageKind::D3d12Resource);
+        let opengl = stream_backend_class(ExternalImageKind::OpenGlD3d12Resource);
+        let vulkan = stream_backend_class(ExternalImageKind::VulkanD3d12Resource);
+        assert!(should_replace_same_window_backend(&AUTO_HOOKS, d3d11, d3d12));
+        assert!(should_replace_same_window_backend(&AUTO_HOOKS, d3d12, opengl));
+        assert!(should_replace_same_window_backend(&AUTO_HOOKS, d3d12, vulkan));
+        assert!(!should_replace_same_window_backend(&AUTO_HOOKS, vulkan, d3d12));
+        assert!(!should_replace_same_window_backend(&AUTO_HOOKS, opengl, d3d12));
+        // A recreated surface from the same backend still replaces its predecessor.
+        assert!(should_replace_same_window_backend(&AUTO_HOOKS, vulkan, vulkan));
+        // The submitted hook order overrides the automatic ranking.
+        let reversed = [HookBackend::D3d11, HookBackend::Vulkan];
+        assert!(!should_replace_same_window_backend(&reversed, d3d11, vulkan));
+        assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
     }
 }
 
@@ -2080,6 +2576,7 @@ fn launch_target(
     session: &str,
     track_render_targets: Option<u32>,
     force_keyed_mutex: bool,
+    hooks: &[HookBackend],
     isolate: bool,
 ) -> std::io::Result<TargetProcess> {
     use std::os::windows::process::CommandExt;
@@ -2091,14 +2588,36 @@ fn launch_target(
     let opengl_hook = layer_dir.join("snowglass_hook_opengl32.dll");
     let gdi_hook = layer_dir.join("snowglass_hook_gdi.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
-    for (name, hook) in [
-        ("DXGI", &dxgi_hook),
-        ("D3D11", &d3d11_hook),
-        ("D3D12", &d3d12_hook),
-        ("OpenGL", &opengl_hook),
-        ("GDI", &gdi_hook),
-        ("DirectInput", &dinput_hook),
-    ] {
+    let mut libraries: Vec<(&str, &Path, &std::ffi::CStr)> = Vec::new();
+    // Both DXGI producers intercept swapchains through the factory-level hooks.
+    if hooks
+        .iter()
+        .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
+    {
+        libraries.push(("DXGI", dxgi_hook.as_path(), c"SnowglassInstallDxgiHook"));
+    }
+    if hooks.contains(&HookBackend::D3d11) {
+        libraries.push(("D3D11", d3d11_hook.as_path(), c"SnowglassInstallD3d11Hook"));
+    }
+    if hooks.contains(&HookBackend::D3d12) {
+        libraries.push(("D3D12", d3d12_hook.as_path(), c"SnowglassInstallD3d12Hook"));
+    }
+    if hooks.contains(&HookBackend::OpenGl) {
+        libraries.push((
+            "OpenGL",
+            opengl_hook.as_path(),
+            c"SnowglassInstallOpenGlHook",
+        ));
+    }
+    if hooks.contains(&HookBackend::Gdi) {
+        libraries.push(("GDI", gdi_hook.as_path(), c"SnowglassInstallGdiHook"));
+    }
+    libraries.push((
+        "DirectInput",
+        dinput_hook.as_path(),
+        c"SnowglassInstallDinputHook",
+    ));
+    for &(name, hook, _) in &libraries {
         if hook.is_file() {
             continue;
         }
@@ -2110,14 +2629,6 @@ fn launch_target(
     let mut command = Command::new(&target[0]);
     command.args(&target[1..]);
     let mut environment = vec![
-        (
-            OsString::from("VK_LAYER_PATH"),
-            layer_dir.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("VK_INSTANCE_LAYERS"),
-            OsString::from("VK_LAYER_SNOWGLASS_capture"),
-        ),
         (OsString::from("SNOWGLASS_SESSION"), OsString::from(session)),
         (
             OsString::from("SNOWGLASS_LOG_FILE"),
@@ -2148,6 +2659,18 @@ fn launch_target(
             layer_dir.join("snowglass-gdi.log").into_os_string(),
         ),
     ];
+    // The Vulkan producer installs as an instance layer rather than an
+    // injected DLL, so its selection travels through the loader environment.
+    if hooks.contains(&HookBackend::Vulkan) {
+        environment.push((
+            OsString::from("VK_LAYER_PATH"),
+            layer_dir.as_os_str().to_owned(),
+        ));
+        environment.push((
+            OsString::from("VK_INSTANCE_LAYERS"),
+            OsString::from("VK_LAYER_SNOWGLASS_capture"),
+        ));
+    }
     if let Some(count) = track_render_targets {
         environment.push((
             OsString::from("SNOWGLASS_TRACK_RENDER_TARGET"),
@@ -2184,32 +2707,10 @@ fn launch_target(
         let _ = child.wait();
         return Err(error);
     }
-    let libraries = [
-        (
-            dxgi_hook.as_path(),
-            c"SnowglassInstallDxgiHook" as &std::ffi::CStr,
-        ),
-        (
-            d3d11_hook.as_path(),
-            c"SnowglassInstallD3d11Hook" as &std::ffi::CStr,
-        ),
-        (
-            d3d12_hook.as_path(),
-            c"SnowglassInstallD3d12Hook" as &std::ffi::CStr,
-        ),
-        (
-            opengl_hook.as_path(),
-            c"SnowglassInstallOpenGlHook" as &std::ffi::CStr,
-        ),
-        (
-            gdi_hook.as_path(),
-            c"SnowglassInstallGdiHook" as &std::ffi::CStr,
-        ),
-        (
-            dinput_hook.as_path(),
-            c"SnowglassInstallDinputHook" as &std::ffi::CStr,
-        ),
-    ];
+    let libraries = libraries
+        .iter()
+        .map(|&(_, path, export)| (path, export))
+        .collect::<Vec<_>>();
     if let Err(error) = inject_libraries_before_resume(process, process_id, &libraries) {
         let _ = child.kill();
         let _ = child.wait();

@@ -276,7 +276,8 @@ fn validate_stream(stream: &StreamReady, adapter_luid: AdapterLuid) -> windows::
             ExternalImageKind::D3d12Resource
             | ExternalImageKind::OpenGlD3d12Resource
             | ExternalImageKind::VulkanD3d12Resource
-            | ExternalImageKind::D3d11D3d12Resource,
+            | ExternalImageKind::D3d11D3d12Resource
+            | ExternalImageKind::GdiD3d12Resource,
             ExternalSyncKind::D3d12Fence,
         ) => false,
         (ExternalImageKind::D3d11SharedResourceNt, ExternalSyncKind::D3d11KeyedMutex) => true,

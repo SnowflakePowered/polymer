@@ -32,7 +32,7 @@ const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
 
 const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
-const CONTENT_DESCRIPTOR: u32 = 0;
+const FIRST_CONTENT_DESCRIPTOR: u32 = 0;
 const FIRST_EGUI_DESCRIPTOR: u32 = 64;
 const SWAPCHAIN_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -49,6 +49,16 @@ struct EguiTexture {
     pixels: Vec<u8>,
     size: [usize; 2],
     descriptor: u32,
+}
+
+struct ImportedSurface {
+    connection: u64,
+    descriptor: u32,
+    imported: ImportedD3d12Stream,
+    cache: ID3D12Resource,
+    cache_state: D3D12_RESOURCE_STATES,
+    latest: Option<FrameReady>,
+    display_frame: Option<FrameReady>,
 }
 
 pub(crate) struct D3d12Compositor {
@@ -71,14 +81,10 @@ pub(crate) struct D3d12Compositor {
     frame_values: [u64; FRAME_COUNT],
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
     frame_descriptors: [Vec<u32>; FRAME_COUNT],
-    imported: Option<ImportedD3d12Stream>,
+    surfaces: Vec<ImportedSurface>,
     // Standalone copy submission used to bound keyed-mutex holds; the main
     // command list executes too late to release the mutex promptly.
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
-    cache: Option<ID3D12Resource>,
-    cache_state: D3D12_RESOURCE_STATES,
-    latest: Option<FrameReady>,
-    display_frame: Option<FrameReady>,
     textures: HashMap<TextureId, EguiTexture>,
     free_descriptors: Vec<u32>,
 }
@@ -187,12 +193,8 @@ impl D3d12Compositor {
                 frame_values: [0; FRAME_COUNT],
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
                 frame_descriptors: std::array::from_fn(|_| Vec::new()),
-                imported: None,
+                surfaces: Vec::new(),
                 mutex_copy: None,
-                cache: None,
-                cache_state: D3D12_RESOURCE_STATE_COMMON,
-                latest: None,
-                display_frame: None,
                 textures: HashMap::new(),
                 free_descriptors: (FIRST_EGUI_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
             })
@@ -203,8 +205,12 @@ impl D3d12Compositor {
         self.consumer.adapter_luid()
     }
 
-    pub(crate) fn import_stream(&mut self, stream: &StreamReady) -> Result<(), Box<dyn Error>> {
-        self.release_imported_stream()?;
+    pub(crate) fn import_stream(
+        &mut self,
+        connection: u64,
+        stream: &StreamReady,
+    ) -> Result<(), Box<dyn Error>> {
+        self.disconnect_stream(connection)?;
         let imported = self.consumer.import(stream)?;
         if imported.uses_keyed_mutex() && self.mutex_copy.is_none() {
             unsafe {
@@ -237,47 +243,80 @@ impl D3d12Compositor {
                 self.consumer.device(),
                 &self.srv_heap,
                 self.srv_stride,
-                CONTENT_DESCRIPTOR,
+                FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
                 &cache,
             )
         };
-        self.imported = Some(imported);
-        self.cache = Some(cache);
-        self.cache_state = D3D12_RESOURCE_STATE_COMMON;
-        self.latest = None;
-        self.display_frame = None;
+        self.surfaces.push(ImportedSurface {
+            connection,
+            descriptor: FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
+            imported,
+            cache,
+            cache_state: D3D12_RESOURCE_STATE_COMMON,
+            latest: None,
+            display_frame: None,
+        });
         Ok(())
     }
 
-    pub(crate) fn set_latest(&mut self, frame: FrameReady) {
-        if let Some(previous) = self.latest.replace(frame)
+    pub(crate) fn set_latest(&mut self, connection: u64, frame: FrameReady) {
+        let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.connection == connection)
+        else {
+            return;
+        };
+        if let Some(previous) = surface.latest.replace(frame)
             && previous.slot != frame.slot
-            && let Some(imported) = self.imported.as_ref()
         {
-            imported.recycle_slot(previous.slot);
+            surface.imported.recycle_slot(previous.slot);
         }
     }
     pub(crate) fn has_pending_frame(&self) -> bool {
-        self.latest.is_some()
+        self.surfaces.iter().any(|surface| surface.latest.is_some())
     }
 
-    pub(crate) fn disconnect_stream(&mut self) -> Result<(), Box<dyn Error>> {
-        self.release_imported_stream()?;
-        self.latest = None;
-        self.display_frame = None;
-        self.cache = None;
+    pub(crate) fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
+        if let Some(index) = self
+            .surfaces
+            .iter()
+            .position(|surface| surface.connection == connection)
+        {
+            let surface = self.surfaces.remove(index);
+            surface
+                .imported
+                .signal_release(self.consumer.queue(), RELEASE_ALL_SYNC_VALUE)?;
+            self.wait_idle()?;
+            self.refresh_surface_descriptors()?;
+        }
         Ok(())
     }
 
-    fn release_imported_stream(&mut self) -> windows::core::Result<()> {
-        if let Some(imported) = self.imported.as_ref() {
-            // This signal is ordered after every queued read from the old ring.
-            // It also releases producer submissions whose FrameReady messages
-            // were still buffered when a replacement stream arrived.
-            imported.signal_release(self.consumer.queue(), RELEASE_ALL_SYNC_VALUE)?;
+    fn release_imported_streams(&mut self) -> windows::core::Result<()> {
+        for surface in &self.surfaces {
+            surface
+                .imported
+                .signal_release(self.consumer.queue(), RELEASE_ALL_SYNC_VALUE)?;
         }
         self.wait_idle()?;
-        self.imported = None;
+        self.surfaces.clear();
+        Ok(())
+    }
+
+    fn refresh_surface_descriptors(&mut self) -> windows::core::Result<()> {
+        for (index, surface) in self.surfaces.iter_mut().enumerate() {
+            surface.descriptor = FIRST_CONTENT_DESCRIPTOR + index as u32;
+            unsafe {
+                create_srv(
+                    self.consumer.device(),
+                    &self.srv_heap,
+                    self.srv_stride,
+                    surface.descriptor,
+                    &surface.cache,
+                )
+            };
+        }
         Ok(())
     }
 
@@ -326,74 +365,70 @@ impl D3d12Compositor {
 
         self.upload_texture_deltas(frame_index, &output.textures_delta.set)?;
 
-        let mut release_value = None;
-        let pending = match (self.latest, self.imported.as_ref(), self.cache.as_ref()) {
-            (Some(frame), Some(imported), Some(cache)) => {
-                imported.resource(frame.slot).map(|source| {
-                    (
-                        frame,
-                        source.clone(),
-                        cache.clone(),
-                        imported.uses_keyed_mutex(),
-                    )
-                })
-            }
-            _ => None,
-        };
-        if let Some((frame, source, cache, keyed_mutex)) = pending {
-            if keyed_mutex {
-                // Acquire the keyed mutex
-                let acquired = self.imported.as_ref().is_some_and(|imported| {
-                    imported
+        let mut release_values = Vec::new();
+        for index in 0..self.surfaces.len() {
+            let mut surface = self.surfaces.remove(index);
+            let pending = surface.latest.and_then(|frame| {
+                surface
+                    .imported
+                    .resource(frame.slot)
+                    .map(|source| (frame, source.clone(), surface.imported.uses_keyed_mutex()))
+            });
+            if let Some((frame, source, keyed_mutex)) = pending {
+                if keyed_mutex {
+                    let acquired = surface
+                        .imported
                         .acquire_slot(frame.slot, KEYED_MUTEX_TIMEOUT_MS)
-                        .is_ok()
-                });
-                // if timed out, then repeat the frame
-                if acquired {
-                    let copied = self.copy_to_cache_sync(&source, &cache);
-                    if let Some(imported) = self.imported.as_ref() {
-                        let _ = imported.release_slot(frame.slot);
+                        .is_ok();
+                    if acquired {
+                        let copied = self.copy_to_cache_sync(
+                            &source,
+                            &surface.cache,
+                            &mut surface.cache_state,
+                        );
+                        let _ = surface.imported.release_slot(frame.slot);
+                        copied?;
+                        surface.display_frame = Some(frame);
+                        surface.latest = None;
                     }
-                    copied?;
-                    self.display_frame = Some(frame);
-                    self.latest = None;
+                } else {
+                    surface
+                        .imported
+                        .wait_on_queue(self.consumer.queue(), frame.sync_value)?;
+                    unsafe {
+                        transition(
+                            &self.command_list,
+                            &source,
+                            D3D12_RESOURCE_STATE_COMMON,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE,
+                        );
+                        transition(
+                            &self.command_list,
+                            &surface.cache,
+                            surface.cache_state,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
+                        );
+                        self.command_list.CopyResource(&surface.cache, &source);
+                        transition(
+                            &self.command_list,
+                            &source,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_COMMON,
+                        );
+                        transition(
+                            &self.command_list,
+                            &surface.cache,
+                            D3D12_RESOURCE_STATE_COPY_DEST,
+                            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        );
+                    }
+                    surface.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                    surface.display_frame = Some(frame);
+                    surface.latest = None;
+                    release_values.push((surface.connection, frame.sync_value));
                 }
-            } else {
-                if let Some(imported) = self.imported.as_ref() {
-                    imported.wait_on_queue(self.consumer.queue(), frame.sync_value)?;
-                }
-                unsafe {
-                    transition(
-                        &self.command_list,
-                        &source,
-                        D3D12_RESOURCE_STATE_COMMON,
-                        D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    );
-                    transition(
-                        &self.command_list,
-                        &cache,
-                        self.cache_state,
-                        D3D12_RESOURCE_STATE_COPY_DEST,
-                    );
-                    self.command_list.CopyResource(&cache, &source);
-                    transition(
-                        &self.command_list,
-                        &source,
-                        D3D12_RESOURCE_STATE_COPY_SOURCE,
-                        D3D12_RESOURCE_STATE_COMMON,
-                    );
-                    transition(
-                        &self.command_list,
-                        &cache,
-                        D3D12_RESOURCE_STATE_COPY_DEST,
-                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    );
-                }
-                self.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-                self.display_frame = Some(frame);
-                self.latest = None;
-                release_value = Some(frame.sync_value);
             }
+            self.surfaces.insert(index, surface);
         }
 
         let backbuffer = self.backbuffers[frame_index].clone();
@@ -417,7 +452,11 @@ impl D3d12Compositor {
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
 
-        if self.cache.is_some() && self.display_frame.is_some() {
+        if self
+            .surfaces
+            .iter()
+            .any(|surface| surface.display_frame.is_some())
+        {
             self.draw_content(frame_index)?;
         }
         self.draw_egui(frame_index, output.pixels_per_point, primitives)?;
@@ -432,8 +471,16 @@ impl D3d12Compositor {
             self.command_list.Close()?;
             let list: ID3D12CommandList = self.command_list.cast()?;
             self.consumer.queue().ExecuteCommandLists(&[Some(list)]);
-            if let (Some(value), Some(imported)) = (release_value, self.imported.as_ref()) {
-                imported.signal_release(self.consumer.queue(), value)?;
+            for (connection, value) in release_values {
+                if let Some(surface) = self
+                    .surfaces
+                    .iter()
+                    .find(|surface| surface.connection == connection)
+                {
+                    surface
+                        .imported
+                        .signal_release(self.consumer.queue(), value)?;
+                }
             }
             self.fence_value += 1;
             self.consumer
@@ -455,23 +502,41 @@ impl D3d12Compositor {
         unsafe {
             self.command_list.SetPipelineState(&self.content_pipeline);
         }
-        let frame = self.display_frame.ok_or("no D3D12 frame to display")?;
-        let imported = self.imported.as_ref().ok_or("no imported D3D12 stream")?;
-        let (crop_w, crop_h) = super::fit_inside(
-            frame.render_width.max(1),
-            frame.render_height.max(1),
-            imported.width,
-            imported.height,
-        );
-        let (x, y, w, h) = super::fit_extent(crop_w, crop_h, self.extent.0, self.extent.1);
-        let l = x as f32 / self.extent.0 as f32 * 2.0 - 1.0;
-        let r = (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0;
-        let t = 1.0 - y as f32 / self.extent.1 as f32 * 2.0;
-        let b = 1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0;
-        let u = crop_w as f32 / imported.width as f32;
-        let v = crop_h as f32 / imported.height as f32;
-        let vertices = quad(l, t, r, b, u, v, [255; 4]);
-        self.draw_vertices(frame_index, CONTENT_DESCRIPTOR, &vertices, None)
+        let visible = self
+            .surfaces
+            .iter()
+            .filter(|surface| surface.display_frame.is_some())
+            .count() as u32;
+        let cell_height = self.extent.1 / visible.max(1);
+        let draws = self
+            .surfaces
+            .iter()
+            .filter(|surface| surface.display_frame.is_some())
+            .enumerate()
+            .map(|(position, surface)| {
+                let frame = surface.display_frame.expect("filtered display frame");
+                let (crop_w, crop_h) = super::fit_inside(
+                    frame.render_width.max(1),
+                    frame.render_height.max(1),
+                    surface.imported.width,
+                    surface.imported.height,
+                );
+                let (x, local_y, w, h) =
+                    super::fit_extent(crop_w, crop_h, self.extent.0, cell_height);
+                let y = position as i32 * cell_height as i32 + local_y;
+                let l = x as f32 / self.extent.0 as f32 * 2.0 - 1.0;
+                let r = (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0;
+                let t = 1.0 - y as f32 / self.extent.1 as f32 * 2.0;
+                let b = 1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0;
+                let u = crop_w as f32 / surface.imported.width as f32;
+                let v = crop_h as f32 / surface.imported.height as f32;
+                (surface.descriptor, quad(l, t, r, b, u, v, [255; 4]))
+            })
+            .collect::<Vec<_>>();
+        for (descriptor, vertices) in draws {
+            self.draw_vertices(frame_index, descriptor, &vertices, None)?;
+        }
+        Ok(())
     }
 
     fn draw_egui(
@@ -674,6 +739,7 @@ impl D3d12Compositor {
         &mut self,
         source: &ID3D12Resource,
         cache: &ID3D12Resource,
+        cache_state: &mut D3D12_RESOURCE_STATES,
     ) -> Result<(), Box<dyn Error>> {
         let (allocator, list) = self
             .mutex_copy
@@ -689,12 +755,7 @@ impl D3d12Compositor {
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_COPY_SOURCE,
             );
-            transition(
-                &list,
-                cache,
-                self.cache_state,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-            );
+            transition(&list, cache, *cache_state, D3D12_RESOURCE_STATE_COPY_DEST);
             list.CopyResource(cache, source);
             transition(
                 &list,
@@ -712,7 +773,7 @@ impl D3d12Compositor {
             let command: ID3D12CommandList = list.cast()?;
             self.consumer.queue().ExecuteCommandLists(&[Some(command)]);
         }
-        self.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        *cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         self.wait_idle()?;
         Ok(())
     }
@@ -742,7 +803,7 @@ impl D3d12Compositor {
 
 impl Drop for D3d12Compositor {
     fn drop(&mut self) {
-        let _ = self.release_imported_stream();
+        let _ = self.release_imported_streams();
         unsafe {
             let _ = CloseHandle(self.fence_event);
         }

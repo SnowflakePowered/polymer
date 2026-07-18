@@ -227,30 +227,6 @@ mod desktop_tests {
 }
 
 #[cfg(windows)]
-pub fn mark_vulkan_capture_active() -> std::io::Result<()> {
-    use windows_sys::Win32::System::Environment::SetEnvironmentVariableW;
-    let name = "SNOWGLASS_VULKAN_CAPTURE_ACTIVE\0"
-        .encode_utf16()
-        .collect::<Vec<_>>();
-    let value = "1\0".encode_utf16().collect::<Vec<_>>();
-    if unsafe { SetEnvironmentVariableW(name.as_ptr(), value.as_ptr()) } == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-pub fn vulkan_capture_active() -> bool {
-    use windows_sys::Win32::System::Environment::GetEnvironmentVariableW;
-    let name = "SNOWGLASS_VULKAN_CAPTURE_ACTIVE\0"
-        .encode_utf16()
-        .collect::<Vec<_>>();
-    let mut value = [0u16; 2];
-    (unsafe { GetEnvironmentVariableW(name.as_ptr(), value.as_mut_ptr(), value.len() as u32) }) != 0
-}
-
-#[cfg(windows)]
 pub fn inject_library_before_resume(
     process: windows_sys::Win32::Foundation::HANDLE,
     process_id: ProcessId,

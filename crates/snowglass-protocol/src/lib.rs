@@ -64,6 +64,9 @@ pub enum ExternalImageKind {
     VulkanD3d12Resource = 6,
     /// D3D11 shared resource opened by D3D12 through its NT handle.
     D3d11D3d12Resource = 7,
+    /// D3D11 shared resource painted through a GDI surface DC and opened by
+    /// D3D12 through its NT handle.
+    GdiD3d12Resource = 8,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -78,6 +81,7 @@ impl TryFrom<u32> for ExternalImageKind {
             5 => Ok(Self::OpenGlD3d12Resource),
             6 => Ok(Self::VulkanD3d12Resource),
             7 => Ok(Self::D3d11D3d12Resource),
+            8 => Ok(Self::GdiD3d12Resource),
             _ => Err(()),
         }
     }

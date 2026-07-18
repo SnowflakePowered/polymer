@@ -10,7 +10,7 @@ pub(crate) unsafe fn claim_swapchain(
     _swapchain: *mut c_void,
     creation_device: *mut c_void,
 ) -> bool {
-    if snowglass_platform_windows::vulkan_capture_active() || creation_device.is_null() {
+    if creation_device.is_null() {
         return false;
     }
     unsafe { IUnknown::from_raw_borrowed(&creation_device) }
@@ -24,7 +24,7 @@ pub(crate) unsafe fn create_device(
     immediate_context: *mut *mut c_void,
     result: i32,
 ) {
-    if result >= 0 && !snowglass_platform_windows::vulkan_capture_active() {
+    if result >= 0 {
         crate::d3d11_log("snowglass: intercepted D3D11CreateDevice");
         unsafe { crate::vtable::install_immediate_context(immediate_context) };
     }
@@ -38,7 +38,7 @@ pub(crate) unsafe fn create_device_and_swapchain(
     immediate_context: *mut *mut c_void,
     result: i32,
 ) {
-    if result < 0 || swapchain.is_null() || snowglass_platform_windows::vulkan_capture_active() {
+    if result < 0 || swapchain.is_null() {
         return;
     }
     crate::d3d11_log("snowglass: intercepted D3D11CreateDeviceAndSwapChain");

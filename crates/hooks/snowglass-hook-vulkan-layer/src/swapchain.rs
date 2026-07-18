@@ -15,9 +15,12 @@ use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, StreamId,
 };
-use std::sync::{
-    LazyLock,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 struct SwapchainState {
@@ -247,13 +250,11 @@ pub(crate) unsafe fn handle_queue_present(
     let queue_state = { QUEUE.get(&queue).map(|entry| entry.clone()) };
     let result = if let Some(queue_state) = queue_state {
         if !present_info.is_null()
-            && unsafe { (*present_info).swapchain_count } == 1
+            && unsafe { (*present_info).swapchain_count } != 0
             && !unsafe { (*present_info).p_swapchains }.is_null()
             && !unsafe { (*present_info).p_image_indices }.is_null()
         {
             let original = unsafe { &*present_info };
-            let swapchain = unsafe { *original.p_swapchains };
-            let image_index = unsafe { *original.p_image_indices };
             let waits = if original.wait_semaphore_count == 0 {
                 &[]
             } else {
@@ -264,7 +265,23 @@ pub(crate) unsafe fn handle_queue_present(
                     )
                 }
             };
-            let copy_ready = { SWAPCHAIN.get_mut(&swapchain) }.and_then(|mut state| {
+            let swapchains = unsafe {
+                std::slice::from_raw_parts(original.p_swapchains, original.swapchain_count as usize)
+            };
+            let image_indices = unsafe {
+                std::slice::from_raw_parts(
+                    original.p_image_indices,
+                    original.swapchain_count as usize,
+                )
+            };
+            // Each copy consumes the preceding binary semaphore chain. The
+            // final copy-ready semaphore therefore represents completion of
+            // every captured swapchain and can replace the application's waits
+            // for the combined present operation.
+            let mut chained_waits = waits.to_vec();
+            let mut copied = false;
+            for (&swapchain, &image_index) in swapchains.iter().zip(image_indices) {
+                let copy_ready = { SWAPCHAIN.get_mut(&swapchain) }.and_then(|mut state| {
                 if state.copy_engine.is_none() {
                     let ring = state.ring.take()?;
                     let timeline = state.producer_timeline.take()?;
@@ -307,7 +324,7 @@ pub(crate) unsafe fn handle_queue_present(
                         image_index,
                         rect.offset,
                         rect.extent,
-                        waits,
+                        &chained_waits,
                     )
                 } else if let Some(candidate) = presentation_source {
                     state.copy_engine.as_mut()?.submit_image_copy(
@@ -316,13 +333,13 @@ pub(crate) unsafe fn handle_queue_present(
                         candidate.image,
                         candidate.extent,
                         candidate.layout,
-                        waits,
+                        &chained_waits,
                     )
                 } else {
                     state
                         .copy_engine
                         .as_mut()?
-                        .submit_copy(queue, image_index, waits)
+                        .submit_copy(queue, image_index, &chained_waits)
                 };
                 match submission {
                     Ok(submission) => {
@@ -367,13 +384,18 @@ pub(crate) unsafe fn handle_queue_present(
                         None
                     }
                 }
-            });
+                });
+                if let Some(copy_ready) = copy_ready {
+                    chained_waits.clear();
+                    chained_waits.push(copy_ready);
+                    copied = true;
+                }
+            }
 
-            if let Some(copy_ready) = copy_ready {
-                let copy_waits = [copy_ready];
+            if copied {
                 let mut modified = *original;
-                modified.wait_semaphore_count = 1;
-                modified.p_wait_semaphores = copy_waits.as_ptr();
+                modified.wait_semaphore_count = chained_waits.len() as u32;
+                modified.p_wait_semaphores = chained_waits.as_ptr();
                 unsafe { continuation(queue, &modified, next) }
             } else {
                 unsafe { continuation(queue, present_info, next) }
@@ -409,7 +431,7 @@ pub(crate) fn queue_submit(
         return;
     }
 
-    let mut selected: Option<(vk::SwapchainKHR, RenderTargetCandidate)> = None;
+    let mut selected = HashMap::<vk::SwapchainKHR, RenderTargetCandidate>::new();
     for submit in unsafe { std::slice::from_raw_parts(submits, submit_count as usize) } {
         if submit.command_buffer_count == 0 || submit.p_command_buffers.is_null() {
             continue;
@@ -427,22 +449,28 @@ pub(crate) fn queue_submit(
             else {
                 continue;
             };
-            if selected.is_none_or(|old| candidate.1.is_better_than(old.1)) {
-                selected = Some((swapchain, candidate.1));
-            }
+            selected
+                .entry(swapchain)
+                .and_modify(|current| {
+                    if candidate.1.is_better_than(*current) {
+                        *current = candidate.1;
+                    }
+                })
+                .or_insert(candidate.1);
         }
     }
 
-    if let Some((swapchain, candidate)) = selected
-        && let Some(mut state) = { SWAPCHAIN.get_mut(&swapchain) }
-    {
+    for (swapchain, candidate) in selected {
+        let Some(mut state) = ({ SWAPCHAIN.get_mut(&swapchain) }) else {
+            continue;
+        };
         if state.copy_engine.is_none()
             && let (Some(ring), Some(timeline)) =
                 (state.ring.take(), state.producer_timeline.take())
         {
             let consumer_timeline = state.consumer_timeline.take();
             let Some(capture) = queue_state.dispatch.capture.as_ref() else {
-                return;
+                continue;
             };
             match SwapchainCopyEngine::create(
                 capture.device.clone(),
@@ -654,13 +682,6 @@ pub(crate) fn create_swapchain(
                         )
                     })
             });
-            if ipc.is_some() {
-                // Creating a Vulkan instance is not enough to select Vulkan:
-                // applications such as Dolphin enumerate multiple graphics
-                // APIs before creating the swapchain for the chosen backend.
-                // Exclude the other hooks only after Vulkan owns a live stream.
-                let _ = snowglass_platform_windows::mark_vulkan_capture_active();
-            }
             unsafe {
                 SWAPCHAIN.insert(
                     *swapchain,

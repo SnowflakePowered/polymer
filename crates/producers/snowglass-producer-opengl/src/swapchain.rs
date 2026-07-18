@@ -80,9 +80,6 @@ fn captures() -> &'static Mutex<HashMap<(usize, usize), Capture>> {
 
 /// Called immediately before the real GDI `SwapBuffers`.
 pub unsafe fn before_swap_buffers(hdc: isize) {
-    if snowglass_platform_windows::vulkan_capture_active() {
-        return;
-    }
     let context = unsafe { current_context() };
     if context.is_null() {
         return;

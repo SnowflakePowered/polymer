@@ -77,13 +77,7 @@ fn state() -> &'static Mutex<State> {
 /// Replaces a top-level window paint DC with a shared DXGI-surface DC.
 /// Returns `None` when capture is unavailable; the caller must retain the real DC.
 pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4]) -> Option<isize> {
-    if hwnd == 0
-        || width == 0
-        || height == 0
-        || width > 8192
-        || height > 8192
-        || snowglass_platform_windows::vulkan_capture_active()
-    {
+    if hwnd == 0 || width == 0 || height == 0 || width > 8192 || height > 8192 {
         return None;
     }
     let mut state = state().lock().unwrap_or_else(|error| error.into_inner());
@@ -327,7 +321,7 @@ fn connect_viewer(
         width: desc.width,
         height: desc.height,
         format: desc.format,
-        image_kind: ExternalImageKind::D3d11D3d12Resource,
+        image_kind: ExternalImageKind::GdiD3d12Resource,
         sync_kind: ExternalSyncKind::D3d12Fence,
         slot_count: 1,
         image_handles,

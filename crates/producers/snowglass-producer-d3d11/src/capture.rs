@@ -20,16 +20,20 @@ struct CaptureState {
     copy_failures: u64,
 }
 
-static CAPTURES: OnceLock<Mutex<HashMap<usize, CaptureState>>> = OnceLock::new();
+/// A swapchain the viewer declined stays parked until it resizes or is
+/// destroyed, so a rejected surface does not reconnect on every present.
+enum CaptureEntry {
+    Active(Box<CaptureState>),
+    Declined,
+}
 
-fn captures() -> &'static Mutex<HashMap<usize, CaptureState>> {
+static CAPTURES: OnceLock<Mutex<HashMap<usize, CaptureEntry>>> = OnceLock::new();
+
+fn captures() -> &'static Mutex<HashMap<usize, CaptureEntry>> {
     CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub unsafe fn before_present(swapchain: *mut c_void) {
-    if snowglass_platform_windows::vulkan_capture_active() {
-        return;
-    }
     let mut captures = captures().lock().unwrap_or_else(|error| error.into_inner());
     if let std::collections::hash_map::Entry::Vacant(entry) = captures.entry(swapchain as usize) {
         let connection = match begin_viewer_connection() {
@@ -95,14 +99,14 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             "snowglass: attached D3D11 {}x{} {}-slot shared texture ring",
             desc.width, desc.height, desc.slots
         ));
-        entry.insert(CaptureState {
+        entry.insert(CaptureEntry::Active(Box::new(CaptureState {
             capture,
             ipc,
             frame_number: 0,
             copy_failures: 0,
-        });
+        })));
     }
-    if let Some(state) = captures.get_mut(&(swapchain as usize)) {
+    if let Some(CaptureEntry::Active(state)) = captures.get_mut(&(swapchain as usize)) {
         let tracked_region = crate::tracking::take_swapchain_region(swapchain);
         let submission = match unsafe { state.capture.copy_frame(tracked_region) } {
             Ok(submission) => submission,
@@ -142,18 +146,22 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             .as_mut()
             .is_some_and(|ipc| ipc.send(message).is_err())
         {
-            state.ipc = None;
+            // The viewer declined or preempted this stream; release the ring
+            // instead of copying frames nobody consumes.
+            crate::d3d11_log("snowglass: viewer released D3D11 stream; capture parked until resize");
+            captures.insert(swapchain as usize, CaptureEntry::Declined);
         }
     }
 }
 
 pub unsafe fn before_resize(swapchain: *mut c_void) {
-    if captures()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .remove(&(swapchain as usize))
-        .is_some()
-    {
+    if matches!(
+        captures()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&(swapchain as usize)),
+        Some(CaptureEntry::Active(_))
+    ) {
         crate::d3d11_log("snowglass: released D3D11 capture for ResizeBuffers");
     }
 }
