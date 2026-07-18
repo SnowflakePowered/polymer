@@ -654,6 +654,13 @@ pub(crate) fn create_swapchain(
                         )
                     })
             });
+            if ipc.is_some() {
+                // Creating a Vulkan instance is not enough to select Vulkan:
+                // applications such as Dolphin enumerate multiple graphics
+                // APIs before creating the swapchain for the chosen backend.
+                // Exclude the other hooks only after Vulkan owns a live stream.
+                let _ = snowglass_platform_windows::mark_vulkan_capture_active();
+            }
             unsafe {
                 SWAPCHAIN.insert(
                     *swapchain,

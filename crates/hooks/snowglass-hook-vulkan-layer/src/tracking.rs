@@ -415,9 +415,6 @@ pub(crate) fn enumerate_physical_devices(
 }
 
 pub(crate) fn create_instance(result: vk::Result) {
-    if result == vk::Result::SUCCESS {
-        let _ = snowglass_platform_windows::mark_vulkan_capture_active();
-    }
     layer_log(format!(
         "snowglass: downstream vkCreateInstance returned {result}"
     ));

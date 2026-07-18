@@ -27,7 +27,6 @@ const CONTEXT_SLOT_CAPACITY: usize = <ID3D11DeviceContext4_Vtbl as Vtable>::SLOT
 
 type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
 type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
-
 type InstallFn = unsafe fn(*mut c_void) -> bool;
 
 #[repr(C)]
@@ -165,31 +164,26 @@ pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
     {
         return;
     }
-    // The immediate context implements one linear interface generation; cloning
-    // at a wider layout than the object supports would read past its real
-    // vtable. Probe the widest generation and clone at exactly that width.
     let Some(install) = widest_context(context) else {
         return;
     };
     unsafe { install(context) };
 }
 
-/// The widest device-context interface implemented by the object, paired with
-/// the install routine for that layout's clone width.
 fn widest_context(context: *mut c_void) -> Option<InstallFn> {
     let unknown = unsafe { IUnknown::from_raw_borrowed(&context) }?;
-    macro_rules! try_cast {
+    macro_rules! try_interface {
         ($interface:ty, $vtbl:ty) => {
             if unknown.cast::<$interface>().is_ok() {
                 return Some(install_context_kind::<$vtbl> as InstallFn);
             }
         };
     }
-    try_cast!(ID3D11DeviceContext4, ID3D11DeviceContext4_Vtbl);
-    try_cast!(ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl);
-    try_cast!(ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl);
-    try_cast!(ID3D11DeviceContext1, ID3D11DeviceContext1_Vtbl);
-    try_cast!(ID3D11DeviceContext, ID3D11DeviceContext_Vtbl);
+    try_interface!(ID3D11DeviceContext4, ID3D11DeviceContext4_Vtbl);
+    try_interface!(ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl);
+    try_interface!(ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl);
+    try_interface!(ID3D11DeviceContext1, ID3D11DeviceContext1_Vtbl);
+    try_interface!(ID3D11DeviceContext, ID3D11DeviceContext_Vtbl);
     None
 }
 

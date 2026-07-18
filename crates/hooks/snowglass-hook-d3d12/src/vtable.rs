@@ -537,13 +537,13 @@ impl<A: Vtable> DeviceHook for ID3D12DeviceHook<A> {
     }
 }
 
-/// A monomorphized per-object install routine, used to dispatch a widest-cast
-/// result to a typed layout.
-type InstallFn = unsafe fn(*mut c_void) -> bool;
-
 static DEVICES: LazyLock<DashMap<usize, Box<dyn DeviceHook>>> = LazyLock::new(Default::default);
 static COMMAND_LISTS: LazyLock<DashMap<usize, Box<dyn CommandListHook>>> =
     LazyLock::new(Default::default);
+
+/// A monomorphized per-object install routine, used to dispatch a widest-cast
+/// result to a typed layout.
+type InstallFn = unsafe fn(*mut c_void) -> bool;
 
 /// Installs render-target tracking on a device returned by
 /// `D3D12CreateDevice`. Command lists are hooked as the device creates them.
@@ -581,10 +581,15 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<bool, String> {
     let already_hooked = DEVICES
         .get(&(base as usize))
         .is_some_and(|hook| unsafe { *base.cast::<*const usize>() } == hook.patched_vtable());
-    let extended = widest_device(&device);
-    let mut installed = unsafe { install_device_kind::<ID3D12Device_Vtbl>(base) };
-    if let Some((extended, install)) = extended {
-        installed |= unsafe { install(extended) };
+    // Resolve every interface pointer before replacing any vtable. D3D12
+    // wrappers may expose distinct pointers for intermediate generations, so
+    // patching only the base and widest interfaces misses calls made through
+    // (for example) ID3D12Device4. The list is widest-first and deduplicated,
+    // ensuring each physical pointer is cloned exactly once.
+    let interfaces = device_interfaces(&device);
+    let mut installed = false;
+    for (interface, install) in interfaces {
+        installed |= unsafe { install(interface) };
     }
     if !installed {
         return Err("could not clone the device vtable".to_owned());
@@ -592,16 +597,15 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<bool, String> {
     Ok(!already_hooked)
 }
 
-/// The widest device interface implemented by the object, paired with the
-/// install routine for that layout.
-fn widest_device(device: &ID3D12Device) -> Option<(*mut c_void, InstallFn)> {
+fn device_interfaces(device: &ID3D12Device) -> Vec<(*mut c_void, InstallFn)> {
+    let mut interfaces = Vec::new();
     macro_rules! try_cast {
         ($interface:ty, $vtbl:ty) => {
             if let Ok(interface) = device.cast::<$interface>() {
-                return Some((
-                    interface.as_raw(),
-                    install_device_kind::<$vtbl> as InstallFn,
-                ));
+                let pointer = interface.as_raw();
+                if !interfaces.iter().any(|(existing, _)| *existing == pointer) {
+                    interfaces.push((pointer, install_device_kind::<$vtbl> as InstallFn));
+                }
             }
         };
     }
@@ -619,36 +623,11 @@ fn widest_device(device: &ID3D12Device) -> Option<(*mut c_void, InstallFn)> {
     try_cast!(ID3D12Device3, ID3D12Device3_Vtbl);
     try_cast!(ID3D12Device2, ID3D12Device2_Vtbl);
     try_cast!(ID3D12Device1, ID3D12Device1_Vtbl);
-    None
-}
-
-/// The widest graphics command-list interface implemented by the object,
-/// paired with the install routine for that layout.
-fn widest_command_list(list: &ID3D12GraphicsCommandList) -> Option<(*mut c_void, InstallFn)> {
-    macro_rules! try_cast {
-        ($interface:ty, $vtbl:ty) => {
-            if let Ok(interface) = list.cast::<$interface>() {
-                return Some((
-                    interface.as_raw(),
-                    install_command_list_kind::<$vtbl> as InstallFn,
-                ));
-            }
-        };
+    let base = device.as_raw();
+    if !interfaces.iter().any(|(existing, _)| *existing == base) {
+        interfaces.push((base, install_device_kind::<ID3D12Device_Vtbl> as InstallFn));
     }
-    try_cast!(
-        ID3D12GraphicsCommandList10,
-        ID3D12GraphicsCommandList10_Vtbl
-    );
-    try_cast!(ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList6_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList5_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList4_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList3_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList2_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList1_Vtbl);
-    None
+    interfaces
 }
 
 unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
@@ -686,22 +665,57 @@ unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
 /// # Safety
 ///
 /// `list` must be null or point to a live COM command-list interface.
-unsafe fn install_command_list(list: *mut c_void) {
-    if list.is_null() {
+unsafe fn install_command_list(list: *mut c_void, interface_id: *const GUID) {
+    if list.is_null() || interface_id.is_null() {
         return;
     }
     let Some(unknown) = (unsafe { IUnknown::from_raw_borrowed(&list) }) else {
         return;
     };
-    // Video and other non-graphics list kinds carry none of the tracked
-    // methods.
     let Ok(base) = unknown.cast::<ID3D12GraphicsCommandList>() else {
         return;
     };
-    let extended = widest_command_list(&base);
-    unsafe { install_command_list_kind::<ID3D12GraphicsCommandList_Vtbl>(base.as_raw()) };
-    if let Some((extended, install)) = extended {
-        unsafe { install(extended) };
+    // Clone the widest interface generation the object implements rather than
+    // the generation it was created as: a caller can obtain a wider interface
+    // later through QueryInterface (typically the same pointer), and a clone
+    // sized to the creation interface would dispatch those wider slots into
+    // the uninitialized tail of the clone.
+    let mut interfaces = Vec::new();
+    macro_rules! try_cast {
+        ($interface:ty, $vtbl:ty) => {
+            if let Ok(interface) = base.cast::<$interface>() {
+                let pointer = interface.as_raw();
+                if !interfaces.iter().any(|(existing, _)| *existing == pointer) {
+                    interfaces.push((pointer, install_command_list_kind::<$vtbl> as InstallFn));
+                }
+            }
+        };
+    }
+    try_cast!(
+        ID3D12GraphicsCommandList10,
+        ID3D12GraphicsCommandList10_Vtbl
+    );
+    try_cast!(ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList6_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList5_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList4_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList3_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList2_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList1_Vtbl);
+    let base_pointer = base.as_raw();
+    if !interfaces
+        .iter()
+        .any(|(existing, _)| *existing == base_pointer)
+    {
+        interfaces.push((
+            base_pointer,
+            install_command_list_kind::<ID3D12GraphicsCommandList_Vtbl> as InstallFn,
+        ));
+    }
+    for (pointer, install) in interfaces {
+        unsafe { install(pointer) };
     }
 }
 
@@ -808,7 +822,7 @@ unsafe extern "system" fn create_command_list(
         )
     };
     if result.is_ok() && !output.is_null() {
-        unsafe { install_command_list(*output) };
+        unsafe { install_command_list(*output, interface_id) };
     }
     result
 }
@@ -826,7 +840,7 @@ unsafe extern "system" fn create_command_list1(
     };
     let result = unsafe { original(this, node_mask, list_type, flags, interface_id, output) };
     if result.is_ok() && !output.is_null() {
-        unsafe { install_command_list(*output) };
+        unsafe { install_command_list(*output, interface_id) };
     }
     result
 }
@@ -893,6 +907,12 @@ unsafe extern "system" fn reset(
         return E_FAIL;
     };
     let result = unsafe { original(this, allocator, initial_state) };
+    // d3d12.dll re-initializes the recycled command list inside Reset and
+    // rewrites the object's vtable pointer, discarding the per-object clone.
+    // Reinstall the clone after forwarding so tracking survives the reset.
+    if let Some(patched) = list_method(this, |hook| hook.patched_vtable()) {
+        unsafe { *this.cast::<*const usize>() = patched };
+    }
     if result.is_ok() {
         snowglass_producer_d3d12::command_reset(this);
     }

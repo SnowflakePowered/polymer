@@ -113,7 +113,8 @@ unsafe fn install_factory_from_adapter(adapter: *mut c_void) -> bool {
     let Ok(factory) = (unsafe { adapter.GetParent::<IDXGIFactory>() }) else {
         return false;
     };
-    let installed = unsafe { snowglass_hook_dxgi::install_factory_interfaces(factory.as_raw()) };
+
+    let installed = unsafe { snowglass_hook_dxgi::install_factory(factory.as_raw()) };
     if installed {
         retain_factory(factory);
         crate::d3d11_log("snowglass: installed device DXGI factory swapchain hooks");

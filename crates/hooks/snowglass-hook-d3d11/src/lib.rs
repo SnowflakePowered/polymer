@@ -169,6 +169,7 @@ mod tests {
         );
         let listener = LocalSocketListener::bind(&session).unwrap();
         unsafe { std::env::set_var("SNOWGLASS_SESSION", &session) };
+        unsafe { std::env::set_var("SNOWGLASS_TRACK_RENDER_TARGET", "1") };
         let (message_sender, message_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for _ in 0..2 {
@@ -384,6 +385,7 @@ mod tests {
             release(context);
             DestroyWindow(window);
             std::env::remove_var("SNOWGLASS_SESSION");
+            std::env::remove_var("SNOWGLASS_TRACK_RENDER_TARGET");
         }
     }
 }

@@ -12,6 +12,7 @@ retour.workspace = true
 snowglass-hook.workspace = true
 snowglass-platform-windows.workspace = true
 windows.workspace = true
+windows-sys.workspace = true
 
 [lints]
 workspace = true

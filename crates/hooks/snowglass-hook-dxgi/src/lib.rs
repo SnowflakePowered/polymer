@@ -10,8 +10,45 @@ mod vtable;
 
 pub use runtime::{
     SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
-    install_swapchain, install_swapchain1, register_callbacks, register_swapchain,
+    install_swapchain, install_swapchain1, register_swapchain,
 };
+
+/// Registers callbacks locally and with every loaded Snowglass graphics hook
+/// DLL. DXGI is linked into each hook DLL independently, but a factory object
+/// must have one vtable owner; sharing callbacks lets that owner dispatch to
+/// the producer whose API actually created the swapchain.
+pub fn register_callbacks(callbacks: SwapchainCallbacks) {
+    runtime::register_callbacks(callbacks);
+    unsafe { register_callbacks_with_loaded_hooks(&callbacks) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn SnowglassRegisterDxgiCallbacks(callbacks: *const SwapchainCallbacks) {
+    let Some(callbacks) = (unsafe { callbacks.as_ref() }) else {
+        return;
+    };
+    runtime::register_callbacks(*callbacks);
+}
+
+unsafe fn register_callbacks_with_loaded_hooks(callbacks: &SwapchainCallbacks) {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+
+    type RegisterFn = unsafe extern "system" fn(*const SwapchainCallbacks);
+    for name in ["snowglass_hook_d3d11.dll\0", "snowglass_hook_d3d12.dll\0"] {
+        let wide = name.encode_utf16().collect::<Vec<_>>();
+        let module = unsafe { GetModuleHandleW(wide.as_ptr()) };
+        if module.is_null() {
+            continue;
+        }
+        let Some(address) =
+            (unsafe { GetProcAddress(module, c"SnowglassRegisterDxgiCallbacks".as_ptr().cast()) })
+        else {
+            continue;
+        };
+        let register: RegisterFn = unsafe { std::mem::transmute(address) };
+        unsafe { register(callbacks) };
+    }
+}
 
 /// Installs process-wide detours over the DXGI factory creation exports so
 /// every factory the application creates receives the per-object vtable hooks
