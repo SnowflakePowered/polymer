@@ -19,12 +19,15 @@ use windows::{
         Graphics::{
             Direct3D12::{
                 D3D12_BARRIER_GROUP, D3D12_BARRIER_LAYOUT_COMMON, D3D12_BARRIER_TYPE_TEXTURE,
-                D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
-                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_GPU_DESCRIPTOR_HANDLE,
-                D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RESOURCE_BARRIER,
-                D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
-                D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT, ID3D12DescriptorHeap,
+                D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_CPU_DESCRIPTOR_HANDLE,
+                D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                D3D12_DESCRIPTOR_HEAP_TYPE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                D3D12_FEATURE_D3D12_OPTIONS12, D3D12_FEATURE_DATA_D3D12_OPTIONS12,
+                D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_RENDER_TARGET_VIEW_DESC,
+                D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT,
+                ID3D12CommandAllocator, ID3D12DescriptorHeap, ID3D12Device,
+                ID3D12GraphicsCommandList, ID3D12GraphicsCommandList7, ID3D12PipelineState,
                 ID3D12Resource,
             },
             Dxgi::IDXGISwapChain3,
@@ -100,19 +103,56 @@ static GPU_HEAPS: LazyLock<DashMap<u64, HeapInfo>> = LazyLock::new(Default::defa
 static DESCRIPTOR_INCREMENT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 static ENHANCED_BARRIERS_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Records the CBV/SRV/UAV descriptor increment, queried once at device setup.
-pub fn set_descriptor_increment(increment: u32) {
-    let _ = DESCRIPTOR_INCREMENT.set(increment);
-}
-
-/// Records whether the device supports enhanced barriers, detected once at
-/// device setup.
-pub fn set_enhanced_barriers_supported(supported: bool) {
-    let _ = ENHANCED_BARRIERS_SUPPORTED.set(supported);
-}
-
 pub fn enhanced_barriers_supported() -> bool {
     ENHANCED_BARRIERS_SUPPORTED.get().copied().unwrap_or(false)
+}
+
+/// Detects capture-related device features once per process: whether enhanced
+/// barriers can be recorded, and the shader-visible descriptor stride.
+///
+/// Returns the enhanced-barrier decision on the first probe, and `None` once
+/// the features have already been recorded.
+pub fn detect_device_features(device: &ID3D12Device) -> Result<Option<bool>, String> {
+    static FEATURES_PROBED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if FEATURES_PROBED.get().is_some() {
+        return Ok(None);
+    }
+    // A throwaway command list probes whether the runtime implements the
+    // enhanced-barrier interface generation.
+    let list: ID3D12GraphicsCommandList = unsafe {
+        let allocator: ID3D12CommandAllocator = device
+            .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+            .map_err(|error| error.to_string())?;
+        let list: ID3D12GraphicsCommandList = device
+            .CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                &allocator,
+                None::<&ID3D12PipelineState>,
+            )
+            .map_err(|error| error.to_string())?;
+        list.Close().map_err(|error| error.to_string())?;
+        list
+    };
+    let mut options12 = D3D12_FEATURE_DATA_D3D12_OPTIONS12::default();
+    let enhanced_barriers_advertised = unsafe {
+        device
+            .CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS12,
+                (&raw mut options12).cast(),
+                std::mem::size_of_val(&options12) as u32,
+            )
+            .is_ok()
+            && options12.EnhancedBarriersSupported.as_bool()
+    };
+    let enhanced_barriers_supported =
+        enhanced_barriers_advertised && list.cast::<ID3D12GraphicsCommandList7>().is_ok();
+    let _ = ENHANCED_BARRIERS_SUPPORTED.set(enhanced_barriers_supported);
+    let _ = DESCRIPTOR_INCREMENT.set(unsafe {
+        device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+    });
+    let _ = FEATURES_PROBED.set(());
+    Ok(Some(enhanced_barriers_supported))
 }
 
 /// Releases every tracker-owned reference to the swapchain's current buffers.

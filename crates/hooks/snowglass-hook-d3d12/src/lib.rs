@@ -6,7 +6,6 @@ mod hook_chain;
 mod hooks;
 mod install;
 mod sys;
-mod tracking;
 mod vtable;
 
 pub use sys::SnowglassInstallD3d12Hook;
@@ -17,7 +16,7 @@ fn register_hooks() {
         hooks::register_create_device(|device, result| {
             if result >= 0 {
                 d3d12_log("snowglass: intercepted D3D12CreateDevice");
-                unsafe { tracking::install_device(device) };
+                unsafe { vtable::install_device(device) };
                 install_dxgi_interception();
             }
         });
