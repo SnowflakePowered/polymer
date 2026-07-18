@@ -20,7 +20,6 @@ pub(crate) static CREATE_DEVICE: OnceLock<GenericDetour<D3D12CreateDeviceFn>> = 
 
 pub(crate) unsafe fn install() -> i32 {
     crate::register_hooks();
-    crate::install_dxgi_interception();
     if let Some(detour) = CREATE_DEVICE.get() {
         return if detour.is_enabled() { 0 } else { E_FAIL };
     }

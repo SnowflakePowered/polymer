@@ -152,6 +152,7 @@ mod tests {
     #[test]
     fn early_detour_installation_is_idempotent() {
         let _test_lock = test_lock();
+        assert!(unsafe { snowglass_hook_dxgi::install_factory_detours() });
         assert_eq!(unsafe { SnowglassInstallD3d11Hook() }, 0);
         assert_eq!(unsafe { SnowglassInstallD3d11Hook() }, 0);
     }
@@ -229,6 +230,7 @@ mod tests {
             SwapEffect: DXGI_SWAP_EFFECT_DISCARD,
             Flags: 0,
         };
+        assert!(unsafe { snowglass_hook_dxgi::install_factory_detours() });
         assert_eq!(unsafe { SnowglassInstallD3d11Hook() }, 0);
         let factory =
             unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }.expect("CreateDXGIFactory1 failed");

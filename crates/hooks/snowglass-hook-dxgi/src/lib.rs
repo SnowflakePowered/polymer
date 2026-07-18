@@ -10,16 +10,17 @@ mod vtable;
 
 pub use runtime::{
     SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
-    install_swapchain, install_swapchain1, register_swapchain,
+    install_swapchain, install_swapchain1,
 };
 
-/// Registers callbacks locally and with every loaded Snowglass graphics hook
-/// DLL. DXGI is linked into each hook DLL independently, but a factory object
-/// must have one vtable owner; sharing callbacks lets that owner dispatch to
-/// the producer whose API actually created the swapchain.
+/// Registers producer callbacks with the viewer-injected DXGI hook.
 pub fn register_callbacks(callbacks: SwapchainCallbacks) {
-    runtime::register_callbacks(callbacks);
-    unsafe { register_callbacks_with_loaded_hooks(&callbacks) };
+    if !unsafe { register_callbacks_with_dxgi_hook(&callbacks) } {
+        // Unit tests can link this crate without loading its cdylib. Production
+        // injection always loads the central DXGI hook first.
+        register_hooks();
+        runtime::register_callbacks(callbacks);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -30,23 +31,65 @@ pub unsafe extern "system" fn SnowglassRegisterDxgiCallbacks(callbacks: *const S
     runtime::register_callbacks(*callbacks);
 }
 
-unsafe fn register_callbacks_with_loaded_hooks(callbacks: &SwapchainCallbacks) {
+/// Registers a swapchain created directly by D3D11 with the central hook.
+///
+/// # Safety
+///
+/// `swapchain` and `creation_device` follow [`runtime::register_swapchain`].
+pub unsafe fn register_swapchain(
+    swapchain: *mut std::ffi::c_void,
+    creation_device: *mut std::ffi::c_void,
+) -> bool {
+    type RegisterFn =
+        unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> bool;
+    if let Some(register) =
+        unsafe { dxgi_hook_export::<RegisterFn>(c"SnowglassRegisterDxgiSwapchain") }
+    {
+        return unsafe { register(swapchain, creation_device) };
+    }
+    register_hooks();
+    unsafe { runtime::register_swapchain(swapchain, creation_device) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn SnowglassRegisterDxgiSwapchain(
+    swapchain: *mut std::ffi::c_void,
+    creation_device: *mut std::ffi::c_void,
+) -> bool {
+    unsafe { runtime::register_swapchain(swapchain, creation_device) }
+}
+
+unsafe fn register_callbacks_with_dxgi_hook(callbacks: &SwapchainCallbacks) -> bool {
+    type RegisterFn = unsafe extern "system" fn(*const SwapchainCallbacks);
+    let Some(register) =
+        (unsafe { dxgi_hook_export::<RegisterFn>(c"SnowglassRegisterDxgiCallbacks") })
+    else {
+        return false;
+    };
+    unsafe { register(callbacks) };
+    true
+}
+
+unsafe fn dxgi_hook_export<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 
-    type RegisterFn = unsafe extern "system" fn(*const SwapchainCallbacks);
-    for name in ["snowglass_hook_d3d11.dll\0", "snowglass_hook_d3d12.dll\0"] {
-        let wide = name.encode_utf16().collect::<Vec<_>>();
-        let module = unsafe { GetModuleHandleW(wide.as_ptr()) };
-        if module.is_null() {
-            continue;
-        }
-        let Some(address) =
-            (unsafe { GetProcAddress(module, c"SnowglassRegisterDxgiCallbacks".as_ptr().cast()) })
-        else {
-            continue;
-        };
-        let register: RegisterFn = unsafe { std::mem::transmute(address) };
-        unsafe { register(callbacks) };
+    let wide = "snowglass_hook_dxgi.dll\0"
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    let module = unsafe { GetModuleHandleW(wide.as_ptr()) };
+    if module.is_null() {
+        return None;
+    }
+    let address = unsafe { GetProcAddress(module, name.as_ptr().cast()) }?;
+    Some(unsafe { std::mem::transmute_copy(&address) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn SnowglassInstallDxgiHook() -> i32 {
+    if unsafe { install_factory_detours() } {
+        0
+    } else {
+        windows_sys::Win32::Foundation::E_FAIL
     }
 }
 
@@ -65,7 +108,7 @@ pub unsafe fn install_factory_detours() -> bool {
 pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    let Ok(path) = std::env::var("SNOWGLASS_D3D11_LOG_FILE") else {
+    let Ok(path) = std::env::var("SNOWGLASS_DXGI_LOG_FILE") else {
         return;
     };
     if let Ok(mut file) = std::fs::OpenOptions::new()

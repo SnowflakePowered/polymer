@@ -2030,11 +2030,13 @@ fn launch_target(
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
+    let dxgi_hook = layer_dir.join("snowglass_hook_dxgi.dll");
     let d3d11_hook = layer_dir.join("snowglass_hook_d3d11.dll");
     let d3d12_hook = layer_dir.join("snowglass_hook_d3d12.dll");
     let opengl_hook = layer_dir.join("snowglass_hook_opengl32.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
     for (name, hook) in [
+        ("DXGI", &dxgi_hook),
         ("D3D11", &d3d11_hook),
         ("D3D12", &d3d12_hook),
         ("OpenGL", &opengl_hook),
@@ -2067,6 +2069,10 @@ fn launch_target(
         (
             OsString::from("SNOWGLASS_DINPUT_LOG_FILE"),
             layer_dir.join("snowglass-dinput.log").into_os_string(),
+        ),
+        (
+            OsString::from("SNOWGLASS_DXGI_LOG_FILE"),
+            layer_dir.join("snowglass-dxgi.log").into_os_string(),
         ),
         (
             OsString::from("SNOWGLASS_D3D11_LOG_FILE"),
@@ -2108,6 +2114,10 @@ fn launch_target(
         return Err(error);
     }
     let libraries = [
+        (
+            dxgi_hook.as_path(),
+            c"SnowglassInstallDxgiHook" as &std::ffi::CStr,
+        ),
         (
             d3d11_hook.as_path(),
             c"SnowglassInstallD3d11Hook" as &std::ffi::CStr,

@@ -16,7 +16,6 @@ fn register_hooks() {
             if result >= 0 {
                 d3d12_log("snowglass: intercepted D3D12CreateDevice");
                 unsafe { vtable::install_device(device) };
-                install_dxgi_interception();
             }
         });
         snowglass_hook_dxgi::register_callbacks(snowglass_hook_dxgi::SwapchainCallbacks {
@@ -26,18 +25,6 @@ fn register_hooks() {
             after_resize: None,
             destroyed: Some(snowglass_producer_d3d12::destroyed),
         });
-    });
-}
-
-pub(crate) fn install_dxgi_interception() {
-    static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    INSTALLED.get_or_init(|| {
-        d3d12_log("snowglass: installing DXGI factory export detours for D3D12");
-        let installed = unsafe { snowglass_hook_dxgi::install_factory_detours() };
-        if !installed {
-            d3d12_log("snowglass: failed to install DXGI factory export detours");
-        }
-        installed
     });
 }
 
@@ -179,6 +166,7 @@ mod tests {
         assert!(!window.is_null());
 
         unsafe {
+            assert!(snowglass_hook_dxgi::install_factory_detours());
             assert_eq!(SnowglassInstallD3d12Hook(), 0);
             let factory = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
                 .expect("CreateDXGIFactory2 failed");

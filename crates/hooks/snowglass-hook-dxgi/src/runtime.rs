@@ -135,9 +135,6 @@ unsafe fn install_swapchain_kind<A: Vtable>(swapchain: *mut c_void) -> bool {
     let mut states = swapchains()
         .write()
         .unwrap_or_else(|error| error.into_inner());
-    if !states.contains_key(&key) && unsafe { owned_by_snowglass_module(swapchain) } {
-        return true;
-    }
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *swapchain.cast::<*const usize>() };
         if current == existing.patched_vtable() {
@@ -220,9 +217,6 @@ unsafe fn install_factory_kind<A: Vtable>(factory: *mut c_void) -> bool {
     let mut states = factories()
         .write()
         .unwrap_or_else(|error| error.into_inner());
-    if !states.contains_key(&key) && unsafe { owned_by_snowglass_module(factory) } {
-        return true;
-    }
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *factory.cast::<*const usize>() };
         if current == existing.patched_vtable() {
@@ -243,21 +237,6 @@ unsafe fn install_factory_kind<A: Vtable>(factory: *mut c_void) -> bool {
     unsafe { *factory.cast::<*const usize>() = state.patched_vtable() };
     states.insert(key, state);
     true
-}
-
-/// Detects an object already patched by another independently linked
-/// Snowglass hook DLL. Chaining two copies of the DXGI QueryInterface hook
-/// makes each copy's continuation point at the other and recurses forever.
-unsafe fn owned_by_snowglass_module(object: *mut c_void) -> bool {
-    if object.is_null() {
-        return false;
-    }
-    let vtable = unsafe { *object.cast::<*const usize>() };
-    if vtable.is_null() {
-        return false;
-    }
-    let query_interface = unsafe { *vtable } as *const c_void;
-    snowglass_platform_windows::is_snowglass_hook_address(query_interface)
 }
 
 fn factory_install(interface_id: &GUID) -> Option<InstallFn> {

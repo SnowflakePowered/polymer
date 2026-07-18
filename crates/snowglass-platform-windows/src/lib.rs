@@ -1,46 +1,5 @@
 //! Windows-specific handle, adapter, process, and window utilities.
 
-/// Returns whether an instruction pointer belongs to a loaded Snowglass hook
-/// DLL. This is used to prevent independently linked hook crates from wrapping
-/// the same COM object and chaining their continuations into a cycle.
-#[cfg(windows)]
-pub fn is_snowglass_hook_address(address: *const std::ffi::c_void) -> bool {
-    use windows_sys::Win32::System::LibraryLoader::{
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        GetModuleFileNameW, GetModuleHandleExW,
-    };
-
-    if address.is_null() {
-        return false;
-    }
-    let mut module = std::ptr::null_mut();
-    if unsafe {
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            address.cast(),
-            &raw mut module,
-        )
-    } == 0
-    {
-        return false;
-    }
-    let mut path = [0u16; 1024];
-    let length = unsafe { GetModuleFileNameW(module, path.as_mut_ptr(), path.len() as u32) };
-    if length == 0 || length as usize >= path.len() {
-        return false;
-    }
-    let filename = String::from_utf16_lossy(&path[..length as usize]);
-    std::path::Path::new(&filename)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            matches!(
-                name.to_ascii_lowercase().as_str(),
-                "snowglass_hook_d3d11.dll" | "snowglass_hook_d3d12.dll"
-            )
-        })
-}
-
 /// Calls an installed detour's original trampoline, or returns `fallback` if
 /// the detour is absent or disabled.
 pub fn call_original<T, R>(
