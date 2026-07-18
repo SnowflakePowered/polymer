@@ -1,7 +1,6 @@
 //! DXGI swapchain interception shared by D3D11 and D3D12.
 #![allow(unsafe_code)]
 
-mod detour;
 mod hook_chain;
 mod hooks;
 mod runtime;
@@ -9,9 +8,8 @@ mod sys;
 mod vtable;
 
 pub use runtime::{
-    SwapchainCallbacks, install_factory, install_factory_detours, install_factory_interface,
-    install_factory_interfaces, install_swapchain, install_swapchain1, register_callbacks,
-    register_swapchain,
+    SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
+    install_swapchain, install_swapchain1, register_callbacks, register_swapchain,
 };
 
 pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
@@ -37,7 +35,7 @@ pub(crate) fn register_hooks() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vtable::SwapchainKind;
+    use crate::vtable::Vtable;
     use std::ffi::c_void;
     use windows::{
         Win32::Graphics::Dxgi::{IDXGISwapChain_Vtbl, IDXGISwapChain1_Vtbl},
@@ -45,8 +43,8 @@ mod tests {
     };
 
     const SLOT_SIZE: usize = size_of::<usize>();
-    const SWAPCHAIN_VTABLE_LEN: usize = SwapchainKind::Swapchain.slots();
-    const SWAPCHAIN1_VTABLE_LEN: usize = SwapchainKind::Swapchain1.slots();
+    const SWAPCHAIN_VTABLE_LEN: usize = <IDXGISwapChain_Vtbl as Vtable>::SLOTS;
+    const SWAPCHAIN1_VTABLE_LEN: usize = <IDXGISwapChain1_Vtbl as Vtable>::SLOTS;
     const QUERY_INTERFACE_INDEX: usize =
         std::mem::offset_of!(IUnknown_Vtbl, QueryInterface) / SLOT_SIZE;
     const RELEASE_INDEX: usize = std::mem::offset_of!(IUnknown_Vtbl, Release) / SLOT_SIZE;

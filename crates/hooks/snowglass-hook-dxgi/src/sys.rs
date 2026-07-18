@@ -1,30 +1,5 @@
 use std::ffi::c_void;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) unsafe extern "system" fn detoured_create_swapchain_for_hwnd(
-    this: *mut c_void,
-    device: *mut c_void,
-    window: *mut c_void,
-    desc: *const c_void,
-    fullscreen_desc: *const c_void,
-    restrict_to_output: *mut c_void,
-    swapchain: *mut *mut c_void,
-) -> i32 {
-    let result = unsafe {
-        crate::detour::call_create_swapchain_for_hwnd(
-            this,
-            device,
-            window,
-            desc,
-            fullscreen_desc,
-            restrict_to_output,
-            swapchain,
-        )
-    };
-    unsafe { crate::runtime::factory_created_swapchain(device, swapchain, result) };
-    result
-}
-
 snowglass_hook::trampoline! {
     pub(crate) unsafe extern "system" fn query_interface(
         this: *mut c_void,

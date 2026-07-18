@@ -1,16 +1,24 @@
-#![allow(clippy::missing_transmute_annotations)]
-
 use dashmap::DashMap;
 use std::ffi::c_void;
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
+use std::ptr::NonNull;
 use std::sync::LazyLock;
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1_Vtbl, ID3D11DeviceContext2_Vtbl,
     ID3D11DeviceContext3_Vtbl, ID3D11DeviceContext4_Vtbl,
 };
 
+snowglass_hook::vtable! {
+    ID3D11DeviceContext_Vtbl,
+    ID3D11DeviceContext1_Vtbl,
+    ID3D11DeviceContext2_Vtbl,
+    ID3D11DeviceContext3_Vtbl,
+    ID3D11DeviceContext4_Vtbl,
+}
+
 const SLOT_SIZE: usize = size_of::<usize>();
-const CONTEXT_SLOT_CAPACITY: usize = size_of::<ID3D11DeviceContext4_Vtbl>() / SLOT_SIZE;
+const CONTEXT_SLOT_CAPACITY: usize = <ID3D11DeviceContext4_Vtbl as Vtable>::SLOTS;
 
 type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
 type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
@@ -30,20 +38,19 @@ const _: () = assert!(size_of::<ID3D11DeviceContextVtable>() == CONTEXT_SLOT_CAP
 impl ID3D11DeviceContextVtable {
     /// # Safety
     ///
-    /// `original` must point to a vtable spanning at least
-    /// [`CONTEXT_SLOT_CAPACITY`] entries.
-    unsafe fn read(original: *const usize) -> Self {
-        let mut slots = Self {
+    /// `original` must point to a vtable spanning at least `slots` entries.
+    unsafe fn read(original: NonNull<usize>, slots: usize) -> Self {
+        let mut cloned = Self {
             raw: [0; CONTEXT_SLOT_CAPACITY],
         };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                original,
-                (&raw mut slots.raw).cast::<usize>(),
-                CONTEXT_SLOT_CAPACITY,
+                original.as_ptr().cast_const(),
+                (&raw mut cloned.raw).cast::<usize>(),
+                slots,
             );
         }
-        slots
+        cloned
     }
 
     fn table(&self) -> *const ID3D11DeviceContext_Vtbl {
@@ -55,38 +62,41 @@ impl ID3D11DeviceContextVtable {
     }
 }
 
-struct ID3D11DeviceContextHook {
+struct ID3D11DeviceContextHook<A: Vtable> {
     /// Hook-patched clone installed as the object's vtable pointer.
     patched: Box<ID3D11DeviceContextVtable>,
     /// Verbatim copies of the original slots for downstream continuation.
     draw: DrawFn,
     draw_indexed: DrawIndexedFn,
+    /// The interface generation cloned from the object's vtable.
+    vtable: PhantomData<A>,
 }
 
-impl ID3D11DeviceContextHook {
+impl<A: Vtable> ID3D11DeviceContextHook<A> {
     /// # Safety
     ///
-    /// `original` must point to a live `ID3D11DeviceContext` vtable.
-    unsafe fn clone_from(original: *const usize) -> Self {
-        let mut patched = Box::new(unsafe { ID3D11DeviceContextVtable::read(original) });
+    /// `original` must be null or point to a vtable spanning at least
+    /// [`A::SLOTS`](Vtable::SLOTS) entries.
+    unsafe fn clone_from(original: *const usize) -> Option<Self> {
+        let original = NonNull::new(original.cast_mut())?;
+        let mut patched = Box::new(unsafe { ID3D11DeviceContextVtable::read(original, A::SLOTS) });
         let (draw, draw_indexed) = unsafe {
             let table = patched.table();
-            let draw = std::mem::transmute::<_, DrawFn>((*table).Draw);
-            let draw_indexed = std::mem::transmute::<_, DrawIndexedFn>((*table).DrawIndexed);
-            (draw, draw_indexed)
+            ((*table).Draw, (*table).DrawIndexed)
         };
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
             let table = patched.table_mut();
-            (*table).Draw = std::mem::transmute(draw_trampoline as DrawFn);
-            (*table).DrawIndexed = std::mem::transmute(draw_indexed_trampoline as DrawIndexedFn);
+            (*table).Draw = draw_trampoline;
+            (*table).DrawIndexed = draw_indexed_trampoline;
         }
-        Self {
+        Some(Self {
             patched,
             draw,
             draw_indexed,
-        }
+            vtable: PhantomData,
+        })
     }
 
     fn patched_vtable(&self) -> *const usize {
@@ -94,7 +104,11 @@ impl ID3D11DeviceContextHook {
     }
 }
 
-static CONTEXTS: LazyLock<DashMap<usize, ID3D11DeviceContextHook>> = LazyLock::new(Default::default);
+/// The immediate context is always cloned at its widest generation; the D3D11
+/// runtime implements every generation on one object.
+type ImmediateContextHook = ID3D11DeviceContextHook<ID3D11DeviceContext4_Vtbl>;
+
+static CONTEXTS: LazyLock<DashMap<usize, ImmediateContextHook>> = LazyLock::new(Default::default);
 
 /// Installs draw interception on a device's immediate context so the producer
 /// can track render regions.
@@ -113,16 +127,15 @@ pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
     }
     let object_vtable = context.cast::<*const usize>();
     let current = unsafe { *object_vtable };
-    if current.is_null() {
-        return;
-    }
     if CONTEXTS
         .get(&(context as usize))
         .is_some_and(|state| state.patched_vtable() == current)
     {
         return;
     }
-    let vtable = unsafe { ID3D11DeviceContextHook::clone_from(current) };
+    let Some(vtable) = (unsafe { ImmediateContextHook::clone_from(current) }) else {
+        return;
+    };
     unsafe { *object_vtable = vtable.patched_vtable() };
     CONTEXTS.insert(context as usize, vtable);
 }

@@ -15,6 +15,7 @@
 
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
+use std::ptr::NonNull;
 use windows::Win32::Devices::HumanInterfaceDevice::{
     IDirectInput8A_Vtbl, IDirectInput8W_Vtbl, IDirectInputDevice8A_Vtbl, IDirectInputDevice8W_Vtbl,
 };
@@ -22,6 +23,13 @@ use windows_sys::{
     Win32::Devices::HumanInterfaceDevice::DIDEVICEOBJECTDATA,
     core::{GUID, HRESULT},
 };
+
+snowglass_hook::vtable! {
+    IDirectInput8A_Vtbl,
+    IDirectInput8W_Vtbl,
+    IDirectInputDevice8A_Vtbl,
+    IDirectInputDevice8W_Vtbl,
+}
 
 /// A continuation resolved from a hooked object, together with the vtable
 /// pointers needed to unhook the object across the downstream call.
@@ -32,8 +40,8 @@ pub(crate) struct OriginalMethod<T> {
 }
 
 const SLOT_SIZE: usize = size_of::<usize>();
-pub(crate) const DIRECT_INPUT_VTABLE_LEN: usize = size_of::<IDirectInput8A_Vtbl>() / SLOT_SIZE;
-pub(crate) const DEVICE_VTABLE_LEN: usize = size_of::<IDirectInputDevice8A_Vtbl>() / SLOT_SIZE;
+pub(crate) const DIRECT_INPUT_VTABLE_LEN: usize = <IDirectInput8A_Vtbl as Vtable>::SLOTS;
+pub(crate) const DEVICE_VTABLE_LEN: usize = <IDirectInputDevice8A_Vtbl as Vtable>::SLOTS;
 
 pub(crate) type CreateDeviceFn =
     unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void, *mut c_void) -> HRESULT;
@@ -139,19 +147,22 @@ pub(crate) struct IDirectInputHook {
     /// Verbatim copy of the original slots for downstream continuation.
     saved: IDirectInputVtable,
     /// The object's original vtable pointer, restored across releases.
-    original: usize,
+    original: NonNull<usize>,
 }
+
+// SAFETY: `original` identifies an immutable vtable owned by the hooked
+// module for the process lifetime; the hook only reads through it.
+unsafe impl Send for IDirectInputHook {}
+unsafe impl Sync for IDirectInputHook {}
 
 impl IDirectInputHook {
     /// # Safety
     ///
     /// `original` must be null or point to a live `IDirectInput8` vtable.
     pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        if original.is_null() {
-            return None;
-        }
-        let saved = unsafe { IDirectInputVtable::read(original) };
-        let mut patched = Box::new(unsafe { IDirectInputVtable::read(original) });
+        let original = NonNull::new(original.cast_mut())?;
+        let saved = unsafe { IDirectInputVtable::read(original.as_ptr()) };
+        let mut patched = Box::new(unsafe { IDirectInputVtable::read(original.as_ptr()) });
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -163,7 +174,7 @@ impl IDirectInputHook {
         Some(Self {
             patched,
             saved,
-            original: original as usize,
+            original,
         })
     }
 
@@ -174,7 +185,7 @@ impl IDirectInputHook {
 
     /// The object's original vtable pointer.
     pub(crate) fn original_vtable(&self) -> *const usize {
-        self.original as *const usize
+        self.original.as_ptr()
     }
 
     pub(crate) fn release(&self) -> ReleaseFn {
@@ -192,8 +203,12 @@ pub(crate) struct IDirectInputDeviceHook {
     /// Verbatim copy of the original slots for downstream continuation.
     saved: IDirectInputDeviceVtable,
     /// The object's original vtable pointer, restored across releases.
-    original: usize,
+    original: NonNull<usize>,
 }
+
+// SAFETY: see `IDirectInputHook`.
+unsafe impl Send for IDirectInputDeviceHook {}
+unsafe impl Sync for IDirectInputDeviceHook {}
 
 impl IDirectInputDeviceHook {
     /// # Safety
@@ -201,11 +216,9 @@ impl IDirectInputDeviceHook {
     /// `original` must be null or point to a live `IDirectInputDevice8`
     /// vtable.
     pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        if original.is_null() {
-            return None;
-        }
-        let saved = unsafe { IDirectInputDeviceVtable::read(original) };
-        let mut patched = Box::new(unsafe { IDirectInputDeviceVtable::read(original) });
+        let original = NonNull::new(original.cast_mut())?;
+        let saved = unsafe { IDirectInputDeviceVtable::read(original.as_ptr()) };
+        let mut patched = Box::new(unsafe { IDirectInputDeviceVtable::read(original.as_ptr()) });
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -226,7 +239,7 @@ impl IDirectInputDeviceHook {
         Some(Self {
             patched,
             saved,
-            original: original as usize,
+            original,
         })
     }
 
@@ -237,7 +250,7 @@ impl IDirectInputDeviceHook {
 
     /// The object's original vtable pointer.
     pub(crate) fn original_vtable(&self) -> *const usize {
-        self.original as *const usize
+        self.original.as_ptr()
     }
 
     pub(crate) fn release(&self) -> ReleaseFn {

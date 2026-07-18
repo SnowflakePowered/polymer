@@ -66,19 +66,23 @@ impl D3d11ImageRing {
             (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX).0 as u32;
 
         let mut slots = Vec::with_capacity(slot_count as usize);
-        for _ in 0..slot_count {
+        for index in 0..slot_count {
+            eprintln!("CHECKPOINT-R: slot {index} CreateTexture2D {}x{} fmt {:?} misc {:#x}", shared_desc.Width, shared_desc.Height, shared_desc.Format, shared_desc.MiscFlags);
             let mut texture = None;
             unsafe { device.CreateTexture2D(&shared_desc, None, Some(&mut texture)) }
                 .map_err(|error| contextual(error, "ID3D11Device::CreateTexture2D"))?;
+            eprintln!("CHECKPOINT-R: slot {index} texture created");
             let Some(texture) = texture else {
                 return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
             };
             let resource: IDXGIResource1 = texture
                 .cast()
                 .map_err(|error| contextual(error, "IDXGIResource1 query"))?;
+            eprintln!("CHECKPOINT-R: slot {index} CreateSharedHandle");
             let handle =
                 unsafe { resource.CreateSharedHandle(None, GENERIC_ALL.0, PCWSTR::null()) }
                     .map_err(|error| contextual(error, "IDXGIResource1::CreateSharedHandle"))?;
+            eprintln!("CHECKPOINT-R: slot {index} keyed_mutex");
             let keyed_mutex: IDXGIKeyedMutex = texture
                 .cast()
                 .map_err(|error| contextual(error, "IDXGIKeyedMutex query"))?;

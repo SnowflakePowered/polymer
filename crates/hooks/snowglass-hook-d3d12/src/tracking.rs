@@ -10,10 +10,11 @@
 //! object registries and the device-setup feature detection.
 
 use crate::vtable::{
-    DeviceKind, GraphicsCommandListKind, ID3D12DeviceHook, ID3D12GraphicsCommandListHook,
+    CommandListHook, DeviceHook, ID3D12DeviceHook, ID3D12GraphicsCommandListHook, Vtable,
 };
 use dashmap::{DashMap, mapref::entry::Entry};
 use std::{
+    any::TypeId,
     ffi::c_void,
     sync::{LazyLock, OnceLock},
 };
@@ -27,21 +28,36 @@ use windows::{
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_FEATURE_D3D12_OPTIONS12,
             D3D12_FEATURE_DATA_D3D12_OPTIONS12, D3D12_GPU_DESCRIPTOR_HANDLE,
             D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RESOURCE_BARRIER, D3D12_SHADER_RESOURCE_VIEW_DESC,
-            D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12Device, ID3D12Device1, ID3D12Device2,
-            ID3D12Device3, ID3D12Device4, ID3D12Device5, ID3D12Device6, ID3D12Device7,
-            ID3D12Device8, ID3D12Device9, ID3D12Device10, ID3D12Device11, ID3D12Device12,
-            ID3D12Device13, ID3D12Device14, ID3D12GraphicsCommandList, ID3D12GraphicsCommandList1,
-            ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList4,
-            ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList7,
-            ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList10,
-            ID3D12PipelineState,
+            D3D12_VIEWPORT, ID3D12CommandAllocator, ID3D12Device, ID3D12Device_Vtbl, ID3D12Device1,
+            ID3D12Device1_Vtbl, ID3D12Device2, ID3D12Device2_Vtbl, ID3D12Device3,
+            ID3D12Device3_Vtbl, ID3D12Device4, ID3D12Device4_Vtbl, ID3D12Device5,
+            ID3D12Device5_Vtbl, ID3D12Device6, ID3D12Device6_Vtbl, ID3D12Device7,
+            ID3D12Device7_Vtbl, ID3D12Device8, ID3D12Device8_Vtbl, ID3D12Device9,
+            ID3D12Device9_Vtbl, ID3D12Device10, ID3D12Device10_Vtbl, ID3D12Device11,
+            ID3D12Device11_Vtbl, ID3D12Device12, ID3D12Device12_Vtbl, ID3D12Device13,
+            ID3D12Device13_Vtbl, ID3D12Device14, ID3D12Device14_Vtbl, ID3D12GraphicsCommandList,
+            ID3D12GraphicsCommandList_Vtbl, ID3D12GraphicsCommandList1,
+            ID3D12GraphicsCommandList1_Vtbl, ID3D12GraphicsCommandList2,
+            ID3D12GraphicsCommandList2_Vtbl, ID3D12GraphicsCommandList3,
+            ID3D12GraphicsCommandList3_Vtbl, ID3D12GraphicsCommandList4,
+            ID3D12GraphicsCommandList4_Vtbl, ID3D12GraphicsCommandList5,
+            ID3D12GraphicsCommandList5_Vtbl, ID3D12GraphicsCommandList6,
+            ID3D12GraphicsCommandList6_Vtbl, ID3D12GraphicsCommandList7,
+            ID3D12GraphicsCommandList7_Vtbl, ID3D12GraphicsCommandList8,
+            ID3D12GraphicsCommandList8_Vtbl, ID3D12GraphicsCommandList9,
+            ID3D12GraphicsCommandList9_Vtbl, ID3D12GraphicsCommandList10,
+            ID3D12GraphicsCommandList10_Vtbl, ID3D12PipelineState,
         },
     },
     core::{BOOL, GUID, HRESULT, IUnknown, Interface},
 };
 
-static DEVICES: LazyLock<DashMap<usize, ID3D12DeviceHook>> = LazyLock::new(Default::default);
-static COMMAND_LISTS: LazyLock<DashMap<usize, ID3D12GraphicsCommandListHook>> =
+/// A monomorphized per-object install routine, used to dispatch a widest-cast
+/// result to a typed layout.
+type InstallFn = unsafe fn(*mut c_void) -> bool;
+
+static DEVICES: LazyLock<DashMap<usize, Box<dyn DeviceHook>>> = LazyLock::new(Default::default);
+static COMMAND_LISTS: LazyLock<DashMap<usize, Box<dyn CommandListHook>>> =
     LazyLock::new(Default::default);
 static FEATURES_PROBED: OnceLock<()> = OnceLock::new();
 
@@ -76,9 +92,9 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<bool, String> {
         .get(&(base as usize))
         .is_some_and(|hook| unsafe { *base.cast::<*const usize>() } == hook.patched_vtable());
     let extended = widest_device(&device);
-    let mut installed = unsafe { install_device_kind(base, DeviceKind::Device) };
-    if let Some((extended, kind)) = extended {
-        installed |= unsafe { install_device_kind(extended, kind) };
+    let mut installed = unsafe { install_device_kind::<ID3D12Device_Vtbl>(base) };
+    if let Some((extended, install)) = extended {
+        installed |= unsafe { install(extended) };
     }
     if !installed {
         return Err("could not clone the device vtable".to_owned());
@@ -135,55 +151,60 @@ fn detect_device_features(device: &ID3D12Device) -> Result<(), String> {
     Ok(())
 }
 
-fn widest_device(device: &ID3D12Device) -> Option<(*mut c_void, DeviceKind)> {
+/// The widest device interface implemented by the object, paired with the
+/// install routine for that layout.
+fn widest_device(device: &ID3D12Device) -> Option<(*mut c_void, InstallFn)> {
     macro_rules! try_cast {
-        ($interface:ty, $kind:expr) => {
+        ($interface:ty, $vtbl:ty) => {
             if let Ok(interface) = device.cast::<$interface>() {
-                return Some((interface.as_raw(), $kind));
+                return Some((interface.as_raw(), install_device_kind::<$vtbl> as InstallFn));
             }
         };
     }
-    try_cast!(ID3D12Device14, DeviceKind::Device14);
-    try_cast!(ID3D12Device13, DeviceKind::Device13);
-    try_cast!(ID3D12Device12, DeviceKind::Device12);
-    try_cast!(ID3D12Device11, DeviceKind::Device11);
-    try_cast!(ID3D12Device10, DeviceKind::Device10);
-    try_cast!(ID3D12Device9, DeviceKind::Device9);
-    try_cast!(ID3D12Device8, DeviceKind::Device8);
-    try_cast!(ID3D12Device7, DeviceKind::Device7);
-    try_cast!(ID3D12Device6, DeviceKind::Device6);
-    try_cast!(ID3D12Device5, DeviceKind::Device5);
-    try_cast!(ID3D12Device4, DeviceKind::Device4);
-    try_cast!(ID3D12Device3, DeviceKind::Device3);
-    try_cast!(ID3D12Device2, DeviceKind::Device2);
-    try_cast!(ID3D12Device1, DeviceKind::Device1);
+    try_cast!(ID3D12Device14, ID3D12Device14_Vtbl);
+    try_cast!(ID3D12Device13, ID3D12Device13_Vtbl);
+    try_cast!(ID3D12Device12, ID3D12Device12_Vtbl);
+    try_cast!(ID3D12Device11, ID3D12Device11_Vtbl);
+    try_cast!(ID3D12Device10, ID3D12Device10_Vtbl);
+    try_cast!(ID3D12Device9, ID3D12Device9_Vtbl);
+    try_cast!(ID3D12Device8, ID3D12Device8_Vtbl);
+    try_cast!(ID3D12Device7, ID3D12Device7_Vtbl);
+    try_cast!(ID3D12Device6, ID3D12Device6_Vtbl);
+    try_cast!(ID3D12Device5, ID3D12Device5_Vtbl);
+    try_cast!(ID3D12Device4, ID3D12Device4_Vtbl);
+    try_cast!(ID3D12Device3, ID3D12Device3_Vtbl);
+    try_cast!(ID3D12Device2, ID3D12Device2_Vtbl);
+    try_cast!(ID3D12Device1, ID3D12Device1_Vtbl);
     None
 }
 
-fn widest_command_list(
-    list: &ID3D12GraphicsCommandList,
-) -> Option<(*mut c_void, GraphicsCommandListKind)> {
+/// The widest graphics command-list interface implemented by the object,
+/// paired with the install routine for that layout.
+fn widest_command_list(list: &ID3D12GraphicsCommandList) -> Option<(*mut c_void, InstallFn)> {
     macro_rules! try_cast {
-        ($interface:ty, $kind:expr) => {
+        ($interface:ty, $vtbl:ty) => {
             if let Ok(interface) = list.cast::<$interface>() {
-                return Some((interface.as_raw(), $kind));
+                return Some((
+                    interface.as_raw(),
+                    install_command_list_kind::<$vtbl> as InstallFn,
+                ));
             }
         };
     }
-    try_cast!(ID3D12GraphicsCommandList10, GraphicsCommandListKind::List10);
-    try_cast!(ID3D12GraphicsCommandList9, GraphicsCommandListKind::List9);
-    try_cast!(ID3D12GraphicsCommandList8, GraphicsCommandListKind::List8);
-    try_cast!(ID3D12GraphicsCommandList7, GraphicsCommandListKind::List7);
-    try_cast!(ID3D12GraphicsCommandList6, GraphicsCommandListKind::List6);
-    try_cast!(ID3D12GraphicsCommandList5, GraphicsCommandListKind::List5);
-    try_cast!(ID3D12GraphicsCommandList4, GraphicsCommandListKind::List4);
-    try_cast!(ID3D12GraphicsCommandList3, GraphicsCommandListKind::List3);
-    try_cast!(ID3D12GraphicsCommandList2, GraphicsCommandListKind::List2);
-    try_cast!(ID3D12GraphicsCommandList1, GraphicsCommandListKind::List1);
+    try_cast!(ID3D12GraphicsCommandList10, ID3D12GraphicsCommandList10_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList6_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList5_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList4_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList3_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList2_Vtbl);
+    try_cast!(ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList1_Vtbl);
     None
 }
 
-unsafe fn install_device_kind(device: *mut c_void, kind: DeviceKind) -> bool {
+unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
     if device.is_null() {
         return false;
     }
@@ -193,21 +214,22 @@ unsafe fn install_device_kind(device: *mut c_void, kind: DeviceKind) -> bool {
         Entry::Occupied(occupied) => {
             let existing = occupied.get();
             if current == existing.patched_vtable() {
-                if existing.kind() >= kind {
+                if existing.vtable_type() == TypeId::of::<A>() || existing.slots() >= A::SLOTS {
                     return true;
                 }
-                unsafe { ID3D12DeviceHook::clone_from(existing.original_vtable(), kind) }
+                unsafe { ID3D12DeviceHook::<A>::clone_from(existing.original_vtable()) }
             } else {
-                unsafe { ID3D12DeviceHook::clone_from(current, kind) }
+                unsafe { ID3D12DeviceHook::<A>::clone_from(current) }
             }
         }
-        Entry::Vacant(_) => unsafe { ID3D12DeviceHook::clone_from(current, kind) },
+        Entry::Vacant(_) => unsafe { ID3D12DeviceHook::<A>::clone_from(current) },
     };
     let Some(vtable) = vtable else {
         return false;
     };
-    unsafe { *device.cast::<*const usize>() = vtable.patched_vtable() };
-    entry.insert(vtable);
+    let state: Box<dyn DeviceHook> = Box::new(vtable);
+    unsafe { *device.cast::<*const usize>() = state.patched_vtable() };
+    entry.insert(state);
     true
 }
 
@@ -230,13 +252,13 @@ unsafe fn install_command_list(list: *mut c_void) {
         return;
     };
     let extended = widest_command_list(&base);
-    unsafe { install_command_list_kind(base.as_raw(), GraphicsCommandListKind::List) };
-    if let Some((extended, kind)) = extended {
-        unsafe { install_command_list_kind(extended, kind) };
+    unsafe { install_command_list_kind::<ID3D12GraphicsCommandList_Vtbl>(base.as_raw()) };
+    if let Some((extended, install)) = extended {
+        unsafe { install(extended) };
     }
 }
 
-unsafe fn install_command_list_kind(list: *mut c_void, kind: GraphicsCommandListKind) -> bool {
+unsafe fn install_command_list_kind<A: Vtable>(list: *mut c_void) -> bool {
     if list.is_null() {
         return false;
     }
@@ -246,38 +268,37 @@ unsafe fn install_command_list_kind(list: *mut c_void, kind: GraphicsCommandList
         Entry::Occupied(occupied) => {
             let existing = occupied.get();
             if current == existing.patched_vtable() {
-                if existing.kind() >= kind {
+                if existing.vtable_type() == TypeId::of::<A>() || existing.slots() >= A::SLOTS {
                     return true;
                 }
                 unsafe {
-                    ID3D12GraphicsCommandListHook::clone_from(existing.original_vtable(), kind)
+                    ID3D12GraphicsCommandListHook::<A>::clone_from(existing.original_vtable())
                 }
             } else {
-                unsafe { ID3D12GraphicsCommandListHook::clone_from(current, kind) }
+                unsafe { ID3D12GraphicsCommandListHook::<A>::clone_from(current) }
             }
         }
-        Entry::Vacant(_) => unsafe { ID3D12GraphicsCommandListHook::clone_from(current, kind) },
+        Entry::Vacant(_) => unsafe { ID3D12GraphicsCommandListHook::<A>::clone_from(current) },
     };
     let Some(vtable) = vtable else {
         return false;
     };
-    unsafe { *list.cast::<*const usize>() = vtable.patched_vtable() };
-    entry.insert(vtable);
+    let state: Box<dyn CommandListHook> = Box::new(vtable);
+    unsafe { *list.cast::<*const usize>() = state.patched_vtable() };
+    entry.insert(state);
     true
 }
 
-fn device_method<T>(
-    device: *mut c_void,
-    select: impl FnOnce(&ID3D12DeviceHook) -> T,
-) -> Option<T> {
-    DEVICES.get(&(device as usize)).map(|hook| select(&hook))
+fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {
+    DEVICES
+        .get(&(device as usize))
+        .map(|hook| select(&**hook))
 }
 
-fn list_method<T>(
-    list: *mut c_void,
-    select: impl FnOnce(&ID3D12GraphicsCommandListHook) -> T,
-) -> Option<T> {
-    COMMAND_LISTS.get(&(list as usize)).map(|hook| select(&hook))
+fn list_method<T>(list: *mut c_void, select: impl FnOnce(&dyn CommandListHook) -> T) -> Option<T> {
+    COMMAND_LISTS
+        .get(&(list as usize))
+        .map(|hook| select(&**hook))
 }
 
 pub(crate) unsafe extern "system" fn device_release(this: *mut c_void) -> u32 {
@@ -294,7 +315,7 @@ pub(crate) unsafe extern "system" fn device_release(this: *mut c_void) -> u32 {
     let references = unsafe { release(this) };
     if references == 0 {
         DEVICES.remove(&(this as usize));
-    } else if let Some(patched) = device_method(this, ID3D12DeviceHook::patched_vtable) {
+    } else if let Some(patched) = device_method(this, |hook| hook.patched_vtable()) {
         unsafe { *this.cast::<*const usize>() = patched };
     }
     references
@@ -312,7 +333,7 @@ pub(crate) unsafe extern "system" fn command_list_release(this: *mut c_void) -> 
     let references = unsafe { release(this) };
     if references == 0 {
         COMMAND_LISTS.remove(&(this as usize));
-    } else if let Some(patched) = list_method(this, ID3D12GraphicsCommandListHook::patched_vtable) {
+    } else if let Some(patched) = list_method(this, |hook| hook.patched_vtable()) {
         unsafe { *this.cast::<*const usize>() = patched };
     }
     references
@@ -327,7 +348,7 @@ pub(crate) unsafe extern "system" fn create_command_list(
     interface_id: *const GUID,
     output: *mut *mut c_void,
 ) -> HRESULT {
-    let Some(original) = device_method(this, ID3D12DeviceHook::create_command_list) else {
+    let Some(original) = device_method(this, |hook| hook.create_command_list()) else {
         return E_FAIL;
     };
     let result = unsafe {
@@ -355,8 +376,7 @@ pub(crate) unsafe extern "system" fn create_command_list1(
     interface_id: *const GUID,
     output: *mut *mut c_void,
 ) -> HRESULT {
-    let Some(original) = device_method(this, ID3D12DeviceHook::create_command_list1).flatten()
-    else {
+    let Some(original) = device_method(this, |hook| hook.create_command_list1()).flatten() else {
         return E_FAIL;
     };
     let result = unsafe { original(this, node_mask, list_type, flags, interface_id, output) };
@@ -372,7 +392,7 @@ pub(crate) unsafe extern "system" fn create_descriptor_heap(
     interface_id: *const GUID,
     output: *mut *mut c_void,
 ) -> HRESULT {
-    let Some(original) = device_method(this, ID3D12DeviceHook::create_descriptor_heap) else {
+    let Some(original) = device_method(this, |hook| hook.create_descriptor_heap()) else {
         return E_FAIL;
     };
     let result = unsafe { original(this, desc, interface_id, output) };
@@ -388,7 +408,7 @@ pub(crate) unsafe extern "system" fn create_shader_resource_view(
     desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
     destination: D3D12_CPU_DESCRIPTOR_HANDLE,
 ) {
-    if let Some(original) = device_method(this, ID3D12DeviceHook::create_shader_resource_view) {
+    if let Some(original) = device_method(this, |hook| hook.create_shader_resource_view()) {
         unsafe { original(this, resource, desc, destination) };
     }
     unsafe { snowglass_producer_d3d12::record_shader_resource_view(resource, desc, destination) };
@@ -400,7 +420,7 @@ pub(crate) unsafe extern "system" fn create_render_target_view(
     desc: *const D3D12_RENDER_TARGET_VIEW_DESC,
     destination: D3D12_CPU_DESCRIPTOR_HANDLE,
 ) {
-    if let Some(original) = device_method(this, ID3D12DeviceHook::create_render_target_view) {
+    if let Some(original) = device_method(this, |hook| hook.create_render_target_view()) {
         unsafe { original(this, resource, desc, destination) };
     }
     unsafe { snowglass_producer_d3d12::record_render_target_view(resource, desc, destination) };
@@ -413,7 +433,7 @@ pub(crate) unsafe extern "system" fn copy_descriptors_simple(
     source: D3D12_CPU_DESCRIPTOR_HANDLE,
     heap_type: D3D12_DESCRIPTOR_HEAP_TYPE,
 ) {
-    if let Some(original) = device_method(this, ID3D12DeviceHook::copy_descriptors_simple) {
+    if let Some(original) = device_method(this, |hook| hook.copy_descriptors_simple()) {
         unsafe { original(this, count, destination, source, heap_type) };
     }
     snowglass_producer_d3d12::record_copy_descriptors_simple(count, destination, source, heap_type);
@@ -424,7 +444,7 @@ pub(crate) unsafe extern "system" fn reset(
     allocator: *mut c_void,
     initial_state: *mut c_void,
 ) -> HRESULT {
-    let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::reset) else {
+    let Some(original) = list_method(this, |hook| hook.reset()) else {
         return E_FAIL;
     };
     let result = unsafe { original(this, allocator, initial_state) };
@@ -439,7 +459,7 @@ pub(crate) unsafe extern "system" fn set_viewports(
     count: u32,
     viewports: *const D3D12_VIEWPORT,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::set_viewports) {
+    if let Some(original) = list_method(this, |hook| hook.set_viewports()) {
         unsafe { original(this, count, viewports) };
     }
     unsafe { snowglass_producer_d3d12::record_viewports(this, count, viewports) };
@@ -450,7 +470,7 @@ pub(crate) unsafe extern "system" fn set_scissors(
     count: u32,
     scissors: *const RECT,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::set_scissors) {
+    if let Some(original) = list_method(this, |hook| hook.set_scissors()) {
         unsafe { original(this, count, scissors) };
     }
     unsafe { snowglass_producer_d3d12::record_scissors(this, count, scissors) };
@@ -463,7 +483,7 @@ pub(crate) unsafe extern "system" fn draw_instanced(
     start_vertex: u32,
     start_instance: u32,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::draw_instanced) {
+    if let Some(original) = list_method(this, |hook| hook.draw_instanced()) {
         unsafe {
             original(
                 this,
@@ -485,8 +505,7 @@ pub(crate) unsafe extern "system" fn draw_indexed_instanced(
     base_vertex: i32,
     start_instance: u32,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::draw_indexed_instanced)
-    {
+    if let Some(original) = list_method(this, |hook| hook.draw_indexed_instanced()) {
         unsafe {
             original(
                 this,
@@ -506,7 +525,7 @@ pub(crate) unsafe extern "system" fn resource_barrier(
     count: u32,
     barriers: *const D3D12_RESOURCE_BARRIER,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::resource_barrier) {
+    if let Some(original) = list_method(this, |hook| hook.resource_barrier()) {
         unsafe { original(this, count, barriers) };
     }
     unsafe { snowglass_producer_d3d12::record_resource_barrier(this, count, barriers) };
@@ -517,10 +536,7 @@ pub(crate) unsafe extern "system" fn set_graphics_root_descriptor_table(
     root_index: u32,
     descriptor: D3D12_GPU_DESCRIPTOR_HANDLE,
 ) {
-    if let Some(original) = list_method(
-        this,
-        ID3D12GraphicsCommandListHook::set_graphics_root_descriptor_table,
-    ) {
+    if let Some(original) = list_method(this, |hook| hook.set_graphics_root_descriptor_table()) {
         unsafe { original(this, root_index, descriptor) };
     }
     snowglass_producer_d3d12::record_root_descriptor_table(this, root_index, descriptor);
@@ -530,10 +546,7 @@ pub(crate) unsafe extern "system" fn set_graphics_root_signature(
     this: *mut c_void,
     signature: *mut c_void,
 ) {
-    if let Some(original) = list_method(
-        this,
-        ID3D12GraphicsCommandListHook::set_graphics_root_signature,
-    ) {
+    if let Some(original) = list_method(this, |hook| hook.set_graphics_root_signature()) {
         unsafe { original(this, signature) };
     }
     snowglass_producer_d3d12::record_root_signature(this);
@@ -546,8 +559,7 @@ pub(crate) unsafe extern "system" fn om_set_render_targets(
     contiguous: BOOL,
     depth: *const D3D12_CPU_DESCRIPTOR_HANDLE,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::om_set_render_targets)
-    {
+    if let Some(original) = list_method(this, |hook| hook.om_set_render_targets()) {
         unsafe { original(this, count, descriptors, contiguous, depth) };
     }
     unsafe { snowglass_producer_d3d12::record_render_targets(this, count, descriptors) };
@@ -558,7 +570,7 @@ pub(crate) unsafe extern "system" fn enhanced_barrier(
     count: u32,
     groups: *const D3D12_BARRIER_GROUP,
 ) {
-    if let Some(original) = list_method(this, ID3D12GraphicsCommandListHook::barrier).flatten() {
+    if let Some(original) = list_method(this, |hook| hook.barrier()).flatten() {
         unsafe { original(this, count, groups) };
     }
     unsafe { snowglass_producer_d3d12::record_enhanced_barrier(this, count, groups) };

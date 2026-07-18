@@ -1,5 +1,7 @@
 //! Shared typed-hook infrastructure.
 
+mod vtable;
+
 /// A continuation over a typed hook chain.
 pub trait HookChain<'a, T: 'a> {
     /// Advances to the next registered hook, if one remains.

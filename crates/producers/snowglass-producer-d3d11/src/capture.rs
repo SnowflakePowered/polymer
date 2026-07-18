@@ -32,6 +32,7 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
     }
     let mut captures = captures().lock().unwrap_or_else(|error| error.into_inner());
     if let std::collections::hash_map::Entry::Vacant(entry) = captures.entry(swapchain as usize) {
+        eprintln!("CHECKPOINT-P: before_present creating capture");
         let capture = match unsafe { D3d11SwapchainCapture::new(swapchain, 3) } {
             Ok(capture) => capture,
             Err(error) => {
