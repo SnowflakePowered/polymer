@@ -4,9 +4,14 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::LazyLock;
-use windows::Win32::Graphics::Direct3D11::{
-    ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1_Vtbl, ID3D11DeviceContext2_Vtbl,
-    ID3D11DeviceContext3_Vtbl, ID3D11DeviceContext4_Vtbl,
+use windows::{
+    Win32::Graphics::Direct3D11::{
+        ID3D11DeviceContext, ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1,
+        ID3D11DeviceContext1_Vtbl, ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl,
+        ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl, ID3D11DeviceContext4,
+        ID3D11DeviceContext4_Vtbl,
+    },
+    core::{IUnknown, Interface},
 };
 
 snowglass_hook::vtable! {
@@ -22,6 +27,8 @@ const CONTEXT_SLOT_CAPACITY: usize = <ID3D11DeviceContext4_Vtbl as Vtable>::SLOT
 
 type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
 type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
+
+type InstallFn = unsafe fn(*mut c_void) -> bool;
 
 #[repr(C)]
 union ID3D11DeviceContextVtable {
@@ -62,6 +69,17 @@ impl ID3D11DeviceContextVtable {
     }
 }
 
+/// The layout-erased view of a hooked immediate context stored in the
+/// registry. `Draw`/`DrawIndexed` live in the base `ID3D11DeviceContext`
+/// layout common to every generation, so the exposed continuations do not
+/// depend on the cloned width.
+trait ContextHook: Send + Sync {
+    /// The vtable pointer that intercepts a hooked object.
+    fn patched_vtable(&self) -> *const usize;
+    fn draw(&self) -> DrawFn;
+    fn draw_indexed(&self) -> DrawIndexedFn;
+}
+
 struct ID3D11DeviceContextHook<A: Vtable> {
     /// Hook-patched clone installed as the object's vtable pointer.
     patched: Box<ID3D11DeviceContextVtable>,
@@ -71,6 +89,12 @@ struct ID3D11DeviceContextHook<A: Vtable> {
     /// The interface generation cloned from the object's vtable.
     vtable: PhantomData<A>,
 }
+
+// SAFETY: the clone holds only fn pointers and copied vtable slots; the
+// `PhantomData<A>` layout marker carries no data. Matches the other
+// per-object hooks.
+unsafe impl<A: Vtable> Send for ID3D11DeviceContextHook<A> {}
+unsafe impl<A: Vtable> Sync for ID3D11DeviceContextHook<A> {}
 
 impl<A: Vtable> ID3D11DeviceContextHook<A> {
     /// # Safety
@@ -98,17 +122,23 @@ impl<A: Vtable> ID3D11DeviceContextHook<A> {
             vtable: PhantomData,
         })
     }
+}
 
+impl<A: Vtable> ContextHook for ID3D11DeviceContextHook<A> {
     fn patched_vtable(&self) -> *const usize {
         std::ptr::from_ref::<ID3D11DeviceContextVtable>(&self.patched).cast()
     }
+
+    fn draw(&self) -> DrawFn {
+        self.draw
+    }
+
+    fn draw_indexed(&self) -> DrawIndexedFn {
+        self.draw_indexed
+    }
 }
 
-/// The immediate context is always cloned at its widest generation; the D3D11
-/// runtime implements every generation on one object.
-type ImmediateContextHook = ID3D11DeviceContextHook<ID3D11DeviceContext4_Vtbl>;
-
-static CONTEXTS: LazyLock<DashMap<usize, ImmediateContextHook>> = LazyLock::new(Default::default);
+static CONTEXTS: LazyLock<DashMap<usize, Box<dyn ContextHook>>> = LazyLock::new(Default::default);
 
 /// Installs draw interception on a device's immediate context so the producer
 /// can track render regions.
@@ -125,23 +155,61 @@ pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
     if context.is_null() {
         return;
     }
-    let object_vtable = context.cast::<*const usize>();
-    let current = unsafe { *object_vtable };
+    let current = unsafe { *context.cast::<*const usize>() };
+    if current.is_null() {
+        return;
+    }
     if CONTEXTS
         .get(&(context as usize))
         .is_some_and(|state| state.patched_vtable() == current)
     {
         return;
     }
-    let Some(vtable) = (unsafe { ImmediateContextHook::clone_from(current) }) else {
+    // The immediate context implements one linear interface generation; cloning
+    // at a wider layout than the object supports would read past its real
+    // vtable. Probe the widest generation and clone at exactly that width.
+    let Some(install) = widest_context(context) else {
         return;
     };
-    unsafe { *object_vtable = vtable.patched_vtable() };
-    CONTEXTS.insert(context as usize, vtable);
+    unsafe { install(context) };
+}
+
+/// The widest device-context interface implemented by the object, paired with
+/// the install routine for that layout's clone width.
+fn widest_context(context: *mut c_void) -> Option<InstallFn> {
+    let unknown = unsafe { IUnknown::from_raw_borrowed(&context) }?;
+    macro_rules! try_cast {
+        ($interface:ty, $vtbl:ty) => {
+            if unknown.cast::<$interface>().is_ok() {
+                return Some(install_context_kind::<$vtbl> as InstallFn);
+            }
+        };
+    }
+    try_cast!(ID3D11DeviceContext4, ID3D11DeviceContext4_Vtbl);
+    try_cast!(ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl);
+    try_cast!(ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl);
+    try_cast!(ID3D11DeviceContext1, ID3D11DeviceContext1_Vtbl);
+    try_cast!(ID3D11DeviceContext, ID3D11DeviceContext_Vtbl);
+    None
+}
+
+unsafe fn install_context_kind<A: Vtable>(context: *mut c_void) -> bool {
+    if context.is_null() {
+        return false;
+    }
+    let object_vtable = context.cast::<*const usize>();
+    let current = unsafe { *object_vtable };
+    let Some(hook) = (unsafe { ID3D11DeviceContextHook::<A>::clone_from(current) }) else {
+        return false;
+    };
+    let state: Box<dyn ContextHook> = Box::new(hook);
+    unsafe { *object_vtable = state.patched_vtable() };
+    CONTEXTS.insert(context as usize, state);
+    true
 }
 
 unsafe extern "system" fn draw_trampoline(this: *mut c_void, vertex_count: u32, start_vertex: u32) {
-    if let Some(original) = CONTEXTS.get(&(this as usize)).map(|state| state.draw) {
+    if let Some(original) = CONTEXTS.get(&(this as usize)).map(|state| state.draw()) {
         unsafe { original(this, vertex_count, start_vertex) };
     }
     unsafe { snowglass_producer_d3d11::record_context_draw(this) };
@@ -153,7 +221,10 @@ unsafe extern "system" fn draw_indexed_trampoline(
     start_index: u32,
     base_vertex: i32,
 ) {
-    if let Some(original) = CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed) {
+    if let Some(original) = CONTEXTS
+        .get(&(this as usize))
+        .map(|state| state.draw_indexed())
+    {
         unsafe { original(this, index_count, start_index, base_vertex) };
     }
     unsafe { snowglass_producer_d3d11::record_context_draw(this) };

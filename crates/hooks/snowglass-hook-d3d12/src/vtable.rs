@@ -598,7 +598,10 @@ fn widest_device(device: &ID3D12Device) -> Option<(*mut c_void, InstallFn)> {
     macro_rules! try_cast {
         ($interface:ty, $vtbl:ty) => {
             if let Ok(interface) = device.cast::<$interface>() {
-                return Some((interface.as_raw(), install_device_kind::<$vtbl> as InstallFn));
+                return Some((
+                    interface.as_raw(),
+                    install_device_kind::<$vtbl> as InstallFn,
+                ));
             }
         };
     }
@@ -632,7 +635,10 @@ fn widest_command_list(list: &ID3D12GraphicsCommandList) -> Option<(*mut c_void,
             }
         };
     }
-    try_cast!(ID3D12GraphicsCommandList10, ID3D12GraphicsCommandList10_Vtbl);
+    try_cast!(
+        ID3D12GraphicsCommandList10,
+        ID3D12GraphicsCommandList10_Vtbl
+    );
     try_cast!(ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl);
     try_cast!(ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl);
     try_cast!(ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl);
@@ -731,9 +737,7 @@ unsafe fn install_command_list_kind<A: Vtable>(list: *mut c_void) -> bool {
 }
 
 fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {
-    DEVICES
-        .get(&(device as usize))
-        .map(|hook| select(&**hook))
+    DEVICES.get(&(device as usize)).map(|hook| select(&**hook))
 }
 
 fn list_method<T>(list: *mut c_void, select: impl FnOnce(&dyn CommandListHook) -> T) -> Option<T> {

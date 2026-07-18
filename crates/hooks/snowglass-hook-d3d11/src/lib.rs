@@ -1,12 +1,12 @@
 //! D3D11 export detours and COM device bootstrap.
 #![allow(unsafe_code)]
 
-mod vtable;
 mod device;
 mod hook_chain;
 mod hooks;
 mod install;
 mod sys;
+mod vtable;
 
 pub use sys::SnowglassInstallD3d11Hook;
 
