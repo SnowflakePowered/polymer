@@ -10,6 +10,7 @@ crate-type = ["rlib"]
 [dependencies]
 retour.workspace = true
 snowglass-hook.workspace = true
+snowglass-platform-windows.workspace = true
 windows.workspace = true
 
 [lints]

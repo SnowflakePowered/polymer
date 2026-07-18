@@ -336,6 +336,21 @@ pub(crate) fn query_method(
     })
 }
 
+pub(crate) unsafe fn created_factory(
+    _interface_id: *const c_void,
+    factory: *mut *mut c_void,
+    result: i32,
+) {
+    if result < 0 || factory.is_null() {
+        return;
+    }
+    let factory = unsafe { *factory };
+    if factory.is_null() {
+        return;
+    }
+    unsafe { install_factory_interfaces(factory) };
+}
+
 pub(crate) unsafe fn factory_created_swapchain(
     device: *mut c_void,
     swapchain: *mut *mut c_void,
@@ -540,6 +555,9 @@ pub(crate) unsafe fn factory_release(
 }
 
 pub(crate) fn register_runtime_hooks() {
+    hooks::register_create_factory(created_factory);
+    hooks::register_create_factory1(created_factory);
+    hooks::register_create_factory2(created_factory);
     hooks::register_query_interface(query_interface);
     hooks::register_factory_create_swapchain(factory_created_swapchain);
     hooks::register_factory_create_swapchain_for_hwnd(factory_created_swapchain);

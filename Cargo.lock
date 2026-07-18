@@ -1849,6 +1849,7 @@ version = "0.1.0"
 dependencies = [
  "retour",
  "snowglass-hook",
+ "snowglass-platform-windows",
  "windows",
 ]
 

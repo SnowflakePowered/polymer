@@ -3,6 +3,7 @@
 
 mod hook_chain;
 mod hooks;
+mod install;
 mod runtime;
 mod sys;
 mod vtable;
@@ -11,6 +12,18 @@ pub use runtime::{
     SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
     install_swapchain, install_swapchain1, register_callbacks, register_swapchain,
 };
+
+/// Installs process-wide detours over the DXGI factory creation exports so
+/// every factory the application creates receives the per-object vtable hooks
+/// at creation time.
+///
+/// # Safety
+///
+/// The process must have a usable system DXGI runtime, and callers must not
+/// concurrently unload the DXGI module while installation is in progress.
+pub unsafe fn install_factory_detours() -> bool {
+    unsafe { install::install() }
+}
 
 pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
     use std::io::Write;

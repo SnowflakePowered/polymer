@@ -32,32 +32,14 @@ fn register_hooks() {
 }
 
 pub(crate) fn install_dxgi_interception() {
-    use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory2,
-    };
-
     static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     INSTALLED.get_or_init(|| {
-        d3d12_log("snowglass: creating DXGI factory for D3D12 interception");
-        let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory2>(DXGI_CREATE_FACTORY_FLAGS(0)) };
-        match factory {
-            Ok(factory) => {
-                use windows::core::Interface;
-                d3d12_log("snowglass: installing process-wide DXGI method detours for D3D12");
-                let installed =
-                    unsafe { snowglass_hook_dxgi::install_factory_detours(factory.as_raw()) };
-                if !installed {
-                    d3d12_log("snowglass: failed to seed DXGI factory interception");
-                }
-                installed
-            }
-            Err(error) => {
-                d3d12_log(format!(
-                    "snowglass: could not create DXGI factory for interception: {error}"
-                ));
-                false
-            }
+        d3d12_log("snowglass: installing DXGI factory export detours for D3D12");
+        let installed = unsafe { snowglass_hook_dxgi::install_factory_detours() };
+        if !installed {
+            d3d12_log("snowglass: failed to install DXGI factory export detours");
         }
+        installed
     });
 }
 

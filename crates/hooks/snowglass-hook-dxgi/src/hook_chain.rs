@@ -12,6 +12,15 @@ macro_rules! resolve_proc {
 pub(crate) use resolve_proc as __resolve_proc;
 
 macro_rules! resolve_terminal {
+    (($($argument:ident),*); resolve with detour $detours:path, $field:ident -> $fallback:expr;) => {
+        || {
+            snowglass_platform_windows::call_original(
+                $detours.get().map(|detours| &detours.$field),
+                $fallback,
+                |detour| unsafe { detour.call($($argument),*) },
+            )
+        }
+    };
     (($this:ident $(, $argument:ident)*); resolve with swapchain, $field:ident -> $fallback:expr;) => {
         || {
             let Some(function) = crate::hook_chain::__resolve_proc!(swapchain, $this, $field) else {
