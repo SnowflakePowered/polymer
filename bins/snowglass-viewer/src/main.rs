@@ -10,8 +10,8 @@ use snowglass_platform_windows::{
     inject_libraries_before_resume, performance_counter, performance_frequency,
 };
 use snowglass_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, FrameReady, Handshake, PROTOCOL_VERSION,
-    RELEASE_ALL_SYNC_VALUE,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake,
+    PROTOCOL_VERSION, RELEASE_ALL_SYNC_VALUE,
 };
 use std::{
     collections::{HashSet, VecDeque},
@@ -260,6 +260,21 @@ impl ViewerApi {
     }
 }
 
+/// Whether the native D3D12 consumer can import this stream: either a
+/// fence-synchronized D3D12-shareable resource, or a keyed-mutex D3D11
+/// resource acquired through D3D11On12 (which needs the adapter LUID).
+fn d3d12_consumable(stream: &StreamReady) -> bool {
+    matches!(
+        stream.image_kind,
+        ExternalImageKind::D3d12Resource
+            | ExternalImageKind::OpenGlD3d12Resource
+            | ExternalImageKind::VulkanD3d12Resource
+            | ExternalImageKind::D3d11D3d12Resource
+    ) || (stream.image_kind == ExternalImageKind::D3d11SharedResourceNt
+        && stream.sync_kind == ExternalSyncKind::D3d11KeyedMutex
+        && (stream.adapter_luid.low_part != 0 || stream.adapter_luid.high_part != 0))
+}
+
 impl ViewerCompositor {
     fn new(window: &Window, api: ViewerApi) -> Result<Self, Box<dyn Error>> {
         match api {
@@ -278,14 +293,7 @@ impl ViewerCompositor {
         stream: &StreamReady,
         api: ViewerApi,
     ) -> Result<(), Box<dyn Error>> {
-        if api == ViewerApi::D3d12
-            && matches!(
-                stream.image_kind,
-                ExternalImageKind::D3d12Resource
-                    | ExternalImageKind::OpenGlD3d12Resource
-                    | ExternalImageKind::VulkanD3d12Resource
-            )
-        {
+        if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
             let matches =
                 matches!(self, Self::D3d12(value) if value.adapter_luid() == stream.adapter_luid);
             if !matches {
@@ -1128,6 +1136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &executable_dir,
         &session,
         track_render_target,
+        options.force_keyed_mutex,
         isolate,
     )?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -1308,7 +1317,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         match capture {
                             CaptureEvent::Stream(connection, stream, accepted) => {
                                 active_backend = match stream.image_kind {
-                                    ExternalImageKind::D3d11SharedResourceNt => "D3D11",
+                                    ExternalImageKind::D3d11SharedResourceNt
+                                    | ExternalImageKind::D3d11D3d12Resource => "D3D11",
                                     ExternalImageKind::VulkanOpaqueWin32 => "Vulkan",
                                     ExternalImageKind::D3d12Resource
                                     | ExternalImageKind::D3d12Heap => "D3D12",
@@ -1335,18 +1345,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             window.theme(),
                                             None,
                                         );
-                                        active_consumer = match viewer_api {
-                                            ViewerApi::D3d12
-                                                if matches!(
-                                                    stream.image_kind,
-                                                    ExternalImageKind::D3d12Resource
-                                                        | ExternalImageKind::OpenGlD3d12Resource
-                                                        | ExternalImageKind::VulkanD3d12Resource
-                                                ) =>
-                                            {
-                                                "D3D12/DXGI"
-                                            }
-                                            _ => "Vulkan",
+                                        active_consumer = if viewer_api == ViewerApi::D3d12
+                                            && d3d12_consumable(&stream)
+                                        {
+                                            "D3D12/DXGI"
+                                        } else {
+                                            "Vulkan"
                                         };
                                         eprintln!(
                                             "snowglass: imported {active_backend} stream {}x{} with {} slots using {}",
@@ -1693,6 +1697,7 @@ struct ViewerOptions {
     track_render_target: bool,
     isolate: bool,
     api: ViewerApi,
+    force_keyed_mutex: bool,
 }
 
 fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
@@ -1706,6 +1711,7 @@ fn parse_arguments(
     let mut track_render_target = false;
     let mut isolate = true;
     let mut api = ViewerApi::default();
+    let mut force_keyed_mutex = false;
     let mut found_separator = false;
     while let Some(argument) = arguments.next() {
         if argument == "--" {
@@ -1718,20 +1724,22 @@ fn parse_arguments(
             isolate = true;
         } else if argument == "--no-isolate" {
             isolate = false;
+        } else if argument == "--force-km" {
+            force_keyed_mutex = true;
         } else if argument == "--api" {
             api = ViewerApi::parse(&arguments.next().ok_or("--api requires d3d12 or vulkan")?)?;
         } else if let Some(value) = argument.strip_prefix("--api=") {
             api = ViewerApi::parse(value)?;
         } else {
             return Err(format!(
-                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--no-isolate] -- <program> [arguments...]"
+                "unknown viewer option '{argument}'; usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--force-km] [--no-isolate] -- <program> [arguments...]"
             )
             .into());
         }
     }
     if !found_separator {
         return Err(
-            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--no-isolate] -- <program> [arguments...]".into(),
+            "usage: snowglass-viewer [--api d3d12|vulkan] [--track-render-target] [--force-km] [--no-isolate] -- <program> [arguments...]".into(),
         );
     }
     let target = arguments.collect::<Vec<_>>();
@@ -1743,6 +1751,7 @@ fn parse_arguments(
         track_render_target,
         isolate,
         api,
+        force_keyed_mutex,
     })
 }
 
@@ -1760,6 +1769,7 @@ mod argument_tests {
         assert_eq!(options.api, ViewerApi::D3d12);
         assert!(!options.track_render_target);
         assert!(options.isolate);
+        assert!(!options.force_keyed_mutex);
         assert_eq!(options.target, ["game.exe"]);
         Ok(())
     }
@@ -1769,6 +1779,7 @@ mod argument_tests {
         let options = arguments(&[
             "--track-render-target",
             "--no-isolate",
+            "--force-km",
             "--api=vulkan",
             "--",
             "game.exe",
@@ -1778,6 +1789,7 @@ mod argument_tests {
         assert_eq!(options.api, ViewerApi::Vulkan);
         assert!(options.track_render_target);
         assert!(!options.isolate);
+        assert!(options.force_keyed_mutex);
         assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
         Ok(())
     }
@@ -2025,6 +2037,7 @@ fn launch_target(
     layer_dir: &Path,
     session: &str,
     track_render_target: bool,
+    force_keyed_mutex: bool,
     isolate: bool,
 ) -> std::io::Result<TargetProcess> {
     use std::os::windows::process::CommandExt;
@@ -2090,6 +2103,12 @@ fn launch_target(
     if track_render_target {
         environment.push((
             OsString::from("SNOWGLASS_TRACK_RENDER_TARGET"),
+            OsString::from("1"),
+        ));
+    }
+    if force_keyed_mutex {
+        environment.push((
+            OsString::from("SNOWGLASS_FORCE_KEYED_MUTEX"),
             OsString::from("1"),
         ));
     }

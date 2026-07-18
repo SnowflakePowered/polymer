@@ -1802,6 +1802,7 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "retour",
+ "snowglass-consumer-d3d12",
  "snowglass-consumer-vulkan",
  "snowglass-hook",
  "snowglass-hook-dxgi",
@@ -1851,6 +1852,7 @@ dependencies = [
  "snowglass-hook",
  "snowglass-platform-windows",
  "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -62,6 +62,8 @@ pub enum ExternalImageKind {
     OpenGlD3d12Resource = 5,
     /// D3D12 shared resource owned by D3D12 and written through Vulkan external memory.
     VulkanD3d12Resource = 6,
+    /// D3D11 shared resource opened by D3D12 through its NT handle.
+    D3d11D3d12Resource = 7,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -75,6 +77,7 @@ impl TryFrom<u32> for ExternalImageKind {
             4 => Ok(Self::D3d12Heap),
             5 => Ok(Self::OpenGlD3d12Resource),
             6 => Ok(Self::VulkanD3d12Resource),
+            7 => Ok(Self::D3d11D3d12Resource),
             _ => Err(()),
         }
     }

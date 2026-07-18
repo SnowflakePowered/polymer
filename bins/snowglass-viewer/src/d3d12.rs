@@ -30,6 +30,8 @@ use winit::window::Window;
 
 const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
+
+const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
 const CONTENT_DESCRIPTOR: u32 = 0;
 const FIRST_EGUI_DESCRIPTOR: u32 = 64;
 const SWAPCHAIN_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -70,6 +72,9 @@ pub(crate) struct D3d12Compositor {
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
     frame_descriptors: [Vec<u32>; FRAME_COUNT],
     imported: Option<ImportedD3d12Stream>,
+    // Standalone copy submission used to bound keyed-mutex holds; the main
+    // command list executes too late to release the mutex promptly.
+    mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     cache: Option<ID3D12Resource>,
     cache_state: D3D12_RESOURCE_STATES,
     latest: Option<FrameReady>,
@@ -183,6 +188,7 @@ impl D3d12Compositor {
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
                 frame_descriptors: std::array::from_fn(|_| Vec::new()),
                 imported: None,
+                mutex_copy: None,
                 cache: None,
                 cache_state: D3D12_RESOURCE_STATE_COMMON,
                 latest: None,
@@ -200,6 +206,22 @@ impl D3d12Compositor {
     pub(crate) fn import_stream(&mut self, stream: &StreamReady) -> Result<(), Box<dyn Error>> {
         self.release_imported_stream()?;
         let imported = self.consumer.import(stream)?;
+        if imported.uses_keyed_mutex() && self.mutex_copy.is_none() {
+            unsafe {
+                let allocator: ID3D12CommandAllocator = self
+                    .consumer
+                    .device()
+                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+                let list: ID3D12GraphicsCommandList = self.consumer.device().CreateCommandList(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    &allocator,
+                    None,
+                )?;
+                list.Close()?;
+                self.mutex_copy = Some((allocator, list));
+            }
+        }
         // The private texture decouples viewer redraws from producer slot reuse.
         let cache = unsafe {
             create_texture(
@@ -228,7 +250,12 @@ impl D3d12Compositor {
     }
 
     pub(crate) fn set_latest(&mut self, frame: FrameReady) {
-        self.latest = Some(frame);
+        if let Some(previous) = self.latest.replace(frame)
+            && previous.slot != frame.slot
+            && let Some(imported) = self.imported.as_ref()
+        {
+            imported.recycle_slot(previous.slot);
+        }
     }
     pub(crate) fn has_pending_frame(&self) -> bool {
         self.latest.is_some()
@@ -300,42 +327,73 @@ impl D3d12Compositor {
         self.upload_texture_deltas(frame_index, &output.textures_delta.set)?;
 
         let mut release_value = None;
-        if let (Some(frame), Some(imported), Some(cache)) =
-            (self.latest, self.imported.as_ref(), self.cache.as_ref())
-            && let Some(source) = imported.resource(frame.slot)
-        {
-            imported.wait_on_queue(self.consumer.queue(), frame.sync_value)?;
-            unsafe {
-                transition(
-                    &self.command_list,
-                    source,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE,
-                );
-                transition(
-                    &self.command_list,
-                    cache,
-                    self.cache_state,
-                    D3D12_RESOURCE_STATE_COPY_DEST,
-                );
-                self.command_list.CopyResource(cache, source);
-                transition(
-                    &self.command_list,
-                    source,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    D3D12_RESOURCE_STATE_COMMON,
-                );
-                transition(
-                    &self.command_list,
-                    cache,
-                    D3D12_RESOURCE_STATE_COPY_DEST,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                );
+        let pending = match (self.latest, self.imported.as_ref(), self.cache.as_ref()) {
+            (Some(frame), Some(imported), Some(cache)) => {
+                imported.resource(frame.slot).map(|source| {
+                    (
+                        frame,
+                        source.clone(),
+                        cache.clone(),
+                        imported.uses_keyed_mutex(),
+                    )
+                })
             }
-            self.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            self.display_frame = Some(frame);
-            self.latest = None;
-            release_value = Some(frame.sync_value);
+            _ => None,
+        };
+        if let Some((frame, source, cache, keyed_mutex)) = pending {
+            if keyed_mutex {
+                // Acquire the keyed mutex
+                let acquired = self.imported.as_ref().is_some_and(|imported| {
+                    imported
+                        .acquire_slot(frame.slot, KEYED_MUTEX_TIMEOUT_MS)
+                        .is_ok()
+                });
+                // if timed out, then repeat the frame
+                if acquired {
+                    let copied = self.copy_to_cache_sync(&source, &cache);
+                    if let Some(imported) = self.imported.as_ref() {
+                        let _ = imported.release_slot(frame.slot);
+                    }
+                    copied?;
+                    self.display_frame = Some(frame);
+                    self.latest = None;
+                }
+            } else {
+                if let Some(imported) = self.imported.as_ref() {
+                    imported.wait_on_queue(self.consumer.queue(), frame.sync_value)?;
+                }
+                unsafe {
+                    transition(
+                        &self.command_list,
+                        &source,
+                        D3D12_RESOURCE_STATE_COMMON,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    );
+                    transition(
+                        &self.command_list,
+                        &cache,
+                        self.cache_state,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                    );
+                    self.command_list.CopyResource(&cache, &source);
+                    transition(
+                        &self.command_list,
+                        &source,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE,
+                        D3D12_RESOURCE_STATE_COMMON,
+                    );
+                    transition(
+                        &self.command_list,
+                        &cache,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    );
+                }
+                self.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                self.display_frame = Some(frame);
+                self.latest = None;
+                release_value = Some(frame.sync_value);
+            }
         }
 
         let backbuffer = self.backbuffers[frame_index].clone();
@@ -606,6 +664,56 @@ impl D3d12Compositor {
             }
             self.frame_garbage[frame_index].push(upload);
         }
+        Ok(())
+    }
+
+    /// Copies `source` into `cache` and blocks until the GPU finishes. Used
+    /// for keyed-mutex streams, where the mutex must not be released before
+    /// every read of the slot has completed.
+    fn copy_to_cache_sync(
+        &mut self,
+        source: &ID3D12Resource,
+        cache: &ID3D12Resource,
+    ) -> Result<(), Box<dyn Error>> {
+        let (allocator, list) = self
+            .mutex_copy
+            .as_ref()
+            .ok_or("keyed-mutex stream has no copy command list")?
+            .clone();
+        unsafe {
+            allocator.Reset()?;
+            list.Reset(&allocator, None)?;
+            transition(
+                &list,
+                source,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+            transition(
+                &list,
+                cache,
+                self.cache_state,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            );
+            list.CopyResource(cache, source);
+            transition(
+                &list,
+                source,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_COMMON,
+            );
+            transition(
+                &list,
+                cache,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            );
+            list.Close()?;
+            let command: ID3D12CommandList = list.cast()?;
+            self.consumer.queue().ExecuteCommandLists(&[Some(command)]);
+        }
+        self.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        self.wait_idle()?;
         Ok(())
     }
 

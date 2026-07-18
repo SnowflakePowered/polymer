@@ -1,4 +1,5 @@
-use crate::D3d11ImageRing;
+use crate::{D3d11ImageRing, D3d11RingMode};
+use snowglass_protocol::AdapterLuid;
 use std::ffi::c_void;
 use windows::{
     Win32::Graphics::{
@@ -6,7 +7,7 @@ use windows::{
             D3D11_BOX, D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext,
             ID3D11DeviceContext4, ID3D11Texture2D,
         },
-        Dxgi::IDXGISwapChain,
+        Dxgi::{IDXGIDevice, IDXGISwapChain},
     },
     core::{Error, HRESULT, Interface},
 };
@@ -33,16 +34,22 @@ pub struct D3d11CaptureRegion {
 pub struct D3d11SwapchainCapture {
     swapchain: IDXGISwapChain,
     context: ID3D11DeviceContext,
-    context4: ID3D11DeviceContext4,
+    context4: Option<ID3D11DeviceContext4>,
     ring: D3d11ImageRing,
     source_desc: D3D11_TEXTURE2D_DESC,
     next_slot: u32,
     sync_value: u64,
+    release_values: Vec<u64>,
+    adapter_luid: AdapterLuid,
     source_window: isize,
 }
 
 impl D3d11SwapchainCapture {
-    pub unsafe fn new(swapchain: *mut c_void, slots: u32) -> windows::core::Result<Self> {
+    pub unsafe fn new(
+        swapchain: *mut c_void,
+        slots: u32,
+        mode: D3d11RingMode,
+    ) -> windows::core::Result<Self> {
         if swapchain.is_null() || slots == 0 {
             return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
         }
@@ -54,16 +61,32 @@ impl D3d11SwapchainCapture {
             .map_err(|error| contextual(error, "IDXGISwapChain::GetDevice"))?;
         let context = unsafe { device.GetImmediateContext() }
             .map_err(|error| contextual(error, "ID3D11Device::GetImmediateContext"))?;
-        let context4: ID3D11DeviceContext4 = context
-            .cast()
-            .map_err(|error| contextual(error, "ID3D11DeviceContext4 query"))?;
+
+        // If we don't have DeviceContext4, fallback to keyed mutexes.
+        let context4 = match context.cast::<ID3D11DeviceContext4>() {
+            Ok(context4) => Some(context4),
+            Err(_) if mode == D3d11RingMode::KeyedMutexNoFence => None,
+            Err(error) => return Err(contextual(error, "ID3D11DeviceContext4 query")),
+        };
         let source: ID3D11Texture2D = unsafe { swapchain.GetBuffer(0) }
             .map_err(|error| contextual(error, "IDXGISwapChain::GetBuffer"))?;
         let swapchain_desc = unsafe { swapchain.GetDesc() }
             .map_err(|error| contextual(error, "IDXGISwapChain::GetDesc"))?;
+
+        let adapter_luid = match (device_adapter_luid(&device), mode) {
+            (Ok(value), _) => value,
+            (Err(error), D3d11RingMode::Fence | D3d11RingMode::KeyedMutexNoFence) => {
+                return Err(contextual(error, "D3D11 adapter LUID query"));
+            }
+            // Vulkan keyed mutexes don't need LUID
+            (Err(_), D3d11RingMode::KeyedMutex) => AdapterLuid {
+                low_part: 0,
+                high_part: 0,
+            },
+        };
         let mut source_desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { source.GetDesc(&mut source_desc) };
-        let ring = unsafe { D3d11ImageRing::new(&device, &source_desc, slots) }
+        let ring = unsafe { D3d11ImageRing::new(&device, &source_desc, slots, mode) }
             .map_err(|error| contextual(error, "D3D11 image ring creation"))?;
         Ok(Self {
             swapchain,
@@ -73,6 +96,8 @@ impl D3d11SwapchainCapture {
             source_desc,
             next_slot: 0,
             sync_value: 0,
+            release_values: vec![0; slots as usize],
+            adapter_luid,
             source_window: swapchain_desc.OutputWindow.0 as isize,
         })
     }
@@ -94,31 +119,57 @@ impl D3d11SwapchainCapture {
                 width: self.source_desc.Width,
                 height: self.source_desc.Height,
             });
-        let slot = self.next_slot;
         let next_value = self.sync_value.wrapping_add(1).max(1);
+        let slot = match self.ring.mode() {
+            D3d11RingMode::KeyedMutex | D3d11RingMode::KeyedMutexNoFence => self.next_slot,
+            // Fence mode has no mutex to block reuse, so skip slots the
+            // consumer has not signaled released yet.
+            D3d11RingMode::Fence => {
+                let consumer_fence = self
+                    .ring
+                    .consumer_fence()
+                    .expect("fence-mode rings carry a consumer fence");
+                let completed = unsafe { consumer_fence.GetCompletedValue() };
+                let count = self.ring.desc().slots;
+                (0..count)
+                    .map(|offset| (self.next_slot + offset) % count)
+                    .find(|&index| {
+                        let release = self.release_values[index as usize];
+                        release == 0 || release <= completed
+                    })
+                    .ok_or_else(|| {
+                        Error::new(
+                            HRESULT(0x8007_0102u32 as i32),
+                            "the consumer has not released any capture slot",
+                        )
+                    })?
+            }
+        };
         let ring_slot = &self.ring.slots()[slot as usize];
         let acquire_key = 0;
-        // A zero timeout keeps capture non-blocking if the viewer has not released this slot yet.
-        let acquire = unsafe {
-            (Interface::vtable(&ring_slot.keyed_mutex).AcquireSync)(
-                Interface::as_raw(&ring_slot.keyed_mutex),
-                acquire_key,
-                0,
-            )
-        };
-        if acquire.0 != 0 {
-            if acquire.0 > 0 {
-                return Err(Error::new(
-                    HRESULT(0x8007_0102u32 as i32),
-                    format!(
-                        "IDXGIKeyedMutex::AcquireSync timed out for slot {slot}, key {acquire_key}"
-                    ),
+        if let Some(keyed_mutex) = ring_slot.keyed_mutex.as_ref() {
+            // A zero timeout keeps capture non-blocking if the viewer has not released this slot yet.
+            let acquire = unsafe {
+                (Interface::vtable(keyed_mutex).AcquireSync)(
+                    Interface::as_raw(keyed_mutex),
+                    acquire_key,
+                    0,
+                )
+            };
+            if acquire.0 != 0 {
+                if acquire.0 > 0 {
+                    return Err(Error::new(
+                        HRESULT(0x8007_0102u32 as i32),
+                        format!(
+                            "IDXGIKeyedMutex::AcquireSync timed out for slot {slot}, key {acquire_key}"
+                        ),
+                    ));
+                }
+                return Err(contextual(
+                    Error::from_hresult(acquire),
+                    "IDXGIKeyedMutex::AcquireSync",
                 ));
             }
-            return Err(contextual(
-                Error::from_hresult(acquire),
-                "IDXGIKeyedMutex::AcquireSync",
-            ));
         }
         let destination = &ring_slot.texture;
         if self.source_desc.SampleDesc.Count > 1 {
@@ -148,12 +199,24 @@ impl D3d11SwapchainCapture {
                 )
             };
         }
-        if let Err(error) = unsafe { self.context4.Signal(self.ring.fence(), next_value) } {
-            let _ = unsafe { ring_slot.keyed_mutex.ReleaseSync(acquire_key) };
-            return Err(contextual(error, "ID3D11DeviceContext4::Signal"));
+        if let Some(fence) = self.ring.fence() {
+            let context4 = self
+                .context4
+                .as_ref()
+                .expect("fence-carrying rings require ID3D11DeviceContext4");
+            if let Err(error) = unsafe { context4.Signal(fence, next_value) } {
+                if let Some(keyed_mutex) = ring_slot.keyed_mutex.as_ref() {
+                    let _ = unsafe { keyed_mutex.ReleaseSync(acquire_key) };
+                }
+                return Err(contextual(error, "ID3D11DeviceContext4::Signal"));
+            }
         }
-        unsafe { ring_slot.keyed_mutex.ReleaseSync(1) }
-            .map_err(|error| contextual(error, "IDXGIKeyedMutex::ReleaseSync"))?;
+        if let Some(keyed_mutex) = ring_slot.keyed_mutex.as_ref() {
+            unsafe { keyed_mutex.ReleaseSync(1) }
+                .map_err(|error| contextual(error, "IDXGIKeyedMutex::ReleaseSync"))?;
+        } else {
+            self.release_values[slot as usize] = next_value;
+        }
         self.sync_value = next_value;
         self.next_slot = (slot + 1) % self.ring.desc().slots;
         Ok(D3d11CopySubmission {
@@ -171,9 +234,23 @@ impl D3d11SwapchainCapture {
         &self.ring
     }
 
+    pub fn adapter_luid(&self) -> AdapterLuid {
+        self.adapter_luid
+    }
+
     pub fn source_window(&self) -> isize {
         self.source_window
     }
+}
+
+fn device_adapter_luid(device: &ID3D11Device) -> windows::core::Result<AdapterLuid> {
+    let dxgi_device: IDXGIDevice = device.cast()?;
+    let adapter = unsafe { dxgi_device.GetAdapter() }?;
+    let desc = unsafe { adapter.GetDesc() }?;
+    Ok(AdapterLuid {
+        low_part: desc.AdapterLuid.LowPart,
+        high_part: desc.AdapterLuid.HighPart,
+    })
 }
 
 fn clamp_region(region: D3d11CaptureRegion, width: u32, height: u32) -> Option<D3d11CaptureRegion> {

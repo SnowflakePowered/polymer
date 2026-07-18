@@ -7,7 +7,7 @@ mod swapchain;
 mod tracking;
 
 pub use capture::{before_present, before_resize, destroyed};
-pub use image_ring::{D3d11ImageRing, D3d11ImageRingDesc, D3d11ImageSlot};
+pub use image_ring::{D3d11ImageRing, D3d11ImageRingDesc, D3d11ImageSlot, D3d11RingMode};
 pub use swapchain::{D3d11CaptureRegion, D3d11CopySubmission, D3d11SwapchainCapture};
 pub use tracking::record_context_draw;
 

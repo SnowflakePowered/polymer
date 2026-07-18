@@ -20,6 +20,7 @@ windows-sys.workspace = true
 windows.workspace = true
 
 [dev-dependencies]
+snowglass-consumer-d3d12 = { path = "../../consumer/snowglass-consumer-d3d12" }
 snowglass-consumer-vulkan = { path = "../../consumer/snowglass-consumer-vulkan" }
 snowglass-ipc.workspace = true
 

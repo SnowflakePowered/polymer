@@ -1,10 +1,10 @@
 //! Swapchain capture state and viewer handoff.
 
-use crate::D3d11SwapchainCapture;
+use crate::{D3d11RingMode, D3d11SwapchainCapture};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, StreamId,
 };
 use std::{
@@ -32,15 +32,8 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
     }
     let mut captures = captures().lock().unwrap_or_else(|error| error.into_inner());
     if let std::collections::hash_map::Entry::Vacant(entry) = captures.entry(swapchain as usize) {
-        let capture = match unsafe { D3d11SwapchainCapture::new(swapchain, 3) } {
-            Ok(capture) => capture,
-            Err(error) => {
-                crate::d3d11_log(format!("snowglass: D3D11 capture creation failed: {error}"));
-                return;
-            }
-        };
-        let ipc = match connect_viewer(&capture) {
-            Ok(ipc) => Some(ipc),
+        let connection = match begin_viewer_connection() {
+            Ok(connection) => Some(connection),
             Err(error) => {
                 crate::d3d11_log(format!(
                     "snowglass: D3D11 viewer connection failed: {error}"
@@ -48,6 +41,55 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
                 None
             }
         };
+  
+        let mode_chain: &[D3d11RingMode] = if connection
+            .as_ref()
+            .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
+        {
+            if std::env::var_os("SNOWGLASS_FORCE_KEYED_MUTEX").is_some() {
+                &[D3d11RingMode::KeyedMutexNoFence, D3d11RingMode::KeyedMutex]
+            } else {
+                &[
+                    D3d11RingMode::Fence,
+                    D3d11RingMode::KeyedMutexNoFence,
+                    D3d11RingMode::KeyedMutex,
+                ]
+            }
+        } else {
+            &[D3d11RingMode::KeyedMutex]
+        };
+        let mut capture = None;
+        for (index, &mode) in mode_chain.iter().enumerate() {
+            match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode) } {
+                Ok(value) => {
+                    capture = Some(value);
+                    break;
+                }
+                Err(error) if index + 1 < mode_chain.len() => {
+                    crate::d3d11_log(format!(
+                        "snowglass: D3D11 {mode:?} capture unavailable, trying {:?}: {error}",
+                        mode_chain[index + 1]
+                    ));
+                }
+                Err(error) => {
+                    crate::d3d11_log(format!("snowglass: D3D11 capture creation failed: {error}"));
+                }
+            }
+        }
+        let Some(capture) = capture else {
+            return;
+        };
+        let ipc = connection.and_then(|mut connection| {
+            match send_stream_ready(&mut connection, &capture) {
+                Ok(()) => Some(connection.socket),
+                Err(error) => {
+                    crate::d3d11_log(format!(
+                        "snowglass: D3D11 viewer connection failed: {error}"
+                    ));
+                    None
+                }
+            }
+        });
         let desc = capture.ring().desc();
         crate::d3d11_log(format!(
             "snowglass: attached D3D11 {}x{} {}-slot shared texture ring",
@@ -120,19 +162,36 @@ pub unsafe fn destroyed(swapchain: *mut c_void) {
     unsafe { before_resize(swapchain) };
 }
 
-fn connect_viewer(capture: &D3d11SwapchainCapture) -> std::io::Result<LocalSocket> {
+struct ViewerConnection {
+    socket: LocalSocket,
+    viewer_pid: u32,
+    preferred_consumer: ConsumerApi,
+}
+
+fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
     let session = std::env::var("SNOWGLASS_SESSION")
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let mut socket = LocalSocket::connect(&session)?;
-    let viewer_pid = match socket.receive()? {
-        Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => hello.process_id,
-        _ => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "viewer did not begin with a compatible Hello message",
-            ));
+    match socket.receive()? {
+        Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => {
+            Ok(ViewerConnection {
+                socket,
+                viewer_pid: hello.process_id,
+                preferred_consumer: hello.preferred_consumer,
+            })
         }
-    };
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "viewer did not begin with a compatible Hello message",
+        )),
+    }
+}
+
+fn send_stream_ready(
+    connection: &mut ViewerConnection,
+    capture: &D3d11SwapchainCapture,
+) -> std::io::Result<()> {
+    let viewer_pid = connection.viewer_pid;
     let ring = capture.ring();
     if ring.slots().len() > MAX_IMAGE_SLOTS {
         return Err(std::io::Error::new(
@@ -146,29 +205,61 @@ fn connect_viewer(capture: &D3d11SwapchainCapture) -> std::io::Result<LocalSocke
             duplicate_handle_into_process(slot.raw_handle() as isize, ProcessId(viewer_pid))?
                 as i64;
     }
-    let fence =
-        duplicate_handle_into_process(ring.raw_fence_handle() as isize, ProcessId(viewer_pid))?
-            as i64;
+    let fence = match ring.raw_fence_handle() {
+        Some(raw) => duplicate_handle_into_process(raw as isize, ProcessId(viewer_pid))? as i64,
+        None => 0,
+    };
+    let (image_kind, sync_kind, adapter_luid, consumer_fence) = match ring.mode() {
+        D3d11RingMode::Fence => {
+            let raw_consumer_fence = ring.raw_consumer_fence_handle().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "fence-mode D3D11 ring is missing its consumer fence",
+                )
+            })?;
+            (
+                ExternalImageKind::D3d11D3d12Resource,
+                // The shared D3D11 fences open as ID3D12Fence on the consumer.
+                ExternalSyncKind::D3d12Fence,
+                capture.adapter_luid(),
+                duplicate_handle_into_process(raw_consumer_fence as isize, ProcessId(viewer_pid))?
+                    as i64,
+            )
+        }
+        // The D3D12 consumer acquires the keyed mutexes through D3D11On12.
+        D3d11RingMode::KeyedMutexNoFence => (
+            ExternalImageKind::D3d11SharedResourceNt,
+            ExternalSyncKind::D3d11KeyedMutex,
+            capture.adapter_luid(),
+            0,
+        ),
+        D3d11RingMode::KeyedMutex => (
+            ExternalImageKind::D3d11SharedResourceNt,
+            ExternalSyncKind::D3d11Fence,
+            AdapterLuid {
+                low_part: 0,
+                high_part: 0,
+            },
+            0,
+        ),
+    };
     let desc = ring.desc();
-    socket.send(Message::StreamReady(StreamReady {
+    connection.socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),
-        adapter_luid: AdapterLuid {
-            low_part: 0,
-            high_part: 0,
-        },
+        adapter_luid,
         source_window: capture.source_window() as i64,
         width: desc.width,
         height: desc.height,
         format: desc.format,
-        image_kind: ExternalImageKind::D3d11SharedResourceNt,
-        sync_kind: ExternalSyncKind::D3d11Fence,
+        image_kind,
+        sync_kind,
         slot_count: desc.slots,
         image_handles,
         timeline_semaphore_handle: fence,
-        consumer_semaphore_handle: 0,
+        consumer_semaphore_handle: consumer_fence,
     }))?;
     crate::d3d11_log(format!(
         "snowglass: connected D3D11 ring to viewer process {viewer_pid}"
     ));
-    Ok(socket)
+    Ok(())
 }
