@@ -77,7 +77,7 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
     let Some(queue) = queue else {
         return;
     };
-    let presentation = unsafe { crate::tracking::swapchain_presentation(swapchain) };
+    let presentation = unsafe { snowglass_producer_d3d12::swapchain_presentation(swapchain) };
     let tracked_region = presentation.as_ref().and_then(|value| value.region);
     let tracked_source = presentation
         .as_ref()
@@ -104,7 +104,7 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
                 queue.as_raw(),
                 3,
                 tracked_source.map(|source| &source.resource),
-                crate::tracking::enhanced_barriers_supported(),
+                snowglass_producer_d3d12::enhanced_barriers_supported(),
             )
         } {
             Ok(value) => value,
@@ -199,7 +199,7 @@ pub(crate) unsafe fn before_resize(swapchain: *mut c_void) {
         "snowglass: D3D12 resize released capture state: {}",
         removed.is_some()
     ));
-    unsafe { crate::tracking::before_swapchain_resize(swapchain) };
+    unsafe { snowglass_producer_d3d12::before_swapchain_resize(swapchain) };
 }
 pub(crate) unsafe fn destroyed(swapchain: *mut c_void) {
     let key = aliases()

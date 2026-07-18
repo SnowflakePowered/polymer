@@ -1,4 +1,7 @@
 //! Draw-time render-region tracking for D3D11 swapchain backbuffers.
+//!
+//! The vtable interception that drives this lives in the D3D11 hook crate; this
+//! module owns only the capture-region bookkeeping keyed by backbuffer.
 
 use crate::D3d11CaptureRegion;
 use dashmap::DashMap;
@@ -6,28 +9,13 @@ use std::{ffi::c_void, sync::LazyLock};
 use windows::{
     Win32::Graphics::{
         Direct3D11::{
-            D3D11_RASTERIZER_DESC, D3D11_VIEWPORT, ID3D11DeviceContext, ID3D11DeviceContext_Vtbl,
-            ID3D11DeviceContext4_Vtbl, ID3D11Resource, ID3D11Texture2D,
+            D3D11_RASTERIZER_DESC, D3D11_VIEWPORT, ID3D11DeviceContext, ID3D11Resource,
+            ID3D11Texture2D,
         },
         Dxgi::IDXGISwapChain,
     },
     core::{IUnknown, Interface},
 };
-
-const SLOT_SIZE: usize = std::mem::size_of::<usize>();
-const DRAW_INDEXED_SLOT: usize =
-    std::mem::offset_of!(ID3D11DeviceContext_Vtbl, DrawIndexed) / SLOT_SIZE;
-const DRAW_SLOT: usize = std::mem::offset_of!(ID3D11DeviceContext_Vtbl, Draw) / SLOT_SIZE;
-const CONTEXT_VTABLE_LEN: usize = std::mem::size_of::<ID3D11DeviceContext4_Vtbl>() / SLOT_SIZE;
-
-pub(crate) type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
-pub(crate) type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
-
-struct ContextState {
-    patched: Box<[usize]>,
-    draw_indexed: DrawIndexedFn,
-    draw: DrawFn,
-}
 
 #[derive(Clone, Copy)]
 struct Candidate {
@@ -35,55 +23,16 @@ struct Candidate {
     area: u64,
 }
 
-static CONTEXTS: LazyLock<DashMap<usize, ContextState>> = LazyLock::new(Default::default);
 static CANDIDATES: LazyLock<DashMap<usize, Candidate>> = LazyLock::new(Default::default);
 
-pub unsafe fn install_immediate_context(output: *mut *mut c_void) {
-    if std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_none() || output.is_null() {
-        return;
-    }
-    let context = unsafe { *output };
-    if context.is_null() {
-        return;
-    }
-    let current = unsafe { *context.cast::<*const usize>() };
-    if current.is_null() {
-        return;
-    }
-    if CONTEXTS
-        .get(&(context as usize))
-        .is_some_and(|state| state.patched.as_ptr() == current)
-    {
-        return;
-    }
-
-    let mut patched = unsafe { std::slice::from_raw_parts(current, CONTEXT_VTABLE_LEN) }.to_vec();
-    let original_draw_indexed =
-        unsafe { std::mem::transmute::<usize, DrawIndexedFn>(patched[DRAW_INDEXED_SLOT]) };
-    let original_draw = unsafe { std::mem::transmute::<usize, DrawFn>(patched[DRAW_SLOT]) };
-    patched[DRAW_INDEXED_SLOT] = draw_indexed as *const () as usize;
-    patched[DRAW_SLOT] = draw as *const () as usize;
-    let state = ContextState {
-        patched: patched.into_boxed_slice(),
-        draw_indexed: original_draw_indexed,
-        draw: original_draw,
-    };
-    unsafe { *context.cast::<*const usize>() = state.patched.as_ptr() };
-    CONTEXTS.insert(context as usize, state);
-}
-
-fn draw_indexed_original(context: *mut c_void) -> Option<DrawIndexedFn> {
-    CONTEXTS
-        .get(&(context as usize))
-        .map(|state| state.draw_indexed)
-}
-
-fn draw_original(context: *mut c_void) -> Option<DrawFn> {
-    CONTEXTS.get(&(context as usize)).map(|state| state.draw)
-}
-
-fn record_draw(raw_context: *mut c_void) {
-    let Some(context) = (unsafe { ID3D11DeviceContext::from_raw_borrowed(&raw_context) }) else {
+/// Records the render region in effect for the render target bound to `context`
+/// at draw time. Called by the D3D11 hook's draw trampolines.
+///
+/// # Safety
+///
+/// `context` must be null or point to a live `ID3D11DeviceContext`.
+pub unsafe fn record_context_draw(context: *mut c_void) {
+    let Some(context) = (unsafe { ID3D11DeviceContext::from_raw_borrowed(&context) }) else {
         return;
     };
     let mut targets = [None];
@@ -107,25 +56,6 @@ fn record_draw(raw_context: *mut c_void) {
             }
         })
         .or_insert(Candidate { region, area });
-}
-
-unsafe extern "system" fn draw_indexed(
-    this: *mut c_void,
-    index_count: u32,
-    start_index: u32,
-    base_vertex: i32,
-) {
-    if let Some(original) = draw_indexed_original(this) {
-        unsafe { original(this, index_count, start_index, base_vertex) };
-    }
-    record_draw(this);
-}
-
-unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32) {
-    if let Some(original) = draw_original(this) {
-        unsafe { original(this, vertex_count, start_vertex) };
-    }
-    record_draw(this);
 }
 
 pub(crate) fn take_swapchain_region(swapchain: *mut c_void) -> Option<D3d11CaptureRegion> {

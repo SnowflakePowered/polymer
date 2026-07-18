@@ -7,6 +7,7 @@ mod hooks;
 mod install;
 mod sys;
 mod tracking;
+mod vtable;
 
 pub use sys::SnowglassInstallD3d12Hook;
 
@@ -287,7 +288,7 @@ mod tests {
                 right: 56,
                 bottom: 52,
             }]);
-            tracking::record_draw(list.as_raw());
+            snowglass_producer_d3d12::record_draw(list.as_raw());
             record_barriers(
                 &list,
                 [transition(

@@ -78,3 +78,11 @@ chain! {
     hook ReleaseHook(this: *mut c_void) -> u32;
     resolve with crate::runtime::release;
 }
+
+chain! {
+    pub(crate) dispatch_factory_release, register_factory_release;
+    around FactoryRelease;
+    chain FACTORY_RELEASE_CHAIN, context FactoryReleaseContext;
+    hook FactoryReleaseHook(this: *mut c_void) -> u32;
+    resolve with crate::runtime::factory_release;
+}

@@ -1,0 +1,653 @@
+//! Capture-region tracking derived from D3D12 command-list state.
+//!
+//! The vtable detours that drive this live in the D3D12 hook crate, which calls
+//! the `record_*` observers below after forwarding each intercepted method. This
+//! module owns the tracking state: descriptor bookkeeping, per-command-list
+//! draw candidates, resource states, and the presentation lookup consumed at
+//! capture time.
+
+use crate::{D3d12CaptureRegion, D3d12CaptureSourceState};
+use dashmap::DashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::c_void,
+    sync::LazyLock,
+};
+use windows::{
+    Win32::{
+        Foundation::RECT,
+        Graphics::{
+            Direct3D12::{
+                D3D12_BARRIER_GROUP, D3D12_BARRIER_LAYOUT_COMMON, D3D12_BARRIER_TYPE_TEXTURE,
+                D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC,
+                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_GPU_DESCRIPTOR_HANDLE,
+                D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RESOURCE_BARRIER,
+                D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT, ID3D12DescriptorHeap,
+                ID3D12Resource,
+            },
+            Dxgi::IDXGISwapChain3,
+        },
+    },
+    core::{IUnknown, Interface},
+};
+
+#[derive(Clone)]
+struct Candidate {
+    region: D3d12CaptureRegion,
+    draw_area: u64,
+    target_extent: (u32, u32),
+    source: Option<TrackedResource>,
+}
+
+impl Candidate {
+    fn rank(&self) -> (u64, u64) {
+        let source_pixels = self.source.as_ref().map_or(0, |source| {
+            u64::from(source.width) * u64::from(source.height)
+        });
+        (self.draw_area, source_pixels)
+    }
+}
+
+/// The presentation source resolved for a swapchain backbuffer.
+pub struct Presentation {
+    pub region: Option<D3d12CaptureRegion>,
+    pub source: Option<TrackedResource>,
+}
+
+/// A render target tracked as a candidate capture source.
+#[derive(Clone)]
+pub struct TrackedResource {
+    pub resource: ID3D12Resource,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub state: Option<D3d12CaptureSourceState>,
+}
+
+#[derive(Clone, Copy)]
+struct TrackedTarget {
+    key: usize,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Default)]
+struct CommandState {
+    viewport: Option<D3D12_VIEWPORT>,
+    scissor: Option<RECT>,
+    candidate: Option<Candidate>,
+    render_target: Option<TrackedTarget>,
+    root_sources: HashMap<u32, TrackedResource>,
+    recorded_targets: HashSet<usize>,
+}
+
+struct HeapInfo {
+    cpu_base: usize,
+    gpu_base: u64,
+    count: u32,
+    increment: u32,
+}
+
+static COMMANDS: LazyLock<DashMap<usize, CommandState>> = LazyLock::new(Default::default);
+static PRESENT_REGIONS: LazyLock<DashMap<usize, Candidate>> = LazyLock::new(Default::default);
+static CPU_DESCRIPTORS: LazyLock<DashMap<usize, TrackedResource>> = LazyLock::new(Default::default);
+static RTV_DESCRIPTORS: LazyLock<DashMap<usize, TrackedTarget>> = LazyLock::new(Default::default);
+static RESOURCE_STATES: LazyLock<DashMap<usize, D3d12CaptureSourceState>> =
+    LazyLock::new(Default::default);
+static GPU_HEAPS: LazyLock<DashMap<u64, HeapInfo>> = LazyLock::new(Default::default);
+static DESCRIPTOR_INCREMENT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+static ENHANCED_BARRIERS_SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Records the CBV/SRV/UAV descriptor increment, queried once at device setup.
+pub fn set_descriptor_increment(increment: u32) {
+    let _ = DESCRIPTOR_INCREMENT.set(increment);
+}
+
+/// Records whether the device supports enhanced barriers, detected once at
+/// device setup.
+pub fn set_enhanced_barriers_supported(supported: bool) {
+    let _ = ENHANCED_BARRIERS_SUPPORTED.set(supported);
+}
+
+pub fn enhanced_barriers_supported() -> bool {
+    ENHANCED_BARRIERS_SUPPORTED.get().copied().unwrap_or(false)
+}
+
+/// Releases every tracker-owned reference to the swapchain's current buffers.
+///
+/// DXGI requires all direct and indirect references obtained through
+/// `GetBuffer` to be gone before `ResizeBuffers` is called. The tracking maps
+/// deliberately retain resources across command-list execution, so their
+/// swapchain entries must be invalidated explicitly at this lifecycle boundary.
+///
+/// # Safety
+///
+/// `swapchain` must be null or point to a live `IDXGISwapChain3`.
+pub unsafe fn before_swapchain_resize(swapchain: *mut c_void) {
+    let Some(swapchain) = (unsafe { IDXGISwapChain3::from_raw_borrowed(&swapchain) }) else {
+        return;
+    };
+    let Ok(desc) = (unsafe { swapchain.GetDesc() }) else {
+        return;
+    };
+    let buffer_keys = (0..desc.BufferCount)
+        .filter_map(|index| unsafe { swapchain.GetBuffer::<ID3D12Resource>(index).ok() })
+        .map(|resource| identity_key(&resource))
+        .collect::<HashSet<_>>();
+    if buffer_keys.is_empty() {
+        return;
+    }
+
+    CPU_DESCRIPTORS.retain(|_, resource| !buffer_keys.contains(&identity_key(&resource.resource)));
+    RTV_DESCRIPTORS.retain(|_, target| !buffer_keys.contains(&target.key));
+    PRESENT_REGIONS.retain(|key, candidate| {
+        !buffer_keys.contains(key)
+            && candidate
+                .source
+                .as_ref()
+                .is_none_or(|source| !buffer_keys.contains(&identity_key(&source.resource)))
+    });
+    RESOURCE_STATES.retain(|key, _| !buffer_keys.contains(key));
+    for mut command in COMMANDS.iter_mut() {
+        let state = command.value_mut();
+        state
+            .root_sources
+            .retain(|_, source| !buffer_keys.contains(&identity_key(&source.resource)));
+        if state
+            .candidate
+            .as_ref()
+            .and_then(|candidate| candidate.source.as_ref())
+            .is_some_and(|source| buffer_keys.contains(&identity_key(&source.resource)))
+        {
+            state.candidate = None;
+        }
+        if state
+            .render_target
+            .is_some_and(|target| buffer_keys.contains(&target.key))
+        {
+            state.render_target = None;
+        }
+        state
+            .recorded_targets
+            .retain(|key| !buffer_keys.contains(key));
+    }
+}
+
+/// Discards the tracked state for a command list being reset.
+pub fn command_reset(list: *mut c_void) {
+    COMMANDS.remove(&(list as usize));
+}
+
+/// Records the viewport set on a command list.
+///
+/// # Safety
+///
+/// `viewports` must be null or reference `count` valid `D3D12_VIEWPORT` values.
+pub unsafe fn record_viewports(list: *mut c_void, count: u32, viewports: *const D3D12_VIEWPORT) {
+    if count != 0 && !viewports.is_null() {
+        COMMANDS.entry(list as usize).or_default().viewport = Some(unsafe { *viewports });
+    }
+}
+
+/// Records the scissor rect set on a command list.
+///
+/// # Safety
+///
+/// `scissors` must be null or reference `count` valid `RECT` values.
+pub unsafe fn record_scissors(list: *mut c_void, count: u32, scissors: *const RECT) {
+    if count != 0 && !scissors.is_null() {
+        COMMANDS.entry(list as usize).or_default().scissor = Some(unsafe { *scissors });
+    }
+}
+
+/// Records a newly created shader-visible descriptor heap.
+///
+/// # Safety
+///
+/// `desc` must be null or reference a valid heap description, and `output` must
+/// be null or point to the created `ID3D12DescriptorHeap` COM pointer.
+pub unsafe fn record_descriptor_heap(
+    desc: *const D3D12_DESCRIPTOR_HEAP_DESC,
+    output: *mut *mut c_void,
+) {
+    if desc.is_null() || output.is_null() || unsafe { (*output).is_null() } {
+        return;
+    }
+    let desc = unsafe { *desc };
+    if desc.Type != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+        || !desc
+            .Flags
+            .contains(D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+    {
+        return;
+    }
+    let raw = unsafe { *output };
+    if let Some(unknown) = (unsafe { IUnknown::from_raw_borrowed(&raw) })
+        && let Ok(heap) = unknown.cast::<ID3D12DescriptorHeap>()
+    {
+        let (cpu, gpu) = unsafe {
+            (
+                heap.GetCPUDescriptorHandleForHeapStart(),
+                heap.GetGPUDescriptorHandleForHeapStart(),
+            )
+        };
+        let increment = DESCRIPTOR_INCREMENT.get().copied().unwrap_or(0);
+        if gpu.ptr != 0 && increment != 0 {
+            GPU_HEAPS.insert(
+                gpu.ptr,
+                HeapInfo {
+                    cpu_base: cpu.ptr,
+                    gpu_base: gpu.ptr,
+                    count: desc.NumDescriptors,
+                    increment,
+                },
+            );
+        }
+    }
+}
+
+/// Records the resource backing a newly created shader resource view.
+///
+/// # Safety
+///
+/// `resource` must be null or point to a live `ID3D12Resource`; `desc` is
+/// unused and may be null.
+pub unsafe fn record_shader_resource_view(
+    resource: *mut c_void,
+    _desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
+    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+) {
+    if let Some(resource) = unsafe { tracked_resource(resource) } {
+        CPU_DESCRIPTORS.insert(destination.ptr, resource);
+    } else {
+        CPU_DESCRIPTORS.remove(&destination.ptr);
+    }
+}
+
+/// Records the resource backing a newly created render target view.
+///
+/// # Safety
+///
+/// `resource` must be null or point to a live `ID3D12Resource`; `desc` is
+/// unused and may be null.
+pub unsafe fn record_render_target_view(
+    resource: *mut c_void,
+    _desc: *const D3D12_RENDER_TARGET_VIEW_DESC,
+    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+) {
+    if let Some(resource) = unsafe { tracked_resource(resource) } {
+        RTV_DESCRIPTORS.insert(
+            destination.ptr,
+            TrackedTarget {
+                key: identity_key(&resource.resource),
+                width: resource.width,
+                height: resource.height,
+            },
+        );
+    } else {
+        RTV_DESCRIPTORS.remove(&destination.ptr);
+    }
+}
+
+/// Propagates descriptor bindings across a `CopyDescriptorsSimple`.
+pub fn record_copy_descriptors_simple(
+    count: u32,
+    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+    source: D3D12_CPU_DESCRIPTOR_HANDLE,
+    heap_type: D3D12_DESCRIPTOR_HEAP_TYPE,
+) {
+    if heap_type != D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV {
+        return;
+    }
+    let increment = DESCRIPTOR_INCREMENT.get().copied().unwrap_or(0) as usize;
+    if increment == 0 {
+        return;
+    }
+    for index in 0..count as usize {
+        let source = source.ptr + index * increment;
+        let destination = destination.ptr + index * increment;
+        if let Some(resource) = CPU_DESCRIPTORS.get(&source).map(|entry| entry.clone()) {
+            CPU_DESCRIPTORS.insert(destination, resource);
+        } else {
+            CPU_DESCRIPTORS.remove(&destination);
+        }
+    }
+}
+
+/// Records the resource bound to a graphics root descriptor table.
+pub fn record_root_descriptor_table(
+    list: *mut c_void,
+    root_index: u32,
+    descriptor: D3D12_GPU_DESCRIPTOR_HANDLE,
+) {
+    let mut state = COMMANDS.entry(list as usize).or_default();
+    if let Some(resource) = resolve_gpu_descriptor(descriptor.ptr) {
+        state.root_sources.insert(root_index, resource);
+    } else {
+        state.root_sources.remove(&root_index);
+    }
+}
+
+/// Clears the tracked root bindings when a new root signature is set.
+pub fn record_root_signature(list: *mut c_void) {
+    COMMANDS
+        .entry(list as usize)
+        .or_default()
+        .root_sources
+        .clear();
+}
+
+/// Records the render target bound on a command list.
+///
+/// # Safety
+///
+/// `descriptors` must be null or reference `count` valid handles.
+pub unsafe fn record_render_targets(
+    list: *mut c_void,
+    count: u32,
+    descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+) {
+    let target = (count != 0 && !descriptors.is_null())
+        .then(|| unsafe { (*descriptors).ptr })
+        .and_then(|handle| RTV_DESCRIPTORS.get(&handle).map(|entry| *entry));
+    COMMANDS.entry(list as usize).or_default().render_target = target;
+}
+
+/// Records the render region in effect at a draw on the given command list.
+pub fn record_draw(list: *mut c_void) {
+    let mut state = COMMANDS.entry(list as usize).or_default();
+    let Some(region) = state
+        .scissor
+        .and_then(region_from_scissor)
+        .or_else(|| state.viewport.and_then(region_from_viewport))
+    else {
+        return;
+    };
+    let draw_area = u64::from(region.width) * u64::from(region.height);
+    let target = state.render_target;
+    let source = state
+        .root_sources
+        .values()
+        .filter(|source| {
+            target
+                .as_ref()
+                .is_none_or(|target| identity_key(&source.resource) != target.key)
+                && source.width >= 64
+                && source.height >= 64
+        })
+        .max_by_key(|source| u64::from(source.width) * u64::from(source.height))
+        .cloned();
+    let target_extent = target.as_ref().map_or(
+        (region.x + region.width, region.y + region.height),
+        |target| (target.width, target.height),
+    );
+    let candidate = Candidate {
+        region,
+        draw_area,
+        target_extent,
+        source,
+    };
+    if state
+        .candidate
+        .as_ref()
+        .is_none_or(|current| candidate.rank() >= current.rank())
+    {
+        state.candidate = Some(candidate.clone());
+    }
+    if let Some(target) = target
+        && state.recorded_targets.insert(target.key)
+    {
+        PRESENT_REGIONS.insert(target.key, candidate);
+    }
+}
+
+/// Records legacy resource-state transitions and present-time candidates.
+///
+/// # Safety
+///
+/// `barriers` must be null or reference `count` valid barriers.
+pub unsafe fn record_resource_barrier(
+    list: *mut c_void,
+    count: u32,
+    barriers: *const D3D12_RESOURCE_BARRIER,
+) {
+    if count == 0 || barriers.is_null() {
+        return;
+    }
+    let barriers = unsafe { std::slice::from_raw_parts(barriers, count as usize) };
+    for barrier in barriers {
+        if barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
+            continue;
+        }
+        let transition = unsafe { &*barrier.Anonymous.Transition };
+        if let Some(resource) = transition.pResource.as_ref() {
+            RESOURCE_STATES.insert(
+                identity_key(resource),
+                D3d12CaptureSourceState::Legacy(transition.StateAfter),
+            );
+        }
+    }
+    let Some(candidate) = COMMANDS.get(&(list as usize)).and_then(|state| {
+        state
+            .render_target
+            .is_none()
+            .then(|| state.candidate.clone())
+            .flatten()
+    }) else {
+        return;
+    };
+    for barrier in barriers {
+        if barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
+            continue;
+        }
+        let transition = unsafe { &*barrier.Anonymous.Transition };
+        if transition.StateAfter != D3D12_RESOURCE_STATE_PRESENT {
+            continue;
+        }
+        let Some(resource) = transition.pResource.as_ref() else {
+            continue;
+        };
+        let key = identity_key(resource);
+        let desc = unsafe { resource.GetDesc() };
+        let mut candidate = candidate.clone();
+        candidate.target_extent = (desc.Width as u32, desc.Height);
+        record_candidate(key, candidate);
+    }
+}
+
+/// Records enhanced-barrier resource states and present-time candidates.
+///
+/// # Safety
+///
+/// `groups` must be null or reference `count` valid barrier groups.
+pub unsafe fn record_enhanced_barrier(
+    list: *mut c_void,
+    count: u32,
+    groups: *const D3D12_BARRIER_GROUP,
+) {
+    if count == 0 || groups.is_null() {
+        return;
+    }
+    let groups = unsafe { std::slice::from_raw_parts(groups, count as usize) };
+    for group in groups {
+        if group.Type != D3D12_BARRIER_TYPE_TEXTURE {
+            continue;
+        }
+        let texture_barriers = unsafe { group.Anonymous.pTextureBarriers };
+        if texture_barriers.is_null() {
+            continue;
+        }
+        for barrier in
+            unsafe { std::slice::from_raw_parts(texture_barriers, group.NumBarriers as usize) }
+        {
+            if let Some(resource) = barrier.pResource.as_ref() {
+                RESOURCE_STATES.insert(
+                    identity_key(resource),
+                    D3d12CaptureSourceState::Enhanced {
+                        sync: barrier.SyncAfter,
+                        access: barrier.AccessAfter,
+                        layout: barrier.LayoutAfter,
+                    },
+                );
+            }
+        }
+    }
+    let Some(candidate) = COMMANDS.get(&(list as usize)).and_then(|state| {
+        state
+            .render_target
+            .is_none()
+            .then(|| state.candidate.clone())
+            .flatten()
+    }) else {
+        return;
+    };
+    for group in groups {
+        if group.Type != D3D12_BARRIER_TYPE_TEXTURE {
+            continue;
+        }
+        let texture_barriers = unsafe { group.Anonymous.pTextureBarriers };
+        if texture_barriers.is_null() {
+            continue;
+        }
+        for barrier in
+            unsafe { std::slice::from_raw_parts(texture_barriers, group.NumBarriers as usize) }
+        {
+            if barrier.LayoutAfter != D3D12_BARRIER_LAYOUT_COMMON {
+                continue;
+            }
+            let Some(resource) = barrier.pResource.as_ref() else {
+                continue;
+            };
+            let desc = unsafe { resource.GetDesc() };
+            let mut candidate = candidate.clone();
+            candidate.target_extent = (desc.Width as u32, desc.Height);
+            record_candidate(identity_key(resource), candidate);
+        }
+    }
+}
+
+/// Resolves the presentation source recorded for a swapchain's current
+/// backbuffer.
+///
+/// # Safety
+///
+/// `swapchain` must be null or point to a live `IDXGISwapChain3`.
+pub unsafe fn swapchain_presentation(swapchain: *mut c_void) -> Option<Presentation> {
+    std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET")?;
+    let swapchain = unsafe { IDXGISwapChain3::from_raw_borrowed(&swapchain) }?;
+    let index = unsafe { swapchain.GetCurrentBackBufferIndex() };
+    let resource: ID3D12Resource = unsafe { swapchain.GetBuffer(index).ok()? };
+    let candidate = PRESENT_REGIONS.get(&identity_key(&resource))?;
+    let region_is_content = (candidate.region.x, candidate.region.y) != (0, 0)
+        || (candidate.region.width, candidate.region.height) != candidate.target_extent;
+    let source = (!region_is_content)
+        .then(|| candidate.source.clone())
+        .flatten()
+        .map(|mut source| {
+            source.state = RESOURCE_STATES
+                .get(&identity_key(&source.resource))
+                .map(|entry| *entry);
+            source
+        });
+    Some(Presentation {
+        region: region_is_content.then_some(candidate.region),
+        source,
+    })
+}
+
+fn record_candidate(key: usize, candidate: Candidate) {
+    if PRESENT_REGIONS
+        .get(&key)
+        .is_none_or(|current| candidate.rank() >= current.rank())
+    {
+        PRESENT_REGIONS.insert(key, candidate);
+    }
+}
+
+unsafe fn tracked_resource(raw: *mut c_void) -> Option<TrackedResource> {
+    let resource = unsafe { ID3D12Resource::from_raw_borrowed(&raw) }?.clone();
+    let desc = unsafe { resource.GetDesc() };
+    Some(TrackedResource {
+        resource,
+        width: desc.Width.try_into().ok()?,
+        height: desc.Height,
+        format: desc.Format.0 as u32,
+        state: None,
+    })
+}
+
+fn resolve_gpu_descriptor(handle: u64) -> Option<TrackedResource> {
+    for heap in GPU_HEAPS.iter() {
+        let info = heap.value();
+        let size = u64::from(info.count) * u64::from(info.increment);
+        if handle < info.gpu_base || handle >= info.gpu_base.saturating_add(size) {
+            continue;
+        }
+        let offset = handle - info.gpu_base;
+        if !offset.is_multiple_of(u64::from(info.increment)) {
+            continue;
+        }
+        let cpu = info.cpu_base + offset as usize;
+        return CPU_DESCRIPTORS.get(&cpu).map(|entry| entry.clone());
+    }
+    None
+}
+
+fn region_from_scissor(scissor: RECT) -> Option<D3d12CaptureRegion> {
+    let left = scissor.left.max(0) as u32;
+    let top = scissor.top.max(0) as u32;
+    let right = scissor.right.max(0) as u32;
+    let bottom = scissor.bottom.max(0) as u32;
+    (right > left && bottom > top).then_some(D3d12CaptureRegion {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+fn region_from_viewport(viewport: D3D12_VIEWPORT) -> Option<D3d12CaptureRegion> {
+    let left = viewport.TopLeftX.max(0.0).round() as u32;
+    let top = viewport.TopLeftY.max(0.0).round() as u32;
+    let width = viewport.Width.abs().round() as u32;
+    let height = viewport.Height.abs().round() as u32;
+    (width != 0 && height != 0).then_some(D3d12CaptureRegion {
+        x: left,
+        y: top,
+        width,
+        height,
+    })
+}
+
+fn identity_key(resource: &ID3D12Resource) -> usize {
+    resource
+        .cast::<IUnknown>()
+        .map_or(resource.as_raw() as usize, |identity| {
+            identity.as_raw() as usize
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scissor_is_used_without_intersecting_the_viewport() {
+        assert_eq!(
+            region_from_scissor(RECT {
+                left: 160,
+                top: 90,
+                right: 1760,
+                bottom: 990,
+            }),
+            Some(D3d12CaptureRegion {
+                x: 160,
+                y: 90,
+                width: 1600,
+                height: 900,
+            })
+        );
+    }
+}

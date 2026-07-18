@@ -1,11 +1,6 @@
 use crate::{
     hooks,
-    vtable::{
-        FACTORY_VTABLE_LEN, FACTORY1_VTABLE_LEN, FACTORY2_VTABLE_LEN, FACTORY3_VTABLE_LEN,
-        FACTORY4_VTABLE_LEN, FACTORY5_VTABLE_LEN, FACTORY6_VTABLE_LEN, FACTORY7_VTABLE_LEN,
-        FactoryVtable, SWAPCHAIN_VTABLE_LEN, SWAPCHAIN1_VTABLE_LEN, SWAPCHAIN2_VTABLE_LEN,
-        SWAPCHAIN3_VTABLE_LEN, SWAPCHAIN4_VTABLE_LEN, SwapchainVtable,
-    },
+    vtable::{FactoryKind, IDXGIFactoryHook, SwapchainKind, IDXGISwapchainHook},
 };
 use snowglass_hook::HookChain;
 use std::{
@@ -34,14 +29,14 @@ pub struct SwapchainCallbacks {
 static CALLBACKS: LazyLock<RwLock<Vec<SwapchainCallbacks>>> = LazyLock::new(Default::default);
 static OWNERS: LazyLock<RwLock<HashMap<usize, SwapchainCallbacks>>> =
     LazyLock::new(Default::default);
-static SWAPCHAINS: OnceLock<RwLock<HashMap<usize, Arc<SwapchainVtable>>>> = OnceLock::new();
-static FACTORIES: OnceLock<RwLock<HashMap<usize, Arc<FactoryVtable>>>> = OnceLock::new();
+static SWAPCHAINS: OnceLock<RwLock<HashMap<usize, Arc<IDXGISwapchainHook>>>> = OnceLock::new();
+static FACTORIES: OnceLock<RwLock<HashMap<usize, Arc<IDXGIFactoryHook>>>> = OnceLock::new();
 
-fn swapchains() -> &'static RwLock<HashMap<usize, Arc<SwapchainVtable>>> {
+fn swapchains() -> &'static RwLock<HashMap<usize, Arc<IDXGISwapchainHook>>> {
     SWAPCHAINS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn factories() -> &'static RwLock<HashMap<usize, Arc<FactoryVtable>>> {
+fn factories() -> &'static RwLock<HashMap<usize, Arc<IDXGIFactoryHook>>> {
     FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
@@ -56,11 +51,11 @@ pub fn register_callbacks(callbacks: SwapchainCallbacks) {
 }
 
 pub unsafe fn install_swapchain(swapchain: *mut c_void) -> bool {
-    unsafe { install_swapchain_len(swapchain, SWAPCHAIN_VTABLE_LEN) }
+    unsafe { install_swapchain_kind(swapchain, SwapchainKind::Swapchain) }
 }
 
 pub unsafe fn install_swapchain1(swapchain: *mut c_void) -> bool {
-    unsafe { install_swapchain_len(swapchain, SWAPCHAIN1_VTABLE_LEN) }
+    unsafe { install_swapchain_kind(swapchain, SwapchainKind::Swapchain1) }
 }
 
 /// Installs interception and assigns the swapchain to the first backend that
@@ -71,21 +66,21 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     }
     let extended = unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }.and_then(|swapchain| {
         if let Ok(interface) = swapchain.cast::<IDXGISwapChain4>() {
-            Some((interface.as_raw(), SWAPCHAIN4_VTABLE_LEN))
+            Some((interface.as_raw(), SwapchainKind::Swapchain4))
         } else if let Ok(interface) = swapchain.cast::<IDXGISwapChain3>() {
-            Some((interface.as_raw(), SWAPCHAIN3_VTABLE_LEN))
+            Some((interface.as_raw(), SwapchainKind::Swapchain3))
         } else if let Ok(interface) = swapchain.cast::<IDXGISwapChain2>() {
-            Some((interface.as_raw(), SWAPCHAIN2_VTABLE_LEN))
+            Some((interface.as_raw(), SwapchainKind::Swapchain2))
         } else {
             swapchain
                 .cast::<IDXGISwapChain1>()
                 .ok()
-                .map(|interface| (interface.as_raw(), SWAPCHAIN1_VTABLE_LEN))
+                .map(|interface| (interface.as_raw(), SwapchainKind::Swapchain1))
         }
     });
     let mut installed = unsafe { install_swapchain(swapchain) };
-    if let Some((extended, length)) = extended {
-        installed |= unsafe { install_swapchain_len(extended, length) };
+    if let Some((extended, kind)) = extended {
+        installed |= unsafe { install_swapchain_kind(extended, kind) };
     }
     let owner = CALLBACKS
         .read()
@@ -103,7 +98,7 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     installed
 }
 
-unsafe fn install_swapchain_len(swapchain: *mut c_void, length: usize) -> bool {
+unsafe fn install_swapchain_kind(swapchain: *mut c_void, kind: SwapchainKind) -> bool {
     if swapchain.is_null() {
         return false;
     }
@@ -113,30 +108,29 @@ unsafe fn install_swapchain_len(swapchain: *mut c_void, length: usize) -> bool {
         .unwrap_or_else(|error| error.into_inner());
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *swapchain.cast::<*const usize>() };
-        if current == existing.patched.as_ptr() {
-            if existing.patched.len() >= length {
+        if current == existing.patched_vtable() {
+            if existing.kind() >= kind {
                 return true;
             }
-            unsafe { SwapchainVtable::clone_from(existing.original as *const usize, length) }
+            unsafe { IDXGISwapchainHook::clone_from(existing.original_vtable(), kind) }
         } else {
-            let original = unsafe { *swapchain.cast::<*const usize>() };
-            unsafe { SwapchainVtable::clone_from(original, length) }
+            unsafe { IDXGISwapchainHook::clone_from(current, kind) }
         }
     } else {
         let original = unsafe { *swapchain.cast::<*const usize>() };
-        unsafe { SwapchainVtable::clone_from(original, length) }
+        unsafe { IDXGISwapchainHook::clone_from(original, kind) }
     };
     let Some(vtable) = vtable else {
         return false;
     };
     let state = Arc::new(vtable);
-    unsafe { *swapchain.cast::<*const usize>() = state.patched.as_ptr() };
+    unsafe { *swapchain.cast::<*const usize>() = state.patched_vtable() };
     states.insert(key, state);
     true
 }
 
 pub unsafe fn install_factory(factory: *mut c_void) -> bool {
-    unsafe { install_factory_len(factory, FACTORY_VTABLE_LEN) }
+    unsafe { install_factory_kind(factory, FactoryKind::Factory) }
 }
 
 /// Seeds process-wide Factory2-compatible method detours without modifying the
@@ -190,17 +184,17 @@ pub unsafe fn install_factory_interface(factory: *mut c_void, interface_id: *con
         return false;
     }
     let interface_id = unsafe { &*interface_id.cast::<GUID>() };
-    let Some(length) = factory_vtable_len(interface_id) else {
+    let Some(kind) = factory_kind(interface_id) else {
         return false;
     };
-    unsafe { install_factory_len(factory, length) }
+    unsafe { install_factory_kind(factory, kind) }
 }
 
-unsafe fn install_factory_len(factory: *mut c_void, length: usize) -> bool {
+unsafe fn install_factory_kind(factory: *mut c_void, kind: FactoryKind) -> bool {
     if factory.is_null() {
         return false;
     }
-    if length >= FACTORY2_VTABLE_LEN {
+    if kind >= FactoryKind::Factory2 {
         unsafe { crate::detour::install_create_swapchain_for_hwnd(factory) };
     }
     let key = factory as usize;
@@ -209,44 +203,44 @@ unsafe fn install_factory_len(factory: *mut c_void, length: usize) -> bool {
         .unwrap_or_else(|error| error.into_inner());
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *factory.cast::<*const usize>() };
-        if current == existing.patched.as_ptr() {
-            if existing.patched.len() >= length {
+        if current == existing.patched_vtable() {
+            if existing.kind() >= kind {
                 return true;
             }
-            unsafe { FactoryVtable::clone_from(existing.original as *const usize, length) }
+            unsafe { IDXGIFactoryHook::clone_from(existing.original_vtable(), kind) }
         } else {
-            unsafe { FactoryVtable::clone_and_patch_len(factory, length) }
+            unsafe { IDXGIFactoryHook::clone_and_patch(factory, kind) }
         }
     } else {
-        unsafe { FactoryVtable::clone_and_patch_len(factory, length) }
+        unsafe { IDXGIFactoryHook::clone_and_patch(factory, kind) }
     };
     let Some(vtable) = vtable else {
         return false;
     };
     let state = Arc::new(vtable);
-    unsafe { *factory.cast::<*const usize>() = state.patched.as_ptr() };
+    unsafe { *factory.cast::<*const usize>() = state.patched_vtable() };
     states.insert(key, state);
     true
 }
 
-fn factory_vtable_len(interface_id: &GUID) -> Option<usize> {
+fn factory_kind(interface_id: &GUID) -> Option<FactoryKind> {
     [
-        (&IDXGIFactory::IID, FACTORY_VTABLE_LEN),
-        (&IDXGIFactory1::IID, FACTORY1_VTABLE_LEN),
-        (&IDXGIFactory2::IID, FACTORY2_VTABLE_LEN),
-        (&IDXGIFactory3::IID, FACTORY3_VTABLE_LEN),
-        (&IDXGIFactory4::IID, FACTORY4_VTABLE_LEN),
-        (&IDXGIFactory5::IID, FACTORY5_VTABLE_LEN),
-        (&IDXGIFactory6::IID, FACTORY6_VTABLE_LEN),
-        (&IDXGIFactory7::IID, FACTORY7_VTABLE_LEN),
+        (&IDXGIFactory::IID, FactoryKind::Factory),
+        (&IDXGIFactory1::IID, FactoryKind::Factory1),
+        (&IDXGIFactory2::IID, FactoryKind::Factory2),
+        (&IDXGIFactory3::IID, FactoryKind::Factory3),
+        (&IDXGIFactory4::IID, FactoryKind::Factory4),
+        (&IDXGIFactory5::IID, FactoryKind::Factory5),
+        (&IDXGIFactory6::IID, FactoryKind::Factory6),
+        (&IDXGIFactory7::IID, FactoryKind::Factory7),
     ]
     .into_iter()
-    .find_map(|(candidate, length)| (interface_id == candidate).then_some(length))
+    .find_map(|(candidate, kind)| (interface_id == candidate).then_some(kind))
 }
 
 pub(crate) fn swapchain_method<T: Copy>(
     swapchain: *mut c_void,
-    select: impl FnOnce(&SwapchainVtable) -> T,
+    select: impl FnOnce(&IDXGISwapchainHook) -> T,
 ) -> Option<T> {
     let states = swapchains()
         .read()
@@ -256,7 +250,7 @@ pub(crate) fn swapchain_method<T: Copy>(
 
 pub(crate) fn factory_method<T: Copy>(
     factory: *mut c_void,
-    select: impl FnOnce(&FactoryVtable) -> Option<T>,
+    select: impl FnOnce(&IDXGIFactoryHook) -> Option<T>,
 ) -> Option<T> {
     let states = factories()
         .read()
@@ -269,10 +263,13 @@ pub(crate) fn factory_method<T: Copy>(
 pub(crate) fn query_method(
     factory_or_swapchain: *mut c_void,
 ) -> Option<crate::vtable::QueryInterfaceFn> {
-    if let Some(method) = swapchain_method(factory_or_swapchain, |vtable| vtable.query_interface) {
+    if let Some(method) = swapchain_method(factory_or_swapchain, |vtable| vtable.query_interface())
+    {
         return Some(method);
     }
-    factory_method(factory_or_swapchain, |vtable| Some(vtable.query_interface))
+    factory_method(factory_or_swapchain, |vtable| {
+        Some(vtable.query_interface())
+    })
 }
 
 pub(crate) unsafe fn factory_created_swapchain(
@@ -314,16 +311,16 @@ pub(crate) unsafe fn query_interface(
                 .copied();
             if interface_id == &IDXGISwapChain::IID {
                 unsafe { install_swapchain(swapchain) };
-            } else if let Some(length) = [
-                (&IDXGISwapChain1::IID, SWAPCHAIN1_VTABLE_LEN),
-                (&IDXGISwapChain2::IID, SWAPCHAIN2_VTABLE_LEN),
-                (&IDXGISwapChain3::IID, SWAPCHAIN3_VTABLE_LEN),
-                (&IDXGISwapChain4::IID, SWAPCHAIN4_VTABLE_LEN),
+            } else if let Some(kind) = [
+                (&IDXGISwapChain1::IID, SwapchainKind::Swapchain1),
+                (&IDXGISwapChain2::IID, SwapchainKind::Swapchain2),
+                (&IDXGISwapChain3::IID, SwapchainKind::Swapchain3),
+                (&IDXGISwapChain4::IID, SwapchainKind::Swapchain4),
             ]
             .into_iter()
-            .find_map(|(candidate, length)| (interface_id == candidate).then_some(length))
+            .find_map(|(candidate, kind)| (interface_id == candidate).then_some(kind))
             {
-                unsafe { install_swapchain_len(swapchain, length) };
+                unsafe { install_swapchain_kind(swapchain, kind) };
             } else {
                 unsafe {
                     install_factory_interface(
@@ -421,7 +418,13 @@ pub(crate) unsafe fn release(this: *mut c_void, _next: hooks::ReleaseContext<'_>
         states.get(&(this as usize)).cloned()
     };
     if let Some(state) = swapchain_state {
-        let references = unsafe { (state.release)(this) };
+        // The cloned vtable spans only the COM interface methods, but a final
+        // release destroys the object through implementation virtuals stored
+        // beyond them (dxgi.dll dispatches its deleting destructor from the
+        // object's vtable). Restore the original vtable across the downstream
+        // release so destruction never reads past the clone.
+        unsafe { *this.cast::<*const usize>() = state.original_vtable() };
+        let references = unsafe { (state.release())(this) };
         if references == 0 {
             swapchains()
                 .write()
@@ -433,6 +436,46 @@ pub(crate) unsafe fn release(this: *mut c_void, _next: hooks::ReleaseContext<'_>
                 .remove(&(this as usize));
             if let Some(callback) = owner.and_then(|callbacks| callbacks.destroyed) {
                 unsafe { callback(this) };
+            }
+        } else {
+            let states = swapchains()
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(current) = states.get(&(this as usize)) {
+                unsafe { *this.cast::<*const usize>() = current.patched_vtable() };
+            }
+        }
+        return references;
+    }
+    0
+}
+
+pub(crate) unsafe fn factory_release(
+    this: *mut c_void,
+    _next: hooks::FactoryReleaseContext<'_>,
+) -> u32 {
+    let factory_state = {
+        let states = factories()
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        states.get(&(this as usize)).cloned()
+    };
+    if let Some(state) = factory_state {
+        // See `release`: factory destruction must also run on the original,
+        // full-length vtable rather than the interface-only clone.
+        unsafe { *this.cast::<*const usize>() = state.original_vtable() };
+        let references = unsafe { (state.release())(this) };
+        if references == 0 {
+            factories()
+                .write()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&(this as usize));
+        } else {
+            let states = factories()
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(current) = states.get(&(this as usize)) {
+                unsafe { *this.cast::<*const usize>() = current.patched_vtable() };
             }
         }
         return references;

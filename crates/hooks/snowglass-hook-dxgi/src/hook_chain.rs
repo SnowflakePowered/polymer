@@ -1,9 +1,9 @@
 macro_rules! resolve_proc {
     (swapchain, $this:expr, $field:ident) => {
-        crate::runtime::swapchain_method($this, |vtable| vtable.$field)
+        crate::runtime::swapchain_method($this, |vtable| vtable.$field())
     };
     (factory, $this:expr, $field:ident) => {
-        crate::runtime::factory_method($this, |vtable| vtable.$field)
+        crate::runtime::factory_method($this, |vtable| vtable.$field())
     };
     (query, $this:expr, $field:ident) => {
         crate::runtime::query_method($this)
@@ -115,7 +115,7 @@ macro_rules! resolve_around_terminal {
             terminal |$this, $($argument,)* _context: $context<'_>| unsafe {
                 let Some(function) = crate::runtime::swapchain_method(
                     $this,
-                    |vtable| vtable.$field,
+                    |vtable| vtable.$field(),
                 ).flatten() else {
                     return $fallback;
                 };

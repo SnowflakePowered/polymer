@@ -9,7 +9,7 @@ mod tracking;
 pub use capture::{before_present, before_resize, destroyed};
 pub use image_ring::{D3d11ImageRing, D3d11ImageRingDesc, D3d11ImageSlot};
 pub use swapchain::{D3d11CaptureRegion, D3d11CopySubmission, D3d11SwapchainCapture};
-pub use tracking::install_immediate_context;
+pub use tracking::record_context_draw;
 
 pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
     use std::io::Write;

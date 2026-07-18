@@ -1,9 +1,8 @@
 //! Process-wide detours for DXGI methods whose COM object may predate hook installation.
 
-use crate::vtable::FACTORY_CREATE_SWAPCHAIN_FOR_HWND_INDEX;
 use retour::GenericDetour;
 use std::{ffi::c_void, sync::OnceLock};
-use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
+use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_INVALID_CALL, IDXGIFactory2_Vtbl};
 
 type CreateSwapchainForHwndFn = unsafe extern "system" fn(
     *mut c_void,
@@ -25,13 +24,13 @@ pub(crate) unsafe fn install_create_swapchain_for_hwnd(factory: *mut c_void) -> 
     if factory.is_null() {
         return false;
     }
-    let vtable = unsafe { *factory.cast::<*const usize>() };
+    let vtable = unsafe { *factory.cast::<*const IDXGIFactory2_Vtbl>() };
     if vtable.is_null() {
         return false;
     }
     let target = unsafe {
         std::mem::transmute::<usize, CreateSwapchainForHwndFn>(
-            *vtable.add(FACTORY_CREATE_SWAPCHAIN_FOR_HWND_INDEX),
+            (*vtable).CreateSwapChainForHwnd as usize,
         )
     };
     let Ok(detour) =

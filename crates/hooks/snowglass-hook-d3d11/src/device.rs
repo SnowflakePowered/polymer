@@ -51,7 +51,7 @@ pub(crate) unsafe fn create_device(
         if !installed {
             unsafe { install_factory_from_device(device) };
         }
-        unsafe { snowglass_producer_d3d11::install_immediate_context(immediate_context) };
+        unsafe { crate::vtable::install_immediate_context(immediate_context) };
     }
 }
 
@@ -71,7 +71,7 @@ pub(crate) unsafe fn create_device_and_swapchain(
     if !installed {
         unsafe { install_factory_from_device(device) };
     }
-    unsafe { snowglass_producer_d3d11::install_immediate_context(immediate_context) };
+    unsafe { crate::vtable::install_immediate_context(immediate_context) };
     let swapchain = unsafe { *swapchain };
     if !swapchain.is_null() {
         let creation_device = if device.is_null() {

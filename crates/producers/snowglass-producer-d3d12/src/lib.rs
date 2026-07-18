@@ -1,6 +1,17 @@
 //! D3D12 swapchain capture into shared textures and a shared fence.
 #![allow(unsafe_code)]
 
+pub mod tracking;
+
+pub use tracking::{
+    Presentation, TrackedResource, before_swapchain_resize, command_reset,
+    enhanced_barriers_supported, record_copy_descriptors_simple, record_descriptor_heap,
+    record_draw, record_enhanced_barrier, record_render_target_view, record_render_targets,
+    record_resource_barrier, record_root_descriptor_table, record_root_signature, record_scissors,
+    record_shader_resource_view, record_viewports, set_descriptor_increment,
+    set_enhanced_barriers_supported, swapchain_presentation,
+};
+
 use std::{ffi::c_void, mem::ManuallyDrop};
 use windows::{
     Win32::{

@@ -9,6 +9,7 @@ name = "snowglass_hook_d3d11"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+dashmap.workspace = true
 retour.workspace = true
 snowglass-hook.workspace = true
 snowglass-hook-dxgi = { path = "../snowglass-hook-dxgi" }

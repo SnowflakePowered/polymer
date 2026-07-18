@@ -36,7 +36,7 @@ chain! {
     after CreateDevice;
     chain CREATE_DEVICE_CHAIN, context CreateDeviceContext;
     hook CreateDeviceHook(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> result: HRESULT;
-    resolve with direct_input, original_create_device -> 0x8000_4005u32 as i32;
+    resolve with direct_input, create_device -> 0x8000_4005u32 as i32;
 }
 
 chain! {
@@ -52,7 +52,7 @@ chain! {
     around Acquire;
     chain ACQUIRE_CHAIN, context AcquireContext;
     hook AcquireHook(this: *mut c_void) -> HRESULT;
-    resolve with device, original_acquire -> 0x8000_4005u32 as i32;
+    resolve with device, acquire -> 0x8000_4005u32 as i32;
 }
 
 chain! {
@@ -60,7 +60,7 @@ chain! {
     around GetDeviceState;
     chain GET_DEVICE_STATE_CHAIN, context GetDeviceStateContext;
     hook GetDeviceStateHook(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT;
-    resolve with device, original_get_device_state -> 0x8000_4005u32 as i32;
+    resolve with device, get_device_state -> 0x8000_4005u32 as i32;
 }
 
 chain! {
@@ -68,7 +68,7 @@ chain! {
     around SetDataFormat;
     chain SET_DATA_FORMAT_CHAIN, context SetDataFormatContext;
     hook SetDataFormatHook(this: *mut c_void, format: *const c_void) -> HRESULT;
-    resolve with device, original_set_data_format -> 0x8000_4005u32 as i32;
+    resolve with device, set_data_format -> 0x8000_4005u32 as i32;
 }
 
 chain! {
@@ -76,7 +76,7 @@ chain! {
     around GetDeviceData;
     chain GET_DEVICE_DATA_CHAIN, context GetDeviceDataContext;
     hook GetDeviceDataHook(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT;
-    resolve with device, original_get_device_data -> 0x8000_4005u32 as i32;
+    resolve with device, get_device_data -> 0x8000_4005u32 as i32;
 }
 
 chain! {
@@ -84,7 +84,7 @@ chain! {
     around SetCooperativeLevel;
     chain SET_COOPERATIVE_LEVEL_CHAIN, context SetCooperativeLevelContext;
     hook SetCooperativeLevelHook(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT;
-    resolve with device, original_set_cooperative_level -> 0x8000_4005u32 as i32;
+    resolve with device, set_cooperative_level -> 0x8000_4005u32 as i32;
 }
 
 chain! {
@@ -92,5 +92,5 @@ chain! {
     observes SetEventNotification;
     chain SET_EVENT_NOTIFICATION_CHAIN, context SetEventNotificationContext;
     hook SetEventNotificationHook(this: *mut c_void, event: *mut c_void) -> HRESULT;
-    resolve with device, original_set_event_notification -> 0x8000_4005u32 as i32;
+    resolve with device, set_event_notification -> 0x8000_4005u32 as i32;
 }

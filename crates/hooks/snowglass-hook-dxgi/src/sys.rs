@@ -108,3 +108,9 @@ snowglass_hook::trampoline! {
         this: *mut c_void,
     ) -> u32 => crate::hooks::dispatch_release;
 }
+
+snowglass_hook::trampoline! {
+    pub(crate) unsafe extern "system" fn factory_release(
+        this: *mut c_void,
+    ) -> u32 => crate::hooks::dispatch_factory_release;
+}

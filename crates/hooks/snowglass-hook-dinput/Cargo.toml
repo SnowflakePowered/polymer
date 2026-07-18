@@ -13,6 +13,7 @@ snowglass-hook.workspace = true
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
+windows = { workspace = true, features = ["Win32_Devices_HumanInterfaceDevice"] }
 windows-sys.workspace = true
 
 [lints]

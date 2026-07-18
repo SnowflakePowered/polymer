@@ -37,11 +37,23 @@ pub(crate) fn register_hooks() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vtable::{
-        PRESENT_INDEX, PRESENT1_INDEX, QUERY_INTERFACE_INDEX, RELEASE_INDEX, RESIZE_BUFFERS_INDEX,
-        SWAPCHAIN_VTABLE_LEN, SWAPCHAIN1_VTABLE_LEN,
-    };
+    use crate::vtable::SwapchainKind;
     use std::ffi::c_void;
+    use windows::{
+        Win32::Graphics::Dxgi::{IDXGISwapChain_Vtbl, IDXGISwapChain1_Vtbl},
+        core::IUnknown_Vtbl,
+    };
+
+    const SLOT_SIZE: usize = size_of::<usize>();
+    const SWAPCHAIN_VTABLE_LEN: usize = SwapchainKind::Swapchain.slots();
+    const SWAPCHAIN1_VTABLE_LEN: usize = SwapchainKind::Swapchain1.slots();
+    const QUERY_INTERFACE_INDEX: usize =
+        std::mem::offset_of!(IUnknown_Vtbl, QueryInterface) / SLOT_SIZE;
+    const RELEASE_INDEX: usize = std::mem::offset_of!(IUnknown_Vtbl, Release) / SLOT_SIZE;
+    const PRESENT_INDEX: usize = std::mem::offset_of!(IDXGISwapChain_Vtbl, Present) / SLOT_SIZE;
+    const RESIZE_BUFFERS_INDEX: usize =
+        std::mem::offset_of!(IDXGISwapChain_Vtbl, ResizeBuffers) / SLOT_SIZE;
+    const PRESENT1_INDEX: usize = std::mem::offset_of!(IDXGISwapChain1_Vtbl, Present1) / SLOT_SIZE;
 
     unsafe extern "system" fn release(_this: *mut c_void) -> u32 {
         0

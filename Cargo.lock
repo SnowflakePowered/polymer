@@ -1800,6 +1800,7 @@ version = "0.1.0"
 name = "snowglass-hook-d3d11"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "retour",
  "snowglass-consumer-vulkan",
  "snowglass-hook",
@@ -1838,6 +1839,7 @@ dependencies = [
  "snowglass-input",
  "snowglass-ipc",
  "snowglass-platform-windows",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
@@ -1919,6 +1921,7 @@ dependencies = [
 name = "snowglass-producer-d3d12"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "windows",
  "windows-sys 0.61.2",
 ]

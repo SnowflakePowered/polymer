@@ -14,10 +14,10 @@ pub(crate) use invoke_original_method as __invoke_original_method;
 
 macro_rules! resolve_proc {
     (direct_input, $this:expr, $field:ident) => {
-        crate::runtime::direct_input_method($this, |context| context.$field)
+        crate::runtime::direct_input_method($this, |vtable| vtable.$field())
     };
     (device, $this:expr, $field:ident) => {
-        crate::runtime::device_method($this, |context| context.$field)
+        crate::runtime::device_method($this, |vtable| vtable.$field())
     };
 }
 pub(crate) use resolve_proc as __resolve_proc;

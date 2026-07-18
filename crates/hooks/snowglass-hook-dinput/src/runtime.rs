@@ -2,6 +2,7 @@
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
 
+use crate::vtable::{IDirectInputDeviceHook, IDirectInputHook};
 use snowglass_hook::HookChain;
 use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocket, Message};
@@ -38,81 +39,43 @@ static DIRECT_INPUT_HOOKS: LazyLock<Mutex<HashMap<usize, DirectInputHook>>> =
 static DEVICE_HOOKS: LazyLock<Mutex<HashMap<usize, DeviceHook>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-const DIRECT_INPUT_VTABLE_LEN: usize = 11;
-const DEVICE_VTABLE_LEN: usize = 32;
-const RELEASE_INDEX: usize = 2;
-const CREATE_DEVICE_INDEX: usize = 3;
-const ACQUIRE_INDEX: usize = 7;
-const GET_DEVICE_STATE_INDEX: usize = 9;
-const GET_DEVICE_DATA_INDEX: usize = 10;
-const SET_DATA_FORMAT_INDEX: usize = 11;
-const SET_EVENT_NOTIFICATION_INDEX: usize = 12;
-const SET_COOPERATIVE_LEVEL_INDEX: usize = 13;
-
-type CreateDeviceFn =
-    unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void, *mut c_void) -> HRESULT;
-type GetDeviceStateFn = unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> HRESULT;
-type AcquireFn = unsafe extern "system" fn(*mut c_void) -> HRESULT;
-type SetDataFormatFn = unsafe extern "system" fn(*mut c_void, *const c_void) -> HRESULT;
-type SetCooperativeLevelFn = unsafe extern "system" fn(*mut c_void, *mut c_void, u32) -> HRESULT;
-type GetDeviceDataFn =
-    unsafe extern "system" fn(*mut c_void, u32, *mut DIDEVICEOBJECTDATA, *mut u32, u32) -> HRESULT;
-type SetEventNotificationFn = unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT;
-type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
-
 pub(crate) struct DirectInputHook {
-    _vtable: Box<[usize; DIRECT_INPUT_VTABLE_LEN]>,
-    original_vtable: usize,
-    original_release: ReleaseFn,
-    pub(crate) original_create_device: CreateDeviceFn,
+    vtable: IDirectInputHook,
 }
 
-// Function addresses and immutable vtable storage remain valid for the process lifetime.
-unsafe impl Send for DirectInputHook {}
-
 pub(crate) struct DeviceHook {
-    _vtable: Box<[usize; DEVICE_VTABLE_LEN]>,
-    original_vtable: usize,
-    original_release: ReleaseFn,
-    pub(crate) original_acquire: AcquireFn,
-    pub(crate) original_get_device_state: GetDeviceStateFn,
-    pub(crate) original_get_device_data: GetDeviceDataFn,
-    pub(crate) original_set_data_format: SetDataFormatFn,
-    pub(crate) original_set_event_notification: SetEventNotificationFn,
-    pub(crate) original_set_cooperative_level: SetCooperativeLevelFn,
+    vtable: IDirectInputDeviceHook,
     device: DirectInputDevice,
     event_handle: usize,
 }
 
-unsafe impl Send for DeviceHook {}
-
 pub(crate) fn direct_input_method<T: Copy>(
     this: *mut c_void,
-    select: impl FnOnce(&DirectInputHook) -> T,
+    select: impl FnOnce(&IDirectInputHook) -> T,
 ) -> Option<crate::vtable::OriginalMethod<T>> {
     let hooks = DIRECT_INPUT_HOOKS
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let hook = hooks.get(&(this as usize))?;
     Some(crate::vtable::OriginalMethod {
-        original_vtable: hook.original_vtable as *const usize,
-        intercepted_vtable: hook._vtable.as_ptr(),
-        function: select(hook),
+        original_vtable: hook.vtable.original_vtable(),
+        intercepted_vtable: hook.vtable.patched_vtable(),
+        function: select(&hook.vtable),
     })
 }
 
 pub(crate) fn device_method<T: Copy>(
     this: *mut c_void,
-    select: impl FnOnce(&DeviceHook) -> T,
+    select: impl FnOnce(&IDirectInputDeviceHook) -> T,
 ) -> Option<crate::vtable::OriginalMethod<T>> {
     let hooks = DEVICE_HOOKS
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let hook = hooks.get(&(this as usize))?;
     Some(crate::vtable::OriginalMethod {
-        original_vtable: hook.original_vtable as *const usize,
-        intercepted_vtable: hook._vtable.as_ptr(),
-        function: select(hook),
+        original_vtable: hook.vtable.original_vtable(),
+        intercepted_vtable: hook.vtable.patched_vtable(),
+        function: select(&hook.vtable),
     })
 }
 
@@ -241,31 +204,11 @@ unsafe fn hook_direct_input(interface: *mut c_void) {
     // SAFETY: a successful DirectInput8Create result is a COM object whose first
     // field is an IDirectInput8A/W vtable pointer. Both variants share this layout.
     let object_vtable = interface.cast::<*const usize>();
-    let original_vtable = unsafe { *object_vtable };
-    let mut vtable = Box::new([0usize; DIRECT_INPUT_VTABLE_LEN]);
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            original_vtable,
-            vtable.as_mut_ptr(),
-            DIRECT_INPUT_VTABLE_LEN,
-        );
-    }
-    let original_create_device =
-        unsafe { std::mem::transmute::<usize, CreateDeviceFn>(vtable[CREATE_DEVICE_INDEX]) };
-    let original_release =
-        unsafe { std::mem::transmute::<usize, ReleaseFn>(vtable[RELEASE_INDEX]) };
-    vtable[RELEASE_INDEX] = crate::sys::direct_input_release as *const () as usize;
-    vtable[CREATE_DEVICE_INDEX] = crate::sys::create_device as *const () as usize;
-    unsafe { *object_vtable = vtable.as_ptr() };
-    hooks.insert(
-        key,
-        DirectInputHook {
-            _vtable: vtable,
-            original_vtable: original_vtable as usize,
-            original_release,
-            original_create_device,
-        },
-    );
+    let Some(vtable) = (unsafe { IDirectInputHook::clone_from(*object_vtable) }) else {
+        return;
+    };
+    unsafe { *object_vtable = vtable.patched_vtable() };
+    hooks.insert(key, DirectInputHook { vtable });
 }
 
 pub(crate) unsafe fn direct_input_release(
@@ -280,9 +223,9 @@ pub(crate) unsafe fn direct_input_release(
             return 0;
         };
         (
-            hook.original_vtable as *const usize,
-            hook._vtable.as_ptr(),
-            hook.original_release,
+            hook.vtable.original_vtable(),
+            hook.vtable.patched_vtable(),
+            hook.vtable.release(),
         )
     };
     let object_vtable = this.cast::<*const usize>();
@@ -357,47 +300,14 @@ unsafe fn hook_device(interface: *mut c_void, device: DirectInputDevice) {
         return;
     }
     let object_vtable = interface.cast::<*const usize>();
-    let original_vtable = unsafe { *object_vtable };
-    let mut vtable = Box::new([0usize; DEVICE_VTABLE_LEN]);
-    unsafe {
-        std::ptr::copy_nonoverlapping(original_vtable, vtable.as_mut_ptr(), DEVICE_VTABLE_LEN);
-    }
-    let original_get_device_data =
-        unsafe { std::mem::transmute::<usize, GetDeviceDataFn>(vtable[GET_DEVICE_DATA_INDEX]) };
-    let original_acquire =
-        unsafe { std::mem::transmute::<usize, AcquireFn>(vtable[ACQUIRE_INDEX]) };
-    let original_get_device_state =
-        unsafe { std::mem::transmute::<usize, GetDeviceStateFn>(vtable[GET_DEVICE_STATE_INDEX]) };
-    let original_release =
-        unsafe { std::mem::transmute::<usize, ReleaseFn>(vtable[RELEASE_INDEX]) };
-    let original_set_event_notification = unsafe {
-        std::mem::transmute::<usize, SetEventNotificationFn>(vtable[SET_EVENT_NOTIFICATION_INDEX])
+    let Some(vtable) = (unsafe { IDirectInputDeviceHook::clone_from(*object_vtable) }) else {
+        return;
     };
-    let original_set_data_format =
-        unsafe { std::mem::transmute::<usize, SetDataFormatFn>(vtable[SET_DATA_FORMAT_INDEX]) };
-    let original_set_cooperative_level = unsafe {
-        std::mem::transmute::<usize, SetCooperativeLevelFn>(vtable[SET_COOPERATIVE_LEVEL_INDEX])
-    };
-    vtable[RELEASE_INDEX] = crate::sys::device_release as *const () as usize;
-    vtable[ACQUIRE_INDEX] = crate::sys::acquire as *const () as usize;
-    vtable[GET_DEVICE_STATE_INDEX] = crate::sys::get_device_state as *const () as usize;
-    vtable[GET_DEVICE_DATA_INDEX] = crate::sys::get_device_data as *const () as usize;
-    vtable[SET_DATA_FORMAT_INDEX] = crate::sys::set_data_format as *const () as usize;
-    vtable[SET_EVENT_NOTIFICATION_INDEX] = crate::sys::set_event_notification as *const () as usize;
-    vtable[SET_COOPERATIVE_LEVEL_INDEX] = crate::sys::set_cooperative_level as *const () as usize;
-    unsafe { *object_vtable = vtable.as_ptr() };
+    unsafe { *object_vtable = vtable.patched_vtable() };
     hooks.insert(
         key,
         DeviceHook {
-            _vtable: vtable,
-            original_vtable: original_vtable as usize,
-            original_release,
-            original_acquire,
-            original_get_device_state,
-            original_get_device_data,
-            original_set_data_format,
-            original_set_event_notification,
-            original_set_cooperative_level,
+            vtable,
             device,
             event_handle: 0,
         },
@@ -488,9 +398,9 @@ pub(crate) unsafe fn device_release(
             return 0;
         };
         (
-            hook.original_vtable as *const usize,
-            hook._vtable.as_ptr(),
-            hook.original_release,
+            hook.vtable.original_vtable(),
+            hook.vtable.patched_vtable(),
+            hook.vtable.release(),
         )
     };
     let object_vtable = this.cast::<*const usize>();
@@ -610,8 +520,20 @@ pub(crate) unsafe fn direct_input_8_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vtable::{
+        DEVICE_VTABLE_LEN, GetDeviceDataFn, GetDeviceStateFn, SetEventNotificationFn,
+    };
     use snowglass_ipc::LocalSocketListener;
     use std::time::{Duration, Instant};
+    use windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A_Vtbl;
+
+    const SLOT_SIZE: usize = size_of::<usize>();
+    const GET_DEVICE_STATE_INDEX: usize =
+        std::mem::offset_of!(IDirectInputDevice8A_Vtbl, GetDeviceState) / SLOT_SIZE;
+    const GET_DEVICE_DATA_INDEX: usize =
+        std::mem::offset_of!(IDirectInputDevice8A_Vtbl, GetDeviceData) / SLOT_SIZE;
+    const SET_EVENT_NOTIFICATION_INDEX: usize =
+        std::mem::offset_of!(IDirectInputDevice8A_Vtbl, SetEventNotification) / SLOT_SIZE;
 
     unsafe extern "system" fn original_get_data_stub(
         _this: *mut c_void,
