@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(frame.sync_value, 1);
 
         let (import_sender, import_receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let import_thread = std::thread::spawn(move || {
             let _ = import_sender.send(("importing", None));
             let mut imported = match snowglass_consumer_vulkan::ImportedStream::import(&ready) {
                 Ok(imported) => imported,
@@ -323,6 +323,8 @@ mod tests {
                     let _ = import_sender.send(("read failed", Some(error.to_string())));
                 }
             }
+            // leak the imported stream to prevent crashes
+            std::mem::forget(imported);
         });
         assert_eq!(
             import_receiver.recv_timeout(std::time::Duration::from_secs(2)),
@@ -340,6 +342,7 @@ mod tests {
             ("read", Some(format!("{}:[64, 127, 191, 255]", 64 * 64 * 4))),
             "{read:?}"
         );
+        import_thread.join().expect("Vulkan import thread panicked");
 
         drop(target);
         drop(buffer);
