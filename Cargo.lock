@@ -1924,6 +1924,9 @@ name = "snowglass-producer-d3d12"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
+ "snowglass-protocol",
  "windows",
  "windows-sys 0.61.2",
 ]

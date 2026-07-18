@@ -6,5 +6,8 @@ license.workspace = true
 
 [dependencies]
 dashmap.workspace = true
+snowglass-ipc.workspace = true
+snowglass-platform-windows.workspace = true
+snowglass-protocol.workspace = true
 windows.workspace = true
 windows-sys.workspace = true

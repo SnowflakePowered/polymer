@@ -1,6 +1,8 @@
+//! Swapchain capture state, copy submission, and viewer handoff.
+
+use crate::{D3d12CaptureSourceState, D3d12SwapchainCapture};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
-use snowglass_producer_d3d12::{D3d12CaptureSourceState, D3d12SwapchainCapture};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, StreamId,
@@ -34,7 +36,12 @@ fn aliases() -> &'static Mutex<HashMap<usize, usize>> {
     ALIASES.get_or_init(Default::default)
 }
 
-pub(crate) unsafe fn claim(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
+/// Claims a DXGI swapchain created for a D3D12 command queue.
+///
+/// # Safety
+///
+/// `swapchain` and `creation_device` must point to live COM interfaces.
+pub unsafe fn claim(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
     if snowglass_platform_windows::vulkan_capture_active() || creation_device.is_null() {
         return false;
     }
@@ -61,7 +68,12 @@ pub(crate) unsafe fn claim(swapchain: *mut c_void, creation_device: *mut c_void)
     true
 }
 
-pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
+/// Captures the image that is about to be presented.
+///
+/// # Safety
+///
+/// `swapchain` must point to a live DXGI swapchain previously passed to [`claim`].
+pub unsafe fn before_present(swapchain: *mut c_void) {
     let Some(key) = (unsafe { swapchain_key(swapchain) }) else {
         return;
     };
@@ -77,7 +89,7 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
     let Some(queue) = queue else {
         return;
     };
-    let presentation = unsafe { snowglass_producer_d3d12::swapchain_presentation(swapchain) };
+    let presentation = unsafe { crate::swapchain_presentation(swapchain) };
     let tracked_region = presentation.as_ref().and_then(|value| value.region);
     let tracked_source = presentation
         .as_ref()
@@ -104,7 +116,7 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
                 queue.as_raw(),
                 3,
                 tracked_source.map(|source| &source.resource),
-                snowglass_producer_d3d12::enhanced_barriers_supported(),
+                crate::enhanced_barriers_supported(),
             )
         } {
             Ok(value) => value,
@@ -187,7 +199,12 @@ pub(crate) unsafe fn before_present(swapchain: *mut c_void) {
     }
 }
 
-pub(crate) unsafe fn before_resize(swapchain: *mut c_void) {
+/// Releases capture and tracking references before the swapchain buffers resize.
+///
+/// # Safety
+///
+/// `swapchain` must point to a live DXGI swapchain previously passed to [`claim`].
+pub unsafe fn before_resize(swapchain: *mut c_void) {
     let Some(key) = (unsafe { swapchain_key(swapchain) }) else {
         return;
     };
@@ -199,9 +216,15 @@ pub(crate) unsafe fn before_resize(swapchain: *mut c_void) {
         "snowglass: D3D12 resize released capture state: {}",
         removed.is_some()
     ));
-    unsafe { snowglass_producer_d3d12::before_swapchain_resize(swapchain) };
+    unsafe { crate::before_swapchain_resize(swapchain) };
 }
-pub(crate) unsafe fn destroyed(swapchain: *mut c_void) {
+
+/// Releases all producer state associated with a destroyed swapchain.
+///
+/// # Safety
+///
+/// `swapchain` must be the pointer previously passed to [`claim`].
+pub unsafe fn destroyed(swapchain: *mut c_void) {
     let key = aliases()
         .lock()
         .unwrap_or_else(|e| e.into_inner())

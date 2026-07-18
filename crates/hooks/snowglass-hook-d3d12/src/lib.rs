@@ -1,7 +1,6 @@
 //! D3D12 export detours, DXGI ownership, and swapchain capture.
 #![allow(unsafe_code)]
 
-mod capture;
 mod hook_chain;
 mod hooks;
 mod install;
@@ -21,11 +20,11 @@ fn register_hooks() {
             }
         });
         snowglass_hook_dxgi::register_callbacks(snowglass_hook_dxgi::SwapchainCallbacks {
-            claim: capture::claim,
-            before_present: Some(capture::before_present),
-            before_resize: Some(capture::before_resize),
+            claim: snowglass_producer_d3d12::claim,
+            before_present: Some(snowglass_producer_d3d12::before_present),
+            before_resize: Some(snowglass_producer_d3d12::before_resize),
             after_resize: None,
-            destroyed: Some(capture::destroyed),
+            destroyed: Some(snowglass_producer_d3d12::destroyed),
         });
     });
 }

@@ -12,15 +12,15 @@ dashmap.workspace = true
 retour.workspace = true
 snowglass-hook.workspace = true
 snowglass-hook-dxgi = { path = "../snowglass-hook-dxgi" }
-snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-producer-d3d12 = { path = "../../producers/snowglass-producer-d3d12" }
-snowglass-protocol.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
 snowglass-consumer-vulkan = { path = "../../consumer/snowglass-consumer-vulkan" }
+snowglass-ipc.workspace = true
+snowglass-protocol.workspace = true
 
 [lints]
 workspace = true

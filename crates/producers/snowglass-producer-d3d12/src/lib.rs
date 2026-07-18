@@ -1,7 +1,10 @@
 //! D3D12 swapchain capture into shared textures and a shared fence.
 #![allow(unsafe_code)]
 
+mod capture;
 pub mod tracking;
+
+pub use capture::{before_present, before_resize, claim, destroyed};
 
 pub use tracking::{
     Presentation, TrackedResource, before_swapchain_resize, command_reset, detect_device_features,
@@ -22,6 +25,19 @@ use windows::{
     },
     core::Interface,
 };
+
+pub(crate) fn d3d12_log(message: impl std::fmt::Display) {
+    use std::io::Write;
+    eprintln!("{message}");
+    if let Ok(path) = std::env::var("SNOWGLASS_D3D12_LOG_FILE")
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    {
+        let _ = writeln!(file, "{message}");
+    }
+}
 
 pub struct D3d12SharedSlot {
     resource: ID3D12Resource,
