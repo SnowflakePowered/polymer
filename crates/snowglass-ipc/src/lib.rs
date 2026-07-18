@@ -33,6 +33,7 @@ const MESSAGE_STREAM_READY: u32 = 2;
 const MESSAGE_FRAME_READY: u32 = 3;
 const MESSAGE_SHUTDOWN: u32 = 4;
 const MESSAGE_DIRECT_INPUT_DATA: u32 = 5;
+const MESSAGE_STREAM_ACCEPTED: u32 = 6;
 const PAYLOAD_SIZE: usize = mem::size_of::<WireStreamReady>();
 
 static WINSOCK: OnceLock<i32> = OnceLock::new();
@@ -63,6 +64,8 @@ pub enum Message {
     FrameReady(FrameReady),
     Shutdown,
     DirectInputData(DirectInputData),
+    /// The viewer has imported the stream resources and released its previous stream.
+    StreamAccepted,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -231,6 +234,10 @@ impl LocalSocket {
             .map_err(|_| invalid_data("invalid wire message layout"))?;
         decode(wire)
     }
+
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.stream.set_read_timeout(timeout)
+    }
 }
 
 fn initialize_winsock() -> io::Result<()> {
@@ -362,6 +369,9 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
+        Message::StreamAccepted => {
+            wire.kind = U32::new(MESSAGE_STREAM_ACCEPTED);
+        }
     }
     wire
 }
@@ -441,6 +451,7 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 sequence: value.sequence.get(),
             }))
         }
+        MESSAGE_STREAM_ACCEPTED => Ok(Message::StreamAccepted),
         _ => Err(invalid_data("unknown message type")),
     }
 }
@@ -508,6 +519,7 @@ mod tests {
                 timestamp: 123,
                 sequence: 456,
             }),
+            Message::StreamAccepted,
         ];
         for message in messages {
             assert_eq!(decode(&encode(message)).unwrap(), message);

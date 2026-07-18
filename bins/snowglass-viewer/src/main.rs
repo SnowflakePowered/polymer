@@ -173,7 +173,7 @@ unsafe extern "system" fn raw_keyboard_subclass(
 }
 
 enum CaptureEvent {
-    Stream(u64, StreamReady),
+    Stream(u64, StreamReady, mpsc::SyncSender<bool>),
     Frame(u64, FrameReady),
     Disconnected(u64),
 }
@@ -1306,8 +1306,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     while let Ok(capture) = capture_rx.try_recv() {
                         match capture {
-                            CaptureEvent::Stream(connection, stream) => {
-                                active_capture_connection = connection;
+                            CaptureEvent::Stream(connection, stream, accepted) => {
                                 active_backend = match stream.image_kind {
                                     ExternalImageKind::D3d11SharedResourceNt => "D3D11",
                                     ExternalImageKind::VulkanOpaqueWin32 => "Vulkan",
@@ -1322,6 +1321,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                                 match compositor.import_stream(&window, &stream, viewer_api) {
                                     Ok(()) => {
+                                        active_capture_connection = connection;
                                         // A deferred or replaced graphics backend has no copy
                                         // of textures emitted to its predecessor. A fresh egui
                                         // context guarantees that Managed(0) is emitted as a full
@@ -1355,9 +1355,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             stream.slot_count,
                                             active_consumer,
                                         );
+                                        let _ = accepted.send(true);
                                     }
                                     Err(error) => {
-                                        eprintln!("snowglass: direct import failed: {error}")
+                                        eprintln!("snowglass: direct import failed: {error}");
+                                        let _ = accepted.send(false);
                                     }
                                 }
                             }
@@ -1557,7 +1559,8 @@ fn spawn_ipc(
     viewer_api: ViewerApi,
 ) {
     thread::spawn(move || {
-        let newest_connection = Arc::new(AtomicU64::new(0));
+        let next_connection = Arc::new(AtomicU64::new(0));
+        let active_connection = Arc::new(AtomicU64::new(0));
         loop {
             let mut socket = match listener.accept() {
                 Ok(socket) => socket,
@@ -1566,7 +1569,7 @@ fn spawn_ipc(
                     return;
                 }
             };
-            let connection = newest_connection.fetch_add(1, Ordering::AcqRel) + 1;
+            let connection = next_connection.fetch_add(1, Ordering::AcqRel) + 1;
             if let Err(error) = socket.send(Message::Hello(Handshake {
                 protocol_version: PROTOCOL_VERSION,
                 process_id: std::process::id(),
@@ -1579,29 +1582,35 @@ fn spawn_ipc(
                 continue;
             }
             let events = events.clone();
-            let newest_connection = newest_connection.clone();
+            let active_connection = active_connection.clone();
             thread::spawn(move || {
                 let result = (|| -> std::io::Result<()> {
                     loop {
                         match socket.receive()? {
                             Message::StreamReady(stream) => {
+                                let (accepted_tx, accepted_rx) = mpsc::sync_channel(0);
                                 events
-                                    .send(CaptureEvent::Stream(connection, stream))
+                                    .send(CaptureEvent::Stream(connection, stream, accepted_tx))
                                     .map_err(|_| {
                                         std::io::Error::new(
                                             std::io::ErrorKind::BrokenPipe,
                                             "viewer closed",
                                         )
                                     })?;
+                                if accepted_rx.recv().unwrap_or(false) {
+                                    active_connection.store(connection, Ordering::Release);
+                                    socket.send(Message::StreamAccepted)?;
+                                }
                             }
                             Message::FrameReady(frame) => {
-                                if newest_connection.load(Ordering::Acquire) == connection {
+                                if active_connection.load(Ordering::Acquire) == connection {
                                     let _ = events.send(CaptureEvent::Frame(connection, frame));
                                 }
                             }
                             Message::Shutdown => return Ok(()),
                             Message::DirectInputData(_) => {}
                             Message::Hello(_) => {}
+                            Message::StreamAccepted => {}
                         }
                     }
                 })();

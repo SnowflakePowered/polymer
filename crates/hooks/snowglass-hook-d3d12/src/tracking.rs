@@ -161,6 +161,62 @@ pub(crate) fn enhanced_barriers_supported() -> bool {
     ENHANCED_BARRIERS_SUPPORTED.get().copied().unwrap_or(false)
 }
 
+/// Releases every tracker-owned reference to the swapchain's current buffers.
+///
+/// DXGI requires all direct and indirect references obtained through
+/// `GetBuffer` to be gone before `ResizeBuffers` is called. The tracking maps
+/// deliberately retain resources across command-list execution, so their
+/// swapchain entries must be invalidated explicitly at this lifecycle boundary.
+pub(crate) unsafe fn before_swapchain_resize(swapchain: *mut c_void) {
+    let Some(swapchain) = (unsafe { IDXGISwapChain3::from_raw_borrowed(&swapchain) }) else {
+        return;
+    };
+    let Ok(desc) = (unsafe { swapchain.GetDesc() }) else {
+        return;
+    };
+    let buffer_keys = (0..desc.BufferCount)
+        .filter_map(|index| unsafe { swapchain.GetBuffer::<ID3D12Resource>(index).ok() })
+        .map(|resource| identity_key(&resource))
+        .collect::<HashSet<_>>();
+    if buffer_keys.is_empty() {
+        return;
+    }
+
+    CPU_DESCRIPTORS.retain(|_, resource| !buffer_keys.contains(&identity_key(&resource.resource)));
+    RTV_DESCRIPTORS.retain(|_, target| !buffer_keys.contains(&target.key));
+    PRESENT_REGIONS.retain(|key, candidate| {
+        !buffer_keys.contains(key)
+            && candidate
+                .source
+                .as_ref()
+                .is_none_or(|source| !buffer_keys.contains(&identity_key(&source.resource)))
+    });
+    RESOURCE_STATES.retain(|key, _| !buffer_keys.contains(key));
+    for mut command in COMMANDS.iter_mut() {
+        let state = command.value_mut();
+        state
+            .root_sources
+            .retain(|_, source| !buffer_keys.contains(&identity_key(&source.resource)));
+        if state
+            .candidate
+            .as_ref()
+            .and_then(|candidate| candidate.source.as_ref())
+            .is_some_and(|source| buffer_keys.contains(&identity_key(&source.resource)))
+        {
+            state.candidate = None;
+        }
+        if state
+            .render_target
+            .is_some_and(|target| buffer_keys.contains(&target.key))
+        {
+            state.render_target = None;
+        }
+        state
+            .recorded_targets
+            .retain(|key| !buffer_keys.contains(key));
+    }
+}
+
 pub(crate) unsafe fn install_device(output: *mut *mut c_void) {
     if std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_none()
         || output.is_null()

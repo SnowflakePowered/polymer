@@ -199,6 +199,7 @@ pub(crate) unsafe fn before_resize(swapchain: *mut c_void) {
         "snowglass: D3D12 resize released capture state: {}",
         removed.is_some()
     ));
+    unsafe { crate::tracking::before_swapchain_resize(swapchain) };
 }
 pub(crate) unsafe fn destroyed(swapchain: *mut c_void) {
     let key = aliases()
