@@ -1,6 +1,5 @@
 #![allow(clippy::missing_transmute_annotations)]
 
-use std::any::TypeId;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -16,19 +15,23 @@ use windows::{
 };
 
 snowglass_hook::vtable! {
-    IDXGISwapChain_Vtbl,
-    IDXGISwapChain1_Vtbl,
-    IDXGISwapChain2_Vtbl,
-    IDXGISwapChain3_Vtbl,
-    IDXGISwapChain4_Vtbl,
-    IDXGIFactory_Vtbl,
-    IDXGIFactory1_Vtbl,
-    IDXGIFactory2_Vtbl,
-    IDXGIFactory3_Vtbl,
-    IDXGIFactory4_Vtbl,
-    IDXGIFactory5_Vtbl,
-    IDXGIFactory6_Vtbl,
-    IDXGIFactory7_Vtbl,
+    [
+        IDXGISwapChain_Vtbl,
+        IDXGISwapChain1_Vtbl,
+        IDXGISwapChain2_Vtbl,
+        IDXGISwapChain3_Vtbl,
+        IDXGISwapChain4_Vtbl,
+    ],
+    [
+        IDXGIFactory_Vtbl,
+        IDXGIFactory1_Vtbl,
+        IDXGIFactory2_Vtbl,
+        IDXGIFactory3_Vtbl,
+        IDXGIFactory4_Vtbl,
+        IDXGIFactory5_Vtbl,
+        IDXGIFactory6_Vtbl,
+        IDXGIFactory7_Vtbl,
+    ],
 }
 
 const SLOT_SIZE: usize = size_of::<usize>();
@@ -71,15 +74,7 @@ pub(crate) type FactoryCreateSwapchainForCompositionFn = unsafe extern "system" 
 
 /// The layout-erased view of a hooked swapchain stored in the runtime
 /// registry.
-pub(crate) trait SwapchainHook: Send + Sync {
-    /// The number of slots spanned by the cloned layout.
-    fn slots(&self) -> usize;
-    /// The [`Vtable`] layout the clone was created for.
-    fn vtable_type(&self) -> TypeId;
-    /// The vtable pointer that intercepts a hooked object.
-    fn patched_vtable(&self) -> *const usize;
-    /// The object's original vtable pointer.
-    fn original_vtable(&self) -> *const usize;
+pub(crate) trait SwapchainHook: snowglass_hook::VtableHook {
     fn query_interface(&self) -> QueryInterfaceFn;
     fn release(&self) -> ReleaseFn;
     fn present(&self) -> PresentFn;
@@ -88,15 +83,7 @@ pub(crate) trait SwapchainHook: Send + Sync {
 }
 
 /// The layout-erased view of a hooked factory stored in the runtime registry.
-pub(crate) trait FactoryHook: Send + Sync {
-    /// The number of slots spanned by the cloned layout.
-    fn slots(&self) -> usize;
-    /// The [`Vtable`] layout the clone was created for.
-    fn vtable_type(&self) -> TypeId;
-    /// The vtable pointer that intercepts a hooked object.
-    fn patched_vtable(&self) -> *const usize;
-    /// The object's original vtable pointer.
-    fn original_vtable(&self) -> *const usize;
+pub(crate) trait FactoryHook: snowglass_hook::VtableHook {
     fn query_interface(&self) -> QueryInterfaceFn;
     fn release(&self) -> ReleaseFn;
     fn create_swapchain(&self) -> Option<FactoryCreateSwapchainFn>;
@@ -121,30 +108,18 @@ impl IDXGISwapchainVtable {
     /// # Safety
     ///
     /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<usize>, slots: usize) -> Self {
+    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
         let mut cloned = Self {
             raw: [0; SWAPCHAIN_SLOT_CAPACITY],
         };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast_const(),
+                original.as_ptr().cast::<usize>().cast_const(),
                 (&raw mut cloned.raw).cast::<usize>(),
                 slots,
             );
         }
         cloned
-    }
-
-    fn unknown(&self) -> *const IUnknown_Vtbl {
-        (&raw const self.swapchain).cast()
-    }
-
-    fn table(&self) -> *const IDXGISwapChain_Vtbl {
-        (&raw const self.swapchain).cast()
-    }
-
-    fn table1(&self) -> *const IDXGISwapChain1_Vtbl {
-        (&raw const self.swapchain1).cast()
     }
 
     fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
@@ -181,30 +156,18 @@ impl IDXGIFactoryVtable {
     /// # Safety
     ///
     /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<usize>, slots: usize) -> Self {
+    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
         let mut cloned = Self {
             raw: [0; FACTORY_SLOT_CAPACITY],
         };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast_const(),
+                original.as_ptr().cast::<usize>().cast_const(),
                 (&raw mut cloned.raw).cast::<usize>(),
                 slots,
             );
         }
         cloned
-    }
-
-    fn unknown(&self) -> *const IUnknown_Vtbl {
-        (&raw const self.factory).cast()
-    }
-
-    fn table(&self) -> *const IDXGIFactory_Vtbl {
-        (&raw const self.factory).cast()
-    }
-
-    fn table2(&self) -> *const IDXGIFactory2_Vtbl {
-        (&raw const self.factory2).cast()
     }
 
     fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
@@ -226,25 +189,15 @@ pub(crate) struct IDXGISwapchainHook<A: Vtable> {
     /// Verbatim copy of the original slots for downstream continuation.
     saved: IDXGISwapchainVtable,
     /// The object's original vtable pointer, restored across releases.
-    original: NonNull<usize>,
+    original: NonNull<c_void>,
     /// The widest interface generation cloned from the object's vtable.
     vtable: PhantomData<A>,
 }
 
-// SAFETY: `original` identifies an immutable vtable owned by the hooked
-// module for the process lifetime; the hook only reads through it.
-unsafe impl<A: Vtable> Send for IDXGISwapchainHook<A> {}
-unsafe impl<A: Vtable> Sync for IDXGISwapchainHook<A> {}
-
-impl<A: Vtable> IDXGISwapchainHook<A> {
-    /// # Safety
-    ///
-    /// `original` must be null or point to a vtable spanning at least
-    /// [`A::SLOTS`](Vtable::SLOTS) entries.
-    pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut())?;
-        let saved = unsafe { IDXGISwapchainVtable::read(original, A::SLOTS) };
-        let mut patched = Box::new(unsafe { IDXGISwapchainVtable::read(original, A::SLOTS) });
+snowglass_hook::impl_com_hook! {
+    impl SwapchainHook for IDXGISwapchainHook {
+        vtable IDXGISwapchainVtable;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -256,56 +209,28 @@ impl<A: Vtable> IDXGISwapchainHook<A> {
             (*table).Present = std::mem::transmute(crate::sys::present as PresentFn);
             (*table).ResizeBuffers =
                 std::mem::transmute(crate::sys::resize_buffers as ResizeBuffersFn);
-            if A::SLOTS >= <IDXGISwapChain1_Vtbl as Vtable>::SLOTS {
+            if A::supports(std::any::TypeId::of::<IDXGISwapChain1_Vtbl>()) {
                 let table1 = patched.table1_mut();
                 (*table1).Present1 = std::mem::transmute(crate::sys::present1 as Present1Fn);
             }
         }
-        Some(Self {
-            patched,
-            saved,
-            original,
-            vtable: PhantomData,
-        })
-    }
-}
+        }
 
-impl<A: Vtable> SwapchainHook for IDXGISwapchainHook<A> {
-    fn slots(&self) -> usize {
-        A::SLOTS
-    }
-
-    fn vtable_type(&self) -> TypeId {
-        TypeId::of::<A>()
-    }
-
-    fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<IDXGISwapchainVtable>(&self.patched).cast()
-    }
-
-    fn original_vtable(&self) -> *const usize {
-        self.original.as_ptr()
-    }
-
-    fn query_interface(&self) -> QueryInterfaceFn {
-        unsafe { std::mem::transmute((*self.saved.unknown()).QueryInterface) }
-    }
-
-    fn release(&self) -> ReleaseFn {
-        unsafe { (*self.saved.unknown()).Release }
-    }
-
-    fn present(&self) -> PresentFn {
-        unsafe { std::mem::transmute((*self.saved.table()).Present) }
-    }
-
-    fn resize_buffers(&self) -> ResizeBuffersFn {
-        unsafe { std::mem::transmute((*self.saved.table()).ResizeBuffers) }
-    }
-
-    fn present1(&self) -> Option<Present1Fn> {
-        (A::SLOTS >= <IDXGISwapChain1_Vtbl as Vtable>::SLOTS)
-            .then(|| unsafe { std::mem::transmute((*self.saved.table1()).Present1) })
+        #[vtable = IUnknown_Vtbl]
+        #[base = QueryInterface]
+        fn query_interface(&self) -> QueryInterfaceFn;
+        #[vtable = IUnknown_Vtbl]
+        #[base = Release]
+        fn release(&self) -> ReleaseFn;
+        #[vtable = IDXGISwapChain_Vtbl]
+        #[base = Present]
+        fn present(&self) -> PresentFn;
+        #[vtable = IDXGISwapChain_Vtbl]
+        #[base = ResizeBuffers]
+        fn resize_buffers(&self) -> ResizeBuffersFn;
+        #[vtable = IDXGISwapChain1_Vtbl]
+        #[base = Present1]
+        fn present1(&self) -> Option<Present1Fn>;
     }
 }
 
@@ -315,14 +240,10 @@ pub(crate) struct IDXGIFactoryHook<A: Vtable> {
     /// Verbatim copy of the original slots for downstream continuation.
     saved: IDXGIFactoryVtable,
     /// The object's original vtable pointer, restored across releases.
-    original: NonNull<usize>,
+    original: NonNull<c_void>,
     /// The widest interface generation cloned from the object's vtable.
     vtable: PhantomData<A>,
 }
-
-// SAFETY: see `IDXGISwapchainHook`.
-unsafe impl<A: Vtable> Send for IDXGIFactoryHook<A> {}
-unsafe impl<A: Vtable> Sync for IDXGIFactoryHook<A> {}
 
 impl<A: Vtable> IDXGIFactoryHook<A> {
     /// # Safety
@@ -336,15 +257,12 @@ impl<A: Vtable> IDXGIFactoryHook<A> {
         let original = unsafe { *object.cast::<*const usize>() };
         unsafe { Self::clone_from(original) }
     }
+}
 
-    /// # Safety
-    ///
-    /// `original` must be null or point to a vtable spanning at least
-    /// [`A::SLOTS`](Vtable::SLOTS) entries.
-    pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut())?;
-        let saved = unsafe { IDXGIFactoryVtable::read(original, A::SLOTS) };
-        let mut patched = Box::new(unsafe { IDXGIFactoryVtable::read(original, A::SLOTS) });
+snowglass_hook::impl_com_hook! {
+    impl FactoryHook for IDXGIFactoryHook {
+        vtable IDXGIFactoryVtable;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -356,7 +274,7 @@ impl<A: Vtable> IDXGIFactoryHook<A> {
             (*table).CreateSwapChain = std::mem::transmute(
                 crate::sys::factory_create_swapchain as FactoryCreateSwapchainFn,
             );
-            if A::SLOTS >= <IDXGIFactory2_Vtbl as Vtable>::SLOTS {
+            if A::supports(std::any::TypeId::of::<IDXGIFactory2_Vtbl>()) {
                 let table2 = patched.table2_mut();
                 (*table2).CreateSwapChainForHwnd = std::mem::transmute(
                     crate::sys::factory_create_swapchain_for_hwnd
@@ -372,58 +290,25 @@ impl<A: Vtable> IDXGIFactoryHook<A> {
                 );
             }
         }
-        Some(Self {
-            patched,
-            saved,
-            original,
-            vtable: PhantomData,
-        })
-    }
-}
+        }
 
-impl<A: Vtable> FactoryHook for IDXGIFactoryHook<A> {
-    fn slots(&self) -> usize {
-        A::SLOTS
-    }
-
-    fn vtable_type(&self) -> TypeId {
-        TypeId::of::<A>()
-    }
-
-    fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<IDXGIFactoryVtable>(&self.patched).cast()
-    }
-
-    fn original_vtable(&self) -> *const usize {
-        self.original.as_ptr()
-    }
-
-    fn query_interface(&self) -> QueryInterfaceFn {
-        unsafe { std::mem::transmute((*self.saved.unknown()).QueryInterface) }
-    }
-
-    fn release(&self) -> ReleaseFn {
-        unsafe { (*self.saved.unknown()).Release }
-    }
-
-    fn create_swapchain(&self) -> Option<FactoryCreateSwapchainFn> {
-        Some(unsafe { std::mem::transmute((*self.saved.table()).CreateSwapChain) })
-    }
-
-    fn create_swapchain_for_hwnd(&self) -> Option<FactoryCreateSwapchainForHwndFn> {
-        (A::SLOTS >= <IDXGIFactory2_Vtbl as Vtable>::SLOTS)
-            .then(|| unsafe { std::mem::transmute((*self.saved.table2()).CreateSwapChainForHwnd) })
-    }
-
-    fn create_swapchain_for_core_window(&self) -> Option<FactoryCreateSwapchainForCoreWindowFn> {
-        (A::SLOTS >= <IDXGIFactory2_Vtbl as Vtable>::SLOTS).then(|| unsafe {
-            std::mem::transmute((*self.saved.table2()).CreateSwapChainForCoreWindow)
-        })
-    }
-
-    fn create_swapchain_for_composition(&self) -> Option<FactoryCreateSwapchainForCompositionFn> {
-        (A::SLOTS >= <IDXGIFactory2_Vtbl as Vtable>::SLOTS).then(|| unsafe {
-            std::mem::transmute((*self.saved.table2()).CreateSwapChainForComposition)
-        })
+        #[vtable = IUnknown_Vtbl]
+        #[base = QueryInterface]
+        fn query_interface(&self) -> QueryInterfaceFn;
+        #[vtable = IUnknown_Vtbl]
+        #[base = Release]
+        fn release(&self) -> ReleaseFn;
+        #[vtable = IDXGIFactory_Vtbl]
+        #[base = CreateSwapChain]
+        fn create_swapchain(&self) -> Option<FactoryCreateSwapchainFn>;
+        #[vtable = IDXGIFactory2_Vtbl]
+        #[base = CreateSwapChainForHwnd]
+        fn create_swapchain_for_hwnd(&self) -> Option<FactoryCreateSwapchainForHwndFn>;
+        #[vtable = IDXGIFactory2_Vtbl]
+        #[base = CreateSwapChainForCoreWindow]
+        fn create_swapchain_for_core_window(&self) -> Option<FactoryCreateSwapchainForCoreWindowFn>;
+        #[vtable = IDXGIFactory2_Vtbl]
+        #[base = CreateSwapChainForComposition]
+        fn create_swapchain_for_composition(&self) -> Option<FactoryCreateSwapchainForCompositionFn>;
     }
 }

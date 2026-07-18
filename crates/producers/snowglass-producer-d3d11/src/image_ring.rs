@@ -4,9 +4,10 @@ use windows::{
         Foundation::GENERIC_ALL,
         Graphics::{
             Direct3D11::{
-                D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_SHARED,
-                D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
-                D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Device5, ID3D11Fence, ID3D11Texture2D,
+                D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_GDI_COMPATIBLE,
+                D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
+                D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC, ID3D11Device,
+                ID3D11Device5, ID3D11Fence, ID3D11Texture2D,
             },
             Dxgi::{IDXGIKeyedMutex, IDXGIResource1},
         },
@@ -71,6 +72,25 @@ impl D3d11ImageRing {
         slot_count: u32,
         mode: D3d11RingMode,
     ) -> windows::core::Result<Self> {
+        unsafe { Self::new_inner(device, source, slot_count, mode, false) }
+    }
+
+    /// Creates a fence-synchronized ring whose textures can be rendered by GDI.
+    pub unsafe fn new_gdi(
+        device: &ID3D11Device,
+        source: &D3D11_TEXTURE2D_DESC,
+        slot_count: u32,
+    ) -> windows::core::Result<Self> {
+        unsafe { Self::new_inner(device, source, slot_count, D3d11RingMode::Fence, true) }
+    }
+
+    unsafe fn new_inner(
+        device: &ID3D11Device,
+        source: &D3D11_TEXTURE2D_DESC,
+        slot_count: u32,
+        mode: D3d11RingMode,
+        gdi_compatible: bool,
+    ) -> windows::core::Result<Self> {
         if slot_count == 0 {
             return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
         }
@@ -89,7 +109,11 @@ impl D3d11ImageRing {
         shared_desc.MiscFlags = if mode.uses_keyed_mutex() {
             (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX).0 as u32
         } else {
-            (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED).0 as u32
+            let mut flags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+            if gdi_compatible {
+                flags |= D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
+            }
+            flags.0 as u32
         };
 
         let mut slots = Vec::with_capacity(slot_count as usize);

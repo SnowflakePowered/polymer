@@ -50,32 +50,36 @@ use windows::{
 };
 
 snowglass_hook::vtable! {
-    ID3D12GraphicsCommandList_Vtbl,
-    ID3D12GraphicsCommandList1_Vtbl,
-    ID3D12GraphicsCommandList2_Vtbl,
-    ID3D12GraphicsCommandList3_Vtbl,
-    ID3D12GraphicsCommandList4_Vtbl,
-    ID3D12GraphicsCommandList5_Vtbl,
-    ID3D12GraphicsCommandList6_Vtbl,
-    ID3D12GraphicsCommandList7_Vtbl,
-    ID3D12GraphicsCommandList8_Vtbl,
-    ID3D12GraphicsCommandList9_Vtbl,
-    ID3D12GraphicsCommandList10_Vtbl,
-    ID3D12Device_Vtbl,
-    ID3D12Device1_Vtbl,
-    ID3D12Device2_Vtbl,
-    ID3D12Device3_Vtbl,
-    ID3D12Device4_Vtbl,
-    ID3D12Device5_Vtbl,
-    ID3D12Device6_Vtbl,
-    ID3D12Device7_Vtbl,
-    ID3D12Device8_Vtbl,
-    ID3D12Device9_Vtbl,
-    ID3D12Device10_Vtbl,
-    ID3D12Device11_Vtbl,
-    ID3D12Device12_Vtbl,
-    ID3D12Device13_Vtbl,
-    ID3D12Device14_Vtbl,
+    [
+        ID3D12GraphicsCommandList_Vtbl,
+        ID3D12GraphicsCommandList1_Vtbl,
+        ID3D12GraphicsCommandList2_Vtbl,
+        ID3D12GraphicsCommandList3_Vtbl,
+        ID3D12GraphicsCommandList4_Vtbl,
+        ID3D12GraphicsCommandList5_Vtbl,
+        ID3D12GraphicsCommandList6_Vtbl,
+        ID3D12GraphicsCommandList7_Vtbl,
+        ID3D12GraphicsCommandList8_Vtbl,
+        ID3D12GraphicsCommandList9_Vtbl,
+        ID3D12GraphicsCommandList10_Vtbl,
+    ],
+    [
+        ID3D12Device_Vtbl,
+        ID3D12Device1_Vtbl,
+        ID3D12Device2_Vtbl,
+        ID3D12Device3_Vtbl,
+        ID3D12Device4_Vtbl,
+        ID3D12Device5_Vtbl,
+        ID3D12Device6_Vtbl,
+        ID3D12Device7_Vtbl,
+        ID3D12Device8_Vtbl,
+        ID3D12Device9_Vtbl,
+        ID3D12Device10_Vtbl,
+        ID3D12Device11_Vtbl,
+        ID3D12Device12_Vtbl,
+        ID3D12Device13_Vtbl,
+        ID3D12Device14_Vtbl,
+    ],
 }
 
 const SLOT_SIZE: usize = size_of::<usize>();
@@ -149,15 +153,7 @@ pub(crate) type CopyDescriptorsSimpleFn = unsafe extern "system" fn(
 
 /// The layout-erased view of a hooked graphics command list stored in the
 /// tracking registry.
-pub(crate) trait CommandListHook: Send + Sync {
-    /// The number of slots spanned by the cloned layout.
-    fn slots(&self) -> usize;
-    /// The [`Vtable`] layout the clone was created for.
-    fn vtable_type(&self) -> TypeId;
-    /// The vtable pointer that intercepts a hooked object.
-    fn patched_vtable(&self) -> *const usize;
-    /// The object's original vtable pointer.
-    fn original_vtable(&self) -> *const usize;
+pub(crate) trait CommandListHook: snowglass_hook::VtableHook {
     fn release(&self) -> ReleaseFn;
     fn reset(&self) -> ResetFn;
     fn set_viewports(&self) -> SetViewportsFn;
@@ -172,15 +168,7 @@ pub(crate) trait CommandListHook: Send + Sync {
 }
 
 /// The layout-erased view of a hooked device stored in the tracking registry.
-pub(crate) trait DeviceHook: Send + Sync {
-    /// The number of slots spanned by the cloned layout.
-    fn slots(&self) -> usize;
-    /// The [`Vtable`] layout the clone was created for.
-    fn vtable_type(&self) -> TypeId;
-    /// The vtable pointer that intercepts a hooked object.
-    fn patched_vtable(&self) -> *const usize;
-    /// The object's original vtable pointer.
-    fn original_vtable(&self) -> *const usize;
+pub(crate) trait DeviceHook: snowglass_hook::VtableHook {
     fn release(&self) -> ReleaseFn;
     fn create_command_list(&self) -> CreateCommandListFn;
     fn create_command_list1(&self) -> Option<CreateCommandList1Fn>;
@@ -217,30 +205,18 @@ impl ID3D12GraphicsCommandListVtable {
     /// # Safety
     ///
     /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<usize>, slots: usize) -> Self {
+    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
         let mut cloned = Self {
             raw: [0; LIST_SLOT_CAPACITY],
         };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast_const(),
+                original.as_ptr().cast::<usize>().cast_const(),
                 (&raw mut cloned.raw).cast::<usize>(),
                 slots,
             );
         }
         cloned
-    }
-
-    fn unknown(&self) -> *const IUnknown_Vtbl {
-        (&raw const self.list).cast()
-    }
-
-    fn table(&self) -> *const ID3D12GraphicsCommandList_Vtbl {
-        (&raw const self.list).cast()
-    }
-
-    fn table7(&self) -> *const ID3D12GraphicsCommandList7_Vtbl {
-        (&raw const self.list7).cast()
     }
 
     fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
@@ -284,30 +260,18 @@ impl ID3D12DeviceVtable {
     /// # Safety
     ///
     /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<usize>, slots: usize) -> Self {
+    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
         let mut cloned = Self {
             raw: [0; DEVICE_SLOT_CAPACITY],
         };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast_const(),
+                original.as_ptr().cast::<usize>().cast_const(),
                 (&raw mut cloned.raw).cast::<usize>(),
                 slots,
             );
         }
         cloned
-    }
-
-    fn unknown(&self) -> *const IUnknown_Vtbl {
-        (&raw const self.device).cast()
-    }
-
-    fn table(&self) -> *const ID3D12Device_Vtbl {
-        (&raw const self.device).cast()
-    }
-
-    fn table4(&self) -> *const ID3D12Device4_Vtbl {
-        (&raw const self.device4).cast()
     }
 
     fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
@@ -329,26 +293,15 @@ pub(crate) struct ID3D12GraphicsCommandListHook<A: Vtable> {
     /// Verbatim copy of the original slots for downstream continuation.
     saved: ID3D12GraphicsCommandListVtable,
     /// The object's original vtable pointer, restored across releases.
-    original: NonNull<usize>,
+    original: NonNull<c_void>,
     /// The widest interface generation cloned from the object's vtable.
     vtable: PhantomData<A>,
 }
 
-// SAFETY: `original` identifies an immutable vtable owned by the hooked
-// module for the process lifetime; the hook only reads through it.
-unsafe impl<A: Vtable> Send for ID3D12GraphicsCommandListHook<A> {}
-unsafe impl<A: Vtable> Sync for ID3D12GraphicsCommandListHook<A> {}
-
-impl<A: Vtable> ID3D12GraphicsCommandListHook<A> {
-    /// # Safety
-    ///
-    /// `original` must be null or point to a vtable spanning at least
-    /// [`A::SLOTS`](Vtable::SLOTS) entries.
-    pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut())?;
-        let saved = unsafe { ID3D12GraphicsCommandListVtable::read(original, A::SLOTS) };
-        let mut patched =
-            Box::new(unsafe { ID3D12GraphicsCommandListVtable::read(original, A::SLOTS) });
+snowglass_hook::impl_com_hook! {
+    impl CommandListHook for ID3D12GraphicsCommandListHook {
+        vtable ID3D12GraphicsCommandListVtable;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -364,80 +317,46 @@ impl<A: Vtable> ID3D12GraphicsCommandListHook<A> {
             (*table).SetGraphicsRootDescriptorTable = set_graphics_root_descriptor_table;
             (*table).SetGraphicsRootSignature = set_graphics_root_signature;
             (*table).OMSetRenderTargets = om_set_render_targets;
-            if A::SLOTS >= <ID3D12GraphicsCommandList7_Vtbl as Vtable>::SLOTS {
+            if A::supports(TypeId::of::<ID3D12GraphicsCommandList7_Vtbl>()) {
                 let table7 = patched.table7_mut();
                 (*table7).Barrier = enhanced_barrier;
             }
         }
-        Some(Self {
-            patched,
-            saved,
-            original,
-            vtable: PhantomData,
-        })
-    }
-}
+        }
 
-impl<A: Vtable> CommandListHook for ID3D12GraphicsCommandListHook<A> {
-    fn slots(&self) -> usize {
-        A::SLOTS
-    }
-
-    fn vtable_type(&self) -> TypeId {
-        TypeId::of::<A>()
-    }
-
-    fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<ID3D12GraphicsCommandListVtable>(&self.patched).cast()
-    }
-
-    fn original_vtable(&self) -> *const usize {
-        self.original.as_ptr()
-    }
-
-    fn release(&self) -> ReleaseFn {
-        unsafe { (*self.saved.unknown()).Release }
-    }
-
-    fn reset(&self) -> ResetFn {
-        unsafe { (*self.saved.table()).Reset }
-    }
-
-    fn set_viewports(&self) -> SetViewportsFn {
-        unsafe { (*self.saved.table()).RSSetViewports }
-    }
-
-    fn set_scissors(&self) -> SetScissorsFn {
-        unsafe { (*self.saved.table()).RSSetScissorRects }
-    }
-
-    fn draw_instanced(&self) -> DrawInstancedFn {
-        unsafe { (*self.saved.table()).DrawInstanced }
-    }
-
-    fn draw_indexed_instanced(&self) -> DrawIndexedInstancedFn {
-        unsafe { (*self.saved.table()).DrawIndexedInstanced }
-    }
-
-    fn resource_barrier(&self) -> ResourceBarrierFn {
-        unsafe { (*self.saved.table()).ResourceBarrier }
-    }
-
-    fn set_graphics_root_descriptor_table(&self) -> SetGraphicsRootDescriptorTableFn {
-        unsafe { (*self.saved.table()).SetGraphicsRootDescriptorTable }
-    }
-
-    fn set_graphics_root_signature(&self) -> SetGraphicsRootSignatureFn {
-        unsafe { (*self.saved.table()).SetGraphicsRootSignature }
-    }
-
-    fn om_set_render_targets(&self) -> OmSetRenderTargetsFn {
-        unsafe { (*self.saved.table()).OMSetRenderTargets }
-    }
-
-    fn barrier(&self) -> Option<EnhancedBarrierFn> {
-        (A::SLOTS >= <ID3D12GraphicsCommandList7_Vtbl as Vtable>::SLOTS)
-            .then(|| unsafe { (*self.saved.table7()).Barrier })
+        #[vtable = IUnknown_Vtbl]
+        #[base = Release]
+        fn release(&self) -> ReleaseFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = Reset]
+        fn reset(&self) -> ResetFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = RSSetViewports]
+        fn set_viewports(&self) -> SetViewportsFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = RSSetScissorRects]
+        fn set_scissors(&self) -> SetScissorsFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = DrawInstanced]
+        fn draw_instanced(&self) -> DrawInstancedFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = DrawIndexedInstanced]
+        fn draw_indexed_instanced(&self) -> DrawIndexedInstancedFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = ResourceBarrier]
+        fn resource_barrier(&self) -> ResourceBarrierFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = SetGraphicsRootDescriptorTable]
+        fn set_graphics_root_descriptor_table(&self) -> SetGraphicsRootDescriptorTableFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = SetGraphicsRootSignature]
+        fn set_graphics_root_signature(&self) -> SetGraphicsRootSignatureFn;
+        #[vtable = ID3D12GraphicsCommandList_Vtbl]
+        #[base = OMSetRenderTargets]
+        fn om_set_render_targets(&self) -> OmSetRenderTargetsFn;
+        #[vtable = ID3D12GraphicsCommandList7_Vtbl]
+        #[base = Barrier]
+        fn barrier(&self) -> Option<EnhancedBarrierFn>;
     }
 }
 
@@ -447,24 +366,15 @@ pub(crate) struct ID3D12DeviceHook<A: Vtable> {
     /// Verbatim copy of the original slots for downstream continuation.
     saved: ID3D12DeviceVtable,
     /// The object's original vtable pointer, restored across releases.
-    original: NonNull<usize>,
+    original: NonNull<c_void>,
     /// The widest interface generation cloned from the object's vtable.
     vtable: PhantomData<A>,
 }
 
-// SAFETY: see `ID3D12GraphicsCommandListHook`.
-unsafe impl<A: Vtable> Send for ID3D12DeviceHook<A> {}
-unsafe impl<A: Vtable> Sync for ID3D12DeviceHook<A> {}
-
-impl<A: Vtable> ID3D12DeviceHook<A> {
-    /// # Safety
-    ///
-    /// `original` must be null or point to a vtable spanning at least
-    /// [`A::SLOTS`](Vtable::SLOTS) entries.
-    pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut())?;
-        let saved = unsafe { ID3D12DeviceVtable::read(original, A::SLOTS) };
-        let mut patched = Box::new(unsafe { ID3D12DeviceVtable::read(original, A::SLOTS) });
+snowglass_hook::impl_com_hook! {
+    impl DeviceHook for ID3D12DeviceHook {
+        vtable ID3D12DeviceVtable;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -476,64 +386,34 @@ impl<A: Vtable> ID3D12DeviceHook<A> {
             (*table).CreateShaderResourceView = create_shader_resource_view;
             (*table).CreateRenderTargetView = create_render_target_view;
             (*table).CopyDescriptorsSimple = copy_descriptors_simple;
-            if A::SLOTS >= <ID3D12Device4_Vtbl as Vtable>::SLOTS {
+            if A::supports(TypeId::of::<ID3D12Device4_Vtbl>()) {
                 let table4 = patched.table4_mut();
                 (*table4).CreateCommandList1 = create_command_list1;
             }
         }
-        Some(Self {
-            patched,
-            saved,
-            original,
-            vtable: PhantomData,
-        })
-    }
-}
+        }
 
-impl<A: Vtable> DeviceHook for ID3D12DeviceHook<A> {
-    fn slots(&self) -> usize {
-        A::SLOTS
-    }
-
-    fn vtable_type(&self) -> TypeId {
-        TypeId::of::<A>()
-    }
-
-    fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<ID3D12DeviceVtable>(&self.patched).cast()
-    }
-
-    fn original_vtable(&self) -> *const usize {
-        self.original.as_ptr()
-    }
-
-    fn release(&self) -> ReleaseFn {
-        unsafe { (*self.saved.unknown()).Release }
-    }
-
-    fn create_command_list(&self) -> CreateCommandListFn {
-        unsafe { (*self.saved.table()).CreateCommandList }
-    }
-
-    fn create_command_list1(&self) -> Option<CreateCommandList1Fn> {
-        (A::SLOTS >= <ID3D12Device4_Vtbl as Vtable>::SLOTS)
-            .then(|| unsafe { (*self.saved.table4()).CreateCommandList1 })
-    }
-
-    fn create_descriptor_heap(&self) -> CreateDescriptorHeapFn {
-        unsafe { (*self.saved.table()).CreateDescriptorHeap }
-    }
-
-    fn create_shader_resource_view(&self) -> CreateShaderResourceViewFn {
-        unsafe { (*self.saved.table()).CreateShaderResourceView }
-    }
-
-    fn create_render_target_view(&self) -> CreateRenderTargetViewFn {
-        unsafe { (*self.saved.table()).CreateRenderTargetView }
-    }
-
-    fn copy_descriptors_simple(&self) -> CopyDescriptorsSimpleFn {
-        unsafe { (*self.saved.table()).CopyDescriptorsSimple }
+        #[vtable = IUnknown_Vtbl]
+        #[base = Release]
+        fn release(&self) -> ReleaseFn;
+        #[vtable = ID3D12Device_Vtbl]
+        #[base = CreateCommandList]
+        fn create_command_list(&self) -> CreateCommandListFn;
+        #[vtable = ID3D12Device4_Vtbl]
+        #[base = CreateCommandList1]
+        fn create_command_list1(&self) -> Option<CreateCommandList1Fn>;
+        #[vtable = ID3D12Device_Vtbl]
+        #[base = CreateDescriptorHeap]
+        fn create_descriptor_heap(&self) -> CreateDescriptorHeapFn;
+        #[vtable = ID3D12Device_Vtbl]
+        #[base = CreateShaderResourceView]
+        fn create_shader_resource_view(&self) -> CreateShaderResourceViewFn;
+        #[vtable = ID3D12Device_Vtbl]
+        #[base = CreateRenderTargetView]
+        fn create_render_target_view(&self) -> CreateRenderTargetViewFn;
+        #[vtable = ID3D12Device_Vtbl]
+        #[base = CopyDescriptorsSimple]
+        fn copy_descriptors_simple(&self) -> CopyDescriptorsSimpleFn;
     }
 }
 
@@ -640,7 +520,7 @@ unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
         Entry::Occupied(occupied) => {
             let existing = occupied.get();
             if current == existing.patched_vtable() {
-                if existing.vtable_type() == TypeId::of::<A>() || existing.slots() >= A::SLOTS {
+                if A::supported_by(existing.vtable_type()) {
                     return true;
                 }
                 unsafe { ID3D12DeviceHook::<A>::clone_from(existing.original_vtable()) }
@@ -729,7 +609,7 @@ unsafe fn install_command_list_kind<A: Vtable>(list: *mut c_void) -> bool {
         Entry::Occupied(occupied) => {
             let existing = occupied.get();
             if current == existing.patched_vtable() {
-                if existing.vtable_type() == TypeId::of::<A>() || existing.slots() >= A::SLOTS {
+                if A::supported_by(existing.vtable_type()) {
                     return true;
                 }
                 unsafe {

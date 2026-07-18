@@ -41,7 +41,7 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
                 None
             }
         };
-  
+
         let mode_chain: &[D3d11RingMode] = if connection
             .as_ref()
             .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)

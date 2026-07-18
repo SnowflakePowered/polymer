@@ -15,11 +15,13 @@ use windows::{
 };
 
 snowglass_hook::vtable! {
-    ID3D11DeviceContext_Vtbl,
-    ID3D11DeviceContext1_Vtbl,
-    ID3D11DeviceContext2_Vtbl,
-    ID3D11DeviceContext3_Vtbl,
-    ID3D11DeviceContext4_Vtbl,
+    [
+        ID3D11DeviceContext_Vtbl,
+        ID3D11DeviceContext1_Vtbl,
+        ID3D11DeviceContext2_Vtbl,
+        ID3D11DeviceContext3_Vtbl,
+        ID3D11DeviceContext4_Vtbl,
+    ],
 }
 
 const SLOT_SIZE: usize = size_of::<usize>();
@@ -45,22 +47,18 @@ impl ID3D11DeviceContextVtable {
     /// # Safety
     ///
     /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<usize>, slots: usize) -> Self {
+    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
         let mut cloned = Self {
             raw: [0; CONTEXT_SLOT_CAPACITY],
         };
         unsafe {
             std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast_const(),
+                original.as_ptr().cast::<usize>().cast_const(),
                 (&raw mut cloned.raw).cast::<usize>(),
                 slots,
             );
         }
         cloned
-    }
-
-    fn table(&self) -> *const ID3D11DeviceContext_Vtbl {
-        (&raw const self.context).cast()
     }
 
     fn table_mut(&mut self) -> *mut ID3D11DeviceContext_Vtbl {
@@ -72,9 +70,7 @@ impl ID3D11DeviceContextVtable {
 /// registry. `Draw`/`DrawIndexed` live in the base `ID3D11DeviceContext`
 /// layout common to every generation, so the exposed continuations do not
 /// depend on the cloned width.
-trait ContextHook: Send + Sync {
-    /// The vtable pointer that intercepts a hooked object.
-    fn patched_vtable(&self) -> *const usize;
+trait ContextHook: snowglass_hook::VtableHook {
     fn draw(&self) -> DrawFn;
     fn draw_indexed(&self) -> DrawIndexedFn;
 }
@@ -82,31 +78,18 @@ trait ContextHook: Send + Sync {
 struct ID3D11DeviceContextHook<A: Vtable> {
     /// Hook-patched clone installed as the object's vtable pointer.
     patched: Box<ID3D11DeviceContextVtable>,
-    /// Verbatim copies of the original slots for downstream continuation.
-    draw: DrawFn,
-    draw_indexed: DrawIndexedFn,
+    /// Verbatim copy of the original slots for downstream continuation.
+    saved: ID3D11DeviceContextVtable,
+    /// The object's original vtable pointer.
+    original: NonNull<c_void>,
     /// The interface generation cloned from the object's vtable.
     vtable: PhantomData<A>,
 }
 
-// SAFETY: the clone holds only fn pointers and copied vtable slots; the
-// `PhantomData<A>` layout marker carries no data. Matches the other
-// per-object hooks.
-unsafe impl<A: Vtable> Send for ID3D11DeviceContextHook<A> {}
-unsafe impl<A: Vtable> Sync for ID3D11DeviceContextHook<A> {}
-
-impl<A: Vtable> ID3D11DeviceContextHook<A> {
-    /// # Safety
-    ///
-    /// `original` must be null or point to a vtable spanning at least
-    /// [`A::SLOTS`](Vtable::SLOTS) entries.
-    unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut())?;
-        let mut patched = Box::new(unsafe { ID3D11DeviceContextVtable::read(original, A::SLOTS) });
-        let (draw, draw_indexed) = unsafe {
-            let table = patched.table();
-            ((*table).Draw, (*table).DrawIndexed)
-        };
+snowglass_hook::impl_com_hook! {
+    impl ContextHook for ID3D11DeviceContextHook {
+        vtable ID3D11DeviceContextVtable;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
@@ -114,26 +97,14 @@ impl<A: Vtable> ID3D11DeviceContextHook<A> {
             (*table).Draw = draw_trampoline;
             (*table).DrawIndexed = draw_indexed_trampoline;
         }
-        Some(Self {
-            patched,
-            draw,
-            draw_indexed,
-            vtable: PhantomData,
-        })
-    }
-}
+        }
 
-impl<A: Vtable> ContextHook for ID3D11DeviceContextHook<A> {
-    fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<ID3D11DeviceContextVtable>(&self.patched).cast()
-    }
-
-    fn draw(&self) -> DrawFn {
-        self.draw
-    }
-
-    fn draw_indexed(&self) -> DrawIndexedFn {
-        self.draw_indexed
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = Draw]
+        fn draw(&self) -> DrawFn;
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = DrawIndexed]
+        fn draw_indexed(&self) -> DrawIndexedFn;
     }
 }
 

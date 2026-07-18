@@ -4,7 +4,6 @@ use crate::{
 };
 use snowglass_hook::HookChain;
 use std::{
-    any::TypeId,
     collections::HashMap,
     ffi::c_void,
     sync::{Arc, LazyLock, OnceLock, RwLock},
@@ -138,7 +137,7 @@ unsafe fn install_swapchain_kind<A: Vtable>(swapchain: *mut c_void) -> bool {
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *swapchain.cast::<*const usize>() };
         if current == existing.patched_vtable() {
-            if existing.vtable_type() == TypeId::of::<A>() || existing.slots() >= A::SLOTS {
+            if A::supported_by(existing.vtable_type()) {
                 return true;
             }
             unsafe { IDXGISwapchainHook::<A>::clone_from(existing.original_vtable()) }
@@ -220,7 +219,7 @@ unsafe fn install_factory_kind<A: Vtable>(factory: *mut c_void) -> bool {
     let vtable = if let Some(existing) = states.get(&key) {
         let current = unsafe { *factory.cast::<*const usize>() };
         if current == existing.patched_vtable() {
-            if existing.vtable_type() == TypeId::of::<A>() || existing.slots() >= A::SLOTS {
+            if A::supported_by(existing.vtable_type()) {
                 return true;
             }
             unsafe { IDXGIFactoryHook::<A>::clone_from(existing.original_vtable()) }
