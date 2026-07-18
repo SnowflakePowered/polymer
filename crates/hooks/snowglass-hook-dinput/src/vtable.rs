@@ -14,11 +14,11 @@
 #![allow(clippy::missing_transmute_annotations)]
 
 use std::ffi::c_void;
-use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use windows::Win32::Devices::HumanInterfaceDevice::{
     IDirectInput8A_Vtbl, IDirectInput8W_Vtbl, IDirectInputDevice8A_Vtbl, IDirectInputDevice8W_Vtbl,
 };
+use windows::core::IUnknown_Vtbl;
 use windows_sys::{
     Win32::Devices::HumanInterfaceDevice::DIDEVICEOBJECTDATA,
     core::{GUID, HRESULT},
@@ -39,7 +39,6 @@ pub(crate) struct OriginalMethod<T> {
     pub(crate) function: T,
 }
 
-const SLOT_SIZE: usize = size_of::<usize>();
 pub(crate) const DIRECT_INPUT_VTABLE_LEN: usize = <IDirectInput8A_Vtbl as Vtable>::SLOTS;
 pub(crate) const DEVICE_VTABLE_LEN: usize = <IDirectInputDevice8A_Vtbl as Vtable>::SLOTS;
 
@@ -57,89 +56,18 @@ pub(crate) type SetEventNotificationFn =
     unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT;
 pub(crate) type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
 
-/// Overlays the ANSI and wide `IDirectInput8` vtables on one allocation. The
-/// two variants differ only in string payload types, never in slot layout, so
-/// either view describes objects of both variants; `raw` spans the layout and
-/// is the untyped view used for copying and for the pointer installed into
-/// hooked objects.
-#[repr(C)]
-pub(crate) union IDirectInputVtable {
-    raw: [usize; DIRECT_INPUT_VTABLE_LEN],
-    ansi: ManuallyDrop<IDirectInput8A_Vtbl>,
-    wide: ManuallyDrop<IDirectInput8W_Vtbl>,
+snowglass_hook::com_vtable! {
+    /// Overlays the ABI-identical ANSI and wide `IDirectInput8` vtables.
+    pub(crate) union IDirectInputVtable for IDirectInput8A_Vtbl;
 }
-
-const _: () = assert!(size_of::<IDirectInputVtable>() == DIRECT_INPUT_VTABLE_LEN * SLOT_SIZE);
 const _: () = assert!(size_of::<IDirectInput8A_Vtbl>() == size_of::<IDirectInput8W_Vtbl>());
 
-impl IDirectInputVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least
-    /// [`DIRECT_INPUT_VTABLE_LEN`] entries.
-    unsafe fn read(original: *const usize) -> Self {
-        let mut slots = Self {
-            raw: [0; DIRECT_INPUT_VTABLE_LEN],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original,
-                (&raw mut slots.raw).cast::<usize>(),
-                DIRECT_INPUT_VTABLE_LEN,
-            );
-        }
-        slots
-    }
-
-    fn table(&self) -> *const IDirectInput8A_Vtbl {
-        (&raw const self.ansi).cast()
-    }
-
-    fn table_mut(&mut self) -> *mut IDirectInput8A_Vtbl {
-        (&raw mut self.ansi).cast()
-    }
+snowglass_hook::com_vtable! {
+    /// Overlays the ABI-identical ANSI and wide `IDirectInputDevice8` vtables.
+    pub(crate) union IDirectInputDeviceVtable for IDirectInputDevice8A_Vtbl;
 }
-
-/// Overlays the ANSI and wide `IDirectInputDevice8` vtables on one allocation,
-/// mirroring [`DirectInputSlots`].
-#[repr(C)]
-pub(crate) union IDirectInputDeviceVtable {
-    raw: [usize; DEVICE_VTABLE_LEN],
-    ansi: ManuallyDrop<IDirectInputDevice8A_Vtbl>,
-    wide: ManuallyDrop<IDirectInputDevice8W_Vtbl>,
-}
-
-const _: () = assert!(size_of::<IDirectInputDeviceVtable>() == DEVICE_VTABLE_LEN * SLOT_SIZE);
 const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
-
-impl IDirectInputDeviceVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least
-    /// [`DEVICE_VTABLE_LEN`] entries.
-    unsafe fn read(original: *const usize) -> Self {
-        let mut slots = Self {
-            raw: [0; DEVICE_VTABLE_LEN],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original,
-                (&raw mut slots.raw).cast::<usize>(),
-                DEVICE_VTABLE_LEN,
-            );
-        }
-        slots
-    }
-
-    fn table(&self) -> *const IDirectInputDevice8A_Vtbl {
-        (&raw const self.ansi).cast()
-    }
-
-    fn table_mut(&mut self) -> *mut IDirectInputDevice8A_Vtbl {
-        (&raw mut self.ansi).cast()
-    }
-}
 
 pub(crate) struct IDirectInputHook {
     /// Hook-patched clone installed as the object's vtable pointer.
@@ -150,50 +78,27 @@ pub(crate) struct IDirectInputHook {
     original: NonNull<c_void>,
 }
 
-// SAFETY: `original` identifies an immutable vtable owned by the hooked
-// module for the process lifetime; the hook only reads through it.
-unsafe impl Send for IDirectInputHook {}
-unsafe impl Sync for IDirectInputHook {}
-
-impl IDirectInputHook {
-    /// # Safety
-    ///
-    /// `original` must be null or point to a live `IDirectInput8` vtable.
-    pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut().cast::<c_void>())?;
-        let saved = unsafe { IDirectInputVtable::read(original.as_ptr().cast()) };
-        let mut patched = Box::new(unsafe { IDirectInputVtable::read(original.as_ptr().cast()) });
+snowglass_hook::impl_com_hook! {
+    impl IDirectInputHook {
+        vtable IDirectInputVtable;
+        slots DIRECT_INPUT_VTABLE_LEN;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<IDirectInput8A_Vtbl>();
             (*table).base__.Release = crate::sys::direct_input_release;
             (*table).CreateDevice =
                 std::mem::transmute(crate::sys::create_device as CreateDeviceFn);
         }
-        Some(Self {
-            patched,
-            saved,
-            original,
-        })
-    }
+        }
 
-    /// The vtable pointer that intercepts a hooked object.
-    pub(crate) fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<IDirectInputVtable>(&self.patched).cast()
-    }
-
-    /// The object's original vtable pointer.
-    pub(crate) fn original_vtable(&self) -> *const usize {
-        self.original.as_ptr().cast()
-    }
-
-    pub(crate) fn release(&self) -> ReleaseFn {
-        unsafe { (*self.saved.table()).base__.Release }
-    }
-
-    pub(crate) fn create_device(&self) -> CreateDeviceFn {
-        unsafe { std::mem::transmute((*self.saved.table()).CreateDevice) }
+        #[vtable = IUnknown_Vtbl]
+        #[base = Release]
+        fn release(&self) -> ReleaseFn;
+        #[vtable = IDirectInput8A_Vtbl]
+        #[base = CreateDevice]
+        fn create_device(&self) -> CreateDeviceFn;
     }
 }
 
@@ -206,24 +111,15 @@ pub(crate) struct IDirectInputDeviceHook {
     original: NonNull<c_void>,
 }
 
-// SAFETY: see `IDirectInputHook`.
-unsafe impl Send for IDirectInputDeviceHook {}
-unsafe impl Sync for IDirectInputDeviceHook {}
-
-impl IDirectInputDeviceHook {
-    /// # Safety
-    ///
-    /// `original` must be null or point to a live `IDirectInputDevice8`
-    /// vtable.
-    pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
-        let original = NonNull::new(original.cast_mut().cast::<c_void>())?;
-        let saved = unsafe { IDirectInputDeviceVtable::read(original.as_ptr().cast()) };
-        let mut patched =
-            Box::new(unsafe { IDirectInputDeviceVtable::read(original.as_ptr().cast()) });
+snowglass_hook::impl_com_hook! {
+    impl IDirectInputDeviceHook {
+        vtable IDirectInputDeviceVtable;
+        slots DEVICE_VTABLE_LEN;
+        patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<IDirectInputDevice8A_Vtbl>();
             (*table).base__.Release = crate::sys::device_release;
             (*table).Acquire = std::mem::transmute(crate::sys::acquire as AcquireFn);
             (*table).GetDeviceState =
@@ -237,48 +133,28 @@ impl IDirectInputDeviceHook {
             (*table).SetCooperativeLevel =
                 std::mem::transmute(crate::sys::set_cooperative_level as SetCooperativeLevelFn);
         }
-        Some(Self {
-            patched,
-            saved,
-            original,
-        })
-    }
+        }
 
-    /// The vtable pointer that intercepts a hooked object.
-    pub(crate) fn patched_vtable(&self) -> *const usize {
-        std::ptr::from_ref::<IDirectInputDeviceVtable>(&self.patched).cast()
-    }
-
-    /// The object's original vtable pointer.
-    pub(crate) fn original_vtable(&self) -> *const usize {
-        self.original.as_ptr().cast()
-    }
-
-    pub(crate) fn release(&self) -> ReleaseFn {
-        unsafe { (*self.saved.table()).base__.Release }
-    }
-
-    pub(crate) fn acquire(&self) -> AcquireFn {
-        unsafe { std::mem::transmute((*self.saved.table()).Acquire) }
-    }
-
-    pub(crate) fn get_device_state(&self) -> GetDeviceStateFn {
-        unsafe { std::mem::transmute((*self.saved.table()).GetDeviceState) }
-    }
-
-    pub(crate) fn get_device_data(&self) -> GetDeviceDataFn {
-        unsafe { std::mem::transmute((*self.saved.table()).GetDeviceData) }
-    }
-
-    pub(crate) fn set_data_format(&self) -> SetDataFormatFn {
-        unsafe { std::mem::transmute((*self.saved.table()).SetDataFormat) }
-    }
-
-    pub(crate) fn set_event_notification(&self) -> SetEventNotificationFn {
-        unsafe { std::mem::transmute((*self.saved.table()).SetEventNotification) }
-    }
-
-    pub(crate) fn set_cooperative_level(&self) -> SetCooperativeLevelFn {
-        unsafe { std::mem::transmute((*self.saved.table()).SetCooperativeLevel) }
+        #[vtable = IUnknown_Vtbl]
+        #[base = Release]
+        fn release(&self) -> ReleaseFn;
+        #[vtable = IDirectInputDevice8A_Vtbl]
+        #[base = Acquire]
+        fn acquire(&self) -> AcquireFn;
+        #[vtable = IDirectInputDevice8A_Vtbl]
+        #[base = GetDeviceState]
+        fn get_device_state(&self) -> GetDeviceStateFn;
+        #[vtable = IDirectInputDevice8A_Vtbl]
+        #[base = GetDeviceData]
+        fn get_device_data(&self) -> GetDeviceDataFn;
+        #[vtable = IDirectInputDevice8A_Vtbl]
+        #[base = SetDataFormat]
+        fn set_data_format(&self) -> SetDataFormatFn;
+        #[vtable = IDirectInputDevice8A_Vtbl]
+        #[base = SetEventNotification]
+        fn set_event_notification(&self) -> SetEventNotificationFn;
+        #[vtable = IDirectInputDevice8A_Vtbl]
+        #[base = SetCooperativeLevel]
+        fn set_cooperative_level(&self) -> SetCooperativeLevelFn;
     }
 }

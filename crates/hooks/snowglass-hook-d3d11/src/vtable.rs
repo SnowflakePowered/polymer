@@ -1,7 +1,6 @@
 use dashmap::DashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::LazyLock;
 use windows::{
@@ -24,46 +23,12 @@ snowglass_hook::vtable! {
     ],
 }
 
-const SLOT_SIZE: usize = size_of::<usize>();
-const CONTEXT_SLOT_CAPACITY: usize = <ID3D11DeviceContext4_Vtbl as Vtable>::SLOTS;
-
 type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
 type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
 type InstallFn = unsafe fn(*mut c_void) -> bool;
 
-#[repr(C)]
-union ID3D11DeviceContextVtable {
-    raw: [usize; CONTEXT_SLOT_CAPACITY],
-    context: ManuallyDrop<ID3D11DeviceContext_Vtbl>,
-    context1: ManuallyDrop<ID3D11DeviceContext1_Vtbl>,
-    context2: ManuallyDrop<ID3D11DeviceContext2_Vtbl>,
-    context3: ManuallyDrop<ID3D11DeviceContext3_Vtbl>,
-    context4: ManuallyDrop<ID3D11DeviceContext4_Vtbl>,
-}
-
-const _: () = assert!(size_of::<ID3D11DeviceContextVtable>() == CONTEXT_SLOT_CAPACITY * SLOT_SIZE);
-
-impl ID3D11DeviceContextVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
-        let mut cloned = Self {
-            raw: [0; CONTEXT_SLOT_CAPACITY],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast::<usize>().cast_const(),
-                (&raw mut cloned.raw).cast::<usize>(),
-                slots,
-            );
-        }
-        cloned
-    }
-
-    fn table_mut(&mut self) -> *mut ID3D11DeviceContext_Vtbl {
-        (&raw mut self.context).cast()
-    }
+snowglass_hook::com_vtable! {
+    union ID3D11DeviceContextVtable for ID3D11DeviceContext4_Vtbl;
 }
 
 /// The layout-erased view of a hooked immediate context stored in the
@@ -93,7 +58,7 @@ snowglass_hook::impl_com_hook! {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<ID3D11DeviceContext_Vtbl>();
             (*table).Draw = draw_trampoline;
             (*table).DrawIndexed = draw_indexed_trampoline;
         }
@@ -173,24 +138,27 @@ unsafe fn install_context_kind<A: Vtable>(context: *mut c_void) -> bool {
     true
 }
 
-unsafe extern "system" fn draw_trampoline(this: *mut c_void, vertex_count: u32, start_vertex: u32) {
-    if let Some(original) = CONTEXTS.get(&(this as usize)).map(|state| state.draw()) {
-        unsafe { original(this, vertex_count, start_vertex) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_trampoline(
+        this: *mut c_void,
+        vertex_count: u32,
+        start_vertex: u32,
+    );
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw());
+    after {
+        unsafe { snowglass_producer_d3d11::record_context_draw(this) };
     }
-    unsafe { snowglass_producer_d3d11::record_context_draw(this) };
 }
 
-unsafe extern "system" fn draw_indexed_trampoline(
-    this: *mut c_void,
-    index_count: u32,
-    start_index: u32,
-    base_vertex: i32,
-) {
-    if let Some(original) = CONTEXTS
-        .get(&(this as usize))
-        .map(|state| state.draw_indexed())
-    {
-        unsafe { original(this, index_count, start_index, base_vertex) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_indexed_trampoline(
+        this: *mut c_void,
+        index_count: u32,
+        start_index: u32,
+        base_vertex: i32,
+    );
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed());
+    after {
+        unsafe { snowglass_producer_d3d11::record_context_draw(this) };
     }
-    unsafe { snowglass_producer_d3d11::record_context_draw(this) };
 }

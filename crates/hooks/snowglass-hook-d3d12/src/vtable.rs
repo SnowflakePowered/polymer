@@ -15,7 +15,6 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use std::any::TypeId;
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::LazyLock;
 use windows::{
@@ -81,10 +80,6 @@ snowglass_hook::vtable! {
         ID3D12Device14_Vtbl,
     ],
 }
-
-const SLOT_SIZE: usize = size_of::<usize>();
-const LIST_SLOT_CAPACITY: usize = <ID3D12GraphicsCommandList10_Vtbl as Vtable>::SLOTS;
-const DEVICE_SLOT_CAPACITY: usize = <ID3D12Device14_Vtbl as Vtable>::SLOTS;
 
 pub(crate) type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
 pub(crate) type ResetFn =
@@ -178,113 +173,16 @@ pub(crate) trait DeviceHook: snowglass_hook::VtableHook {
     fn copy_descriptors_simple(&self) -> CopyDescriptorsSimpleFn;
 }
 
-/// Overlays every graphics command-list interface generation on one
-/// allocation. The generations extend one another, so a narrower interface is
-/// a prefix of a wider one; `raw` spans the widest layout and is the untyped
-/// view used for copying.
-#[repr(C)]
-pub(crate) union ID3D12GraphicsCommandListVtable {
-    raw: [usize; LIST_SLOT_CAPACITY],
-    list: ManuallyDrop<ID3D12GraphicsCommandList_Vtbl>,
-    list1: ManuallyDrop<ID3D12GraphicsCommandList1_Vtbl>,
-    list2: ManuallyDrop<ID3D12GraphicsCommandList2_Vtbl>,
-    list3: ManuallyDrop<ID3D12GraphicsCommandList3_Vtbl>,
-    list4: ManuallyDrop<ID3D12GraphicsCommandList4_Vtbl>,
-    list5: ManuallyDrop<ID3D12GraphicsCommandList5_Vtbl>,
-    list6: ManuallyDrop<ID3D12GraphicsCommandList6_Vtbl>,
-    list7: ManuallyDrop<ID3D12GraphicsCommandList7_Vtbl>,
-    list8: ManuallyDrop<ID3D12GraphicsCommandList8_Vtbl>,
-    list9: ManuallyDrop<ID3D12GraphicsCommandList9_Vtbl>,
-    list10: ManuallyDrop<ID3D12GraphicsCommandList10_Vtbl>,
+snowglass_hook::com_vtable! {
+    /// Overlays every graphics command-list interface generation on one
+    /// allocation. Narrower interfaces are prefixes of this storage.
+    pub(crate) union ID3D12GraphicsCommandListVtable for ID3D12GraphicsCommandList10_Vtbl;
 }
 
-const _: () =
-    assert!(size_of::<ID3D12GraphicsCommandListVtable>() == LIST_SLOT_CAPACITY * SLOT_SIZE);
-
-impl ID3D12GraphicsCommandListVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
-        let mut cloned = Self {
-            raw: [0; LIST_SLOT_CAPACITY],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast::<usize>().cast_const(),
-                (&raw mut cloned.raw).cast::<usize>(),
-                slots,
-            );
-        }
-        cloned
-    }
-
-    fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
-        (&raw mut self.list).cast()
-    }
-
-    fn table_mut(&mut self) -> *mut ID3D12GraphicsCommandList_Vtbl {
-        (&raw mut self.list).cast()
-    }
-
-    fn table7_mut(&mut self) -> *mut ID3D12GraphicsCommandList7_Vtbl {
-        (&raw mut self.list7).cast()
-    }
-}
-
-/// Overlays every device interface generation on one allocation, mirroring
-/// [`ID3D12GraphicsCommandListVtable`].
-#[repr(C)]
-pub(crate) union ID3D12DeviceVtable {
-    raw: [usize; DEVICE_SLOT_CAPACITY],
-    device: ManuallyDrop<ID3D12Device_Vtbl>,
-    device1: ManuallyDrop<ID3D12Device1_Vtbl>,
-    device2: ManuallyDrop<ID3D12Device2_Vtbl>,
-    device3: ManuallyDrop<ID3D12Device3_Vtbl>,
-    device4: ManuallyDrop<ID3D12Device4_Vtbl>,
-    device5: ManuallyDrop<ID3D12Device5_Vtbl>,
-    device6: ManuallyDrop<ID3D12Device6_Vtbl>,
-    device7: ManuallyDrop<ID3D12Device7_Vtbl>,
-    device8: ManuallyDrop<ID3D12Device8_Vtbl>,
-    device9: ManuallyDrop<ID3D12Device9_Vtbl>,
-    device10: ManuallyDrop<ID3D12Device10_Vtbl>,
-    device11: ManuallyDrop<ID3D12Device11_Vtbl>,
-    device12: ManuallyDrop<ID3D12Device12_Vtbl>,
-    device13: ManuallyDrop<ID3D12Device13_Vtbl>,
-    device14: ManuallyDrop<ID3D12Device14_Vtbl>,
-}
-
-const _: () = assert!(size_of::<ID3D12DeviceVtable>() == DEVICE_SLOT_CAPACITY * SLOT_SIZE);
-
-impl ID3D12DeviceVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
-        let mut cloned = Self {
-            raw: [0; DEVICE_SLOT_CAPACITY],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast::<usize>().cast_const(),
-                (&raw mut cloned.raw).cast::<usize>(),
-                slots,
-            );
-        }
-        cloned
-    }
-
-    fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
-        (&raw mut self.device).cast()
-    }
-
-    fn table_mut(&mut self) -> *mut ID3D12Device_Vtbl {
-        (&raw mut self.device).cast()
-    }
-
-    fn table4_mut(&mut self) -> *mut ID3D12Device4_Vtbl {
-        (&raw mut self.device4).cast()
-    }
+snowglass_hook::com_vtable! {
+    /// Overlays every device interface generation on one allocation, mirroring
+    /// [`ID3D12GraphicsCommandListVtable`].
+    pub(crate) union ID3D12DeviceVtable for ID3D12Device14_Vtbl;
 }
 
 pub(crate) struct ID3D12GraphicsCommandListHook<A: Vtable> {
@@ -305,9 +203,9 @@ snowglass_hook::impl_com_hook! {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let unknown = patched.unknown_mut();
+            let unknown = patched.as_mut_ptr::<IUnknown_Vtbl>();
             (*unknown).Release = command_list_release;
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<ID3D12GraphicsCommandList_Vtbl>();
             (*table).Reset = reset;
             (*table).RSSetViewports = set_viewports;
             (*table).RSSetScissorRects = set_scissors;
@@ -318,7 +216,7 @@ snowglass_hook::impl_com_hook! {
             (*table).SetGraphicsRootSignature = set_graphics_root_signature;
             (*table).OMSetRenderTargets = om_set_render_targets;
             if A::supports(TypeId::of::<ID3D12GraphicsCommandList7_Vtbl>()) {
-                let table7 = patched.table7_mut();
+                let table7 = patched.as_mut_ptr::<ID3D12GraphicsCommandList7_Vtbl>();
                 (*table7).Barrier = enhanced_barrier;
             }
         }
@@ -378,16 +276,16 @@ snowglass_hook::impl_com_hook! {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let unknown = patched.unknown_mut();
+            let unknown = patched.as_mut_ptr::<IUnknown_Vtbl>();
             (*unknown).Release = device_release;
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<ID3D12Device_Vtbl>();
             (*table).CreateCommandList = create_command_list;
             (*table).CreateDescriptorHeap = create_descriptor_heap;
             (*table).CreateShaderResourceView = create_shader_resource_view;
             (*table).CreateRenderTargetView = create_render_target_view;
             (*table).CopyDescriptorsSimple = copy_descriptors_simple;
             if A::supports(TypeId::of::<ID3D12Device4_Vtbl>()) {
-                let table4 = patched.table4_mut();
+                let table4 = patched.as_mut_ptr::<ID3D12Device4_Vtbl>();
                 (*table4).CreateCommandList1 = create_command_list1;
             }
         }
@@ -461,11 +359,7 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<bool, String> {
     let already_hooked = DEVICES
         .get(&(base as usize))
         .is_some_and(|hook| unsafe { *base.cast::<*const usize>() } == hook.patched_vtable());
-    // Resolve every interface pointer before replacing any vtable. D3D12
-    // wrappers may expose distinct pointers for intermediate generations, so
-    // patching only the base and widest interfaces misses calls made through
-    // (for example) ID3D12Device4. The list is widest-first and deduplicated,
-    // ensuring each physical pointer is cloned exactly once.
+
     let interfaces = device_interfaces(&device);
     let mut installed = false;
     for (interface, install) in interfaces {
@@ -741,41 +635,53 @@ unsafe extern "system" fn create_descriptor_heap(
     result
 }
 
-unsafe extern "system" fn create_shader_resource_view(
-    this: *mut c_void,
-    resource: *mut c_void,
-    desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
-    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
-) {
-    if let Some(original) = device_method(this, |hook| hook.create_shader_resource_view()) {
-        unsafe { original(this, resource, desc, destination) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn create_shader_resource_view(
+        this: *mut c_void,
+        resource: *mut c_void,
+        desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
+        destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+    );
+    original device_method(this, |hook| hook.create_shader_resource_view());
+    after {
+        unsafe {
+            snowglass_producer_d3d12::record_shader_resource_view(resource, desc, destination)
+        };
     }
-    unsafe { snowglass_producer_d3d12::record_shader_resource_view(resource, desc, destination) };
 }
 
-unsafe extern "system" fn create_render_target_view(
-    this: *mut c_void,
-    resource: *mut c_void,
-    desc: *const D3D12_RENDER_TARGET_VIEW_DESC,
-    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
-) {
-    if let Some(original) = device_method(this, |hook| hook.create_render_target_view()) {
-        unsafe { original(this, resource, desc, destination) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn create_render_target_view(
+        this: *mut c_void,
+        resource: *mut c_void,
+        desc: *const D3D12_RENDER_TARGET_VIEW_DESC,
+        destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+    );
+    original device_method(this, |hook| hook.create_render_target_view());
+    after {
+        unsafe {
+            snowglass_producer_d3d12::record_render_target_view(resource, desc, destination)
+        };
     }
-    unsafe { snowglass_producer_d3d12::record_render_target_view(resource, desc, destination) };
 }
 
-unsafe extern "system" fn copy_descriptors_simple(
-    this: *mut c_void,
-    count: u32,
-    destination: D3D12_CPU_DESCRIPTOR_HANDLE,
-    source: D3D12_CPU_DESCRIPTOR_HANDLE,
-    heap_type: D3D12_DESCRIPTOR_HEAP_TYPE,
-) {
-    if let Some(original) = device_method(this, |hook| hook.copy_descriptors_simple()) {
-        unsafe { original(this, count, destination, source, heap_type) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn copy_descriptors_simple(
+        this: *mut c_void,
+        count: u32,
+        destination: D3D12_CPU_DESCRIPTOR_HANDLE,
+        source: D3D12_CPU_DESCRIPTOR_HANDLE,
+        heap_type: D3D12_DESCRIPTOR_HEAP_TYPE,
+    );
+    original device_method(this, |hook| hook.copy_descriptors_simple());
+    after {
+        snowglass_producer_d3d12::record_copy_descriptors_simple(
+            count,
+            destination,
+            source,
+            heap_type,
+        );
     }
-    snowglass_producer_d3d12::record_copy_descriptors_simple(count, destination, source, heap_type);
 }
 
 unsafe extern "system" fn reset(
@@ -799,117 +705,116 @@ unsafe extern "system" fn reset(
     result
 }
 
-unsafe extern "system" fn set_viewports(
-    this: *mut c_void,
-    count: u32,
-    viewports: *const D3D12_VIEWPORT,
-) {
-    if let Some(original) = list_method(this, |hook| hook.set_viewports()) {
-        unsafe { original(this, count, viewports) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn set_viewports(
+        this: *mut c_void,
+        count: u32,
+        viewports: *const D3D12_VIEWPORT,
+    );
+    original list_method(this, |hook| hook.set_viewports());
+    after {
+        unsafe { snowglass_producer_d3d12::record_viewports(this, count, viewports) };
     }
-    unsafe { snowglass_producer_d3d12::record_viewports(this, count, viewports) };
 }
 
-unsafe extern "system" fn set_scissors(this: *mut c_void, count: u32, scissors: *const RECT) {
-    if let Some(original) = list_method(this, |hook| hook.set_scissors()) {
-        unsafe { original(this, count, scissors) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn set_scissors(
+        this: *mut c_void,
+        count: u32,
+        scissors: *const RECT,
+    );
+    original list_method(this, |hook| hook.set_scissors());
+    after {
+        unsafe { snowglass_producer_d3d12::record_scissors(this, count, scissors) };
     }
-    unsafe { snowglass_producer_d3d12::record_scissors(this, count, scissors) };
 }
 
-unsafe extern "system" fn draw_instanced(
-    this: *mut c_void,
-    vertex_count: u32,
-    instance_count: u32,
-    start_vertex: u32,
-    start_instance: u32,
-) {
-    if let Some(original) = list_method(this, |hook| hook.draw_instanced()) {
-        unsafe {
-            original(
-                this,
-                vertex_count,
-                instance_count,
-                start_vertex,
-                start_instance,
-            )
-        };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_instanced(
+        this: *mut c_void,
+        vertex_count: u32,
+        instance_count: u32,
+        start_vertex: u32,
+        start_instance: u32,
+    );
+    original list_method(this, |hook| hook.draw_instanced());
+    after {
+        snowglass_producer_d3d12::record_draw(this);
     }
-    snowglass_producer_d3d12::record_draw(this);
 }
 
-unsafe extern "system" fn draw_indexed_instanced(
-    this: *mut c_void,
-    index_count: u32,
-    instance_count: u32,
-    start_index: u32,
-    base_vertex: i32,
-    start_instance: u32,
-) {
-    if let Some(original) = list_method(this, |hook| hook.draw_indexed_instanced()) {
-        unsafe {
-            original(
-                this,
-                index_count,
-                instance_count,
-                start_index,
-                base_vertex,
-                start_instance,
-            )
-        };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_indexed_instanced(
+        this: *mut c_void,
+        index_count: u32,
+        instance_count: u32,
+        start_index: u32,
+        base_vertex: i32,
+        start_instance: u32,
+    );
+    original list_method(this, |hook| hook.draw_indexed_instanced());
+    after {
+        snowglass_producer_d3d12::record_draw(this);
     }
-    snowglass_producer_d3d12::record_draw(this);
 }
 
-unsafe extern "system" fn resource_barrier(
-    this: *mut c_void,
-    count: u32,
-    barriers: *const D3D12_RESOURCE_BARRIER,
-) {
-    if let Some(original) = list_method(this, |hook| hook.resource_barrier()) {
-        unsafe { original(this, count, barriers) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn resource_barrier(
+        this: *mut c_void,
+        count: u32,
+        barriers: *const D3D12_RESOURCE_BARRIER,
+    );
+    original list_method(this, |hook| hook.resource_barrier());
+    after {
+        unsafe { snowglass_producer_d3d12::record_resource_barrier(this, count, barriers) };
     }
-    unsafe { snowglass_producer_d3d12::record_resource_barrier(this, count, barriers) };
 }
 
-unsafe extern "system" fn set_graphics_root_descriptor_table(
-    this: *mut c_void,
-    root_index: u32,
-    descriptor: D3D12_GPU_DESCRIPTOR_HANDLE,
-) {
-    if let Some(original) = list_method(this, |hook| hook.set_graphics_root_descriptor_table()) {
-        unsafe { original(this, root_index, descriptor) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn set_graphics_root_descriptor_table(
+        this: *mut c_void,
+        root_index: u32,
+        descriptor: D3D12_GPU_DESCRIPTOR_HANDLE,
+    );
+    original list_method(this, |hook| hook.set_graphics_root_descriptor_table());
+    after {
+        snowglass_producer_d3d12::record_root_descriptor_table(this, root_index, descriptor);
     }
-    snowglass_producer_d3d12::record_root_descriptor_table(this, root_index, descriptor);
 }
 
-unsafe extern "system" fn set_graphics_root_signature(this: *mut c_void, signature: *mut c_void) {
-    if let Some(original) = list_method(this, |hook| hook.set_graphics_root_signature()) {
-        unsafe { original(this, signature) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn set_graphics_root_signature(
+        this: *mut c_void,
+        signature: *mut c_void,
+    );
+    original list_method(this, |hook| hook.set_graphics_root_signature());
+    after {
+        snowglass_producer_d3d12::record_root_signature(this);
     }
-    snowglass_producer_d3d12::record_root_signature(this);
 }
 
-unsafe extern "system" fn om_set_render_targets(
-    this: *mut c_void,
-    count: u32,
-    descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE,
-    contiguous: BOOL,
-    depth: *const D3D12_CPU_DESCRIPTOR_HANDLE,
-) {
-    if let Some(original) = list_method(this, |hook| hook.om_set_render_targets()) {
-        unsafe { original(this, count, descriptors, contiguous, depth) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn om_set_render_targets(
+        this: *mut c_void,
+        count: u32,
+        descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        contiguous: BOOL,
+        depth: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+    );
+    original list_method(this, |hook| hook.om_set_render_targets());
+    after {
+        unsafe { snowglass_producer_d3d12::record_render_targets(this, count, descriptors) };
     }
-    unsafe { snowglass_producer_d3d12::record_render_targets(this, count, descriptors) };
 }
 
-unsafe extern "system" fn enhanced_barrier(
-    this: *mut c_void,
-    count: u32,
-    groups: *const D3D12_BARRIER_GROUP,
-) {
-    if let Some(original) = list_method(this, |hook| hook.barrier()).flatten() {
-        unsafe { original(this, count, groups) };
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn enhanced_barrier(
+        this: *mut c_void,
+        count: u32,
+        groups: *const D3D12_BARRIER_GROUP,
+    );
+    original list_method(this, |hook| hook.barrier()).flatten();
+    after {
+        unsafe { snowglass_producer_d3d12::record_enhanced_barrier(this, count, groups) };
     }
-    unsafe { snowglass_producer_d3d12::record_enhanced_barrier(this, count, groups) };
 }

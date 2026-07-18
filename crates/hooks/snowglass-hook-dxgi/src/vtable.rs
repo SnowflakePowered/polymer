@@ -2,7 +2,6 @@
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use windows::{
     Win32::Graphics::Dxgi::{
@@ -33,10 +32,6 @@ snowglass_hook::vtable! {
         IDXGIFactory7_Vtbl,
     ],
 }
-
-const SLOT_SIZE: usize = size_of::<usize>();
-const SWAPCHAIN_SLOT_CAPACITY: usize = <IDXGISwapChain4_Vtbl as Vtable>::SLOTS;
-const FACTORY_SLOT_CAPACITY: usize = <IDXGIFactory7_Vtbl as Vtable>::SLOTS;
 
 pub(crate) type QueryInterfaceFn =
     unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32;
@@ -92,95 +87,14 @@ pub(crate) trait FactoryHook: snowglass_hook::VtableHook {
     fn create_swapchain_for_composition(&self) -> Option<FactoryCreateSwapchainForCompositionFn>;
 }
 
-#[repr(C)]
-pub(crate) union IDXGISwapchainVtable {
-    raw: [usize; SWAPCHAIN_SLOT_CAPACITY],
-    swapchain: ManuallyDrop<IDXGISwapChain_Vtbl>,
-    swapchain1: ManuallyDrop<IDXGISwapChain1_Vtbl>,
-    swapchain2: ManuallyDrop<IDXGISwapChain2_Vtbl>,
-    swapchain3: ManuallyDrop<IDXGISwapChain3_Vtbl>,
-    swapchain4: ManuallyDrop<IDXGISwapChain4_Vtbl>,
+snowglass_hook::com_vtable! {
+    pub(crate) union IDXGISwapchainVtable for IDXGISwapChain4_Vtbl;
 }
 
-const _: () = assert!(size_of::<IDXGISwapchainVtable>() == SWAPCHAIN_SLOT_CAPACITY * SLOT_SIZE);
-
-impl IDXGISwapchainVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
-        let mut cloned = Self {
-            raw: [0; SWAPCHAIN_SLOT_CAPACITY],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast::<usize>().cast_const(),
-                (&raw mut cloned.raw).cast::<usize>(),
-                slots,
-            );
-        }
-        cloned
-    }
-
-    fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
-        (&raw mut self.swapchain).cast()
-    }
-
-    fn table_mut(&mut self) -> *mut IDXGISwapChain_Vtbl {
-        (&raw mut self.swapchain).cast()
-    }
-
-    fn table1_mut(&mut self) -> *mut IDXGISwapChain1_Vtbl {
-        (&raw mut self.swapchain1).cast()
-    }
-}
-
-/// Overlays every factory interface generation on one allocation, mirroring
-/// [`IDXGISwapchainVtable`].
-#[repr(C)]
-pub(crate) union IDXGIFactoryVtable {
-    raw: [usize; FACTORY_SLOT_CAPACITY],
-    factory: ManuallyDrop<IDXGIFactory_Vtbl>,
-    factory1: ManuallyDrop<IDXGIFactory1_Vtbl>,
-    factory2: ManuallyDrop<IDXGIFactory2_Vtbl>,
-    factory3: ManuallyDrop<IDXGIFactory3_Vtbl>,
-    factory4: ManuallyDrop<IDXGIFactory4_Vtbl>,
-    factory5: ManuallyDrop<IDXGIFactory5_Vtbl>,
-    factory6: ManuallyDrop<IDXGIFactory6_Vtbl>,
-    factory7: ManuallyDrop<IDXGIFactory7_Vtbl>,
-}
-
-const _: () = assert!(size_of::<IDXGIFactoryVtable>() == FACTORY_SLOT_CAPACITY * SLOT_SIZE);
-
-impl IDXGIFactoryVtable {
-    /// # Safety
-    ///
-    /// `original` must point to a vtable spanning at least `slots` entries.
-    unsafe fn read(original: NonNull<c_void>, slots: usize) -> Self {
-        let mut cloned = Self {
-            raw: [0; FACTORY_SLOT_CAPACITY],
-        };
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                original.as_ptr().cast::<usize>().cast_const(),
-                (&raw mut cloned.raw).cast::<usize>(),
-                slots,
-            );
-        }
-        cloned
-    }
-
-    fn unknown_mut(&mut self) -> *mut IUnknown_Vtbl {
-        (&raw mut self.factory).cast()
-    }
-
-    fn table_mut(&mut self) -> *mut IDXGIFactory_Vtbl {
-        (&raw mut self.factory).cast()
-    }
-
-    fn table2_mut(&mut self) -> *mut IDXGIFactory2_Vtbl {
-        (&raw mut self.factory2).cast()
-    }
+snowglass_hook::com_vtable! {
+    /// Overlays every factory interface generation on one allocation, mirroring
+    /// [`IDXGISwapchainVtable`].
+    pub(crate) union IDXGIFactoryVtable for IDXGIFactory7_Vtbl;
 }
 
 pub(crate) struct IDXGISwapchainHook<A: Vtable> {
@@ -201,16 +115,16 @@ snowglass_hook::impl_com_hook! {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let unknown = patched.unknown_mut();
+            let unknown = patched.as_mut_ptr::<IUnknown_Vtbl>();
             (*unknown).QueryInterface =
                 std::mem::transmute(crate::sys::query_interface as QueryInterfaceFn);
             (*unknown).Release = crate::sys::release;
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<IDXGISwapChain_Vtbl>();
             (*table).Present = std::mem::transmute(crate::sys::present as PresentFn);
             (*table).ResizeBuffers =
                 std::mem::transmute(crate::sys::resize_buffers as ResizeBuffersFn);
             if A::supports(std::any::TypeId::of::<IDXGISwapChain1_Vtbl>()) {
-                let table1 = patched.table1_mut();
+                let table1 = patched.as_mut_ptr::<IDXGISwapChain1_Vtbl>();
                 (*table1).Present1 = std::mem::transmute(crate::sys::present1 as Present1Fn);
             }
         }
@@ -266,16 +180,16 @@ snowglass_hook::impl_com_hook! {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
         unsafe {
-            let unknown = patched.unknown_mut();
+            let unknown = patched.as_mut_ptr::<IUnknown_Vtbl>();
             (*unknown).QueryInterface =
                 std::mem::transmute(crate::sys::query_interface as QueryInterfaceFn);
             (*unknown).Release = crate::sys::factory_release;
-            let table = patched.table_mut();
+            let table = patched.as_mut_ptr::<IDXGIFactory_Vtbl>();
             (*table).CreateSwapChain = std::mem::transmute(
                 crate::sys::factory_create_swapchain as FactoryCreateSwapchainFn,
             );
             if A::supports(std::any::TypeId::of::<IDXGIFactory2_Vtbl>()) {
-                let table2 = patched.table2_mut();
+                let table2 = patched.as_mut_ptr::<IDXGIFactory2_Vtbl>();
                 (*table2).CreateSwapChainForHwnd = std::mem::transmute(
                     crate::sys::factory_create_swapchain_for_hwnd
                         as FactoryCreateSwapchainForHwndFn,
