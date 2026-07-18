@@ -1856,6 +1856,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-hook-gdi"
+version = "0.1.0"
+dependencies = [
+ "retour",
+ "snowglass-producer-gdi",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "snowglass-hook-input"
 version = "0.1.0"
 dependencies = [
@@ -1931,6 +1940,17 @@ dependencies = [
  "snowglass-protocol",
  "windows",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "snowglass-producer-gdi"
+version = "0.1.0"
+dependencies = [
+ "snowglass-ipc",
+ "snowglass-platform-windows",
+ "snowglass-producer-d3d11",
+ "snowglass-protocol",
+ "windows",
 ]
 
 [[package]]

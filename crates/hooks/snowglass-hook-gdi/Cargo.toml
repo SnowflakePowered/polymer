@@ -1,0 +1,16 @@
+[package]
+name = "snowglass-hook-gdi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+retour.workspace = true
+snowglass-producer-gdi = { path = "../../producers/snowglass-producer-gdi" }
+windows-sys.workspace = true
+
+[lints]
+workspace = true
