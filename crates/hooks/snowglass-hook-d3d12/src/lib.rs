@@ -9,23 +9,20 @@ mod vtable;
 
 pub use sys::SnowglassInstallD3d12Hook;
 
-fn register_hooks() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| {
-        hooks::register_create_device(|device, result| {
-            if result >= 0 {
-                d3d12_log("snowglass: intercepted D3D12CreateDevice");
-                unsafe { vtable::install_device(device) };
-            }
-        });
-        snowglass_hook_dxgi::register_callbacks(snowglass_hook_dxgi::SwapchainCallbacks {
-            claim: snowglass_producer_d3d12::claim,
-            before_present: Some(snowglass_producer_d3d12::before_present),
-            before_resize: Some(snowglass_producer_d3d12::before_resize),
-            after_resize: None,
-            destroyed: Some(snowglass_producer_d3d12::destroyed),
-        });
-    });
+snowglass_hook::register_hooks! {
+    hooks::register_create_device -> |device, result| {
+        if result >= 0 {
+            d3d12_log("snowglass: intercepted D3D12CreateDevice");
+            unsafe { vtable::install_device(device) };
+        }
+    };
+    snowglass_hook_dxgi::register_callbacks -> snowglass_hook_dxgi::SwapchainCallbacks {
+        claim: snowglass_producer_d3d12::claim,
+        before_present: Some(snowglass_producer_d3d12::before_present),
+        before_resize: Some(snowglass_producer_d3d12::before_resize),
+        after_resize: None,
+        destroyed: Some(snowglass_producer_d3d12::destroyed),
+    };
 }
 
 fn d3d12_log(message: impl std::fmt::Display) {

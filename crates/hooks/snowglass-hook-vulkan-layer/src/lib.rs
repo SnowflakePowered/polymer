@@ -32,49 +32,44 @@ pub use hooks::{vkDestroyDevice, vkDestroyInstance};
 
 use ash::vk;
 use std::mem;
-use std::sync::Once;
 
-static REGISTER_HOOKS: Once = Once::new();
-
-pub(crate) fn register_hooks() {
-    REGISTER_HOOKS.call_once(|| {
-        hooks::register_cmd_draw(tracking::cmd_draw);
-        hooks::register_cmd_draw_indexed(tracking::cmd_draw);
-        hooks::register_cmd_set_viewport(tracking::cmd_set_viewport);
-        hooks::register_cmd_set_scissor(tracking::cmd_set_scissor);
-        hooks::register_cmd_end_render_pass(tracking::cmd_end_render_pass);
-        hooks::register_cmd_begin_render_pass(tracking::cmd_begin_render_pass);
-        hooks::register_cmd_bind_descriptor_sets(tracking::cmd_bind_descriptor_sets);
-        hooks::register_cmd_push_descriptor_set(tracking::cmd_push_descriptor_set);
-        hooks::register_cmd_blit_image(tracking::cmd_blit_image);
-        hooks::register_cmd_copy_image(tracking::cmd_copy_image);
-        hooks::register_begin_command_buffer(tracking::begin_command_buffer);
-        hooks::register_create_image(tracking::create_image);
-        hooks::register_create_image_view(tracking::create_image_view);
-        hooks::register_create_framebuffer(tracking::create_framebuffer);
-        hooks::register_destroy_image(tracking::destroy_image);
-        hooks::register_destroy_image_view(tracking::destroy_image_view);
-        hooks::register_destroy_framebuffer(tracking::destroy_framebuffer);
-        hooks::register_update_descriptor_sets(tracking::update_descriptor_sets);
-        hooks::register_get_device_queue(tracking::get_device_queue);
-        hooks::register_get_device_queue2(tracking::get_device_queue2);
-        hooks::register_queue_submit(swapchain::queue_submit);
-        hooks::register_create_swapchain(swapchain::create_swapchain);
-        hooks::register_destroy_swapchain(swapchain::destroy_swapchain);
-        hooks::register_get_swapchain_images(swapchain::get_swapchain_images);
-        hooks::register_queue_present(swapchain::handle_queue_present);
-        hooks::register_create_win32_surface(swapchain::create_win32_surface);
-        hooks::register_destroy_surface(swapchain::destroy_surface);
-        hooks::register_enumerate_physical_devices(tracking::enumerate_physical_devices);
-        hooks::register_destroy_instance(layer::handle_destroy_instance);
-        hooks::register_destroy_device(layer::handle_destroy_device);
-        hooks::register_create_instance(tracking::create_instance);
-        hooks::register_create_device(tracking::noop);
-        hooks::register_negotiate(tracking::noop);
-        hooks::register_get_instance_proc_addr(tracking::noop);
-        hooks::register_get_physical_device_proc_addr(tracking::noop);
-        hooks::register_get_device_proc_addr(tracking::noop);
-    });
+snowglass_hook::register_hooks! {
+    hooks::register_cmd_draw -> tracking::cmd_draw;
+    hooks::register_cmd_draw_indexed -> tracking::cmd_draw;
+    hooks::register_cmd_set_viewport -> tracking::cmd_set_viewport;
+    hooks::register_cmd_set_scissor -> tracking::cmd_set_scissor;
+    hooks::register_cmd_end_render_pass -> tracking::cmd_end_render_pass;
+    hooks::register_cmd_begin_render_pass -> tracking::cmd_begin_render_pass;
+    hooks::register_cmd_bind_descriptor_sets -> tracking::cmd_bind_descriptor_sets;
+    hooks::register_cmd_push_descriptor_set -> tracking::cmd_push_descriptor_set;
+    hooks::register_cmd_blit_image -> tracking::cmd_blit_image;
+    hooks::register_cmd_copy_image -> tracking::cmd_copy_image;
+    hooks::register_begin_command_buffer -> tracking::begin_command_buffer;
+    hooks::register_create_image -> tracking::create_image;
+    hooks::register_create_image_view -> tracking::create_image_view;
+    hooks::register_create_framebuffer -> tracking::create_framebuffer;
+    hooks::register_destroy_image -> tracking::destroy_image;
+    hooks::register_destroy_image_view -> tracking::destroy_image_view;
+    hooks::register_destroy_framebuffer -> tracking::destroy_framebuffer;
+    hooks::register_update_descriptor_sets -> tracking::update_descriptor_sets;
+    hooks::register_get_device_queue -> tracking::get_device_queue;
+    hooks::register_get_device_queue2 -> tracking::get_device_queue2;
+    hooks::register_queue_submit -> swapchain::queue_submit;
+    hooks::register_create_swapchain -> swapchain::create_swapchain;
+    hooks::register_destroy_swapchain -> swapchain::destroy_swapchain;
+    hooks::register_get_swapchain_images -> swapchain::get_swapchain_images;
+    hooks::register_queue_present -> swapchain::handle_queue_present;
+    hooks::register_create_win32_surface -> swapchain::create_win32_surface;
+    hooks::register_destroy_surface -> swapchain::destroy_surface;
+    hooks::register_enumerate_physical_devices -> tracking::enumerate_physical_devices;
+    hooks::register_destroy_instance -> layer::handle_destroy_instance;
+    hooks::register_destroy_device -> layer::handle_destroy_device;
+    hooks::register_create_instance -> tracking::create_instance;
+    hooks::register_create_device -> tracking::noop;
+    hooks::register_negotiate -> tracking::noop;
+    hooks::register_get_instance_proc_addr -> tracking::noop;
+    hooks::register_get_physical_device_proc_addr -> tracking::noop;
+    hooks::register_get_device_proc_addr -> tracking::noop;
 }
 
 fn hook(pointer: *const ()) -> vk::PFN_vkVoidFunction {

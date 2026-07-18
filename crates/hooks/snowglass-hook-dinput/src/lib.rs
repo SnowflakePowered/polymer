@@ -18,15 +18,12 @@ pub(crate) type DirectInput8CreateFn = unsafe extern "system" fn(
 
 pub use sys::SnowglassInstallDinputHook;
 
-fn register_hooks() {
-    static REGISTER: std::sync::Once = std::sync::Once::new();
-    REGISTER.call_once(|| {
-        hooks::register_direct_input_8_create(runtime::direct_input_8_create);
-        hooks::register_create_device(runtime::create_device);
-        hooks::register_get_device_state(runtime::get_device_state);
-        hooks::register_get_device_data(runtime::get_device_data);
-        hooks::register_set_event_notification(runtime::set_event_notification);
-    });
+snowglass_hook::register_hooks! {
+    hooks::register_direct_input_8_create -> runtime::direct_input_8_create;
+    hooks::register_create_device -> runtime::create_device;
+    hooks::register_get_device_state -> runtime::get_device_state;
+    hooks::register_get_device_data -> runtime::get_device_data;
+    hooks::register_set_event_notification -> runtime::set_event_notification;
 }
 
 #[cfg(test)]

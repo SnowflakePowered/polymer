@@ -553,17 +553,3 @@ pub(crate) unsafe fn factory_release(
     }
     0
 }
-
-pub(crate) fn register_runtime_hooks() {
-    hooks::register_create_factory(created_factory);
-    hooks::register_create_factory1(created_factory);
-    hooks::register_create_factory2(created_factory);
-    hooks::register_query_interface(query_interface);
-    hooks::register_factory_create_swapchain(factory_created_swapchain);
-    hooks::register_factory_create_swapchain_for_hwnd(factory_created_swapchain);
-    hooks::register_factory_create_swapchain_for_core_window(factory_created_swapchain);
-    hooks::register_factory_create_swapchain_for_composition(factory_created_swapchain);
-    hooks::register_present(present);
-    hooks::register_present1(present1);
-    hooks::register_resize_buffers(resize_buffers);
-}

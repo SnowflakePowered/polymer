@@ -17,6 +17,47 @@ pub enum ChainOrder {
     Reverse,
 }
 
+/// Declares an idempotent hook-registration entry point.
+#[macro_export]
+macro_rules! register_hooks {
+    (
+        $($($register:ident)::+ -> $hook:expr;)+
+    ) => {
+        pub(crate) fn register_hooks() {
+            static REGISTER_HOOKS: ::std::sync::Once = ::std::sync::Once::new();
+            REGISTER_HOOKS.call_once(|| {
+                $($($register)::+($hook);)+
+            });
+        }
+    };
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static REGISTRATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    fn record_registration() {
+        REGISTRATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn install_registration(registration: fn()) {
+        registration();
+    }
+
+    crate::register_hooks! {
+        install_registration -> record_registration;
+    }
+
+    #[test]
+    fn hook_registration_runs_once() {
+        register_hooks();
+        register_hooks();
+        assert_eq!(REGISTRATIONS.load(Ordering::Relaxed), 1);
+    }
+}
+
 fn for_each_hook<T>(
     chain: &std::sync::RwLock<Vec<T>>,
     order: ChainOrder,
