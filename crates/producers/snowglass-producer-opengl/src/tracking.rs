@@ -546,15 +546,31 @@ pub(crate) fn graph_tracking_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("SNOWGLASS_GRAPH_TRACKING").is_some())
 }
 
+/// The render-target indices to capture, in the caller's requested order.
+/// Each index selects into the deterministically ordered selection and
+/// becomes its own capture stream.
+pub(crate) fn tracked_render_target_indices() -> Option<Vec<usize>> {
+    static INDICES: OnceLock<Option<Vec<usize>>> = OnceLock::new();
+    INDICES
+        .get_or_init(|| {
+            if let Some(value) = std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGETS") {
+                let indices = value
+                    .to_str()?
+                    .split(',')
+                    .map(|index| index.trim().parse::<usize>().ok())
+                    .collect::<Option<Vec<_>>>()?;
+                return (!indices.is_empty()).then_some(indices);
+            }
+            std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").map(|_| vec![0])
+        })
+        .clone()
+}
+
+/// How many selection entries the requested indices reach into.
 pub(crate) fn tracked_render_target_count() -> Option<usize> {
-    if let Some(value) = std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGETS") {
-        return value
-            .to_str()?
-            .parse::<usize>()
-            .ok()
-            .filter(|count| *count != 0);
-    }
-    std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").map(|_| 1)
+    tracked_render_target_indices()
+        .and_then(|indices| indices.iter().max().copied())
+        .map(|max| max + 1)
 }
 
 /// Keeps the largest group of distinct textures with a common extent. Games

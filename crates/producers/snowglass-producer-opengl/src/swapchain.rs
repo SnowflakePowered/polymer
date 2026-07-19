@@ -10,7 +10,10 @@ use crate::{
     },
     log,
     timeline::Timeline,
-    tracking::{DrawCandidate, QuadBounds, take_draw_candidates, tracked_render_target_count},
+    tracking::{
+        DrawCandidate, QuadBounds, take_draw_candidates, tracked_render_target_count,
+        tracked_render_target_indices,
+    },
 };
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
@@ -139,6 +142,13 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         )
     };
     entry.tracked_sources.clone_from(&tracked);
+    // The caller tracks selection entries by index; each requested index
+    // becomes its own stream, in the requested order.
+    let chosen = tracked_render_target_indices()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|&index| tracked.get(index).copied())
+        .collect::<Vec<_>>();
     // One stream per tracked source, or the classic whole-window stream when
     // nothing resolves. Tracked layouts ride out short selection gaps and
     // hold off layout changes until they persist, rather than churning
@@ -149,8 +159,9 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         .iter()
         .map(|capture| (capture.width, capture.height))
         .collect::<Vec<_>>();
-    let tracked_layout = current.len() > 1 || current.first().is_some_and(|first| *first != window_extent);
-    let proposed = tracked
+    let tracked_layout =
+        current.len() > 1 || current.first().is_some_and(|first| *first != window_extent);
+    let proposed = chosen
         .iter()
         .map(|source| (source.width, source.height))
         .collect::<Vec<_>>();
@@ -183,10 +194,10 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
     if desired.iter().any(|(width, height)| *width == 0 || *height == 0) {
         return;
     }
-    if desired != current && !tracked.is_empty() {
+    if desired != current && !chosen.is_empty() {
         log(format!(
             "snowglass: selected OpenGL render targets {}",
-            tracked
+            chosen
                 .iter()
                 .map(|source| format!(
                     "texture {} layer {} ({:#x}, {}x{})",
@@ -243,7 +254,7 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
     // While a layout change is being dampened the source list can differ
     // from the stream list; feed each stream the source matching its extent
     // and let unmatched streams idle a frame.
-    let mut source_used = vec![false; tracked.len()];
+    let mut source_used = vec![false; chosen.len()];
     for (index, capture) in entry.streams.iter_mut().enumerate() {
         capture.presents += 1;
         // A stream can be rejected while the viewer's surfaces are
@@ -251,7 +262,7 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         if capture.ipc.is_none() && capture.presents.is_multiple_of(120) {
             capture.reconnect();
         }
-        let source = tracked.iter().enumerate().find_map(|(source_index, source)| {
+        let source = chosen.iter().enumerate().find_map(|(source_index, source)| {
             (!source_used[source_index]
                 && (source.width, source.height) == (capture.width, capture.height))
                 .then_some(source_index)
@@ -259,7 +270,7 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         if let Some(source_index) = source {
             source_used[source_index] = true;
         }
-        let source = source.map(|source_index| &tracked[source_index]);
+        let source = source.map(|source_index| &chosen[source_index]);
         // During a selection gap a tracked stream has no source this frame;
         // the whole-window fallback only makes sense at window extent.
         if source.is_none() && (capture.width, capture.height) != window_extent {

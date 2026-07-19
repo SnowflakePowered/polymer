@@ -446,7 +446,12 @@ pub(crate) unsafe fn handle_queue_present(
                     resolved.clear();
                     state.tracked_sources.clear();
                 }
-                let graph_sources = resolved;
+                // The caller tracks selection entries by index; each
+                // requested index becomes its own stream, in request order.
+                let graph_sources = tracking::tracked_render_target_indices()
+                    .iter()
+                    .filter_map(|&index| resolved.get(index).copied())
+                    .collect::<Vec<_>>();
               
                 let current = state
                     .streams

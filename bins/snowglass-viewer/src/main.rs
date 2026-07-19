@@ -2464,7 +2464,7 @@ fn spawn_target_monitor(
 
 struct ViewerOptions {
     target: Vec<String>,
-    track_render_targets: Option<u32>,
+    track_render_targets: Option<Vec<u32>>,
     graph_tracking: bool,
     surfaces: u32,
     skip_surfaces: u32,
@@ -2483,15 +2483,18 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     api: ViewerApi,
 
-    /// Track render targets, optionally retaining up to COUNT candidates.
+    /// Track render targets by index into the detected selection, as a
+    /// comma-separated list
     #[arg(
         long,
         visible_alias = "track-render-target",
         num_args = 0..=1,
-        default_missing_value = "1",
-        value_parser = parse_render_target_count
+        default_missing_value = "0",
+        value_delimiter = ',',
+        value_name = "INDEXES",
+        value_parser = parse_render_target_index
     )]
-    track_render_targets: Option<u32>,
+    track_render_targets: Option<Vec<u32>>,
 
     /// Resolve tracked render targets through the presentation dependency
     /// graph (offscreen screens behind compositor blits and copies) instead
@@ -2522,9 +2525,9 @@ struct ViewerArguments {
     /// Maximum number of capture surfaces to display.
     #[arg(
         long,
-        default_value_t = 1,
+        default_value_t = 16,
         num_args = 0..=1,
-        default_missing_value = "1",
+        default_missing_value = "16",
         value_parser = parse_surface_count
     )]
     surfaces: u32,
@@ -2580,6 +2583,12 @@ impl ViewerArguments {
                 return Err("WebRTC render-target indices must be unique".into());
             }
         }
+        if let Some(indices) = &self.track_render_targets {
+            let mut unique = HashSet::new();
+            if indices.iter().any(|index| !unique.insert(*index)) {
+                return Err("render-target indices must be unique".into());
+            }
+        }
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
@@ -2610,8 +2619,16 @@ fn parse_arguments(
     .into_options()
 }
 
-fn parse_render_target_count(value: &str) -> Result<u32, String> {
-    parse_bounded_count(value, "render-target")
+fn parse_render_target_index(value: &str) -> Result<u32, String> {
+    let index = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid render-target index '{value}'; expected 0..=15"))?;
+    if index >= 16 {
+        return Err(format!(
+            "invalid render-target index '{value}'; expected 0..=15"
+        ));
+    }
+    Ok(index)
 }
 
 fn parse_webrtc_target(value: &str) -> Result<u32, String> {
@@ -2659,7 +2676,7 @@ mod argument_tests {
         let options = arguments(&["--", "game.exe"])?;
         assert_eq!(options.api, ViewerApi::D3d12);
         assert_eq!(options.track_render_targets, None);
-        assert_eq!(options.surfaces, 1);
+        assert_eq!(options.surfaces, 16);
         assert_eq!(options.skip_surfaces, 0);
         assert!(options.isolate);
         assert!(!options.force_keyed_mutex);
@@ -2731,7 +2748,7 @@ mod argument_tests {
             "target-argument",
         ])?;
         assert_eq!(options.api, ViewerApi::Vulkan);
-        assert_eq!(options.track_render_targets, Some(1));
+        assert_eq!(options.track_render_targets, Some(vec![0]));
         assert!(!options.isolate);
         assert!(options.force_keyed_mutex);
         assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
@@ -2739,26 +2756,26 @@ mod argument_tests {
     }
 
     #[test]
-    fn accepts_a_render_target_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
+    fn accepts_render_target_indices_and_defaults_to_zero() -> Result<(), Box<dyn Error>> {
         assert_eq!(
-            arguments(&["--track-render-targets", "2", "--", "game.exe"])?.track_render_targets,
-            Some(2)
+            arguments(&["--track-render-targets", "0,1", "--", "game.exe"])?.track_render_targets,
+            Some(vec![0, 1])
         );
         assert_eq!(
             arguments(&["--track-render-targets", "--", "game.exe"])?.track_render_targets,
-            Some(1)
+            Some(vec![0])
         );
         assert_eq!(
-            arguments(&["--track-render-targets=3", "--", "game.exe"])?.track_render_targets,
-            Some(3)
+            arguments(&["--track-render-targets=1", "--", "game.exe"])?.track_render_targets,
+            Some(vec![1])
         );
         Ok(())
     }
 
     #[test]
-    fn rejects_an_invalid_render_target_count() {
-        assert!(arguments(&["--track-render-targets", "0", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--track-render-targets=17", "--", "game.exe"]).is_err());
+    fn rejects_invalid_render_target_indices() {
+        assert!(arguments(&["--track-render-targets", "16", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--track-render-targets=0,0", "--", "game.exe"]).is_err());
     }
 
     #[test]
@@ -2790,7 +2807,7 @@ mod argument_tests {
             arguments(&["--surfaces", "2", "--", "game.exe"])?.surfaces,
             2
         );
-        assert_eq!(arguments(&["--surfaces", "--", "game.exe"])?.surfaces, 1);
+        assert_eq!(arguments(&["--surfaces", "--", "game.exe"])?.surfaces, 16);
         assert_eq!(arguments(&["--surfaces=3", "--", "game.exe"])?.surfaces, 3);
         Ok(())
     }
@@ -3111,7 +3128,7 @@ fn launch_target(
     target: &[String],
     layer_dir: &Path,
     session: &str,
-    track_render_targets: Option<u32>,
+    track_render_targets: Option<Vec<u32>>,
     graph_tracking: bool,
     force_keyed_mutex: bool,
     hooks: &[HookBackend],
@@ -3209,14 +3226,20 @@ fn launch_target(
             OsString::from("VK_LAYER_SNOWGLASS_capture"),
         ));
     }
-    if let Some(count) = track_render_targets {
+    if let Some(indices) = track_render_targets {
         environment.push((
             OsString::from("SNOWGLASS_TRACK_RENDER_TARGET"),
             OsString::from("1"),
         ));
         environment.push((
             OsString::from("SNOWGLASS_TRACK_RENDER_TARGETS"),
-            OsString::from(count.to_string()),
+            OsString::from(
+                indices
+                    .iter()
+                    .map(|index| index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
         ));
         if graph_tracking {
             environment.push((

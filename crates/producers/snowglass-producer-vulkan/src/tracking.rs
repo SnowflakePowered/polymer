@@ -498,12 +498,31 @@ pub fn tracking_enabled() -> bool {
     std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_some()
 }
 
+/// The render-target indices to capture, in the caller's requested order.
+/// Each index selects into the deterministically ordered selection and
+/// becomes its own capture stream.
+pub fn tracked_render_target_indices() -> Vec<usize> {
+    static INDICES: LazyLock<Vec<usize>> = LazyLock::new(|| {
+        std::env::var("SNOWGLASS_TRACK_RENDER_TARGETS")
+            .ok()
+            .and_then(|value| {
+                value
+                    .split(',')
+                    .map(|index| index.trim().parse::<usize>().ok())
+                    .collect::<Option<Vec<_>>>()
+            })
+            .filter(|indices| !indices.is_empty())
+            .unwrap_or_else(|| vec![0])
+    });
+    INDICES.clone()
+}
+
+/// How many selection entries the requested indices reach into.
 pub fn tracked_render_target_count() -> usize {
-    std::env::var("SNOWGLASS_TRACK_RENDER_TARGETS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|count| *count != 0)
-        .unwrap_or(1)
+    tracked_render_target_indices()
+        .iter()
+        .max()
+        .map_or(1, |max| max + 1)
 }
 
 #[derive(Clone, Copy)]
