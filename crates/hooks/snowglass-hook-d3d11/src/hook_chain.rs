@@ -1,11 +1,10 @@
 macro_rules! resolve_terminal {
     (($($argument:ident),*); resolve with detour $detours:path, $field:ident -> $fallback:expr;) => {
         || {
-            snowglass_platform_windows::call_original(
-                $detours.get().map(|detours| &detours.$field),
-                $fallback,
-                |detour| unsafe { detour.call($($argument),*) },
-            )
+            match $detours.get().map(|detours| &detours.$field) {
+                Some(detour) if detour.is_enabled() => unsafe { detour.call($($argument),*) },
+                Some(_) | None => $fallback,
+            }
         }
     };
     (($($argument:ident),*); resolve with $terminal:path;) => {

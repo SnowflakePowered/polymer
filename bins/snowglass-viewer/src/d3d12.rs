@@ -59,6 +59,7 @@ struct ImportedSurface {
     cache_state: D3D12_RESOURCE_STATES,
     latest: Option<FrameReady>,
     display_frame: Option<FrameReady>,
+    video_completion_value: u64,
 }
 
 pub(crate) struct D3d12Compositor {
@@ -87,10 +88,18 @@ pub(crate) struct D3d12Compositor {
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     textures: HashMap<TextureId, EguiTexture>,
     free_descriptors: Vec<u32>,
+    publish_video: bool,
+    video_completion_fence: ID3D12Fence,
+    video_completion_value: u64,
+    completed_video: Vec<super::webrtc::VideoFrame>,
 }
 
 impl D3d12Compositor {
-    pub(crate) fn new(window: &Window, adapter: AdapterLuid) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(
+        window: &Window,
+        adapter: AdapterLuid,
+        publish_video: bool,
+    ) -> Result<Self, Box<dyn Error>> {
         let consumer = D3d12ConsumerDevice::new(adapter)?;
         let size = window.inner_size();
         let extent = (size.width.max(1), size.height.max(1));
@@ -171,6 +180,7 @@ impl D3d12Compositor {
             )?;
             command_list.Close()?;
             let fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+            let video_completion_fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
             let fence_event = CreateEventW(None, false, false, None)?;
 
             Ok(Self {
@@ -197,6 +207,10 @@ impl D3d12Compositor {
                 mutex_copy: None,
                 textures: HashMap::new(),
                 free_descriptors: (FIRST_EGUI_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
+                publish_video,
+                video_completion_fence,
+                video_completion_value: 0,
+                completed_video: Vec::new(),
             })
         }
     }
@@ -255,6 +269,7 @@ impl D3d12Compositor {
             cache_state: D3D12_RESOURCE_STATE_COMMON,
             latest: None,
             display_frame: None,
+            video_completion_value: 0,
         });
         Ok(())
     }
@@ -366,8 +381,10 @@ impl D3d12Compositor {
         self.upload_texture_deltas(frame_index, &output.textures_delta.set)?;
 
         let mut release_values = Vec::new();
+        let mut video_captures = Vec::new();
         for index in 0..self.surfaces.len() {
             let mut surface = self.surfaces.remove(index);
+            let mut captured = None;
             let pending = surface.latest.and_then(|frame| {
                 surface
                     .imported
@@ -375,6 +392,13 @@ impl D3d12Compositor {
                     .map(|source| (frame, source.clone(), surface.imported.uses_keyed_mutex()))
             });
             if let Some((frame, source, keyed_mutex)) = pending {
+                if self.publish_video && surface.video_completion_value != 0 {
+                    unsafe {
+                        self.consumer
+                            .queue()
+                            .Wait(&self.video_completion_fence, surface.video_completion_value)?;
+                    }
+                }
                 if keyed_mutex {
                     let acquired = surface
                         .imported
@@ -390,6 +414,7 @@ impl D3d12Compositor {
                         copied?;
                         surface.display_frame = Some(frame);
                         surface.latest = None;
+                        captured = Some(frame);
                     }
                 } else {
                     surface
@@ -425,8 +450,18 @@ impl D3d12Compositor {
                     surface.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
                     surface.display_frame = Some(frame);
                     surface.latest = None;
+                    captured = Some(frame);
                     release_values.push((surface.connection, frame.sync_value));
                 }
+            }
+            if self.publish_video && captured.is_some() {
+                video_captures.push((
+                    surface.connection,
+                    surface.cache.clone(),
+                    surface.imported.width,
+                    surface.imported.height,
+                    DXGI_FORMAT(surface.imported.format as i32),
+                ));
             }
             self.surfaces.insert(index, surface);
         }
@@ -487,6 +522,33 @@ impl D3d12Compositor {
                 .queue()
                 .Signal(&self.fence, self.fence_value)?;
             self.frame_values[frame_index] = self.fence_value;
+            for (connection, resource, width, height, format) in video_captures {
+                self.video_completion_value += 1;
+                let completion_value = self.video_completion_value;
+                if let Some(surface) = self
+                    .surfaces
+                    .iter_mut()
+                    .find(|surface| surface.connection == connection)
+                {
+                    surface.video_completion_value = completion_value;
+                }
+                self.completed_video.push(super::webrtc::VideoFrame {
+                    connection,
+                    width,
+                    height,
+                    data: super::webrtc::VideoFrameData::D3d12(super::webrtc::D3d12Frame {
+                        device: self.consumer.device().clone(),
+                        resource,
+                        state: D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        format,
+                        ready_fence: self.fence.clone(),
+                        ready_value: self.fence_value,
+                        completion_fence: self.video_completion_fence.clone(),
+                        completion_value,
+                        completion_submitted: false,
+                    }),
+                });
+            }
             self.swapchain.Present(1, DXGI_PRESENT(0)).ok()?;
         }
         for texture_id in &output.textures_delta.free {
@@ -496,6 +558,10 @@ impl D3d12Compositor {
             }
         }
         Ok(true)
+    }
+
+    pub(crate) fn take_video_frames(&mut self) -> Vec<super::webrtc::VideoFrame> {
+        std::mem::take(&mut self.completed_video)
     }
 
     fn draw_content(&mut self, frame_index: usize) -> Result<(), Box<dyn Error>> {

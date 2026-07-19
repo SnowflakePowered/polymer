@@ -19,6 +19,7 @@ use std::{
     env,
     error::Error,
     ffi::{OsStr, OsString},
+    net::SocketAddr,
     path::Path,
     process::{Child, Command},
     sync::{
@@ -38,6 +39,7 @@ use winit::{
 };
 
 mod d3d12;
+mod webrtc;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 
@@ -212,6 +214,21 @@ struct ImportedVulkanSurface {
     imported: ImportedImageRing,
     latest: Option<FrameReady>,
     last_released_frame: u64,
+    video_readbacks: Vec<VulkanVideoReadback>,
+    video_cache: Option<VulkanVideoCache>,
+    video_completion_value: u64,
+}
+
+struct VulkanVideoCache {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    initialized: bool,
+}
+
+struct VulkanVideoReadback {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    pending: Option<FrameReady>,
 }
 
 struct DirectCompositor {
@@ -223,6 +240,13 @@ struct DirectCompositor {
     device: ash::Device,
     queue: vk::Queue,
     queue_family: u32,
+    video_queue: Option<vk::Queue>,
+    video_queue_family: Option<u32>,
+    video_conversion_queue: Option<vk::Queue>,
+    video_ready: Option<vk::Semaphore>,
+    video_completion: Option<vk::Semaphore>,
+    video_ready_value: u64,
+    video_completion_value: u64,
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
@@ -241,6 +265,8 @@ struct DirectCompositor {
     surfaces: Vec<ImportedVulkanSurface>,
     keyed_mutex_enabled: bool,
     egui_renderer: Option<EguiRenderer>,
+    publish_video: bool,
+    completed_video: Vec<webrtc::VideoFrame>,
 }
 
 enum ViewerCompositor {
@@ -326,7 +352,9 @@ fn expand_hook_choices(
             }
             continue;
         }
-        let hook = choice.backend().expect("non-auto hook choice has a backend");
+        let hook = choice
+            .backend()
+            .expect("non-auto hook choice has a backend");
         if hooks.contains(&hook) {
             return Err(format!("hook '{choice:?}' is listed more than once").into());
         }
@@ -388,13 +416,16 @@ fn should_replace_same_window_backend(hooks: &[HookBackend], existing: u8, incom
 }
 
 impl ViewerCompositor {
-    fn new(window: &Window, api: ViewerApi) -> Result<Self, Box<dyn Error>> {
+    fn new(window: &Window, api: ViewerApi, publish_video: bool) -> Result<Self, Box<dyn Error>> {
         match api {
             // D3D12 device selection requires the source adapter LUID, which arrives
             // with StreamReady. Avoid creating and immediately replacing a Vulkan surface.
             ViewerApi::D3d12 => Ok(Self::Empty),
             ViewerApi::Vulkan => Ok(Self::Vulkan(Box::new(DirectCompositor::new(
-                window, None, true,
+                window,
+                None,
+                true,
+                publish_video,
             )?))),
         }
     }
@@ -405,6 +436,7 @@ impl ViewerCompositor {
         connection: u64,
         stream: &StreamReady,
         api: ViewerApi,
+        publish_video: bool,
     ) -> Result<(), Box<dyn Error>> {
         if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
             let matches =
@@ -414,6 +446,7 @@ impl ViewerCompositor {
                 *self = Self::D3d12(Box::new(d3d12::D3d12Compositor::new(
                     window,
                     stream.adapter_luid,
+                    publish_video,
                 )?));
             }
             let Self::D3d12(value) = self else {
@@ -434,6 +467,7 @@ impl ViewerCompositor {
                 window,
                 preferred,
                 needs_keyed_mutex,
+                publish_video,
             )?));
         }
         let Self::Vulkan(value) = self else {
@@ -485,6 +519,14 @@ impl ViewerCompositor {
             Self::Empty => Ok(false),
         }
     }
+
+    fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame> {
+        match self {
+            Self::Vulkan(value) => std::mem::take(&mut value.completed_video),
+            Self::D3d12(value) => value.take_video_frames(),
+            Self::Empty => Vec::new(),
+        }
+    }
 }
 
 impl DirectCompositor {
@@ -492,6 +534,7 @@ impl DirectCompositor {
         window: &Window,
         preferred_adapter: Option<AdapterLuid>,
         enable_keyed_mutex: bool,
+        publish_video: bool,
     ) -> Result<Self, Box<dyn Error>> {
         // SAFETY: all Vulkan children are owned by Self and destroyed in reverse
         // dependency order after the device becomes idle.
@@ -521,7 +564,7 @@ impl DirectCompositor {
             if enable_keyed_mutex {
                 required.push(ash::khr::win32_keyed_mutex::NAME);
             }
-            let (physical_device, queue_family) = instance
+            let (physical_device, queue_family, video_queue_family) = instance
                 .enumerate_physical_devices()?
                 .into_iter()
                 .find_map(|physical| {
@@ -541,44 +584,114 @@ impl DirectCompositor {
                     if !supports_extensions {
                         return None;
                     }
-                    instance
-                        .get_physical_device_queue_family_properties(physical)
-                        .iter()
-                        .enumerate()
-                        .find_map(|(index, properties)| {
-                            let graphics =
-                                properties.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-                            let present = surface_loader
-                                .get_physical_device_surface_support(
-                                    physical,
-                                    index as u32,
-                                    surface,
-                                )
-                                .ok()?;
-                            (graphics && present).then_some((physical, index as u32))
+                    let video_extensions = [
+                        ash::khr::video_queue::NAME,
+                        ash::khr::video_encode_queue::NAME,
+                        ash::khr::video_encode_h264::NAME,
+                        ash::khr::synchronization2::NAME,
+                    ];
+                    let supports_video_extensions = publish_video
+                        && video_extensions.iter().all(|required| {
+                            available.iter().any(|property| {
+                                std::ffi::CStr::from_ptr(property.extension_name.as_ptr())
+                                    == *required
+                            })
+                        });
+                    let families = instance.get_physical_device_queue_family_properties(physical);
+                    let video_operations = queue_family_video_operations(&instance, physical);
+                    let graphics_family =
+                        families
+                            .iter()
+                            .enumerate()
+                            .find_map(|(index, properties)| {
+                                let graphics =
+                                    properties.queue_flags.contains(vk::QueueFlags::GRAPHICS);
+                                let present = surface_loader
+                                    .get_physical_device_surface_support(
+                                        physical,
+                                        index as u32,
+                                        surface,
+                                    )
+                                    .ok()?;
+                                (graphics && present).then_some(index as u32)
+                            })?;
+                    let video_family = (supports_video_extensions
+                        && families[graphics_family as usize].queue_count >= 2)
+                        .then(|| {
+                            families
+                                .iter()
+                                .enumerate()
+                                .find(|(index, properties)| {
+                                    *index as u32 != graphics_family
+                                        && properties
+                                            .queue_flags
+                                            .contains(vk::QueueFlags::VIDEO_ENCODE_KHR)
+                                        && video_operations[*index]
+                                            .contains(vk::VideoCodecOperationFlagsKHR::ENCODE_H264)
+                                })
+                                .map(|(index, _)| index as u32)
                         })
+                        .flatten();
+                    Some((physical, graphics_family, video_family))
                 })
                 .ok_or("no Vulkan device supports capture import and presentation")?;
 
-            let priorities = [1.0];
+            let priorities = if video_queue_family.is_some() {
+                vec![1.0, 1.0]
+            } else {
+                vec![1.0]
+            };
+            let video_priorities = [1.0];
             let queue_info = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family)
                 .queue_priorities(&priorities);
-            let extension_names = required
+            let video_queue_info = video_queue_family.map(|family| {
+                vk::DeviceQueueCreateInfo::default()
+                    .queue_family_index(family)
+                    .queue_priorities(&video_priorities)
+            });
+            let mut queue_infos = vec![queue_info];
+            if let Some(info) = video_queue_info {
+                queue_infos.push(info);
+            }
+            let mut extension_names = required
                 .iter()
                 .map(|name| name.as_ptr())
                 .collect::<Vec<_>>();
+            if video_queue_family.is_some() {
+                extension_names.extend([
+                    ash::khr::video_queue::NAME.as_ptr(),
+                    ash::khr::video_encode_queue::NAME.as_ptr(),
+                    ash::khr::video_encode_h264::NAME.as_ptr(),
+                    ash::khr::synchronization2::NAME.as_ptr(),
+                ]);
+            }
             let mut timeline_features =
                 vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
             let device = instance.create_device(
                 physical_device,
                 &vk::DeviceCreateInfo::default()
-                    .queue_create_infos(std::slice::from_ref(&queue_info))
+                    .queue_create_infos(&queue_infos)
                     .enabled_extension_names(&extension_names)
                     .push_next(&mut timeline_features),
                 None,
             )?;
             let queue = device.get_device_queue(queue_family, 0);
+            let video_queue = video_queue_family.map(|family| device.get_device_queue(family, 0));
+            let video_conversion_queue =
+                video_queue_family.map(|_| device.get_device_queue(queue_family, 1));
+            let (video_ready, video_completion) = if video_queue.is_some() {
+                let mut timeline = vk::SemaphoreTypeCreateInfo::default()
+                    .semaphore_type(vk::SemaphoreType::TIMELINE)
+                    .initial_value(0);
+                let create = vk::SemaphoreCreateInfo::default().push_next(&mut timeline);
+                (
+                    Some(device.create_semaphore(&create, None)?),
+                    Some(device.create_semaphore(&create, None)?),
+                )
+            } else {
+                (None, None)
+            };
             let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
             let capabilities = surface_loader
                 .get_physical_device_surface_capabilities(physical_device, surface)?;
@@ -695,12 +808,14 @@ impl DirectCompositor {
             for _ in 0..FRAMES_IN_FLIGHT {
                 image_available
                     .push(device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?);
-                render_finished
-                    .push(device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?);
                 fences.push(device.create_fence(
                     &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
                     None,
                 )?);
+            }
+            for _ in &swapchain_images {
+                render_finished
+                    .push(device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?);
             }
             let egui_renderer = EguiRenderer::with_default_allocator(
                 &instance,
@@ -723,6 +838,13 @@ impl DirectCompositor {
                 device,
                 queue,
                 queue_family,
+                video_queue,
+                video_queue_family,
+                video_conversion_queue,
+                video_ready,
+                video_completion,
+                video_ready_value: 0,
+                video_completion_value: 0,
                 swapchain_loader,
                 swapchain,
                 swapchain_images,
@@ -741,6 +863,8 @@ impl DirectCompositor {
                 surfaces: Vec::new(),
                 keyed_mutex_enabled: enable_keyed_mutex,
                 egui_renderer: Some(egui_renderer),
+                publish_video,
+                completed_video: Vec::new(),
             })
         }
     }
@@ -757,11 +881,44 @@ impl DirectCompositor {
             self.physical_device,
             stream,
         )?;
+        let video_readbacks = if self.publish_video && self.video_queue.is_none() {
+            unsafe {
+                create_vulkan_video_readbacks(
+                    &self.instance,
+                    &self.device,
+                    self.physical_device,
+                    imported.width,
+                    imported.height,
+                    imported.format,
+                )?
+            }
+        } else {
+            Vec::new()
+        };
+        let video_cache = if self.publish_video && self.video_queue.is_some() {
+            Some(unsafe {
+                create_vulkan_video_cache(
+                    &self.instance,
+                    &self.device,
+                    self.physical_device,
+                    imported.width,
+                    imported.height,
+                    imported.format,
+                    self.queue_family,
+                    self.video_queue_family.expect("video queue is present"),
+                )?
+            })
+        } else {
+            None
+        };
         self.surfaces.push(ImportedVulkanSurface {
             connection,
             imported,
             latest: None,
             last_released_frame: 0,
+            video_readbacks,
+            video_cache,
+            video_completion_value: 0,
         });
         Ok(())
     }
@@ -802,7 +959,13 @@ impl DirectCompositor {
                 )?;
             }
         }
-        self.surfaces.remove(index);
+        let surface = self.surfaces.remove(index);
+        unsafe {
+            destroy_vulkan_video_readbacks(&self.device, surface.video_readbacks);
+            if let Some(cache) = surface.video_cache {
+                destroy_vulkan_video_cache(&self.device, cache);
+            }
+        };
         Ok(())
     }
 
@@ -819,7 +982,17 @@ impl DirectCompositor {
                 }
             }
         }
-        self.surfaces.clear();
+        for mut surface in self.surfaces.drain(..) {
+            unsafe {
+                destroy_vulkan_video_readbacks(
+                    &self.device,
+                    std::mem::take(&mut surface.video_readbacks),
+                );
+                if let Some(cache) = surface.video_cache.take() {
+                    destroy_vulkan_video_cache(&self.device, cache);
+                }
+            };
+        }
         Ok(())
     }
 
@@ -880,6 +1053,13 @@ impl DirectCompositor {
             let images = self.swapchain_loader.get_swapchain_images(replacement)?;
             let views = create_swapchain_views(&self.device, &images, self.surface_format.format)?;
             let framebuffers = create_framebuffers(&self.device, self.render_pass, &views, extent)?;
+            let render_finished = images
+                .iter()
+                .map(|_| {
+                    self.device
+                        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer, None);
@@ -887,12 +1067,16 @@ impl DirectCompositor {
             for view in self.swapchain_views.drain(..) {
                 self.device.destroy_image_view(view, None);
             }
+            for semaphore in self.render_finished.drain(..) {
+                self.device.destroy_semaphore(semaphore, None);
+            }
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
             self.swapchain = replacement;
             self.swapchain_images = images;
             self.swapchain_views = views;
             self.framebuffers = framebuffers;
+            self.render_finished = render_finished;
             self.swapchain_initialized = vec![false; self.swapchain_images.len()];
             self.extent = extent;
             Ok(true)
@@ -910,6 +1094,34 @@ impl DirectCompositor {
             let flight = self.frame_index as usize % FRAMES_IN_FLIGHT;
             self.device
                 .wait_for_fences(&[self.fences[flight]], true, u64::MAX)?;
+            for surface in &mut self.surfaces {
+                let Some(readback) = surface.video_readbacks.get_mut(flight) else {
+                    continue;
+                };
+                let Some(frame) = readback.pending.take() else {
+                    continue;
+                };
+                let byte_len =
+                    surface.imported.width as usize * surface.imported.height as usize * 4;
+                let mapped = self.device.map_memory(
+                    readback.memory,
+                    0,
+                    byte_len as u64,
+                    vk::MemoryMapFlags::empty(),
+                )?;
+                let packed = std::slice::from_raw_parts(mapped.cast::<u8>(), byte_len);
+                self.completed_video.push(webrtc::VideoFrame {
+                    connection: surface.connection,
+                    width: surface.imported.width,
+                    height: surface.imported.height,
+                    data: webrtc::VideoFrameData::Rgba(vulkan_pixels_to_rgba(
+                        surface.imported.format,
+                        packed,
+                    )),
+                });
+                self.device.unmap_memory(readback.memory);
+                let _ = frame;
+            }
             for surface in self
                 .surfaces
                 .iter()
@@ -990,7 +1202,8 @@ impl DirectCompositor {
                 .count() as u32;
             let cell_height = self.extent.height / visible_count.max(1);
             let mut visible_index = 0;
-            for surface in &self.surfaces {
+            let mut video_copies = Vec::new();
+            for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
                 let imported = &surface.imported;
                 let Some(frame) = surface.latest else {
                     continue;
@@ -1061,6 +1274,96 @@ impl DirectCompositor {
                             ])],
                         vk::Filter::LINEAR,
                     );
+                    if let Some(cache) = surface.video_cache.as_mut() {
+                        let cache_to_destination = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(if cache.initialized {
+                                vk::AccessFlags::TRANSFER_READ
+                            } else {
+                                vk::AccessFlags::empty()
+                            })
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .old_layout(if cache.initialized {
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL
+                            } else {
+                                vk::ImageLayout::UNDEFINED
+                            })
+                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .image(cache.image)
+                            .subresource_range(color_range());
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[cache_to_destination],
+                        );
+                        self.device.cmd_copy_image(
+                            command,
+                            source,
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            cache.image,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            &[vk::ImageCopy::default()
+                                .src_subresource(color_layers())
+                                .dst_subresource(color_layers())
+                                .extent(vk::Extent3D {
+                                    width: imported.width,
+                                    height: imported.height,
+                                    depth: 1,
+                                })],
+                        );
+                        let cache_to_source = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                            .image(cache.image)
+                            .subresource_range(color_range());
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[cache_to_source],
+                        );
+                        cache.initialized = true;
+                        video_copies.push((surface_index, frame));
+                    }
+                    if let Some(readback) = surface.video_readbacks.get(flight) {
+                        self.device.cmd_copy_image_to_buffer(
+                            command,
+                            source,
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            readback.buffer,
+                            &[vk::BufferImageCopy::default()
+                                .image_subresource(color_layers())
+                                .image_extent(vk::Extent3D {
+                                    width: imported.width,
+                                    height: imported.height,
+                                    depth: 1,
+                                })],
+                        );
+                        let to_host = vk::BufferMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .dst_access_mask(vk::AccessFlags::HOST_READ)
+                            .buffer(readback.buffer)
+                            .offset(0)
+                            .size(vk::WHOLE_SIZE);
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::HOST,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[to_host],
+                            &[],
+                        );
+                        video_copies.push((surface_index, frame));
+                    }
                     let mut source_to_general = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::TRANSFER_READ)
                         .dst_access_mask(vk::AccessFlags::MEMORY_READ)
@@ -1147,9 +1450,33 @@ impl DirectCompositor {
                     wait_stages.push(vk::PipelineStageFlags::TRANSFER);
                 }
             }
+            let video_wait_value = self
+                .surfaces
+                .iter()
+                .filter(|surface| surface.video_cache.is_some() && surface.latest.is_some())
+                .map(|surface| surface.video_completion_value)
+                .max()
+                .unwrap_or(0);
+            if video_wait_value != 0 {
+                waits.push(self.video_completion.expect("video completion semaphore"));
+                wait_values.push(video_wait_value);
+                wait_stages.push(vk::PipelineStageFlags::TRANSFER);
+            }
             let commands = [command];
-            let mut signals = vec![self.render_finished[flight]];
+            // Presentation may continue using its wait semaphore after the
+            // render fence signals. Indexing by acquired image guarantees that
+            // the image has returned from presentation before reusing it.
+            let render_complete = self.render_finished[image_index as usize];
+            let mut signals = vec![render_complete];
             let mut signal_values = vec![0];
+            let hardware_video = video_copies
+                .iter()
+                .any(|(index, _)| self.surfaces[*index].video_cache.is_some());
+            if hardware_video {
+                self.video_ready_value += 1;
+                signals.push(self.video_ready.expect("video ready semaphore"));
+                signal_values.push(self.video_ready_value);
+            }
             let mut releases = Vec::new();
             for (index, surface) in self.surfaces.iter().enumerate() {
                 if let Some(frame) = surface.latest
@@ -1197,6 +1524,43 @@ impl DirectCompositor {
             }
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
+            for (index, frame) in video_copies {
+                if let Some(image) = self.surfaces[index]
+                    .video_cache
+                    .as_ref()
+                    .map(|cache| cache.image)
+                {
+                    self.video_completion_value += 1;
+                    let completion_value = self.video_completion_value;
+                    self.surfaces[index].video_completion_value = completion_value;
+                    self.completed_video.push(webrtc::VideoFrame {
+                        connection: self.surfaces[index].connection,
+                        width: self.surfaces[index].imported.width,
+                        height: self.surfaces[index].imported.height,
+                        data: webrtc::VideoFrameData::Vulkan(webrtc::VulkanFrame {
+                            instance: self.instance.clone(),
+                            physical_device: self.physical_device,
+                            device: self.device.clone(),
+                            queue: self.video_queue.expect("video queue"),
+                            queue_family: self.video_queue_family.expect("video queue family"),
+                            conversion_queue: self
+                                .video_conversion_queue
+                                .expect("video conversion queue"),
+                            conversion_queue_family: self.queue_family,
+                            image,
+                            format: self.surfaces[index].imported.format,
+                            layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            ready: self.video_ready.expect("video ready semaphore"),
+                            ready_value: self.video_ready_value,
+                            completion: self.video_completion.expect("video completion semaphore"),
+                            completion_value,
+                            completion_submitted: false,
+                        }),
+                    });
+                } else {
+                    self.surfaces[index].video_readbacks[flight].pending = Some(frame);
+                }
+            }
             for (index, frame_number) in releases {
                 self.surfaces[index].last_released_frame = frame_number;
             }
@@ -1232,6 +1596,12 @@ impl Drop for DirectCompositor {
             let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
             let _ = self.device.device_wait_idle();
             self.egui_renderer = None;
+            for surface in &mut self.surfaces {
+                destroy_vulkan_video_readbacks(
+                    &self.device,
+                    std::mem::take(&mut surface.video_readbacks),
+                );
+            }
             for fence in self.fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }
@@ -1239,6 +1609,12 @@ impl Drop for DirectCompositor {
                 self.device.destroy_semaphore(semaphore, None);
             }
             for semaphore in self.image_available.drain(..) {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            if let Some(semaphore) = self.video_ready.take() {
+                self.device.destroy_semaphore(semaphore, None);
+            }
+            if let Some(semaphore) = self.video_completion.take() {
                 self.device.destroy_semaphore(semaphore, None);
             }
             self.device.destroy_command_pool(self.command_pool, None);
@@ -1262,10 +1638,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_target()?;
     let target = options.target;
     let track_render_targets = options.track_render_targets;
-    let surface_limit = options.surfaces;
+    let webrtc_targets = options.webrtc.clone();
+    let surface_limit = options.surfaces.max(
+        webrtc_targets
+            .as_ref()
+            .and_then(|targets| targets.iter().max().copied())
+            .map_or(1, |index| index.saturating_add(1)),
+    );
     let mut remaining_surface_skips = options.skip_surfaces;
     let isolate = options.isolate;
     let viewer_api = options.api;
+    let webrtc = webrtc_targets
+        .as_ref()
+        .map(|_| webrtc::Publisher::start(options.bind_webrtc))
+        .transpose()?;
     let executable_dir = env::current_exe()?
         .parent()
         .ok_or("viewer executable has no parent directory")?
@@ -1292,6 +1678,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &executable_dir,
         &session,
         track_render_targets,
+        options.graph_tracking,
         options.force_keyed_mutex,
         &hooks,
         isolate,
@@ -1331,7 +1718,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         window.theme(),
         None,
     );
-    let mut compositor = ViewerCompositor::new(&window, viewer_api)?;
+    let publish_video = webrtc.is_some();
+    let mut compositor = ViewerCompositor::new(&window, viewer_api, publish_video)?;
     let frequency = performance_frequency().unwrap_or(1) as f64;
     let mut stats = Statistics {
         sample_started: Some(Instant::now()),
@@ -1339,6 +1727,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut cursor_position = (0, 0);
     let mut active_capture_connections = HashMap::<u64, (i64, u8)>::new();
+    let mut stream_indices = HashMap::<u64, u32>::new();
     let mut skipped_surface_windows = HashSet::<(i64, u8)>::new();
     let mut skipped_surface_backends = HashSet::<u8>::new();
     let mut active_backend = "Waiting";
@@ -1524,7 +1913,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         .then(|| {
                                             active_capture_connections.iter().find_map(
                                                 |(&existing, &(window, backend))| {
-                                                    (window == stream.source_window)
+                                                    (window == stream.source_window
+                                                        && (backend != surface_identity.1
+                                                            || active_capture_connections.len()
+                                                                >= surface_limit as usize))
                                                         .then_some((existing, backend))
                                                 },
                                             )
@@ -1544,6 +1936,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             continue;
                                         }
                                         active_capture_connections.remove(&existing);
+                                        stream_indices.remove(&existing);
+                                        if let Some(publisher) = &webrtc {
+                                            publisher.remove_stream(existing);
+                                        }
                                         revoked_connections
                                             .lock()
                                             .unwrap_or_else(|error| error.into_inner())
@@ -1568,6 +1964,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     );
                                     if let Some(existing) = provisional {
                                         active_capture_connections.remove(&existing);
+                                        stream_indices.remove(&existing);
+                                        if let Some(publisher) = &webrtc {
+                                            publisher.remove_stream(existing);
+                                        }
                                         revoked_connections
                                             .lock()
                                             .unwrap_or_else(|error| error.into_inner())
@@ -1605,6 +2005,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         .map(|(existing, _)| existing);
                                     if let Some(existing) = victim {
                                         active_capture_connections.remove(&existing);
+                                        stream_indices.remove(&existing);
+                                        if let Some(publisher) = &webrtc {
+                                            publisher.remove_stream(existing);
+                                        }
                                         revoked_connections
                                             .lock()
                                             .unwrap_or_else(|error| error.into_inner())
@@ -1644,13 +2048,31 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
                                 }
+                                let stream_index = stream_indices
+                                    .get(&connection)
+                                    .copied()
+                                    .or_else(|| {
+                                        (0..surface_limit)
+                                            .find(|index| !stream_indices.values().any(|v| v == index))
+                                    })
+                                    .expect("surface limit admitted a stream index");
+                                let publish_stream = webrtc_targets
+                                    .as_ref()
+                                    .is_some_and(|targets| targets.contains(&stream_index));
                                 match compositor.import_stream(
                                     &window,
                                     connection,
                                     &stream,
                                     viewer_api,
+                                    publish_video,
                                 ) {
                                     Ok(()) => {
+                                        stream_indices.insert(connection, stream_index);
+                                        if publish_stream
+                                            && let Some(publisher) = &webrtc
+                                        {
+                                            publisher.add_stream(connection, stream_index);
+                                        }
                                         active_capture_connections
                                             .insert(connection, surface_identity);
                                         // A deferred or replaced graphics backend has no copy
@@ -1739,6 +2161,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             CaptureEvent::Disconnected(connection) => {
+                                if let Some(publisher) = &webrtc {
+                                    publisher.remove_stream(connection);
+                                }
+                                stream_indices.remove(&connection);
                                 revoked_connections
                                     .lock()
                                     .unwrap_or_else(|error| error.into_inner())
@@ -1843,6 +2269,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         Err(error) => {
                             eprintln!("snowglass: direct composition failed: {error}");
                             target.exit();
+                        }
+                    }
+                    if let Some(publisher) = &webrtc {
+                        for frame in compositor.take_video_frames() {
+                            publisher.publish(frame);
                         }
                     }
                 }
@@ -2034,12 +2465,15 @@ fn spawn_target_monitor(
 struct ViewerOptions {
     target: Vec<String>,
     track_render_targets: Option<u32>,
+    graph_tracking: bool,
     surfaces: u32,
     skip_surfaces: u32,
     isolate: bool,
     api: ViewerApi,
     force_keyed_mutex: bool,
     hooks: Vec<HookBackend>,
+    webrtc: Option<Vec<u32>>,
+    bind_webrtc: SocketAddr,
 }
 
 #[derive(Parser)]
@@ -2058,6 +2492,32 @@ struct ViewerArguments {
         value_parser = parse_render_target_count
     )]
     track_render_targets: Option<u32>,
+
+    /// Resolve tracked render targets through the presentation dependency
+    /// graph (offscreen screens behind compositor blits and copies) instead
+    /// of the scissor and one-hop heuristics.
+    #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
+    graph_tracking: bool,
+
+    /// Publish selected render-target indices as tracks on one WebRTC stream.
+    #[arg(
+        long,
+        num_args = 0..,
+        default_missing_value = "0",
+        value_delimiter = ',',
+        value_name = "INDEXES",
+        value_parser = parse_webrtc_target
+    )]
+    webrtc: Option<Vec<u32>>,
+
+    /// Address for the WebRTC HTTP signaling server.
+    #[arg(
+        long,
+        default_value = "127.0.0.1:8080",
+        value_name = "IP:PORT",
+        requires = "webrtc"
+    )]
+    bind_webrtc: SocketAddr,
 
     /// Maximum number of capture surfaces to display.
     #[arg(
@@ -2114,15 +2574,24 @@ impl ViewerArguments {
         if hooks.is_empty() {
             hooks.extend(AUTO_HOOKS);
         }
+        if let Some(targets) = &self.webrtc {
+            let mut unique = HashSet::new();
+            if targets.iter().any(|target| !unique.insert(*target)) {
+                return Err("WebRTC render-target indices must be unique".into());
+            }
+        }
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
+            graph_tracking: self.graph_tracking,
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,
             isolate: !self.no_isolate,
             api: self.api,
             force_keyed_mutex: self.force_keyed_mutex,
             hooks,
+            webrtc: self.webrtc,
+            bind_webrtc: self.bind_webrtc,
         })
     }
 }
@@ -2143,6 +2612,18 @@ fn parse_arguments(
 
 fn parse_render_target_count(value: &str) -> Result<u32, String> {
     parse_bounded_count(value, "render-target")
+}
+
+fn parse_webrtc_target(value: &str) -> Result<u32, String> {
+    let index = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid WebRTC render-target index '{value}'"))?;
+    if index >= 16 {
+        return Err(format!(
+            "invalid WebRTC render-target index '{value}'; expected 0..=15"
+        ));
+    }
+    Ok(index)
 }
 
 fn parse_surface_count(value: &str) -> Result<u32, String> {
@@ -2184,12 +2665,17 @@ mod argument_tests {
         assert!(!options.force_keyed_mutex);
         assert_eq!(options.hooks, AUTO_HOOKS);
         assert_eq!(options.target, ["game.exe"]);
+        assert_eq!(options.webrtc, None);
+        assert_eq!(options.bind_webrtc, "127.0.0.1:8080".parse()?);
         Ok(())
     }
 
     #[test]
     fn hook_selection_defaults_to_auto_without_gdi() -> Result<(), Box<dyn Error>> {
-        assert_eq!(arguments(&["--hook", "auto", "--", "game.exe"])?.hooks, AUTO_HOOKS);
+        assert_eq!(
+            arguments(&["--hook", "auto", "--", "game.exe"])?.hooks,
+            AUTO_HOOKS
+        );
         assert!(!AUTO_HOOKS.contains(&HookBackend::Gdi));
         Ok(())
     }
@@ -2204,7 +2690,10 @@ mod argument_tests {
         let gdi = HookBackend::Gdi.class();
         let vulkan = HookBackend::Vulkan.class();
         assert!(class_priority(&options.hooks, gdi) < class_priority(&options.hooks, vulkan));
-        assert_eq!(class_priority(&options.hooks, HookBackend::OpenGl.class()), None);
+        assert_eq!(
+            class_priority(&options.hooks, HookBackend::OpenGl.class()),
+            None
+        );
         Ok(())
     }
 
@@ -2273,6 +2762,29 @@ mod argument_tests {
     }
 
     #[test]
+    fn accepts_webrtc_defaults_and_target_indices() -> Result<(), Box<dyn Error>> {
+        let defaults = arguments(&["--webrtc", "--", "game.exe"])?;
+        assert_eq!(defaults.webrtc, Some(vec![0]));
+        let explicit = arguments(&[
+            "--webrtc=0,1",
+            "--bind-webrtc",
+            "0.0.0.0:9000",
+            "--",
+            "game.exe",
+        ])?;
+        assert_eq!(explicit.webrtc, Some(vec![0, 1]));
+        assert_eq!(explicit.bind_webrtc, "0.0.0.0:9000".parse()?);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_webrtc_options() {
+        assert!(arguments(&["--webrtc=16", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--webrtc=0,0", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--bind-webrtc=0.0.0.0:9000", "--", "game.exe"]).is_err());
+    }
+
+    #[test]
     fn accepts_a_surface_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             arguments(&["--surfaces", "2", "--", "game.exe"])?.surfaces,
@@ -2317,16 +2829,42 @@ mod argument_tests {
         let d3d12 = stream_backend_class(ExternalImageKind::D3d12Resource);
         let opengl = stream_backend_class(ExternalImageKind::OpenGlD3d12Resource);
         let vulkan = stream_backend_class(ExternalImageKind::VulkanD3d12Resource);
-        assert!(should_replace_same_window_backend(&AUTO_HOOKS, d3d11, d3d12));
-        assert!(should_replace_same_window_backend(&AUTO_HOOKS, d3d12, opengl));
-        assert!(should_replace_same_window_backend(&AUTO_HOOKS, d3d12, vulkan));
-        assert!(!should_replace_same_window_backend(&AUTO_HOOKS, vulkan, d3d12));
-        assert!(!should_replace_same_window_backend(&AUTO_HOOKS, opengl, d3d12));
+        assert!(should_replace_same_window_backend(
+            &AUTO_HOOKS,
+            d3d11,
+            d3d12
+        ));
+        assert!(should_replace_same_window_backend(
+            &AUTO_HOOKS,
+            d3d12,
+            opengl
+        ));
+        assert!(should_replace_same_window_backend(
+            &AUTO_HOOKS,
+            d3d12,
+            vulkan
+        ));
+        assert!(!should_replace_same_window_backend(
+            &AUTO_HOOKS,
+            vulkan,
+            d3d12
+        ));
+        assert!(!should_replace_same_window_backend(
+            &AUTO_HOOKS,
+            opengl,
+            d3d12
+        ));
         // A recreated surface from the same backend still replaces its predecessor.
-        assert!(should_replace_same_window_backend(&AUTO_HOOKS, vulkan, vulkan));
+        assert!(should_replace_same_window_backend(
+            &AUTO_HOOKS,
+            vulkan,
+            vulkan
+        ));
         // The submitted hook order overrides the automatic ranking.
         let reversed = [HookBackend::D3d11, HookBackend::Vulkan];
-        assert!(!should_replace_same_window_backend(&reversed, d3d11, vulkan));
+        assert!(!should_replace_same_window_backend(
+            &reversed, d3d11, vulkan
+        ));
         assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
     }
 }
@@ -2568,11 +3106,13 @@ struct TargetProcess {
     desktop: Option<PrivateDesktop>,
 }
 
+#[expect(clippy::too_many_arguments)]
 fn launch_target(
     target: &[String],
     layer_dir: &Path,
     session: &str,
     track_render_targets: Option<u32>,
+    graph_tracking: bool,
     force_keyed_mutex: bool,
     hooks: &[HookBackend],
     isolate: bool,
@@ -2678,6 +3218,12 @@ fn launch_target(
             OsString::from("SNOWGLASS_TRACK_RENDER_TARGETS"),
             OsString::from(count.to_string()),
         ));
+        if graph_tracking {
+            environment.push((
+                OsString::from("SNOWGLASS_GRAPH_TRACKING"),
+                OsString::from("1"),
+            ));
+        }
     }
     if force_keyed_mutex {
         environment.push((
@@ -2873,6 +3419,201 @@ fn color_range() -> vk::ImageSubresourceRange {
         level_count: 1,
         base_array_layer: 0,
         layer_count: 1,
+    }
+}
+
+unsafe fn queue_family_video_operations(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> Vec<vk::VideoCodecOperationFlagsKHR> {
+    unsafe {
+        let count = instance.get_physical_device_queue_family_properties2_len(physical_device);
+        let mut video = vec![vk::QueueFamilyVideoPropertiesKHR::default(); count];
+        let mut properties = vec![vk::QueueFamilyProperties2::default(); count];
+        for (properties, video) in properties.iter_mut().zip(&mut video) {
+            properties.p_next = (video as *mut vk::QueueFamilyVideoPropertiesKHR<'_>).cast();
+        }
+        instance.get_physical_device_queue_family_properties2(physical_device, &mut properties);
+        video
+            .into_iter()
+            .map(|properties| properties.video_codec_operations)
+            .collect()
+    }
+}
+
+unsafe fn create_vulkan_video_cache(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    graphics_family: u32,
+    video_family: u32,
+) -> Result<VulkanVideoCache, vk::Result> {
+    let families = [graphics_family, video_family];
+    let image = unsafe {
+        device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(format)
+                .extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(
+                    vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::TRANSFER_SRC
+                        | vk::ImageUsageFlags::SAMPLED,
+                )
+                .sharing_mode(vk::SharingMode::CONCURRENT)
+                .queue_family_indices(&families)
+                .initial_layout(vk::ImageLayout::UNDEFINED),
+            None,
+        )?
+    };
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    let properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let memory_type = properties.memory_types[..properties.memory_type_count as usize]
+        .iter()
+        .enumerate()
+        .find(|(index, memory)| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && memory
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        })
+        .map(|(index, _)| index as u32)
+        .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
+    let memory = unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type),
+            None,
+        )?
+    };
+    unsafe { device.bind_image_memory(image, memory, 0)? };
+    Ok(VulkanVideoCache {
+        image,
+        memory,
+        initialized: false,
+    })
+}
+
+unsafe fn destroy_vulkan_video_cache(device: &ash::Device, cache: VulkanVideoCache) {
+    unsafe {
+        device.destroy_image(cache.image, None);
+        device.free_memory(cache.memory, None);
+    }
+}
+
+unsafe fn create_vulkan_video_readbacks(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+) -> Result<Vec<VulkanVideoReadback>, vk::Result> {
+    if !matches!(
+        format,
+        vk::Format::R8G8B8A8_UNORM
+            | vk::Format::R8G8B8A8_SRGB
+            | vk::Format::B8G8R8A8_UNORM
+            | vk::Format::B8G8R8A8_SRGB
+            | vk::Format::A2B10G10R10_UNORM_PACK32
+    ) {
+        eprintln!(
+            "snowglass: WebRTC does not support Vulkan format {}",
+            format.as_raw()
+        );
+        return Ok(Vec::new());
+    }
+    let size = width as u64 * height as u64 * 4;
+    let properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let mut readbacks = Vec::with_capacity(FRAMES_IN_FLIGHT);
+    for _ in 0..FRAMES_IN_FLIGHT {
+        let buffer = unsafe {
+            device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(size)
+                    .usage(vk::BufferUsageFlags::TRANSFER_DST)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )?
+        };
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let memory_type = properties.memory_types[..properties.memory_type_count as usize]
+            .iter()
+            .enumerate()
+            .find(|(index, memory)| {
+                requirements.memory_type_bits & (1 << index) != 0
+                    && memory.property_flags.contains(
+                        vk::MemoryPropertyFlags::HOST_VISIBLE
+                            | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    )
+            })
+            .map(|(index, _)| index as u32)
+            .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
+        let memory = unsafe {
+            device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirements.size)
+                    .memory_type_index(memory_type),
+                None,
+            )?
+        };
+        unsafe { device.bind_buffer_memory(buffer, memory, 0)? };
+        readbacks.push(VulkanVideoReadback {
+            buffer,
+            memory,
+            pending: None,
+        });
+    }
+    Ok(readbacks)
+}
+
+unsafe fn destroy_vulkan_video_readbacks(
+    device: &ash::Device,
+    readbacks: Vec<VulkanVideoReadback>,
+) {
+    for readback in readbacks {
+        unsafe {
+            device.destroy_buffer(readback.buffer, None);
+            device.free_memory(readback.memory, None);
+        }
+    }
+}
+
+fn vulkan_pixels_to_rgba(format: vk::Format, packed: &[u8]) -> Vec<u8> {
+    if format == vk::Format::A2B10G10R10_UNORM_PACK32 {
+        let mut output = Vec::with_capacity(packed.len());
+        for bytes in packed.chunks_exact(4) {
+            let pixel = u32::from_le_bytes(bytes.try_into().expect("four-byte pixel"));
+            output.extend_from_slice(&[
+                ((pixel & 0x3ff) * 255 / 1023) as u8,
+                (((pixel >> 10) & 0x3ff) * 255 / 1023) as u8,
+                (((pixel >> 20) & 0x3ff) * 255 / 1023) as u8,
+                255,
+            ]);
+        }
+        output
+    } else if matches!(
+        format,
+        vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB
+    ) {
+        packed
+            .chunks_exact(4)
+            .flat_map(|pixel| [pixel[2], pixel[1], pixel[0], pixel[3]])
+            .collect()
+    } else {
+        packed.to_vec()
     }
 }
 

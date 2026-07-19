@@ -148,7 +148,9 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
         {
             // The viewer declined or preempted this stream; release the ring
             // instead of copying frames nobody consumes.
-            crate::d3d11_log("snowglass: viewer released D3D11 stream; capture parked until resize");
+            crate::d3d11_log(
+                "snowglass: viewer released D3D11 stream; capture parked until resize",
+            );
             captures.insert(swapchain as usize, CaptureEntry::Declined);
         }
     }

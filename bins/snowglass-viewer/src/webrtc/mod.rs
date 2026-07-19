@@ -1,0 +1,632 @@
+//! WebRTC signaling and one-track-per-capture-stream publishing.
+#![allow(unsafe_code)]
+
+use std::{
+    collections::HashMap,
+    error::Error,
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
+use tokio::runtime::{Handle, Runtime};
+use webrtc::{
+    api::{
+        API, APIBuilder,
+        interceptor_registry::register_default_interceptors,
+        media_engine::{MIME_TYPE_H264, MediaEngine},
+        setting_engine::SettingEngine,
+    },
+    interceptor::registry::Registry,
+    media::Sample,
+    peer_connection::{
+        RTCPeerConnection, configuration::RTCConfiguration,
+        peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription,
+    },
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
+};
+use webrtc_ice::{
+    udp_mux::{UDPMuxDefault, UDPMuxParams},
+    udp_network::UDPNetwork,
+};
+use windows::Win32::Graphics::{
+    Direct3D12::{D3D12_RESOURCE_STATES, ID3D12Device, ID3D12Fence, ID3D12Resource},
+    Dxgi::Common::DXGI_FORMAT,
+};
+
+const FRAME_RATE: f32 = 60.0;
+const FRAME_DURATION: Duration = Duration::from_micros(16_667);
+const DEFAULT_BITRATE: u32 = 8_000_000;
+const MAX_HTTP_HEADER: usize = 64 * 1024;
+static NEXT_WHEP_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+mod encoders;
+
+pub(crate) struct VideoFrame {
+    pub(crate) connection: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) data: VideoFrameData,
+}
+
+pub(crate) enum VideoFrameData {
+    Rgba(Vec<u8>),
+    D3d12(D3d12Frame),
+    Vulkan(VulkanFrame),
+}
+
+pub(crate) struct VulkanFrame {
+    pub(crate) instance: ash::Instance,
+    pub(crate) physical_device: ash::vk::PhysicalDevice,
+    pub(crate) device: ash::Device,
+    pub(crate) queue: ash::vk::Queue,
+    pub(crate) queue_family: u32,
+    pub(crate) conversion_queue: ash::vk::Queue,
+    pub(crate) conversion_queue_family: u32,
+    pub(crate) image: ash::vk::Image,
+    pub(crate) format: ash::vk::Format,
+    pub(crate) layout: ash::vk::ImageLayout,
+    pub(crate) ready: ash::vk::Semaphore,
+    pub(crate) ready_value: u64,
+    pub(crate) completion: ash::vk::Semaphore,
+    pub(crate) completion_value: u64,
+    pub(crate) completion_submitted: bool,
+}
+
+impl VulkanFrame {
+    pub(crate) fn mark_completion_submitted(&mut self) {
+        self.completion_submitted = true;
+    }
+
+    pub(crate) fn completion_submitted(&self) -> bool {
+        self.completion_submitted
+    }
+}
+
+impl Drop for VulkanFrame {
+    fn drop(&mut self) {
+        if !self.completion_submitted {
+            let _ = unsafe {
+                self.device.signal_semaphore(
+                    &ash::vk::SemaphoreSignalInfo::default()
+                        .semaphore(self.completion)
+                        .value(self.completion_value),
+                )
+            };
+        }
+    }
+}
+
+pub(crate) struct D3d12Frame {
+    pub(crate) device: ID3D12Device,
+    pub(crate) resource: ID3D12Resource,
+    pub(crate) state: D3D12_RESOURCE_STATES,
+    pub(crate) format: DXGI_FORMAT,
+    pub(crate) ready_fence: ID3D12Fence,
+    pub(crate) ready_value: u64,
+    pub(crate) completion_fence: ID3D12Fence,
+    pub(crate) completion_value: u64,
+    pub(crate) completion_submitted: bool,
+}
+
+impl D3d12Frame {
+    pub(crate) fn mark_completion_submitted(&mut self) {
+        self.completion_submitted = true;
+    }
+}
+
+impl Drop for D3d12Frame {
+    fn drop(&mut self) {
+        if !self.completion_submitted {
+            // No GPU consumer took ownership (for example the bounded channel
+            // was full), so release the compositor cache immediately.
+            let _ = unsafe { self.completion_fence.Signal(self.completion_value) };
+        }
+    }
+}
+
+type Tracks = Arc<Mutex<HashMap<u64, Arc<TrackLocalStaticSample>>>>;
+type Sessions = Arc<Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>;
+
+pub(crate) struct Publisher {
+    tracks: Tracks,
+    frames: mpsc::SyncSender<VideoFrame>,
+    _runtime: Runtime,
+}
+
+impl Publisher {
+    pub(crate) fn start(bind: SocketAddr) -> Result<Self, Box<dyn Error>> {
+        let listener = TcpListener::bind(bind)?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("snowglass-webrtc")
+            .build()?;
+        let api = Arc::new(runtime.block_on(build_api(bind))?);
+        let tracks = Tracks::default();
+        let (frames, frame_rx) = mpsc::sync_channel(2);
+
+        spawn_encoder(runtime.handle().clone(), tracks.clone(), frame_rx);
+        spawn_signaling(listener, runtime.handle().clone(), api, tracks.clone());
+        eprintln!("snowglass: WebRTC signaling and ICE listening on {bind}");
+        Ok(Self {
+            tracks,
+            frames,
+            _runtime: runtime,
+        })
+    }
+
+    pub(crate) fn add_stream(&self, connection: u64, target_index: u32) {
+        let track = Arc::new(TrackLocalStaticSample::new(
+            h264_capability(),
+            format!("render-target-{target_index}"),
+            "snowglass".to_owned(),
+        ));
+        self.tracks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(connection, track);
+    }
+
+    pub(crate) fn remove_stream(&self, connection: u64) {
+        self.tracks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&connection);
+    }
+
+    pub(crate) fn publish(&self, frame: VideoFrame) {
+        // Never stall the render loop behind CPU encoding or a slow peer.
+        let _ = self.frames.try_send(frame);
+    }
+}
+
+async fn build_api(bind: SocketAddr) -> Result<API, Box<dyn Error>> {
+    let mut media = MediaEngine::default();
+    media.register_default_codecs()?;
+    let interceptors = register_default_interceptors(Registry::new(), &mut media)?;
+    let mut settings = SettingEngine::default();
+    let socket = tokio::net::UdpSocket::bind(bind).await?;
+    settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
+        socket,
+    ))));
+    settings.set_include_loopback_candidate(true);
+    Ok(APIBuilder::new()
+        .with_media_engine(media)
+        .with_interceptor_registry(interceptors)
+        .with_setting_engine(settings)
+        .build())
+}
+
+fn h264_capability() -> RTCRtpCodecCapability {
+    RTCRtpCodecCapability {
+        mime_type: MIME_TYPE_H264.to_owned(),
+        clock_rate: 90_000,
+        channels: 0,
+        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+            .to_owned(),
+        rtcp_feedback: Vec::new(),
+    }
+}
+
+fn spawn_encoder(handle: Handle, tracks: Tracks, frames: mpsc::Receiver<VideoFrame>) {
+    thread::Builder::new()
+        .name("snowglass-h264".to_owned())
+        .spawn(move || {
+            let mut encoders = HashMap::<u64, encoders::Encoder>::new();
+            while let Ok(frame) = frames.recv() {
+                let track = tracks
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .get(&frame.connection)
+                    .cloned();
+                let Some(track) = track else { continue };
+                if frame.width < 2
+                    || frame.height < 2
+                    || frame.width % 2 != 0
+                    || frame.height % 2 != 0
+                {
+                    continue;
+                }
+                let encoder = encoders
+                    .entry(frame.connection)
+                    .or_insert_with(|| encoders::Encoder::new(DEFAULT_BITRATE, FRAME_RATE));
+                match encoder.encode(frame) {
+                    Ok(encoded) => {
+                        let sample = Sample {
+                            data: encoded.into(),
+                            duration: FRAME_DURATION,
+                            ..Default::default()
+                        };
+                        if let Err(error) = handle.block_on(track.write_sample(&sample)) {
+                            eprintln!("snowglass: WebRTC track write failed: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("snowglass: H.264 encoding failed: {error}"),
+                }
+            }
+        })
+        .expect("failed to spawn H.264 encoder thread");
+}
+
+fn spawn_signaling(listener: TcpListener, handle: Handle, api: Arc<API>, tracks: Tracks) {
+    let sessions = Sessions::default();
+    thread::Builder::new()
+        .name("snowglass-webrtc-http".to_owned())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let handle = handle.clone();
+                let api = api.clone();
+                let tracks = tracks.clone();
+                let sessions = sessions.clone();
+                thread::spawn(move || {
+                    if let Err(error) = serve_http(stream, &handle, &api, &tracks, &sessions) {
+                        eprintln!("snowglass: WebRTC signaling request failed: {error}");
+                    }
+                });
+            }
+        })
+        .expect("failed to spawn WebRTC signaling thread");
+}
+
+fn serve_http(
+    mut stream: TcpStream,
+    handle: &Handle,
+    api: &API,
+    tracks: &Tracks,
+    sessions: &Sessions,
+) -> Result<(), Box<dyn Error>> {
+    let (method, path, body) = read_request(&mut stream)?;
+    if method == "OPTIONS" {
+        return respond_with_headers(
+            &mut stream,
+            "204 No Content",
+            "text/plain; charset=utf-8",
+            &[],
+            &[("Accept-Post", "application/sdp")],
+        );
+    }
+    if method == "DELETE" && path.starts_with("/session/") {
+        let session_id = path.trim_start_matches("/session/").parse::<u64>().ok();
+        if let Some(peer) = session_id.and_then(|session_id| {
+            sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&session_id)
+        }) {
+            handle.block_on(peer.close())?;
+        }
+        return respond(
+            &mut stream,
+            "204 No Content",
+            "text/plain; charset=utf-8",
+            &[],
+        );
+    }
+    match (method.as_str(), path.as_str()) {
+        ("GET", "/") => respond(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            VIEWER_HTML.as_bytes(),
+        ),
+        ("GET", "/tracks") => {
+            let count = tracks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len();
+            respond(
+                &mut stream,
+                "200 OK",
+                "application/json",
+                count.to_string().as_bytes(),
+            )
+        }
+        ("POST", "/offer") => {
+            let offer: RTCSessionDescription = serde_json::from_slice(&body)?;
+            let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+            let answer = handle.block_on(answer_offer(api, tracks, sessions, session_id, offer))?;
+            let json = serde_json::to_vec(&answer)?;
+            respond(&mut stream, "200 OK", "application/json", &json)
+        }
+        ("POST", "/") => {
+            let offer = RTCSessionDescription::offer(String::from_utf8(body)?)?;
+            let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+            let answer = handle.block_on(answer_offer(api, tracks, sessions, session_id, offer))?;
+            let location = format!("/session/{session_id}");
+            respond_with_headers(
+                &mut stream,
+                "201 Created",
+                "application/sdp",
+                answer.sdp.as_bytes(),
+                &[("Location", location.as_str())],
+            )
+        }
+        _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+    }
+}
+
+async fn answer_offer(
+    api: &API,
+    tracks: &Tracks,
+    sessions: &Sessions,
+    session_id: u64,
+    offer: RTCSessionDescription,
+) -> Result<RTCSessionDescription, Box<dyn Error>> {
+    let peer = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
+    let current_tracks = tracks
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for track in current_tracks {
+        let sender = peer
+            .add_track(track as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
+        tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+    }
+    let weak_sessions = Arc::downgrade(sessions);
+    peer.on_peer_connection_state_change(Box::new(move |state| {
+        let weak_sessions = weak_sessions.clone();
+        Box::pin(async move {
+            eprintln!("snowglass: WebRTC session {session_id} state {state}");
+            if matches!(
+                state,
+                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+            ) && let Some(sessions) = weak_sessions.upgrade()
+            {
+                sessions
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&session_id);
+            }
+        })
+    }));
+    peer.set_remote_description(offer).await?;
+    let mut gathering = peer.gathering_complete_promise().await;
+    peer.set_local_description(peer.create_answer(None).await?)
+        .await?;
+    let _ = gathering.recv().await;
+    let answer = peer
+        .local_description()
+        .await
+        .ok_or("WebRTC answer has no local description")?;
+    sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(session_id, peer);
+    Ok(answer)
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Box<dyn Error>> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut request = Vec::new();
+    let header_end;
+    loop {
+        let mut chunk = [0u8; 4096];
+        let count = stream.read(&mut chunk)?;
+        if count == 0 {
+            return Err("incomplete HTTP request".into());
+        }
+        request.extend_from_slice(&chunk[..count]);
+        if request.len() > MAX_HTTP_HEADER {
+            return Err("HTTP header is too large".into());
+        }
+        if let Some(position) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+            header_end = position + 4;
+            break;
+        }
+    }
+    let header = std::str::from_utf8(&request[..header_end])?;
+    let mut lines = header.split("\r\n");
+    let mut request_line = lines
+        .next()
+        .ok_or("missing HTTP request line")?
+        .split_whitespace();
+    let method = request_line.next().ok_or("missing HTTP method")?.to_owned();
+    let path = request_line.next().ok_or("missing HTTP path")?.to_owned();
+    let content_length = lines
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while request.len() < header_end + content_length {
+        let mut chunk = [0u8; 4096];
+        let count = stream.read(&mut chunk)?;
+        if count == 0 {
+            return Err("incomplete HTTP body".into());
+        }
+        request.extend_from_slice(&chunk[..count]);
+    }
+    Ok((
+        method,
+        path,
+        request[header_end..header_end + content_length].to_vec(),
+    ))
+}
+
+fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    respond_with_headers(stream, status, content_type, body, &[])
+}
+
+fn respond_with_headers(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+    headers: &[(&str, &str)],
+) -> Result<(), Box<dyn Error>> {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Expose-Headers: Location\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Max-Age: 86400\r\n",
+        body.len()
+    )?;
+    for (name, value) in headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    write!(stream, "\r\n")?;
+    stream.write_all(body)?;
+    Ok(())
+}
+
+const VIEWER_HTML: &str = r#"<!doctype html>
+<meta charset="utf-8"><title>Snowglass WebRTC</title>
+<style>body{margin:0;background:#111;color:#ddd;font:14px sans-serif;display:grid;gap:8px;padding:8px}video{max-width:100%;background:#000}</style>
+<script type="module">
+const count = await (await fetch('/tracks')).json();
+const pc = new RTCPeerConnection();
+for (let i = 0; i < count; ++i) pc.addTransceiver('video', {direction:'recvonly'});
+pc.ontrack = ({track}) => { const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.srcObject=new MediaStream([track]); document.body.append(video); };
+await pc.setLocalDescription(await pc.createOffer());
+await new Promise(resolve => pc.iceGatheringState === 'complete' ? resolve() : pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && resolve()));
+const answer = await (await fetch('/offer', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(pc.localDescription)})).json();
+await pc.setRemoteDescription(answer);
+</script>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h264_codec_uses_browser_compatible_packetization() {
+        let codec = h264_capability();
+        assert_eq!(codec.mime_type, "video/H264");
+        assert!(codec.sdp_fmtp_line.contains("packetization-mode=1"));
+        assert!(codec.sdp_fmtp_line.contains("profile-level-id=42e01f"));
+        assert_eq!(codec.clock_rate, 90_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires local UDP loopback ICE"]
+    async fn whep_session_retains_peer_and_sends_rtp() -> Result<(), Box<dyn Error>> {
+        use webrtc::{
+            api::media_engine::MediaEngine,
+            rtp_transceiver::{
+                RTCRtpTransceiverInit, rtp_codec::RTPCodecType,
+                rtp_transceiver_direction::RTCRtpTransceiverDirection,
+            },
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let server_address = listener.local_addr()?;
+        let tracks = Tracks::default();
+        let server_track = Arc::new(TrackLocalStaticSample::new(
+            h264_capability(),
+            "test-video".to_owned(),
+            "snowglass-test".to_owned(),
+        ));
+        tracks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(1, server_track.clone());
+        let server_api = Arc::new(build_api(server_address).await?);
+        spawn_signaling(listener, Handle::current(), server_api, tracks);
+
+        let mut media = MediaEngine::default();
+        media.register_default_codecs()?;
+        let interceptors = register_default_interceptors(Registry::new(), &mut media)?;
+        let mut client_settings = SettingEngine::default();
+        client_settings.set_include_loopback_candidate(true);
+        let peer = Arc::new(
+            APIBuilder::new()
+                .with_media_engine(media)
+                .with_interceptor_registry(interceptors)
+                .with_setting_engine(client_settings)
+                .build()
+                .new_peer_connection(RTCConfiguration::default())
+                .await?,
+        );
+        peer.add_transceiver_from_kind(
+            RTPCodecType::Video,
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: Vec::new(),
+            }),
+        )
+        .await?;
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::channel(1);
+        peer.on_track(Box::new(move |track, _, _| {
+            let packet_tx = packet_tx.clone();
+            Box::pin(async move {
+                if let Ok((packet, _)) = track.read_rtp().await {
+                    let _ = packet_tx.send(packet.payload.len()).await;
+                }
+            })
+        }));
+        let mut gathering = peer.gathering_complete_promise().await;
+        peer.set_local_description(peer.create_offer(None).await?)
+            .await?;
+        let _ = gathering.recv().await;
+        let offer = peer.local_description().await.ok_or("missing offer")?.sdp;
+        let answer = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let mut stream = TcpStream::connect(server_address).map_err(|e| e.to_string())?;
+            write!(
+                stream,
+                "POST / HTTP/1.1\r\nHost: {server_address}\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                offer.len(),
+                offer
+            )
+            .map_err(|e| e.to_string())?;
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .map_err(|e| e.to_string())?;
+            let (header, body) = response
+                .split_once("\r\n\r\n")
+                .ok_or_else(|| "malformed HTTP response".to_owned())?;
+            if !header.starts_with("HTTP/1.1 201") {
+                return Err(header.to_owned());
+            }
+            Ok(body.to_owned())
+        })
+        .await??;
+        peer.set_remote_description(RTCSessionDescription::answer(answer)?)
+            .await?;
+        let writer = tokio::spawn(async move {
+            loop {
+                let _ = server_track
+                    .write_sample(&Sample {
+                        data: vec![0, 0, 0, 1, 0x65, 0x88, 0x84].into(),
+                        duration: FRAME_DURATION,
+                        ..Default::default()
+                    })
+                    .await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        let payload_len =
+            match tokio::time::timeout(Duration::from_secs(10), packet_rx.recv()).await {
+                Ok(Some(payload_len)) => payload_len,
+                Ok(None) => return Err("RTP receiver closed".into()),
+                Err(_) => {
+                    return Err(format!(
+                        "timed out waiting for RTP (peer={:?}, ice={:?}, signaling={:?})",
+                        peer.connection_state(),
+                        peer.ice_connection_state(),
+                        peer.signaling_state()
+                    )
+                    .into());
+                }
+            };
+        assert!(payload_len > 0);
+        writer.abort();
+        peer.close().await?;
+        Ok(())
+    }
+}

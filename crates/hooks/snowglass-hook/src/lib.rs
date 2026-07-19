@@ -239,12 +239,12 @@ macro_rules! dispatch_terminal_chain {
 macro_rules! trampoline {
     (
         $(#[$attribute:meta])*
-        $visibility:vis unsafe extern "system" fn $name:ident(
+        $visibility:vis unsafe extern $abi:literal fn $name:ident(
             $($argument:ident: $argument_type:ty),* $(,)?
         ) -> $result:ty => $dispatch:path;
     ) => {
         $(#[$attribute])*
-        $visibility unsafe extern "system" fn $name(
+        $visibility unsafe extern $abi fn $name(
             $($argument: $argument_type),*
         ) -> $result {
             unsafe { $dispatch($($argument),*) }

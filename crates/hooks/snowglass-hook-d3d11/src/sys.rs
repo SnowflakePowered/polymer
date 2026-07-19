@@ -15,7 +15,7 @@ pub unsafe extern "system" fn SnowglassInstallD3d11Hook() -> i32 {
 }
 
 snowglass_hook::trampoline! {
-    pub(crate) unsafe extern "system" fn create_device(
+    pub(crate) unsafe extern "system-unwind" fn create_device(
         adapter: *mut c_void,
         driver_type: i32,
         software: HMODULE,
@@ -30,7 +30,7 @@ snowglass_hook::trampoline! {
 }
 
 snowglass_hook::trampoline! {
-    pub(crate) unsafe extern "system" fn create_device_and_swapchain(
+    pub(crate) unsafe extern "system-unwind" fn create_device_and_swapchain(
         adapter: *mut c_void,
         driver_type: i32,
         software: HMODULE,
