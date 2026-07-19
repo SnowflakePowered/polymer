@@ -2580,8 +2580,9 @@ mod tests {
                 completion_value: 1,
                 completion_submitted: false,
             };
-            let mut encoder = Encoder::new_with_codec(&frame, width, height, 2_000_000, 30.0, codec)
-                .expect("initialize Vulkan hardware encoder");
+            let mut encoder =
+                Encoder::new_with_codec(&frame, width, height, 2_000_000, 30.0, codec)
+                    .expect("initialize Vulkan hardware encoder");
             let encoded = encoder
                 .encode_frame(&mut frame, width, height)
                 .expect("encode first Vulkan frame");

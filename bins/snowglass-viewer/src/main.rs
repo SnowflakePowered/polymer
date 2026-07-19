@@ -2316,6 +2316,63 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .show(context, |ui| {
                                 draw_statistics_graph(ui, &stats.history);
                             });
+                        if let Some(webrtc_stats) = &webrtc_stats
+                            && webrtc_stats.connected_clients > 0
+                        {
+                            let webrtc_frame = egui::Frame::window(&context.style())
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::new(
+                                    1.0_f32,
+                                    egui::Color32::from_white_alpha(48),
+                                ))
+                                .shadow(egui::epaint::Shadow::NONE);
+                            egui::Window::new("WebRTC Stats")
+                                .default_pos(egui::pos2(12.0, 270.0))
+                                .resizable(false)
+                                .collapsible(true)
+                                .frame(webrtc_frame)
+                                .show(context, |ui| {
+                                    egui::Grid::new("webrtc_statistics_grid")
+                                        .num_columns(2)
+                                        .spacing(egui::vec2(16.0, 4.0))
+                                        .show(ui, |ui| {
+                                            ui.label("Encode bitrate");
+                                            ui.monospace(format!(
+                                                "{:.2} Mbps",
+                                                webrtc_stats.bitrate_bps / 1_000_000.0
+                                            ));
+                                            ui.end_row();
+                                            ui.label("Encode latency");
+                                            ui.monospace(format!(
+                                                "{:.2} ms",
+                                                webrtc_stats.encode_latency_ms
+                                            ));
+                                            ui.end_row();
+                                            ui.label("Connected clients");
+                                            ui.monospace(
+                                                webrtc_stats.connected_clients.to_string(),
+                                            );
+                                            ui.end_row();
+                                            ui.label("Render targets encoded");
+                                            ui.monospace(webrtc_stats.render_targets.to_string());
+                                            ui.end_row();
+                                            ui.label("Encoder");
+                                            ui.monospace(if webrtc_stats.encoders.is_empty() {
+                                                "Waiting for frames"
+                                            } else {
+                                                &webrtc_stats.encoders
+                                            });
+                                            ui.end_row();
+                                            ui.label("Codec");
+                                            ui.monospace(if webrtc_stats.codecs.is_empty() {
+                                                "Waiting for frames"
+                                            } else {
+                                                &webrtc_stats.codecs
+                                            });
+                                            ui.end_row();
+                                        });
+                                });
+                        }
                     });
                     egui_state.handle_platform_output(&window, output.platform_output.clone());
                     let primitives =

@@ -14,7 +14,7 @@ pub(super) enum Codec {
 }
 
 impl Codec {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Hevc => "HEVC",
             Self::H264 => "H.264",
@@ -22,7 +22,25 @@ impl Codec {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Backend {
+    D3d12,
+    Vulkan,
+    OpenH264,
+}
+
+impl Backend {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::D3d12 => "D3D12 Video Encode",
+            Self::Vulkan => "Vulkan Video Encode",
+            Self::OpenH264 => "OpenH264",
+        }
+    }
+}
+
 pub(super) struct EncodedFrame {
+    pub(super) backend: Backend,
     pub(super) codec: Codec,
     pub(super) data: Vec<u8>,
 }
@@ -115,6 +133,7 @@ impl Encoder {
                             self.d3d12_announced = true;
                         }
                         return Ok(EncodedFrame {
+                            backend: Backend::D3d12,
                             codec: encoder.codec(),
                             data: encoded,
                         });
@@ -171,6 +190,7 @@ impl Encoder {
                             self.vulkan_announced = true;
                         }
                         return Ok(EncodedFrame {
+                            backend: Backend::Vulkan,
                             codec: encoder.codec(),
                             data: encoded,
                         });
@@ -224,6 +244,7 @@ impl Encoder {
             self.openh264_announced = true;
         }
         Ok(EncodedFrame {
+            backend: Backend::OpenH264,
             codec: Codec::H264,
             data: encoded,
         })

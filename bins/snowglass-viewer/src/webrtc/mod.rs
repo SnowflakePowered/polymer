@@ -12,7 +12,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::runtime::{Handle, Runtime};
 use webrtc::{
@@ -159,10 +159,90 @@ struct TrackTable {
 
 type Tracks = Arc<Mutex<TrackTable>>;
 type Sessions = Arc<Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>;
+type SharedStats = Arc<Mutex<RuntimeStats>>;
+
+const STATS_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy)]
+struct Encoding {
+    backend: encoders::Backend,
+    codec: encoders::Codec,
+}
+
+struct RuntimeStats {
+    connected_clients: HashSet<u64>,
+    encodings: HashMap<u64, Encoding>,
+    interval_started: Instant,
+    interval_bytes: u64,
+    interval_encode_time: Duration,
+    interval_frames: u64,
+    bitrate_bps: f64,
+    encode_latency_ms: f64,
+}
+
+impl Default for RuntimeStats {
+    fn default() -> Self {
+        Self {
+            connected_clients: HashSet::new(),
+            encodings: HashMap::new(),
+            interval_started: Instant::now(),
+            interval_bytes: 0,
+            interval_encode_time: Duration::ZERO,
+            interval_frames: 0,
+            bitrate_bps: 0.0,
+            encode_latency_ms: 0.0,
+        }
+    }
+}
+
+impl RuntimeStats {
+    fn record_encode(
+        &mut self,
+        connection: u64,
+        encoded_bytes: usize,
+        encode_time: Duration,
+        backend: encoders::Backend,
+        codec: encoders::Codec,
+    ) {
+        self.encodings
+            .insert(connection, Encoding { backend, codec });
+        self.interval_bytes = self.interval_bytes.saturating_add(encoded_bytes as u64);
+        self.interval_encode_time = self.interval_encode_time.saturating_add(encode_time);
+        self.interval_frames = self.interval_frames.saturating_add(1);
+
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        let elapsed = self.interval_started.elapsed();
+        if elapsed >= STATS_INTERVAL {
+            self.bitrate_bps = self.interval_bytes as f64 * 8.0 / elapsed.as_secs_f64();
+            self.encode_latency_ms = if self.interval_frames == 0 {
+                0.0
+            } else {
+                self.interval_encode_time.as_secs_f64() * 1_000.0 / self.interval_frames as f64
+            };
+            self.interval_started = Instant::now();
+            self.interval_bytes = 0;
+            self.interval_encode_time = Duration::ZERO;
+            self.interval_frames = 0;
+        }
+    }
+}
+
+pub(crate) struct Stats {
+    pub(crate) bitrate_bps: f64,
+    pub(crate) encode_latency_ms: f64,
+    pub(crate) connected_clients: usize,
+    pub(crate) render_targets: usize,
+    pub(crate) encoders: String,
+    pub(crate) codecs: String,
+}
 
 pub(crate) struct Publisher {
     tracks: Tracks,
     frames: mpsc::SyncSender<VideoFrame>,
+    stats: SharedStats,
     _runtime: Runtime,
 }
 
@@ -189,12 +269,14 @@ impl Publisher {
             }
         }
         let sessions = Sessions::default();
+        let stats = SharedStats::default();
         let (frames, frame_rx) = mpsc::sync_channel(FRAME_CHANNEL_CAPACITY);
 
         spawn_encoder(
             runtime.handle().clone(),
             tracks.clone(),
             sessions.clone(),
+            stats.clone(),
             frame_rx,
         );
         spawn_signaling(
@@ -203,11 +285,13 @@ impl Publisher {
             api,
             tracks.clone(),
             sessions,
+            stats.clone(),
         );
         eprintln!("snowglass: WebRTC signaling and ICE listening on {bind}");
         Ok(Self {
             tracks,
             frames,
+            stats,
             _runtime: runtime,
         })
     }
@@ -226,11 +310,43 @@ impl Publisher {
             .unwrap_or_else(|error| error.into_inner())
             .connections
             .remove(&connection);
+        self.stats
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .encodings
+            .remove(&connection);
     }
 
     pub(crate) fn publish(&self, frame: VideoFrame) {
         // Never stall the render loop behind CPU encoding or a slow peer.
         let _ = self.frames.try_send(frame);
+    }
+
+    pub(crate) fn stats(&self) -> Stats {
+        let mut stats = self.stats.lock().unwrap_or_else(|error| error.into_inner());
+        stats.refresh();
+        let mut encoders = stats
+            .encodings
+            .values()
+            .map(|encoding| encoding.backend.name())
+            .collect::<Vec<_>>();
+        encoders.sort_unstable();
+        encoders.dedup();
+        let mut codecs = stats
+            .encodings
+            .values()
+            .map(|encoding| encoding.codec.name())
+            .collect::<Vec<_>>();
+        codecs.sort_unstable();
+        codecs.dedup();
+        Stats {
+            bitrate_bps: stats.bitrate_bps,
+            encode_latency_ms: stats.encode_latency_ms,
+            connected_clients: stats.connected_clients.len(),
+            render_targets: stats.encodings.len(),
+            encoders: encoders.join(", "),
+            codecs: codecs.join(", "),
+        }
     }
 }
 
@@ -349,7 +465,9 @@ async fn rebind_track(
                 continue;
             }
             if let Err(error) = sender
-                .replace_track(Some(replacement.clone() as Arc<dyn TrackLocal + Send + Sync>))
+                .replace_track(Some(
+                    replacement.clone() as Arc<dyn TrackLocal + Send + Sync>
+                ))
                 .await
             {
                 eprintln!(
@@ -365,6 +483,7 @@ fn spawn_encoder(
     handle: Handle,
     tracks: Tracks,
     sessions: Sessions,
+    stats: SharedStats,
     frames: mpsc::Receiver<VideoFrame>,
 ) {
     thread::Builder::new()
@@ -419,8 +538,20 @@ fn spawn_encoder(
                 } else {
                     encoders::Codec::H264
                 };
+                let encode_started = Instant::now();
                 match encoder.encode(frame, preferred) {
                     Ok(encoded) => {
+                        let encode_time = encode_started.elapsed();
+                        stats
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .record_encode(
+                                connection,
+                                encoded.data.len(),
+                                encode_time,
+                                encoded.backend,
+                                encoded.codec,
+                            );
                         let wanted = capability(encoded.codec);
                         let track = if existing_track
                             .codec()
@@ -481,6 +612,7 @@ fn spawn_signaling(
     api: Arc<API>,
     tracks: Tracks,
     sessions: Sessions,
+    stats: SharedStats,
 ) {
     thread::Builder::new()
         .name("snowglass-webrtc-http".to_owned())
@@ -491,8 +623,11 @@ fn spawn_signaling(
                 let api = api.clone();
                 let tracks = tracks.clone();
                 let sessions = sessions.clone();
+                let stats = stats.clone();
                 thread::spawn(move || {
-                    if let Err(error) = serve_http(stream, &handle, &api, &tracks, &sessions) {
+                    if let Err(error) =
+                        serve_http(stream, &handle, &api, &tracks, &sessions, &stats)
+                    {
                         let idle_connection =
                             error.downcast_ref::<std::io::Error>().is_some_and(|error| {
                                 matches!(
@@ -516,6 +651,7 @@ fn serve_http(
     api: &API,
     tracks: &Tracks,
     sessions: &Sessions,
+    stats: &SharedStats,
 ) -> Result<(), Box<dyn Error>> {
     let (method, path, body) = read_request(&mut stream)?;
     if method == "OPTIONS" {
@@ -535,6 +671,13 @@ fn serve_http(
                 .unwrap_or_else(|error| error.into_inner())
                 .remove(&session_id)
         }) {
+            if let Some(session_id) = session_id {
+                stats
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .connected_clients
+                    .remove(&session_id);
+            }
             handle.block_on(peer.close())?;
         }
         return respond(
@@ -567,14 +710,18 @@ fn serve_http(
         ("POST", "/offer") => {
             let offer: RTCSessionDescription = serde_json::from_slice(&body)?;
             let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-            let answer = handle.block_on(answer_offer(api, tracks, sessions, session_id, offer))?;
+            let answer = handle.block_on(answer_offer(
+                api, tracks, sessions, stats, session_id, offer,
+            ))?;
             let json = serde_json::to_vec(&answer)?;
             respond(&mut stream, "200 OK", "application/json", &json)
         }
         ("POST", "/") => {
             let offer = RTCSessionDescription::offer(String::from_utf8(body)?)?;
             let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-            let answer = handle.block_on(answer_offer(api, tracks, sessions, session_id, offer))?;
+            let answer = handle.block_on(answer_offer(
+                api, tracks, sessions, stats, session_id, offer,
+            ))?;
             let location = format!("/session/{session_id}");
             respond_with_headers(
                 &mut stream,
@@ -592,6 +739,7 @@ async fn answer_offer(
     api: &API,
     tracks: &Tracks,
     sessions: &Sessions,
+    stats: &SharedStats,
     session_id: u64,
     offer: RTCSessionDescription,
 ) -> Result<RTCSessionDescription, Box<dyn Error>> {
@@ -609,12 +757,22 @@ async fn answer_offer(
         Box::pin(async {})
     }));
     let weak_sessions = Arc::downgrade(sessions);
+    let weak_stats = Arc::downgrade(stats);
     let weak_peer = Arc::downgrade(&peer);
     peer.on_peer_connection_state_change(Box::new(move |state| {
         let weak_sessions = weak_sessions.clone();
+        let weak_stats = weak_stats.clone();
         let weak_peer = weak_peer.clone();
         Box::pin(async move {
             eprintln!("snowglass: WebRTC session {session_id} state {state}");
+            if let Some(stats) = weak_stats.upgrade() {
+                let mut stats = stats.lock().unwrap_or_else(|error| error.into_inner());
+                if state == RTCPeerConnectionState::Connected {
+                    stats.connected_clients.insert(session_id);
+                } else {
+                    stats.connected_clients.remove(&session_id);
+                }
+            }
             if state == RTCPeerConnectionState::Connected
                 && let Some(peer) = weak_peer.upgrade()
             {
@@ -845,6 +1003,25 @@ mod tests {
         assert!(!offer_supports_hevc("a=rtpmap:102 H264/90000\r\n"));
     }
 
+    #[test]
+    fn encode_statistics_measure_payload_rate_and_latency() {
+        let mut stats = RuntimeStats {
+            interval_started: Instant::now() - Duration::from_secs(1),
+            ..Default::default()
+        };
+        stats.record_encode(
+            7,
+            125_000,
+            Duration::from_millis(4),
+            encoders::Backend::D3d12,
+            encoders::Codec::Hevc,
+        );
+
+        assert!((stats.bitrate_bps - 1_000_000.0).abs() < 10_000.0);
+        assert_eq!(stats.encode_latency_ms, 4.0);
+        assert_eq!(stats.encodings.len(), 1);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires local UDP loopback ICE"]
     async fn whep_session_retains_peer_and_sends_rtp() -> Result<(), Box<dyn Error>> {
@@ -876,6 +1053,7 @@ mod tests {
             server_api,
             tracks,
             Sessions::default(),
+            SharedStats::default(),
         );
 
         let mut media = MediaEngine::default();

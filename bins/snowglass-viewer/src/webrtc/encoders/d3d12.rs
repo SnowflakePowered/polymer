@@ -2045,10 +2045,8 @@ mod tests {
                 ConfigurationFlags: D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_FLAG_NONE,
                 MinLumaCodingUnitSize: D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_CUSIZE_8x8,
                 MaxLumaCodingUnitSize: D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_CUSIZE_32x32,
-                MinLumaTransformUnitSize:
-                    D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_TUSIZE_4x4,
-                MaxLumaTransformUnitSize:
-                    D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_TUSIZE_32x32,
+                MinLumaTransformUnitSize: D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_TUSIZE_4x4,
+                MaxLumaTransformUnitSize: D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_TUSIZE_32x32,
                 max_transform_hierarchy_depth_inter: 3,
                 max_transform_hierarchy_depth_intra: 3,
             },
@@ -2111,8 +2109,7 @@ mod tests {
                     completion_value: 1,
                     completion_submitted: false,
                 };
-                match Encoder::new_with_codec(&frame, width, height, 2_000_000, 30.0, Codec::Hevc)
-                {
+                match Encoder::new_with_codec(&frame, width, height, 2_000_000, 30.0, Codec::Hevc) {
                     Ok(mut encoder) => {
                         eprintln!("probe {width}x{height}: HEVC init OK");
                         let mut stream = Vec::new();
@@ -2133,7 +2130,9 @@ mod tests {
                     }
                     Err(error) => eprintln!("probe {width}x{height}: HEVC init failed: {error}"),
                 }
-                if let Ok(queue) = device.cast::<windows::Win32::Graphics::Direct3D12::ID3D12InfoQueue>() {
+                if let Ok(queue) =
+                    device.cast::<windows::Win32::Graphics::Direct3D12::ID3D12InfoQueue>()
+                {
                     let count = queue.GetNumStoredMessages();
                     for index in 0..count {
                         let mut size = 0;
@@ -2141,8 +2140,10 @@ mod tests {
                             continue;
                         }
                         let mut buffer = vec![0u8; size];
-                        let message =
-                            buffer.as_mut_ptr().cast::<windows::Win32::Graphics::Direct3D12::D3D12_MESSAGE>();
+                        let message = buffer
+                            .as_mut_ptr()
+                            .cast::<windows::Win32::Graphics::Direct3D12::D3D12_MESSAGE>(
+                        );
                         if queue.GetMessage(index, Some(message), &mut size).is_ok() {
                             let message = &*message;
                             let text = std::slice::from_raw_parts(
