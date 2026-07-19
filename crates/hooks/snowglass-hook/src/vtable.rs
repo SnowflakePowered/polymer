@@ -107,6 +107,52 @@ macro_rules! com_vtable {
     };
 }
 
+/// Resolves the distinct COM interfaces an object exposes, widest first, each
+/// paired with a monomorphized install routine for that interface's vtable
+/// layout.
+///
+/// A COM object can implement several generations of an interface, and
+/// `QueryInterface` may hand out a distinct pointer per generation (aggregated
+/// objects) or one shared pointer (tear-off-free objects). A hook has to clone
+/// the *widest* generation each pointer implements, so that a later
+/// `QueryInterface` to a wider interface does not dispatch through the
+/// uninitialized tail of a clone sized to a narrower generation.
+///
+/// Given an object and an `Interface => Vtbl` list ordered widest-to-narrowest,
+/// this expands to a `Vec<(*mut c_void, $install_fn)>` with one entry per
+/// distinct object pointer: the widest interface that resolves to that pointer,
+/// paired with `$install::<Vtbl>` for its generation. Callers that hook every
+/// interface install into each entry; callers that want only the widest take
+/// the first entry. Include the base interface as the final list entry when its
+/// pointer should be covered as a fallback.
+///
+/// `$object` must be a reference to a live COM interface (anything implementing
+/// [`windows::core::Interface`]); `$install` names a routine generic over a
+/// [`Vtable`] layout; `$install_fn` is the shared function-pointer type that
+/// routine coerces to.
+#[macro_export]
+macro_rules! widest_interfaces {
+    (
+        from $object:expr => $install_fn:ty;
+        install $install:ident;
+        $($interface:ty => $vtbl:ty),+ $(,)?
+    ) => {{
+        use ::windows::core::Interface as _;
+        let object = $object;
+        let mut interfaces: ::std::vec::Vec<(*mut ::core::ffi::c_void, $install_fn)> =
+            ::std::vec::Vec::new();
+        $(
+            if let ::core::result::Result::Ok(interface) = object.cast::<$interface>() {
+                let pointer = interface.as_raw();
+                if !interfaces.iter().any(|(existing, _)| *existing == pointer) {
+                    interfaces.push((pointer, $install::<$vtbl> as $install_fn));
+                }
+            }
+        )+
+        interfaces
+    }};
+}
+
 /// Declares a void-returning COM interception terminal that forwards to an
 /// optional original method before running its observation block.
 #[macro_export]

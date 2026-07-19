@@ -35,8 +35,6 @@ pub struct SwapchainCallbacks {
 }
 
 static CALLBACKS: LazyLock<RwLock<Vec<SwapchainCallbacks>>> = LazyLock::new(Default::default);
-static OWNERS: LazyLock<RwLock<HashMap<usize, SwapchainCallbacks>>> =
-    LazyLock::new(Default::default);
 static SWAPCHAINS: OnceLock<RwLock<HashMap<usize, Arc<dyn SwapchainHook>>>> = OnceLock::new();
 static FACTORIES: OnceLock<RwLock<HashMap<usize, Arc<dyn FactoryHook>>>> = OnceLock::new();
 
@@ -59,23 +57,19 @@ pub fn register_callbacks(callbacks: SwapchainCallbacks) {
 }
 
 /// The widest swapchain interface implemented by the object, paired with the
-/// install routine for that layout.
+/// install routine for that layout. The base `IDXGISwapChain` is installed
+/// separately, so it is omitted here.
 fn widest_swapchain(swapchain: &IDXGISwapChain) -> Option<(*mut c_void, InstallFn)> {
-    macro_rules! try_cast {
-        ($interface:ty, $vtbl:ty) => {
-            if let Ok(interface) = swapchain.cast::<$interface>() {
-                return Some((
-                    interface.as_raw(),
-                    install_swapchain::<$vtbl> as InstallFn,
-                ));
-            }
-        };
+    snowglass_hook::widest_interfaces! {
+        from swapchain => InstallFn;
+        install install_swapchain;
+        IDXGISwapChain4 => IDXGISwapChain4_Vtbl,
+        IDXGISwapChain3 => IDXGISwapChain3_Vtbl,
+        IDXGISwapChain2 => IDXGISwapChain2_Vtbl,
+        IDXGISwapChain1 => IDXGISwapChain1_Vtbl,
     }
-    try_cast!(IDXGISwapChain4, IDXGISwapChain4_Vtbl);
-    try_cast!(IDXGISwapChain3, IDXGISwapChain3_Vtbl);
-    try_cast!(IDXGISwapChain2, IDXGISwapChain2_Vtbl);
-    try_cast!(IDXGISwapChain1, IDXGISwapChain1_Vtbl);
-    None
+    .into_iter()
+    .next()
 }
 
 /// Installs interception and assigns the swapchain to the first backend that
@@ -103,13 +97,35 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
         .copied()
         .find(|callbacks| unsafe { (callbacks.claim)(swapchain, creation_device) });
     if let Some(owner) = owner {
-        let mut owners = OWNERS.write().unwrap_or_else(|error| error.into_inner());
-        owners.insert(swapchain as usize, owner);
+        set_swapchain_owner(swapchain, Some(owner));
         if let Some((extended, _)) = extended {
-            owners.insert(extended as usize, owner);
+            set_swapchain_owner(extended, Some(owner));
         }
     }
     installed
+}
+
+/// The claiming backend recorded on a hooked swapchain, if any.
+fn swapchain_owner(swapchain: *mut c_void) -> Option<SwapchainCallbacks> {
+    swapchain_method(swapchain, |hook| {
+        *hook
+            .owner()
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+    })
+    .flatten()
+}
+
+fn set_swapchain_owner(swapchain: *mut c_void, owner: Option<SwapchainCallbacks>) {
+    let states = swapchains()
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(state) = states.get(&(swapchain as usize)) {
+        *state
+            .owner()
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = owner;
+    }
 }
 
 /// Installs interception on a swapchain by cloning the vtable layout of
@@ -128,18 +144,26 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
         .write()
         .unwrap_or_else(|error| error.into_inner());
     let vtable = if let Some(existing) = states.get(&key) {
+        // A widening re-clone replaces the hook object; carry the recorded
+        // owner into the replacement.
+        let owner = RwLock::new(
+            *existing
+                .owner()
+                .read()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
         let current = unsafe { *swapchain.cast::<*const usize>() };
         if current == existing.patched_vtable() {
             if A::supported_by(existing.vtable_type()) {
                 return true;
             }
-            unsafe { IDXGISwapchainHook::<A>::clone_from(existing.original_vtable()) }
+            unsafe { IDXGISwapchainHook::<A>::clone_from(existing.original_vtable(), owner) }
         } else {
-            unsafe { IDXGISwapchainHook::<A>::clone_from(current) }
+            unsafe { IDXGISwapchainHook::<A>::clone_from(current, owner) }
         }
     } else {
         let original = unsafe { *swapchain.cast::<*const usize>() };
-        unsafe { IDXGISwapchainHook::<A>::clone_from(original) }
+        unsafe { IDXGISwapchainHook::<A>::clone_from(original, RwLock::new(None)) }
     };
     let Some(vtable) = vtable else {
         return false;
@@ -168,22 +192,23 @@ pub unsafe fn install_factory_interfaces(factory: *mut c_void) -> bool {
     let Some(factory) = (unsafe { IDXGIFactory::from_raw_borrowed(&factory) }) else {
         return false;
     };
-    let mut installed = false;
-    macro_rules! install_interface {
-        ($interface:ty, $vtbl:ty) => {
-            if let Ok(interface) = factory.cast::<$interface>() {
-                installed |= unsafe { install_factory_kind::<$vtbl>(interface.as_raw()) };
-            }
-        };
-    }
-    install_interface!(IDXGIFactory7, IDXGIFactory7_Vtbl);
-    install_interface!(IDXGIFactory6, IDXGIFactory6_Vtbl);
-    install_interface!(IDXGIFactory5, IDXGIFactory5_Vtbl);
-    install_interface!(IDXGIFactory4, IDXGIFactory4_Vtbl);
-    install_interface!(IDXGIFactory3, IDXGIFactory3_Vtbl);
-    install_interface!(IDXGIFactory2, IDXGIFactory2_Vtbl);
-    install_interface!(IDXGIFactory1, IDXGIFactory1_Vtbl);
-    installed | unsafe { install_factory(factory.as_raw()) }
+    let interfaces = snowglass_hook::widest_interfaces! {
+        from factory => InstallFn;
+        install install_factory_kind;
+        IDXGIFactory7 => IDXGIFactory7_Vtbl,
+        IDXGIFactory6 => IDXGIFactory6_Vtbl,
+        IDXGIFactory5 => IDXGIFactory5_Vtbl,
+        IDXGIFactory4 => IDXGIFactory4_Vtbl,
+        IDXGIFactory3 => IDXGIFactory3_Vtbl,
+        IDXGIFactory2 => IDXGIFactory2_Vtbl,
+        IDXGIFactory1 => IDXGIFactory1_Vtbl,
+        IDXGIFactory => IDXGIFactory_Vtbl,
+    };
+    interfaces
+        .into_iter()
+        .fold(false, |installed, (pointer, install)| {
+            installed | unsafe { install(pointer) }
+        })
 }
 
 /// # Safety
@@ -380,11 +405,7 @@ pub(crate) unsafe fn query_interface(
         let interface_id = unsafe { &*interface_id.cast::<GUID>() };
         let swapchain = unsafe { *output };
         if !swapchain.is_null() {
-            let owner = OWNERS
-                .read()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(&(this as usize))
-                .copied();
+            let owner = swapchain_owner(this);
             if let Some(install) = swapchain_install(interface_id) {
                 unsafe { install(swapchain) };
             } else {
@@ -396,10 +417,7 @@ pub(crate) unsafe fn query_interface(
                 };
             }
             if let Some(owner) = owner {
-                OWNERS
-                    .write()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .insert(swapchain as usize, owner);
+                set_swapchain_owner(swapchain, Some(owner));
             }
         }
     }
@@ -408,15 +426,12 @@ pub(crate) unsafe fn query_interface(
 
 /// Runs a producer callback, absorbing panics. A panic must never unwind
 /// through the detour into the host game (that aborts the process), so the
-/// swapchain's callbacks are dropped instead: capture stops, the game lives.
+/// swapchain's owner is cleared instead: capture stops, the game lives.
 fn guarded_callback(this: *mut c_void, callback: unsafe fn(*mut c_void), stage: &str) {
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { callback(this) }));
     if result.is_err() {
-        OWNERS
-            .write()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&(this as usize));
+        set_swapchain_owner(this, None);
         crate::dxgi_log(format!(
             "snowglass: {stage} callback panicked; capture disabled for swapchain {this:p}"
         ));
@@ -429,13 +444,7 @@ pub(crate) unsafe fn present(
     flags: u32,
     mut next: hooks::PresentContext<'_>,
 ) -> i32 {
-    let callback = {
-        let owners = OWNERS.read().unwrap_or_else(|error| error.into_inner());
-        owners
-            .get(&(this as usize))
-            .and_then(|callbacks| callbacks.before_present)
-    };
-    if let Some(callback) = callback {
+    if let Some(callback) = swapchain_owner(this).and_then(|owner| owner.before_present) {
         guarded_callback(this, callback, "before_present");
     }
     let Some(continuation) = next.fp_next().copied() else {
@@ -451,13 +460,7 @@ pub(crate) unsafe fn present1(
     parameters: *const c_void,
     mut next: hooks::Present1Context<'_>,
 ) -> i32 {
-    let callback = {
-        let owners = OWNERS.read().unwrap_or_else(|error| error.into_inner());
-        owners
-            .get(&(this as usize))
-            .and_then(|callbacks| callbacks.before_present)
-    };
-    if let Some(callback) = callback {
+    if let Some(callback) = swapchain_owner(this).and_then(|owner| owner.before_present) {
         guarded_callback(this, callback, "before_present");
     }
     let Some(continuation) = next.fp_next().copied() else {
@@ -475,11 +478,7 @@ pub(crate) unsafe fn resize_buffers(
     flags: u32,
     mut next: hooks::ResizeBuffersContext<'_>,
 ) -> i32 {
-    let owner = OWNERS
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .get(&(this as usize))
-        .copied();
+    let owner = swapchain_owner(this);
     if let Some(callback) = owner.and_then(|callbacks| callbacks.before_resize) {
         guarded_callback(this, callback, "before_resize");
     }
@@ -492,10 +491,7 @@ pub(crate) unsafe fn resize_buffers(
             callback(this, result)
         }));
         if outcome.is_err() {
-            OWNERS
-                .write()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&(this as usize));
+            set_swapchain_owner(this, None);
             crate::dxgi_log(format!(
                 "snowglass: after_resize callback panicked; capture disabled for swapchain {this:p}"
             ));
@@ -524,10 +520,11 @@ pub(crate) unsafe fn release(this: *mut c_void, _next: hooks::ReleaseContext<'_>
                 .write()
                 .unwrap_or_else(|error| error.into_inner())
                 .remove(&(this as usize));
-            let owner = OWNERS
+            let owner = state
+                .owner()
                 .write()
                 .unwrap_or_else(|error| error.into_inner())
-                .remove(&(this as usize));
+                .take();
             if let Some(callback) = owner.and_then(|callbacks| callbacks.destroyed) {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
                     callback(this)

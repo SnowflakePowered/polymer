@@ -1,9 +1,9 @@
 use dashmap::DashMap;
 use std::ffi::c_void;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use windows::{
     Win32::Graphics::Direct3D11::{
-        ID3D11DeviceContext, ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1,
+        ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1,
         ID3D11DeviceContext1_Vtbl, ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl,
         ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl, ID3D11DeviceContext4,
         ID3D11DeviceContext4_Vtbl,
@@ -23,7 +23,7 @@ snowglass_hook::vtable! {
 
 type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
 type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
-type InstallFn = unsafe fn(*mut c_void) -> bool;
+type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d11::Tracking>) -> bool;
 
 snowglass_hook::com_vtable! {
     union ID3D11DeviceContextVtable for ID3D11DeviceContext4_Vtbl;
@@ -34,6 +34,7 @@ snowglass_hook::com_vtable! {
 /// layout common to every generation, so the exposed continuations do not
 /// depend on the cloned width.
 trait ContextHook: snowglass_hook::VtableHook {
+    fn tracking(&self) -> &Arc<snowglass_producer_d3d11::Tracking>;
     fn draw(&self) -> DrawFn;
     fn draw_indexed(&self) -> DrawIndexedFn;
 }
@@ -41,6 +42,10 @@ trait ContextHook: snowglass_hook::VtableHook {
 snowglass_hook::impl_com_hook! {
     impl ContextHook for ID3D11DeviceContextHook {
         vtable ID3D11DeviceContextVtable;
+        context {
+            /// Device-scoped tracking shared with the swapchains this device presents.
+            tracking: Arc<snowglass_producer_d3d11::Tracking>,
+        };
         patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
@@ -69,7 +74,10 @@ static CONTEXTS: LazyLock<DashMap<usize, Box<dyn ContextHook>>> = LazyLock::new(
 ///
 /// `output` must be null or point to a COM interface pointer for a live
 /// `ID3D11DeviceContext`.
-pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
+pub(crate) unsafe fn install_immediate_context(
+    output: *mut *mut c_void,
+    tracking: Arc<snowglass_producer_d3d11::Tracking>,
+) {
     if !snowglass_hook::config::tracking_enabled() || output.is_null() {
         return;
     }
@@ -90,39 +98,67 @@ pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
     let Some(install) = widest_context(context) else {
         return;
     };
-    unsafe { install(context) };
+    unsafe { install(context, tracking) };
+}
+
+/// Resolves the tracking context installed on a D3D11 device's immediate
+/// context.
+///
+/// # Safety
+///
+/// `device` must be null or point to a live `ID3D11Device`.
+pub(crate) unsafe fn device_tracking(
+    device: *mut c_void,
+) -> Option<Arc<snowglass_producer_d3d11::Tracking>> {
+    let device = unsafe { ID3D11Device::from_raw_borrowed(&device) }?;
+    let context = unsafe { device.GetImmediateContext() }.ok()?;
+    CONTEXTS
+        .get(&(context.as_raw() as usize))
+        .map(|state| state.tracking().clone())
 }
 
 fn widest_context(context: *mut c_void) -> Option<InstallFn> {
     let unknown = unsafe { IUnknown::from_raw_borrowed(&context) }?;
-    macro_rules! try_interface {
-        ($interface:ty, $vtbl:ty) => {
-            if unknown.cast::<$interface>().is_ok() {
-                return Some(install_context_kind::<$vtbl> as InstallFn);
-            }
-        };
+    // The immediate context does not tear off, so every generation shares one
+    // pointer; only the widest supported vtable width matters, and it is
+    // installed into the object's original pointer by the caller.
+    snowglass_hook::widest_interfaces! {
+        from unknown => InstallFn;
+        install install_context_kind;
+        ID3D11DeviceContext4 => ID3D11DeviceContext4_Vtbl,
+        ID3D11DeviceContext3 => ID3D11DeviceContext3_Vtbl,
+        ID3D11DeviceContext2 => ID3D11DeviceContext2_Vtbl,
+        ID3D11DeviceContext1 => ID3D11DeviceContext1_Vtbl,
+        ID3D11DeviceContext => ID3D11DeviceContext_Vtbl,
     }
-    try_interface!(ID3D11DeviceContext4, ID3D11DeviceContext4_Vtbl);
-    try_interface!(ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl);
-    try_interface!(ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl);
-    try_interface!(ID3D11DeviceContext1, ID3D11DeviceContext1_Vtbl);
-    try_interface!(ID3D11DeviceContext, ID3D11DeviceContext_Vtbl);
-    None
+    .into_iter()
+    .next()
+    .map(|(_, install)| install)
 }
 
-unsafe fn install_context_kind<A: Vtable>(context: *mut c_void) -> bool {
+unsafe fn install_context_kind<A: Vtable>(
+    context: *mut c_void,
+    tracking: Arc<snowglass_producer_d3d11::Tracking>,
+) -> bool {
     if context.is_null() {
         return false;
     }
     let object_vtable = context.cast::<*const usize>();
     let current = unsafe { *object_vtable };
-    let Some(hook) = (unsafe { ID3D11DeviceContextHook::<A>::clone_from(current) }) else {
+    let Some(hook) = (unsafe { ID3D11DeviceContextHook::<A>::clone_from(current, tracking) })
+    else {
         return false;
     };
     let state: Box<dyn ContextHook> = Box::new(hook);
     unsafe { *object_vtable = state.patched_vtable() };
     CONTEXTS.insert(context as usize, state);
     true
+}
+
+fn context_tracking(context: *mut c_void) -> Option<Arc<snowglass_producer_d3d11::Tracking>> {
+    CONTEXTS
+        .get(&(context as usize))
+        .map(|state| state.tracking().clone())
 }
 
 snowglass_hook::com_trampoline! {
@@ -133,7 +169,9 @@ snowglass_hook::com_trampoline! {
     );
     original CONTEXTS.get(&(this as usize)).map(|state| state.draw());
     after {
-        unsafe { snowglass_producer_d3d11::record_context_draw(this) };
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
     }
 }
 
@@ -146,6 +184,8 @@ snowglass_hook::com_trampoline! {
     );
     original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed());
     after {
-        unsafe { snowglass_producer_d3d11::record_context_draw(this) };
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
     }
 }

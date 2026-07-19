@@ -348,9 +348,9 @@ unsafe fn try_install_device(
         });
     }
     let base = device.as_raw();
-    let already_hooked = DEVICES.get(&(base as usize)).is_some_and(|hook| unsafe {
-        *base.cast::<*const usize>() == hook.patched_vtable()
-    });
+    let already_hooked = DEVICES
+        .get(&(base as usize))
+        .is_some_and(|hook| unsafe { *base.cast::<*const usize>() == hook.patched_vtable() });
 
     let interfaces = device_interfaces(&device);
     let mut installed = false;
@@ -364,36 +364,25 @@ unsafe fn try_install_device(
 }
 
 fn device_interfaces(device: &ID3D12Device) -> Vec<(*mut c_void, InstallFn)> {
-    let mut interfaces = Vec::new();
-    macro_rules! try_cast {
-        ($interface:ty, $vtbl:ty) => {
-            if let Ok(interface) = device.cast::<$interface>() {
-                let pointer = interface.as_raw();
-                if !interfaces.iter().any(|(existing, _)| *existing == pointer) {
-                    interfaces.push((pointer, install_device_kind::<$vtbl> as InstallFn));
-                }
-            }
-        };
+    snowglass_hook::widest_interfaces! {
+        from device => InstallFn;
+        install install_device_kind;
+        ID3D12Device14 => ID3D12Device14_Vtbl,
+        ID3D12Device13 => ID3D12Device13_Vtbl,
+        ID3D12Device12 => ID3D12Device12_Vtbl,
+        ID3D12Device11 => ID3D12Device11_Vtbl,
+        ID3D12Device10 => ID3D12Device10_Vtbl,
+        ID3D12Device9 => ID3D12Device9_Vtbl,
+        ID3D12Device8 => ID3D12Device8_Vtbl,
+        ID3D12Device7 => ID3D12Device7_Vtbl,
+        ID3D12Device6 => ID3D12Device6_Vtbl,
+        ID3D12Device5 => ID3D12Device5_Vtbl,
+        ID3D12Device4 => ID3D12Device4_Vtbl,
+        ID3D12Device3 => ID3D12Device3_Vtbl,
+        ID3D12Device2 => ID3D12Device2_Vtbl,
+        ID3D12Device1 => ID3D12Device1_Vtbl,
+        ID3D12Device => ID3D12Device_Vtbl,
     }
-    try_cast!(ID3D12Device14, ID3D12Device14_Vtbl);
-    try_cast!(ID3D12Device13, ID3D12Device13_Vtbl);
-    try_cast!(ID3D12Device12, ID3D12Device12_Vtbl);
-    try_cast!(ID3D12Device11, ID3D12Device11_Vtbl);
-    try_cast!(ID3D12Device10, ID3D12Device10_Vtbl);
-    try_cast!(ID3D12Device9, ID3D12Device9_Vtbl);
-    try_cast!(ID3D12Device8, ID3D12Device8_Vtbl);
-    try_cast!(ID3D12Device7, ID3D12Device7_Vtbl);
-    try_cast!(ID3D12Device6, ID3D12Device6_Vtbl);
-    try_cast!(ID3D12Device5, ID3D12Device5_Vtbl);
-    try_cast!(ID3D12Device4, ID3D12Device4_Vtbl);
-    try_cast!(ID3D12Device3, ID3D12Device3_Vtbl);
-    try_cast!(ID3D12Device2, ID3D12Device2_Vtbl);
-    try_cast!(ID3D12Device1, ID3D12Device1_Vtbl);
-    let base = device.as_raw();
-    if !interfaces.iter().any(|(existing, _)| *existing == base) {
-        interfaces.push((base, install_device_kind::<ID3D12Device_Vtbl> as InstallFn));
-    }
-    interfaces
 }
 
 unsafe fn install_device_kind<A: Vtable>(
@@ -453,40 +442,21 @@ unsafe fn install_command_list(
     // later through QueryInterface (typically the same pointer), and a clone
     // sized to the creation interface would dispatch those wider slots into
     // the uninitialized tail of the clone.
-    let mut interfaces = Vec::new();
-    macro_rules! try_cast {
-        ($interface:ty, $vtbl:ty) => {
-            if let Ok(interface) = base.cast::<$interface>() {
-                let pointer = interface.as_raw();
-                if !interfaces.iter().any(|(existing, _)| *existing == pointer) {
-                    interfaces.push((pointer, install_command_list_kind::<$vtbl> as InstallFn));
-                }
-            }
-        };
-    }
-    try_cast!(
-        ID3D12GraphicsCommandList10,
-        ID3D12GraphicsCommandList10_Vtbl
-    );
-    try_cast!(ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList6_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList5_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList4_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList3_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList2_Vtbl);
-    try_cast!(ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList1_Vtbl);
-    let base_pointer = base.as_raw();
-    if !interfaces
-        .iter()
-        .any(|(existing, _)| *existing == base_pointer)
-    {
-        interfaces.push((
-            base_pointer,
-            install_command_list_kind::<ID3D12GraphicsCommandList_Vtbl> as InstallFn,
-        ));
-    }
+    let interfaces = snowglass_hook::widest_interfaces! {
+        from &base => InstallFn;
+        install install_command_list_kind;
+        ID3D12GraphicsCommandList10 => ID3D12GraphicsCommandList10_Vtbl,
+        ID3D12GraphicsCommandList9 => ID3D12GraphicsCommandList9_Vtbl,
+        ID3D12GraphicsCommandList8 => ID3D12GraphicsCommandList8_Vtbl,
+        ID3D12GraphicsCommandList7 => ID3D12GraphicsCommandList7_Vtbl,
+        ID3D12GraphicsCommandList6 => ID3D12GraphicsCommandList6_Vtbl,
+        ID3D12GraphicsCommandList5 => ID3D12GraphicsCommandList5_Vtbl,
+        ID3D12GraphicsCommandList4 => ID3D12GraphicsCommandList4_Vtbl,
+        ID3D12GraphicsCommandList3 => ID3D12GraphicsCommandList3_Vtbl,
+        ID3D12GraphicsCommandList2 => ID3D12GraphicsCommandList2_Vtbl,
+        ID3D12GraphicsCommandList1 => ID3D12GraphicsCommandList1_Vtbl,
+        ID3D12GraphicsCommandList => ID3D12GraphicsCommandList_Vtbl,
+    };
     for (pointer, install) in interfaces {
         unsafe { install(pointer, tracking.clone()) };
     }

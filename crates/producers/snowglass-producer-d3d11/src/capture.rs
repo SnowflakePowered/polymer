@@ -1,6 +1,6 @@
 //! Swapchain capture state and viewer handoff.
 
-use crate::{D3d11RingMode, D3d11SwapchainCapture};
+use crate::{D3d11RingMode, D3d11SwapchainCapture, Tracking};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
@@ -10,7 +10,11 @@ use snowglass_protocol::{
 use std::{
     collections::HashMap,
     ffi::c_void,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
+};
+use windows::{
+    Win32::Graphics::Direct3D11::ID3D11Device,
+    core::{IUnknown, Interface},
 };
 
 struct CaptureState {
@@ -28,11 +32,47 @@ enum CaptureEntry {
 }
 
 static CAPTURES: OnceLock<Mutex<HashMap<usize, CaptureEntry>>> = OnceLock::new();
+static TRACKERS: OnceLock<Mutex<HashMap<usize, Arc<Tracking>>>> = OnceLock::new();
 
 fn captures() -> &'static Mutex<HashMap<usize, CaptureEntry>> {
-    CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
+    CAPTURES.get_or_init(Default::default)
 }
 
+fn trackers() -> &'static Mutex<HashMap<usize, Arc<Tracking>>> {
+    TRACKERS.get_or_init(Default::default)
+}
+
+/// Claims a DXGI swapchain created for a D3D11 device.
+///
+/// # Safety
+///
+/// `swapchain` and `creation_device` must be null or point to live COM
+/// interfaces.
+pub unsafe fn claim(
+    swapchain: *mut c_void,
+    creation_device: *mut c_void,
+    tracking: Arc<Tracking>,
+) -> bool {
+    if swapchain.is_null() || creation_device.is_null() {
+        return false;
+    }
+    let is_d3d11 = unsafe { IUnknown::from_raw_borrowed(&creation_device) }
+        .is_some_and(|unknown| unknown.cast::<ID3D11Device>().is_ok());
+    if !is_d3d11 {
+        return false;
+    }
+    trackers()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(swapchain as usize, tracking);
+    true
+}
+
+/// Captures the image that is about to be presented.
+///
+/// # Safety
+///
+/// `swapchain` must point to a live DXGI swapchain.
 pub unsafe fn before_present(swapchain: *mut c_void) {
     let mut captures = captures().lock().unwrap_or_else(|error| error.into_inner());
     if let std::collections::hash_map::Entry::Vacant(entry) = captures.entry(swapchain as usize) {
@@ -107,7 +147,12 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
         })));
     }
     if let Some(CaptureEntry::Active(state)) = captures.get_mut(&(swapchain as usize)) {
-        let tracked_region = crate::tracking::take_swapchain_region(swapchain);
+        let tracked_region = trackers()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&(swapchain as usize))
+            .cloned()
+            .and_then(|tracking| tracking.take_swapchain_region(swapchain));
         let submission = match unsafe { state.capture.copy_frame(tracked_region) } {
             Ok(submission) => submission,
             Err(error) => {
@@ -139,6 +184,7 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             capture_height: submission.height,
             presentation_width: state.capture.ring().desc().width,
             presentation_height: state.capture.ring().desc().height,
+            presentation_flip_y: false,
             presentation_transform: PresentationTransform::axis_aligned(
                 submission.capture_x,
                 submission.capture_y,
@@ -164,6 +210,11 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
     }
 }
 
+/// Releases capture state before the swapchain buffers resize.
+///
+/// # Safety
+///
+/// `swapchain` must point to a live DXGI swapchain.
 pub unsafe fn before_resize(swapchain: *mut c_void) {
     if matches!(
         captures()
@@ -176,8 +227,17 @@ pub unsafe fn before_resize(swapchain: *mut c_void) {
     }
 }
 
+/// Releases all producer state associated with a destroyed swapchain.
+///
+/// # Safety
+///
+/// `swapchain` must be the pointer previously passed to [`claim`].
 pub unsafe fn destroyed(swapchain: *mut c_void) {
     unsafe { before_resize(swapchain) };
+    trackers()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(swapchain as usize));
 }
 
 struct ViewerConnection {

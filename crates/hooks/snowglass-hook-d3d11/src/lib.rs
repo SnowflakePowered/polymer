@@ -125,6 +125,9 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
+                &hooks::CreateDeviceContext {
+                    tracking: Default::default(),
+                },
             );
             device::create_device_and_swapchain(
                 std::ptr::null_mut(),
@@ -133,6 +136,9 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
+                &hooks::CreateDeviceAndSwapChainContext {
+                    tracking: Default::default(),
+                },
             );
         }
     }

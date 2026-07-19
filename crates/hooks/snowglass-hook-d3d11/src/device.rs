@@ -1,20 +1,10 @@
 //! D3D11 device discovery and hook installation.
 
 use std::ffi::c_void;
-use windows::{
-    Win32::Graphics::Direct3D11::ID3D11Device,
-    core::{IUnknown, Interface},
-};
 
-pub(crate) unsafe fn claim_swapchain(
-    _swapchain: *mut c_void,
-    creation_device: *mut c_void,
-) -> bool {
-    if creation_device.is_null() {
-        return false;
-    }
-    unsafe { IUnknown::from_raw_borrowed(&creation_device) }
-        .is_some_and(|unknown| unknown.cast::<ID3D11Device>().is_ok())
+pub(crate) unsafe fn claim_swapchain(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
+    let tracking = unsafe { crate::vtable::device_tracking(creation_device) }.unwrap_or_default();
+    unsafe { snowglass_producer_d3d11::claim(swapchain, creation_device, tracking) }
 }
 
 pub(crate) unsafe fn create_device(
@@ -23,10 +13,13 @@ pub(crate) unsafe fn create_device(
     _feature_level: *mut i32,
     immediate_context: *mut *mut c_void,
     result: i32,
+    context: &crate::hooks::CreateDeviceContext,
 ) {
     if result >= 0 {
         crate::d3d11_log("snowglass: intercepted D3D11CreateDevice");
-        unsafe { crate::vtable::install_immediate_context(immediate_context) };
+        unsafe {
+            crate::vtable::install_immediate_context(immediate_context, context.tracking.clone())
+        };
     }
 }
 
@@ -37,12 +30,15 @@ pub(crate) unsafe fn create_device_and_swapchain(
     _feature_level: *mut i32,
     immediate_context: *mut *mut c_void,
     result: i32,
+    context: &crate::hooks::CreateDeviceAndSwapChainContext,
 ) {
     if result < 0 || swapchain.is_null() {
         return;
     }
     crate::d3d11_log("snowglass: intercepted D3D11CreateDeviceAndSwapChain");
-    unsafe { crate::vtable::install_immediate_context(immediate_context) };
+    unsafe {
+        crate::vtable::install_immediate_context(immediate_context, context.tracking.clone())
+    };
     let swapchain = unsafe { *swapchain };
     if !swapchain.is_null() {
         let creation_device = if device.is_null() {
