@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -19,7 +19,7 @@ use webrtc::{
     api::{
         API, APIBuilder,
         interceptor_registry::register_default_interceptors,
-        media_engine::{MIME_TYPE_H264, MediaEngine},
+        media_engine::{MIME_TYPE_H264, MIME_TYPE_HEVC, MediaEngine},
         setting_engine::SettingEngine,
     },
     interceptor::registry::Registry,
@@ -29,10 +29,15 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
-    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    rtp_transceiver::{
+        rtp_codec::{RTCRtpCodecCapability, RTPCodecType},
+        rtp_transceiver_direction::RTCRtpTransceiverDirection,
+    },
+    stats::StatsReportType,
     track::track_local::{TrackLocal, track_local_static_sample::TrackLocalStaticSample},
 };
 use webrtc_ice::{
+    network_type::NetworkType,
     udp_mux::{UDPMuxDefault, UDPMuxParams},
     udp_network::UDPNetwork,
 };
@@ -45,6 +50,11 @@ const FRAME_RATE: f32 = 60.0;
 const FRAME_DURATION: Duration = Duration::from_micros(16_667);
 const DEFAULT_BITRATE: u32 = 8_000_000;
 const MAX_HTTP_HEADER: usize = 64 * 1024;
+/// Bounded frame handoff to the encoder thread. GPU-backed frame producers
+/// must never have more frames outstanding than this, so an accepted frame
+/// can never resolve after a later frame that was dropped by `try_send`.
+pub(crate) const FRAME_CHANNEL_CAPACITY: usize = 2;
+const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_WHEP_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 mod encoders;
@@ -132,7 +142,22 @@ impl Drop for D3d12Frame {
     }
 }
 
-type Tracks = Arc<Mutex<HashMap<u64, Arc<TrackLocalStaticSample>>>>;
+/// Publish targets and their capture connections. Tracks are created for
+/// every configured target index before signaling starts: a WHEP session can
+/// only ever send media on tracks present in its answer, so a track that
+/// appears after a session connects would leave that session silent forever
+/// (webrtc-rs cannot late-attach a track to a negotiated trackless
+/// transceiver without renegotiation, which WHEP has no channel for).
+#[derive(Default)]
+struct TrackTable {
+    /// One long-lived track per `--webrtc` target index.
+    tracks: HashMap<u32, Arc<TrackLocalStaticSample>>,
+    /// Live capture connection -> target index. Streams come and go (window
+    /// recreation, backend preemption) while the track persists.
+    connections: HashMap<u64, u32>,
+}
+
+type Tracks = Arc<Mutex<TrackTable>>;
 type Sessions = Arc<Mutex<HashMap<u64, Arc<RTCPeerConnection>>>>;
 
 pub(crate) struct Publisher {
@@ -142,7 +167,7 @@ pub(crate) struct Publisher {
 }
 
 impl Publisher {
-    pub(crate) fn start(bind: SocketAddr) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn start(bind: SocketAddr, targets: &[u32]) -> Result<Self, Box<dyn Error>> {
         let listener = TcpListener::bind(bind)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -150,10 +175,35 @@ impl Publisher {
             .build()?;
         let api = Arc::new(runtime.block_on(build_api(bind))?);
         let tracks = Tracks::default();
-        let (frames, frame_rx) = mpsc::sync_channel(2);
+        {
+            let mut table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+            for &target_index in targets {
+                table.tracks.insert(
+                    target_index,
+                    Arc::new(TrackLocalStaticSample::new(
+                        hevc_capability(),
+                        format!("render-target-{target_index}"),
+                        "snowglass".to_owned(),
+                    )),
+                );
+            }
+        }
+        let sessions = Sessions::default();
+        let (frames, frame_rx) = mpsc::sync_channel(FRAME_CHANNEL_CAPACITY);
 
-        spawn_encoder(runtime.handle().clone(), tracks.clone(), frame_rx);
-        spawn_signaling(listener, runtime.handle().clone(), api, tracks.clone());
+        spawn_encoder(
+            runtime.handle().clone(),
+            tracks.clone(),
+            sessions.clone(),
+            frame_rx,
+        );
+        spawn_signaling(
+            listener,
+            runtime.handle().clone(),
+            api,
+            tracks.clone(),
+            sessions,
+        );
         eprintln!("snowglass: WebRTC signaling and ICE listening on {bind}");
         Ok(Self {
             tracks,
@@ -163,21 +213,18 @@ impl Publisher {
     }
 
     pub(crate) fn add_stream(&self, connection: u64, target_index: u32) {
-        let track = Arc::new(TrackLocalStaticSample::new(
-            h264_capability(),
-            format!("render-target-{target_index}"),
-            "snowglass".to_owned(),
-        ));
         self.tracks
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(connection, track);
+            .connections
+            .insert(connection, target_index);
     }
 
     pub(crate) fn remove_stream(&self, connection: u64) {
         self.tracks
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .connections
             .remove(&connection);
     }
 
@@ -193,15 +240,53 @@ async fn build_api(bind: SocketAddr) -> Result<API, Box<dyn Error>> {
     let interceptors = register_default_interceptors(Registry::new(), &mut media)?;
     let mut settings = SettingEngine::default();
     let socket = tokio::net::UdpSocket::bind(bind).await?;
+    disable_udp_connection_reset(&socket)?;
     settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
         socket,
     ))));
+    // Only advertise candidates matching the mux socket's address family.
+    // Mixed-family host candidates on one mux make the ICE agent file
+    // peer-reflexive candidates under one family and look them up under the
+    // other, so its connectivity checks never succeed.
+    settings.set_network_types(vec![if bind.is_ipv4() {
+        NetworkType::Udp4
+    } else {
+        NetworkType::Udp6
+    }]);
     settings.set_include_loopback_candidate(true);
     Ok(APIBuilder::new()
         .with_media_engine(media)
         .with_interceptor_registry(interceptors)
         .with_setting_engine(settings)
         .build())
+}
+
+/// Windows surfaces ICMP port-unreachable as `WSAECONNRESET` on the next UDP
+/// receive; the ICE mux read loop treats that as fatal and goes deaf, killing
+/// DTLS. Sends to unreachable candidates are routine, so drop those reports.
+fn disable_udp_connection_reset(socket: &tokio::net::UdpSocket) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{SIO_UDP_CONNRESET, SOCKET_ERROR, WSAIoctl};
+
+    let mut returned = 0u32;
+    let report_connreset: u32 = 0;
+    let result = unsafe {
+        WSAIoctl(
+            socket.as_raw_socket() as usize,
+            SIO_UDP_CONNRESET,
+            (&raw const report_connreset).cast(),
+            size_of::<u32>() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if result == SOCKET_ERROR {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn h264_capability() -> RTCRtpCodecCapability {
@@ -215,32 +300,167 @@ fn h264_capability() -> RTCRtpCodecCapability {
     }
 }
 
-fn spawn_encoder(handle: Handle, tracks: Tracks, frames: mpsc::Receiver<VideoFrame>) {
+fn hevc_capability() -> RTCRtpCodecCapability {
+    RTCRtpCodecCapability {
+        mime_type: MIME_TYPE_HEVC.to_owned(),
+        clock_rate: 90_000,
+        channels: 0,
+        sdp_fmtp_line: String::new(),
+        rtcp_feedback: Vec::new(),
+    }
+}
+
+fn capability(codec: encoders::Codec) -> RTCRtpCodecCapability {
+    match codec {
+        encoders::Codec::Hevc => hevc_capability(),
+        encoders::Codec::H264 => h264_capability(),
+    }
+}
+
+fn offer_supports_hevc(sdp: &str) -> bool {
+    sdp.lines().any(|line| {
+        line.trim_start().starts_with("a=rtpmap:")
+            && line.to_ascii_lowercase().contains(" h265/90000")
+    })
+}
+
+/// Swapping a stream's track object only affects future sessions; peers that
+/// already added the old track keep sending from it. Rebind every live
+/// sender so connected sessions follow the codec change. Sessions whose
+/// negotiated codecs cannot carry the new track keep the old (now silent)
+/// track and are logged.
+async fn rebind_track(
+    sessions: &Sessions,
+    track_id: &str,
+    replacement: &Arc<TrackLocalStaticSample>,
+) {
+    let peers = sessions
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .map(|(session_id, peer)| (*session_id, peer.clone()))
+        .collect::<Vec<_>>();
+    for (session_id, peer) in peers {
+        for sender in peer.get_senders().await {
+            let Some(track) = sender.track().await else {
+                continue;
+            };
+            if track.id() != track_id {
+                continue;
+            }
+            if let Err(error) = sender
+                .replace_track(Some(replacement.clone() as Arc<dyn TrackLocal + Send + Sync>))
+                .await
+            {
+                eprintln!(
+                    "snowglass: WebRTC session {session_id} cannot switch to {}: {error}",
+                    replacement.codec().mime_type
+                );
+            }
+        }
+    }
+}
+
+fn spawn_encoder(
+    handle: Handle,
+    tracks: Tracks,
+    sessions: Sessions,
+    frames: mpsc::Receiver<VideoFrame>,
+) {
     thread::Builder::new()
-        .name("snowglass-h264".to_owned())
+        .name("snowglass-video-encode".to_owned())
         .spawn(move || {
             let mut encoders = HashMap::<u64, encoders::Encoder>::new();
-            while let Ok(frame) = frames.recv() {
-                let track = tracks
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .get(&frame.connection)
-                    .cloned();
-                let Some(track) = track else { continue };
-                if frame.width < 2
-                    || frame.height < 2
-                    || frame.width % 2 != 0
-                    || frame.height % 2 != 0
-                {
+            let mut announced_crops = HashSet::new();
+            let mut announced_samples = HashSet::new();
+            let mut bitstream_dump = std::env::var_os("SNOWGLASS_DUMP_BITSTREAM")
+                .and_then(|path| std::fs::File::create(path).ok());
+            while let Ok(mut frame) = frames.recv() {
+                let existing = {
+                    let table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+                    table.connections.get(&frame.connection).copied().and_then(
+                        |target_index| {
+                            table
+                                .tracks
+                                .get(&target_index)
+                                .map(|track| (target_index, track.clone()))
+                        },
+                    )
+                };
+                let Some((target_index, existing_track)) = existing else { continue };
+                if frame.width < 2 || frame.height < 2 {
                     continue;
+                }
+                let source_extent = (frame.width, frame.height);
+                frame.width &= !1;
+                frame.height &= !1;
+                if source_extent != (frame.width, frame.height)
+                    && announced_crops.insert(frame.connection)
+                {
+                    eprintln!(
+                        "snowglass: cropping WebRTC track {} from {}x{} to {}x{} for 4:2:0 encoding",
+                        frame.connection,
+                        source_extent.0,
+                        source_extent.1,
+                        frame.width,
+                        frame.height,
+                    );
                 }
                 let encoder = encoders
                     .entry(frame.connection)
                     .or_insert_with(|| encoders::Encoder::new(DEFAULT_BITRATE, FRAME_RATE));
-                match encoder.encode(frame) {
+                let connection = frame.connection;
+                let preferred = if existing_track
+                    .codec()
+                    .mime_type
+                    .eq_ignore_ascii_case(MIME_TYPE_HEVC)
+                {
+                    encoders::Codec::Hevc
+                } else {
+                    encoders::Codec::H264
+                };
+                match encoder.encode(frame, preferred) {
                     Ok(encoded) => {
+                        let wanted = capability(encoded.codec);
+                        let track = if existing_track
+                            .codec()
+                            .mime_type
+                            .eq_ignore_ascii_case(&wanted.mime_type)
+                        {
+                            existing_track
+                        } else {
+                            let replacement = Arc::new(TrackLocalStaticSample::new(
+                                wanted,
+                                existing_track.id().to_owned(),
+                                existing_track.stream_id().to_owned(),
+                            ));
+                            tracks
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .tracks
+                                .insert(target_index, replacement.clone());
+                            eprintln!(
+                                "snowglass: WebRTC track {connection} switching to {}",
+                                replacement.codec().mime_type
+                            );
+                            handle.block_on(rebind_track(
+                                &sessions,
+                                existing_track.id(),
+                                &replacement,
+                            ));
+                            replacement
+                        };
+                        if announced_samples.insert(connection) {
+                            eprintln!(
+                                "snowglass: encoded first WebRTC sample for track {connection} ({} bytes)",
+                                encoded.data.len()
+                            );
+                        }
+                        if let Some(file) = bitstream_dump.as_mut() {
+                            let _ = std::io::Write::write_all(file, &encoded.data);
+                        }
                         let sample = Sample {
-                            data: encoded.into(),
+                            data: encoded.data.into(),
                             duration: FRAME_DURATION,
                             ..Default::default()
                         };
@@ -248,15 +468,20 @@ fn spawn_encoder(handle: Handle, tracks: Tracks, frames: mpsc::Receiver<VideoFra
                             eprintln!("snowglass: WebRTC track write failed: {error}");
                         }
                     }
-                    Err(error) => eprintln!("snowglass: H.264 encoding failed: {error}"),
+                    Err(error) => eprintln!("snowglass: video encoding failed: {error}"),
                 }
             }
         })
-        .expect("failed to spawn H.264 encoder thread");
+        .expect("failed to spawn video encoder thread");
 }
 
-fn spawn_signaling(listener: TcpListener, handle: Handle, api: Arc<API>, tracks: Tracks) {
-    let sessions = Sessions::default();
+fn spawn_signaling(
+    listener: TcpListener,
+    handle: Handle,
+    api: Arc<API>,
+    tracks: Tracks,
+    sessions: Sessions,
+) {
     thread::Builder::new()
         .name("snowglass-webrtc-http".to_owned())
         .spawn(move || {
@@ -268,7 +493,16 @@ fn spawn_signaling(listener: TcpListener, handle: Handle, api: Arc<API>, tracks:
                 let sessions = sessions.clone();
                 thread::spawn(move || {
                     if let Err(error) = serve_http(stream, &handle, &api, &tracks, &sessions) {
-                        eprintln!("snowglass: WebRTC signaling request failed: {error}");
+                        let idle_connection =
+                            error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                                matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                                )
+                            });
+                        if !idle_connection {
+                            eprintln!("snowglass: WebRTC signaling request failed: {error}");
+                        }
                     }
                 });
             }
@@ -321,6 +555,7 @@ fn serve_http(
             let count = tracks
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
+                .tracks
                 .len();
             respond(
                 &mut stream,
@@ -360,24 +595,46 @@ async fn answer_offer(
     session_id: u64,
     offer: RTCSessionDescription,
 ) -> Result<RTCSessionDescription, Box<dyn Error>> {
-    let peer = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
-    let current_tracks = tracks
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
-    for track in current_tracks {
-        let sender = peer
-            .add_track(track as Arc<dyn TrackLocal + Send + Sync>)
-            .await?;
-        tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+    let offered_video = offer
+        .sdp
+        .lines()
+        .any(|line| line.trim_end().starts_with("m=video "));
+    if !offered_video {
+        return Err("WebRTC offer contains no video media section".into());
     }
+    let offered_hevc = offer_supports_hevc(&offer.sdp);
+    let peer = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
+    peer.on_ice_connection_state_change(Box::new(move |state| {
+        eprintln!("snowglass: WebRTC session {session_id} ICE state {state}");
+        Box::pin(async {})
+    }));
     let weak_sessions = Arc::downgrade(sessions);
+    let weak_peer = Arc::downgrade(&peer);
     peer.on_peer_connection_state_change(Box::new(move |state| {
         let weak_sessions = weak_sessions.clone();
+        let weak_peer = weak_peer.clone();
         Box::pin(async move {
             eprintln!("snowglass: WebRTC session {session_id} state {state}");
+            if state == RTCPeerConnectionState::Connected
+                && let Some(peer) = weak_peer.upgrade()
+            {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let (packets, bytes) = peer.get_stats().await.reports.values().fold(
+                        (0_u64, 0_u64),
+                        |(packets, bytes), report| match report {
+                            StatsReportType::OutboundRTP(outbound) => (
+                                packets.saturating_add(outbound.packets_sent),
+                                bytes.saturating_add(outbound.bytes_sent),
+                            ),
+                            _ => (packets, bytes),
+                        },
+                    );
+                    eprintln!(
+                        "snowglass: WebRTC session {session_id} sent {packets} RTP packets ({bytes} payload bytes)"
+                    );
+                });
+            }
             if matches!(
                 state,
                 RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
@@ -390,11 +647,74 @@ async fn answer_offer(
             }
         })
     }));
+    let (current_tracks, downgrades) = {
+        let mut table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+        let mut downgrades = Vec::new();
+        if !offered_hevc {
+            for track in table.tracks.values_mut() {
+                if track.codec().mime_type.eq_ignore_ascii_case(MIME_TYPE_HEVC) {
+                    let replacement = Arc::new(TrackLocalStaticSample::new(
+                        h264_capability(),
+                        track.id().to_owned(),
+                        track.stream_id().to_owned(),
+                    ));
+                    downgrades.push((track.id().to_owned(), replacement.clone()));
+                    *track = replacement;
+                }
+            }
+        }
+        // Deterministic track order so multi-target answers assign the same
+        // m-line to the same render target across sessions.
+        let mut entries = table.tracks.iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(target_index, _)| **target_index);
+        (
+            entries
+                .into_iter()
+                .map(|(_, track)| track.clone())
+                .collect::<Vec<_>>(),
+            downgrades,
+        )
+    };
+    for (track_id, replacement) in downgrades {
+        eprintln!(
+            "snowglass: WebRTC session {session_id} offer has no HEVC; switching track {track_id} to H.264"
+        );
+        rebind_track(sessions, &track_id, &replacement).await;
+    }
+    for track in current_tracks {
+        let sender = peer
+            .add_track(track as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
+        tokio::spawn(async move { while sender.read_rtcp().await.is_ok() {} });
+    }
     peer.set_remote_description(offer).await?;
+    for transceiver in peer.get_transceivers().await {
+        if transceiver.kind() == RTPCodecType::Audio {
+            transceiver
+                .set_direction(RTCRtpTransceiverDirection::Inactive)
+                .await;
+        }
+    }
     let mut gathering = peer.gathering_complete_promise().await;
     peer.set_local_description(peer.create_answer(None).await?)
         .await?;
-    let _ = gathering.recv().await;
+    for transceiver in peer.get_transceivers().await {
+        let has_track = transceiver.sender().await.track().await.is_some();
+        eprintln!(
+            "snowglass: WebRTC session {session_id} {:?} transceiver direction={} negotiated={} track={has_track}",
+            transceiver.kind(),
+            transceiver.direction(),
+            transceiver.current_direction(),
+        );
+    }
+    if tokio::time::timeout(ICE_GATHERING_TIMEOUT, gathering.recv())
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "snowglass: WebRTC session {session_id} ICE gathering timed out; returning gathered candidates"
+        );
+    }
     let answer = peer
         .local_description()
         .await
@@ -512,6 +832,19 @@ mod tests {
         assert_eq!(codec.clock_rate, 90_000);
     }
 
+    #[test]
+    fn hevc_codec_uses_the_webrtc_clock_rate() {
+        let codec = hevc_capability();
+        assert_eq!(codec.mime_type, "video/H265");
+        assert_eq!(codec.clock_rate, 90_000);
+    }
+
+    #[test]
+    fn codec_selection_falls_back_when_offer_omits_hevc() {
+        assert!(offer_supports_hevc("a=rtpmap:126 H265/90000\r\n"));
+        assert!(!offer_supports_hevc("a=rtpmap:102 H264/90000\r\n"));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires local UDP loopback ICE"]
     async fn whep_session_retains_peer_and_sends_rtp() -> Result<(), Box<dyn Error>> {
@@ -531,12 +864,19 @@ mod tests {
             "test-video".to_owned(),
             "snowglass-test".to_owned(),
         ));
-        tracks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(1, server_track.clone());
+        {
+            let mut table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+            table.tracks.insert(0, server_track.clone());
+            table.connections.insert(1, 0);
+        }
         let server_api = Arc::new(build_api(server_address).await?);
-        spawn_signaling(listener, Handle::current(), server_api, tracks);
+        spawn_signaling(
+            listener,
+            Handle::current(),
+            server_api,
+            tracks,
+            Sessions::default(),
+        );
 
         let mut media = MediaEngine::default();
         media.register_default_codecs()?;

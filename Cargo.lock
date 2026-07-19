@@ -3174,6 +3174,7 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "snowglass-api",
+ "snowglass-hook",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",
@@ -3185,6 +3186,7 @@ name = "snowglass-producer-d3d12"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "snowglass-hook",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",
@@ -3196,6 +3198,7 @@ dependencies = [
 name = "snowglass-producer-gdi"
 version = "0.1.0"
 dependencies = [
+ "snowglass-hook",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-producer-d3d11",
@@ -3208,6 +3211,7 @@ name = "snowglass-producer-opengl"
 version = "0.1.0"
 dependencies = [
  "snowglass-api",
+ "snowglass-hook",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",
@@ -3221,6 +3225,9 @@ dependencies = [
  "ash",
  "dashmap",
  "snowglass-api",
+ "snowglass-hook",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
  "snowglass-protocol",
  "windows",
 ]
@@ -3248,11 +3255,13 @@ dependencies = [
  "egui",
  "egui-ash-renderer",
  "egui-winit",
+ "log",
  "openh264",
  "raw-window-handle",
  "serde_json",
  "snowglass-consumer-d3d12",
  "snowglass-consumer-vulkan",
+ "snowglass-hook",
  "snowglass-input",
  "snowglass-ipc",
  "snowglass-platform-windows",

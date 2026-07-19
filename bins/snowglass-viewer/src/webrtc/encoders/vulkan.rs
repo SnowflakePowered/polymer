@@ -1,4 +1,4 @@
-//! Vulkan Video H.264 encoder and on-demand OpenH264 fallback readback.
+//! Vulkan Video HEVC/H.264 encoder and on-demand OpenH264 fallback readback.
 #![allow(unsafe_code)]
 
 use std::io::Cursor;
@@ -6,9 +6,12 @@ use std::io::Cursor;
 use ash::vk::native;
 use ash::{util::read_spv, vk};
 
-use super::super::VulkanFrame;
+use super::{super::VulkanFrame, Codec};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
+
+const GPU_WAIT_TIMEOUT_NS: u64 = 5_000_000_000;
+const DROP_WAIT_TIMEOUT_NS: u64 = 100_000_000;
 
 struct Image {
     image: vk::Image,
@@ -23,6 +26,7 @@ struct Buffer {
 }
 
 struct VideoState {
+    codec: Codec,
     device: ash::Device,
     video: ash::khr::video_queue::Device,
     encode: ash::khr::video_encode_queue::Device,
@@ -30,6 +34,10 @@ struct VideoState {
     parameters: vk::VideoSessionParametersKHR,
     session_memory: Vec<vk::DeviceMemory>,
     input: Image,
+    /// Reconstructed-picture slot. The H.265 encode path always provides a
+    /// setup reference slot: encoding without one is legal for a zero-slot
+    /// session, but NVIDIA's HEVC engine silently drops such submissions.
+    dpb: Option<Image>,
     parameter_sets: Vec<u8>,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
@@ -48,6 +56,7 @@ struct VideoState {
 }
 
 pub(super) struct Encoder {
+    codec: Codec,
     device: ash::Device,
     conversion_queue: vk::Queue,
     command_pool: vk::CommandPool,
@@ -70,6 +79,7 @@ pub(super) struct Encoder {
     height: u32,
     output_initialized: bool,
     input_initialized: bool,
+    synchronization_announced: bool,
 }
 
 impl Encoder {
@@ -79,9 +89,30 @@ impl Encoder {
         height: u32,
         bitrate: u32,
         frame_rate: f32,
+        preferred: Codec,
+    ) -> Result<Self, Error> {
+        if preferred == Codec::H264 {
+            return Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::H264);
+        }
+        match Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::Hevc) {
+            Ok(encoder) => Ok(encoder),
+            Err(hevc_error) => {
+                eprintln!("snowglass: Vulkan HEVC unavailable; trying H.264: {hevc_error}");
+                Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::H264)
+            }
+        }
+    }
+
+    fn new_with_codec(
+        frame: &VulkanFrame,
+        width: u32,
+        height: u32,
+        bitrate: u32,
+        frame_rate: f32,
+        codec: Codec,
     ) -> Result<Self, Error> {
         if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
-            return Err("Vulkan H.264 encoding requires a non-zero, even-sized frame".into());
+            return Err("Vulkan video encoding requires a non-zero, even-sized frame".into());
         }
         unsafe {
             let device = frame.device.clone();
@@ -240,9 +271,10 @@ impl Encoder {
                 &vk::SemaphoreCreateInfo::default().push_next(&mut timeline_type),
                 None,
             )?;
-            let video = VideoState::new(frame, width, height, bitrate, frame_rate)
+            let video = VideoState::new(frame, width, height, bitrate, frame_rate, codec)
                 .map_err(|error| format!("Vulkan Video initialization failed: {error}"))?;
             Ok(Self {
+                codec,
                 device,
                 conversion_queue: frame.conversion_queue,
                 command_pool,
@@ -265,8 +297,13 @@ impl Encoder {
                 height,
                 output_initialized: false,
                 input_initialized: false,
+                synchronization_announced: false,
             })
         }
+    }
+
+    pub(super) fn codec(&self) -> Codec {
+        self.codec
     }
 
     pub(super) fn encode_frame(
@@ -287,11 +324,18 @@ impl Encoder {
         )
     }
 
+    pub(super) fn has_in_flight_work(&self) -> bool {
+        self.conversion_fence_in_flight || self.video.fence_in_flight
+    }
+
     fn convert(&mut self, frame: &VulkanFrame) -> Result<(), Error> {
         unsafe {
             if self.conversion_fence_in_flight {
-                self.device
-                    .wait_for_fences(&[self.conversion_fence], true, u64::MAX)?;
+                wait_for_fence(
+                    &self.device,
+                    self.conversion_fence,
+                    "previous Vulkan conversion",
+                )?;
                 self.conversion_fence_in_flight = false;
             }
             self.device.reset_fences(&[self.conversion_fence])?;
@@ -484,12 +528,25 @@ impl Encoder {
                 .wait_dst_stage_mask(&stages)
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
+            if !self.synchronization_announced {
+                eprintln!(
+                    "snowglass: Vulkan WebRTC conversion waiting for ready timeline value {}",
+                    frame.ready_value
+                );
+            }
             self.device
                 .queue_submit(self.conversion_queue, &[submit], self.conversion_fence)?;
             self.conversion_fence_in_flight = true;
-            self.device
-                .wait_for_fences(&[self.conversion_fence], true, u64::MAX)?;
+            wait_for_fence(
+                &self.device,
+                self.conversion_fence,
+                "Vulkan RGBA-to-NV12 conversion",
+            )?;
             self.conversion_fence_in_flight = false;
+            if !self.synchronization_announced {
+                eprintln!("snowglass: Vulkan WebRTC conversion completed");
+                self.synchronization_announced = true;
+            }
             self.output_initialized = true;
             self.input_initialized = true;
             Ok(())
@@ -504,7 +561,11 @@ impl VideoState {
         height: u32,
         bitrate: u32,
         frame_rate: f32,
+        codec: Codec,
     ) -> Result<Self, Error> {
+        if codec == Codec::Hevc {
+            return unsafe { Self::new_hevc(frame, width, height, bitrate, frame_rate) };
+        }
         unsafe {
             let video_instance = ash::khr::video_queue::Instance::new(
                 // The loader only retains function pointers and the instance handle.
@@ -708,8 +769,15 @@ impl VideoState {
             .map_err(|error| format!("create H.264 session parameters: {error}"))?;
             let parameter_sets = encoded_parameter_sets(&encode, &frame.device, parameters)
                 .map_err(|error| format!("encode H.264 parameter sets: {error}"))?;
-            let input = create_video_image(frame, width, height, input_format, &profiles)
-                .map_err(|error| format!("create H.264 input image: {error}"))?;
+            let input = create_video_image(
+                frame,
+                width,
+                height,
+                input_format,
+                vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
+                &profiles,
+            )
+            .map_err(|error| format!("create H.264 input image: {error}"))?;
             let bitstream_offset =
                 align_up(parameter_sets.len() as u64, bitstream_offset_alignment);
             let bitstream_size = align_up(
@@ -748,6 +816,235 @@ impl VideoState {
             )?;
 
             Ok(Self {
+                codec: Codec::H264,
+                dpb: None,
+                device: frame.device.clone(),
+                video,
+                encode,
+                session,
+                parameters,
+                session_memory,
+                input,
+                parameter_sets,
+                queue: frame.queue,
+                command_pool,
+                command,
+                fence,
+                fence_in_flight: false,
+                bitstream,
+                bitstream_offset,
+                query_pool,
+                width,
+                height,
+                bitrate: (bitrate as u64).min(encode_capabilities.max_bitrate),
+                frame_rate: frame_rate.round().max(1.0) as u32,
+                rate_control_mode,
+                initialized: false,
+            })
+        }
+    }
+
+    unsafe fn new_hevc(
+        frame: &VulkanFrame,
+        width: u32,
+        height: u32,
+        bitrate: u32,
+        frame_rate: f32,
+    ) -> Result<Self, Error> {
+        unsafe {
+            let video_instance =
+                ash::khr::video_queue::Instance::new(&ash::Entry::load()?, &frame.instance);
+            let video = ash::khr::video_queue::Device::new(&frame.instance, &frame.device);
+            let encode = ash::khr::video_encode_queue::Device::new(&frame.instance, &frame.device);
+            let mut hevc_profile = vk::VideoEncodeH265ProfileInfoKHR::default()
+                .std_profile_idc(native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN);
+            let profile = vk::VideoProfileInfoKHR::default()
+                .video_codec_operation(vk::VideoCodecOperationFlagsKHR::ENCODE_H265)
+                .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
+                .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
+                .push_next(&mut hevc_profile);
+
+            let mut hevc_capabilities = vk::VideoEncodeH265CapabilitiesKHR::default();
+            let mut encode_capabilities = vk::VideoEncodeCapabilitiesKHR::default();
+            let mut capabilities = vk::VideoCapabilitiesKHR::default()
+                .push_next(&mut hevc_capabilities)
+                .push_next(&mut encode_capabilities);
+            vk_result((video_instance
+                .fp()
+                .get_physical_device_video_capabilities_khr)(
+                frame.physical_device,
+                &profile,
+                &mut capabilities,
+            ))
+            .map_err(|error| format!("query HEVC capabilities: {error}"))?;
+            let extent = vk::Extent2D { width, height };
+            if width < capabilities.min_coded_extent.width
+                || height < capabilities.min_coded_extent.height
+                || width > capabilities.max_coded_extent.width
+                || height > capabilities.max_coded_extent.height
+            {
+                return Err("frame extent is outside Vulkan Video HEVC capabilities".into());
+            }
+            let bitstream_alignment = capabilities.min_bitstream_buffer_size_alignment.max(1);
+            let bitstream_offset_alignment =
+                capabilities.min_bitstream_buffer_offset_alignment.max(1);
+            let std_header_version = capabilities.std_header_version;
+            if !encode_capabilities
+                .supported_encode_feedback_flags
+                .contains(vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BYTES_WRITTEN)
+            {
+                return Err("driver cannot report Vulkan Video HEVC byte counts".into());
+            }
+            let rate_control_mode = preferred_rate_control(&encode_capabilities);
+
+            let profiles = [profile];
+            let mut profile_list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
+            let format_info = vk::PhysicalDeviceVideoFormatInfoKHR::default()
+                .image_usage(
+                    vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
+                )
+                .push_next(&mut profile_list);
+            let mut format_count = 0;
+            vk_result((video_instance
+                .fp()
+                .get_physical_device_video_format_properties_khr)(
+                frame.physical_device,
+                &format_info,
+                &mut format_count,
+                std::ptr::null_mut(),
+            ))
+            .map_err(|error| format!("count HEVC input formats: {error}"))?;
+            if format_count == 0 {
+                return Err("driver exposes no HEVC encode input format".into());
+            }
+            let mut formats = vec![vk::VideoFormatPropertiesKHR::default(); format_count as usize];
+            vk_result((video_instance
+                .fp()
+                .get_physical_device_video_format_properties_khr)(
+                frame.physical_device,
+                &format_info,
+                &mut format_count,
+                formats.as_mut_ptr(),
+            ))
+            .map_err(|error| format!("query HEVC input formats: {error}"))?;
+            let input_format = formats
+                .iter()
+                .find(|properties| properties.format == vk::Format::G8_B8R8_2PLANE_420_UNORM)
+                .ok_or("driver does not expose two-plane NV12 HEVC input")?
+                .format;
+
+            let mut hevc_session = vk::VideoEncodeH265SessionCreateInfoKHR::default()
+                .use_max_level_idc(true)
+                .max_level_idc(native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_1);
+            let session_info = vk::VideoSessionCreateInfoKHR::default()
+                .queue_family_index(frame.queue_family)
+                .video_profile(&profile)
+                .picture_format(input_format)
+                .max_coded_extent(extent)
+                .reference_picture_format(input_format)
+                .max_dpb_slots(1)
+                .max_active_reference_pictures(0)
+                .std_header_version(&std_header_version)
+                .push_next(&mut hevc_session);
+            let mut session = vk::VideoSessionKHR::null();
+            vk_result((video.fp().create_video_session_khr)(
+                frame.device.handle(),
+                &session_info,
+                std::ptr::null(),
+                &mut session,
+            ))
+            .map_err(|error| format!("create HEVC video session: {error}"))?;
+            let session_memory = bind_session_memory(frame, &video, session)?;
+
+            let blocks = HevcBlockSizes::from_capabilities(&hevc_capabilities)?;
+            let (profile_tier, mut vps, mut sps, pps) =
+                hevc_parameter_structures(width, height, blocks);
+            let dec_pic_buf: native::StdVideoH265DecPicBufMgr = std::mem::zeroed();
+            vps.pProfileTierLevel = &raw const profile_tier;
+            vps.pDecPicBufMgr = &raw const dec_pic_buf;
+            sps.pProfileTierLevel = &raw const profile_tier;
+            sps.pDecPicBufMgr = &raw const dec_pic_buf;
+            let vps_list = [vps];
+            let sps_list = [sps];
+            let pps_list = [pps];
+            let add = vk::VideoEncodeH265SessionParametersAddInfoKHR::default()
+                .std_vp_ss(&vps_list)
+                .std_sp_ss(&sps_list)
+                .std_pp_ss(&pps_list);
+            let mut hevc_parameters = vk::VideoEncodeH265SessionParametersCreateInfoKHR::default()
+                .max_std_vps_count(1)
+                .max_std_sps_count(1)
+                .max_std_pps_count(1)
+                .parameters_add_info(&add);
+            let parameters_info = vk::VideoSessionParametersCreateInfoKHR::default()
+                .video_session(session)
+                .push_next(&mut hevc_parameters);
+            let mut parameters = vk::VideoSessionParametersKHR::null();
+            vk_result((video.fp().create_video_session_parameters_khr)(
+                frame.device.handle(),
+                &parameters_info,
+                std::ptr::null(),
+                &mut parameters,
+            ))
+            .map_err(|error| format!("create HEVC session parameters: {error}"))?;
+            let parameter_sets = encoded_hevc_parameter_sets(&encode, &frame.device, parameters)
+                .map_err(|error| format!("encode HEVC parameter sets: {error}"))?;
+            let input = create_video_image(
+                frame,
+                width,
+                height,
+                input_format,
+                vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
+                &profiles,
+            )
+            .map_err(|error| format!("create HEVC input image: {error}"))?;
+            let dpb = create_video_image(
+                frame,
+                width,
+                height,
+                input_format,
+                vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR,
+                &profiles,
+            )
+            .map_err(|error| format!("create HEVC reconstructed image: {error}"))?;
+            let bitstream_offset =
+                align_up(parameter_sets.len() as u64, bitstream_offset_alignment);
+            let bitstream_size = align_up(
+                bitstream_offset + width as u64 * height as u64 * 3 + 64 * 1024,
+                bitstream_alignment,
+            );
+            let bitstream = create_video_buffer(frame, bitstream_size, &profiles)
+                .map_err(|error| format!("create HEVC bitstream buffer: {error}"))?;
+            let mut feedback = vk::QueryPoolVideoEncodeFeedbackCreateInfoKHR::default()
+                .encode_feedback_flags(vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BYTES_WRITTEN);
+            let mut query_profile = profile;
+            let query_info = vk::QueryPoolCreateInfo::default()
+                .query_type(vk::QueryType::VIDEO_ENCODE_FEEDBACK_KHR)
+                .query_count(1)
+                .push_next(&mut query_profile)
+                .push_next(&mut feedback);
+            let query_pool = frame.device.create_query_pool(&query_info, None)?;
+            let command_pool = frame.device.create_command_pool(
+                &vk::CommandPoolCreateInfo::default()
+                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                    .queue_family_index(frame.queue_family),
+                None,
+            )?;
+            let command = frame.device.allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(command_pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )?[0];
+            let fence = frame.device.create_fence(
+                &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                None,
+            )?;
+
+            Ok(Self {
+                codec: Codec::Hevc,
+                dpb: Some(dpb),
                 device: frame.device.clone(),
                 video,
                 encode,
@@ -781,9 +1078,12 @@ impl VideoState {
         conversion_done: vk::Semaphore,
         conversion_value: u64,
     ) -> Result<Vec<u8>, Error> {
+        if self.codec == Codec::Hevc {
+            return self.encode_hevc_frame(device, frame, conversion_done, conversion_value);
+        }
         unsafe {
             if self.fence_in_flight {
-                device.wait_for_fences(&[self.fence], true, u64::MAX)?;
+                wait_for_fence(device, self.fence, "previous Vulkan video encode")?;
                 self.fence_in_flight = false;
             }
             device.reset_fences(&[self.fence])?;
@@ -916,8 +1216,25 @@ impl VideoState {
             device.queue_submit(self.queue, &[submit], self.fence)?;
             self.fence_in_flight = true;
             frame.mark_completion_submitted();
-            device.wait_for_fences(&[self.fence], true, u64::MAX)?;
+            if !self.initialized {
+                eprintln!(
+                    "snowglass: Vulkan Video Encode waiting for conversion timeline value {conversion_value}"
+                );
+            }
+            if let Err(error) = wait_for_fence(device, self.fence, "Vulkan Video Encode") {
+                // Do not leave the compositor waiting forever if the driver
+                // accepted an encode submission but never completes it.
+                let _ = device.signal_semaphore(
+                    &vk::SemaphoreSignalInfo::default()
+                        .semaphore(frame.completion)
+                        .value(frame.completion_value),
+                );
+                return Err(error);
+            }
             self.fence_in_flight = false;
+            if !self.initialized {
+                eprintln!("snowglass: Vulkan Video Encode completed");
+            }
             self.initialized = true;
 
             let mut written = [0u64];
@@ -950,6 +1267,425 @@ impl VideoState {
             Ok(bytes)
         }
     }
+
+    fn encode_hevc_frame(
+        &mut self,
+        device: &ash::Device,
+        frame: &mut VulkanFrame,
+        conversion_done: vk::Semaphore,
+        conversion_value: u64,
+    ) -> Result<Vec<u8>, Error> {
+        unsafe {
+            if self.fence_in_flight {
+                wait_for_fence(device, self.fence, "previous Vulkan HEVC encode")?;
+                self.fence_in_flight = false;
+            }
+            device.reset_fences(&[self.fence])?;
+            device.reset_command_pool(self.command_pool, vk::CommandPoolResetFlags::empty())?;
+            let mapped = device.map_memory(
+                self.bitstream.memory,
+                0,
+                self.bitstream.size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            std::ptr::copy_nonoverlapping(
+                self.parameter_sets.as_ptr(),
+                mapped.cast::<u8>(),
+                self.parameter_sets.len(),
+            );
+            device.unmap_memory(self.bitstream.memory);
+            device.begin_command_buffer(
+                self.command,
+                &vk::CommandBufferBeginInfo::default()
+                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+            device.cmd_reset_query_pool(self.command, self.query_pool, 0, 1);
+            let dpb = self.dpb.as_ref().expect("HEVC encoder has a DPB image");
+            // The reconstructed picture is rewritten from scratch every frame
+            // (IDR-only stream), so the previous contents can be discarded.
+            let dpb_barrier = image_barrier()
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::VIDEO_ENCODE_DPB_KHR)
+                .image(dpb.image)
+                .subresource_range(color_range());
+            device.cmd_pipeline_barrier(
+                self.command,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[dpb_barrier],
+            );
+            let dpb_resource = vk::VideoPictureResourceInfoKHR::default()
+                .coded_extent(vk::Extent2D {
+                    width: self.width,
+                    height: self.height,
+                })
+                .image_view_binding(dpb.view);
+            let mut hevc_rate_control = vk::VideoEncodeH265RateControlInfoKHR::default()
+                .gop_frame_count(1)
+                .idr_period(1)
+                .consecutive_b_frame_count(0)
+                .sub_layer_count(1);
+            let mut hevc_rate_control_layer = vk::VideoEncodeH265RateControlLayerInfoKHR::default();
+            let rate_control_layers = [vk::VideoEncodeRateControlLayerInfoKHR::default()
+                .average_bitrate(self.bitrate)
+                .max_bitrate(self.bitrate)
+                .frame_rate_numerator(self.frame_rate)
+                .frame_rate_denominator(1)
+                .push_next(&mut hevc_rate_control_layer)];
+            let mut rate_control = vk::VideoEncodeRateControlInfoKHR::default()
+                .rate_control_mode(self.rate_control_mode)
+                .layers(
+                    if self.rate_control_mode == vk::VideoEncodeRateControlModeFlagsKHR::DISABLED {
+                        &[]
+                    } else {
+                        &rate_control_layers
+                    },
+                )
+                .virtual_buffer_size_in_ms(1000)
+                .initial_virtual_buffer_size_in_ms(500);
+            // Bind the DPB resource without an active slot: every frame is an
+            // IDR that re-activates slot 0 through the setup reference slot.
+            let begin_slots = [vk::VideoReferenceSlotInfoKHR::default()
+                .slot_index(-1)
+                .picture_resource(&dpb_resource)];
+            let mut begin = vk::VideoBeginCodingInfoKHR::default()
+                .video_session(self.session)
+                .video_session_parameters(self.parameters)
+                .reference_slots(&begin_slots);
+            if self.initialized {
+                begin = begin
+                    .push_next(&mut rate_control)
+                    .push_next(&mut hevc_rate_control);
+            }
+            (self.video.fp().cmd_begin_video_coding_khr)(self.command, &begin);
+            if !self.initialized {
+                let control = vk::VideoCodingControlInfoKHR::default()
+                    .flags(
+                        vk::VideoCodingControlFlagsKHR::RESET
+                            | vk::VideoCodingControlFlagsKHR::ENCODE_RATE_CONTROL,
+                    )
+                    .push_next(&mut rate_control)
+                    .push_next(&mut hevc_rate_control);
+                (self.video.fp().cmd_control_video_coding_khr)(self.command, &control);
+            }
+            device.cmd_begin_query(
+                self.command,
+                self.query_pool,
+                0,
+                vk::QueryControlFlags::empty(),
+            );
+            let mut picture: native::StdVideoEncodeH265PictureInfo = std::mem::zeroed();
+            picture.flags.set_IrapPicFlag(1);
+            picture.flags.set_is_reference(1);
+            picture.pic_type = native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR;
+            let mut slice: native::StdVideoEncodeH265SliceSegmentHeader = std::mem::zeroed();
+            slice.flags.set_first_slice_segment_in_pic_flag(1);
+            slice.slice_type = native::StdVideoH265SliceType_STD_VIDEO_H265_SLICE_TYPE_I;
+            slice.MaxNumMergeCand = 5;
+            let constant_qp =
+                if self.rate_control_mode == vk::VideoEncodeRateControlModeFlagsKHR::DISABLED {
+                    26
+                } else {
+                    0
+                };
+            let slices = [vk::VideoEncodeH265NaluSliceSegmentInfoKHR::default()
+                .constant_qp(constant_qp)
+                .std_slice_segment_header(&slice)];
+            let mut hevc_picture = vk::VideoEncodeH265PictureInfoKHR::default()
+                .nalu_slice_segment_entries(&slices)
+                .std_picture_info(&picture);
+            let picture_resource = vk::VideoPictureResourceInfoKHR::default()
+                .coded_extent(vk::Extent2D {
+                    width: self.width,
+                    height: self.height,
+                })
+                .image_view_binding(self.input.view);
+            let mut reference: native::StdVideoEncodeH265ReferenceInfo = std::mem::zeroed();
+            reference.pic_type = native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR;
+            let mut dpb_slot =
+                vk::VideoEncodeH265DpbSlotInfoKHR::default().std_reference_info(&reference);
+            let setup_slot = vk::VideoReferenceSlotInfoKHR::default()
+                .slot_index(0)
+                .picture_resource(&dpb_resource)
+                .push_next(&mut dpb_slot);
+            let encode_info = vk::VideoEncodeInfoKHR::default()
+                .dst_buffer(self.bitstream.buffer)
+                .dst_buffer_offset(self.bitstream_offset)
+                .dst_buffer_range(self.bitstream.size - self.bitstream_offset)
+                .src_picture_resource(picture_resource)
+                .setup_reference_slot(&setup_slot)
+                .preceding_externally_encoded_bytes(self.parameter_sets.len() as u32)
+                .push_next(&mut hevc_picture);
+            (self.encode.fp().cmd_encode_video_khr)(self.command, &encode_info);
+            device.cmd_end_query(self.command, self.query_pool, 0);
+            (self.video.fp().cmd_end_video_coding_khr)(
+                self.command,
+                &vk::VideoEndCodingInfoKHR::default(),
+            );
+            device.end_command_buffer(self.command)?;
+            let waits = [conversion_done];
+            let wait_values = [conversion_value];
+            let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
+            let signals = [frame.completion];
+            let signal_values = [frame.completion_value];
+            let commands = [self.command];
+            let mut timeline = vk::TimelineSemaphoreSubmitInfo::default()
+                .wait_semaphore_values(&wait_values)
+                .signal_semaphore_values(&signal_values);
+            let submit = vk::SubmitInfo::default()
+                .push_next(&mut timeline)
+                .wait_semaphores(&waits)
+                .wait_dst_stage_mask(&stages)
+                .command_buffers(&commands)
+                .signal_semaphores(&signals);
+            if !self.initialized {
+                eprintln!("snowglass: Vulkan HEVC encode submitting first frame");
+            }
+            device.queue_submit(self.queue, &[submit], self.fence)?;
+            self.fence_in_flight = true;
+            frame.mark_completion_submitted();
+            if let Err(error) = wait_for_fence(device, self.fence, "Vulkan HEVC Encode") {
+                let _ = device.signal_semaphore(
+                    &vk::SemaphoreSignalInfo::default()
+                        .semaphore(frame.completion)
+                        .value(frame.completion_value),
+                );
+                return Err(error);
+            }
+            self.fence_in_flight = false;
+            if !self.initialized {
+                eprintln!("snowglass: Vulkan HEVC encode first frame completed");
+            }
+            self.initialized = true;
+            // The encode fence has signaled, so the query must be resolvable.
+            // WITH_STATUS instead of WAIT: a failed encode operation leaves
+            // the feedback query unavailable and WAIT would block forever.
+            let mut written = [[0u64; 2]];
+            device.get_query_pool_results(
+                self.query_pool,
+                0,
+                &mut written,
+                vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WITH_STATUS_KHR,
+            )?;
+            let status = written[0][1] as i64;
+            if status <= 0 {
+                return Err(format!("Vulkan HEVC encode feedback status {status}").into());
+            }
+            let encoded_size = written[0][0] as usize;
+            let encoded_end = (self.bitstream_offset as usize)
+                .checked_add(encoded_size)
+                .ok_or("Vulkan HEVC encoded size overflow")?;
+            if encoded_size == 0 || encoded_end > self.bitstream.size as usize {
+                return Err("Vulkan HEVC encoder returned an invalid bitstream size".into());
+            }
+            let mapped = device.map_memory(
+                self.bitstream.memory,
+                0,
+                encoded_end as u64,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            let mut bytes = Vec::with_capacity(self.parameter_sets.len() + encoded_size);
+            bytes.extend_from_slice(&self.parameter_sets);
+            bytes.extend_from_slice(std::slice::from_raw_parts(
+                mapped.cast::<u8>().add(self.bitstream_offset as usize),
+                encoded_size,
+            ));
+            device.unmap_memory(self.bitstream.memory);
+            Ok(bytes)
+        }
+    }
+}
+
+fn preferred_rate_control(
+    capabilities: &vk::VideoEncodeCapabilitiesKHR<'_>,
+) -> vk::VideoEncodeRateControlModeFlagsKHR {
+    if capabilities
+        .rate_control_modes
+        .contains(vk::VideoEncodeRateControlModeFlagsKHR::CBR)
+    {
+        vk::VideoEncodeRateControlModeFlagsKHR::CBR
+    } else if capabilities
+        .rate_control_modes
+        .contains(vk::VideoEncodeRateControlModeFlagsKHR::VBR)
+    {
+        vk::VideoEncodeRateControlModeFlagsKHR::VBR
+    } else {
+        vk::VideoEncodeRateControlModeFlagsKHR::DISABLED
+    }
+}
+
+unsafe fn bind_session_memory(
+    frame: &VulkanFrame,
+    video: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+) -> Result<Vec<vk::DeviceMemory>, Error> {
+    unsafe {
+        let mut count = 0;
+        vk_result((video.fp().get_video_session_memory_requirements_khr)(
+            frame.device.handle(),
+            session,
+            &mut count,
+            std::ptr::null_mut(),
+        ))?;
+        let mut requirements =
+            vec![vk::VideoSessionMemoryRequirementsKHR::default(); count as usize];
+        vk_result((video.fp().get_video_session_memory_requirements_khr)(
+            frame.device.handle(),
+            session,
+            &mut count,
+            requirements.as_mut_ptr(),
+        ))?;
+        let properties = frame
+            .instance
+            .get_physical_device_memory_properties(frame.physical_device);
+        let mut memories = Vec::with_capacity(requirements.len());
+        let mut bindings = Vec::with_capacity(requirements.len());
+        for requirement in requirements {
+            let memory_type = find_memory_type(
+                &properties,
+                requirement.memory_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )
+            .or_else(|_| {
+                find_memory_type(
+                    &properties,
+                    requirement.memory_requirements.memory_type_bits,
+                    vk::MemoryPropertyFlags::empty(),
+                )
+            })?;
+            let memory = frame.device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirement.memory_requirements.size)
+                    .memory_type_index(memory_type),
+                None,
+            )?;
+            bindings.push(
+                vk::BindVideoSessionMemoryInfoKHR::default()
+                    .memory_bind_index(requirement.memory_bind_index)
+                    .memory(memory)
+                    .memory_size(requirement.memory_requirements.size),
+            );
+            memories.push(memory);
+        }
+        vk_result((video.fp().bind_video_session_memory_khr)(
+            frame.device.handle(),
+            session,
+            bindings.len() as u32,
+            bindings.as_ptr(),
+        ))?;
+        Ok(memories)
+    }
+}
+
+/// Block-size configuration derived from `VideoEncodeH265CapabilitiesKHR`.
+/// The SPS must describe exactly the block structure the hardware encodes
+/// with, and picture dimensions must be multiples of the minimum coding block
+/// size, cropping the remainder through the conformance window.
+#[derive(Clone, Copy)]
+struct HevcBlockSizes {
+    ctb_log2: u32,
+    min_tu_log2: u32,
+    max_tu_log2: u32,
+}
+
+impl HevcBlockSizes {
+    fn from_capabilities(capabilities: &vk::VideoEncodeH265CapabilitiesKHR) -> Result<Self, Error> {
+        let ctb_log2 = if capabilities
+            .ctb_sizes
+            .contains(vk::VideoEncodeH265CtbSizeFlagsKHR::TYPE_64)
+        {
+            6
+        } else if capabilities
+            .ctb_sizes
+            .contains(vk::VideoEncodeH265CtbSizeFlagsKHR::TYPE_32)
+        {
+            5
+        } else if capabilities
+            .ctb_sizes
+            .contains(vk::VideoEncodeH265CtbSizeFlagsKHR::TYPE_16)
+        {
+            4
+        } else {
+            return Err("driver reports no HEVC coding tree block size".into());
+        };
+        let tu_flags = [
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_4, 2),
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_8, 3),
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_16, 4),
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_32, 5),
+        ];
+        let min_tu_log2 = tu_flags
+            .iter()
+            .find(|(flag, _)| capabilities.transform_block_sizes.contains(*flag))
+            .map(|(_, log2)| *log2)
+            .ok_or("driver reports no HEVC transform block size")?;
+        let max_tu_log2 = tu_flags
+            .iter()
+            .rev()
+            .find(|(flag, _)| capabilities.transform_block_sizes.contains(*flag))
+            .map(|(_, log2)| *log2)
+            .ok_or("driver reports no HEVC transform block size")?;
+        Ok(Self {
+            ctb_log2,
+            min_tu_log2,
+            max_tu_log2,
+        })
+    }
+}
+
+fn hevc_parameter_structures(
+    width: u32,
+    height: u32,
+    blocks: HevcBlockSizes,
+) -> (
+    native::StdVideoH265ProfileTierLevel,
+    native::StdVideoH265VideoParameterSet,
+    native::StdVideoH265SequenceParameterSet,
+    native::StdVideoH265PictureParameterSet,
+) {
+    let mut profile: native::StdVideoH265ProfileTierLevel = unsafe { std::mem::zeroed() };
+    profile.flags.set_general_progressive_source_flag(1);
+    profile.flags.set_general_frame_only_constraint_flag(1);
+    profile.general_profile_idc = native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN;
+    profile.general_level_idc = native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_1;
+
+    let mut vps: native::StdVideoH265VideoParameterSet = unsafe { std::mem::zeroed() };
+    vps.flags.set_vps_temporal_id_nesting_flag(1);
+
+    // pic_width/height_in_luma_samples must be multiples of MinCbSizeY (8);
+    // the conformance window crops the alignment padding back off.
+    let coded_width = width.div_ceil(8) * 8;
+    let coded_height = height.div_ceil(8) * 8;
+    let mut sps: native::StdVideoH265SequenceParameterSet = unsafe { std::mem::zeroed() };
+    sps.flags.set_sps_temporal_id_nesting_flag(1);
+    sps.flags.set_strong_intra_smoothing_enabled_flag(1);
+    sps.chroma_format_idc =
+        native::StdVideoH265ChromaFormatIdc_STD_VIDEO_H265_CHROMA_FORMAT_IDC_420;
+    sps.pic_width_in_luma_samples = coded_width;
+    sps.pic_height_in_luma_samples = coded_height;
+    if coded_width != width || coded_height != height {
+        sps.flags.set_conformance_window_flag(1);
+        sps.conf_win_right_offset = (coded_width - width) / 2;
+        sps.conf_win_bottom_offset = (coded_height - height) / 2;
+    }
+    sps.log2_max_pic_order_cnt_lsb_minus4 = 4;
+    sps.log2_min_luma_coding_block_size_minus3 = 0;
+    sps.log2_diff_max_min_luma_coding_block_size = (blocks.ctb_log2 - 3) as u8;
+    sps.log2_min_luma_transform_block_size_minus2 = (blocks.min_tu_log2 - 2) as u8;
+    sps.log2_diff_max_min_luma_transform_block_size =
+        (blocks.max_tu_log2 - blocks.min_tu_log2) as u8;
+    sps.max_transform_hierarchy_depth_inter = (blocks.ctb_log2 - blocks.min_tu_log2).min(3) as u8;
+    sps.max_transform_hierarchy_depth_intra = (blocks.ctb_log2 - blocks.min_tu_log2).min(3) as u8;
+
+    let mut pps: native::StdVideoH265PictureParameterSet = unsafe { std::mem::zeroed() };
+    pps.flags.set_deblocking_filter_control_present_flag(1);
+    pps.log2_parallel_merge_level_minus2 = 0;
+    (profile, vps, sps, pps)
 }
 
 fn h264_parameter_structures(
@@ -1021,11 +1757,49 @@ unsafe fn encoded_parameter_sets(
     }
 }
 
+unsafe fn encoded_hevc_parameter_sets(
+    encode: &ash::khr::video_encode_queue::Device,
+    device: &ash::Device,
+    parameters: vk::VideoSessionParametersKHR,
+) -> Result<Vec<u8>, Error> {
+    unsafe {
+        let mut hevc_get = vk::VideoEncodeH265SessionParametersGetInfoKHR::default()
+            .write_std_vps(true)
+            .write_std_sps(true)
+            .write_std_pps(true)
+            .std_vps_id(0)
+            .std_sps_id(0)
+            .std_pps_id(0);
+        let get = vk::VideoEncodeSessionParametersGetInfoKHR::default()
+            .video_session_parameters(parameters)
+            .push_next(&mut hevc_get);
+        let mut size = 0;
+        vk_result((encode.fp().get_encoded_video_session_parameters_khr)(
+            device.handle(),
+            &get,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+        ))?;
+        let mut bytes = vec![0; size];
+        vk_result((encode.fp().get_encoded_video_session_parameters_khr)(
+            device.handle(),
+            &get,
+            std::ptr::null_mut(),
+            &mut size,
+            bytes.as_mut_ptr().cast(),
+        ))?;
+        bytes.truncate(size);
+        Ok(bytes)
+    }
+}
+
 unsafe fn create_video_image(
     frame: &VulkanFrame,
     width: u32,
     height: u32,
     format: vk::Format,
+    usage: vk::ImageUsageFlags,
     profiles: &[vk::VideoProfileInfoKHR<'_>],
 ) -> Result<Image, Error> {
     unsafe {
@@ -1043,7 +1817,7 @@ unsafe fn create_video_image(
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST)
+            .usage(usage)
             .sharing_mode(vk::SharingMode::CONCURRENT)
             .queue_family_indices(&families)
             .initial_layout(vk::ImageLayout::UNDEFINED)
@@ -1139,6 +1913,14 @@ fn vk_result(result: vk::Result) -> Result<(), vk::Result> {
     }
 }
 
+fn wait_for_fence(device: &ash::Device, fence: vk::Fence, operation: &str) -> Result<(), Error> {
+    match unsafe { device.wait_for_fences(&[fence], true, GPU_WAIT_TIMEOUT_NS) } {
+        Ok(()) => Ok(()),
+        Err(vk::Result::TIMEOUT) => Err(format!("timed out waiting for {operation}").into()),
+        Err(error) => Err(format!("{operation} failed: {error}").into()),
+    }
+}
+
 fn align_up(value: u64, alignment: u64) -> u64 {
     value.div_ceil(alignment) * alignment
 }
@@ -1147,9 +1929,15 @@ impl Drop for Encoder {
     fn drop(&mut self) {
         unsafe {
             if self.conversion_fence_in_flight {
-                let _ = self
+                if self
                     .device
-                    .wait_for_fences(&[self.conversion_fence], true, u64::MAX);
+                    .wait_for_fences(&[self.conversion_fence], true, DROP_WAIT_TIMEOUT_NS)
+                    .is_err()
+                {
+                    // The queue may still reference the conversion resources.
+                    // Leaking them is safer than hanging or destroying in-use objects.
+                    return;
+                }
             }
             self.device.destroy_fence(self.conversion_fence, None);
             self.device.destroy_semaphore(self.conversion_done, None);
@@ -1173,13 +1961,23 @@ impl Drop for VideoState {
     fn drop(&mut self) {
         unsafe {
             if self.fence_in_flight {
-                let _ = self.device.wait_for_fences(&[self.fence], true, u64::MAX);
+                if self
+                    .device
+                    .wait_for_fences(&[self.fence], true, DROP_WAIT_TIMEOUT_NS)
+                    .is_err()
+                {
+                    // The queue may still reference the video resources.
+                    return;
+                }
             }
             self.device.destroy_fence(self.fence, None);
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_query_pool(self.query_pool, None);
             destroy_buffer(&self.device, &self.bitstream);
             destroy_image(&self.device, &self.input);
+            if let Some(dpb) = &self.dpb {
+                destroy_image(&self.device, dpb);
+            }
             (self.video.fp().destroy_video_session_parameters_khr)(
                 self.device.handle(),
                 self.parameters,
@@ -1491,8 +2289,90 @@ mod tests {
     }
 
     #[test]
+    fn hevc_parameters_describe_main_profile_extent() {
+        let blocks = HevcBlockSizes {
+            ctb_log2: 5,
+            min_tu_log2: 2,
+            max_tu_log2: 5,
+        };
+        let (profile, _, sps, pps) = hevc_parameter_structures(1920, 1080, blocks);
+        assert_eq!(
+            profile.general_profile_idc,
+            native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
+        );
+        assert_eq!(sps.pic_width_in_luma_samples, 1920);
+        assert_eq!(sps.pic_height_in_luma_samples, 1080);
+        assert_eq!(sps.log2_diff_max_min_luma_coding_block_size, 2);
+        assert_eq!(pps.pps_seq_parameter_set_id, 0);
+    }
+
+    #[test]
+    fn hevc_parameters_align_and_crop_odd_extents() {
+        let blocks = HevcBlockSizes {
+            ctb_log2: 5,
+            min_tu_log2: 2,
+            max_tu_log2: 5,
+        };
+        let (_, _, sps, _) = hevc_parameter_structures(626, 632, blocks);
+        assert_eq!(sps.pic_width_in_luma_samples, 632);
+        assert_eq!(sps.pic_height_in_luma_samples, 632);
+        assert_eq!(sps.flags.conformance_window_flag(), 1);
+        assert_eq!(sps.conf_win_right_offset, 3);
+        assert_eq!(sps.conf_win_bottom_offset, 0);
+    }
+
+    #[test]
     #[ignore = "requires a Vulkan device with VK_KHR_video_encode_h264"]
     fn hardware_encode_smoke_test() {
+        let (encoded, second) = hardware_encode_frames(Codec::H264);
+        assert!(encoded.windows(3).any(|bytes| bytes == [0, 0, 1]));
+        let mut decoder = openh264::decoder::Decoder::new().expect("initialize H.264 decoder");
+        assert!(
+            decoder
+                .decode(&encoded)
+                .expect("decode Vulkan H.264 output")
+                .is_some()
+        );
+        assert!(second.windows(3).any(|bytes| bytes == [0, 0, 1]));
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan device with VK_KHR_video_encode_h265"]
+    fn hevc_hardware_encode_smoke_test() {
+        let (encoded, second) = hardware_encode_frames(Codec::Hevc);
+        let nal_types = |bytes: &[u8]| {
+            bytes
+                .windows(5)
+                .filter_map(|window| (window[..4] == [0, 0, 0, 1]).then_some(window[4] >> 1))
+                .collect::<Vec<_>>()
+        };
+        let types = nal_types(&encoded);
+        assert!(types.contains(&32), "missing VPS in {types:?}");
+        assert!(types.contains(&33), "missing SPS in {types:?}");
+        assert!(types.contains(&34), "missing PPS in {types:?}");
+        assert!(
+            types.iter().any(|nal| (16..=21).contains(nal)),
+            "missing IRAP slice in {types:?}"
+        );
+        let second_types = nal_types(&second);
+        assert!(
+            second_types.iter().any(|nal| (16..=21).contains(nal)),
+            "missing IRAP slice in second frame {second_types:?}"
+        );
+        if let Some(path) = std::env::var_os("SNOWGLASS_HEVC_PROBE_DUMP") {
+            let path = std::path::PathBuf::from(path).join("vulkan-626x632.h265");
+            let mut stream = encoded;
+            stream.extend_from_slice(&second);
+            std::fs::write(path, stream).expect("write HEVC probe dump");
+        }
+    }
+
+    fn hardware_encode_frames(codec: Codec) -> (Vec<u8>, Vec<u8>) {
+        let (source_width, source_height, width, height) =
+            match std::env::var("SNOWGLASS_TEST_EXTENT").as_deref() {
+                Ok("aligned") => (640, 480, 640, 480),
+                _ => (627, 633, 626, 632),
+            };
         unsafe {
             let entry = ash::Entry::load().expect("load Vulkan");
             let application = vk::ApplicationInfo::default()
@@ -1504,10 +2384,20 @@ mod tests {
                     None,
                 )
                 .expect("create Vulkan instance");
+            let (codec_extension, codec_operation) = match codec {
+                Codec::H264 => (
+                    ash::khr::video_encode_h264::NAME,
+                    vk::VideoCodecOperationFlagsKHR::ENCODE_H264,
+                ),
+                Codec::Hevc => (
+                    ash::khr::video_encode_h265::NAME,
+                    vk::VideoCodecOperationFlagsKHR::ENCODE_H265,
+                ),
+            };
             let required = [
                 ash::khr::video_queue::NAME,
                 ash::khr::video_encode_queue::NAME,
-                ash::khr::video_encode_h264::NAME,
+                codec_extension,
             ];
             let (physical, graphics_family, video_family) = instance
                 .enumerate_physical_devices()
@@ -1526,32 +2416,33 @@ mod tests {
                     }
                     let families = instance.get_physical_device_queue_family_properties(physical);
                     let operations = crate::queue_family_video_operations(&instance, physical);
-                    let graphics = families
-                        .iter()
-                        .position(|family| family.queue_flags.contains(vk::QueueFlags::GRAPHICS))?
-                        as u32;
+                    let graphics = families.iter().position(|family| {
+                        family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                            && family.queue_count >= 2
+                    })? as u32;
                     let video = families.iter().enumerate().position(|(index, family)| {
-                        family
-                            .queue_flags
-                            .contains(vk::QueueFlags::VIDEO_ENCODE_KHR)
-                            && operations[index]
-                                .contains(vk::VideoCodecOperationFlagsKHR::ENCODE_H264)
+                        index as u32 != graphics
+                            && family
+                                .queue_flags
+                                .contains(vk::QueueFlags::VIDEO_ENCODE_KHR)
+                            && operations[index].contains(codec_operation)
                     })? as u32;
                     Some((physical, graphics, video))
                 })
-                .expect("find H.264-capable Vulkan device");
+                .expect("find encode-capable Vulkan device");
 
-            let priorities = [1.0];
+            let graphics_priorities = [1.0, 1.0];
+            let video_priorities = [1.0];
             let mut queue_infos = vec![
                 vk::DeviceQueueCreateInfo::default()
                     .queue_family_index(graphics_family)
-                    .queue_priorities(&priorities),
+                    .queue_priorities(&graphics_priorities),
             ];
             if video_family != graphics_family {
                 queue_infos.push(
                     vk::DeviceQueueCreateInfo::default()
                         .queue_family_index(video_family)
-                        .queue_priorities(&priorities),
+                        .queue_priorities(&video_priorities),
                 );
             }
             let extensions = required
@@ -1571,13 +2462,14 @@ mod tests {
                 )
                 .expect("create Vulkan Video device");
             let graphics_queue = device.get_device_queue(graphics_family, 0);
+            let conversion_queue = device.get_device_queue(graphics_family, 1);
             let video_queue = device.get_device_queue(video_family, 0);
             let source = create_image(
                 &instance,
                 &device,
                 physical,
-                1280,
-                720,
+                source_width,
+                source_height,
                 vk::Format::R8G8B8A8_UNORM,
                 vk::ImageUsageFlags::SAMPLED
                     | vk::ImageUsageFlags::TRANSFER_DST
@@ -1677,7 +2569,7 @@ mod tests {
                 device: device.clone(),
                 queue: video_queue,
                 queue_family: video_family,
-                conversion_queue: graphics_queue,
+                conversion_queue,
                 conversion_queue_family: graphics_family,
                 image: source.image,
                 format: vk::Format::R8G8B8A8_UNORM,
@@ -1688,27 +2580,18 @@ mod tests {
                 completion_value: 1,
                 completion_submitted: false,
             };
-            let mut encoder = Encoder::new_for_frame(&frame, 1280, 720, 2_000_000, 30.0)
-                .expect("initialize Vulkan H.264 encoder");
+            let mut encoder = Encoder::new_with_codec(&frame, width, height, 2_000_000, 30.0, codec)
+                .expect("initialize Vulkan hardware encoder");
             let encoded = encoder
-                .encode_frame(&mut frame, 1280, 720)
-                .expect("encode Vulkan H.264 frame");
+                .encode_frame(&mut frame, width, height)
+                .expect("encode first Vulkan frame");
             assert!(encoded.len() > 128);
-            assert!(encoded.windows(3).any(|bytes| bytes == [0, 0, 1]));
-            let mut decoder = openh264::decoder::Decoder::new().expect("initialize H.264 decoder");
-            assert!(
-                decoder
-                    .decode(&encoded)
-                    .expect("decode Vulkan H.264 output")
-                    .is_some()
-            );
             frame.completion_value = 2;
             frame.completion_submitted = false;
             let second = encoder
-                .encode_frame(&mut frame, 1280, 720)
-                .expect("encode second Vulkan H.264 frame");
+                .encode_frame(&mut frame, width, height)
+                .expect("encode second Vulkan frame");
             assert!(second.len() > 128);
-            assert!(second.windows(3).any(|bytes| bytes == [0, 0, 1]));
 
             drop(encoder);
             drop(frame);
@@ -1719,6 +2602,7 @@ mod tests {
             destroy_image(&device, &source);
             device.destroy_device(None);
             instance.destroy_instance(None);
+            (encoded, second)
         }
     }
 }

@@ -3,6 +3,7 @@ use clap::{ArgAction, Parser, ValueEnum};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
+use snowglass_hook::config;
 use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
@@ -212,6 +213,7 @@ struct StatisticsSample {
 struct ImportedVulkanSurface {
     connection: u64,
     imported: ImportedImageRing,
+    flip_y: bool,
     latest: Option<FrameReady>,
     last_released_frame: u64,
     video_readbacks: Vec<VulkanVideoReadback>,
@@ -665,6 +667,13 @@ impl DirectCompositor {
                     ash::khr::video_encode_h264::NAME.as_ptr(),
                     ash::khr::synchronization2::NAME.as_ptr(),
                 ]);
+                let available = instance.enumerate_device_extension_properties(physical_device)?;
+                if available.iter().any(|property| {
+                    std::ffi::CStr::from_ptr(property.extension_name.as_ptr())
+                        == ash::khr::video_encode_h265::NAME
+                }) {
+                    extension_names.push(ash::khr::video_encode_h265::NAME.as_ptr());
+                }
             }
             let mut timeline_features =
                 vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
@@ -914,6 +923,7 @@ impl DirectCompositor {
         self.surfaces.push(ImportedVulkanSurface {
             connection,
             imported,
+            flip_y: stream.bottom_up,
             latest: None,
             last_released_frame: 0,
             video_readbacks,
@@ -1200,9 +1210,28 @@ impl DirectCompositor {
                 .iter()
                 .filter(|surface| surface.latest.is_some())
                 .count() as u32;
+            let reverse_surface_rows = visible_count > 1
+                && self
+                    .surfaces
+                    .iter()
+                    .filter(|surface| surface.latest.is_some())
+                    .all(|surface| surface.flip_y);
             let cell_height = self.extent.height / visible_count.max(1);
             let mut visible_index = 0;
             let mut video_copies = Vec::new();
+            // A timeline semaphore must be signaled in strictly increasing
+            // order, but published frames resolve out of order: dropped frames
+            // host-signal immediately while accepted frames signal from the
+            // encoder later. Publishing only while no completion value is
+            // outstanding keeps the timeline monotonic.
+            let video_publish_ready = match self.video_completion {
+                Some(semaphore) => {
+                    self.device.get_semaphore_counter_value(semaphore)?
+                        >= self.video_completion_value
+                }
+                None => false,
+            };
+            let mut video_publish_budget = webrtc::FRAME_CHANNEL_CAPACITY;
             for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
                 let imported = &surface.imported;
                 let Some(frame) = surface.latest else {
@@ -1242,7 +1271,13 @@ impl DirectCompositor {
                         self.extent.width,
                         cell_height,
                     );
-                    let offset_y = offset_y + (visible_index * cell_height) as i32;
+                    let row = vertical_layout_index(
+                        visible_index,
+                        visible_count,
+                        reverse_surface_rows,
+                    );
+                    let offset_y = offset_y + (row * cell_height) as i32;
+                    let source_y = source_y_offsets(content_height, surface.flip_y);
                     self.device.cmd_blit_image(
                         command,
                         source,
@@ -1252,10 +1287,13 @@ impl DirectCompositor {
                         &[vk::ImageBlit::default()
                             .src_subresource(color_layers())
                             .src_offsets([
-                                vk::Offset3D::default(),
+                                vk::Offset3D {
+                                    y: source_y[0],
+                                    ..Default::default()
+                                },
                                 vk::Offset3D {
                                     x: content_width as i32,
-                                    y: content_height as i32,
+                                    y: source_y[1],
                                     z: 1,
                                 },
                             ])
@@ -1274,7 +1312,11 @@ impl DirectCompositor {
                             ])],
                         vk::Filter::LINEAR,
                     );
-                    if let Some(cache) = surface.video_cache.as_mut() {
+                    if video_publish_ready
+                        && video_publish_budget > 0
+                        && let Some(cache) = surface.video_cache.as_mut()
+                    {
+                        video_publish_budget -= 1;
                         let cache_to_destination = vk::ImageMemoryBarrier::default()
                             .src_access_mask(if cache.initialized {
                                 vk::AccessFlags::TRANSFER_READ
@@ -1634,7 +1676,27 @@ impl Drop for DirectCompositor {
     }
 }
 
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.target().starts_with("webrtc")
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::var_os("SNOWGLASS_WEBRTC_TRACE").is_some() {
+        let _ = log::set_boxed_logger(Box::new(StderrLogger));
+        log::set_max_level(log::LevelFilter::Trace);
+    }
     let options = parse_target()?;
     let target = options.target;
     let track_render_targets = options.track_render_targets;
@@ -1650,7 +1712,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let viewer_api = options.api;
     let webrtc = webrtc_targets
         .as_ref()
-        .map(|_| webrtc::Publisher::start(options.bind_webrtc))
+        .map(|targets| webrtc::Publisher::start(options.bind_webrtc, targets))
         .transpose()?;
     let executable_dir = env::current_exe()?
         .parent()
@@ -2885,6 +2947,15 @@ mod argument_tests {
         ));
         assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
     }
+
+    #[test]
+    fn bottom_up_streams_reverse_vulkan_source_y() {
+        assert_eq!(source_y_offsets(720, true), [720, 0]);
+        assert_eq!(source_y_offsets(720, false), [0, 720]);
+        assert_eq!(vertical_layout_index(0, 2, true), 1);
+        assert_eq!(vertical_layout_index(1, 2, true), 0);
+        assert_eq!(vertical_layout_index(0, 2, false), 0);
+    }
 }
 
 enum TargetChild {
@@ -3185,33 +3256,33 @@ fn launch_target(
     let mut command = Command::new(&target[0]);
     command.args(&target[1..]);
     let mut environment = vec![
-        (OsString::from("SNOWGLASS_SESSION"), OsString::from(session)),
+        (OsString::from(config::SESSION), OsString::from(session)),
         (
-            OsString::from("SNOWGLASS_LOG_FILE"),
+            OsString::from(config::LAYER_LOG_FILE),
             layer_dir.join("snowglass-layer.log").into_os_string(),
         ),
         (
-            OsString::from("SNOWGLASS_DINPUT_LOG_FILE"),
+            OsString::from(config::DINPUT_LOG_FILE),
             layer_dir.join("snowglass-dinput.log").into_os_string(),
         ),
         (
-            OsString::from("SNOWGLASS_DXGI_LOG_FILE"),
+            OsString::from(config::DXGI_LOG_FILE),
             layer_dir.join("snowglass-dxgi.log").into_os_string(),
         ),
         (
-            OsString::from("SNOWGLASS_D3D11_LOG_FILE"),
+            OsString::from(config::D3D11_LOG_FILE),
             layer_dir.join("snowglass-d3d11.log").into_os_string(),
         ),
         (
-            OsString::from("SNOWGLASS_D3D12_LOG_FILE"),
+            OsString::from(config::D3D12_LOG_FILE),
             layer_dir.join("snowglass-d3d12.log").into_os_string(),
         ),
         (
-            OsString::from("SNOWGLASS_OPENGL_LOG_FILE"),
+            OsString::from(config::OPENGL_LOG_FILE),
             layer_dir.join("snowglass-opengl.log").into_os_string(),
         ),
         (
-            OsString::from("SNOWGLASS_GDI_LOG_FILE"),
+            OsString::from(config::GDI_LOG_FILE),
             layer_dir.join("snowglass-gdi.log").into_os_string(),
         ),
     ];
@@ -3229,11 +3300,11 @@ fn launch_target(
     }
     if let Some(indices) = track_render_targets {
         environment.push((
-            OsString::from("SNOWGLASS_TRACK_RENDER_TARGET"),
+            OsString::from(config::TRACK_RENDER_TARGET),
             OsString::from("1"),
         ));
         environment.push((
-            OsString::from("SNOWGLASS_TRACK_RENDER_TARGETS"),
+            OsString::from(config::TRACK_RENDER_TARGETS),
             OsString::from(
                 indices
                     .iter()
@@ -3243,15 +3314,12 @@ fn launch_target(
             ),
         ));
         if graph_tracking {
-            environment.push((
-                OsString::from("SNOWGLASS_GRAPH_TRACKING"),
-                OsString::from("1"),
-            ));
+            environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
         }
     }
     if force_keyed_mutex {
         environment.push((
-            OsString::from("SNOWGLASS_FORCE_KEYED_MUTEX"),
+            OsString::from(config::FORCE_KEYED_MUTEX),
             OsString::from("1"),
         ));
     }
@@ -3801,4 +3869,20 @@ fn fit_inside(
         (source_width as f64 * scale).floor().max(1.0) as u32,
         (source_height as f64 * scale).floor().max(1.0) as u32,
     )
+}
+
+fn source_y_offsets(height: u32, flip_y: bool) -> [i32; 2] {
+    if flip_y {
+        [height as i32, 0]
+    } else {
+        [0, height as i32]
+    }
+}
+
+fn vertical_layout_index(index: u32, count: u32, flip_y: bool) -> u32 {
+    if flip_y {
+        count.saturating_sub(index + 1)
+    } else {
+        index
+    }
 }

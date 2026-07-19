@@ -4,20 +4,26 @@ use openh264::{
     formats::{RgbaSliceU8, YUVBuffer},
 };
 
-pub(super) struct Encoder(openh264::encoder::Encoder);
+pub(super) struct Encoder {
+    encoder: openh264::encoder::Encoder,
+    parameter_sets: Vec<u8>,
+}
 
 impl Encoder {
     pub(super) fn new(bitrate: u32, frame_rate: f32) -> Result<Self, openh264::Error> {
-        Ok(Self(openh264::encoder::Encoder::with_api_config(
-            OpenH264API::from_source(),
-            EncoderConfig::new()
-                .bitrate(BitRate::from_bps(bitrate))
-                .max_frame_rate(FrameRate::from_hz(frame_rate))
-                .usage_type(UsageType::ScreenContentRealTime)
-                .profile(Profile::Baseline)
-                .intra_frame_period(IntraFramePeriod::from_num_frames(120))
-                .vui(VuiConfig::srgb()),
-        )?))
+        Ok(Self {
+            encoder: openh264::encoder::Encoder::with_api_config(
+                OpenH264API::from_source(),
+                EncoderConfig::new()
+                    .bitrate(BitRate::from_bps(bitrate))
+                    .max_frame_rate(FrameRate::from_hz(frame_rate))
+                    .usage_type(UsageType::ScreenContentRealTime)
+                    .profile(Profile::Baseline)
+                    .intra_frame_period(IntraFramePeriod::from_num_frames(120))
+                    .vui(VuiConfig::srgb()),
+            )?,
+            parameter_sets: Vec::new(),
+        })
     }
 
     pub(super) fn encode(
@@ -28,7 +34,31 @@ impl Encoder {
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let rgba = RgbaSliceU8::new(rgba, (width as usize, height as usize));
         let yuv = YUVBuffer::from_rgb_source(rgba);
-        Ok(self.0.encode(&yuv)?.to_vec())
+        let access_unit = self.encoder.encode(&yuv)?.to_vec();
+        let mut parameter_sets = Vec::new();
+        let mut has_sps = false;
+        let mut has_pps = false;
+        for nal in annex_b_nals(&access_unit) {
+            match nal.first().copied().unwrap_or(0) & 0x1f {
+                7 => has_sps = true,
+                8 => has_pps = true,
+                _ => continue,
+            }
+            parameter_sets.extend_from_slice(&[0, 0, 0, 1]);
+            parameter_sets.extend_from_slice(nal);
+        }
+        if has_sps && has_pps {
+            self.parameter_sets = parameter_sets;
+            return Ok(access_unit);
+        }
+        if self.parameter_sets.is_empty() {
+            return Ok(access_unit);
+        }
+        let mut browser_access_unit =
+            Vec::with_capacity(self.parameter_sets.len() + access_unit.len());
+        browser_access_unit.extend_from_slice(&self.parameter_sets);
+        browser_access_unit.extend_from_slice(&access_unit);
+        Ok(browser_access_unit)
     }
 }
 
@@ -84,4 +114,23 @@ fn annex_b_nals(bytes: &[u8]) -> Vec<&[u8]> {
             (*start + *prefix < end).then_some(&bytes[*start + *prefix..end])
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeats_parameter_sets_for_midstream_receivers() {
+        let mut encoder = Encoder::new(1_000_000, 30.0).expect("create OpenH264 encoder");
+        let rgba = vec![0; 64 * 64 * 4];
+        let _ = encoder.encode(&rgba, 64, 64).expect("encode first frame");
+        let second = encoder.encode(&rgba, 64, 64).expect("encode second frame");
+        let kinds = annex_b_nals(&second)
+            .into_iter()
+            .filter_map(|nal| nal.first().map(|byte| byte & 0x1f))
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&7), "second access unit has no SPS");
+        assert!(kinds.contains(&8), "second access unit has no PPS");
+    }
 }

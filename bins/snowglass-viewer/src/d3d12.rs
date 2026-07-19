@@ -55,6 +55,7 @@ struct ImportedSurface {
     connection: u64,
     descriptor: u32,
     imported: ImportedD3d12Stream,
+    flip_y: bool,
     cache: ID3D12Resource,
     cache_state: D3D12_RESOURCE_STATES,
     latest: Option<FrameReady>,
@@ -265,6 +266,7 @@ impl D3d12Compositor {
             connection,
             descriptor: FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
             imported,
+            flip_y: stream.bottom_up,
             cache,
             cache_state: D3D12_RESOURCE_STATE_COMMON,
             latest: None,
@@ -382,6 +384,20 @@ impl D3d12Compositor {
 
         let mut release_values = Vec::new();
         let mut video_captures = Vec::new();
+        // Only publish video when every previously published frame has
+        // resolved its completion value, and never more per draw than the
+        // encoder channel can buffer. Out-of-order completion signals would
+        // rewind the fence (dropped frames host-signal immediately while an
+        // in-flight frame signals its older value later), and a rewound
+        // fence leaves the compositor queue waiting forever.
+        let video_publish_ready = self.publish_video
+            && unsafe { self.video_completion_fence.GetCompletedValue() }
+                >= self.video_completion_value;
+        let mut video_publish_budget = if video_publish_ready {
+            super::webrtc::FRAME_CHANNEL_CAPACITY
+        } else {
+            0
+        };
         for index in 0..self.surfaces.len() {
             let mut surface = self.surfaces.remove(index);
             let mut captured = None;
@@ -454,7 +470,8 @@ impl D3d12Compositor {
                     release_values.push((surface.connection, frame.sync_value));
                 }
             }
-            if self.publish_video && captured.is_some() {
+            if video_publish_budget > 0 && captured.is_some() {
+                video_publish_budget -= 1;
                 video_captures.push((
                     surface.connection,
                     surface.cache.clone(),
@@ -573,6 +590,12 @@ impl D3d12Compositor {
             .iter()
             .filter(|surface| surface.display_frame.is_some())
             .count() as u32;
+        let reverse_surface_rows = visible > 1
+            && self
+                .surfaces
+                .iter()
+                .filter(|surface| surface.display_frame.is_some())
+                .all(|surface| surface.flip_y);
         let cell_height = self.extent.1 / visible.max(1);
         let draws = self
             .surfaces
@@ -589,14 +612,19 @@ impl D3d12Compositor {
                 );
                 let (x, local_y, w, h) =
                     super::fit_extent(crop_w, crop_h, self.extent.0, cell_height);
-                let y = position as i32 * cell_height as i32 + local_y;
+                let row =
+                    super::vertical_layout_index(position as u32, visible, reverse_surface_rows);
+                let y = row as i32 * cell_height as i32 + local_y;
                 let l = x as f32 / self.extent.0 as f32 * 2.0 - 1.0;
                 let r = (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0;
                 let t = 1.0 - y as f32 / self.extent.1 as f32 * 2.0;
                 let b = 1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0;
                 let u = crop_w as f32 / surface.imported.width as f32;
                 let v = crop_h as f32 / surface.imported.height as f32;
-                (surface.descriptor, quad(l, t, r, b, u, v, [255; 4]))
+                (
+                    surface.descriptor,
+                    quad(l, t, r, b, u, v, surface.flip_y, [255; 4]),
+                )
             })
             .collect::<Vec<_>>();
         for (descriptor, vertices) in draws {
@@ -876,19 +904,29 @@ impl Drop for D3d12Compositor {
     }
 }
 
-fn quad(l: f32, t: f32, r: f32, b: f32, u: f32, v: f32, color: [u8; 4]) -> [GpuVertex; 6] {
+fn quad(
+    l: f32,
+    t: f32,
+    r: f32,
+    b: f32,
+    u: f32,
+    v: f32,
+    flip_y: bool,
+    color: [u8; 4],
+) -> [GpuVertex; 6] {
     let p = |position, uv| GpuVertex {
         position,
         uv,
         color,
     };
+    let (top_v, bottom_v) = if flip_y { (v, 0.0) } else { (0.0, v) };
     [
-        p([l, t], [0.0, 0.0]),
-        p([r, t], [u, 0.0]),
-        p([r, b], [u, v]),
-        p([l, t], [0.0, 0.0]),
-        p([r, b], [u, v]),
-        p([l, b], [0.0, v]),
+        p([l, t], [0.0, top_v]),
+        p([r, t], [u, top_v]),
+        p([r, b], [u, bottom_v]),
+        p([l, t], [0.0, top_v]),
+        p([r, b], [u, bottom_v]),
+        p([l, b], [0.0, bottom_v]),
     ]
 }
 
@@ -1292,4 +1330,20 @@ fn gpu_handle(heap: &ID3D12DescriptorHeap, stride: u32, index: u32) -> D3D12_GPU
 }
 fn as_bytes<T>(items: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(items.as_ptr().cast(), size_of_val(items)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quad;
+
+    #[test]
+    fn opengl_quad_reverses_texture_v() {
+        let normal = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, [255; 4]);
+        let flipped = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, true, [255; 4]);
+
+        assert_eq!(normal[0].uv[1], 0.0);
+        assert_eq!(normal[2].uv[1], 0.5);
+        assert_eq!(flipped[0].uv[1], 0.5);
+        assert_eq!(flipped[2].uv[1], 0.0);
+    }
 }

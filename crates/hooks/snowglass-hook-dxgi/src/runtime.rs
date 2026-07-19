@@ -411,6 +411,23 @@ pub(crate) unsafe fn query_interface(
     result
 }
 
+/// Runs a producer callback, absorbing panics. A panic must never unwind
+/// through the detour into the host game (that aborts the process), so the
+/// swapchain's callbacks are dropped instead: capture stops, the game lives.
+fn guarded_callback(this: *mut c_void, callback: unsafe fn(*mut c_void), stage: &str) {
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { callback(this) }));
+    if result.is_err() {
+        OWNERS
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&(this as usize));
+        crate::dxgi_log(format!(
+            "snowglass: {stage} callback panicked; capture disabled for swapchain {this:p}"
+        ));
+    }
+}
+
 pub(crate) unsafe fn present(
     this: *mut c_void,
     sync_interval: u32,
@@ -424,7 +441,7 @@ pub(crate) unsafe fn present(
             .and_then(|callbacks| callbacks.before_present)
     };
     if let Some(callback) = callback {
-        unsafe { callback(this) };
+        guarded_callback(this, callback, "before_present");
     }
     let Some(continuation) = next.fp_next().copied() else {
         return DXGI_ERROR_INVALID_CALL.0;
@@ -446,7 +463,7 @@ pub(crate) unsafe fn present1(
             .and_then(|callbacks| callbacks.before_present)
     };
     if let Some(callback) = callback {
-        unsafe { callback(this) };
+        guarded_callback(this, callback, "before_present");
     }
     let Some(continuation) = next.fp_next().copied() else {
         return DXGI_ERROR_INVALID_CALL.0;
@@ -469,14 +486,25 @@ pub(crate) unsafe fn resize_buffers(
         .get(&(this as usize))
         .copied();
     if let Some(callback) = owner.and_then(|callbacks| callbacks.before_resize) {
-        unsafe { callback(this) };
+        guarded_callback(this, callback, "before_resize");
     }
     let Some(continuation) = next.fp_next().copied() else {
         return DXGI_ERROR_INVALID_CALL.0;
     };
     let result = unsafe { continuation(this, buffer_count, width, height, format, flags, next) };
     if let Some(callback) = owner.and_then(|callbacks| callbacks.after_resize) {
-        unsafe { callback(this, result) };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            callback(this, result)
+        }));
+        if outcome.is_err() {
+            OWNERS
+                .write()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&(this as usize));
+            crate::dxgi_log(format!(
+                "snowglass: after_resize callback panicked; capture disabled for swapchain {this:p}"
+            ));
+        }
     }
     result
 }
@@ -506,7 +534,9 @@ pub(crate) unsafe fn release(this: *mut c_void, _next: hooks::ReleaseContext<'_>
                 .unwrap_or_else(|error| error.into_inner())
                 .remove(&(this as usize));
             if let Some(callback) = owner.and_then(|callbacks| callbacks.destroyed) {
-                unsafe { callback(this) };
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                    callback(this)
+                }));
             }
         } else {
             let states = swapchains()
