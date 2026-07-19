@@ -34,7 +34,7 @@ use std::mem;
 
 snowglass_hook::register_hooks! {
     hooks::register_cmd_draw -> observers::cmd_draw;
-    hooks::register_cmd_draw_indexed -> observers::cmd_draw;
+    hooks::register_cmd_draw_indexed -> observers::cmd_draw_indexed;
     hooks::register_cmd_set_viewport -> observers::cmd_set_viewport;
     hooks::register_cmd_set_scissor -> observers::cmd_set_scissor;
     hooks::register_cmd_end_render_pass -> observers::cmd_end_render_pass;

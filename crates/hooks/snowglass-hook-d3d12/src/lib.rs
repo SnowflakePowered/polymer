@@ -10,19 +10,24 @@ mod vtable;
 pub use sys::SnowglassInstallD3d12Hook;
 
 snowglass_hook::register_hooks! {
-    hooks::register_create_device -> |device, result| {
+    hooks::register_create_device -> |device, result, context: &hooks::CreateDeviceContext| {
         if result >= 0 {
             d3d12_log("snowglass: intercepted D3D12CreateDevice");
-            unsafe { vtable::install_device(device) };
+            unsafe { vtable::install_device(device, context.tracking.clone()) };
         }
     };
     snowglass_hook_dxgi::register_callbacks -> snowglass_hook_dxgi::SwapchainCallbacks {
-        claim: snowglass_producer_d3d12::claim,
+        claim: claim_swapchain,
         before_present: Some(snowglass_producer_d3d12::before_present),
         before_resize: Some(snowglass_producer_d3d12::before_resize),
         after_resize: None,
         destroyed: Some(snowglass_producer_d3d12::destroyed),
     };
+}
+
+unsafe fn claim_swapchain(swapchain: *mut std::ffi::c_void, queue: *mut std::ffi::c_void) -> bool {
+    let tracking = unsafe { vtable::queue_tracking(queue) }.unwrap_or_default();
+    unsafe { snowglass_producer_d3d12::claim(swapchain, queue, tracking) }
 }
 
 fn d3d12_log(message: impl std::fmt::Display) {
@@ -253,7 +258,9 @@ mod tests {
                 right: 56,
                 bottom: 52,
             }]);
-            snowglass_producer_d3d12::record_draw(list.as_raw());
+            vtable::list_tracking(list.as_raw())
+                .expect("hooked command list has no tracking context")
+                .record_draw(list.as_raw());
             record_barriers(
                 &list,
                 [transition(

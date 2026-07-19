@@ -49,6 +49,9 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        $(context fields {
+            $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+        };)?
         hook $hook:ident($this:ident: $this_type:ty $(, $argument:ident: $argument_type:ty)* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;
@@ -62,7 +65,7 @@ macro_rules! resolve_around_terminal {
             hook $hook($this: $this_type $(, $argument: $argument_type)*) -> $result;
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
-            fields {}
+            fields { $($($context_field: $context_field_type = $context_field_value),*)? }
             terminal |$this, $($argument,)* _context: $context<'_>| unsafe {
                 let Some(function) = crate::hook_chain::__resolve_proc!(query, $this, $field)
                 else {
@@ -78,6 +81,9 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        $(context fields {
+            $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+        };)?
         hook $hook:ident($this:ident: $this_type:ty $(, $argument:ident: $argument_type:ty)* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;
@@ -91,7 +97,7 @@ macro_rules! resolve_around_terminal {
             hook $hook($this: $this_type $(, $argument: $argument_type)*) -> $result;
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
-            fields {}
+            fields { $($($context_field: $context_field_type = $context_field_value),*)? }
             terminal |$this, $($argument,)* _context: $context<'_>| unsafe {
                 let Some(function) = crate::hook_chain::__resolve_proc!(swapchain, $this, $field)
                 else {
@@ -107,6 +113,9 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        $(context fields {
+            $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+        };)?
         hook $hook:ident($this:ident: $this_type:ty $(, $argument:ident: $argument_type:ty)* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;
@@ -120,7 +129,7 @@ macro_rules! resolve_around_terminal {
             hook $hook($this: $this_type $(, $argument: $argument_type)*) -> $result;
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
-            fields {}
+            fields { $($($context_field: $context_field_type = $context_field_value),*)? }
             terminal |$this, $($argument,)* _context: $context<'_>| unsafe {
                 let Some(function) = crate::runtime::swapchain_method(
                     $this,
@@ -138,6 +147,9 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        $(context fields {
+            $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+        };)?
         hook $hook:ident($($argument:ident: $argument_type:ty),* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;
@@ -151,7 +163,7 @@ macro_rules! resolve_around_terminal {
             hook $hook($($argument: $argument_type),*) -> $result;
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
-            fields {}
+            fields { $($($context_field: $context_field_type = $context_field_value),*)? }
             terminal $terminal;
             export $export;
         }

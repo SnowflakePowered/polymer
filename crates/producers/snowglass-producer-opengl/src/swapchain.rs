@@ -10,7 +10,7 @@ use crate::{
     },
     log,
     timeline::Timeline,
-    tracking::{DrawCandidate, QuadBounds, take_draw_candidates},
+    tracking::{DrawCandidate, QuadBounds, Tracking},
 };
 use snowglass_hook::config;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
@@ -106,7 +106,7 @@ fn stream_window(hwnd: isize, index: usize) -> isize {
 }
 
 /// Called immediately before the real GDI `SwapBuffers`.
-pub unsafe fn before_swap_buffers(hdc: isize) {
+pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     let context = unsafe { current_context() };
     if context.is_null() {
         return;
@@ -125,7 +125,7 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
     if window_width == 0 || window_height == 0 {
         return;
     }
-    let (observed, trusted) = take_draw_candidates(context as usize);
+    let (observed, trusted) = tracking.take_draw_candidates(context as usize);
     let key = (hdc as usize, context as usize);
     let mut map = captures().lock().unwrap_or_else(|error| error.into_inner());
     let entry = map.entry(key).or_default();

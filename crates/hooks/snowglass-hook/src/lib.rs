@@ -5,6 +5,9 @@ mod vtable;
 
 pub use vtable::VtableHook;
 
+#[cfg(test)]
+fn register_hooks() {}
+
 /// A continuation over a typed hook chain.
 pub trait HookChain<'a, T: 'a> {
     /// Advances to the next registered hook, if one remains.
@@ -129,6 +132,19 @@ macro_rules! declare_chain_context {
             fn fp_next(&mut self) -> Option<&'a $hook> {
                 self.hooks.next()
             }
+        }
+    };
+}
+
+/// Declares the data passed to observers and post hooks for one dispatch.
+#[macro_export]
+macro_rules! declare_chain_data_context {
+    (
+        $visibility:vis struct $context:ident;
+        fields { $($field:ident: $field_type:ty),* $(,)? };
+    ) => {
+        $visibility struct $context {
+            $(pub(crate) $field: $field_type,)*
         }
     };
 }
@@ -296,6 +312,137 @@ macro_rules! decl_observer_chain {
             (
                 $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
                 target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result_name:ident: $dollar result:ty;
+                $dollar($dollar tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> $dollar result;
+                    $dollar($dollar tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result:ty;
+                abi ($dollar($dollar abi_arg:ident: $dollar abi_arg_type:ty),* $dollar(,)?);
+                $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                type $dollar hook = unsafe fn(
+                    $dollar($dollar hook_arg_type,)*
+                    &$dollar context,
+                );
+                $crate::declare_chain_data_context! {
+                    $dollar chain_visibility struct $dollar context;
+                    fields { $dollar($dollar field: $dollar field_type),* };
+                }
+                $crate::declare_chain_storage! {
+                    static $dollar chain for $dollar hook;
+                    $dollar chain_visibility register $dollar register;
+                }
+                $dollar chain_visibility unsafe fn $dollar dispatch(
+                    $dollar($dollar abi_arg: $dollar abi_arg_type),*
+                ) -> $dollar result {
+                    crate::register_hooks();
+                    $dollar(let $dollar field = $dollar field_value;)*
+                    let context = $dollar context { $dollar($dollar field,)* };
+                    $crate::dispatch_observer_chain(
+                        &$dollar chain,
+                        $order,
+                        |hook| unsafe { hook($dollar($dollar hook_arg,)* &context) },
+                        $resolve! {
+                            ($dollar($dollar abi_arg),*);
+                            $dollar($dollar resolve_tokens)*
+                        },
+                    )
+                }
+                $crate::emit_chain_export! {
+                    $export;
+                    target $dollar target;
+                    dispatch $dollar dispatch;
+                    abi ($dollar($dollar abi_arg: $dollar abi_arg_type),*);
+                    result $dollar result;
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result:ty;
+                resolve with $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> $dollar result;
+                    abi ($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    resolve with $dollar($dollar resolve_tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?);
+                abi ($dollar($dollar abi_arg:ident: $dollar abi_arg_type:ty),* $dollar(,)?);
+                $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*) -> ();
+                    abi ($dollar($dollar abi_arg: $dollar abi_arg_type),*);
+                    $dollar($dollar resolve_tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?);
+                resolve with $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    abi ($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    resolve with $dollar($dollar resolve_tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
                 chain $dollar chain:ident, context $dollar context:ident;
                 hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
                     -> $dollar result_name:ident: $dollar result:ty;
@@ -414,6 +561,171 @@ macro_rules! decl_post_chain {
         $dollar:tt
     ) => {
         macro_rules! $name {
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result_argument:ident: $dollar result:ty;
+                abi ($dollar($dollar abi_arg:ident: $dollar abi_arg_type:ty),* $dollar(,)?);
+                $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                type $dollar hook = unsafe fn(
+                    $dollar($dollar hook_arg_type,)*
+                    $dollar result,
+                    &$dollar context,
+                );
+                $crate::declare_chain_data_context! {
+                    $dollar chain_visibility struct $dollar context;
+                    fields { $dollar($dollar field: $dollar field_type),* };
+                }
+                $crate::declare_chain_storage! {
+                    static $dollar chain for $dollar hook;
+                    $dollar chain_visibility register $dollar register;
+                }
+                $dollar chain_visibility unsafe fn $dollar dispatch(
+                    $dollar($dollar abi_arg: $dollar abi_arg_type),*
+                ) -> $dollar result {
+                    crate::register_hooks();
+                    $dollar(let $dollar field = $dollar field_value;)*
+                    let context = $dollar context { $dollar($dollar field,)* };
+                    $crate::dispatch_post_chain(
+                        &$dollar chain,
+                        $order,
+                        $resolve! {
+                            ($dollar($dollar abi_arg),*);
+                            $dollar($dollar resolve_tokens)*
+                        },
+                        |hook, $dollar result_argument| unsafe {
+                            hook(
+                                $dollar($dollar hook_arg,)*
+                                $dollar result_argument,
+                                &context,
+                            )
+                        },
+                    )
+                }
+                $crate::emit_chain_export! {
+                    $export;
+                    target $dollar target;
+                    dispatch $dollar dispatch;
+                    abi ($dollar($dollar abi_arg: $dollar abi_arg_type),*);
+                    result $dollar result;
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result_argument:ident: $dollar result:ty;
+                resolve with $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> $dollar result_argument: $dollar result;
+                    abi ($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    resolve with $dollar($dollar resolve_tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result:ty;
+                $dollar($dollar tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> result: $dollar result;
+                    $dollar($dollar tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?);
+                abi ($dollar($dollar abi_arg:ident: $dollar abi_arg_type:ty),* $dollar(,)?);
+                $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                type $dollar hook = unsafe fn(
+                    $dollar($dollar hook_arg_type,)*
+                    &$dollar context,
+                );
+                $crate::declare_chain_data_context! {
+                    $dollar chain_visibility struct $dollar context;
+                    fields { $dollar($dollar field: $dollar field_type),* };
+                }
+                $crate::declare_chain_storage! {
+                    static $dollar chain for $dollar hook;
+                    $dollar chain_visibility register $dollar register;
+                }
+                $dollar chain_visibility unsafe fn $dollar dispatch(
+                    $dollar($dollar abi_arg: $dollar abi_arg_type),*
+                ) {
+                    crate::register_hooks();
+                    $dollar(let $dollar field = $dollar field_value;)*
+                    let context = $dollar context { $dollar($dollar field,)* };
+                    $crate::dispatch_post_chain(
+                        &$dollar chain,
+                        $order,
+                        $resolve! {
+                            ($dollar($dollar abi_arg),*);
+                            $dollar($dollar resolve_tokens)*
+                        },
+                        |hook, ()| unsafe {
+                            hook($dollar($dollar hook_arg,)* &context)
+                        },
+                    )
+                }
+                $crate::emit_chain_export! {
+                    $export;
+                    target $dollar target;
+                    dispatch $dollar dispatch;
+                    abi ($dollar($dollar abi_arg: $dollar abi_arg_type),*);
+                    result ();
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?);
+                resolve with $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    abi ($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    resolve with $dollar($dollar resolve_tokens)*
+                }
+            };
             (
                 $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
                 target $dollar target:ident;
@@ -617,6 +929,75 @@ macro_rules! decl_around_chain {
             (
                 $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
                 target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result_name:ident: $dollar result:ty;
+                $dollar($dollar tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> $dollar result;
+                    $dollar($dollar tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result:ty;
+                abi ($dollar($dollar abi_arg:ident: $dollar abi_arg_type:ty),* $dollar(,)?);
+                $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $resolve! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    order $order;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context;
+                    context fields {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> $dollar result;
+                    abi ($dollar($dollar abi_arg: $dollar abi_arg_type),*);
+                    export $export;
+                    $dollar($dollar resolve_tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
+                chain $dollar chain:ident, context $dollar context:ident {
+                    $dollar($dollar field:ident: $dollar field_type:ty = $dollar field_value:expr),* $dollar(,)?
+                };
+                hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
+                    -> $dollar result:ty;
+                resolve with $dollar($dollar resolve_tokens:tt)*
+            ) => {
+                $name! {
+                    $dollar chain_visibility $dollar dispatch, $dollar register;
+                    target $dollar target;
+                    chain $dollar chain, context $dollar context {
+                        $dollar($dollar field: $dollar field_type = $dollar field_value),*
+                    };
+                    hook $dollar hook($dollar($dollar hook_arg: $dollar hook_arg_type),*)
+                        -> $dollar result;
+                    abi ($dollar($dollar hook_arg: $dollar hook_arg_type),*);
+                    resolve with $dollar($dollar resolve_tokens)*
+                }
+            };
+            (
+                $dollar chain_visibility:vis $dollar dispatch:ident, $dollar register:ident;
+                target $dollar target:ident;
                 chain $dollar chain:ident, context $dollar context:ident;
                 hook $dollar hook:ident($dollar($dollar hook_arg:ident: $dollar hook_arg_type:ty),* $dollar(,)?)
                     -> $dollar result_name:ident: $dollar result:ty;
@@ -677,6 +1058,10 @@ macro_rules! decl_around_chain {
 
 /// Declares all backend chain modes and a `chain!` frontend which routes to
 /// them. Each mode supplies only its iteration order, resolver, and exporter.
+/// A chain may replace `context Context;` with
+/// `context Context { field: Type = value, ... };`. Observer and post hooks
+/// receive the generated context by shared reference as their final argument;
+/// around hooks receive the fields on their continuation context.
 ///
 /// The dollar token is supplied by the caller because stable `macro_rules!`
 /// cannot otherwise escape metavariables while defining another macro.
@@ -863,4 +1248,133 @@ macro_rules! define_chain_macro {
         }
         $visibility use $name;
     };
+}
+
+#[cfg(test)]
+#[allow(unused_imports)]
+mod context_field_tests {
+    use crate::HookChain;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+    static POSTED: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe fn terminal(value: usize) -> usize {
+        value * 2
+    }
+
+    macro_rules! resolve_terminal {
+        (($($argument:ident),*); resolve with terminal;) => {
+            || unsafe { terminal($($argument),*) }
+        };
+    }
+    use resolve_terminal as __resolve_terminal;
+
+    macro_rules! resolve_around_terminal {
+        (
+            $visibility:vis $dispatch:ident, $register:ident;
+            order $order:ident;
+            target $target:ident;
+            chain $chain:ident, context $context:ident;
+            context fields {
+                $($field:ident: $field_type:ty = $field_value:expr),* $(,)?
+            };
+            hook $hook:ident($($argument:ident: $argument_type:ty),* $(,)?) -> $result:ty;
+            abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
+            export $export:ident;
+            resolve with terminal;
+        ) => {
+            crate::define_around_chain! {
+                $visibility $dispatch, $register;
+                order $order;
+                target $target;
+                chain $chain, context $context;
+                hook $hook($($argument: $argument_type),*) -> $result;
+                abi ($($abi_arg: $abi_arg_type),*);
+                prepare {}
+                fields { $($field: $field_type = $field_value),* }
+                terminal |$($argument,)* _context: $context<'_>| unsafe {
+                    terminal($($argument),*)
+                };
+                export $export;
+            }
+        };
+    }
+    use resolve_around_terminal as __resolve_around_terminal;
+
+    crate::define_chain_macro! {
+        chain => {
+            observer {
+                order crate::ChainOrder::Forward;
+                resolve with __resolve_terminal;
+            }
+            post {
+                order crate::ChainOrder::Forward;
+                resolve with __resolve_terminal;
+            }
+            around {
+                order forward;
+                resolve with __resolve_around_terminal;
+            }
+        },
+        $
+    }
+
+    chain! {
+        dispatch_observe, register_observe;
+        observes observe_target;
+        chain OBSERVE_CHAIN, context ObserveContext {
+            offset: usize = 2,
+        };
+        hook ObserveHook(value: usize) -> usize;
+        resolve with terminal;
+    }
+
+    chain! {
+        dispatch_post, register_post;
+        after post_target;
+        chain POST_CHAIN, context PostContext {
+            offset: usize = 3,
+        };
+        hook PostHook() -> result: usize;
+        abi (value: usize);
+        resolve with terminal;
+    }
+
+    chain! {
+        dispatch_around, register_around;
+        around around_target;
+        chain AROUND_CHAIN, context AroundContext {
+            offset: usize = 4,
+        };
+        hook AroundHook(value: usize) -> usize;
+        resolve with terminal;
+    }
+
+    unsafe fn observe(value: usize, context: &ObserveContext) {
+        OBSERVED.store(value + context.offset, Ordering::Relaxed);
+    }
+
+    unsafe fn post(result: usize, context: &PostContext) {
+        POSTED.store(result + context.offset, Ordering::Relaxed);
+    }
+
+    unsafe fn around(value: usize, mut next: AroundContext<'_>) -> usize {
+        let offset = next.offset;
+        let continuation = *next.fp_next().expect("around chains have a terminal");
+        unsafe { continuation(value + offset, next) }
+    }
+
+    #[test]
+    fn chain_context_fields_reach_each_hook_mode() {
+        register_observe(observe);
+        register_post(post);
+        register_around(around);
+
+        assert_eq!(unsafe { dispatch_observe(5) }, 10);
+        assert_eq!(OBSERVED.load(Ordering::Relaxed), 7);
+        assert_eq!(unsafe { dispatch_post(5) }, 10);
+        assert_eq!(POSTED.load(Ordering::Relaxed), 13);
+        assert_eq!(unsafe { dispatch_around(5) }, 18);
+    }
 }

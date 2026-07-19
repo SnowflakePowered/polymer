@@ -55,6 +55,48 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        context fields {
+            $($field:ident: $field_type:ty = $field_value:expr),* $(,)?
+        };
+        hook $hook:ident($($hook_arg:ident: $hook_arg_type:ty),* $(,)?) -> $result:ty;
+        abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
+        export $export:ident;
+        resolve with $resolve_arg:ident, $name:literal: $next_module:ident::$resolved_ty:ident -> $fallback:expr;
+    ) => {
+        snowglass_hook::define_around_chain! {
+            $visibility $dispatch, $register;
+            order $order;
+            target $target;
+            chain $chain, context $context;
+            hook $hook($($hook_arg: $hook_arg_type),*) -> $result;
+            abi ($($abi_arg: $abi_arg_type),*);
+            prepare {
+                let Some(resolved): Option<$next_module::$resolved_ty> =
+                    crate::hook_chain::resolve_proc!(
+                        $resolve_arg,
+                        $resolve_arg,
+                        $name,
+                        $next_module::$resolved_ty
+                    )
+                else {
+                    return $fallback;
+                };
+            }
+            fields {
+                $($field: $field_type = $field_value,)*
+                resolved: $next_module::$resolved_ty = resolved
+            }
+            terminal |$($hook_arg,)* context: $context<'_>| unsafe {
+                (context.resolved)($($hook_arg),*)
+            };
+            export $export;
+        }
+    };
+    (
+        $visibility:vis $dispatch:ident, $register:ident;
+        order $order:ident;
+        target $target:ident;
+        chain $chain:ident, context $context:ident;
         hook $hook:ident($($hook_arg:ident: $hook_arg_type:ty),* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;

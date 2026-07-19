@@ -12,7 +12,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     sync::{
-        LazyLock, Mutex, Once,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -27,17 +27,33 @@ use windows_sys::{
     core::{GUID, HRESULT},
 };
 
-static START_INPUT: Once = Once::new();
-static INPUT_CONNECTED: AtomicBool = AtomicBool::new(false);
-static LOGGED_DELIVERY: AtomicBool = AtomicBool::new(false);
-static LOGGED_KEYBOARD_RECEIVE: AtomicBool = AtomicBool::new(false);
-static LOGGED_KEYBOARD_POLL: AtomicBool = AtomicBool::new(false);
-static LOGGED_KEYBOARD_PRESSED: AtomicBool = AtomicBool::new(false);
-static INPUT_QUEUE: Mutex<InputQueues> = Mutex::new(InputQueues::new());
-static DIRECT_INPUT_HOOKS: LazyLock<Mutex<HashMap<usize, DirectInputHook>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static DEVICE_HOOKS: LazyLock<Mutex<HashMap<usize, DeviceHook>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+pub(crate) struct Runtime {
+    receiver_started: AtomicBool,
+    input_connected: AtomicBool,
+    logged_delivery: AtomicBool,
+    logged_keyboard_receive: AtomicBool,
+    logged_keyboard_poll: AtomicBool,
+    logged_keyboard_pressed: AtomicBool,
+    input_queue: Mutex<InputQueues>,
+    direct_input_hooks: Mutex<HashMap<usize, DirectInputHook>>,
+    device_hooks: Mutex<HashMap<usize, DeviceHook>>,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            receiver_started: AtomicBool::new(false),
+            input_connected: AtomicBool::new(false),
+            logged_delivery: AtomicBool::new(false),
+            logged_keyboard_receive: AtomicBool::new(false),
+            logged_keyboard_poll: AtomicBool::new(false),
+            logged_keyboard_pressed: AtomicBool::new(false),
+            input_queue: Mutex::new(InputQueues::new()),
+            direct_input_hooks: Mutex::new(HashMap::new()),
+            device_hooks: Mutex::new(HashMap::new()),
+        }
+    }
+}
 
 pub(crate) struct DirectInputHook {
     vtable: IDirectInputHook,
@@ -49,34 +65,40 @@ pub(crate) struct DeviceHook {
     event_handle: usize,
 }
 
-pub(crate) fn direct_input_method<T: Copy>(
-    this: *mut c_void,
-    select: impl FnOnce(&IDirectInputHook) -> T,
-) -> Option<crate::vtable::OriginalMethod<T>> {
-    let hooks = DIRECT_INPUT_HOOKS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let hook = hooks.get(&(this as usize))?;
-    Some(crate::vtable::OriginalMethod {
-        original_vtable: hook.vtable.original_vtable(),
-        intercepted_vtable: hook.vtable.patched_vtable(),
-        function: select(&hook.vtable),
-    })
-}
+impl Runtime {
+    pub(crate) fn direct_input_method<T: Copy>(
+        &self,
+        this: *mut c_void,
+        select: impl FnOnce(&IDirectInputHook) -> T,
+    ) -> Option<crate::vtable::OriginalMethod<T>> {
+        let hooks = self
+            .direct_input_hooks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let hook = hooks.get(&(this as usize))?;
+        Some(crate::vtable::OriginalMethod {
+            original_vtable: hook.vtable.original_vtable(),
+            intercepted_vtable: hook.vtable.patched_vtable(),
+            function: select(&hook.vtable),
+        })
+    }
 
-pub(crate) fn device_method<T: Copy>(
-    this: *mut c_void,
-    select: impl FnOnce(&IDirectInputDeviceHook) -> T,
-) -> Option<crate::vtable::OriginalMethod<T>> {
-    let hooks = DEVICE_HOOKS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let hook = hooks.get(&(this as usize))?;
-    Some(crate::vtable::OriginalMethod {
-        original_vtable: hook.vtable.original_vtable(),
-        intercepted_vtable: hook.vtable.patched_vtable(),
-        function: select(&hook.vtable),
-    })
+    pub(crate) fn device_method<T: Copy>(
+        &self,
+        this: *mut c_void,
+        select: impl FnOnce(&IDirectInputDeviceHook) -> T,
+    ) -> Option<crate::vtable::OriginalMethod<T>> {
+        let hooks = self
+            .device_hooks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let hook = hooks.get(&(this as usize))?;
+        Some(crate::vtable::OriginalMethod {
+            original_vtable: hook.vtable.original_vtable(),
+            intercepted_vtable: hook.vtable.patched_vtable(),
+            function: select(&hook.vtable),
+        })
+    }
 }
 
 struct InputQueues {
@@ -125,6 +147,12 @@ impl InputQueues {
     }
 }
 
+impl Default for InputQueues {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn dinput_log(message: impl std::fmt::Display) {
     let Some(path) = config::dinput_log_file() else {
         return;
@@ -134,68 +162,79 @@ fn dinput_log(message: impl std::fmt::Display) {
     }
 }
 
-fn start_input_receiver() {
-    START_INPUT.call_once(|| {
+impl Runtime {
+    fn start_input_receiver(self: &Arc<Self>) {
         let Ok(session) = config::session() else {
             return;
         };
-        thread::spawn(move || receive_input(format!("{session}-input")));
-    });
-}
-
-fn receive_input(session: String) {
-    let Ok(mut socket) = LocalSocket::connect(&session) else {
-        dinput_log("snowglass: DirectInput input socket connection failed");
-        return;
-    };
-    INPUT_CONNECTED.store(true, Ordering::Release);
-    dinput_log("snowglass: DirectInput input socket connected");
-    while let Ok(message) = socket.receive() {
-        match message {
-            Message::DirectInputData(event) => {
-                if event.device == DirectInputDevice::Keyboard
-                    && !LOGGED_KEYBOARD_RECEIVE.swap(true, Ordering::AcqRel)
-                {
-                    dinput_log(format!(
-                        "snowglass: received first keyboard transition offset={:#x} data={:#x}",
-                        event.offset, event.data
-                    ));
-                }
-                let mut queues = INPUT_QUEUE
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                queues.apply(event);
-                let queue = queues.get_mut(event.device);
-                // Match the bounded behavior of a DirectInput buffered device.
-                if queue.len() == 1024 {
-                    queue.pop_front();
-                }
-                queue.push_back(event);
-                drop(queues);
-                let handles = DEVICE_HOOKS
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .values()
-                    .filter(|hook| hook.device == event.device && hook.event_handle != 0)
-                    .map(|hook| hook.event_handle)
-                    .collect::<Vec<_>>();
-                for handle in handles {
-                    unsafe { windows_sys::Win32::System::Threading::SetEvent(handle as _) };
-                }
-            }
-            Message::Shutdown => break,
-            _ => {}
+        if self
+            .receiver_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
         }
+        let runtime = self.clone();
+        thread::spawn(move || runtime.receive_input(format!("{session}-input")));
     }
-    INPUT_CONNECTED.store(false, Ordering::Release);
+
+    fn receive_input(self: Arc<Self>, session: String) {
+        let Ok(mut socket) = LocalSocket::connect(&session) else {
+            dinput_log("snowglass: DirectInput input socket connection failed");
+            return;
+        };
+        self.input_connected.store(true, Ordering::Release);
+        dinput_log("snowglass: DirectInput input socket connected");
+        while let Ok(message) = socket.receive() {
+            match message {
+                Message::DirectInputData(event) => {
+                    if event.device == DirectInputDevice::Keyboard
+                        && !self.logged_keyboard_receive.swap(true, Ordering::AcqRel)
+                    {
+                        dinput_log(format!(
+                            "snowglass: received first keyboard transition offset={:#x} data={:#x}",
+                            event.offset, event.data
+                        ));
+                    }
+                    let mut queues = self
+                        .input_queue
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    queues.apply(event);
+                    let queue = queues.get_mut(event.device);
+                    // Match the bounded behavior of a DirectInput buffered device.
+                    if queue.len() == 1024 {
+                        queue.pop_front();
+                    }
+                    queue.push_back(event);
+                    drop(queues);
+                    let handles = self
+                        .device_hooks
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .values()
+                        .filter(|hook| hook.device == event.device && hook.event_handle != 0)
+                        .map(|hook| hook.event_handle)
+                        .collect::<Vec<_>>();
+                    for handle in handles {
+                        unsafe { windows_sys::Win32::System::Threading::SetEvent(handle as _) };
+                    }
+                }
+                Message::Shutdown => break,
+                _ => {}
+            }
+        }
+        self.input_connected.store(false, Ordering::Release);
+    }
 }
 
-unsafe fn hook_direct_input(interface: *mut c_void) {
+unsafe fn hook_direct_input(runtime: &Runtime, interface: *mut c_void) {
     if interface.is_null() {
         return;
     }
     let key = interface as usize;
-    let mut hooks = DIRECT_INPUT_HOOKS
+    let mut hooks = runtime
+        .direct_input_hooks
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if hooks.contains_key(&key) {
@@ -213,10 +252,12 @@ unsafe fn hook_direct_input(interface: *mut c_void) {
 
 pub(crate) unsafe fn direct_input_release(
     this: *mut c_void,
-    _next: crate::hooks::DirectInputReleaseContext<'_>,
+    next: crate::hooks::DirectInputReleaseContext<'_>,
 ) -> u32 {
     let (original_vtable, patched_vtable, original_release) = {
-        let hooks = DIRECT_INPUT_HOOKS
+        let hooks = next
+            .runtime
+            .direct_input_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get(&(this as usize)) else {
@@ -232,7 +273,8 @@ pub(crate) unsafe fn direct_input_release(
     unsafe { *object_vtable = original_vtable };
     let remaining = unsafe { original_release(this) };
     if remaining == 0 {
-        DIRECT_INPUT_HOOKS
+        next.runtime
+            .direct_input_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&(this as usize));
@@ -248,6 +290,7 @@ pub(crate) unsafe fn create_device(
     output: *mut *mut c_void,
     _outer: *mut c_void,
     result: HRESULT,
+    context: &crate::hooks::CreateDeviceContext,
 ) {
     if !class.is_null() {
         let class = unsafe { &*class };
@@ -273,7 +316,7 @@ pub(crate) unsafe fn create_device(
             None
         };
         if let Some(device_class) = device_class {
-            unsafe { hook_device(*output, device_class) };
+            unsafe { hook_device(&context.runtime, *output, device_class) };
             dinput_log(format!(
                 "snowglass: hooked {device_class:?} DirectInput device"
             ));
@@ -288,12 +331,13 @@ fn guid_eq(left: &GUID, right: &GUID) -> bool {
         && left.data4 == right.data4
 }
 
-unsafe fn hook_device(interface: *mut c_void, device: DirectInputDevice) {
+unsafe fn hook_device(runtime: &Runtime, interface: *mut c_void, device: DirectInputDevice) {
     if interface.is_null() {
         return;
     }
     let key = interface as usize;
-    let mut hooks = DEVICE_HOOKS
+    let mut hooks = runtime
+        .device_hooks
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if hooks.contains_key(&key) {
@@ -321,7 +365,9 @@ pub(crate) unsafe fn get_device_state(
     mut next: crate::hooks::GetDeviceStateContext<'_>,
 ) -> HRESULT {
     let device = {
-        let hooks = DEVICE_HOOKS
+        let hooks = next
+            .runtime
+            .device_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get(&(this as usize)) else {
@@ -329,7 +375,7 @@ pub(crate) unsafe fn get_device_state(
         };
         hook.device
     };
-    if !INPUT_CONNECTED.load(Ordering::Acquire) {
+    if !next.runtime.input_connected.load(Ordering::Acquire) {
         let continuation = *next
             .fp_next()
             .expect("DirectInput hook chains always have a terminal");
@@ -338,7 +384,9 @@ pub(crate) unsafe fn get_device_state(
     if output.is_null() {
         return 0x8007_0057u32 as i32;
     }
-    let mut queues = INPUT_QUEUE
+    let mut queues = next
+        .runtime
+        .input_queue
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     match device {
@@ -346,11 +394,18 @@ pub(crate) unsafe fn get_device_state(
             if size as usize != queues.keyboard_state.len() {
                 return 0x8007_0057u32 as i32;
             }
-            if !LOGGED_KEYBOARD_POLL.swap(true, Ordering::AcqRel) {
+            if !next
+                .runtime
+                .logged_keyboard_poll
+                .swap(true, Ordering::AcqRel)
+            {
                 dinput_log("snowglass: target first polled forwarded keyboard state");
             }
             if queues.keyboard_state.iter().any(|state| *state != 0)
-                && !LOGGED_KEYBOARD_PRESSED.swap(true, Ordering::AcqRel)
+                && !next
+                    .runtime
+                    .logged_keyboard_pressed
+                    .swap(true, Ordering::AcqRel)
             {
                 dinput_log("snowglass: target polled a pressed forwarded keyboard key");
             }
@@ -388,10 +443,12 @@ pub(crate) unsafe fn get_device_state(
 
 pub(crate) unsafe fn device_release(
     this: *mut c_void,
-    _next: crate::hooks::DeviceReleaseContext<'_>,
+    next: crate::hooks::DeviceReleaseContext<'_>,
 ) -> u32 {
     let (original_vtable, patched_vtable, original_release) = {
-        let hooks = DEVICE_HOOKS
+        let hooks = next
+            .runtime
+            .device_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get(&(this as usize)) else {
@@ -407,7 +464,8 @@ pub(crate) unsafe fn device_release(
     unsafe { *object_vtable = original_vtable };
     let remaining = unsafe { original_release(this) };
     if remaining == 0 {
-        DEVICE_HOOKS
+        next.runtime
+            .device_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&(this as usize));
@@ -417,9 +475,15 @@ pub(crate) unsafe fn device_release(
     remaining
 }
 
-pub(crate) unsafe fn set_event_notification(this: *mut c_void, event: *mut c_void) {
+pub(crate) unsafe fn set_event_notification(
+    this: *mut c_void,
+    event: *mut c_void,
+    context: &crate::hooks::SetEventNotificationContext,
+) {
     {
-        let mut hooks = DEVICE_HOOKS
+        let mut hooks = context
+            .runtime
+            .device_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get_mut(&(this as usize)) else {
@@ -438,7 +502,9 @@ pub(crate) unsafe fn get_device_data(
     mut next: crate::hooks::GetDeviceDataContext<'_>,
 ) -> HRESULT {
     let device = {
-        let hooks = DEVICE_HOOKS
+        let hooks = next
+            .runtime
+            .device_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let Some(hook) = hooks.get(&(this as usize)) else {
@@ -446,7 +512,7 @@ pub(crate) unsafe fn get_device_data(
         };
         hook.device
     };
-    if !INPUT_CONNECTED.load(Ordering::Acquire) {
+    if !next.runtime.input_connected.load(Ordering::Acquire) {
         let continuation = *next
             .fp_next()
             .expect("DirectInput hook chains always have a terminal");
@@ -456,7 +522,9 @@ pub(crate) unsafe fn get_device_data(
         return 0x8007_0057u32 as i32;
     }
 
-    let mut queues = INPUT_QUEUE
+    let mut queues = next
+        .runtime
+        .input_queue
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let queue = queues.get_mut(device);
@@ -491,7 +559,7 @@ pub(crate) unsafe fn get_device_data(
             }
         }
     }
-    if available != 0 && !LOGGED_DELIVERY.swap(true, Ordering::AcqRel) {
+    if available != 0 && !next.runtime.logged_delivery.swap(true, Ordering::AcqRel) {
         dinput_log(format!(
             "snowglass: returned first forwarded {device:?} record from GetDeviceData"
         ));
@@ -506,13 +574,14 @@ pub(crate) unsafe fn direct_input_8_create(
     output: *mut *mut c_void,
     outer: *mut c_void,
     result: HRESULT,
+    context: &crate::hooks::DirectInput8CreateContext,
 ) {
-    start_input_receiver();
+    context.runtime.start_input_receiver();
     dinput_log(format!(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
     if result >= 0 && !output.is_null() {
-        unsafe { hook_direct_input(*output) };
+        unsafe { hook_direct_input(&context.runtime, *output) };
     }
     let _ = (instance, outer);
 }
@@ -561,11 +630,49 @@ mod tests {
     }
 
     #[test]
+    fn runtime_instances_do_not_share_input() {
+        let first = Runtime::default();
+        let second = Runtime::default();
+        let event = DirectInputData {
+            device: DirectInputDevice::Keyboard,
+            offset: 0x1e,
+            data: 0x80,
+            timestamp: 12,
+            sequence: 34,
+        };
+
+        first
+            .input_queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .apply(event);
+
+        assert_eq!(
+            first
+                .input_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keyboard_state[0x1e],
+            0x80
+        );
+        assert_eq!(
+            second
+                .input_queue
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .keyboard_state[0x1e],
+            0
+        );
+    }
+
+    #[test]
     fn forwarded_record_is_returned_by_device_get_data() {
         let session = format!("snowglass-dinput-test-{}", std::process::id());
         let listener = LocalSocketListener::bind(&format!("{session}-input")).unwrap();
         unsafe { std::env::set_var(config::SESSION, &session) };
-        start_input_receiver();
+        let _ = unsafe { crate::install::install() };
+        let runtime = crate::install::runtime();
+        runtime.start_input_receiver();
         let mut socket = listener.accept().unwrap();
 
         let mut original_vtable = [0usize; DEVICE_VTABLE_LEN];
@@ -575,7 +682,7 @@ mod tests {
             original_set_event_stub as *const () as usize;
         let mut object_vtable = original_vtable.as_ptr();
         let keyboard = (&raw mut object_vtable).cast::<c_void>();
-        unsafe { hook_device(keyboard, DirectInputDevice::Keyboard) };
+        unsafe { hook_device(&runtime, keyboard, DirectInputDevice::Keyboard) };
         let event = unsafe {
             windows_sys::Win32::System::Threading::CreateEventW(
                 std::ptr::null(),
@@ -606,7 +713,8 @@ mod tests {
             windows_sys::Win32::Foundation::WAIT_OBJECT_0
         );
         let deadline = Instant::now() + Duration::from_secs(1);
-        while INPUT_QUEUE
+        while runtime
+            .input_queue
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .keyboard
@@ -650,6 +758,6 @@ mod tests {
         );
         assert_eq!(state[0x1e], 0x80);
         unsafe { windows_sys::Win32::Foundation::CloseHandle(event) };
-        INPUT_CONNECTED.store(false, Ordering::Release);
+        runtime.input_connected.store(false, Ordering::Release);
     }
 }

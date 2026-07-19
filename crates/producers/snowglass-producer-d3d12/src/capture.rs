@@ -1,6 +1,6 @@
 //! Swapchain capture state, copy submission, and viewer handoff.
 
-use crate::{D3d12CaptureSourceState, D3d12SwapchainCapture};
+use crate::{D3d12CaptureSourceState, D3d12SwapchainCapture, Tracking};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
@@ -10,7 +10,7 @@ use snowglass_protocol::{
 use std::{
     collections::HashMap,
     ffi::c_void,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 use windows::{
     Win32::Graphics::Direct3D12::ID3D12CommandQueue,
@@ -30,10 +30,16 @@ enum CaptureEntry {
     Active(Box<CaptureState>),
     Declined,
 }
-static QUEUES: OnceLock<Mutex<HashMap<usize, ID3D12CommandQueue>>> = OnceLock::new();
+#[derive(Clone)]
+struct QueueState {
+    queue: ID3D12CommandQueue,
+    tracking: Arc<Tracking>,
+}
+
+static QUEUES: OnceLock<Mutex<HashMap<usize, QueueState>>> = OnceLock::new();
 static CAPTURES: OnceLock<Mutex<HashMap<usize, CaptureEntry>>> = OnceLock::new();
 static ALIASES: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
-fn queues() -> &'static Mutex<HashMap<usize, ID3D12CommandQueue>> {
+fn queues() -> &'static Mutex<HashMap<usize, QueueState>> {
     QUEUES.get_or_init(Default::default)
 }
 fn captures() -> &'static Mutex<HashMap<usize, CaptureEntry>> {
@@ -48,7 +54,11 @@ fn aliases() -> &'static Mutex<HashMap<usize, usize>> {
 /// # Safety
 ///
 /// `swapchain` and `creation_device` must point to live COM interfaces.
-pub unsafe fn claim(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
+pub unsafe fn claim(
+    swapchain: *mut c_void,
+    creation_device: *mut c_void,
+    tracking: Arc<Tracking>,
+) -> bool {
     if creation_device.is_null() {
         return false;
     }
@@ -67,7 +77,7 @@ pub unsafe fn claim(swapchain: *mut c_void, creation_device: *mut c_void) -> boo
     queues()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(key, queue);
+        .insert(key, QueueState { queue, tracking });
     aliases()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -88,15 +98,15 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(swapchain as usize, key);
-    let queue = queues()
+    let queue_state = queues()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
         .cloned();
-    let Some(queue) = queue else {
+    let Some(queue_state) = queue_state else {
         return;
     };
-    let presentation = unsafe { crate::swapchain_presentation(swapchain) };
+    let presentation = unsafe { queue_state.tracking.swapchain_presentation(swapchain) };
     let tracked_region = presentation.as_ref().and_then(|value| value.region);
     let tracked_source = presentation
         .as_ref()
@@ -124,10 +134,10 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
         let capture = match unsafe {
             D3d12SwapchainCapture::new(
                 swapchain,
-                queue.as_raw(),
+                queue_state.queue.as_raw(),
                 3,
                 tracked_source.map(|source| &source.resource),
-                crate::enhanced_barriers_supported(),
+                queue_state.tracking.enhanced_barriers_supported(),
             )
         } {
             Ok(value) => value,
@@ -260,7 +270,14 @@ pub unsafe fn before_resize(swapchain: *mut c_void) {
         "snowglass: D3D12 resize released capture state: {}",
         matches!(removed, Some(CaptureEntry::Active(_)))
     ));
-    unsafe { crate::before_swapchain_resize(swapchain) };
+    if let Some(queue) = queues()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned()
+    {
+        unsafe { queue.tracking.before_swapchain_resize(swapchain) };
+    }
 }
 
 /// Releases all producer state associated with a destroyed swapchain.

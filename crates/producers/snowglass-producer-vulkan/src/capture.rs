@@ -21,7 +21,7 @@ use snowglass_protocol::{
 use std::{
     collections::HashMap,
     sync::{
-        Arc, LazyLock,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -98,6 +98,7 @@ impl CaptureStream {
 struct SwapchainState {
     device: vk::Device,
     capture: Option<Arc<CaptureDevice>>,
+    tracking: Arc<tracking::Tracking>,
     format: vk::Format,
     extent: vk::Extent2D,
     source_window: isize,
@@ -124,69 +125,72 @@ struct SwapchainState {
     last_present: u64,
 }
 
-static SWAPCHAIN: LazyLock<DashMap<vk::SwapchainKHR, SwapchainState>> =
-    LazyLock::new(Default::default);
-static SURFACE_WINDOW: LazyLock<DashMap<vk::SurfaceKHR, isize>> = LazyLock::new(Default::default);
-static SWAPCHAIN_IMAGE: LazyLock<DashMap<vk::Image, vk::SwapchainKHR>> =
-    LazyLock::new(Default::default);
-static SWAPCHAINS_CREATED: AtomicU64 = AtomicU64::new(0);
-static PRESENTS_SEEN: AtomicU64 = AtomicU64::new(0);
-static COPIES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
-
-/// Which swapchain streams tracked render targets. An application with
-/// several windows resolves the same screens on every one of them; without a
-/// single owner each window would publish redundant duplicate streams and
-/// race the others for viewer surfaces. Ownership is process-wide and
-/// sticky: the incumbent keeps it as long as it keeps resolving sources.
-static TRACKED_OWNER: LazyLock<std::sync::Mutex<Option<(vk::SwapchainKHR, u64)>>> =
-    LazyLock::new(Default::default);
+/// Capture state shared by the hook contexts associated with one Vulkan
+/// instance and propagated to its devices and queues.
+#[derive(Default)]
+pub struct CaptureState {
+    swapchains: DashMap<vk::SwapchainKHR, SwapchainState>,
+    surface_windows: DashMap<vk::SurfaceKHR, isize>,
+    swapchain_images: DashMap<vk::Image, vk::SwapchainKHR>,
+    swapchains_created: AtomicU64,
+    presents_seen: AtomicU64,
+    copies_submitted: AtomicU64,
+    /// Which swapchain streams tracked render targets. An application with
+    /// several windows resolves the same screens on every one of them;
+    /// without a single owner each window would publish redundant streams.
+    tracked_owner: Mutex<Option<(vk::SwapchainKHR, u64)>>,
+}
 const CLAIM_HORIZON: u64 = 240;
 
 /// Presents (across all swapchains) an idle swapchain may hold streams for.
 const IDLE_STREAM_HORIZON: u64 = 600;
 
-fn claim_tracked_streaming(swapchain: vk::SwapchainKHR, now: u64) -> bool {
-    let mut owner = TRACKED_OWNER
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    match *owner {
-        Some((incumbent, refreshed))
-            if incumbent != swapchain && now.saturating_sub(refreshed) <= CLAIM_HORIZON =>
-        {
-            false
-        }
-        _ => {
-            *owner = Some((swapchain, now));
-            true
+impl CaptureState {
+    fn claim_tracked_streaming(&self, swapchain: vk::SwapchainKHR, now: u64) -> bool {
+        let mut owner = self
+            .tracked_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match *owner {
+            Some((incumbent, refreshed))
+                if incumbent != swapchain && now.saturating_sub(refreshed) <= CLAIM_HORIZON =>
+            {
+                false
+            }
+            _ => {
+                *owner = Some((swapchain, now));
+                true
+            }
         }
     }
-}
 
-fn release_tracked_streaming(swapchain: vk::SwapchainKHR) {
-    let mut owner = TRACKED_OWNER
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if owner.is_some_and(|(incumbent, _)| incumbent == swapchain) {
-        *owner = None;
-    }
-}
-
-/// Retires the streams of swapchains that have stopped presenting, freeing
-/// their viewer surfaces. Presenting again rebuilds them on demand.
-fn retire_idle_streams(now: u64) {
-    for mut entry in SWAPCHAIN.iter_mut() {
-        if entry.last_present.saturating_add(IDLE_STREAM_HORIZON) >= now
-            || entry.streams.is_empty()
-        {
-            continue;
+    fn release_tracked_streaming(&self, swapchain: vk::SwapchainKHR) {
+        let mut owner = self
+            .tracked_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if owner.is_some_and(|(incumbent, _)| incumbent == swapchain) {
+            *owner = None;
         }
-        log(format!(
-            "snowglass: retiring {} stream(s) of an idle swapchain (window {:#x})",
-            entry.streams.len(),
-            entry.source_window
-        ));
-        for mut stream in entry.streams.drain(..) {
-            stream.retire();
+    }
+
+    /// Retires the streams of swapchains that have stopped presenting, freeing
+    /// their viewer surfaces. Presenting again rebuilds them on demand.
+    fn retire_idle_streams(&self, now: u64) {
+        for mut entry in self.swapchains.iter_mut() {
+            if entry.last_present.saturating_add(IDLE_STREAM_HORIZON) >= now
+                || entry.streams.is_empty()
+            {
+                continue;
+            }
+            log(format!(
+                "snowglass: retiring {} stream(s) of an idle swapchain (window {:#x})",
+                entry.streams.len(),
+                entry.source_window
+            ));
+            for mut stream in entry.streams.drain(..) {
+                stream.retire();
+            }
         }
     }
 }
@@ -515,604 +519,512 @@ fn create_transport(
     }
 }
 
-pub fn surface_created(surface: vk::SurfaceKHR, source_window: isize) {
-    SURFACE_WINDOW.insert(surface, source_window);
-    log(format!(
-        "snowglass: associated Vulkan surface with HWND {source_window:#x}"
-    ));
-}
-
-pub fn surface_destroyed(surface: vk::SurfaceKHR) {
-    SURFACE_WINDOW.remove(&surface);
-}
-
-pub fn device_destroyed(device: vk::Device) {
-    SWAPCHAIN.retain(|_, state| state.device != device);
-}
-
-pub fn swapchain_created(
-    swapchain: vk::SwapchainKHR,
-    device: vk::Device,
-    capture: Option<Arc<CaptureDevice>>,
-    extent: vk::Extent2D,
-    format: vk::Format,
-    surface: vk::SurfaceKHR,
-) {
-    let count = SWAPCHAINS_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
-    let source_window = SURFACE_WINDOW.get(&surface).map(|entry| *entry).unwrap_or(0);
-    let transport = capture.as_deref().map_or(
-        Transport {
-            ring: None,
-            producer_timeline: None,
-            consumer_timeline: None,
-            ipc: None,
-        },
-        |capture| {
-            create_transport(
-                Some(capture),
-                extent,
-                format,
-                stream_surface_id(source_window, 0),
-                source_window,
-            )
-        },
-    );
-    SWAPCHAIN.insert(
-        swapchain,
-        SwapchainState {
-            device,
-            capture,
-            format,
-            extent,
-            source_window,
-            images: Vec::new(),
-            streams: vec![CaptureStream::from_transport(extent, transport)],
-            untracked_presents: 0,
-            pending_layout: Vec::new(),
-            pending_presents: 0,
-            tracked_sources: Vec::new(),
-            last_present: PRESENTS_SEEN.load(Ordering::Relaxed),
-        },
-    );
-    log(format!(
-        "snowglass: intercepted vkCreateSwapchainKHR (count={count})"
-    ));
-}
-
-pub fn swapchain_destroyed(swapchain: vk::SwapchainKHR) {
-    if let Some(state) = SWAPCHAIN.get(&swapchain) {
-        for image in &state.images {
-            SWAPCHAIN_IMAGE.remove(image);
-            tracking::swapchain_image_removed(*image);
-        }
+impl CaptureState {
+    pub fn surface_created(&self, surface: vk::SurfaceKHR, source_window: isize) {
+        self.surface_windows.insert(surface, source_window);
+        log(format!(
+            "snowglass: associated Vulkan surface with HWND {source_window:#x}"
+        ));
     }
-    SWAPCHAIN.remove(&swapchain);
-    // A freed claim lets a surviving window take over the tracked streams.
-    release_tracked_streaming(swapchain);
-}
 
-pub fn swapchain_images(swapchain: vk::SwapchainKHR, images: &[vk::Image]) {
-    if let Some(mut state) = SWAPCHAIN.get_mut(&swapchain) {
-        state.images = images.to_vec();
-        if config::tracking_enabled() {
+    pub fn surface_destroyed(&self, surface: vk::SurfaceKHR) {
+        self.surface_windows.remove(&surface);
+    }
+
+    pub fn device_destroyed(&self, device: vk::Device) {
+        self.swapchains.retain(|_, state| state.device != device);
+    }
+
+    pub fn swapchain_created(
+        &self,
+        swapchain: vk::SwapchainKHR,
+        device: vk::Device,
+        capture: Option<Arc<CaptureDevice>>,
+        tracking: Arc<tracking::Tracking>,
+        extent: vk::Extent2D,
+        format: vk::Format,
+        surface: vk::SurfaceKHR,
+    ) {
+        let count = self.swapchains_created.fetch_add(1, Ordering::Relaxed) + 1;
+        let source_window = self
+            .surface_windows
+            .get(&surface)
+            .map(|entry| *entry)
+            .unwrap_or(0);
+        let transport = capture.as_deref().map_or(
+            Transport {
+                ring: None,
+                producer_timeline: None,
+                consumer_timeline: None,
+                ipc: None,
+            },
+            |capture| {
+                create_transport(
+                    Some(capture),
+                    extent,
+                    format,
+                    stream_surface_id(source_window, 0),
+                    source_window,
+                )
+            },
+        );
+        self.swapchains.insert(
+            swapchain,
+            SwapchainState {
+                device,
+                capture,
+                tracking,
+                format,
+                extent,
+                source_window,
+                images: Vec::new(),
+                streams: vec![CaptureStream::from_transport(extent, transport)],
+                untracked_presents: 0,
+                pending_layout: Vec::new(),
+                pending_presents: 0,
+                tracked_sources: Vec::new(),
+                last_present: self.presents_seen.load(Ordering::Relaxed),
+            },
+        );
+        log(format!(
+            "snowglass: intercepted vkCreateSwapchainKHR (count={count})"
+        ));
+    }
+
+    pub fn swapchain_destroyed(&self, swapchain: vk::SwapchainKHR) {
+        if let Some(state) = self.swapchains.get(&swapchain) {
             for image in &state.images {
-                SWAPCHAIN_IMAGE.insert(*image, swapchain);
-                tracking::swapchain_image_added(*image);
+                self.swapchain_images.remove(image);
+                state.tracking.swapchain_image_removed(*image);
             }
         }
-        log(format!(
-            "snowglass: associated {} swapchain images ({}x{}, format={})",
-            state.images.len(),
-            state.extent.width,
-            state.extent.height,
-            state.format.as_raw()
-        ));
+        self.swapchains.remove(&swapchain);
+        // A freed claim lets a surviving window take over the tracked streams.
+        self.release_tracked_streaming(swapchain);
     }
-}
 
-/// Handles one `vkQueuePresentKHR`: submits capture copies for every
-/// presented swapchain and returns the semaphores presentation must wait on
-/// instead of the application's, when any copy was chained.
-pub fn present(
-    queue: vk::Queue,
-    queue_family_index: u32,
-    presents: &[(vk::SwapchainKHR, u32)],
-    waits: &[vk::Semaphore],
-) -> Option<Vec<vk::Semaphore>> {
-    let mut chained_waits = waits.to_vec();
-    let mut copied = false;
-    retire_idle_streams(PRESENTS_SEEN.load(Ordering::Relaxed));
-    for &(swapchain, image_index) in presents {
-        let copy_ready = SWAPCHAIN.get_mut(&swapchain).and_then(|mut state| {
-            present_swapchain(
-                queue,
-                queue_family_index,
-                swapchain,
-                image_index,
-                &mut state,
-                &chained_waits,
-            )
-        });
-        if let Some(copy_ready) = copy_ready {
-            chained_waits.clear();
-            chained_waits.push(copy_ready);
-            copied = true;
+    pub fn swapchain_images(&self, swapchain: vk::SwapchainKHR, images: &[vk::Image]) {
+        if let Some(mut state) = self.swapchains.get_mut(&swapchain) {
+            state.images = images.to_vec();
+            if config::tracking_enabled() {
+                for image in &state.images {
+                    self.swapchain_images.insert(*image, swapchain);
+                    state.tracking.swapchain_image_added(*image);
+                }
+            }
+            log(format!(
+                "snowglass: associated {} swapchain images ({}x{}, format={})",
+                state.images.len(),
+                state.extent.width,
+                state.extent.height,
+                state.format.as_raw()
+            ));
         }
     }
-    let count = PRESENTS_SEEN.fetch_add(1, Ordering::Relaxed) + 1;
-    if count == 1 || count % 120 == 0 {
-        log(format!(
-            "snowglass: intercepted vkQueuePresentKHR (count={count})"
-        ));
-    }
-    copied.then_some(chained_waits)
-}
 
-fn present_swapchain(
-    queue: vk::Queue,
-    queue_family_index: u32,
-    swapchain: vk::SwapchainKHR,
-    image_index: u32,
-    state: &mut SwapchainState,
-    chained_waits: &[vk::Semaphore],
-) -> Option<vk::Semaphore> {
-    let presented_image = state.images.get(image_index as usize).copied()?;
-    let capture_rect = tracking::capture_rect(presented_image, state.extent);
-    let rect_is_content = capture_rect.is_some_and(|rect| rect.extent != state.extent);
-    // The dependency graph resolves the offscreen images that fed this
-    // present; it supersedes the single-source fallbacks. A take can
-    // transiently fail (feedback loops make every root prune every other),
-    // so an empty result re-resolves the last good selection while its
-    // images are still live, and a partial one updates matching slots.
-    let mut resolved = (config::tracking_enabled() && config::graph_tracking_enabled())
-        .then(|| {
-            tracking::take_present_sources(
-                presented_image,
-                config::tracked_render_target_count().unwrap_or(1),
-            )
-        })
-        .unwrap_or_default();
-    let previous = tracking::refresh_sources(&state.tracked_sources);
-    if resolved.is_empty() {
-        resolved = previous;
-    } else if resolved.len() < previous.len() {
-        let mut merged = previous;
-        let mut updated = vec![false; merged.len()];
-        for source in resolved {
-            if let Some(index) = merged.iter().enumerate().position(|(index, old)| {
-                !updated[index]
-                    && (old.extent.width, old.extent.height)
-                        == (source.extent.width, source.extent.height)
-            }) {
-                merged[index] = source;
-                updated[index] = true;
-            } else {
-                merged.push(source);
-                updated.push(true);
-            }
-        }
-        resolved = merged;
-    }
-    resolved.truncate(config::tracked_render_target_count().unwrap_or(1));
-    state.tracked_sources = resolved.iter().map(|source| source.image).collect();
-    // Several windows resolve the same screens; the incumbent owner streams
-    // them and the others stream nothing rather than publishing duplicates
-    // that race for viewer surfaces.
-    let now = PRESENTS_SEEN.load(Ordering::Relaxed);
-    state.last_present = now;
-    let claimed_elsewhere = !resolved.is_empty() && !claim_tracked_streaming(swapchain, now);
-    if claimed_elsewhere {
-        resolved.clear();
-        state.tracked_sources.clear();
-    }
-    // The caller tracks selection entries by index; each requested index
-    // becomes its own stream, in request order.
-    let graph_sources = config::tracked_render_target_indices()
-        .unwrap_or_else(|| vec![0])
-        .iter()
-        .filter_map(|&index| resolved.get(index).copied())
-        .collect::<Vec<_>>();
-    // One stream per tracked source, or the classic whole-frame stream when
-    // nothing resolves. Streams whose extent changed rebuild their transport
-    // so tracked screens keep native resolution; surplus streams retire when
-    // tracking shrinks or when another window streams the tracked sources.
-    // Tracked layouts ride out short selection gaps and hold off layout
-    // changes until they persist, rather than churning through rebuilds.
-    let current = state
-        .streams
-        .iter()
-        .map(|stream| stream.extent)
-        .collect::<Vec<_>>();
-    let tracked_layout =
-        current.len() > 1 || current.first().is_some_and(|first| *first != state.extent);
-    let desired = if claimed_elsewhere {
-        state.untracked_presents = 0;
-        state.pending_presents = 0;
-        Vec::new()
-    } else if !graph_sources.is_empty() {
-        state.untracked_presents = 0;
-        let proposed = graph_sources
-            .iter()
-            .map(|source| source.extent)
-            .collect::<Vec<_>>();
-        if proposed == current || !tracked_layout {
-            state.pending_presents = 0;
-            proposed
-        } else {
-            if state.pending_layout == proposed {
-                state.pending_presents += 1;
-            } else {
-                state.pending_layout = proposed;
-                state.pending_presents = 1;
-            }
-            if state.pending_presents >= 60 {
-                state.pending_presents = 0;
-                state.pending_layout.clone()
-            } else {
-                current.clone()
-            }
-        }
-    } else if tracked_layout && state.untracked_presents < 120 {
-        state.untracked_presents += 1;
-        current.clone()
-    } else {
-        state.untracked_presents = 0;
-        vec![state.extent]
-    };
-    // Holding a tracked layout — including through a selection gap — keeps
-    // the process-wide ownership fresh, so a sibling window cannot steal the
-    // streams during a scene transition.
-    if desired.len() > 1 || desired.first().is_some_and(|extent| *extent != state.extent) {
-        let _ = claim_tracked_streaming(swapchain, now);
-    }
-    while state.streams.len() > desired.len() {
-        if let Some(mut stream) = state.streams.pop() {
-            stream.retire();
-        }
-    }
-    let format = state.format;
-    let source_window = state.source_window;
-    for (index, extent) in desired.iter().copied().enumerate() {
-        let surface_id = stream_surface_id(source_window, index);
-        if index >= state.streams.len() {
-            let transport = create_transport(
-                state.capture.as_deref(),
-                extent,
-                format,
-                surface_id,
-                source_window,
-            );
-            state
-                .streams
-                .push(CaptureStream::from_transport(extent, transport));
-            continue;
-        }
-        let stream = &mut state.streams[index];
-        if stream.extent != extent && (stream.copy_engine.is_some() || stream.ring.is_some()) {
-            stream.retire();
-            let transport = create_transport(
-                state.capture.as_deref(),
-                extent,
-                format,
-                surface_id,
-                source_window,
-            );
-            *stream = CaptureStream::from_transport(extent, transport);
-        }
-    }
-    let presentation_source = (config::tracking_enabled()
-        && graph_sources.is_empty()
-        && !rect_is_content)
-        .then(|| tracking::render_target(presented_image))
-        .flatten();
-    let swapchain_extent = state.extent;
-    let swapchain_images = state.images.clone();
-    let capture = state.capture.clone();
-    // While a layout change is being dampened the source list can differ
-    // from the stream list; feed each stream the source matching its extent
-    // and let unmatched streams idle a frame.
-    let stream_extents = state
-        .streams
-        .iter()
-        .map(|stream| stream.extent)
-        .collect::<Vec<_>>();
-    let mut source_used = vec![false; graph_sources.len()];
-    let assigned = stream_extents
-        .iter()
-        .map(|extent| {
-            let found = graph_sources.iter().enumerate().find_map(|(index, source)| {
-                (!source_used[index]
-                    && (source.extent.width, source.extent.height)
-                        == (extent.width, extent.height))
-                    .then_some(index)
+    /// Handles one `vkQueuePresentKHR`: submits capture copies for every
+    /// presented swapchain and returns the semaphores presentation must wait on
+    /// instead of the application's, when any copy was chained.
+    pub fn present(
+        &self,
+        tracking: &tracking::Tracking,
+        queue: vk::Queue,
+        queue_family_index: u32,
+        presents: &[(vk::SwapchainKHR, u32)],
+        waits: &[vk::Semaphore],
+    ) -> Option<Vec<vk::Semaphore>> {
+        let mut chained_waits = waits.to_vec();
+        let mut copied = false;
+        self.retire_idle_streams(self.presents_seen.load(Ordering::Relaxed));
+        for &(swapchain, image_index) in presents {
+            let copy_ready = self.swapchains.get_mut(&swapchain).and_then(|mut state| {
+                self.present_swapchain(
+                    tracking,
+                    queue,
+                    queue_family_index,
+                    swapchain,
+                    image_index,
+                    &mut state,
+                    &chained_waits,
+                )
             });
-            if let Some(index) = found {
-                source_used[index] = true;
-            }
-            found
-        })
-        .collect::<Vec<_>>();
-    // Each copy consumes the previous semaphore in the chain, so the final
-    // copy-ready semaphore covers every stream.
-    let mut waits = chained_waits.to_vec();
-    let mut last_ready = None;
-    for (index, stream) in state.streams.iter_mut().enumerate() {
-        stream.presents += 1;
-        if stream.copy_engine.is_none() {
-            let (Some(ring), Some(timeline)) =
-                (stream.ring.take(), stream.producer_timeline.take())
-            else {
-                continue;
-            };
-            let consumer_timeline = stream.consumer_timeline.take();
-            let Some(capture) = capture.as_ref() else {
-                continue;
-            };
-            match SwapchainCopyEngine::create(
-                capture.device.clone(),
-                ring,
-                timeline,
-                consumer_timeline,
-                swapchain_images.clone(),
-                stream.extent,
-                queue_family_index,
-                capture.set_loader_data,
-            ) {
-                Ok(engine) => stream.copy_engine = Some(engine),
-                Err(error) => {
-                    log(format!("snowglass: copy engine creation failed: {error}"));
-                    continue;
-                }
+            if let Some(copy_ready) = copy_ready {
+                chained_waits.clear();
+                chained_waits.push(copy_ready);
+                copied = true;
             }
         }
-        // A stream can be rejected while the viewer's surfaces are
-        // transiently full (a sibling window's stream had not retired
-        // yet); retry the connection periodically.
-        if stream.ipc.is_none()
-            && stream.presents.is_multiple_of(120)
-            && let Some(engine) = stream.copy_engine.as_ref()
-            && let Some(capture) = capture.as_ref()
-            && let Some(connection) = begin_viewer_connection()
-        {
-            let (ring, producer_timeline, consumer_timeline) = engine.transport_parts();
-            stream.ipc = publish_stream(
-                connection,
-                ring,
-                producer_timeline,
-                consumer_timeline,
-                capture.adapter_luid,
-                stream.extent,
-                format,
-                stream_surface_id(source_window, index),
-                source_window,
-            );
+        let count = self.presents_seen.fetch_add(1, Ordering::Relaxed) + 1;
+        if count == 1 || count % 120 == 0 {
+            log(format!(
+                "snowglass: intercepted vkQueuePresentKHR (count={count})"
+            ));
         }
-        let Some(engine) = stream.copy_engine.as_mut() else {
-            continue;
-        };
-        let source = assigned
-            .get(index)
-            .copied()
-            .flatten()
-            .map(|source| &graph_sources[source]);
-        // During a selection gap a tracked stream has no source this frame;
-        // the whole-frame fallbacks only make sense at swapchain extent.
-        if source.is_none() && stream.extent != swapchain_extent {
-            continue;
-        }
-        let render_extent = match source {
-            Some(source) => source.extent,
-            None => presentation_source.map_or_else(
-                || capture_rect.map_or(swapchain_extent, |rect| rect.extent),
-                |candidate| candidate.extent,
-            ),
-        };
-        let submission = if let Some(source) = source {
-            engine.submit_image_copy(
-                queue,
-                image_index,
-                source.image,
-                source.extent,
-                source.layout,
-                &waits,
-            )
-        } else if rect_is_content {
-            match capture_rect {
-                Some(rect) => {
-                    engine.submit_region_copy(queue, image_index, rect.offset, rect.extent, &waits)
-                }
-                None => continue,
-            }
-        } else if let Some(candidate) = presentation_source {
-            engine.submit_image_copy(
-                queue,
-                image_index,
-                candidate.image,
-                candidate.extent,
-                candidate.layout,
-                &waits,
-            )
-        } else {
-            engine.submit_copy(queue, image_index, &waits)
-        };
-        match submission {
-            Ok(submission) => {
-                let count = COPIES_SUBMITTED.fetch_add(1, Ordering::Relaxed) + 1;
-                stream.frame_number += 1;
-                let cropped =
-                    source.is_none() && (rect_is_content || presentation_source.is_some());
-                let notification = Message::FrameReady(FrameReady {
-                    stream_id: StreamId(swapchain.as_raw() ^ ((index as u64) << 56)),
-                    slot: submission.slot,
-                    render_width: render_extent.width,
-                    render_height: render_extent.height,
-                    capture_x: if cropped {
-                        capture_rect.map_or(0, |rect| rect.offset.x as u32)
-                    } else {
-                        0
-                    },
-                    capture_y: if cropped {
-                        capture_rect.map_or(0, |rect| rect.offset.y as u32)
-                    } else {
-                        0
-                    },
-                    capture_width: if cropped {
-                        capture_rect.map_or(swapchain_extent.width, |r| r.extent.width)
-                    } else {
-                        render_extent.width
-                    },
-                    capture_height: if cropped {
-                        capture_rect.map_or(swapchain_extent.height, |r| r.extent.height)
-                    } else {
-                        render_extent.height
-                    },
-                    presentation_width: swapchain_extent.width,
-                    presentation_height: swapchain_extent.height,
-                    presentation_transform: if source.is_some() || presentation_source.is_some() {
-                        PresentationTransform::UNAVAILABLE
-                    } else {
-                        PresentationTransform::axis_aligned(
-                            if cropped {
-                                capture_rect.map_or(0, |rect| rect.offset.x as u32)
-                            } else {
-                                0
-                            },
-                            if cropped {
-                                capture_rect.map_or(0, |rect| rect.offset.y as u32)
-                            } else {
-                                0
-                            },
-                            if cropped {
-                                capture_rect
-                                    .map_or(swapchain_extent.width, |rect| rect.extent.width)
-                            } else {
-                                render_extent.width
-                            },
-                            if cropped {
-                                capture_rect
-                                    .map_or(swapchain_extent.height, |rect| rect.extent.height)
-                            } else {
-                                render_extent.height
-                            },
-                        )
-                    },
-                    frame_number: stream.frame_number,
-                    sync_value: submission.sync_value,
-                    timestamp_qpc: performance_counter().unwrap_or(0),
-                });
-                if stream
-                    .ipc
-                    .as_mut()
-                    .is_some_and(|socket| socket.send(notification).is_err())
-                {
-                    log("snowglass: viewer socket disconnected");
-                    stream.ipc = None;
-                }
-                if count == 1 || count % 120 == 0 {
-                    log(format!(
-                        "snowglass: submitted capture {}x{} (count={count}, stream={index}, tracked={})",
-                        render_extent.width,
-                        render_extent.height,
-                        source.is_some(),
-                    ));
-                }
-                waits.clear();
-                waits.push(submission.present_ready);
-                last_ready = Some(submission.present_ready);
-            }
-            Err(vk::Result::NOT_READY) => {}
-            Err(error) => {
-                log(format!("snowglass: swapchain copy failed: {error}"));
-            }
-        }
+        copied.then_some(chained_waits)
     }
-    last_ready
-}
 
-/// The default (untracked) capture path: the strongest render-target
-/// candidate of each submission is copied on the graphics queue, outside the
-/// presentation chain.
-pub fn tracked_submission(
-    queue: vk::Queue,
-    queue_family_index: u32,
-    command_buffers: &[vk::CommandBuffer],
-) {
-    if config::tracking_enabled() {
-        return;
-    }
-    let mut selected = HashMap::<vk::SwapchainKHR, tracking::RenderTargetCandidate>::new();
-    for command in command_buffers {
-        let Some(candidate) = tracking::command_candidate(*command) else {
-            continue;
-        };
-        let Some(swapchain) = SWAPCHAIN_IMAGE.get(&candidate.0).map(|entry| *entry) else {
-            continue;
-        };
-        selected
-            .entry(swapchain)
-            .and_modify(|current| {
-                if candidate.1.is_better_than(*current) {
-                    *current = candidate.1;
-                }
+    fn present_swapchain(
+        &self,
+        tracking: &tracking::Tracking,
+        queue: vk::Queue,
+        queue_family_index: u32,
+        swapchain: vk::SwapchainKHR,
+        image_index: u32,
+        state: &mut SwapchainState,
+        chained_waits: &[vk::Semaphore],
+    ) -> Option<vk::Semaphore> {
+        let presented_image = state.images.get(image_index as usize).copied()?;
+        let capture_rect = tracking.capture_rect(presented_image, state.extent);
+        let rect_is_content = capture_rect.is_some_and(|rect| rect.extent != state.extent);
+        // The dependency graph resolves the offscreen images that fed this
+        // present; it supersedes the single-source fallbacks. A take can
+        // transiently fail (feedback loops make every root prune every other),
+        // so an empty result re-resolves the last good selection while its
+        // images are still live, and a partial one updates matching slots.
+        let mut resolved = (config::tracking_enabled() && config::graph_tracking_enabled())
+            .then(|| {
+                tracking.take_present_sources(
+                    presented_image,
+                    config::tracked_render_target_count().unwrap_or(1),
+                )
             })
-            .or_insert(candidate.1);
-    }
-    for (swapchain, candidate) in selected {
-        let Some(mut state) = SWAPCHAIN.get_mut(&swapchain) else {
-            continue;
+            .unwrap_or_default();
+        let previous = tracking.refresh_sources(&state.tracked_sources);
+        if resolved.is_empty() {
+            resolved = previous;
+        } else if resolved.len() < previous.len() {
+            let mut merged = previous;
+            let mut updated = vec![false; merged.len()];
+            for source in resolved {
+                if let Some(index) = merged.iter().enumerate().position(|(index, old)| {
+                    !updated[index]
+                        && (old.extent.width, old.extent.height)
+                            == (source.extent.width, source.extent.height)
+                }) {
+                    merged[index] = source;
+                    updated[index] = true;
+                } else {
+                    merged.push(source);
+                    updated.push(true);
+                }
+            }
+            resolved = merged;
+        }
+        resolved.truncate(config::tracked_render_target_count().unwrap_or(1));
+        state.tracked_sources = resolved.iter().map(|source| source.image).collect();
+        // Several windows resolve the same screens; the incumbent owner streams
+        // them and the others stream nothing rather than publishing duplicates
+        // that race for viewer surfaces.
+        let now = self.presents_seen.load(Ordering::Relaxed);
+        state.last_present = now;
+        let claimed_elsewhere =
+            !resolved.is_empty() && !self.claim_tracked_streaming(swapchain, now);
+        if claimed_elsewhere {
+            resolved.clear();
+            state.tracked_sources.clear();
+        }
+        // The caller tracks selection entries by index; each requested index
+        // becomes its own stream, in request order.
+        let graph_sources = config::tracked_render_target_indices()
+            .unwrap_or_else(|| vec![0])
+            .iter()
+            .filter_map(|&index| resolved.get(index).copied())
+            .collect::<Vec<_>>();
+        // One stream per tracked source, or the classic whole-frame stream when
+        // nothing resolves. Streams whose extent changed rebuild their transport
+        // so tracked screens keep native resolution; surplus streams retire when
+        // tracking shrinks or when another window streams the tracked sources.
+        // Tracked layouts ride out short selection gaps and hold off layout
+        // changes until they persist, rather than churning through rebuilds.
+        let current = state
+            .streams
+            .iter()
+            .map(|stream| stream.extent)
+            .collect::<Vec<_>>();
+        let tracked_layout =
+            current.len() > 1 || current.first().is_some_and(|first| *first != state.extent);
+        let desired = if claimed_elsewhere {
+            state.untracked_presents = 0;
+            state.pending_presents = 0;
+            Vec::new()
+        } else if !graph_sources.is_empty() {
+            state.untracked_presents = 0;
+            let proposed = graph_sources
+                .iter()
+                .map(|source| source.extent)
+                .collect::<Vec<_>>();
+            if proposed == current || !tracked_layout {
+                state.pending_presents = 0;
+                proposed
+            } else {
+                if state.pending_layout == proposed {
+                    state.pending_presents += 1;
+                } else {
+                    state.pending_layout = proposed;
+                    state.pending_presents = 1;
+                }
+                if state.pending_presents >= 60 {
+                    state.pending_presents = 0;
+                    state.pending_layout.clone()
+                } else {
+                    current.clone()
+                }
+            }
+        } else if tracked_layout && state.untracked_presents < 120 {
+            state.untracked_presents += 1;
+            current.clone()
+        } else {
+            state.untracked_presents = 0;
+            vec![state.extent]
         };
-        let images = state.images.clone();
-        let capture = state.capture.clone();
-        let presentation_extent = state.extent;
-        let Some(stream) = state.streams.first_mut() else {
-            continue;
-        };
-        if stream.copy_engine.is_none()
-            && let (Some(ring), Some(timeline)) =
-                (stream.ring.take(), stream.producer_timeline.take())
+        // Holding a tracked layout — including through a selection gap — keeps
+        // the process-wide ownership fresh, so a sibling window cannot steal the
+        // streams during a scene transition.
+        if desired.len() > 1
+            || desired
+                .first()
+                .is_some_and(|extent| *extent != state.extent)
         {
-            let consumer_timeline = stream.consumer_timeline.take();
-            let Some(capture) = capture.as_ref() else {
-                continue;
-            };
-            match SwapchainCopyEngine::create(
-                capture.device.clone(),
-                ring,
-                timeline,
-                consumer_timeline,
-                images,
-                stream.extent,
-                queue_family_index,
-                capture.set_loader_data,
-            ) {
-                Ok(engine) => stream.copy_engine = Some(engine),
-                Err(error) => log(format!(
-                    "snowglass: tracked copy engine creation failed: {error}"
-                )),
+            let _ = self.claim_tracked_streaming(swapchain, now);
+        }
+        while state.streams.len() > desired.len() {
+            if let Some(mut stream) = state.streams.pop() {
+                stream.retire();
             }
         }
-        if let Some(engine) = stream.copy_engine.as_mut() {
-            match engine.submit_tracked_copy(
-                queue,
-                candidate.image,
-                candidate.extent,
-                candidate.layout,
-            ) {
+        let format = state.format;
+        let source_window = state.source_window;
+        for (index, extent) in desired.iter().copied().enumerate() {
+            let surface_id = stream_surface_id(source_window, index);
+            if index >= state.streams.len() {
+                let transport = create_transport(
+                    state.capture.as_deref(),
+                    extent,
+                    format,
+                    surface_id,
+                    source_window,
+                );
+                state
+                    .streams
+                    .push(CaptureStream::from_transport(extent, transport));
+                continue;
+            }
+            let stream = &mut state.streams[index];
+            if stream.extent != extent && (stream.copy_engine.is_some() || stream.ring.is_some()) {
+                stream.retire();
+                let transport = create_transport(
+                    state.capture.as_deref(),
+                    extent,
+                    format,
+                    surface_id,
+                    source_window,
+                );
+                *stream = CaptureStream::from_transport(extent, transport);
+            }
+        }
+        let presentation_source =
+            (config::tracking_enabled() && graph_sources.is_empty() && !rect_is_content)
+                .then(|| tracking.render_target(presented_image))
+                .flatten();
+        let swapchain_extent = state.extent;
+        let swapchain_images = state.images.clone();
+        let capture = state.capture.clone();
+        // While a layout change is being dampened the source list can differ
+        // from the stream list; feed each stream the source matching its extent
+        // and let unmatched streams idle a frame.
+        let stream_extents = state
+            .streams
+            .iter()
+            .map(|stream| stream.extent)
+            .collect::<Vec<_>>();
+        let mut source_used = vec![false; graph_sources.len()];
+        let assigned = stream_extents
+            .iter()
+            .map(|extent| {
+                let found = graph_sources
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, source)| {
+                        (!source_used[index]
+                            && (source.extent.width, source.extent.height)
+                                == (extent.width, extent.height))
+                            .then_some(index)
+                    });
+                if let Some(index) = found {
+                    source_used[index] = true;
+                }
+                found
+            })
+            .collect::<Vec<_>>();
+        // Each copy consumes the previous semaphore in the chain, so the final
+        // copy-ready semaphore covers every stream.
+        let mut waits = chained_waits.to_vec();
+        let mut last_ready = None;
+        for (index, stream) in state.streams.iter_mut().enumerate() {
+            stream.presents += 1;
+            if stream.copy_engine.is_none() {
+                let (Some(ring), Some(timeline)) =
+                    (stream.ring.take(), stream.producer_timeline.take())
+                else {
+                    continue;
+                };
+                let consumer_timeline = stream.consumer_timeline.take();
+                let Some(capture) = capture.as_ref() else {
+                    continue;
+                };
+                match SwapchainCopyEngine::create(
+                    capture.device.clone(),
+                    ring,
+                    timeline,
+                    consumer_timeline,
+                    swapchain_images.clone(),
+                    stream.extent,
+                    queue_family_index,
+                    capture.set_loader_data,
+                ) {
+                    Ok(engine) => stream.copy_engine = Some(engine),
+                    Err(error) => {
+                        log(format!("snowglass: copy engine creation failed: {error}"));
+                        continue;
+                    }
+                }
+            }
+            // A stream can be rejected while the viewer's surfaces are
+            // transiently full (a sibling window's stream had not retired
+            // yet); retry the connection periodically.
+            if stream.ipc.is_none()
+                && stream.presents.is_multiple_of(120)
+                && let Some(engine) = stream.copy_engine.as_ref()
+                && let Some(capture) = capture.as_ref()
+                && let Some(connection) = begin_viewer_connection()
+            {
+                let (ring, producer_timeline, consumer_timeline) = engine.transport_parts();
+                stream.ipc = publish_stream(
+                    connection,
+                    ring,
+                    producer_timeline,
+                    consumer_timeline,
+                    capture.adapter_luid,
+                    stream.extent,
+                    format,
+                    stream_surface_id(source_window, index),
+                    source_window,
+                );
+            }
+            let Some(engine) = stream.copy_engine.as_mut() else {
+                continue;
+            };
+            let source = assigned
+                .get(index)
+                .copied()
+                .flatten()
+                .map(|source| &graph_sources[source]);
+            // During a selection gap a tracked stream has no source this frame;
+            // the whole-frame fallbacks only make sense at swapchain extent.
+            if source.is_none() && stream.extent != swapchain_extent {
+                continue;
+            }
+            let render_extent = match source {
+                Some(source) => source.extent,
+                None => presentation_source.map_or_else(
+                    || capture_rect.map_or(swapchain_extent, |rect| rect.extent),
+                    |candidate| candidate.extent,
+                ),
+            };
+            let submission = if let Some(source) = source {
+                engine.submit_image_copy(
+                    queue,
+                    image_index,
+                    source.image,
+                    source.extent,
+                    source.layout,
+                    &waits,
+                )
+            } else if rect_is_content {
+                match capture_rect {
+                    Some(rect) => engine.submit_region_copy(
+                        queue,
+                        image_index,
+                        rect.offset,
+                        rect.extent,
+                        &waits,
+                    ),
+                    None => continue,
+                }
+            } else if let Some(candidate) = presentation_source {
+                engine.submit_image_copy(
+                    queue,
+                    image_index,
+                    candidate.image,
+                    candidate.extent,
+                    candidate.layout,
+                    &waits,
+                )
+            } else {
+                engine.submit_copy(queue, image_index, &waits)
+            };
+            match submission {
                 Ok(submission) => {
-                    let count = COPIES_SUBMITTED.fetch_add(1, Ordering::Relaxed) + 1;
+                    let count = self.copies_submitted.fetch_add(1, Ordering::Relaxed) + 1;
                     stream.frame_number += 1;
+                    let cropped =
+                        source.is_none() && (rect_is_content || presentation_source.is_some());
                     let notification = Message::FrameReady(FrameReady {
-                        stream_id: StreamId(swapchain.as_raw()),
+                        stream_id: StreamId(swapchain.as_raw() ^ ((index as u64) << 56)),
                         slot: submission.slot,
-                        render_width: candidate.extent.width,
-                        render_height: candidate.extent.height,
-                        capture_x: 0,
-                        capture_y: 0,
-                        capture_width: candidate.extent.width,
-                        capture_height: candidate.extent.height,
-                        presentation_width: presentation_extent.width,
-                        presentation_height: presentation_extent.height,
-                        presentation_transform: PresentationTransform::UNAVAILABLE,
+                        render_width: render_extent.width,
+                        render_height: render_extent.height,
+                        capture_x: if cropped {
+                            capture_rect.map_or(0, |rect| rect.offset.x as u32)
+                        } else {
+                            0
+                        },
+                        capture_y: if cropped {
+                            capture_rect.map_or(0, |rect| rect.offset.y as u32)
+                        } else {
+                            0
+                        },
+                        capture_width: if cropped {
+                            capture_rect.map_or(swapchain_extent.width, |r| r.extent.width)
+                        } else {
+                            render_extent.width
+                        },
+                        capture_height: if cropped {
+                            capture_rect.map_or(swapchain_extent.height, |r| r.extent.height)
+                        } else {
+                            render_extent.height
+                        },
+                        presentation_width: swapchain_extent.width,
+                        presentation_height: swapchain_extent.height,
+                        presentation_transform: if source.is_some() || presentation_source.is_some()
+                        {
+                            PresentationTransform::UNAVAILABLE
+                        } else {
+                            PresentationTransform::axis_aligned(
+                                if cropped {
+                                    capture_rect.map_or(0, |rect| rect.offset.x as u32)
+                                } else {
+                                    0
+                                },
+                                if cropped {
+                                    capture_rect.map_or(0, |rect| rect.offset.y as u32)
+                                } else {
+                                    0
+                                },
+                                if cropped {
+                                    capture_rect
+                                        .map_or(swapchain_extent.width, |rect| rect.extent.width)
+                                } else {
+                                    render_extent.width
+                                },
+                                if cropped {
+                                    capture_rect
+                                        .map_or(swapchain_extent.height, |rect| rect.extent.height)
+                                } else {
+                                    render_extent.height
+                                },
+                            )
+                        },
                         frame_number: stream.frame_number,
                         sync_value: submission.sync_value,
                         timestamp_qpc: performance_counter().unwrap_or(0),
@@ -1122,18 +1034,159 @@ pub fn tracked_submission(
                         .as_mut()
                         .is_some_and(|socket| socket.send(notification).is_err())
                     {
+                        log("snowglass: viewer socket disconnected");
                         stream.ipc = None;
                     }
                     if count == 1 || count % 120 == 0 {
                         log(format!(
-                            "snowglass: submitted graphics-queue capture {}x{} (count={count})",
-                            candidate.extent.width, candidate.extent.height
+                            "snowglass: submitted capture {}x{} (count={count}, stream={index}, tracked={})",
+                            render_extent.width,
+                            render_extent.height,
+                            source.is_some(),
                         ));
                     }
+                    waits.clear();
+                    waits.push(submission.present_ready);
+                    last_ready = Some(submission.present_ready);
                 }
                 Err(vk::Result::NOT_READY) => {}
-                Err(error) => log(format!("snowglass: tracked copy failed: {error}")),
+                Err(error) => {
+                    log(format!("snowglass: swapchain copy failed: {error}"));
+                }
             }
         }
+        last_ready
+    }
+
+    /// The default (untracked) capture path: the strongest render-target
+    /// candidate of each submission is copied on the graphics queue, outside the
+    /// presentation chain.
+    pub fn tracked_submission(
+        &self,
+        tracking: &tracking::Tracking,
+        queue: vk::Queue,
+        queue_family_index: u32,
+        command_buffers: &[vk::CommandBuffer],
+    ) {
+        if config::tracking_enabled() {
+            return;
+        }
+        let mut selected = HashMap::<vk::SwapchainKHR, tracking::RenderTargetCandidate>::new();
+        for command in command_buffers {
+            let Some(candidate) = tracking.command_candidate(*command) else {
+                continue;
+            };
+            let Some(swapchain) = self.swapchain_images.get(&candidate.0).map(|entry| *entry)
+            else {
+                continue;
+            };
+            selected
+                .entry(swapchain)
+                .and_modify(|current| {
+                    if candidate.1.is_better_than(*current) {
+                        *current = candidate.1;
+                    }
+                })
+                .or_insert(candidate.1);
+        }
+        for (swapchain, candidate) in selected {
+            let Some(mut state) = self.swapchains.get_mut(&swapchain) else {
+                continue;
+            };
+            let images = state.images.clone();
+            let capture = state.capture.clone();
+            let presentation_extent = state.extent;
+            let Some(stream) = state.streams.first_mut() else {
+                continue;
+            };
+            if stream.copy_engine.is_none()
+                && let (Some(ring), Some(timeline)) =
+                    (stream.ring.take(), stream.producer_timeline.take())
+            {
+                let consumer_timeline = stream.consumer_timeline.take();
+                let Some(capture) = capture.as_ref() else {
+                    continue;
+                };
+                match SwapchainCopyEngine::create(
+                    capture.device.clone(),
+                    ring,
+                    timeline,
+                    consumer_timeline,
+                    images,
+                    stream.extent,
+                    queue_family_index,
+                    capture.set_loader_data,
+                ) {
+                    Ok(engine) => stream.copy_engine = Some(engine),
+                    Err(error) => log(format!(
+                        "snowglass: tracked copy engine creation failed: {error}"
+                    )),
+                }
+            }
+            if let Some(engine) = stream.copy_engine.as_mut() {
+                match engine.submit_tracked_copy(
+                    queue,
+                    candidate.image,
+                    candidate.extent,
+                    candidate.layout,
+                ) {
+                    Ok(submission) => {
+                        let count = self.copies_submitted.fetch_add(1, Ordering::Relaxed) + 1;
+                        stream.frame_number += 1;
+                        let notification = Message::FrameReady(FrameReady {
+                            stream_id: StreamId(swapchain.as_raw()),
+                            slot: submission.slot,
+                            render_width: candidate.extent.width,
+                            render_height: candidate.extent.height,
+                            capture_x: 0,
+                            capture_y: 0,
+                            capture_width: candidate.extent.width,
+                            capture_height: candidate.extent.height,
+                            presentation_width: presentation_extent.width,
+                            presentation_height: presentation_extent.height,
+                            presentation_transform: PresentationTransform::UNAVAILABLE,
+                            frame_number: stream.frame_number,
+                            sync_value: submission.sync_value,
+                            timestamp_qpc: performance_counter().unwrap_or(0),
+                        });
+                        if stream
+                            .ipc
+                            .as_mut()
+                            .is_some_and(|socket| socket.send(notification).is_err())
+                        {
+                            stream.ipc = None;
+                        }
+                        if count == 1 || count % 120 == 0 {
+                            log(format!(
+                                "snowglass: submitted graphics-queue capture {}x{} (count={count})",
+                                candidate.extent.width, candidate.extent.height
+                            ));
+                        }
+                    }
+                    Err(vk::Result::NOT_READY) => {}
+                    Err(error) => log(format!("snowglass: tracked copy failed: {error}")),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_states_are_isolated() {
+        let first = CaptureState::default();
+        let second = CaptureState::default();
+        let surface = vk::SurfaceKHR::from_raw(1);
+
+        first.surface_created(surface, 42);
+
+        assert_eq!(
+            first.surface_windows.get(&surface).map(|entry| *entry),
+            Some(42)
+        );
+        assert!(!second.surface_windows.contains_key(&surface));
     }
 }

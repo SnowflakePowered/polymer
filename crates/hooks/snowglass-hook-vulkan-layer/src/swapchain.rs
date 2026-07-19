@@ -7,28 +7,28 @@
 use crate::layer::*;
 use ash::vk;
 use snowglass_hook::HookChain;
-use snowglass_producer_vulkan::capture;
-
-pub(crate) fn destroy_device(device: vk::Device) {
-    capture::device_destroyed(device);
-}
-
 pub(crate) fn create_win32_surface(
     create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>,
     surface: *mut vk::SurfaceKHR,
     result: vk::Result,
+    context: &crate::hooks::CreateWin32SurfaceContext,
 ) {
     if result == vk::Result::SUCCESS
         && !create_info.is_null()
         && !surface.is_null()
         && unsafe { *surface } != vk::SurfaceKHR::null()
     {
-        capture::surface_created(unsafe { *surface }, unsafe { (*create_info).hwnd as isize });
+        context
+            .capture_state
+            .surface_created(unsafe { *surface }, unsafe { (*create_info).hwnd as isize });
     }
 }
 
-pub(crate) fn destroy_surface(surface: vk::SurfaceKHR) {
-    capture::surface_destroyed(surface);
+pub(crate) fn destroy_surface(
+    surface: vk::SurfaceKHR,
+    context: &crate::hooks::DestroySurfaceContext,
+) {
+    context.capture_state.surface_destroyed(surface);
 }
 
 pub(crate) fn create_swapchain(
@@ -36,6 +36,7 @@ pub(crate) fn create_swapchain(
     create_info: *const vk::SwapchainCreateInfoKHR<'_>,
     swapchain: *mut vk::SwapchainKHR,
     result: vk::Result,
+    context: &crate::hooks::CreateSwapchainContext,
 ) {
     if result != vk::Result::SUCCESS || create_info.is_null() || swapchain.is_null() {
         return;
@@ -43,18 +44,22 @@ pub(crate) fn create_swapchain(
     let dispatch =
         unsafe { dispatch_key(device) }.and_then(|key| DEVICE.get(&key).map(|entry| entry.clone()));
     let info = unsafe { &*create_info };
-    capture::swapchain_created(
+    context.capture_state.swapchain_created(
         unsafe { *swapchain },
         device,
         dispatch.and_then(|dispatch| dispatch.capture),
+        context.tracking.clone(),
         info.image_extent,
         info.image_format,
         info.surface,
     );
 }
 
-pub(crate) fn destroy_swapchain(swapchain: vk::SwapchainKHR) {
-    capture::swapchain_destroyed(swapchain);
+pub(crate) fn destroy_swapchain(
+    swapchain: vk::SwapchainKHR,
+    context: &crate::hooks::DestroySwapchainContext,
+) {
+    context.capture_state.swapchain_destroyed(swapchain);
 }
 
 pub(crate) fn get_swapchain_images(
@@ -62,13 +67,14 @@ pub(crate) fn get_swapchain_images(
     image_count: *mut u32,
     images: *mut vk::Image,
     result: vk::Result,
+    context: &crate::hooks::GetSwapchainImagesContext,
 ) {
     if matches!(result, vk::Result::SUCCESS | vk::Result::INCOMPLETE)
         && !image_count.is_null()
         && !images.is_null()
     {
         let images = unsafe { std::slice::from_raw_parts(images, *image_count as usize) };
-        capture::swapchain_images(swapchain, images);
+        context.capture_state.swapchain_images(swapchain, images);
     }
 }
 
@@ -77,6 +83,7 @@ pub(crate) fn queue_submit(
     submit_count: u32,
     submits: *const vk::SubmitInfo<'_>,
     result: vk::Result,
+    context: &crate::hooks::QueueSubmitContext,
 ) {
     let Some(queue_state) = ({ QUEUE.get(&queue).map(|entry| entry.clone()) }) else {
         return;
@@ -96,7 +103,12 @@ pub(crate) fn queue_submit(
             )
         });
     }
-    capture::tracked_submission(queue, queue_state.queue_family_index, &command_buffers);
+    context.capture_state.tracked_submission(
+        &context.tracking,
+        queue,
+        queue_state.queue_family_index,
+        &command_buffers,
+    );
 }
 
 pub(crate) unsafe fn handle_queue_present(
@@ -128,8 +140,9 @@ pub(crate) unsafe fn handle_queue_present(
             )
         }
     };
-    let swapchains =
-        unsafe { std::slice::from_raw_parts(original.p_swapchains, original.swapchain_count as usize) };
+    let swapchains = unsafe {
+        std::slice::from_raw_parts(original.p_swapchains, original.swapchain_count as usize)
+    };
     let image_indices = unsafe {
         std::slice::from_raw_parts(original.p_image_indices, original.swapchain_count as usize)
     };
@@ -138,7 +151,13 @@ pub(crate) unsafe fn handle_queue_present(
         .copied()
         .zip(image_indices.iter().copied())
         .collect::<Vec<_>>();
-    match capture::present(queue, queue_state.queue_family_index, &presents, waits) {
+    match next.capture_state.present(
+        &next.tracking,
+        queue,
+        queue_state.queue_family_index,
+        &presents,
+        waits,
+    ) {
         Some(chained_waits) => {
             // The final copy-ready semaphore represents completion of every
             // captured swapchain and replaces the application's waits for

@@ -2,7 +2,11 @@
 
 use crate::hooks::Hdc;
 use retour::GenericDetour;
-use std::{ffi::c_void, sync::OnceLock};
+use snowglass_producer_opengl::Tracking;
+use std::{
+    ffi::c_void,
+    sync::{Arc, OnceLock},
+};
 use windows_sys::Win32::Foundation::E_FAIL;
 
 type SwapBuffersFn = unsafe extern "system" fn(Hdc) -> i32;
@@ -55,6 +59,7 @@ pub(crate) struct OpenGlDetours {
     pub(crate) wgl_get_proc_address: GenericDetour<WglGetProcAddressFn>,
     core_draw_arrays: GenericDetour<GlDrawArraysFn>,
     core_draw_elements: GenericDetour<GlDrawElementsFn>,
+    tracking: Arc<Tracking>,
 }
 
 pub(crate) static DETOURS: OnceLock<OpenGlDetours> = OnceLock::new();
@@ -63,6 +68,13 @@ static DRAW_ELEMENTS: OnceLock<GlDrawElementsFn> = OnceLock::new();
 static DRAW_ELEMENTS_BASE_VERTEX: OnceLock<GlDrawElementsBaseVertexFn> = OnceLock::new();
 static BLIT_FRAMEBUFFER: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
 static COPY_IMAGE_SUB_DATA: OnceLock<GlCopyImageSubDataFn> = OnceLock::new();
+
+pub(crate) fn tracking() -> Arc<Tracking> {
+    DETOURS
+        .get()
+        .map(|detours| detours.tracking.clone())
+        .unwrap_or_default()
+}
 
 pub(crate) fn remember_draw_arrays(address: *const c_void) {
     if address != system_draw_arrays as *const c_void {
@@ -245,6 +257,7 @@ pub(crate) unsafe fn install() -> i32 {
             wgl_get_proc_address,
             core_draw_arrays,
             core_draw_elements,
+            tracking: Arc::default(),
         })
         .is_err()
     {

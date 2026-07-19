@@ -96,7 +96,7 @@ pub(crate) unsafe fn device_proc<T: Copy>(
 }
 
 unsafe fn device_supports_extension(
-    state: crate::layer::PhysicalDeviceState,
+    state: &crate::layer::PhysicalDeviceState,
     physical_device: vk::PhysicalDevice,
     required: &CStr,
 ) -> bool {
@@ -198,7 +198,7 @@ pub(crate) unsafe fn create_device(
             .iter()
             .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == required);
         if !enabled
-            && physical_state.is_some_and(|state| unsafe {
+            && physical_state.as_ref().is_some_and(|state| unsafe {
                 device_supports_extension(state, physical_device, required)
             })
         {
@@ -209,7 +209,7 @@ pub(crate) unsafe fn create_device(
     let foreign_queue_enabled = extension_names
         .iter()
         .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == foreign_queue_extension)
-        || (physical_state.is_some_and(|state| unsafe {
+        || (physical_state.as_ref().is_some_and(|state| unsafe {
             device_supports_extension(state, physical_device, foreign_queue_extension)
         }) && {
             extension_names.push(foreign_queue_extension.as_ptr());
@@ -246,7 +246,11 @@ pub(crate) unsafe fn create_device(
         return result;
     }
     let created = unsafe { *device };
-    let capture = physical_state.and_then(|state| {
+    let capture_state = physical_state
+        .as_ref()
+        .map(|state| state.capture_state.clone())
+        .unwrap_or_default();
+    let capture = physical_state.as_ref().and_then(|state| {
         if !capture_supported {
             return None;
         }
@@ -333,6 +337,8 @@ pub(crate) unsafe fn create_device(
         crate::layer::DeviceDispatchTable {
             next_gdpa: bootstrap.next_gdpa,
             capture,
+            capture_state,
+            tracking: Arc::default(),
         },
     );
     result

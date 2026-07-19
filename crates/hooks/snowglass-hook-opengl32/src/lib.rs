@@ -10,7 +10,7 @@ pub use sys::SnowglassInstallOpenGlHook;
 
 snowglass_hook::register_hooks! {
     hooks::register_swap_buffers -> hooks::capture_swap_buffers;
-    hooks::register_swap_layer_buffers -> hooks::capture_swap_buffers;
+    hooks::register_swap_layer_buffers -> hooks::capture_swap_layer_buffers;
     hooks::register_draw_arrays -> hooks::track_draw_arrays;
     hooks::register_draw_elements -> hooks::track_draw_elements;
     hooks::register_draw_elements_base_vertex -> hooks::track_draw_elements_base_vertex;

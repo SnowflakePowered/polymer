@@ -4,7 +4,7 @@
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
 use snowglass_hook::HookChain;
-use snowglass_producer_vulkan::SetDeviceLoaderData;
+use snowglass_producer_vulkan::{SetDeviceLoaderData, tracking::Tracking};
 use std::{
     ffi::{c_char, c_void},
     fs::OpenOptions,
@@ -13,6 +13,8 @@ use std::{
     sync::Arc,
     sync::LazyLock,
 };
+
+pub(crate) use snowglass_producer_vulkan::capture::{CaptureDevice, CaptureState};
 
 pub(crate) fn layer_log(message: impl std::fmt::Display) {
     eprintln!("{message}");
@@ -81,16 +83,19 @@ struct VkLayerDeviceCreateInfo {
     data: VkLayerDeviceCreateInfoData,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct InstanceDispatchTable {
     pub(crate) next_gipa: vk::PFN_vkGetInstanceProcAddr,
     pub(crate) next_physical_gpa: Option<PfnGetPhysicalDeviceProcAddr>,
+    pub(crate) capture_state: Arc<CaptureState>,
 }
 
 #[derive(Clone)]
 pub(crate) struct DeviceDispatchTable {
     pub next_gdpa: vk::PFN_vkGetDeviceProcAddr,
     pub capture: Option<Arc<CaptureDevice>>,
+    pub capture_state: Arc<CaptureState>,
+    pub tracking: Arc<Tracking>,
 }
 
 #[derive(Clone)]
@@ -100,12 +105,11 @@ pub(crate) struct QueueDispatchTable {
     pub(crate) dispatch: DeviceDispatchTable,
 }
 
-pub(crate) use snowglass_producer_vulkan::capture::CaptureDevice;
-
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct PhysicalDeviceState {
     pub instance: vk::Instance,
     pub next_gipa: vk::PFN_vkGetInstanceProcAddr,
+    pub capture_state: Arc<CaptureState>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -228,6 +232,7 @@ pub(crate) fn register_instance_dispatch(created: vk::Instance, bootstrap: Insta
                 InstanceDispatchTable {
                     next_gipa: bootstrap.next_gipa,
                     next_physical_gpa: bootstrap.next_physical_gpa,
+                    capture_state: Arc::default(),
                 },
             );
         }
@@ -276,7 +281,7 @@ pub(crate) unsafe fn take_device_bootstrap(
 }
 
 pub(crate) fn physical_device_state(device: vk::PhysicalDevice) -> Option<PhysicalDeviceState> {
-    PHYSICAL_DEVICE.get(&device).map(|entry| *entry)
+    PHYSICAL_DEVICE.get(&device).map(|entry| entry.clone())
 }
 
 pub(crate) fn register_device_dispatch(device: vk::Device, dispatch: DeviceDispatchTable) {
@@ -311,7 +316,7 @@ pub(crate) unsafe fn handle_destroy_device(
     {
         QUEUE.retain(|_, dispatch| dispatch.device != device)
     };
-    crate::swapchain::destroy_device(device);
+    next.capture_state.device_destroyed(device);
     unsafe { continuation(device, allocator, next) };
 }
 
@@ -325,6 +330,44 @@ pub(crate) fn command_dispatch_data(
         .as_ref()
         .map_or(vk::Device::null(), |capture| capture.device.handle());
     Some((dispatch.next_gdpa, device))
+}
+
+pub(crate) fn command_tracking(command_buffer: vk::CommandBuffer) -> Arc<Tracking> {
+    unsafe { dispatch_key(command_buffer) }
+        .and_then(|key| DEVICE.get(&key).map(|entry| entry.tracking.clone()))
+        .unwrap_or_default()
+}
+
+pub(crate) fn device_tracking(device: vk::Device) -> Arc<Tracking> {
+    unsafe { dispatch_key(device) }
+        .and_then(|key| DEVICE.get(&key).map(|entry| entry.tracking.clone()))
+        .unwrap_or_default()
+}
+
+pub(crate) fn queue_tracking(queue: vk::Queue) -> Arc<Tracking> {
+    QUEUE
+        .get(&queue)
+        .map(|entry| entry.dispatch.tracking.clone())
+        .unwrap_or_default()
+}
+
+pub(crate) fn instance_capture(instance: vk::Instance) -> Arc<CaptureState> {
+    unsafe { dispatch_key(instance) }
+        .and_then(|key| INSTANCE.get(&key).map(|entry| entry.capture_state.clone()))
+        .unwrap_or_default()
+}
+
+pub(crate) fn device_capture(device: vk::Device) -> Arc<CaptureState> {
+    unsafe { dispatch_key(device) }
+        .and_then(|key| DEVICE.get(&key).map(|entry| entry.capture_state.clone()))
+        .unwrap_or_default()
+}
+
+pub(crate) fn queue_capture(queue: vk::Queue) -> Arc<CaptureState> {
+    QUEUE
+        .get(&queue)
+        .map(|entry| entry.dispatch.capture_state.clone())
+        .unwrap_or_default()
 }
 
 pub(crate) fn instance_gipa(instance: vk::Instance) -> Option<vk::PFN_vkGetInstanceProcAddr> {

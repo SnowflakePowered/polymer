@@ -6,13 +6,7 @@ pub mod tracking;
 
 pub use capture::{before_present, before_resize, claim, destroyed};
 
-pub use tracking::{
-    Presentation, TrackedResource, before_swapchain_resize, command_reset, detect_device_features,
-    enhanced_barriers_supported, record_copy_descriptors_simple, record_descriptor_heap,
-    record_draw, record_enhanced_barrier, record_render_target_view, record_render_targets,
-    record_resource_barrier, record_root_descriptor_table, record_root_signature, record_scissors,
-    record_shader_resource_view, record_viewports, swapchain_presentation,
-};
+pub use tracking::{Presentation, TrackedResource, Tracking};
 
 use std::{ffi::c_void, mem::ManuallyDrop};
 use windows::{

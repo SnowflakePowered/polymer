@@ -13,11 +13,11 @@ macro_rules! invoke_original_method {
 pub(crate) use invoke_original_method as __invoke_original_method;
 
 macro_rules! resolve_proc {
-    (direct_input, $this:expr, $field:ident) => {
-        crate::runtime::direct_input_method($this, |vtable| vtable.$field())
+    ($runtime:expr, direct_input, $this:expr, $field:ident) => {
+        $runtime.direct_input_method($this, |vtable| vtable.$field())
     };
-    (device, $this:expr, $field:ident) => {
-        crate::runtime::device_method($this, |vtable| vtable.$field())
+    ($runtime:expr, device, $this:expr, $field:ident) => {
+        $runtime.device_method($this, |vtable| vtable.$field())
     };
 }
 pub(crate) use resolve_proc as __resolve_proc;
@@ -31,7 +31,8 @@ macro_rules! resolve_observer_terminal {
     };
     (($this:ident $(, $argument:ident)*); resolve with $domain:ident, $field:ident -> $fallback:expr;) => {
         || {
-            let Some(method) = crate::hook_chain::__resolve_proc!($domain, $this, $field) else {
+            let runtime = crate::install::runtime();
+            let Some(method) = crate::hook_chain::__resolve_proc!(runtime, $domain, $this, $field) else {
                 return $fallback;
             };
             crate::hook_chain::__invoke_original_method!($this, method $(, $argument)*)
@@ -46,6 +47,9 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        $(context fields {
+            $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+        };)?
         hook $hook:ident($this:ident: $this_type:ty $(, $argument:ident: $argument_type:ty)* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;
@@ -59,9 +63,9 @@ macro_rules! resolve_around_terminal {
             hook $hook($this: $this_type $(, $argument: $argument_type)*) -> $result;
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
-            fields {}
-            terminal |$this, $($argument,)* _context: $context<'_>| {
-                let Some(method) = crate::hook_chain::__resolve_proc!($domain, $this, $field) else {
+            fields { $($($context_field: $context_field_type = $context_field_value),*)? }
+            terminal |$this, $($argument,)* context: $context<'_>| {
+                let Some(method) = crate::hook_chain::__resolve_proc!(context.runtime, $domain, $this, $field) else {
                     return $fallback;
                 };
                 crate::hook_chain::__invoke_original_method!($this, method $(, $argument)*)
@@ -74,6 +78,9 @@ macro_rules! resolve_around_terminal {
         order $order:ident;
         target $target:ident;
         chain $chain:ident, context $context:ident;
+        $(context fields {
+            $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+        };)?
         hook $hook:ident($($argument:ident: $argument_type:ty),* $(,)?) -> $result:ty;
         abi ($($abi_arg:ident: $abi_arg_type:ty),* $(,)?);
         export $export:ident;
@@ -87,7 +94,7 @@ macro_rules! resolve_around_terminal {
             hook $hook($($argument: $argument_type),*) -> $result;
             abi ($($abi_arg: $abi_arg_type),*);
             prepare {}
-            fields {}
+            fields { $($($context_field: $context_field_type = $context_field_value),*)? }
             terminal $terminal;
             export $export;
         }

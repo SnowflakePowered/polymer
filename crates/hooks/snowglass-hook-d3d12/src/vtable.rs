@@ -16,7 +16,7 @@ use std::any::TypeId;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use windows::{
     Win32::{
         Foundation::{E_FAIL, RECT},
@@ -24,25 +24,25 @@ use windows::{
             D3D12_BARRIER_GROUP, D3D12_COMMAND_LIST_FLAGS, D3D12_COMMAND_LIST_TYPE,
             D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_TYPE,
             D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RESOURCE_BARRIER,
-            D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT, ID3D12Device, ID3D12Device_Vtbl,
-            ID3D12Device1, ID3D12Device1_Vtbl, ID3D12Device2, ID3D12Device2_Vtbl, ID3D12Device3,
-            ID3D12Device3_Vtbl, ID3D12Device4, ID3D12Device4_Vtbl, ID3D12Device5,
-            ID3D12Device5_Vtbl, ID3D12Device6, ID3D12Device6_Vtbl, ID3D12Device7,
-            ID3D12Device7_Vtbl, ID3D12Device8, ID3D12Device8_Vtbl, ID3D12Device9,
-            ID3D12Device9_Vtbl, ID3D12Device10, ID3D12Device10_Vtbl, ID3D12Device11,
-            ID3D12Device11_Vtbl, ID3D12Device12, ID3D12Device12_Vtbl, ID3D12Device13,
-            ID3D12Device13_Vtbl, ID3D12Device14, ID3D12Device14_Vtbl, ID3D12GraphicsCommandList,
-            ID3D12GraphicsCommandList_Vtbl, ID3D12GraphicsCommandList1,
-            ID3D12GraphicsCommandList1_Vtbl, ID3D12GraphicsCommandList2,
-            ID3D12GraphicsCommandList2_Vtbl, ID3D12GraphicsCommandList3,
-            ID3D12GraphicsCommandList3_Vtbl, ID3D12GraphicsCommandList4,
-            ID3D12GraphicsCommandList4_Vtbl, ID3D12GraphicsCommandList5,
-            ID3D12GraphicsCommandList5_Vtbl, ID3D12GraphicsCommandList6,
-            ID3D12GraphicsCommandList6_Vtbl, ID3D12GraphicsCommandList7,
-            ID3D12GraphicsCommandList7_Vtbl, ID3D12GraphicsCommandList8,
-            ID3D12GraphicsCommandList8_Vtbl, ID3D12GraphicsCommandList9,
-            ID3D12GraphicsCommandList9_Vtbl, ID3D12GraphicsCommandList10,
-            ID3D12GraphicsCommandList10_Vtbl,
+            D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT, ID3D12CommandQueue, ID3D12Device,
+            ID3D12Device_Vtbl, ID3D12Device1, ID3D12Device1_Vtbl, ID3D12Device2,
+            ID3D12Device2_Vtbl, ID3D12Device3, ID3D12Device3_Vtbl, ID3D12Device4,
+            ID3D12Device4_Vtbl, ID3D12Device5, ID3D12Device5_Vtbl, ID3D12Device6,
+            ID3D12Device6_Vtbl, ID3D12Device7, ID3D12Device7_Vtbl, ID3D12Device8,
+            ID3D12Device8_Vtbl, ID3D12Device9, ID3D12Device9_Vtbl, ID3D12Device10,
+            ID3D12Device10_Vtbl, ID3D12Device11, ID3D12Device11_Vtbl, ID3D12Device12,
+            ID3D12Device12_Vtbl, ID3D12Device13, ID3D12Device13_Vtbl, ID3D12Device14,
+            ID3D12Device14_Vtbl, ID3D12GraphicsCommandList, ID3D12GraphicsCommandList_Vtbl,
+            ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList1_Vtbl,
+            ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList2_Vtbl,
+            ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList3_Vtbl,
+            ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList4_Vtbl,
+            ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList5_Vtbl,
+            ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList6_Vtbl,
+            ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl,
+            ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl,
+            ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl,
+            ID3D12GraphicsCommandList10, ID3D12GraphicsCommandList10_Vtbl,
         },
     },
     core::{BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface},
@@ -315,13 +315,25 @@ snowglass_hook::impl_com_hook! {
     }
 }
 
-static DEVICES: LazyLock<DashMap<usize, Box<dyn DeviceHook>>> = LazyLock::new(Default::default);
-static COMMAND_LISTS: LazyLock<DashMap<usize, Box<dyn CommandListHook>>> =
+/// Per-interface hook state seeded by `CreateDeviceContext`.
+struct DeviceContext {
+    hook: Box<dyn DeviceHook>,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+}
+
+/// Per-interface hook state inherited from the creating device context.
+struct CommandListContext {
+    hook: Box<dyn CommandListHook>,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+}
+
+static DEVICES: LazyLock<DashMap<usize, DeviceContext>> = LazyLock::new(Default::default);
+static COMMAND_LISTS: LazyLock<DashMap<usize, CommandListContext>> =
     LazyLock::new(Default::default);
 
 /// A monomorphized per-object install routine, used to dispatch a widest-cast
 /// result to a typed layout.
-type InstallFn = unsafe fn(*mut c_void) -> bool;
+type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d12::Tracking>) -> bool;
 
 /// Installs render-target tracking on a device returned by
 /// `D3D12CreateDevice`. Command lists are hooked as the device creates them.
@@ -330,11 +342,14 @@ type InstallFn = unsafe fn(*mut c_void) -> bool;
 ///
 /// `output` must be null or point to a COM interface pointer for a live
 /// `ID3D12Device`.
-pub(crate) unsafe fn install_device(output: *mut *mut c_void) {
+pub(crate) unsafe fn install_device(
+    output: *mut *mut c_void,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+) {
     if !snowglass_hook::config::tracking_enabled() || output.is_null() {
         return;
     }
-    match unsafe { try_install_device(output) } {
+    match unsafe { try_install_device(output, tracking) } {
         Ok(true) => crate::d3d12_log("snowglass: installed D3D12 viewport/scissor tracking"),
         Ok(false) => {}
         Err(error) => crate::d3d12_log(format!(
@@ -343,12 +358,15 @@ pub(crate) unsafe fn install_device(output: *mut *mut c_void) {
     }
 }
 
-unsafe fn try_install_device(output: *mut *mut c_void) -> Result<bool, String> {
+unsafe fn try_install_device(
+    output: *mut *mut c_void,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+) -> Result<bool, String> {
     let raw = unsafe { *output };
     let unknown = unsafe { IUnknown::from_raw_borrowed(&raw) }
         .ok_or_else(|| "D3D12CreateDevice returned a null device".to_owned())?;
     let device: ID3D12Device = unknown.cast().map_err(|error| error.to_string())?;
-    if let Some(enhanced_barriers) = snowglass_producer_d3d12::detect_device_features(&device)? {
+    if let Some(enhanced_barriers) = tracking.detect_device_features(&device)? {
         crate::d3d12_log(if enhanced_barriers {
             "snowglass: D3D12 enhanced capture barriers enabled"
         } else {
@@ -356,14 +374,14 @@ unsafe fn try_install_device(output: *mut *mut c_void) -> Result<bool, String> {
         });
     }
     let base = device.as_raw();
-    let already_hooked = DEVICES
-        .get(&(base as usize))
-        .is_some_and(|hook| unsafe { *base.cast::<*const usize>() } == hook.patched_vtable());
+    let already_hooked = DEVICES.get(&(base as usize)).is_some_and(|context| unsafe {
+        *base.cast::<*const usize>() == context.hook.patched_vtable()
+    });
 
     let interfaces = device_interfaces(&device);
     let mut installed = false;
     for (interface, install) in interfaces {
-        installed |= unsafe { install(interface) };
+        installed |= unsafe { install(interface, tracking.clone()) };
     }
     if !installed {
         return Err("could not clone the device vtable".to_owned());
@@ -404,7 +422,10 @@ fn device_interfaces(device: &ID3D12Device) -> Vec<(*mut c_void, InstallFn)> {
     interfaces
 }
 
-unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
+unsafe fn install_device_kind<A: Vtable>(
+    device: *mut c_void,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+) -> bool {
     if device.is_null() {
         return false;
     }
@@ -412,7 +433,7 @@ unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
     let current = unsafe { *device.cast::<*const usize>() };
     let vtable = match &entry {
         Entry::Occupied(occupied) => {
-            let existing = occupied.get();
+            let existing = &occupied.get().hook;
             if current == existing.patched_vtable() {
                 if A::supported_by(existing.vtable_type()) {
                     return true;
@@ -427,9 +448,9 @@ unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
     let Some(vtable) = vtable else {
         return false;
     };
-    let state: Box<dyn DeviceHook> = Box::new(vtable);
-    unsafe { *device.cast::<*const usize>() = state.patched_vtable() };
-    entry.insert(state);
+    let hook: Box<dyn DeviceHook> = Box::new(vtable);
+    unsafe { *device.cast::<*const usize>() = hook.patched_vtable() };
+    entry.insert(DeviceContext { hook, tracking });
     true
 }
 
@@ -439,7 +460,11 @@ unsafe fn install_device_kind<A: Vtable>(device: *mut c_void) -> bool {
 /// # Safety
 ///
 /// `list` must be null or point to a live COM command-list interface.
-unsafe fn install_command_list(list: *mut c_void, interface_id: *const GUID) {
+unsafe fn install_command_list(
+    list: *mut c_void,
+    interface_id: *const GUID,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+) {
     if list.is_null() || interface_id.is_null() {
         return;
     }
@@ -489,11 +514,14 @@ unsafe fn install_command_list(list: *mut c_void, interface_id: *const GUID) {
         ));
     }
     for (pointer, install) in interfaces {
-        unsafe { install(pointer) };
+        unsafe { install(pointer, tracking.clone()) };
     }
 }
 
-unsafe fn install_command_list_kind<A: Vtable>(list: *mut c_void) -> bool {
+unsafe fn install_command_list_kind<A: Vtable>(
+    list: *mut c_void,
+    tracking: Arc<snowglass_producer_d3d12::Tracking>,
+) -> bool {
     if list.is_null() {
         return false;
     }
@@ -501,7 +529,7 @@ unsafe fn install_command_list_kind<A: Vtable>(list: *mut c_void) -> bool {
     let current = unsafe { *list.cast::<*const usize>() };
     let vtable = match &entry {
         Entry::Occupied(occupied) => {
-            let existing = occupied.get();
+            let existing = &occupied.get().hook;
             if current == existing.patched_vtable() {
                 if A::supported_by(existing.vtable_type()) {
                     return true;
@@ -518,20 +546,49 @@ unsafe fn install_command_list_kind<A: Vtable>(list: *mut c_void) -> bool {
     let Some(vtable) = vtable else {
         return false;
     };
-    let state: Box<dyn CommandListHook> = Box::new(vtable);
-    unsafe { *list.cast::<*const usize>() = state.patched_vtable() };
-    entry.insert(state);
+    let hook: Box<dyn CommandListHook> = Box::new(vtable);
+    unsafe { *list.cast::<*const usize>() = hook.patched_vtable() };
+    entry.insert(CommandListContext { hook, tracking });
     true
 }
 
 fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {
-    DEVICES.get(&(device as usize)).map(|hook| select(&**hook))
+    DEVICES
+        .get(&(device as usize))
+        .map(|context| select(&*context.hook))
 }
 
 fn list_method<T>(list: *mut c_void, select: impl FnOnce(&dyn CommandListHook) -> T) -> Option<T> {
     COMMAND_LISTS
         .get(&(list as usize))
-        .map(|hook| select(&**hook))
+        .map(|context| select(&*context.hook))
+}
+
+fn device_tracking(device: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
+    DEVICES
+        .get(&(device as usize))
+        .map(|context| context.tracking.clone())
+}
+
+pub(crate) fn list_tracking(list: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
+    COMMAND_LISTS
+        .get(&(list as usize))
+        .map(|context| context.tracking.clone())
+}
+
+/// Resolves the tracking context associated with a D3D12 command queue's device.
+///
+/// # Safety
+///
+/// `queue` must be null or point to a live `ID3D12CommandQueue`.
+pub(crate) unsafe fn queue_tracking(
+    queue: *mut c_void,
+) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
+    let queue = unsafe { ID3D12CommandQueue::from_raw_borrowed(&queue) }?;
+    let mut device = None;
+    unsafe { queue.GetDevice(&mut device).ok()? };
+    let device: ID3D12Device = device?;
+    device_tracking(device.as_raw())
 }
 
 unsafe extern "system" fn device_release(this: *mut c_void) -> u32 {
@@ -596,7 +653,9 @@ unsafe extern "system" fn create_command_list(
         )
     };
     if result.is_ok() && !output.is_null() {
-        unsafe { install_command_list(*output, interface_id) };
+        if let Some(tracking) = device_tracking(this) {
+            unsafe { install_command_list(*output, interface_id, tracking) };
+        }
     }
     result
 }
@@ -614,7 +673,9 @@ unsafe extern "system" fn create_command_list1(
     };
     let result = unsafe { original(this, node_mask, list_type, flags, interface_id, output) };
     if result.is_ok() && !output.is_null() {
-        unsafe { install_command_list(*output, interface_id) };
+        if let Some(tracking) = device_tracking(this) {
+            unsafe { install_command_list(*output, interface_id, tracking) };
+        }
     }
     result
 }
@@ -630,7 +691,9 @@ unsafe extern "system" fn create_descriptor_heap(
     };
     let result = unsafe { original(this, desc, interface_id, output) };
     if result.is_ok() {
-        unsafe { snowglass_producer_d3d12::record_descriptor_heap(desc, output) };
+        if let Some(tracking) = device_tracking(this) {
+            unsafe { tracking.record_descriptor_heap(desc, output) };
+        }
     }
     result
 }
@@ -644,9 +707,9 @@ snowglass_hook::com_trampoline! {
     );
     original device_method(this, |hook| hook.create_shader_resource_view());
     after {
-        unsafe {
-            snowglass_producer_d3d12::record_shader_resource_view(resource, desc, destination)
-        };
+        if let Some(tracking) = device_tracking(this) {
+            unsafe { tracking.record_shader_resource_view(resource, desc, destination) };
+        }
     }
 }
 
@@ -659,9 +722,9 @@ snowglass_hook::com_trampoline! {
     );
     original device_method(this, |hook| hook.create_render_target_view());
     after {
-        unsafe {
-            snowglass_producer_d3d12::record_render_target_view(resource, desc, destination)
-        };
+        if let Some(tracking) = device_tracking(this) {
+            unsafe { tracking.record_render_target_view(resource, desc, destination) };
+        }
     }
 }
 
@@ -675,12 +738,9 @@ snowglass_hook::com_trampoline! {
     );
     original device_method(this, |hook| hook.copy_descriptors_simple());
     after {
-        snowglass_producer_d3d12::record_copy_descriptors_simple(
-            count,
-            destination,
-            source,
-            heap_type,
-        );
+        if let Some(tracking) = device_tracking(this) {
+            tracking.record_copy_descriptors_simple(count, destination, source, heap_type);
+        }
     }
 }
 
@@ -700,7 +760,9 @@ unsafe extern "system" fn reset(
         unsafe { *this.cast::<*const usize>() = patched };
     }
     if result.is_ok() {
-        snowglass_producer_d3d12::command_reset(this);
+        if let Some(tracking) = list_tracking(this) {
+            tracking.command_reset(this);
+        }
     }
     result
 }
@@ -713,7 +775,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.set_viewports());
     after {
-        unsafe { snowglass_producer_d3d12::record_viewports(this, count, viewports) };
+        if let Some(tracking) = list_tracking(this) {
+            unsafe { tracking.record_viewports(this, count, viewports) };
+        }
     }
 }
 
@@ -725,7 +789,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.set_scissors());
     after {
-        unsafe { snowglass_producer_d3d12::record_scissors(this, count, scissors) };
+        if let Some(tracking) = list_tracking(this) {
+            unsafe { tracking.record_scissors(this, count, scissors) };
+        }
     }
 }
 
@@ -739,7 +805,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.draw_instanced());
     after {
-        snowglass_producer_d3d12::record_draw(this);
+        if let Some(tracking) = list_tracking(this) {
+            tracking.record_draw(this);
+        }
     }
 }
 
@@ -754,7 +822,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.draw_indexed_instanced());
     after {
-        snowglass_producer_d3d12::record_draw(this);
+        if let Some(tracking) = list_tracking(this) {
+            tracking.record_draw(this);
+        }
     }
 }
 
@@ -766,7 +836,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.resource_barrier());
     after {
-        unsafe { snowglass_producer_d3d12::record_resource_barrier(this, count, barriers) };
+        if let Some(tracking) = list_tracking(this) {
+            unsafe { tracking.record_resource_barrier(this, count, barriers) };
+        }
     }
 }
 
@@ -778,7 +850,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.set_graphics_root_descriptor_table());
     after {
-        snowglass_producer_d3d12::record_root_descriptor_table(this, root_index, descriptor);
+        if let Some(tracking) = list_tracking(this) {
+            tracking.record_root_descriptor_table(this, root_index, descriptor);
+        }
     }
 }
 
@@ -789,7 +863,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.set_graphics_root_signature());
     after {
-        snowglass_producer_d3d12::record_root_signature(this);
+        if let Some(tracking) = list_tracking(this) {
+            tracking.record_root_signature(this);
+        }
     }
 }
 
@@ -803,7 +879,9 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.om_set_render_targets());
     after {
-        unsafe { snowglass_producer_d3d12::record_render_targets(this, count, descriptors) };
+        if let Some(tracking) = list_tracking(this) {
+            unsafe { tracking.record_render_targets(this, count, descriptors) };
+        }
     }
 }
 
@@ -815,6 +893,8 @@ snowglass_hook::com_trampoline! {
     );
     original list_method(this, |hook| hook.barrier()).flatten();
     after {
-        unsafe { snowglass_producer_d3d12::record_enhanced_barrier(this, count, groups) };
+        if let Some(tracking) = list_tracking(this) {
+            unsafe { tracking.record_enhanced_barrier(this, count, groups) };
+        }
     }
 }
