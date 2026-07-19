@@ -55,6 +55,10 @@ pub struct StreamReady {
     pub timeline_semaphore_handle: i64,
     /// Optional timeline handle signaled by the viewer after consuming a slot.
     pub consumer_semaphore_handle: i64,
+    /// Pixel rows are stored bottom-up (OpenGL default-framebuffer origin);
+    /// the consumer flips vertically while presenting. Producers pass
+    /// captures through verbatim and describe the orientation instead.
+    pub bottom_up: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +103,7 @@ struct WireStreamReady {
     image_handles: [I64; MAX_IMAGE_SLOTS],
     timeline_semaphore_handle: I64,
     consumer_semaphore_handle: I64,
+    bottom_up: U32,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -331,6 +336,7 @@ fn encode(message: Message) -> WireMessage {
                     image_handles: value.image_handles.map(I64::new),
                     timeline_semaphore_handle: I64::new(value.timeline_semaphore_handle),
                     consumer_semaphore_handle: I64::new(value.consumer_semaphore_handle),
+                    bottom_up: U32::new(value.bottom_up as u32),
                 },
             );
         }
@@ -417,6 +423,7 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 image_handles: value.image_handles.map(I64::get),
                 timeline_semaphore_handle: value.timeline_semaphore_handle.get(),
                 consumer_semaphore_handle: value.consumer_semaphore_handle.get(),
+                bottom_up: value.bottom_up.get() != 0,
             }))
         }
         MESSAGE_FRAME_READY => {
@@ -497,6 +504,7 @@ mod tests {
                 image_handles: [11, 12, 13, 0],
                 timeline_semaphore_handle: 14,
                 consumer_semaphore_handle: 15,
+                bottom_up: true,
             }),
             Message::FrameReady(FrameReady {
                 stream_id: StreamId(9),

@@ -333,6 +333,7 @@ fn publish_stream(
             }
             None => 0,
         },
+        bottom_up: false,
     };
     if let Err(error) = connection.socket.send(Message::StreamReady(ready)) {
         log(format!("snowglass: StreamReady send failed: {error}"));

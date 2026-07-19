@@ -66,6 +66,7 @@ struct Capture {
     ipc: Option<LocalSocket>,
     adapter_luid: AdapterLuid,
     stream_window: isize,
+    bottom_up: bool,
     next_slot: usize,
     sync_value: u64,
     frame_number: u64,
@@ -225,6 +226,9 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         if up_to_date {
             continue;
         }
+        // The whole-window fallback reads the bottom-up default framebuffer;
+        // tracked textures keep guest memory order and pass through as-is.
+        let bottom_up = chosen.is_empty() && (width, height) == window_extent;
         match unsafe {
             Capture::new(
                 stream_window(hwnd as isize, index),
@@ -232,6 +236,7 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
                 height,
                 window_width,
                 window_height,
+                bottom_up,
             )
         } {
             Ok(capture) => {
@@ -294,6 +299,7 @@ impl Capture {
         height: u32,
         window_width: u32,
         window_height: u32,
+        bottom_up: bool,
     ) -> Result<Self, String> {
         let functions = unsafe { GlFunctions::load() }
             .ok_or("GL_EXT_memory_object_win32 and GL_EXT_semaphore_win32 are unavailable")?;
@@ -333,6 +339,7 @@ impl Capture {
             hwnd,
             width,
             height,
+            bottom_up,
         ) {
             Ok(socket) => Some(socket),
             Err(error) => {
@@ -360,6 +367,7 @@ impl Capture {
             ipc,
             adapter_luid,
             stream_window: hwnd,
+            bottom_up,
             next_slot: 0,
             sync_value: 0,
             frame_number: 0,
@@ -379,6 +387,7 @@ impl Capture {
             self.stream_window,
             self.width,
             self.height,
+            self.bottom_up,
         ) {
             self.ipc = Some(socket);
         }
@@ -592,6 +601,7 @@ impl Drop for Capture {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn connect_viewer(
     slots: &[ImageSlot],
     ready_handle: HANDLE,
@@ -600,6 +610,7 @@ fn connect_viewer(
     hwnd: isize,
     width: u32,
     height: u32,
+    bottom_up: bool,
 ) -> std::io::Result<LocalSocket> {
     let session = snowglass_hook::config::session()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
@@ -638,6 +649,7 @@ fn connect_viewer(
             consumer_handle.0 as isize,
             ProcessId(viewer_pid),
         )? as i64,
+        bottom_up,
     }))?;
     // The viewer acknowledges only accepted streams; a rejection closes the
     // socket instead. Without waiting for the ack, a rejected stream looks

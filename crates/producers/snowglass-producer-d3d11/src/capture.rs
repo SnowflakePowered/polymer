@@ -267,6 +267,7 @@ fn send_stream_ready(
         image_handles,
         timeline_semaphore_handle: fence,
         consumer_semaphore_handle: consumer_fence,
+        bottom_up: false,
     }))?;
     crate::d3d11_log(format!(
         "snowglass: connected D3D11 ring to viewer process {viewer_pid}"

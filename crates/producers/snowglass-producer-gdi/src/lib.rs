@@ -327,6 +327,7 @@ fn connect_viewer(
         image_handles,
         timeline_semaphore_handle: producer,
         consumer_semaphore_handle: consumer,
+        bottom_up: false,
     }))?;
     Ok(socket)
 }

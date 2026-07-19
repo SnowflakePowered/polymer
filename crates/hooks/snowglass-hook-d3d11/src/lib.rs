@@ -746,6 +746,7 @@ mod tests {
             image_handles,
             timeline_semaphore_handle: 0,
             consumer_semaphore_handle: 0,
+            bottom_up: false,
         };
         let consumer = D3d12ConsumerDevice::new(adapter_luid).expect("D3D12 consumer failed");
         let imported = consumer

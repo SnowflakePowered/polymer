@@ -303,6 +303,7 @@ fn connect_viewer(capture: &D3d12SwapchainCapture) -> std::io::Result<LocalSocke
             capture.raw_consumer_fence_handle(),
             ProcessId(pid),
         )? as i64,
+        bottom_up: false,
     }))?;
     Ok(socket)
 }
