@@ -1,9 +1,12 @@
 //! Framed Snowglass IPC over a Windows AF_UNIX stream socket.
 
-use snowglass_input::{DirectInputData, DirectInputDevice};
+use snowglass_input::{
+    DirectInputData, DirectInputDevice,
+    mouse::{PointerInput, PointerPhase, PointerSource},
+};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake, MAX_IMAGE_SLOTS,
-    StreamId,
+    PresentationMappingKind, StreamId, SurfaceId,
 };
 use std::{
     fs,
@@ -34,6 +37,7 @@ const MESSAGE_FRAME_READY: u32 = 3;
 const MESSAGE_SHUTDOWN: u32 = 4;
 const MESSAGE_DIRECT_INPUT_DATA: u32 = 5;
 const MESSAGE_STREAM_ACCEPTED: u32 = 6;
+const MESSAGE_POINTER_INPUT: u32 = 7;
 const PAYLOAD_SIZE: usize = mem::size_of::<WireStreamReady>();
 
 static WINSOCK: OnceLock<i32> = OnceLock::new();
@@ -41,8 +45,11 @@ static WINSOCK: OnceLock<i32> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamReady {
     pub producer_process_id: u32,
+    /// Opaque logical surface identity. Unlike `source_window`, this may be
+    /// synthesized to distinguish multiple frame-graph surfaces from one HWND.
+    pub surface_id: SurfaceId,
     pub adapter_luid: AdapterLuid,
-    /// Win32 HWND used to create the source swapchain's Vulkan surface.
+    /// Real Win32 HWND used as the target for pointer and keyboard messages.
     pub source_window: i64,
     pub width: u32,
     pub height: u32,
@@ -68,6 +75,7 @@ pub enum Message {
     FrameReady(FrameReady),
     Shutdown,
     DirectInputData(DirectInputData),
+    PointerInput(PointerInput),
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
 }
@@ -91,6 +99,7 @@ struct WireHello {
 #[repr(C)]
 struct WireStreamReady {
     producer_process_id: U32,
+    surface_id: U64,
     adapter_luid_low: U32,
     adapter_luid_high: I32,
     source_window: I64,
@@ -117,6 +126,9 @@ struct WireFrameReady {
     capture_y: U32,
     capture_width: U32,
     capture_height: U32,
+    presentation_width: U32,
+    presentation_height: U32,
+    mapping_kind: U32,
     frame_number: U64,
     sync_value: U64,
     timestamp_qpc: U64,
@@ -128,6 +140,27 @@ struct WireDirectInputData {
     device: U32,
     offset: U32,
     data: U32,
+    timestamp: U32,
+    sequence: U32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WirePointerInput {
+    surface_id: U64,
+    target_window: I64,
+    frame_number: U64,
+    source: U32,
+    phase: U32,
+    pointer_id: U32,
+    x: I32,
+    y: I32,
+    coordinate_width: U32,
+    coordinate_height: U32,
+    button: U32,
+    buttons: U32,
+    wheel_horizontal: I32,
+    wheel_vertical: I32,
     timestamp: U32,
     sequence: U32,
 }
@@ -324,6 +357,7 @@ fn encode(message: Message) -> WireMessage {
                 MESSAGE_STREAM_READY,
                 &WireStreamReady {
                     producer_process_id: U32::new(value.producer_process_id),
+                    surface_id: U64::new(value.surface_id.0),
                     adapter_luid_low: U32::new(value.adapter_luid.low_part),
                     adapter_luid_high: I32::new(value.adapter_luid.high_part),
                     source_window: I64::new(value.source_window),
@@ -353,6 +387,9 @@ fn encode(message: Message) -> WireMessage {
                     capture_y: U32::new(value.capture_y),
                     capture_width: U32::new(value.capture_width),
                     capture_height: U32::new(value.capture_height),
+                    presentation_width: U32::new(value.presentation_width),
+                    presentation_height: U32::new(value.presentation_height),
+                    mapping_kind: U32::new(value.mapping_kind as u32),
                     frame_number: U64::new(value.frame_number),
                     sync_value: U64::new(value.sync_value),
                     timestamp_qpc: U64::new(value.timestamp_qpc),
@@ -370,6 +407,30 @@ fn encode(message: Message) -> WireMessage {
                     device: U32::new(value.device as u32),
                     offset: U32::new(value.offset),
                     data: U32::new(value.data),
+                    timestamp: U32::new(value.timestamp),
+                    sequence: U32::new(value.sequence),
+                },
+            );
+        }
+        Message::PointerInput(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_POINTER_INPUT,
+                &WirePointerInput {
+                    surface_id: U64::new(value.surface_id),
+                    target_window: I64::new(value.target_window),
+                    frame_number: U64::new(value.frame_number),
+                    source: U32::new(value.source as u32),
+                    phase: U32::new(value.phase as u32),
+                    pointer_id: U32::new(value.pointer_id),
+                    x: I32::new(value.x),
+                    y: I32::new(value.y),
+                    coordinate_width: U32::new(value.coordinate_width),
+                    coordinate_height: U32::new(value.coordinate_height),
+                    button: U32::new(value.button),
+                    buttons: U32::new(value.buttons),
+                    wheel_horizontal: I32::new(value.wheel_horizontal),
+                    wheel_vertical: I32::new(value.wheel_vertical),
                     timestamp: U32::new(value.timestamp),
                     sequence: U32::new(value.sequence),
                 },
@@ -409,6 +470,7 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 .map_err(|()| io::Error::new(io::ErrorKind::InvalidData, "invalid sync kind"))?;
             Ok(Message::StreamReady(StreamReady {
                 producer_process_id: value.producer_process_id.get(),
+                surface_id: SurfaceId(value.surface_id.get()),
                 adapter_luid: AdapterLuid {
                     low_part: value.adapter_luid_low.get(),
                     high_part: value.adapter_luid_high.get(),
@@ -428,6 +490,8 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
         }
         MESSAGE_FRAME_READY => {
             let value = payload::<WireFrameReady>(wire)?;
+            let mapping_kind = PresentationMappingKind::try_from(value.mapping_kind.get())
+                .map_err(|()| invalid_data("invalid presentation mapping kind"))?;
             Ok(Message::FrameReady(FrameReady {
                 stream_id: StreamId(value.stream_id.get()),
                 slot: value.slot.get(),
@@ -437,6 +501,9 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 capture_y: value.capture_y.get(),
                 capture_width: value.capture_width.get(),
                 capture_height: value.capture_height.get(),
+                presentation_width: value.presentation_width.get(),
+                presentation_height: value.presentation_height.get(),
+                mapping_kind,
                 frame_number: value.frame_number.get(),
                 sync_value: value.sync_value.get(),
                 timestamp_qpc: value.timestamp_qpc.get(),
@@ -459,6 +526,31 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
             }))
         }
         MESSAGE_STREAM_ACCEPTED => Ok(Message::StreamAccepted),
+        MESSAGE_POINTER_INPUT => {
+            let value = payload::<WirePointerInput>(wire)?;
+            let source = PointerSource::try_from(value.source.get())
+                .map_err(|()| invalid_data("invalid pointer source"))?;
+            let phase = PointerPhase::try_from(value.phase.get())
+                .map_err(|()| invalid_data("invalid pointer phase"))?;
+            Ok(Message::PointerInput(PointerInput {
+                surface_id: value.surface_id.get(),
+                target_window: value.target_window.get(),
+                frame_number: value.frame_number.get(),
+                source,
+                phase,
+                pointer_id: value.pointer_id.get(),
+                x: value.x.get(),
+                y: value.y.get(),
+                coordinate_width: value.coordinate_width.get(),
+                coordinate_height: value.coordinate_height.get(),
+                button: value.button.get(),
+                buttons: value.buttons.get(),
+                wheel_horizontal: value.wheel_horizontal.get(),
+                wheel_vertical: value.wheel_vertical.get(),
+                timestamp: value.timestamp.get(),
+                sequence: value.sequence.get(),
+            }))
+        }
         _ => Err(invalid_data("unknown message type")),
     }
 }
@@ -490,6 +582,7 @@ mod tests {
             }),
             Message::StreamReady(StreamReady {
                 producer_process_id: 7,
+                surface_id: SurfaceId(0x1234),
                 adapter_luid: AdapterLuid {
                     low_part: 0x1234,
                     high_part: 0x5678,
@@ -515,6 +608,9 @@ mod tests {
                 capture_y: 20,
                 capture_width: 620,
                 capture_height: 488,
+                presentation_width: 1920,
+                presentation_height: 1080,
+                mapping_kind: PresentationMappingKind::AxisAligned,
                 frame_number: 100,
                 sync_value: 101,
                 timestamp_qpc: 102,
@@ -526,6 +622,24 @@ mod tests {
                 data: 0x80,
                 timestamp: 123,
                 sequence: 456,
+            }),
+            Message::PointerInput(PointerInput {
+                surface_id: 0x1234,
+                target_window: 8,
+                frame_number: 100,
+                source: PointerSource::Touch,
+                phase: PointerPhase::ButtonDown,
+                pointer_id: 7,
+                x: 320,
+                y: 240,
+                coordinate_width: 1920,
+                coordinate_height: 1080,
+                button: 1,
+                buttons: 1,
+                wheel_horizontal: 0,
+                wheel_vertical: 0,
+                timestamp: 123,
+                sequence: 457,
             }),
             Message::StreamAccepted,
         ];

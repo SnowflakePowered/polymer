@@ -1726,9 +1726,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
     let mut cursor_position = (0, 0);
-    let mut active_capture_connections = HashMap::<u64, (i64, u8)>::new();
+    let mut active_capture_connections = HashMap::<u64, (u64, u8)>::new();
     let mut stream_indices = HashMap::<u64, u32>::new();
-    let mut skipped_surface_windows = HashSet::<(i64, u8)>::new();
+    let mut skipped_surface_windows = HashSet::<(u64, u8)>::new();
     let mut skipped_surface_backends = HashSet::<u8>::new();
     let mut active_backend = "Waiting";
     let mut active_consumer = "Waiting";
@@ -1873,7 +1873,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         match capture {
                             CaptureEvent::Stream(connection, stream, accepted) => {
                                 let surface_identity = (
-                                    stream.source_window,
+                                    stream.surface_id.0,
                                     stream_backend_class(stream.image_kind),
                                 );
                                 let Some(stream_rank) =
@@ -1886,7 +1886,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     let _ = accepted.send(false);
                                     continue;
                                 };
-                                let previously_skipped = stream.source_window != 0
+                                let previously_skipped = stream.surface_id.0 != 0
                                     && skipped_surface_windows.contains(&surface_identity);
                                 if previously_skipped
                                     || (!active_capture_connections.contains_key(&connection)
@@ -1894,7 +1894,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 {
                                     if !previously_skipped {
                                         remaining_surface_skips -= 1;
-                                        if stream.source_window != 0 {
+                                        if stream.surface_id.0 != 0 {
                                             skipped_surface_windows.insert(surface_identity);
                                         }
                                         skipped_surface_backends.insert(surface_identity.1);
@@ -1909,11 +1909,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     continue;
                                 }
                                 if !active_capture_connections.contains_key(&connection) {
-                                    let replaced = (stream.source_window != 0)
+                                    let replaced = (stream.surface_id.0 != 0)
                                         .then(|| {
                                             active_capture_connections.iter().find_map(
-                                                |(&existing, &(window, backend))| {
-                                                    (window == stream.source_window
+                                                |(&existing, &(surface_id, backend))| {
+                                                    (surface_id == stream.surface_id.0
                                                         && (backend != surface_identity.1
                                                             || active_capture_connections.len()
                                                                 >= surface_limit as usize))
@@ -2383,6 +2383,7 @@ fn spawn_ipc(
                             }
                             Message::Shutdown => return Ok(()),
                             Message::DirectInputData(_) => {}
+                            Message::PointerInput(_) => {}
                             Message::Hello(_) => {}
                             Message::StreamAccepted => {}
                         }

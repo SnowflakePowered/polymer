@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
@@ -43,6 +43,10 @@ pub struct StreamId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct HandleId(pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[repr(transparent)]
+pub struct SurfaceId(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -133,13 +137,43 @@ pub struct ExternalImageDesc {
 pub struct FrameReady {
     pub stream_id: StreamId,
     pub slot: u32,
+    /// Valid captured pixels packed at the origin of the shared image. These
+    /// dimensions determine the image's displayed aspect ratio.
     pub render_width: u32,
     pub render_height: u32,
+    /// Axis-aligned rectangle where the captured image appeared in the target
+    /// presentation coordinate system.
     pub capture_x: u32,
     pub capture_y: u32,
     pub capture_width: u32,
     pub capture_height: u32,
+    /// Extent of the presentation coordinate system containing the capture
+    /// rectangle. This may differ from both the shared image and target client
+    /// extents when the application uses dynamic resolution or a frame graph.
+    pub presentation_width: u32,
+    pub presentation_height: u32,
+    pub mapping_kind: PresentationMappingKind,
     pub frame_number: u64,
     pub sync_value: u64,
     pub timestamp_qpc: u64,
+}
+
+/// Describes whether a captured image can be mapped back to its presentation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PresentationMappingKind {
+    Unavailable = 0,
+    AxisAligned = 1,
+}
+
+impl TryFrom<u32> for PresentationMappingKind {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unavailable),
+            1 => Ok(Self::AxisAligned),
+            _ => Err(()),
+        }
+    }
 }

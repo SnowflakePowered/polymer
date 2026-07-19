@@ -735,6 +735,7 @@ mod tests {
         let ring_desc = ring.desc();
         let ready = StreamReady {
             producer_process_id: std::process::id(),
+            surface_id: snowglass_protocol::SurfaceId(capture.source_window() as u64),
             adapter_luid,
             source_window: capture.source_window() as i64,
             width: ring_desc.width,

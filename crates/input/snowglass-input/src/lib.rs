@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod mouse;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {
     Key { scan_code: u16, pressed: bool },

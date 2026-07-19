@@ -5,7 +5,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, StreamId,
+    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -137,6 +137,9 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             capture_y: submission.capture_y,
             capture_width: submission.width,
             capture_height: submission.height,
+            presentation_width: state.capture.ring().desc().width,
+            presentation_height: state.capture.ring().desc().height,
+            mapping_kind: PresentationMappingKind::AxisAligned,
             frame_number: state.frame_number,
             sync_value: submission.sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),
@@ -256,6 +259,7 @@ fn send_stream_ready(
     let desc = ring.desc();
     connection.socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),
+        surface_id: SurfaceId(capture.source_window() as u64),
         adapter_luid,
         source_window: capture.source_window() as i64,
         width: desc.width,

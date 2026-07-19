@@ -5,7 +5,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, StreamId,
+    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -188,15 +188,34 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             state.frame
         ));
     }
+    let capture_desc = state.capture.desc();
+    let presentation_extent = presentation
+        .as_ref()
+        .map_or((capture_desc.width, capture_desc.height), |value| {
+            value.target_extent
+        });
+    let presentation_rect = if tracked_source.is_some() {
+        (0, 0, presentation_extent.0, presentation_extent.1)
+    } else {
+        (
+            submission.capture_x,
+            submission.capture_y,
+            submission.width,
+            submission.height,
+        )
+    };
     let message = Message::FrameReady(FrameReady {
         stream_id: StreamId(key as u64),
         slot: submission.slot,
         render_width: submission.width,
         render_height: submission.height,
-        capture_x: submission.capture_x,
-        capture_y: submission.capture_y,
-        capture_width: submission.width,
-        capture_height: submission.height,
+        capture_x: presentation_rect.0,
+        capture_y: presentation_rect.1,
+        capture_width: presentation_rect.2,
+        capture_height: presentation_rect.3,
+        presentation_width: presentation_extent.0,
+        presentation_height: presentation_extent.1,
+        mapping_kind: PresentationMappingKind::AxisAligned,
         frame_number: state.frame,
         sync_value: submission.sync_value,
         timestamp_qpc: performance_counter().unwrap_or(0),
@@ -283,6 +302,7 @@ fn connect_viewer(capture: &D3d12SwapchainCapture) -> std::io::Result<LocalSocke
     let (adapter_luid_low, adapter_luid_high) = capture.adapter_luid();
     socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),
+        surface_id: SurfaceId(capture.source_window() as u64),
         adapter_luid: AdapterLuid {
             low_part: adapter_luid_low,
             high_part: adapter_luid_high,

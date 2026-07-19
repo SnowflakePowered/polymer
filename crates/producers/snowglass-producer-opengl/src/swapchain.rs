@@ -17,7 +17,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, StreamId,
+    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -519,6 +519,9 @@ impl Capture {
             capture_y: bounds.y,
             capture_width: bounds.width,
             capture_height: bounds.height,
+            presentation_width: self.window_width,
+            presentation_height: self.window_height,
+            mapping_kind: PresentationMappingKind::AxisAligned,
             frame_number: self.frame_number,
             sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),
@@ -632,6 +635,7 @@ fn connect_viewer(
     }
     socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),
+        surface_id: SurfaceId(hwnd as u64),
         adapter_luid,
         source_window: hwnd as i64,
         width,

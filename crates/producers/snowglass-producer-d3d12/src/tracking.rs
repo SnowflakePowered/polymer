@@ -56,6 +56,7 @@ impl Candidate {
 pub struct Presentation {
     pub region: Option<D3d12CaptureRegion>,
     pub source: Option<TrackedResource>,
+    pub target_extent: (u32, u32),
 }
 
 /// A render target tracked as a candidate capture source.
@@ -593,6 +594,7 @@ pub unsafe fn swapchain_presentation(swapchain: *mut c_void) -> Option<Presentat
     Some(Presentation {
         region: region_is_content.then_some(candidate.region),
         source,
+        target_extent: candidate.target_extent,
     })
 }
 

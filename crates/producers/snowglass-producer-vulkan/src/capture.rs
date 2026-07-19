@@ -16,7 +16,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, StreamId,
+    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -191,16 +191,10 @@ fn retire_idle_streams(now: u64) {
     }
 }
 
-/// The window identity published for a stream. Extra streams get offset
-/// identities so the viewer treats each tracked screen as its own surface
-/// instead of replacing the window's previous stream; the offsets are odd,
-/// which no real window handle can collide with.
-fn stream_window(source_window: isize, index: usize) -> isize {
-    if source_window == 0 || index == 0 {
-        source_window
-    } else {
-        source_window + (index as isize * 2 - 1)
-    }
+/// Stable logical identity for one of a window's capture streams. It is kept
+/// separate from the real HWND so every stream can route input to the window.
+fn stream_surface_id(source_window: isize, index: usize) -> SurfaceId {
+    SurfaceId(source_window as u64 ^ ((index as u64) << 56))
 }
 
 struct ViewerConnection {
@@ -254,6 +248,7 @@ fn publish_stream(
     adapter_luid: AdapterLuid,
     extent: vk::Extent2D,
     format: vk::Format,
+    surface_id: SurfaceId,
     source_window: isize,
 ) -> Option<LocalSocket> {
     let viewer_pid = connection.process_id;
@@ -290,6 +285,7 @@ fn publish_stream(
     };
     let ready = StreamReady {
         producer_process_id: std::process::id(),
+        surface_id,
         adapter_luid,
         source_window: source_window as i64,
         width: extent.width,
@@ -393,6 +389,7 @@ fn create_transport(
     capture: Option<&CaptureDevice>,
     extent: vk::Extent2D,
     format: vk::Format,
+    surface_id: SurfaceId,
     source_window: isize,
 ) -> Transport {
     let connection = begin_viewer_connection();
@@ -505,6 +502,7 @@ fn create_transport(
                     ),
                     extent,
                     format,
+                    surface_id,
                     source_window,
                 )
             })
@@ -549,7 +547,15 @@ pub fn swapchain_created(
             consumer_timeline: None,
             ipc: None,
         },
-        |capture| create_transport(Some(capture), extent, format, source_window),
+        |capture| {
+            create_transport(
+                Some(capture),
+                extent,
+                format,
+                stream_surface_id(source_window, 0),
+                source_window,
+            )
+        },
     );
     SWAPCHAIN.insert(
         swapchain,
@@ -767,9 +773,15 @@ fn present_swapchain(
     let format = state.format;
     let source_window = state.source_window;
     for (index, extent) in desired.iter().copied().enumerate() {
-        let window = stream_window(source_window, index);
+        let surface_id = stream_surface_id(source_window, index);
         if index >= state.streams.len() {
-            let transport = create_transport(state.capture.as_deref(), extent, format, window);
+            let transport = create_transport(
+                state.capture.as_deref(),
+                extent,
+                format,
+                surface_id,
+                source_window,
+            );
             state
                 .streams
                 .push(CaptureStream::from_transport(extent, transport));
@@ -778,7 +790,13 @@ fn present_swapchain(
         let stream = &mut state.streams[index];
         if stream.extent != extent && (stream.copy_engine.is_some() || stream.ring.is_some()) {
             stream.retire();
-            let transport = create_transport(state.capture.as_deref(), extent, format, window);
+            let transport = create_transport(
+                state.capture.as_deref(),
+                extent,
+                format,
+                surface_id,
+                source_window,
+            );
             *stream = CaptureStream::from_transport(extent, transport);
         }
     }
@@ -865,7 +883,8 @@ fn present_swapchain(
                 capture.adapter_luid,
                 stream.extent,
                 format,
-                stream_window(source_window, index),
+                stream_surface_id(source_window, index),
+                source_window,
             );
         }
         let Some(engine) = stream.copy_engine.as_mut() else {
@@ -947,6 +966,13 @@ fn present_swapchain(
                     } else {
                         render_extent.height
                     },
+                    presentation_width: swapchain_extent.width,
+                    presentation_height: swapchain_extent.height,
+                    mapping_kind: if source.is_some() {
+                        PresentationMappingKind::Unavailable
+                    } else {
+                        PresentationMappingKind::AxisAligned
+                    },
                     frame_number: stream.frame_number,
                     sync_value: submission.sync_value,
                     timestamp_qpc: performance_counter().unwrap_or(0),
@@ -1014,6 +1040,7 @@ pub fn tracked_submission(
         };
         let images = state.images.clone();
         let capture = state.capture.clone();
+        let presentation_extent = state.extent;
         let Some(stream) = state.streams.first_mut() else {
             continue;
         };
@@ -1060,6 +1087,9 @@ pub fn tracked_submission(
                         capture_y: 0,
                         capture_width: candidate.extent.width,
                         capture_height: candidate.extent.height,
+                        presentation_width: presentation_extent.width,
+                        presentation_height: presentation_extent.height,
+                        mapping_kind: PresentationMappingKind::Unavailable,
                         frame_number: stream.frame_number,
                         sync_value: submission.sync_value,
                         timestamp_qpc: performance_counter().unwrap_or(0),
