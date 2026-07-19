@@ -59,6 +59,8 @@ pub enum ExternalImageKind {
     D3d12Resource = 3,
     D3d12Heap = 4,
     /// D3D12 shared resource owned and written through OpenGL EXT external objects.
+    /// Pixel rows retain OpenGL's bottom-left origin; consumers convert them
+    /// to their target coordinate space while presenting.
     OpenGlD3d12Resource = 5,
     /// D3D12 shared resource owned by D3D12 and written through Vulkan external memory.
     VulkanD3d12Resource = 6,

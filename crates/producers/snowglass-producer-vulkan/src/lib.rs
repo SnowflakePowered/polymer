@@ -4,6 +4,8 @@
 //! the API-neutral Snowglass crates.
 
 #[cfg(windows)]
+pub mod capture;
+#[cfg(windows)]
 mod d3d12_interop;
 mod environment;
 mod image_ring;
