@@ -58,20 +58,6 @@ pub fn register_callbacks(callbacks: SwapchainCallbacks) {
     }
 }
 
-/// # Safety
-///
-/// `swapchain` must be null or point to a live `IDXGISwapChain` interface.
-pub unsafe fn install_swapchain(swapchain: *mut c_void) -> bool {
-    unsafe { install_swapchain_kind::<IDXGISwapChain_Vtbl>(swapchain) }
-}
-
-/// # Safety
-///
-/// `swapchain` must be null or point to a live `IDXGISwapChain1` interface.
-pub unsafe fn install_swapchain1(swapchain: *mut c_void) -> bool {
-    unsafe { install_swapchain_kind::<IDXGISwapChain1_Vtbl>(swapchain) }
-}
-
 /// The widest swapchain interface implemented by the object, paired with the
 /// install routine for that layout.
 fn widest_swapchain(swapchain: &IDXGISwapChain) -> Option<(*mut c_void, InstallFn)> {
@@ -80,7 +66,7 @@ fn widest_swapchain(swapchain: &IDXGISwapChain) -> Option<(*mut c_void, InstallF
             if let Ok(interface) = swapchain.cast::<$interface>() {
                 return Some((
                     interface.as_raw(),
-                    install_swapchain_kind::<$vtbl> as InstallFn,
+                    install_swapchain::<$vtbl> as InstallFn,
                 ));
             }
         };
@@ -106,7 +92,7 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     }
     let extended =
         unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }.and_then(widest_swapchain);
-    let mut installed = unsafe { install_swapchain(swapchain) };
+    let mut installed = unsafe { install_swapchain::<IDXGISwapChain_Vtbl>(swapchain) };
     if let Some((extended, install)) = extended {
         installed |= unsafe { install(extended) };
     }
@@ -126,7 +112,14 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     installed
 }
 
-unsafe fn install_swapchain_kind<A: Vtable>(swapchain: *mut c_void) -> bool {
+/// Installs interception on a swapchain by cloning the vtable layout of
+/// interface generation `A`.
+///
+/// # Safety
+///
+/// `swapchain` must be null or point to a live object implementing the
+/// swapchain interface generation named by `A`.
+pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> bool {
     if swapchain.is_null() {
         return false;
     }
@@ -280,20 +273,24 @@ fn factory_install(interface_id: &GUID) -> Option<InstallFn> {
 fn swapchain_install(interface_id: &GUID) -> Option<InstallFn> {
     [
         (
+            &IDXGISwapChain::IID,
+            install_swapchain::<IDXGISwapChain_Vtbl> as InstallFn,
+        ),
+        (
             &IDXGISwapChain1::IID,
-            install_swapchain_kind::<IDXGISwapChain1_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain1_Vtbl> as InstallFn,
         ),
         (
             &IDXGISwapChain2::IID,
-            install_swapchain_kind::<IDXGISwapChain2_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain2_Vtbl> as InstallFn,
         ),
         (
             &IDXGISwapChain3::IID,
-            install_swapchain_kind::<IDXGISwapChain3_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain3_Vtbl> as InstallFn,
         ),
         (
             &IDXGISwapChain4::IID,
-            install_swapchain_kind::<IDXGISwapChain4_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain4_Vtbl> as InstallFn,
         ),
     ]
     .into_iter()
@@ -388,9 +385,7 @@ pub(crate) unsafe fn query_interface(
                 .unwrap_or_else(|error| error.into_inner())
                 .get(&(this as usize))
                 .copied();
-            if interface_id == &IDXGISwapChain::IID {
-                unsafe { install_swapchain(swapchain) };
-            } else if let Some(install) = swapchain_install(interface_id) {
+            if let Some(install) = swapchain_install(interface_id) {
                 unsafe { install(swapchain) };
             } else {
                 unsafe {

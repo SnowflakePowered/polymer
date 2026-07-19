@@ -10,7 +10,6 @@ mod vtable;
 
 pub use runtime::{
     SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
-    install_swapchain, install_swapchain1,
 };
 
 /// Registers producer callbacks with the viewer-injected DXGI hook.
@@ -192,7 +191,7 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
-        assert!(unsafe { install_swapchain(object) });
+        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain_Vtbl>(object) });
         assert_ne!(object_vtable, original.as_ptr());
 
         let patched_present = unsafe {
@@ -235,8 +234,8 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
-        assert!(unsafe { install_swapchain(object) });
-        assert!(unsafe { install_swapchain1(object) });
+        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain_Vtbl>(object) });
+        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain1_Vtbl>(object) });
         let patched_present1 = unsafe {
             std::mem::transmute::<usize, crate::vtable::Present1Fn>(
                 *object_vtable.add(PRESENT1_INDEX),

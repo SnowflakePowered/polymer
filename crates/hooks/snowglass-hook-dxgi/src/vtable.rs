@@ -1,8 +1,6 @@
 #![allow(clippy::missing_transmute_annotations)]
 
 use std::ffi::c_void;
-use std::marker::PhantomData;
-use std::ptr::NonNull;
 use windows::{
     Win32::Graphics::Dxgi::{
         IDXGIFactory_Vtbl, IDXGIFactory1_Vtbl, IDXGIFactory2_Vtbl, IDXGIFactory3_Vtbl,
@@ -97,17 +95,6 @@ snowglass_hook::com_vtable! {
     pub(crate) union IDXGIFactoryVtable for IDXGIFactory7_Vtbl;
 }
 
-pub(crate) struct IDXGISwapchainHook<A: Vtable> {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<IDXGISwapchainVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: IDXGISwapchainVtable,
-    /// The object's original vtable pointer, restored across releases.
-    original: NonNull<c_void>,
-    /// The widest interface generation cloned from the object's vtable.
-    vtable: PhantomData<A>,
-}
-
 snowglass_hook::impl_com_hook! {
     impl SwapchainHook for IDXGISwapchainHook {
         vtable IDXGISwapchainVtable;
@@ -146,17 +133,6 @@ snowglass_hook::impl_com_hook! {
         #[base = Present1]
         fn present1(&self) -> Option<Present1Fn>;
     }
-}
-
-pub(crate) struct IDXGIFactoryHook<A: Vtable> {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<IDXGIFactoryVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: IDXGIFactoryVtable,
-    /// The object's original vtable pointer, restored across releases.
-    original: NonNull<c_void>,
-    /// The widest interface generation cloned from the object's vtable.
-    vtable: PhantomData<A>,
 }
 
 impl<A: Vtable> IDXGIFactoryHook<A> {

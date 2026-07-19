@@ -14,7 +14,6 @@
 #![allow(clippy::missing_transmute_annotations)]
 
 use std::ffi::c_void;
-use std::ptr::NonNull;
 use windows::Win32::Devices::HumanInterfaceDevice::{
     IDirectInput8A_Vtbl, IDirectInput8W_Vtbl, IDirectInputDevice8A_Vtbl, IDirectInputDevice8W_Vtbl,
 };
@@ -69,15 +68,6 @@ snowglass_hook::com_vtable! {
 const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
 
-pub(crate) struct IDirectInputHook {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<IDirectInputVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: IDirectInputVtable,
-    /// The object's original vtable pointer, restored across releases.
-    original: NonNull<c_void>,
-}
-
 snowglass_hook::impl_com_hook! {
     impl IDirectInputHook {
         vtable IDirectInputVtable;
@@ -100,15 +90,6 @@ snowglass_hook::impl_com_hook! {
         #[base = CreateDevice]
         fn create_device(&self) -> CreateDeviceFn;
     }
-}
-
-pub(crate) struct IDirectInputDeviceHook {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<IDirectInputDeviceVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: IDirectInputDeviceVtable,
-    /// The object's original vtable pointer, restored across releases.
-    original: NonNull<c_void>,
 }
 
 snowglass_hook::impl_com_hook! {

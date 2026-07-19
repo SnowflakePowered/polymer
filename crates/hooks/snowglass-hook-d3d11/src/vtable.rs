@@ -1,7 +1,5 @@
 use dashmap::DashMap;
 use std::ffi::c_void;
-use std::marker::PhantomData;
-use std::ptr::NonNull;
 use std::sync::LazyLock;
 use windows::{
     Win32::Graphics::Direct3D11::{
@@ -38,17 +36,6 @@ snowglass_hook::com_vtable! {
 trait ContextHook: snowglass_hook::VtableHook {
     fn draw(&self) -> DrawFn;
     fn draw_indexed(&self) -> DrawIndexedFn;
-}
-
-struct ID3D11DeviceContextHook<A: Vtable> {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<ID3D11DeviceContextVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: ID3D11DeviceContextVtable,
-    /// The object's original vtable pointer.
-    original: NonNull<c_void>,
-    /// The interface generation cloned from the object's vtable.
-    vtable: PhantomData<A>,
 }
 
 snowglass_hook::impl_com_hook! {

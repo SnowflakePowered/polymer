@@ -14,8 +14,6 @@
 use dashmap::{DashMap, mapref::entry::Entry};
 use std::any::TypeId;
 use std::ffi::c_void;
-use std::marker::PhantomData;
-use std::ptr::NonNull;
 use std::sync::{Arc, LazyLock};
 use windows::{
     Win32::{
@@ -149,6 +147,7 @@ pub(crate) type CopyDescriptorsSimpleFn = unsafe extern "system" fn(
 /// The layout-erased view of a hooked graphics command list stored in the
 /// tracking registry.
 pub(crate) trait CommandListHook: snowglass_hook::VtableHook {
+    fn tracking(&self) -> &Arc<snowglass_producer_d3d12::Tracking>;
     fn release(&self) -> ReleaseFn;
     fn reset(&self) -> ResetFn;
     fn set_viewports(&self) -> SetViewportsFn;
@@ -164,6 +163,7 @@ pub(crate) trait CommandListHook: snowglass_hook::VtableHook {
 
 /// The layout-erased view of a hooked device stored in the tracking registry.
 pub(crate) trait DeviceHook: snowglass_hook::VtableHook {
+    fn tracking(&self) -> &Arc<snowglass_producer_d3d12::Tracking>;
     fn release(&self) -> ReleaseFn;
     fn create_command_list(&self) -> CreateCommandListFn;
     fn create_command_list1(&self) -> Option<CreateCommandList1Fn>;
@@ -185,20 +185,13 @@ snowglass_hook::com_vtable! {
     pub(crate) union ID3D12DeviceVtable for ID3D12Device14_Vtbl;
 }
 
-pub(crate) struct ID3D12GraphicsCommandListHook<A: Vtable> {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<ID3D12GraphicsCommandListVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: ID3D12GraphicsCommandListVtable,
-    /// The object's original vtable pointer, restored across releases.
-    original: NonNull<c_void>,
-    /// The widest interface generation cloned from the object's vtable.
-    vtable: PhantomData<A>,
-}
-
 snowglass_hook::impl_com_hook! {
     impl CommandListHook for ID3D12GraphicsCommandListHook {
         vtable ID3D12GraphicsCommandListVtable;
+        context {
+            /// Device-scoped tracking inherited from the creating device's hook.
+            tracking: Arc<snowglass_producer_d3d12::Tracking>,
+        };
         patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
@@ -258,20 +251,13 @@ snowglass_hook::impl_com_hook! {
     }
 }
 
-pub(crate) struct ID3D12DeviceHook<A: Vtable> {
-    /// Hook-patched clone installed as the object's vtable pointer.
-    patched: Box<ID3D12DeviceVtable>,
-    /// Verbatim copy of the original slots for downstream continuation.
-    saved: ID3D12DeviceVtable,
-    /// The object's original vtable pointer, restored across releases.
-    original: NonNull<c_void>,
-    /// The widest interface generation cloned from the object's vtable.
-    vtable: PhantomData<A>,
-}
-
 snowglass_hook::impl_com_hook! {
     impl DeviceHook for ID3D12DeviceHook {
         vtable ID3D12DeviceVtable;
+        context {
+            /// Device-scoped tracking shared with the command lists this device creates.
+            tracking: Arc<snowglass_producer_d3d12::Tracking>,
+        };
         patch |patched| {
         // SAFETY: the slots written below were copied above, so each place
         // projection targets an initialized entry within the clone.
@@ -315,20 +301,8 @@ snowglass_hook::impl_com_hook! {
     }
 }
 
-/// Per-interface hook state seeded by `CreateDeviceContext`.
-struct DeviceContext {
-    hook: Box<dyn DeviceHook>,
-    tracking: Arc<snowglass_producer_d3d12::Tracking>,
-}
-
-/// Per-interface hook state inherited from the creating device context.
-struct CommandListContext {
-    hook: Box<dyn CommandListHook>,
-    tracking: Arc<snowglass_producer_d3d12::Tracking>,
-}
-
-static DEVICES: LazyLock<DashMap<usize, DeviceContext>> = LazyLock::new(Default::default);
-static COMMAND_LISTS: LazyLock<DashMap<usize, CommandListContext>> =
+static DEVICES: LazyLock<DashMap<usize, Box<dyn DeviceHook>>> = LazyLock::new(Default::default);
+static COMMAND_LISTS: LazyLock<DashMap<usize, Box<dyn CommandListHook>>> =
     LazyLock::new(Default::default);
 
 /// A monomorphized per-object install routine, used to dispatch a widest-cast
@@ -374,8 +348,8 @@ unsafe fn try_install_device(
         });
     }
     let base = device.as_raw();
-    let already_hooked = DEVICES.get(&(base as usize)).is_some_and(|context| unsafe {
-        *base.cast::<*const usize>() == context.hook.patched_vtable()
+    let already_hooked = DEVICES.get(&(base as usize)).is_some_and(|hook| unsafe {
+        *base.cast::<*const usize>() == hook.patched_vtable()
     });
 
     let interfaces = device_interfaces(&device);
@@ -433,24 +407,24 @@ unsafe fn install_device_kind<A: Vtable>(
     let current = unsafe { *device.cast::<*const usize>() };
     let vtable = match &entry {
         Entry::Occupied(occupied) => {
-            let existing = &occupied.get().hook;
+            let existing = occupied.get();
             if current == existing.patched_vtable() {
                 if A::supported_by(existing.vtable_type()) {
                     return true;
                 }
-                unsafe { ID3D12DeviceHook::<A>::clone_from(existing.original_vtable()) }
+                unsafe { ID3D12DeviceHook::<A>::clone_from(existing.original_vtable(), tracking) }
             } else {
-                unsafe { ID3D12DeviceHook::<A>::clone_from(current) }
+                unsafe { ID3D12DeviceHook::<A>::clone_from(current, tracking) }
             }
         }
-        Entry::Vacant(_) => unsafe { ID3D12DeviceHook::<A>::clone_from(current) },
+        Entry::Vacant(_) => unsafe { ID3D12DeviceHook::<A>::clone_from(current, tracking) },
     };
     let Some(vtable) = vtable else {
         return false;
     };
     let hook: Box<dyn DeviceHook> = Box::new(vtable);
     unsafe { *device.cast::<*const usize>() = hook.patched_vtable() };
-    entry.insert(DeviceContext { hook, tracking });
+    entry.insert(hook);
     true
 }
 
@@ -529,51 +503,50 @@ unsafe fn install_command_list_kind<A: Vtable>(
     let current = unsafe { *list.cast::<*const usize>() };
     let vtable = match &entry {
         Entry::Occupied(occupied) => {
-            let existing = &occupied.get().hook;
+            let existing = occupied.get();
             if current == existing.patched_vtable() {
                 if A::supported_by(existing.vtable_type()) {
                     return true;
                 }
                 unsafe {
-                    ID3D12GraphicsCommandListHook::<A>::clone_from(existing.original_vtable())
+                    ID3D12GraphicsCommandListHook::<A>::clone_from(
+                        existing.original_vtable(),
+                        tracking,
+                    )
                 }
             } else {
-                unsafe { ID3D12GraphicsCommandListHook::<A>::clone_from(current) }
+                unsafe { ID3D12GraphicsCommandListHook::<A>::clone_from(current, tracking) }
             }
         }
-        Entry::Vacant(_) => unsafe { ID3D12GraphicsCommandListHook::<A>::clone_from(current) },
+        Entry::Vacant(_) => unsafe {
+            ID3D12GraphicsCommandListHook::<A>::clone_from(current, tracking)
+        },
     };
     let Some(vtable) = vtable else {
         return false;
     };
     let hook: Box<dyn CommandListHook> = Box::new(vtable);
     unsafe { *list.cast::<*const usize>() = hook.patched_vtable() };
-    entry.insert(CommandListContext { hook, tracking });
+    entry.insert(hook);
     true
 }
 
 fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {
-    DEVICES
-        .get(&(device as usize))
-        .map(|context| select(&*context.hook))
+    DEVICES.get(&(device as usize)).map(|hook| select(&**hook))
 }
 
 fn list_method<T>(list: *mut c_void, select: impl FnOnce(&dyn CommandListHook) -> T) -> Option<T> {
     COMMAND_LISTS
         .get(&(list as usize))
-        .map(|context| select(&*context.hook))
+        .map(|hook| select(&**hook))
 }
 
 fn device_tracking(device: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
-    DEVICES
-        .get(&(device as usize))
-        .map(|context| context.tracking.clone())
+    device_method(device, |hook| hook.tracking().clone())
 }
 
 pub(crate) fn list_tracking(list: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
-    COMMAND_LISTS
-        .get(&(list as usize))
-        .map(|context| context.tracking.clone())
+    list_method(list, |hook| hook.tracking().clone())
 }
 
 /// Resolves the tracking context associated with a D3D12 command queue's device.

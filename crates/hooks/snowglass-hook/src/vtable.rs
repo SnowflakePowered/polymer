@@ -146,26 +146,48 @@ pub trait VtableHook: Send + Sync {
     fn original_vtable(&self) -> *const usize;
 }
 
-/// Implements the shared storage lifecycle and saved-slot accessors for a
-/// typed COM vtable hook.
+/// Declares a typed COM vtable hook and implements its shared storage
+/// lifecycle and saved-slot accessors.
 ///
-/// The hook type is expected to contain `patched`, `saved`, `original`, and
-/// `vtable` fields. A slot whose return type is `Option<T>` is available only
-/// when the clone's concrete vtable type includes the layout named by its
-/// `vtable` attribute.
+/// The macro emits the hook struct itself: the patched clone, the saved
+/// original slots, the original vtable pointer, and (for the generic form)
+/// the cloned-layout marker. A slot whose return type is `Option<T>` is
+/// available only when the clone's concrete vtable type includes the layout
+/// named by its `vtable` attribute.
+///
+/// An optional `context` clause declares additional fields carried by the
+/// hook, mirroring the field-list syntax of the detour chain contexts. Each
+/// field becomes a `clone_from` parameter in declaration order and is exposed
+/// through a same-named accessor, keeping per-object state owned by the hook
+/// itself rather than a parallel registry entry.
 #[macro_export]
 macro_rules! impl_com_hook {
     (
         impl $hook:ident {
             vtable $storage:ty;
             slots $slots:expr;
+            $(context { $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)? };)?
             patch |$patched:ident| $patch:block
             $($methods:tt)*
         }
     ) => {
+        pub(crate) struct $hook {
+            /// Hook-patched clone installed as the object's vtable pointer.
+            patched: Box<$storage>,
+            /// Verbatim copy of the original slots for downstream continuation.
+            saved: $storage,
+            /// The object's original vtable pointer, restored across releases.
+            original: ::core::ptr::NonNull<::core::ffi::c_void>,
+            $($(
+                $(#[$context_attribute])*
+                $context: $context_type,
+            )*)?
+        }
+
         // SAFETY: the original pointer identifies an immutable vtable owned
         // by the hooked module, and the remaining fields contain copied
-        // vtable data.
+        // vtable data and any context fields, which must themselves be
+        // `Send + Sync`.
         unsafe impl Send for $hook {}
         unsafe impl Sync for $hook {}
 
@@ -176,7 +198,10 @@ macro_rules! impl_com_hook {
             ///
             /// `original` must be null or point to a vtable spanning at least
             /// the configured number of slots.
-            pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
+            pub(crate) unsafe fn clone_from(
+                original: *const usize
+                $($(, $context: $context_type)*)?
+            ) -> Option<Self> {
                 let original = ::core::ptr::NonNull::new(
                     original.cast_mut().cast::<::core::ffi::c_void>()
                 )?;
@@ -188,8 +213,16 @@ macro_rules! impl_com_hook {
                     patched,
                     saved,
                     original,
+                    $($($context,)*)?
                 })
             }
+
+            $($(
+                #[allow(dead_code)]
+                pub(crate) fn $context(&self) -> &$context_type {
+                    &self.$context
+                }
+            )*)?
 
             /// The vtable pointer that intercepts the hooked object.
             pub(crate) fn patched_vtable(&self) -> *const usize {
@@ -208,13 +241,30 @@ macro_rules! impl_com_hook {
     (
         impl $hook_trait:ident for $hook:ident {
             vtable $storage:ty;
+            $(context { $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)? };)?
             patch |$patched:ident| $patch:block
             $($methods:tt)*
         }
     ) => {
+        pub(crate) struct $hook<A: Vtable> {
+            /// Hook-patched clone installed as the object's vtable pointer.
+            patched: Box<$storage>,
+            /// Verbatim copy of the original slots for downstream continuation.
+            saved: $storage,
+            /// The object's original vtable pointer, restored across releases.
+            original: ::core::ptr::NonNull<::core::ffi::c_void>,
+            /// The widest interface generation cloned from the object's vtable.
+            vtable: ::core::marker::PhantomData<A>,
+            $($(
+                $(#[$context_attribute])*
+                $context: $context_type,
+            )*)?
+        }
+
         // SAFETY: the original pointer identifies an immutable vtable owned
-        // by the hooked module, and the remaining fields contain only copied
-        // vtable data and a zero-sized layout marker.
+        // by the hooked module, and the remaining fields contain copied
+        // vtable data, a zero-sized layout marker, and any context fields,
+        // which must themselves be `Send + Sync`.
         unsafe impl<A: Vtable> Send for $hook<A> {}
         unsafe impl<A: Vtable> Sync for $hook<A> {}
 
@@ -225,7 +275,10 @@ macro_rules! impl_com_hook {
             ///
             /// `original` must be null or point to a vtable spanning at least
             /// [`A::SLOTS`](Vtable::SLOTS) entries.
-            pub(crate) unsafe fn clone_from(original: *const usize) -> Option<Self> {
+            pub(crate) unsafe fn clone_from(
+                original: *const usize
+                $($(, $context: $context_type)*)?
+            ) -> Option<Self> {
                 let original = ::core::ptr::NonNull::new(
                     original.cast_mut().cast::<::core::ffi::c_void>()
                 )?;
@@ -238,6 +291,7 @@ macro_rules! impl_com_hook {
                     saved,
                     original,
                     vtable: ::core::marker::PhantomData,
+                    $($($context,)*)?
                 })
             }
         }
@@ -261,6 +315,11 @@ macro_rules! impl_com_hook {
         }
 
         impl<A: Vtable> $hook_trait for $hook<A> {
+            $($(
+                fn $context(&self) -> &$context_type {
+                    &self.$context
+                }
+            )*)?
             $crate::impl_com_hook!(@methods $($methods)*);
         }
     };
