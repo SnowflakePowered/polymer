@@ -127,6 +127,12 @@ pub(crate) static PHYSICAL_DEVICE: LazyLock<DashMap<vk::PhysicalDevice, Physical
 pub(crate) static QUEUE: LazyLock<DashMap<vk::Queue, QueueDispatchTable>> =
     LazyLock::new(Default::default);
 
+/// Presentation ownership is process-wide, not VkInstance-wide. Applications
+/// such as Azahar create separate Vulkan instances for sibling presentation
+/// windows; giving each instance its own capture state makes both instances
+/// export the same graph targets and race the viewer's stable surface IDs.
+static CAPTURE_STATE: LazyLock<Arc<CaptureState>> = LazyLock::new(Arc::default);
+
 pub(crate) unsafe fn dispatch_key<H: Handle>(handle: H) -> Option<usize> {
     let raw = handle.as_raw() as usize;
     if raw == 0 {
@@ -232,7 +238,7 @@ pub(crate) fn register_instance_dispatch(created: vk::Instance, bootstrap: Insta
                 InstanceDispatchTable {
                     next_gipa: bootstrap.next_gipa,
                     next_physical_gpa: bootstrap.next_physical_gpa,
-                    capture_state: Arc::default(),
+                    capture_state: CAPTURE_STATE.clone(),
                 },
             );
         }

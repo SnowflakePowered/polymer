@@ -58,7 +58,11 @@ pub struct Tracking {
     image_cohort: DashMap<(i32, u32, u32, u32), u32>,
     command_tracking: DashMap<vk::CommandBuffer, CommandTrackingState>,
     command_candidate: DashMap<vk::CommandBuffer, (vk::Image, RenderTargetCandidate)>,
-    swapchain_images: DashMap<vk::Image, ()>,
+    /// Presentation images and their bounds. Keep these separate from
+    /// `image_extent`: inserting a swapchain image into the graph's general
+    /// image table makes presentation compositor draws participate in source
+    /// selection and destabilizes the offscreen targets selected for capture.
+    swapchain_images: DashMap<vk::Image, vk::Extent2D>,
     present_rect: DashMap<vk::Image, (vk::Rect2D, u64)>,
 }
 
@@ -415,7 +419,7 @@ impl Tracking {
             &mut paths,
         );
         let selected_extent = self.image_extent(selected_image)?;
-        let presented_extent = self.image_extent(presented_image)?;
+        let presented_extent = self.swapchain_extent(presented_image)?;
         let resolved = paths
             .into_iter()
             .map(|path| {
@@ -863,12 +867,31 @@ mod tests {
     }
 
     #[test]
+    fn swapchain_image_registration_keeps_presentation_extent_out_of_graph_images() {
+        let tracking = Tracking::default();
+        let image = image(1);
+
+        tracking.swapchain_image_added(image, extent(400, 480));
+
+        let tracked = tracking
+            .swapchain_extent(image)
+            .expect("swapchain image extent should be tracked");
+        assert_eq!((tracked.width, tracked.height), (400, 480));
+        assert!(tracking.image_extent(image).is_none());
+        assert!(tracking.is_swapchain_image(image));
+
+        tracking.swapchain_image_removed(image);
+        assert!(tracking.swapchain_extent(image).is_none());
+        assert!(!tracking.is_swapchain_image(image));
+    }
+
+    #[test]
     fn direct_draw_resolves_its_offset_presentation_rectangle() {
         let tracking = Tracking::default();
         let source = image(1);
         let presented_image = image(2);
         tracking.note_image(source, extent(240, 400));
-        tracking.note_image(presented_image, extent(1280, 720));
+        tracking.swapchain_image_added(presented_image, extent(1280, 720));
         tracking.record_edge_placement(
             presented_image,
             source,
@@ -896,7 +919,7 @@ mod tests {
         let presented_image = image(2);
         let source_extent = extent(400, 240);
         tracking.note_image(source, source_extent);
-        tracking.note_image(presented_image, extent(1280, 720));
+        tracking.swapchain_image_added(presented_image, extent(1280, 720));
         tracking.upsert_target(source, source_extent, u64::MAX);
         tracking
             .presented
@@ -927,7 +950,7 @@ mod tests {
         let presented_image = image(3);
         tracking.note_image(source, extent(400, 240));
         tracking.note_image(composite, extent(1280, 720));
-        tracking.note_image(presented_image, extent(1920, 1080));
+        tracking.swapchain_image_added(presented_image, extent(1920, 1080));
         tracking.record_edge_placement(
             composite,
             source,
@@ -961,7 +984,7 @@ mod tests {
         let source = image(1);
         let presented_image = image(2);
         tracking.note_image(source, extent(400, 240));
-        tracking.note_image(presented_image, extent(1280, 720));
+        tracking.swapchain_image_added(presented_image, extent(1280, 720));
         tracking.record_edge_placement(
             presented_image,
             source,
@@ -1058,8 +1081,8 @@ impl Tracking {
         self.render_target.remove(&image);
     }
 
-    pub fn swapchain_image_added(&self, image: vk::Image) {
-        self.swapchain_images.insert(image, ());
+    pub fn swapchain_image_added(&self, image: vk::Image, extent: vk::Extent2D) {
+        self.swapchain_images.insert(image, extent);
     }
 
     pub fn swapchain_image_removed(&self, image: vk::Image) {
@@ -1070,6 +1093,10 @@ impl Tracking {
 
     pub fn is_swapchain_image(&self, image: vk::Image) -> bool {
         self.swapchain_images.contains_key(&image)
+    }
+
+    fn swapchain_extent(&self, image: vk::Image) -> Option<vk::Extent2D> {
+        self.swapchain_images.get(&image).map(|entry| *entry)
     }
 
     pub fn clamp_rect(rect: vk::Rect2D, bounds: vk::Extent2D) -> Option<vk::Rect2D> {

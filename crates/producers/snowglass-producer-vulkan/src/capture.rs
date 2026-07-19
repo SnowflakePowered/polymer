@@ -61,6 +61,9 @@ fn log(message: impl std::fmt::Display) {
 /// stream so the viewer can show the screens as separate surfaces.
 struct CaptureStream {
     extent: vk::Extent2D,
+    surface_id: SurfaceId,
+    target_window: isize,
+    presentation_extent: vk::Extent2D,
     ring: Option<ExportImageRing>,
     producer_timeline: Option<ExportTimelineSemaphore>,
     consumer_timeline: Option<ExportTimelineSemaphore>,
@@ -75,9 +78,18 @@ struct CaptureStream {
 }
 
 impl CaptureStream {
-    fn from_transport(extent: vk::Extent2D, transport: Transport) -> Self {
+    fn from_transport(
+        extent: vk::Extent2D,
+        surface_id: SurfaceId,
+        target_window: isize,
+        presentation_extent: vk::Extent2D,
+        transport: Transport,
+    ) -> Self {
         Self {
             extent,
+            surface_id,
+            target_window,
+            presentation_extent,
             ring: transport.ring,
             producer_timeline: transport.producer_timeline,
             consumer_timeline: transport.consumer_timeline,
@@ -102,6 +114,8 @@ struct SwapchainState {
     format: vk::Format,
     extent: vk::Extent2D,
     source_window: isize,
+    creation_order: u64,
+    window_order: usize,
     images: Vec<vk::Image>,
     /// Stream 0 always exists (the whole-frame capture when nothing is
     /// tracked); additional streams appear per tracked render target.
@@ -125,6 +139,23 @@ struct SwapchainState {
     last_present: u64,
 }
 
+#[derive(Clone)]
+struct GraphPresentation {
+    source_window: isize,
+    presentation_extent: vk::Extent2D,
+    creation_order: u64,
+    window_order: usize,
+    last_present: u64,
+    sources: Vec<tracking::PresentSource>,
+}
+
+#[derive(Clone, Copy)]
+struct PresentationTarget {
+    source_window: isize,
+    presentation_extent: vk::Extent2D,
+    presentation_rect: Option<vk::Rect2D>,
+}
+
 /// Capture state shared by the hook contexts associated with one Vulkan
 /// instance and propagated to its devices and queues.
 #[derive(Default)]
@@ -139,6 +170,19 @@ pub struct CaptureState {
     /// several windows resolves the same screens on every one of them;
     /// without a single owner each window would publish redundant streams.
     tracked_owner: Mutex<Option<(vk::SwapchainKHR, u64)>>,
+    /// Latest graph resolution for each live swapchain. When several windows
+    /// expose the same multi-source graph, source order is paired with stable
+    /// window creation order so input can return to the corresponding window
+    /// even though only one swapchain owns the exported copies.
+    graph_presentations: Mutex<HashMap<vk::SwapchainKHR, GraphPresentation>>,
+    /// Stable presentation targets by graph-source extent. This cache
+    /// deliberately outlives swapchains: resize/recreation and short graph
+    /// gaps or source-list reordering must not send a stream to another HWND.
+    graph_target_layouts: Mutex<HashMap<(u32, u32), PresentationTarget>>,
+    /// Stable HWND order comes from Vulkan surface creation rather than
+    /// swapchain creation: applications can recreate sibling swapchains in a
+    /// different order during resize or startup transitions.
+    window_order: Mutex<Vec<isize>>,
 }
 const CLAIM_HORIZON: u64 = 240;
 
@@ -146,6 +190,181 @@ const CLAIM_HORIZON: u64 = 240;
 const IDLE_STREAM_HORIZON: u64 = 600;
 
 impl CaptureState {
+    fn observe_graph_presentation(
+        &self,
+        swapchain: vk::SwapchainKHR,
+        state: &SwapchainState,
+        sources: &[tracking::PresentSource],
+        now: u64,
+    ) {
+        if !sources.is_empty() {
+            let sources = sources
+                .iter()
+                .map(|source| {
+                    format!(
+                        "{:?}:{}x{}:{}",
+                        source.image,
+                        source.extent.width,
+                        source.extent.height,
+                        source.presentation_rect.map_or_else(
+                            || "?".to_owned(),
+                            |rect| format!(
+                                "{},{}+{}x{}",
+                                rect.offset.x,
+                                rect.offset.y,
+                                rect.extent.width,
+                                rect.extent.height
+                            )
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            log(format!(
+                "snowglass: graph presentation {swapchain:?} window {:#x}: [{sources}]",
+                state.source_window
+            ));
+        }
+        let mut presentations = self
+            .graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if sources.is_empty() {
+            presentations.remove(&swapchain);
+        } else {
+            presentations.insert(
+                swapchain,
+                GraphPresentation {
+                    source_window: state.source_window,
+                    presentation_extent: state.extent,
+                    creation_order: state.creation_order,
+                    window_order: state.window_order,
+                    last_present: now,
+                    sources: sources.to_vec(),
+                },
+            );
+        }
+    }
+
+    fn presentation_targets(
+        &self,
+        owner_window: isize,
+        owner_extent: vk::Extent2D,
+        sources: &[tracking::PresentSource],
+        selected_indices: &[usize],
+        now: u64,
+    ) -> Vec<PresentationTarget> {
+        let fallback = |index: usize| PresentationTarget {
+            source_window: owner_window,
+            presentation_extent: owner_extent,
+            presentation_rect: sources
+                .get(index)
+                .and_then(|source| source.presentation_rect),
+        };
+        let same_layout = |candidate: &GraphPresentation| {
+            candidate.sources.len() == sources.len()
+                && candidate
+                    .sources
+                    .iter()
+                    .zip(sources)
+                    .all(|(candidate, source)| candidate.extent == source.extent)
+        };
+        let presentations = self
+            .graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut by_window = HashMap::<isize, GraphPresentation>::new();
+        for candidate in presentations.values().filter(|candidate| {
+            candidate.source_window != 0
+                && now.saturating_sub(candidate.last_present) <= CLAIM_HORIZON
+                && same_layout(candidate)
+        }) {
+            match by_window.entry(candidate.source_window) {
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if entry.get().creation_order < candidate.creation_order =>
+                {
+                    entry.insert(candidate.clone());
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate.clone());
+                }
+                _ => {}
+            }
+        }
+        let mut candidates = by_window.values().cloned().collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|candidate| candidate.window_order);
+        let discovered = (sources.len() >= 2 && candidates.len() >= sources.len()).then(|| {
+            assign_presentation_candidates(sources, &candidates)
+                .into_iter()
+                .enumerate()
+                .map(|(index, candidate_index)| {
+                    let candidate = &candidates[candidate_index];
+                    PresentationTarget {
+                        source_window: candidate.source_window,
+                        presentation_extent: candidate.presentation_extent,
+                        presentation_rect: candidate
+                            .sources
+                            .get(index)
+                            .and_then(|source| source.presentation_rect),
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
+        drop(presentations);
+        let mut layouts = self
+            .graph_target_layouts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(discovered) = discovered {
+            for (source, target) in sources.iter().zip(discovered) {
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    layouts.entry((source.extent.width, source.extent.height))
+                {
+                    log(format!(
+                        "snowglass: graph target layout {}x{} -> window {:#x} ({}x{})",
+                        source.extent.width,
+                        source.extent.height,
+                        target.source_window,
+                        target.presentation_extent.width,
+                        target.presentation_extent.height,
+                    ));
+                    entry.insert(target);
+                }
+            }
+        }
+
+        selected_indices
+            .iter()
+            .map(|&index| {
+                let Some(source) = sources.get(index) else {
+                    return fallback(index);
+                };
+                let key = (source.extent.width, source.extent.height);
+                let Some(cached) = layouts.get(&key).copied() else {
+                    return fallback(index);
+                };
+                // Only the HWND is sticky; the window's geometry is not. A
+                // resize recreates the swapchain with a new extent, and
+                // coordinates sent against the discovery-time extent would
+                // land on the old letterbox. Re-derive extent and placement
+                // from the window's live presentation whenever one exists.
+                let Some(live) = by_window.get(&cached.source_window) else {
+                    return cached;
+                };
+                let refreshed = PresentationTarget {
+                    source_window: cached.source_window,
+                    presentation_extent: live.presentation_extent,
+                    presentation_rect: live
+                        .sources
+                        .get(index)
+                        .and_then(|source| source.presentation_rect),
+                };
+                layouts.insert(key, refreshed);
+                refreshed
+            })
+            .collect()
+    }
+
     fn claim_tracked_streaming(&self, swapchain: vk::SwapchainKHR, now: u64) -> bool {
         let mut owner = self
             .tracked_owner
@@ -195,10 +414,117 @@ impl CaptureState {
     }
 }
 
+fn assign_presentation_candidates(
+    sources: &[tracking::PresentSource],
+    candidates: &[GraphPresentation],
+) -> Vec<usize> {
+    if sources.len() > 8 || candidates.len() > 16 {
+        return (0..sources.len()).collect();
+    }
+
+    fn visit(
+        source_index: usize,
+        sources: &[tracking::PresentSource],
+        candidates: &[GraphPresentation],
+        used: u16,
+        cost: u128,
+        current: &mut Vec<usize>,
+        best: &mut Option<(u128, Vec<usize>)>,
+    ) {
+        if source_index == sources.len() {
+            if best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost) {
+                *best = Some((cost, current.clone()));
+            }
+            return;
+        }
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            let bit = 1u16 << candidate_index;
+            if used & bit != 0 {
+                continue;
+            }
+            let next_cost = cost.saturating_add(presentation_candidate_cost(
+                source_index,
+                sources[source_index].extent,
+                candidate,
+            ));
+            if best
+                .as_ref()
+                .is_some_and(|(best_cost, _)| next_cost >= *best_cost)
+            {
+                continue;
+            }
+            current.push(candidate_index);
+            visit(
+                source_index + 1,
+                sources,
+                candidates,
+                used | bit,
+                next_cost,
+                current,
+                best,
+            );
+            current.pop();
+        }
+    }
+
+    let mut best = None;
+    visit(
+        0,
+        sources,
+        candidates,
+        0,
+        0,
+        &mut Vec::with_capacity(sources.len()),
+        &mut best,
+    );
+    best.map_or_else(
+        || (0..sources.len()).collect(),
+        |(_, assignment)| assignment,
+    )
+}
+
+fn presentation_candidate_cost(
+    source_index: usize,
+    source: vk::Extent2D,
+    candidate: &GraphPresentation,
+) -> u128 {
+    let target = candidate.presentation_extent;
+    let direct = (u128::from(source.width) * u128::from(target.height))
+        .abs_diff(u128::from(source.height) * u128::from(target.width));
+    let transposed = (u128::from(source.height) * u128::from(target.height))
+        .abs_diff(u128::from(source.width) * u128::from(target.width));
+    let aspect_error = direct.min(transposed);
+    let presentation_rect = candidate
+        .sources
+        .get(source_index)
+        .and_then(|source| source.presentation_rect);
+    let missing_placement = u128::from(presentation_rect.is_none());
+    let target_area = u128::from(target.width) * u128::from(target.height);
+    let covered_area = presentation_rect.map_or(0, |rect| {
+        u128::from(rect.extent.width) * u128::from(rect.extent.height)
+    });
+    let uncovered_area = target_area.saturating_sub(covered_area.min(target_area));
+    (missing_placement << 120) | (aspect_error << 48) | uncovered_area.min((1u128 << 48) - 1)
+}
+
 /// Stable logical identity for one of a window's capture streams. It is kept
 /// separate from the real HWND so every stream can route input to the window.
 fn stream_surface_id(source_window: isize, index: usize) -> SurfaceId {
     SurfaceId(source_window as u64 ^ ((index as u64) << 56))
+}
+
+/// Graph selections are indexed independently of capture ownership and their
+/// presentation HWND. Keeping this identity stable preserves viewer ordering,
+/// CLI rotation, and replacement across swapchain recreation.
+fn graph_surface_id(index: usize) -> SurfaceId {
+    const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
+    SurfaceId(GRAPH_SURFACE_TAG | index as u64)
+}
+
+fn is_graph_surface_id(surface_id: SurfaceId) -> bool {
+    const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
+    const GRAPH_SURFACE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
+    surface_id.0 & GRAPH_SURFACE_TAG_MASK == GRAPH_SURFACE_TAG
 }
 
 struct ViewerConnection {
@@ -522,6 +848,13 @@ fn create_transport(
 impl CaptureState {
     pub fn surface_created(&self, surface: vk::SurfaceKHR, source_window: isize) {
         self.surface_windows.insert(surface, source_window);
+        let mut windows = self
+            .window_order
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if source_window != 0 && !windows.contains(&source_window) {
+            windows.push(source_window);
+        }
         log(format!(
             "snowglass: associated Vulkan surface with HWND {source_window:#x}"
         ));
@@ -533,6 +866,11 @@ impl CaptureState {
 
     pub fn device_destroyed(&self, device: vk::Device) {
         self.swapchains.retain(|_, state| state.device != device);
+        let mut presentations = self
+            .graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        presentations.retain(|swapchain, _| self.swapchains.contains_key(swapchain));
     }
 
     pub fn swapchain_created(
@@ -551,6 +889,14 @@ impl CaptureState {
             .get(&surface)
             .map(|entry| *entry)
             .unwrap_or(0);
+        let window_order = self
+            .window_order
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .position(|window| *window == source_window)
+            .unwrap_or(usize::MAX);
+        let surface_id = stream_surface_id(source_window, 0);
         let transport = capture.as_deref().map_or(
             Transport {
                 ring: None,
@@ -558,15 +904,7 @@ impl CaptureState {
                 consumer_timeline: None,
                 ipc: None,
             },
-            |capture| {
-                create_transport(
-                    Some(capture),
-                    extent,
-                    format,
-                    stream_surface_id(source_window, 0),
-                    source_window,
-                )
-            },
+            |capture| create_transport(Some(capture), extent, format, surface_id, source_window),
         );
         self.swapchains.insert(
             swapchain,
@@ -577,8 +915,16 @@ impl CaptureState {
                 format,
                 extent,
                 source_window,
+                creation_order: count,
+                window_order,
                 images: Vec::new(),
-                streams: vec![CaptureStream::from_transport(extent, transport)],
+                streams: vec![CaptureStream::from_transport(
+                    extent,
+                    surface_id,
+                    source_window,
+                    extent,
+                    transport,
+                )],
                 untracked_presents: 0,
                 pending_layout: Vec::new(),
                 pending_presents: 0,
@@ -599,6 +945,10 @@ impl CaptureState {
             }
         }
         self.swapchains.remove(&swapchain);
+        self.graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&swapchain);
         // A freed claim lets a surviving window take over the tracked streams.
         self.release_tracked_streaming(swapchain);
     }
@@ -609,7 +959,7 @@ impl CaptureState {
             if config::tracking_enabled() {
                 for image in &state.images {
                     self.swapchain_images.insert(*image, swapchain);
-                    state.tracking.swapchain_image_added(*image);
+                    state.tracking.swapchain_image_added(*image, state.extent);
                 }
             }
             log(format!(
@@ -711,11 +1061,25 @@ impl CaptureState {
             resolved = merged;
         }
         resolved.truncate(config::tracked_render_target_count().unwrap_or(1));
+        let now = self.presents_seen.load(Ordering::Relaxed);
+        self.observe_graph_presentation(swapchain, state, &resolved, now);
+        let requested_indices = config::tracked_render_target_indices().unwrap_or_else(|| vec![0]);
+        let selected_indices = requested_indices
+            .iter()
+            .copied()
+            .filter(|&index| index < resolved.len())
+            .collect::<Vec<_>>();
+        let graph_targets = self.presentation_targets(
+            state.source_window,
+            state.extent,
+            &resolved,
+            &selected_indices,
+            now,
+        );
         state.tracked_sources = resolved.clone();
         // Several windows resolve the same screens; the incumbent owner streams
         // them and the others stream nothing rather than publishing duplicates
         // that race for viewer surfaces.
-        let now = self.presents_seen.load(Ordering::Relaxed);
         state.last_present = now;
         let claimed_elsewhere =
             !resolved.is_empty() && !self.claim_tracked_streaming(swapchain, now);
@@ -725,8 +1089,7 @@ impl CaptureState {
         }
         // The caller tracks selection entries by index; each requested index
         // becomes its own stream, in request order.
-        let graph_sources = config::tracked_render_target_indices()
-            .unwrap_or_else(|| vec![0])
+        let graph_sources = selected_indices
             .iter()
             .filter_map(|&index| resolved.get(index).copied())
             .collect::<Vec<_>>();
@@ -793,33 +1156,119 @@ impl CaptureState {
             }
         }
         let format = state.format;
-        let source_window = state.source_window;
+        let keep_tracked_metadata =
+            graph_sources.is_empty() && tracked_layout && desired == current;
         for (index, extent) in desired.iter().copied().enumerate() {
-            let surface_id = stream_surface_id(source_window, index);
+            let proposed_target = graph_targets.get(index).copied().unwrap_or_else(|| {
+                if !keep_tracked_metadata {
+                    return PresentationTarget {
+                        source_window: state.source_window,
+                        presentation_extent: state.extent,
+                        presentation_rect: None,
+                    };
+                }
+                state.streams.get(index).map_or(
+                    PresentationTarget {
+                        source_window: state.source_window,
+                        presentation_extent: state.extent,
+                        presentation_rect: None,
+                    },
+                    |stream| PresentationTarget {
+                        source_window: stream.target_window,
+                        presentation_extent: stream.presentation_extent,
+                        presentation_rect: None,
+                    },
+                )
+            });
+            let existing = state
+                .streams
+                .get(index)
+                .filter(|stream| stream.extent == extent);
+            // A partial graph resolution must not downgrade an established
+            // cross-window association back to the owner HWND. The full graph
+            // will refresh frame assignment when it returns; transport metadata
+            // remains latched in the meantime.
+            let target = existing
+                .filter(|stream| {
+                    is_graph_surface_id(stream.surface_id)
+                        && stream.target_window != state.source_window
+                        && proposed_target.source_window == state.source_window
+                })
+                .map_or(proposed_target, |stream| PresentationTarget {
+                    source_window: stream.target_window,
+                    presentation_extent: stream.presentation_extent,
+                    presentation_rect: proposed_target.presentation_rect,
+                });
+            let proposed_surface_id = selected_indices.get(index).map_or_else(
+                || {
+                    if keep_tracked_metadata {
+                        state.streams.get(index).map_or_else(
+                            || stream_surface_id(state.source_window, index),
+                            |stream| stream.surface_id,
+                        )
+                    } else {
+                        stream_surface_id(state.source_window, index)
+                    }
+                },
+                |_| graph_surface_id(index),
+            );
+            let surface_id = existing
+                .filter(|stream| is_graph_surface_id(stream.surface_id))
+                .map_or(proposed_surface_id, |stream| stream.surface_id);
             if index >= state.streams.len() {
+                log(format!(
+                    "snowglass: stream {index} ({}x{}, surface {:#x}) targets window {:#x}",
+                    extent.width, extent.height, surface_id.0, target.source_window
+                ));
                 let transport = create_transport(
                     state.capture.as_deref(),
                     extent,
                     format,
                     surface_id,
-                    source_window,
+                    target.source_window,
                 );
-                state
-                    .streams
-                    .push(CaptureStream::from_transport(extent, transport));
+                state.streams.push(CaptureStream::from_transport(
+                    extent,
+                    surface_id,
+                    target.source_window,
+                    target.presentation_extent,
+                    transport,
+                ));
                 continue;
             }
             let stream = &mut state.streams[index];
-            if stream.extent != extent && (stream.copy_engine.is_some() || stream.ring.is_some()) {
+            if stream.extent != extent
+                || stream.surface_id != surface_id
+                || stream.target_window != target.source_window
+            {
+                log(format!(
+                    "snowglass: stream {index} ({}x{}, surface {:#x}) retargets window {:#x} -> {:#x}",
+                    extent.width,
+                    extent.height,
+                    surface_id.0,
+                    stream.target_window,
+                    target.source_window
+                ));
                 stream.retire();
                 let transport = create_transport(
                     state.capture.as_deref(),
                     extent,
                     format,
                     surface_id,
-                    source_window,
+                    target.source_window,
                 );
-                *stream = CaptureStream::from_transport(extent, transport);
+                *stream = CaptureStream::from_transport(
+                    extent,
+                    surface_id,
+                    target.source_window,
+                    target.presentation_extent,
+                    transport,
+                );
+            } else if stream.presentation_extent != target.presentation_extent {
+                // A window resize changes only presentation geometry, which
+                // travels per frame; rebuilding the transport would churn the
+                // viewer connection for metadata.
+                stream.presentation_extent = target.presentation_extent;
             }
         }
         let presentation_source =
@@ -907,21 +1356,20 @@ impl CaptureState {
                     capture.adapter_luid,
                     stream.extent,
                     format,
-                    stream_surface_id(source_window, index),
-                    source_window,
+                    stream.surface_id,
+                    stream.target_window,
                 );
             }
             let Some(engine) = stream.copy_engine.as_mut() else {
                 continue;
             };
-            let source = assigned
-                .get(index)
-                .copied()
-                .flatten()
-                .map(|source| &graph_sources[source]);
+            let assigned_source = assigned.get(index).copied().flatten();
+            let source = assigned_source.map(|source| &graph_sources[source]);
             // During a selection gap a tracked stream has no source this frame;
             // the whole-frame fallbacks only make sense at swapchain extent.
-            if source.is_none() && stream.extent != swapchain_extent {
+            if source.is_none()
+                && (is_graph_surface_id(stream.surface_id) || stream.extent != swapchain_extent)
+            {
                 continue;
             }
             let render_extent = match source {
@@ -969,8 +1417,10 @@ impl CaptureState {
                     stream.frame_number += 1;
                     let cropped =
                         source.is_none() && (rect_is_content || presentation_source.is_some());
-                    let presentation_rect = if let Some(source) = source {
-                        source.presentation_rect
+                    let presentation_rect = if source.is_some() {
+                        assigned_source
+                            .and_then(|source| graph_targets.get(source))
+                            .and_then(|target| target.presentation_rect)
                     } else if cropped {
                         capture_rect
                     } else {
@@ -990,8 +1440,8 @@ impl CaptureState {
                             .map_or(render_extent.width, |rect| rect.extent.width),
                         capture_height: presentation_rect
                             .map_or(render_extent.height, |rect| rect.extent.height),
-                        presentation_width: swapchain_extent.width,
-                        presentation_height: swapchain_extent.height,
+                        presentation_width: stream.presentation_extent.width,
+                        presentation_height: stream.presentation_extent.height,
                         presentation_transform: if presentation_source.is_some() {
                             PresentationTransform::UNAVAILABLE
                         } else if let Some(rect) = presentation_rect {
@@ -1017,8 +1467,20 @@ impl CaptureState {
                         stream.ipc = None;
                     }
                     if count == 1 || count % 120 == 0 {
+                        let placement = presentation_rect.map_or_else(
+                            || "unavailable".to_owned(),
+                            |rect| {
+                                format!(
+                                    "{},{} {}x{}",
+                                    rect.offset.x,
+                                    rect.offset.y,
+                                    rect.extent.width,
+                                    rect.extent.height,
+                                )
+                            },
+                        );
                         log(format!(
-                            "snowglass: submitted capture {}x{} (count={count}, stream={index}, tracked={})",
+                            "snowglass: submitted capture {}x{} (count={count}, stream={index}, tracked={}, placement={placement})",
                             render_extent.width,
                             render_extent.height,
                             source.is_some(),
@@ -1154,6 +1616,40 @@ impl CaptureState {
 mod tests {
     use super::*;
 
+    fn graph_source(image: u64, width: u32, height: u32) -> tracking::PresentSource {
+        tracking::PresentSource {
+            image: vk::Image::from_raw(image),
+            extent: vk::Extent2D { width, height },
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            presentation_rect: Some(vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: 400,
+                    height: 480,
+                },
+            }),
+        }
+    }
+
+    fn graph_presentation(
+        source_window: isize,
+        creation_order: u64,
+        window_order: usize,
+        sources: &[tracking::PresentSource],
+    ) -> GraphPresentation {
+        GraphPresentation {
+            source_window,
+            presentation_extent: vk::Extent2D {
+                width: 400,
+                height: 480,
+            },
+            creation_order,
+            window_order,
+            last_present: 100,
+            sources: sources.to_vec(),
+        }
+    }
+
     #[test]
     fn capture_states_are_isolated() {
         let first = CaptureState::default();
@@ -1167,5 +1663,271 @@ mod tests {
             Some(42)
         );
         assert!(!second.surface_windows.contains_key(&surface));
+    }
+
+    #[test]
+    fn graph_surface_identity_does_not_depend_on_its_target_window() {
+        assert_eq!(graph_surface_id(1), SurfaceId(0x5347_0000_0000_0001));
+        assert_ne!(graph_surface_id(0), graph_surface_id(1));
+        assert_ne!(graph_surface_id(1), stream_surface_id(20, 1));
+        assert!(is_graph_surface_id(graph_surface_id(1)));
+        assert!(!is_graph_surface_id(stream_surface_id(20, 1)));
+    }
+
+    #[test]
+    fn shared_graph_targets_follow_surface_order_not_recreated_swapchain_order() {
+        let capture = CaptureState::default();
+        let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            // Azahar recreates the secondary swapchain before the primary one.
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(30),
+                graph_presentation(20, 3, 1, &sources),
+            );
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(40),
+                graph_presentation(10, 4, 0, &sources),
+            );
+        }
+
+        let targets = capture.presentation_targets(
+            10,
+            vk::Extent2D {
+                width: 400,
+                height: 480,
+            },
+            &sources,
+            &[0, 1],
+            100,
+        );
+
+        assert_eq!(targets[0].source_window, 10);
+        assert_eq!(targets[1].source_window, 20);
+    }
+
+    #[test]
+    fn graph_targets_match_transposed_source_aspects_to_separate_windows() {
+        let capture = CaptureState::default();
+        let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
+        let mut bottom = graph_presentation(20, 1, 0, &sources);
+        bottom.presentation_extent = vk::Extent2D {
+            width: 320,
+            height: 240,
+        };
+        let mut top = graph_presentation(10, 2, 1, &sources);
+        top.presentation_extent = vk::Extent2D {
+            width: 400,
+            height: 240,
+        };
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            // Deliberately put the bottom HWND first. Source 0 is still the
+            // 400x240 top screen after its configured quarter turn.
+            presentations.insert(vk::SwapchainKHR::from_raw(1), bottom);
+            presentations.insert(vk::SwapchainKHR::from_raw(2), top);
+        }
+
+        let targets = capture.presentation_targets(
+            10,
+            vk::Extent2D {
+                width: 400,
+                height: 240,
+            },
+            &sources,
+            &[0, 1],
+            100,
+        );
+
+        assert_eq!(targets[0].source_window, 10);
+        assert_eq!(targets[1].source_window, 20);
+    }
+
+    #[test]
+    fn discovered_graph_target_mapping_is_not_overwritten_by_later_order_changes() {
+        let capture = CaptureState::default();
+        let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(1),
+                graph_presentation(10, 1, 0, &sources),
+            );
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(2),
+                graph_presentation(20, 2, 1, &sources),
+            );
+        }
+        let extent = vk::Extent2D {
+            width: 400,
+            height: 480,
+        };
+        let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
+        assert_eq!(initial[0].source_window, 10);
+        assert_eq!(initial[1].source_window, 20);
+
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            presentations.clear();
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(3),
+                graph_presentation(20, 3, 0, &sources),
+            );
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(4),
+                graph_presentation(10, 4, 1, &sources),
+            );
+        }
+        let stable = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
+        assert_eq!(stable[0].source_window, 10);
+        assert_eq!(stable[1].source_window, 20);
+    }
+
+    #[test]
+    fn shared_graph_targets_survive_selection_gaps_and_swapchain_replacement() {
+        let capture = CaptureState::default();
+        let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(1),
+                graph_presentation(10, 1, 0, &sources),
+            );
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(2),
+                graph_presentation(20, 2, 1, &sources),
+            );
+        }
+        let extent = vk::Extent2D {
+            width: 400,
+            height: 480,
+        };
+        let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
+        assert_eq!(initial[1].source_window, 20);
+
+        // Destruction removes swapchain observations, but not the stable
+        // source-layout association used by replacement swapchains.
+        capture
+            .graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        let during_gap = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
+        assert_eq!(during_gap[0].source_window, 10);
+        assert_eq!(during_gap[1].source_window, 20);
+
+        let mut presentations = capture
+            .graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        presentations.insert(
+            vk::SwapchainKHR::from_raw(3),
+            graph_presentation(20, 3, 1, &sources),
+        );
+        presentations.insert(
+            vk::SwapchainKHR::from_raw(4),
+            graph_presentation(10, 4, 0, &sources),
+        );
+        drop(presentations);
+        let recreated = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
+        assert_eq!(recreated[0].source_window, 10);
+        assert_eq!(recreated[1].source_window, 20);
+    }
+
+    #[test]
+    fn graph_target_geometry_follows_window_resize() {
+        let capture = CaptureState::default();
+        let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(1),
+                graph_presentation(10, 1, 0, &sources),
+            );
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(2),
+                graph_presentation(20, 2, 1, &sources),
+            );
+        }
+        let extent = vk::Extent2D {
+            width: 400,
+            height: 480,
+        };
+        let dimensions =
+            |extent: vk::Extent2D| (extent.width, extent.height);
+        let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
+        assert_eq!(initial[1].source_window, 20);
+        assert_eq!(dimensions(initial[1].presentation_extent), (400, 480));
+
+        // The secondary window is resized: its swapchain is recreated with a
+        // larger extent and its presents carry the new placement. The sticky
+        // HWND association must keep following the live geometry.
+        let resized_extent = vk::Extent2D {
+            width: 800,
+            height: 600,
+        };
+        let resized_rect = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: resized_extent,
+        };
+        let resized_sources = sources.map(|source| tracking::PresentSource {
+            presentation_rect: Some(resized_rect),
+            ..source
+        });
+        {
+            let mut presentations = capture
+                .graph_presentations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            presentations.clear();
+            presentations.insert(
+                vk::SwapchainKHR::from_raw(3),
+                graph_presentation(10, 3, 0, &sources),
+            );
+            let mut resized = graph_presentation(20, 4, 1, &resized_sources);
+            resized.presentation_extent = resized_extent;
+            presentations.insert(vk::SwapchainKHR::from_raw(4), resized);
+        }
+
+        let refreshed = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
+        assert_eq!(refreshed[0].source_window, 10);
+        assert_eq!(dimensions(refreshed[0].presentation_extent), (400, 480));
+        assert_eq!(refreshed[1].source_window, 20);
+        assert_eq!(dimensions(refreshed[1].presentation_extent), (800, 600));
+        let rect = refreshed[1]
+            .presentation_rect
+            .expect("resized placement is carried through");
+        assert_eq!((rect.offset.x, rect.offset.y), (0, 0));
+        assert_eq!(dimensions(rect.extent), (800, 600));
+
+        // The refreshed geometry is retained as the last-known value while
+        // the window's presents drop out (a minimized window keeps routing
+        // against its last live geometry).
+        capture
+            .graph_presentations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        let idle = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
+        assert_eq!(idle[1].source_window, 20);
+        assert_eq!(dimensions(idle[1].presentation_extent), (800, 600));
     }
 }

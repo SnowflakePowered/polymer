@@ -225,6 +225,7 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
         capture_height: presentation_rect.3,
         presentation_width: presentation_extent.0,
         presentation_height: presentation_extent.1,
+        presentation_flip_y: false,
         presentation_transform: if tracked_source.is_some() {
             // The current graph tracker identifies the sampled resource and
             // destination bounds, but not the shader's UV orientation yet.

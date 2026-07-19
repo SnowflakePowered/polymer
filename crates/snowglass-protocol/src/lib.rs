@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 /// Fractional bits used by coordinates in [`PresentationPoint`].
 pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
 pub const MAX_IMAGE_SLOTS: usize = 4;
@@ -143,8 +143,9 @@ pub struct FrameReady {
     /// dimensions determine the image's displayed aspect ratio.
     pub render_width: u32,
     pub render_height: u32,
-    /// Axis-aligned bounds of the captured image in the target presentation.
-    /// The exact orientation is described by `presentation_transform`.
+    /// Axis-aligned bounds of the captured image in the producer's
+    /// presentation coordinate space. The exact orientation is described by
+    /// `presentation_transform`.
     pub capture_x: u32,
     pub capture_y: u32,
     pub capture_width: u32,

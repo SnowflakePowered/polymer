@@ -7,6 +7,7 @@ mod install;
 mod runtime;
 mod sys;
 mod vtable;
+mod window_message;
 
 pub(crate) type DirectInput8CreateFn = unsafe extern "system" fn(
     windows_sys::Win32::Foundation::HINSTANCE,

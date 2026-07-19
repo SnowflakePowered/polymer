@@ -31,6 +31,7 @@ pub(crate) fn runtime() -> Arc<crate::runtime::Runtime> {
 pub(crate) unsafe fn install() -> HRESULT {
     if let Some(installation) = DIRECT_INPUT_8_CREATE.get() {
         return if installation.detour.is_enabled() {
+            installation.runtime.start_input_receiver();
             0
         } else {
             E_FAIL
@@ -57,7 +58,14 @@ pub(crate) unsafe fn install() -> HRESULT {
             .detour
             .enable()
     } {
-        Ok(()) => 0,
+        Ok(()) => {
+            DIRECT_INPUT_8_CREATE
+                .get()
+                .expect("detour was set")
+                .runtime
+                .start_input_receiver();
+            0
+        }
         Err(_) => E_FAIL,
     }
 }

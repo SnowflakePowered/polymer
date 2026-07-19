@@ -4,11 +4,13 @@ use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_hook::config;
-use snowglass_input::{DirectInputData, DirectInputDevice};
+use snowglass_input::mouse::{
+    PointerPhase,
+    layout::Extent,
+};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
-    KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, client_size, forward_character,
-    forward_mouse_button, forward_mouse_move, forward_mouse_wheel, forward_raw_key,
+    KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, forward_character,
     inject_libraries_before_resume, performance_counter, performance_frequency,
 };
 use snowglass_protocol::{
@@ -25,7 +27,7 @@ use std::{
     process::{Child, Command},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -34,147 +36,23 @@ use std::{
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::{
     dpi::LogicalSize,
-    event::{DeviceEvent, ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
 
 mod d3d12;
+mod input;
 mod webrtc;
 
+use input::{
+    dinput::{
+        DirectInputForwarder, RawKeyboardForwarder, cancel_pointer_connection, spawn_input_ipc,
+    },
+    pointer::{DisplayedSurface, PointerRoutingState, PointerTarget, mouse_button},
+};
+
 const FRAMES_IN_FLIGHT: usize = 2;
-
-struct RawKeyboardContext {
-    sender: mpsc::Sender<DirectInputData>,
-    backing_window: Arc<AtomicIsize>,
-    sequence: AtomicU32,
-    started: Instant,
-    pressed: [bool; 256],
-}
-
-struct RawKeyboardForwarder {
-    window: isize,
-    context: *mut RawKeyboardContext,
-}
-
-impl RawKeyboardForwarder {
-    fn install(
-        window: NativeWindow,
-        sender: mpsc::Sender<DirectInputData>,
-        backing_window: Arc<AtomicIsize>,
-    ) -> std::io::Result<Self> {
-        use windows_sys::Win32::UI::{
-            Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices},
-            Shell::SetWindowSubclass,
-        };
-        let context = Box::into_raw(Box::new(RawKeyboardContext {
-            sender,
-            backing_window,
-            sequence: AtomicU32::new(0),
-            started: Instant::now(),
-            pressed: [false; 256],
-        }));
-        let device = RAWINPUTDEVICE {
-            usUsagePage: 1,
-            usUsage: 6,
-            dwFlags: RIDEV_INPUTSINK,
-            hwndTarget: window.0 as _,
-        };
-        if unsafe {
-            RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32)
-        } == 0
-            || unsafe {
-                SetWindowSubclass(
-                    window.0 as _,
-                    Some(raw_keyboard_subclass),
-                    context as usize,
-                    context as usize,
-                )
-            } == 0
-        {
-            unsafe { drop(Box::from_raw(context)) };
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self {
-            window: window.0,
-            context,
-        })
-    }
-}
-
-impl Drop for RawKeyboardForwarder {
-    fn drop(&mut self) {
-        use windows_sys::Win32::UI::Shell::RemoveWindowSubclass;
-        unsafe {
-            RemoveWindowSubclass(
-                self.window as _,
-                Some(raw_keyboard_subclass),
-                self.context as usize,
-            );
-            drop(Box::from_raw(self.context));
-        }
-    }
-}
-
-unsafe extern "system" fn raw_keyboard_subclass(
-    window: windows_sys::Win32::Foundation::HWND,
-    message: u32,
-    wparam: windows_sys::Win32::Foundation::WPARAM,
-    lparam: windows_sys::Win32::Foundation::LPARAM,
-    _id: usize,
-    context: usize,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::UI::{
-        Input::{GetRawInputData, RAWINPUT, RID_INPUT, RIM_TYPEKEYBOARD},
-        Shell::DefSubclassProc,
-        WindowsAndMessaging::{RI_KEY_BREAK, RI_KEY_E0, RI_KEY_E1, WM_INPUT},
-    };
-    if message == WM_INPUT {
-        let mut input = RAWINPUT::default();
-        let mut size = std::mem::size_of::<RAWINPUT>() as u32;
-        if unsafe {
-            GetRawInputData(
-                lparam as _,
-                RID_INPUT,
-                (&mut input as *mut RAWINPUT).cast(),
-                &mut size,
-                std::mem::size_of_val(&input.header) as u32,
-            )
-        } != u32::MAX
-            && input.header.dwType == RIM_TYPEKEYBOARD
-        {
-            let keyboard = unsafe { input.data.keyboard };
-            if keyboard.MakeCode != 0 {
-                let extended = keyboard.Flags & (RI_KEY_E0 | RI_KEY_E1) as u16 != 0;
-                let offset = u32::from(keyboard.MakeCode) | u32::from(extended) * 0x80;
-                let context = unsafe { &mut *(context as *mut RawKeyboardContext) };
-                let pressed = keyboard.Flags & RI_KEY_BREAK as u16 == 0;
-                let repeat = pressed && context.pressed[offset as usize];
-                context.pressed[offset as usize] = pressed;
-                let sequence = context.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-                let _ = context.sender.send(DirectInputData {
-                    device: DirectInputDevice::Keyboard,
-                    offset,
-                    data: if pressed { 0x80 } else { 0 },
-                    timestamp: context.started.elapsed().as_millis() as u32,
-                    sequence,
-                });
-                let backing = context.backing_window.load(Ordering::Acquire);
-                if backing != 0 {
-                    forward_raw_key(
-                        NativeWindow(backing),
-                        u32::from(keyboard.VKey),
-                        keyboard.MakeCode,
-                        extended,
-                        pressed,
-                        repeat,
-                    );
-                }
-            }
-        }
-    }
-    unsafe { DefSubclassProc(window, message, wparam, lparam) }
-}
 
 enum CaptureEvent {
     Stream(u64, StreamReady, mpsc::SyncSender<bool>),
@@ -212,6 +90,7 @@ struct StatisticsSample {
 
 struct ImportedVulkanSurface {
     connection: u64,
+    surface_id: u64,
     imported: ImportedImageRing,
     flip_y: bool,
     quarter_turns: u8,
@@ -222,7 +101,6 @@ struct ImportedVulkanSurface {
     video_cache: Option<VulkanVideoCache>,
     video_completion_value: u64,
 }
-
 
 struct VulkanRotation {
     stage_image: vk::Image,
@@ -438,6 +316,29 @@ fn should_replace_same_window_backend(hooks: &[HookBackend], existing: u8, incom
     }
 }
 
+fn matching_surface_connection(
+    active: &HashMap<u64, (u64, u8)>,
+    surface_id: u64,
+) -> Option<(u64, u8)> {
+    active
+        .iter()
+        .find_map(|(&connection, &(existing, backend))| {
+            (existing == surface_id).then_some((connection, backend))
+        })
+}
+
+fn graph_surface_index(surface_id: u64) -> Option<u32> {
+    const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
+    const GRAPH_SURFACE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
+    (surface_id & GRAPH_SURFACE_TAG_MASK == GRAPH_SURFACE_TAG)
+        .then_some(surface_id & !GRAPH_SURFACE_TAG_MASK)
+        .and_then(|index| u32::try_from(index).ok())
+}
+
+fn surface_sort_key(surface_id: u64) -> (u8, u64) {
+    graph_surface_index(surface_id).map_or((1, surface_id), |index| (0, u64::from(index)))
+}
+
 impl ViewerCompositor {
     fn new(window: &Window, api: ViewerApi, publish_video: bool) -> Result<Self, Box<dyn Error>> {
         match api {
@@ -513,6 +414,14 @@ impl ViewerCompositor {
             Self::Vulkan(value) => value.set_latest(connection, frame),
             Self::D3d12(value) => value.set_latest(connection, frame),
             Self::Empty => {}
+        }
+    }
+
+    fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
+        match self {
+            Self::Vulkan(value) => value.displayed_surfaces(),
+            Self::D3d12(value) => value.displayed_surfaces(),
+            Self::Empty => Vec::new(),
         }
     }
 
@@ -966,6 +875,7 @@ impl DirectCompositor {
         };
         self.surfaces.push(ImportedVulkanSurface {
             connection,
+            surface_id: stream.surface_id.0,
             imported,
             flip_y: stream.bottom_up,
             quarter_turns,
@@ -976,6 +886,8 @@ impl DirectCompositor {
             video_cache,
             video_completion_value: 0,
         });
+        self.surfaces
+            .sort_by_key(|surface| surface_sort_key(surface.surface_id));
         Ok(())
     }
 
@@ -1065,6 +977,32 @@ impl DirectCompositor {
         {
             surface.latest = Some(frame);
         }
+    }
+
+    fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| {
+                let frame = surface.latest?;
+                let (width, height) = fit_inside(
+                    frame.render_width.max(1),
+                    frame.render_height.max(1),
+                    surface.imported.width,
+                    surface.imported.height,
+                );
+                let image_extent = if surface.quarter_turns % 2 == 1 {
+                    Extent::new(height, width)
+                } else {
+                    Extent::new(width, height)
+                };
+                Some(DisplayedSurface {
+                    connection: surface.connection,
+                    image_extent,
+                    flip_y: surface.flip_y,
+                    frame,
+                })
+            })
+            .collect()
     }
 
     fn has_pending_frame(&self) -> bool {
@@ -1985,9 +1923,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_target()?;
     let target = options.target;
     let track_render_targets = options.track_render_targets;
-    // Rotation is applied viewer-side while compositing; the producer only
-    // needs the selection indices. Entry order matches stream arrival order,
-    // which is how `stream_index` values are assigned below.
+    // Rotation is applied viewer-side while compositing. Vulkan graph surface
+    // IDs encode this entry order, so reconnect and arrival order cannot move
+    // a rotation to another tracked target.
     let render_target_rotations = track_render_targets
         .as_ref()
         .map(|targets| {
@@ -2035,8 +1973,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let listener = LocalSocketListener::bind(&session)?;
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
-    let (input_tx, input_rx) = mpsc::channel();
-    spawn_input_ipc(input_listener, input_rx);
+    let input_tx = spawn_input_ipc(input_listener);
     let hooks = options.hooks;
     let target_process = launch_target(
         &target,
@@ -2090,15 +2027,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         sample_started: Some(Instant::now()),
         ..Default::default()
     };
-    let mut cursor_position = (0, 0);
+    let mut pointer_routing = PointerRoutingState::new(Instant::now());
+    let mut pointer_targets = HashMap::<u64, PointerTarget>::new();
     let mut active_capture_connections = HashMap::<u64, (u64, u8)>::new();
     let mut stream_indices = HashMap::<u64, u32>::new();
     let mut skipped_surface_windows = HashSet::<(u64, u8)>::new();
     let mut skipped_surface_backends = HashSet::<u8>::new();
     let mut active_backend = "Waiting";
     let mut active_consumer = "Waiting";
-    let input_started = Instant::now();
-    let mut input_sequence = 0u32;
+    let mut direct_input = DirectInputForwarder::new(input_tx.clone());
     let mut pressed_keys = HashSet::<KeyCode>::new();
 
     event_loop.run(move |event, target| match event {
@@ -2125,6 +2062,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 WindowEvent::Focused(focused) => {
                     if !focused {
                         pressed_keys.clear();
+                        if let Some(connection) = pointer_routing.captured_connection() {
+                            let size = window.inner_size();
+                            cancel_pointer_connection(
+                                connection,
+                                &mut pointer_routing,
+                                Extent::new(size.width, size.height),
+                                &compositor.displayed_surfaces(),
+                                &pointer_targets,
+                                &input_tx,
+                                &mut direct_input,
+                            );
+                        }
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
@@ -2151,78 +2100,63 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(backing) = load_window(&backing_window) {
-                        let viewer_size = window.inner_size();
-                        let backing_size =
-                            client_size(backing).unwrap_or((viewer_size.width, viewer_size.height));
-                        cursor_position = (
-                            (position.x * backing_size.0 as f64 / viewer_size.width.max(1) as f64)
-                                .round() as i32,
-                            (position.y * backing_size.1 as f64 / viewer_size.height.max(1) as f64)
-                                .round() as i32,
-                        );
-                        forward_mouse_move(backing, cursor_position.0, cursor_position.1);
-                    }
+                    pointer_routing.set_cursor(position.x, position.y);
+                    let size = window.inner_size();
+                    let surfaces = compositor.displayed_surfaces();
+                    pointer_routing.send(
+                        PointerPhase::Move,
+                        0,
+                        0,
+                        0,
+                        Extent::new(size.width, size.height),
+                        &surfaces,
+                        &pointer_targets,
+                        &input_tx,
+                    );
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     if let Some(button) = mouse_button(button) {
-                        if let Some(backing) = load_window(&backing_window) {
-                            forward_mouse_button(
-                                backing,
-                                button,
-                                state == ElementState::Pressed,
-                                cursor_position.0,
-                                cursor_position.1,
-                            );
-                        }
-                        send_direct_input(
+                        let phase = if state == ElementState::Pressed {
+                            PointerPhase::ButtonDown
+                        } else {
+                            PointerPhase::ButtonUp
+                        };
+                        let size = window.inner_size();
+                        let surfaces = compositor.displayed_surfaces();
+                        if pointer_routing.send(
+                            phase,
+                            u32::from(button),
+                            0,
+                            0,
+                            Extent::new(size.width, size.height),
+                            &surfaces,
+                            &pointer_targets,
                             &input_tx,
-                            &mut input_sequence,
-                            input_started,
-                            DirectInputDevice::Mouse,
-                            12 + u32::from(button.saturating_sub(1)),
-                            if state == ElementState::Pressed {
-                                0x80
-                            } else {
-                                0
-                            },
-                        );
+                        ) {
+                            direct_input.mouse_button(button, state == ElementState::Pressed);
+                        }
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    let vertical = match delta {
-                        MouseScrollDelta::LineDelta(_, vertical) => (vertical * 120.0) as i32,
-                        MouseScrollDelta::PixelDelta(delta) => delta.y as i32,
-                    };
-                    if vertical != 0 {
-                        send_direct_input(
-                            &input_tx,
-                            &mut input_sequence,
-                            input_started,
-                            DirectInputDevice::Mouse,
-                            8,
-                            vertical as u32,
-                        );
-                    }
-                    if let Some(backing) = load_window(&backing_window) {
-                        match delta {
-                            MouseScrollDelta::LineDelta(horizontal, vertical) => {
-                                if vertical != 0.0 {
-                                    forward_mouse_wheel(backing, (vertical * 120.0) as i16, false);
-                                }
-                                if horizontal != 0.0 {
-                                    forward_mouse_wheel(backing, (horizontal * 120.0) as i16, true);
-                                }
-                            }
-                            MouseScrollDelta::PixelDelta(delta) => {
-                                if delta.y != 0.0 {
-                                    forward_mouse_wheel(backing, delta.y as i16, false);
-                                }
-                                if delta.x != 0.0 {
-                                    forward_mouse_wheel(backing, delta.x as i16, true);
-                                }
-                            }
+                    let (horizontal, vertical) = match delta {
+                        MouseScrollDelta::LineDelta(horizontal, vertical) => {
+                            ((horizontal * 120.0) as i32, (vertical * 120.0) as i32)
                         }
+                        MouseScrollDelta::PixelDelta(delta) => (delta.x as i32, delta.y as i32),
+                    };
+                    let size = window.inner_size();
+                    let surfaces = compositor.displayed_surfaces();
+                    if pointer_routing.send(
+                        PointerPhase::Wheel,
+                        0,
+                        horizontal,
+                        vertical,
+                        Extent::new(size.width, size.height),
+                        &surfaces,
+                        &pointer_targets,
+                        &input_tx,
+                    ) {
+                        direct_input.mouse_wheel(vertical);
                     }
                 }
                 WindowEvent::RedrawRequested => {
@@ -2275,17 +2209,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                                 if !active_capture_connections.contains_key(&connection) {
                                     let replaced = (stream.surface_id.0 != 0)
-                                        .then(|| {
-                                            active_capture_connections.iter().find_map(
-                                                |(&existing, &(surface_id, backend))| {
-                                                    (surface_id == stream.surface_id.0
-                                                        && (backend != surface_identity.1
-                                                            || active_capture_connections.len()
-                                                                >= surface_limit as usize))
-                                                        .then_some((existing, backend))
-                                                },
-                                            )
-                                        })
+                                        .then(|| matching_surface_connection(
+                                            &active_capture_connections,
+                                            stream.surface_id.0,
+                                        ))
                                         .flatten();
                                     if let Some((existing, backend)) = replaced {
                                         if !should_replace_same_window_backend(
@@ -2300,8 +2227,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             let _ = accepted.send(false);
                                             continue;
                                         }
+                                        let size = window.inner_size();
+                                        cancel_pointer_connection(
+                                            existing,
+                                            &mut pointer_routing,
+                                            Extent::new(size.width, size.height),
+                                            &compositor.displayed_surfaces(),
+                                            &pointer_targets,
+                                            &input_tx,
+                                            &mut direct_input,
+                                        );
                                         active_capture_connections.remove(&existing);
                                         stream_indices.remove(&existing);
+                                        pointer_targets.remove(&existing);
                                         if let Some(publisher) = &webrtc {
                                             publisher.remove_stream(existing);
                                         }
@@ -2328,8 +2266,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         },
                                     );
                                     if let Some(existing) = provisional {
+                                        let size = window.inner_size();
+                                        cancel_pointer_connection(
+                                            existing,
+                                            &mut pointer_routing,
+                                            Extent::new(size.width, size.height),
+                                            &compositor.displayed_surfaces(),
+                                            &pointer_targets,
+                                            &input_tx,
+                                            &mut direct_input,
+                                        );
                                         active_capture_connections.remove(&existing);
                                         stream_indices.remove(&existing);
+                                        pointer_targets.remove(&existing);
                                         if let Some(publisher) = &webrtc {
                                             publisher.remove_stream(existing);
                                         }
@@ -2369,8 +2318,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         })
                                         .map(|(existing, _)| existing);
                                     if let Some(existing) = victim {
+                                        let size = window.inner_size();
+                                        cancel_pointer_connection(
+                                            existing,
+                                            &mut pointer_routing,
+                                            Extent::new(size.width, size.height),
+                                            &compositor.displayed_surfaces(),
+                                            &pointer_targets,
+                                            &input_tx,
+                                            &mut direct_input,
+                                        );
                                         active_capture_connections.remove(&existing);
                                         stream_indices.remove(&existing);
+                                        pointer_targets.remove(&existing);
                                         if let Some(publisher) = &webrtc {
                                             publisher.remove_stream(existing);
                                         }
@@ -2417,6 +2377,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     .get(&connection)
                                     .copied()
                                     .or_else(|| {
+                                        graph_surface_index(stream.surface_id.0)
+                                            .filter(|index| *index < surface_limit)
+                                    })
+                                    .or_else(|| {
                                         (0..surface_limit)
                                             .find(|index| !stream_indices.values().any(|v| v == index))
                                     })
@@ -2445,6 +2409,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                         active_capture_connections
                                             .insert(connection, surface_identity);
+                                        pointer_targets.insert(
+                                            connection,
+                                            PointerTarget {
+                                                surface_id: stream.surface_id.0,
+                                                target_window: stream.source_window,
+                                            },
+                                        );
                                         // A deferred or replaced graphics backend has no copy
                                         // of textures emitted to its predecessor. A fresh egui
                                         // context guarantees that Managed(0) is emitted as a full
@@ -2534,7 +2505,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if let Some(publisher) = &webrtc {
                                     publisher.remove_stream(connection);
                                 }
+                                let size = window.inner_size();
+                                cancel_pointer_connection(
+                                    connection,
+                                    &mut pointer_routing,
+                                    Extent::new(size.width, size.height),
+                                    &compositor.displayed_surfaces(),
+                                    &pointer_targets,
+                                    &input_tx,
+                                    &mut direct_input,
+                                );
                                 stream_indices.remove(&connection);
+                                pointer_targets.remove(&connection);
                                 revoked_connections
                                     .lock()
                                     .unwrap_or_else(|error| error.into_inner())
@@ -2572,6 +2554,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     let input = egui_state.take_egui_input(&window);
                     let webrtc_stats = webrtc.as_ref().map(webrtc::Publisher::stats);
+                    let last_pointer_sent = pointer_routing.last_sent();
                     let output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
                             ui.horizontal(|ui| {
@@ -2598,6 +2581,30 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     stats.frame_interval_ms
                                 ));
                                 ui.label(format!("Dropped {}", stats.dropped));
+                                if let Some(sent) = last_pointer_sent {
+                                    let color = if sent.sent_at.elapsed()
+                                        <= Duration::from_millis(350)
+                                    {
+                                        egui::Color32::LIGHT_GREEN
+                                    } else {
+                                        egui::Color32::GRAY
+                                    };
+                                    ui.colored_label(
+                                        color,
+                                        format!(
+                                            "Mouse sent #{} {:?} @ {},{}",
+                                            sent.count, sent.phase, sent.x, sent.y
+                                        ),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Surface {} in {}x{} presentation coordinates",
+                                        sent.surface_id,
+                                        sent.coordinate_width,
+                                        sent.coordinate_height
+                                    ));
+                                } else {
+                                    ui.colored_label(egui::Color32::GRAY, "Mouse sent: none");
+                                }
                                 let mut keys = pressed_keys
                                     .iter()
                                     .map(|key| format!("{key:?}"))
@@ -2712,18 +2719,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             event: DeviceEvent::MouseMotion { delta },
             ..
         } => {
-            for (offset, value) in [(0, delta.0), (4, delta.1)] {
-                if value != 0.0 {
-                    send_direct_input(
-                        &input_tx,
-                        &mut input_sequence,
-                        input_started,
-                        DirectInputDevice::Mouse,
-                        offset,
-                        (value as i32) as u32,
-                    );
-                }
-            }
+            direct_input.mouse_motion(delta);
         }
         _ => {}
     })?;
@@ -2825,39 +2821,6 @@ fn spawn_ipc(
                 }
                 let _ = events.send(CaptureEvent::Disconnected(connection));
             });
-        }
-    });
-}
-
-fn spawn_input_ipc(listener: LocalSocketListener, input: mpsc::Receiver<DirectInputData>) {
-    thread::spawn(move || {
-        let mut pending = None;
-        loop {
-            let mut socket = match listener.accept() {
-                Ok(socket) => socket,
-                Err(error) => {
-                    eprintln!("snowglass: DirectInput IPC accept ended: {error}");
-                    return;
-                }
-            };
-            loop {
-                let event = match pending.take() {
-                    Some(event) => event,
-                    None => match input.recv() {
-                        Ok(event) => event,
-                        Err(_) => return,
-                    },
-                };
-                if let Err(error) = socket.send(Message::DirectInputData(event)) {
-                    pending = Some(event);
-                    if error.kind() != std::io::ErrorKind::BrokenPipe
-                        && error.kind() != std::io::ErrorKind::ConnectionReset
-                    {
-                        eprintln!("snowglass: DirectInput IPC send failed: {error}");
-                    }
-                    break;
-                }
-            }
         }
     });
 }
@@ -3365,6 +3328,31 @@ mod argument_tests {
         assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
     }
 
+    #[test]
+    fn recreated_logical_surface_replaces_its_previous_connection() {
+        let active = HashMap::from([(7, (graph_surface_for_test(1), 4))]);
+
+        assert_eq!(
+            matching_surface_connection(&active, graph_surface_for_test(1)),
+            Some((7, 4))
+        );
+        assert_eq!(
+            matching_surface_connection(&active, graph_surface_for_test(2)),
+            None
+        );
+    }
+
+    #[test]
+    fn graph_surface_identity_determines_display_and_rotation_slot() {
+        assert_eq!(graph_surface_index(graph_surface_for_test(0)), Some(0));
+        assert_eq!(graph_surface_index(graph_surface_for_test(1)), Some(1));
+        assert_eq!(graph_surface_index(0x1234), None);
+    }
+
+    fn graph_surface_for_test(index: u64) -> u64 {
+        0x5347_0000_0000_0000 | index
+    }
+
     fn offset_tuples(offsets: [vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {
         offsets.map(|offset| (offset.x, offset.y, offset.z))
     }
@@ -3809,35 +3797,6 @@ fn native_window(window: &Window) -> Result<NativeWindow, Box<dyn Error>> {
         RawWindowHandle::Win32(handle) => Ok(NativeWindow(handle.hwnd.get() as isize)),
         _ => Err("Snowglass viewer requires a Win32 window".into()),
     }
-}
-
-fn mouse_button(button: MouseButton) -> Option<u16> {
-    match button {
-        MouseButton::Left => Some(1),
-        MouseButton::Right => Some(2),
-        MouseButton::Middle => Some(3),
-        MouseButton::Back => Some(4),
-        MouseButton::Forward => Some(5),
-        MouseButton::Other(button) => Some(button.saturating_add(4)),
-    }
-}
-
-fn send_direct_input(
-    sender: &mpsc::Sender<DirectInputData>,
-    sequence: &mut u32,
-    started: Instant,
-    device: DirectInputDevice,
-    offset: u32,
-    data: u32,
-) {
-    *sequence = sequence.wrapping_add(1);
-    let _ = sender.send(DirectInputData {
-        device,
-        offset,
-        data,
-        timestamp: started.elapsed().as_millis() as u32,
-        sequence: *sequence,
-    });
 }
 
 fn virtual_key(code: KeyCode) -> Option<u32> {

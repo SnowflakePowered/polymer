@@ -113,7 +113,7 @@ pub struct SurfaceLayout {
     pub image_extent: Extent,
     /// Extent of the target presentation coordinate space.
     pub presentation_extent: Extent,
-    /// Mapping from captured-image coordinates into the target presentation.
+    /// Mapping from consumer-normalized image coordinates into the target presentation.
     /// `None` means graph tracking could not prove the final placement.
     pub presentation_mapping: Option<AffineMapping>,
 }

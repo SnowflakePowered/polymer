@@ -3,8 +3,10 @@
 #![allow(non_snake_case)]
 
 use crate::vtable::{IDirectInputDeviceHook, IDirectInputHook};
+use crate::window_message::WindowMessageForwarder;
 use snowglass_hook::{HookChain, config};
-use snowglass_input::{DirectInputData, DirectInputDevice};
+use snowglass_input::DirectInputData;
+use snowglass_input::DirectInputDevice;
 use snowglass_ipc::{LocalSocket, Message};
 use std::{
     collections::{HashMap, VecDeque},
@@ -34,7 +36,11 @@ pub(crate) struct Runtime {
     logged_keyboard_receive: AtomicBool,
     logged_keyboard_poll: AtomicBool,
     logged_keyboard_pressed: AtomicBool,
+    logged_pointer_receive: AtomicBool,
+    logged_pointer_delivery: AtomicBool,
+    logged_pointer_rejection: AtomicBool,
     input_queue: Mutex<InputQueues>,
+    window_messages: WindowMessageForwarder,
     direct_input_hooks: Mutex<HashMap<usize, DirectInputHook>>,
     device_hooks: Mutex<HashMap<usize, DeviceHook>>,
 }
@@ -48,7 +54,11 @@ impl Default for Runtime {
             logged_keyboard_receive: AtomicBool::new(false),
             logged_keyboard_poll: AtomicBool::new(false),
             logged_keyboard_pressed: AtomicBool::new(false),
+            logged_pointer_receive: AtomicBool::new(false),
+            logged_pointer_delivery: AtomicBool::new(false),
+            logged_pointer_rejection: AtomicBool::new(false),
             input_queue: Mutex::new(InputQueues::new()),
+            window_messages: WindowMessageForwarder::default(),
             direct_input_hooks: Mutex::new(HashMap::new()),
             device_hooks: Mutex::new(HashMap::new()),
         }
@@ -163,7 +173,7 @@ fn dinput_log(message: impl std::fmt::Display) {
 }
 
 impl Runtime {
-    fn start_input_receiver(self: &Arc<Self>) {
+    pub(crate) fn start_input_receiver(self: &Arc<Self>) {
         let Ok(session) = config::session() else {
             return;
         };
@@ -218,6 +228,30 @@ impl Runtime {
                         .collect::<Vec<_>>();
                     for handle in handles {
                         unsafe { windows_sys::Win32::System::Threading::SetEvent(handle as _) };
+                    }
+                }
+                Message::PointerInput(event) => {
+                    if !self.logged_pointer_receive.swap(true, Ordering::AcqRel) {
+                        dinput_log(format!(
+                            "snowglass: received first pointer hwnd={:#x} surface={} phase={:?} position=({}, {}) extent={}x{}",
+                            event.target_window,
+                            event.surface_id,
+                            event.phase,
+                            event.x,
+                            event.y,
+                            event.coordinate_width,
+                            event.coordinate_height,
+                        ));
+                    }
+                    if self.window_messages.apply(event) {
+                        if !self.logged_pointer_delivery.swap(true, Ordering::AcqRel) {
+                            dinput_log("snowglass: posted first pointer message to target window");
+                        }
+                    } else if !self.logged_pointer_rejection.swap(true, Ordering::AcqRel) {
+                        dinput_log(format!(
+                            "snowglass: rejected pointer message for hwnd={:#x}; window is missing, invalid, foreign, or has an empty client area",
+                            event.target_window,
+                        ));
                     }
                 }
                 Message::Shutdown => break,

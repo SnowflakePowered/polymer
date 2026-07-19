@@ -53,6 +53,7 @@ struct EguiTexture {
 
 struct ImportedSurface {
     connection: u64,
+    surface_id: u64,
     descriptor: u32,
     imported: ImportedD3d12Stream,
     flip_y: bool,
@@ -266,6 +267,7 @@ impl D3d12Compositor {
         };
         self.surfaces.push(ImportedSurface {
             connection,
+            surface_id: stream.surface_id.0,
             descriptor: FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
             imported,
             flip_y: stream.bottom_up,
@@ -276,6 +278,9 @@ impl D3d12Compositor {
             display_frame: None,
             video_completion_value: 0,
         });
+        self.surfaces
+            .sort_by_key(|surface| super::surface_sort_key(surface.surface_id));
+        self.refresh_surface_descriptors()?;
         Ok(())
     }
 
@@ -293,6 +298,33 @@ impl D3d12Compositor {
             surface.imported.recycle_slot(previous.slot);
         }
     }
+
+    pub(crate) fn displayed_surfaces(&self) -> Vec<crate::input::pointer::DisplayedSurface> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| {
+                let frame = surface.display_frame?;
+                let (width, height) = super::fit_inside(
+                    frame.render_width.max(1),
+                    frame.render_height.max(1),
+                    surface.imported.width,
+                    surface.imported.height,
+                );
+                let image_extent = if surface.quarter_turns % 2 == 1 {
+                    super::Extent::new(height, width)
+                } else {
+                    super::Extent::new(width, height)
+                };
+                Some(crate::input::pointer::DisplayedSurface {
+                    connection: surface.connection,
+                    image_extent,
+                    flip_y: surface.flip_y,
+                    frame,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn has_pending_frame(&self) -> bool {
         self.surfaces.iter().any(|surface| surface.latest.is_some())
     }
