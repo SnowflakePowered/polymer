@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 /// Fractional bits used by coordinates in [`PresentationPoint`].
 pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
 pub const MAX_IMAGE_SLOTS: usize = 4;
@@ -199,15 +199,14 @@ impl PresentationPoint {
     }
 }
 
-/// Maps the display-oriented captured image into the target presentation.
+/// Maps the consumer-normalized captured image into the target presentation.
 ///
 /// `upper_left`, `upper_right`, and `lower_left` are the presentation-space
-/// positions of the corresponding corners of the valid captured image. The
-/// fourth corner is implied by the parallelogram. This represents translation,
-/// non-uniform scale, reflection, quarter-turn rotation, and general affine
-/// transforms without relying on the texture having reached the swapchain yet.
-/// Storage orientation such as `StreamReady::bottom_up` is applied before this
-/// transform.
+/// positions of the corresponding corners after consumer-side normalization.
+/// The fourth corner is implied by the parallelogram. Storage orientation such
+/// as `StreamReady::bottom_up` and an explicitly configured display rotation
+/// are applied before this transform. This lets a producer report placement
+/// and scale without needing to know the consumer's normalization policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct PresentationTransform {

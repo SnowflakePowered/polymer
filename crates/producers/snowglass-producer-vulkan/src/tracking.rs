@@ -28,6 +28,13 @@ struct Target {
     seen: u64,
 }
 
+#[derive(Clone, Copy)]
+struct EdgePlacement {
+    source_rect: vk::Rect2D,
+    destination_rect: vk::Rect2D,
+    seen: u64,
+}
+
 /// Device-scoped state shared by the Vulkan hook contexts.
 #[derive(Default)]
 pub struct Tracking {
@@ -37,6 +44,10 @@ pub struct Tracking {
     dependencies: DashMap<vk::Image, Vec<(vk::Image, u64)>>,
     read_layout: DashMap<vk::Image, vk::ImageLayout>,
     presented: DashMap<vk::Image, Vec<(vk::Image, bool)>>,
+    /// Raster placement observations keyed by `(destination, source)`. A source
+    /// can be drawn more than once, so observations from the newest generation
+    /// are retained separately and ambiguity is rejected during resolution.
+    placements: DashMap<(vk::Image, vk::Image), Vec<EdgePlacement>>,
     render_target: DashMap<vk::Image, RenderTargetCandidate>,
     image_info: DashMap<vk::Image, (vk::Format, vk::ImageUsageFlags)>,
     image_view: DashMap<vk::ImageView, vk::Image>,
@@ -57,6 +68,7 @@ pub struct PresentSource {
     pub image: vk::Image,
     pub extent: vk::Extent2D,
     pub layout: vk::ImageLayout,
+    pub presentation_rect: Option<vk::Rect2D>,
 }
 
 impl Tracking {
@@ -78,6 +90,8 @@ impl Tracking {
         self.dependencies.remove(&image);
         self.read_layout.remove(&image);
         self.presented.remove(&image);
+        self.placements
+            .retain(|(destination, source), _| *destination != image && *source != image);
     }
 
     pub fn record_target(&self, image: vk::Image, score: u64) {
@@ -115,6 +129,7 @@ impl Tracking {
         &self,
         destination: vk::Image,
         sampled: &[(vk::Image, vk::ImageLayout)],
+        destination_rect: Option<vk::Rect2D>,
     ) {
         if sampled.is_empty() || !snowglass_hook::config::graph_tracking_enabled() {
             return;
@@ -131,6 +146,16 @@ impl Tracking {
             } else {
                 inputs.push((image, now));
             }
+            if let (Some(source_extent), Some(destination_rect)) =
+                (self.image_extent(image), destination_rect)
+            {
+                self.record_edge_placement(
+                    destination,
+                    image,
+                    full_rect(source_extent),
+                    destination_rect,
+                );
+            }
         }
     }
 
@@ -141,6 +166,8 @@ impl Tracking {
         source: vk::Image,
         source_layout: vk::ImageLayout,
         destination: vk::Image,
+        source_rect: vk::Rect2D,
+        destination_rect: vk::Rect2D,
     ) {
         if !snowglass_hook::config::graph_tracking_enabled() {
             return;
@@ -162,6 +189,7 @@ impl Tracking {
         } else {
             inputs.push((source, now));
         }
+        self.record_edge_placement(destination, source, source_rect, destination_rect);
     }
 
     pub fn record_presented(
@@ -169,6 +197,7 @@ impl Tracking {
         swapchain_image: vk::Image,
         sources: &[(vk::Image, vk::ImageLayout)],
         via_blit: bool,
+        destination_rect: Option<vk::Rect2D>,
     ) {
         if sources.is_empty() || !snowglass_hook::config::graph_tracking_enabled() {
             return;
@@ -181,6 +210,16 @@ impl Tracking {
                     *blit |= via_blit;
                 } else {
                     presented.push((image, via_blit));
+                }
+                if let (Some(source_extent), Some(destination_rect)) =
+                    (self.image_extent(image), destination_rect)
+                {
+                    self.record_edge_placement(
+                        swapchain_image,
+                        image,
+                        full_rect(source_extent),
+                        destination_rect,
+                    );
                 }
             }
         }
@@ -204,18 +243,19 @@ impl Tracking {
     /// outlive the buffers it names. Entries stay live only while the
     /// application keeps rendering into them; this deliberately does not refresh
     /// their stamps.
-    pub fn refresh_sources(&self, images: &[vk::Image]) -> Vec<PresentSource> {
-        images
+    pub fn refresh_sources(&self, sources: &[PresentSource]) -> Vec<PresentSource> {
+        sources
             .iter()
-            .filter_map(|&image| {
-                let target = self.targets.get(&image)?;
+            .filter_map(|source| {
+                let target = self.targets.get(&source.image)?;
                 Some(PresentSource {
-                    image,
+                    image: source.image,
                     extent: target.extent,
                     layout: self
                         .read_layout
-                        .get(&image)
+                        .get(&source.image)
                         .map_or(vk::ImageLayout::GENERAL, |layout| *layout),
+                    presentation_rect: source.presentation_rect,
                 })
             })
             .collect()
@@ -235,6 +275,10 @@ impl Tracking {
         self.dependencies.retain(|_, inputs| {
             inputs.retain(|(_, seen)| *seen >= horizon);
             !inputs.is_empty()
+        });
+        self.placements.retain(|_, placements| {
+            placements.retain(|placement| placement.seen >= horizon);
+            !placements.is_empty()
         });
         let Some((_, presented)) = self.presented.remove(&presented_image) else {
             return Vec::new();
@@ -289,9 +333,103 @@ impl Tracking {
                         .read_layout
                         .get(&image)
                         .map_or(vk::ImageLayout::GENERAL, |layout| *layout),
+                    presentation_rect: self.resolve_presentation_rect(
+                        presented_image,
+                        image,
+                        &presented,
+                        &dependencies,
+                    ),
                 })
             })
             .collect()
+    }
+
+    fn record_edge_placement(
+        &self,
+        destination: vk::Image,
+        source: vk::Image,
+        source_rect: vk::Rect2D,
+        destination_rect: vk::Rect2D,
+    ) {
+        if source_rect.extent.width == 0
+            || source_rect.extent.height == 0
+            || destination_rect.extent.width == 0
+            || destination_rect.extent.height == 0
+        {
+            return;
+        }
+        let seen = self.generation();
+        let mut placements = self.placements.entry((destination, source)).or_default();
+        if let Some(existing) = placements.iter_mut().find(|placement| {
+            rect_eq(placement.source_rect, source_rect)
+                && rect_eq(placement.destination_rect, destination_rect)
+        }) {
+            existing.seen = seen;
+        } else {
+            placements.push(EdgePlacement {
+                source_rect,
+                destination_rect,
+                seen,
+            });
+        }
+    }
+
+    fn newest_edge_placement(
+        &self,
+        destination: vk::Image,
+        source: vk::Image,
+    ) -> Option<EdgePlacement> {
+        let placements = self.placements.get(&(destination, source))?;
+        let newest = placements.iter().map(|placement| placement.seen).max()?;
+        let mut matching = placements
+            .iter()
+            .copied()
+            .filter(|placement| placement.seen == newest);
+        let placement = matching.next()?;
+        matching
+            .all(|other| {
+                rect_eq(other.source_rect, placement.source_rect)
+                    && rect_eq(other.destination_rect, placement.destination_rect)
+            })
+            .then_some(placement)
+    }
+
+    fn resolve_presentation_rect(
+        &self,
+        presented_image: vk::Image,
+        selected_image: vk::Image,
+        presented: &[(vk::Image, bool)],
+        dependencies: &HashMap<vk::Image, Vec<(vk::Image, u64)>>,
+    ) -> Option<vk::Rect2D> {
+        let mut paths = Vec::new();
+        let mut path = Vec::new();
+        let mut visited = HashSet::new();
+        find_paths(
+            presented_image,
+            selected_image,
+            presented_image,
+            presented,
+            dependencies,
+            &mut visited,
+            &mut path,
+            &mut paths,
+        );
+        let selected_extent = self.image_extent(selected_image)?;
+        let presented_extent = self.image_extent(presented_image)?;
+        let resolved = paths
+            .into_iter()
+            .map(|path| {
+                let mut rect = full_rect(selected_extent);
+                for &(destination, source) in path.iter().rev() {
+                    let placement = self.newest_edge_placement(destination, source)?;
+                    rect = map_rect(rect, placement.source_rect, placement.destination_rect)?;
+                }
+                Self::clamp_rect(rect, presented_extent)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut resolved = resolved.into_iter();
+        let first = resolved.next()?;
+        resolved.all(|rect| rect_eq(rect, first)).then_some(first)
     }
 
     fn select(
@@ -499,20 +637,221 @@ impl Tracking {
     }
 }
 
+fn full_rect(extent: vk::Extent2D) -> vk::Rect2D {
+    vk::Rect2D {
+        offset: vk::Offset2D { x: 0, y: 0 },
+        extent,
+    }
+}
+
+fn rect_eq(left: vk::Rect2D, right: vk::Rect2D) -> bool {
+    left.offset.x == right.offset.x
+        && left.offset.y == right.offset.y
+        && left.extent.width == right.extent.width
+        && left.extent.height == right.extent.height
+}
+
+fn viewport_rect(viewport: vk::Viewport) -> Option<vk::Rect2D> {
+    if !viewport.x.is_finite()
+        || !viewport.y.is_finite()
+        || !viewport.width.is_finite()
+        || !viewport.height.is_finite()
+    {
+        return None;
+    }
+    let other_x = viewport.x + viewport.width;
+    let other_y = viewport.y + viewport.height;
+    let left = f64::from(viewport.x.min(other_x)).floor() as i64;
+    let top = f64::from(viewport.y.min(other_y)).floor() as i64;
+    let right = f64::from(viewport.x.max(other_x)).ceil() as i64;
+    let bottom = f64::from(viewport.y.max(other_y)).ceil() as i64;
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some(vk::Rect2D {
+        offset: vk::Offset2D {
+            x: i32::try_from(left).ok()?,
+            y: i32::try_from(top).ok()?,
+        },
+        extent: vk::Extent2D {
+            width: u32::try_from(right - left).ok()?,
+            height: u32::try_from(bottom - top).ok()?,
+        },
+    })
+}
+
+fn intersect_rect(left: vk::Rect2D, right: vk::Rect2D) -> Option<vk::Rect2D> {
+    let x = left.offset.x.max(right.offset.x);
+    let y = left.offset.y.max(right.offset.y);
+    let right_edge = (i64::from(left.offset.x) + i64::from(left.extent.width))
+        .min(i64::from(right.offset.x) + i64::from(right.extent.width));
+    let bottom_edge = (i64::from(left.offset.y) + i64::from(left.extent.height))
+        .min(i64::from(right.offset.y) + i64::from(right.extent.height));
+    let width = right_edge - i64::from(x);
+    let height = bottom_edge - i64::from(y);
+    (width > 0 && height > 0).then_some(vk::Rect2D {
+        offset: vk::Offset2D { x, y },
+        extent: vk::Extent2D {
+            width: width as u32,
+            height: height as u32,
+        },
+    })
+}
+
+fn raster_rect(
+    viewport: Option<vk::Viewport>,
+    scissor: Option<vk::Rect2D>,
+    bounds: vk::Extent2D,
+) -> Option<vk::Rect2D> {
+    let viewport = viewport.and_then(viewport_rect);
+    let rect = match (viewport, scissor) {
+        (Some(viewport), Some(scissor)) => intersect_rect(viewport, scissor)?,
+        (Some(viewport), None) => viewport,
+        (None, Some(scissor)) => scissor,
+        (None, None) => return None,
+    };
+    Tracking::clamp_rect(rect, bounds)
+}
+
+fn map_rect(rect: vk::Rect2D, source: vk::Rect2D, destination: vk::Rect2D) -> Option<vk::Rect2D> {
+    if source.extent.width == 0 || source.extent.height == 0 {
+        return None;
+    }
+    let left = i64::from(rect.offset.x);
+    let top = i64::from(rect.offset.y);
+    let right = left + i64::from(rect.extent.width);
+    let bottom = top + i64::from(rect.extent.height);
+    let source_left = i64::from(source.offset.x);
+    let source_top = i64::from(source.offset.y);
+    let source_right = source_left + i64::from(source.extent.width);
+    let source_bottom = source_top + i64::from(source.extent.height);
+    if left < source_left || top < source_top || right > source_right || bottom > source_bottom {
+        return None;
+    }
+    let map_axis =
+        |value: i64, source_start: i64, source_size: u32, target_start: i32, target_size: u32| {
+            f64::from(target_start)
+                + (value - source_start) as f64 * f64::from(target_size) / f64::from(source_size)
+        };
+    let mapped_left = map_axis(
+        left,
+        source_left,
+        source.extent.width,
+        destination.offset.x,
+        destination.extent.width,
+    );
+    let mapped_top = map_axis(
+        top,
+        source_top,
+        source.extent.height,
+        destination.offset.y,
+        destination.extent.height,
+    );
+    let mapped_right = map_axis(
+        right,
+        source_left,
+        source.extent.width,
+        destination.offset.x,
+        destination.extent.width,
+    );
+    let mapped_bottom = map_axis(
+        bottom,
+        source_top,
+        source.extent.height,
+        destination.offset.y,
+        destination.extent.height,
+    );
+    let mapped_left = mapped_left.round() as i64;
+    let mapped_top = mapped_top.round() as i64;
+    let mapped_right = mapped_right.round() as i64;
+    let mapped_bottom = mapped_bottom.round() as i64;
+    if mapped_right <= mapped_left || mapped_bottom <= mapped_top {
+        return None;
+    }
+    Some(vk::Rect2D {
+        offset: vk::Offset2D {
+            x: i32::try_from(mapped_left).ok()?,
+            y: i32::try_from(mapped_top).ok()?,
+        },
+        extent: vk::Extent2D {
+            width: u32::try_from(mapped_right - mapped_left).ok()?,
+            height: u32::try_from(mapped_bottom - mapped_top).ok()?,
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_paths(
+    current: vk::Image,
+    selected: vk::Image,
+    presented_image: vk::Image,
+    presented: &[(vk::Image, bool)],
+    dependencies: &HashMap<vk::Image, Vec<(vk::Image, u64)>>,
+    visited: &mut HashSet<vk::Image>,
+    path: &mut Vec<(vk::Image, vk::Image)>,
+    paths: &mut Vec<Vec<(vk::Image, vk::Image)>>,
+) {
+    if !visited.insert(current) {
+        return;
+    }
+    let sources = if current == presented_image {
+        presented
+            .iter()
+            .map(|(image, _)| *image)
+            .collect::<Vec<_>>()
+    } else {
+        dependencies
+            .get(&current)
+            .map(|inputs| inputs.iter().map(|(image, _)| *image).collect())
+            .unwrap_or_default()
+    };
+    for source in sources {
+        path.push((current, source));
+        if source == selected {
+            paths.push(path.clone());
+        } else {
+            find_paths(
+                source,
+                selected,
+                presented_image,
+                presented,
+                dependencies,
+                visited,
+                path,
+                paths,
+            );
+        }
+        path.pop();
+    }
+    visited.remove(&current);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ash::vk::Handle;
 
+    fn image(value: u64) -> vk::Image {
+        vk::Image::from_raw(value)
+    }
+
+    fn extent(width: u32, height: u32) -> vk::Extent2D {
+        vk::Extent2D { width, height }
+    }
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> vk::Rect2D {
+        vk::Rect2D {
+            offset: vk::Offset2D { x, y },
+            extent: extent(width, height),
+        }
+    }
+
     #[test]
     fn tracking_instances_do_not_share_images() {
         let first = Tracking::default();
         let second = Tracking::default();
-        let image = vk::Image::from_raw(1);
-        let extent = vk::Extent2D {
-            width: 640,
-            height: 480,
-        };
+        let image = image(1);
+        let extent = extent(640, 480);
 
         first.note_image(image, extent);
 
@@ -521,6 +860,153 @@ mod tests {
             .expect("first instance tracks the image");
         assert_eq!((tracked.width, tracked.height), (640, 480));
         assert!(second.image_extent(image).is_none());
+    }
+
+    #[test]
+    fn direct_draw_resolves_its_offset_presentation_rectangle() {
+        let tracking = Tracking::default();
+        let source = image(1);
+        let presented_image = image(2);
+        tracking.note_image(source, extent(240, 400));
+        tracking.note_image(presented_image, extent(1280, 720));
+        tracking.record_edge_placement(
+            presented_image,
+            source,
+            rect(0, 0, 240, 400),
+            rect(80, 120, 960, 576),
+        );
+
+        assert!(rect_eq(
+            tracking
+                .resolve_presentation_rect(
+                    presented_image,
+                    source,
+                    &[(source, false)],
+                    &HashMap::new(),
+                )
+                .expect("direct placement should resolve"),
+            rect(80, 120, 960, 576),
+        ));
+    }
+
+    #[test]
+    fn selected_source_carries_the_resolved_presentation_rectangle() {
+        let tracking = Tracking::default();
+        let source = image(1);
+        let presented_image = image(2);
+        let source_extent = extent(400, 240);
+        tracking.note_image(source, source_extent);
+        tracking.note_image(presented_image, extent(1280, 720));
+        tracking.upsert_target(source, source_extent, u64::MAX);
+        tracking
+            .presented
+            .insert(presented_image, vec![(source, true)]);
+        tracking.record_edge_placement(
+            presented_image,
+            source,
+            full_rect(source_extent),
+            rect(50, 75, 800, 480),
+        );
+
+        let selected = tracking.take_present_sources(presented_image, 1);
+
+        assert_eq!(selected.len(), 1);
+        assert!(rect_eq(
+            selected[0]
+                .presentation_rect
+                .expect("selected source should carry its placement"),
+            rect(50, 75, 800, 480),
+        ));
+    }
+
+    #[test]
+    fn placement_composes_scale_and_offset_through_an_intermediate() {
+        let tracking = Tracking::default();
+        let source = image(1);
+        let composite = image(2);
+        let presented_image = image(3);
+        tracking.note_image(source, extent(400, 240));
+        tracking.note_image(composite, extent(1280, 720));
+        tracking.note_image(presented_image, extent(1920, 1080));
+        tracking.record_edge_placement(
+            composite,
+            source,
+            rect(0, 0, 400, 240),
+            rect(200, 100, 400, 240),
+        );
+        tracking.record_edge_placement(
+            presented_image,
+            composite,
+            rect(0, 0, 1280, 720),
+            rect(100, 50, 640, 360),
+        );
+        let dependencies = HashMap::from([(composite, vec![(source, 0)])]);
+
+        assert!(rect_eq(
+            tracking
+                .resolve_presentation_rect(
+                    presented_image,
+                    source,
+                    &[(composite, true)],
+                    &dependencies,
+                )
+                .expect("intermediate placement should resolve"),
+            rect(200, 100, 200, 120),
+        ));
+    }
+
+    #[test]
+    fn repeated_source_with_different_offsets_is_ambiguous() {
+        let tracking = Tracking::default();
+        let source = image(1);
+        let presented_image = image(2);
+        tracking.note_image(source, extent(400, 240));
+        tracking.note_image(presented_image, extent(1280, 720));
+        tracking.record_edge_placement(
+            presented_image,
+            source,
+            rect(0, 0, 400, 240),
+            rect(20, 20, 400, 240),
+        );
+        tracking.record_edge_placement(
+            presented_image,
+            source,
+            rect(0, 0, 400, 240),
+            rect(700, 400, 400, 240),
+        );
+
+        assert!(
+            tracking
+                .resolve_presentation_rect(
+                    presented_image,
+                    source,
+                    &[(source, false)],
+                    &HashMap::new(),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn raster_bounds_intersect_scissor_with_a_negative_height_viewport() {
+        let viewport = vk::Viewport {
+            x: 20.0,
+            y: 600.0,
+            width: 800.0,
+            height: -500.0,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        assert!(rect_eq(
+            raster_rect(
+                Some(viewport),
+                Some(rect(100, 50, 640, 480)),
+                extent(1280, 720),
+            )
+            .expect("viewport and scissor overlap"),
+            rect(100, 100, 640, 430),
+        ));
     }
 }
 
@@ -804,18 +1290,14 @@ impl Tracking {
             return;
         };
         drop(images);
-        let draw_area = state
-            .scissor
-            .map(|rect| u64::from(rect.extent.width) * u64::from(rect.extent.height))
-            .or_else(|| {
-                state
-                    .viewport
-                    .map(|vp| (vp.width.abs() as u64) * (vp.height.abs() as u64))
-            })
-            .unwrap_or(0);
-        if draw_area == 0 {
+        let Some(destination_extent) = self.image_extent(destination) else {
             return;
-        }
+        };
+        let Some(raster_rect) = raster_rect(state.viewport, state.scissor, destination_extent)
+        else {
+            return;
+        };
+        let draw_area = u64::from(raster_rect.extent.width) * u64::from(raster_rect.extent.height);
         let mut best = None;
         let mut consider = |image: vk::Image, layout: vk::ImageLayout| {
             if image == destination {
@@ -876,27 +1358,13 @@ impl Tracking {
                 .is_some_and(|extent| u64::from(extent.width) * u64::from(extent.height) >= 64 * 64)
         });
         if self.is_swapchain_image(destination) {
-            self.record_presented(destination, &sampled, false);
+            self.record_presented(destination, &sampled, false, Some(raster_rect));
         } else {
             self.record_target(destination, draw_area);
-            self.record_dependencies(destination, &sampled);
+            self.record_dependencies(destination, &sampled, Some(raster_rect));
         }
         if let Some(candidate) = best {
-            let rect = state.scissor.or_else(|| {
-                state.viewport.map(|viewport| vk::Rect2D {
-                    offset: vk::Offset2D {
-                        x: viewport.x.max(0.0).round() as i32,
-                        y: viewport.y.max(0.0).round() as i32,
-                    },
-                    extent: vk::Extent2D {
-                        width: viewport.width.abs().round() as u32,
-                        height: viewport.height.abs().round() as u32,
-                    },
-                })
-            });
-            if let Some(rect) = rect {
-                self.record_present_rect(destination, rect, draw_area);
-            }
+            self.record_present_rect(destination, raster_rect, draw_area);
             let replace = self
                 .render_target
                 .get(&destination)
@@ -972,11 +1440,36 @@ impl Tracking {
         if source_image == destination_image {
             return;
         }
+        let source_rect = vk::Rect2D {
+            offset: source_offset,
+            extent: source_extent,
+        };
+        let destination_rect = vk::Rect2D {
+            offset: destination_offset,
+            extent: destination_extent,
+        };
         if !self.is_swapchain_image(destination_image) {
-            self.record_transfer(source_image, source_layout, destination_image);
+            self.record_transfer(
+                source_image,
+                source_layout,
+                destination_image,
+                source_rect,
+                destination_rect,
+            );
             return;
         }
-        self.record_presented(destination_image, &[(source_image, source_layout)], true);
+        self.record_presented(
+            destination_image,
+            &[(source_image, source_layout)],
+            true,
+            None,
+        );
+        self.record_edge_placement(
+            destination_image,
+            source_image,
+            source_rect,
+            destination_rect,
+        );
         if source_extent.width != 0 && source_extent.height != 0 {
             self.propagate_present_rect(
                 source_image,

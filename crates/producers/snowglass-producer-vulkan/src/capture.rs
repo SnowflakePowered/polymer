@@ -116,9 +116,9 @@ struct SwapchainState {
     /// is adopted.
     pending_layout: Vec<vk::Extent2D>,
     pending_presents: u32,
-    /// The images captured by the last successful graph selection, for
+    /// The sources captured by the last successful graph selection, for
     /// bridging frames whose presentation roots cannot be resolved.
-    tracked_sources: Vec<vk::Image>,
+    tracked_sources: Vec<tracking::PresentSource>,
     /// Global present count when this swapchain last presented. A window
     /// that stops presenting (a splash screen left alive but idle) must not
     /// keep holding viewer surfaces with a frozen stream.
@@ -711,7 +711,7 @@ impl CaptureState {
             resolved = merged;
         }
         resolved.truncate(config::tracked_render_target_count().unwrap_or(1));
-        state.tracked_sources = resolved.iter().map(|source| source.image).collect();
+        state.tracked_sources = resolved.clone();
         // Several windows resolve the same screens; the incumbent owner streams
         // them and the others stream nothing rather than publishing duplicates
         // that race for viewer surfaces.
@@ -969,61 +969,40 @@ impl CaptureState {
                     stream.frame_number += 1;
                     let cropped =
                         source.is_none() && (rect_is_content || presentation_source.is_some());
+                    let presentation_rect = if let Some(source) = source {
+                        source.presentation_rect
+                    } else if cropped {
+                        capture_rect
+                    } else {
+                        Some(vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: render_extent,
+                        })
+                    };
                     let notification = Message::FrameReady(FrameReady {
                         stream_id: StreamId(swapchain.as_raw() ^ ((index as u64) << 56)),
                         slot: submission.slot,
                         render_width: render_extent.width,
                         render_height: render_extent.height,
-                        capture_x: if cropped {
-                            capture_rect.map_or(0, |rect| rect.offset.x as u32)
-                        } else {
-                            0
-                        },
-                        capture_y: if cropped {
-                            capture_rect.map_or(0, |rect| rect.offset.y as u32)
-                        } else {
-                            0
-                        },
-                        capture_width: if cropped {
-                            capture_rect.map_or(swapchain_extent.width, |r| r.extent.width)
-                        } else {
-                            render_extent.width
-                        },
-                        capture_height: if cropped {
-                            capture_rect.map_or(swapchain_extent.height, |r| r.extent.height)
-                        } else {
-                            render_extent.height
-                        },
+                        capture_x: presentation_rect.map_or(0, |rect| rect.offset.x as u32),
+                        capture_y: presentation_rect.map_or(0, |rect| rect.offset.y as u32),
+                        capture_width: presentation_rect
+                            .map_or(render_extent.width, |rect| rect.extent.width),
+                        capture_height: presentation_rect
+                            .map_or(render_extent.height, |rect| rect.extent.height),
                         presentation_width: swapchain_extent.width,
                         presentation_height: swapchain_extent.height,
-                        presentation_transform: if source.is_some() || presentation_source.is_some()
-                        {
+                        presentation_transform: if presentation_source.is_some() {
                             PresentationTransform::UNAVAILABLE
-                        } else {
+                        } else if let Some(rect) = presentation_rect {
                             PresentationTransform::axis_aligned(
-                                if cropped {
-                                    capture_rect.map_or(0, |rect| rect.offset.x as u32)
-                                } else {
-                                    0
-                                },
-                                if cropped {
-                                    capture_rect.map_or(0, |rect| rect.offset.y as u32)
-                                } else {
-                                    0
-                                },
-                                if cropped {
-                                    capture_rect
-                                        .map_or(swapchain_extent.width, |rect| rect.extent.width)
-                                } else {
-                                    render_extent.width
-                                },
-                                if cropped {
-                                    capture_rect
-                                        .map_or(swapchain_extent.height, |rect| rect.extent.height)
-                                } else {
-                                    render_extent.height
-                                },
+                                rect.offset.x as u32,
+                                rect.offset.y as u32,
+                                rect.extent.width,
+                                rect.extent.height,
                             )
+                        } else {
+                            PresentationTransform::UNAVAILABLE
                         },
                         frame_number: stream.frame_number,
                         sync_value: submission.sync_value,
