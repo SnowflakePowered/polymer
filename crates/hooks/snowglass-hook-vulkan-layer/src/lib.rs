@@ -3,10 +3,9 @@
 mod hook_chain;
 mod hooks;
 mod layer;
-mod scissor;
+mod observers;
 mod swapchain;
 mod terminal;
-mod tracking;
 
 // The Vulkan loader discovers these symbols directly from the layer DLL.
 pub use hooks::vkCreateDevice;
@@ -19,8 +18,8 @@ pub use hooks::{
 };
 pub use hooks::{
     vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBlitImage,
-    vkCmdCopyImage, vkCmdDraw, vkCmdDrawIndexed, vkCmdEndRenderPass, vkCmdPushConstants,
-    vkCmdPushDescriptorSetKHR, vkCmdSetScissor, vkCmdSetViewport,
+    vkCmdCopyImage, vkCmdDraw, vkCmdDrawIndexed, vkCmdEndRenderPass, vkCmdPushDescriptorSetKHR,
+    vkCmdSetScissor, vkCmdSetViewport,
 };
 pub use hooks::{
     vkCreateFramebuffer, vkCreateImage, vkCreateImageView, vkDestroyFramebuffer, vkDestroyImage,
@@ -34,27 +33,26 @@ use ash::vk;
 use std::mem;
 
 snowglass_hook::register_hooks! {
-    hooks::register_cmd_draw -> tracking::cmd_draw;
-    hooks::register_cmd_draw_indexed -> tracking::cmd_draw;
-    hooks::register_cmd_set_viewport -> tracking::cmd_set_viewport;
-    hooks::register_cmd_set_scissor -> tracking::cmd_set_scissor;
-    hooks::register_cmd_push_constants -> tracking::cmd_push_constants;
-    hooks::register_cmd_end_render_pass -> tracking::cmd_end_render_pass;
-    hooks::register_cmd_begin_render_pass -> tracking::cmd_begin_render_pass;
-    hooks::register_cmd_bind_descriptor_sets -> tracking::cmd_bind_descriptor_sets;
-    hooks::register_cmd_push_descriptor_set -> tracking::cmd_push_descriptor_set;
-    hooks::register_cmd_blit_image -> tracking::cmd_blit_image;
-    hooks::register_cmd_copy_image -> tracking::cmd_copy_image;
-    hooks::register_begin_command_buffer -> tracking::begin_command_buffer;
-    hooks::register_create_image -> tracking::create_image;
-    hooks::register_create_image_view -> tracking::create_image_view;
-    hooks::register_create_framebuffer -> tracking::create_framebuffer;
-    hooks::register_destroy_image -> tracking::destroy_image;
-    hooks::register_destroy_image_view -> tracking::destroy_image_view;
-    hooks::register_destroy_framebuffer -> tracking::destroy_framebuffer;
-    hooks::register_update_descriptor_sets -> tracking::update_descriptor_sets;
-    hooks::register_get_device_queue -> tracking::get_device_queue;
-    hooks::register_get_device_queue2 -> tracking::get_device_queue2;
+    hooks::register_cmd_draw -> observers::cmd_draw;
+    hooks::register_cmd_draw_indexed -> observers::cmd_draw;
+    hooks::register_cmd_set_viewport -> observers::cmd_set_viewport;
+    hooks::register_cmd_set_scissor -> observers::cmd_set_scissor;
+    hooks::register_cmd_end_render_pass -> observers::cmd_end_render_pass;
+    hooks::register_cmd_begin_render_pass -> observers::cmd_begin_render_pass;
+    hooks::register_cmd_bind_descriptor_sets -> observers::cmd_bind_descriptor_sets;
+    hooks::register_cmd_push_descriptor_set -> observers::cmd_push_descriptor_set;
+    hooks::register_cmd_blit_image -> observers::cmd_blit_image;
+    hooks::register_cmd_copy_image -> observers::cmd_copy_image;
+    hooks::register_begin_command_buffer -> observers::begin_command_buffer;
+    hooks::register_create_image -> observers::create_image;
+    hooks::register_create_image_view -> observers::create_image_view;
+    hooks::register_create_framebuffer -> observers::create_framebuffer;
+    hooks::register_destroy_image -> observers::destroy_image;
+    hooks::register_destroy_image_view -> observers::destroy_image_view;
+    hooks::register_destroy_framebuffer -> observers::destroy_framebuffer;
+    hooks::register_update_descriptor_sets -> observers::update_descriptor_sets;
+    hooks::register_get_device_queue -> observers::get_device_queue;
+    hooks::register_get_device_queue2 -> observers::get_device_queue2;
     hooks::register_queue_submit -> swapchain::queue_submit;
     hooks::register_create_swapchain -> swapchain::create_swapchain;
     hooks::register_destroy_swapchain -> swapchain::destroy_swapchain;
@@ -62,15 +60,15 @@ snowglass_hook::register_hooks! {
     hooks::register_queue_present -> swapchain::handle_queue_present;
     hooks::register_create_win32_surface -> swapchain::create_win32_surface;
     hooks::register_destroy_surface -> swapchain::destroy_surface;
-    hooks::register_enumerate_physical_devices -> tracking::enumerate_physical_devices;
+    hooks::register_enumerate_physical_devices -> observers::enumerate_physical_devices;
     hooks::register_destroy_instance -> layer::handle_destroy_instance;
     hooks::register_destroy_device -> layer::handle_destroy_device;
-    hooks::register_create_instance -> tracking::create_instance;
-    hooks::register_create_device -> tracking::noop;
-    hooks::register_negotiate -> tracking::noop;
-    hooks::register_get_instance_proc_addr -> tracking::noop;
-    hooks::register_get_physical_device_proc_addr -> tracking::noop;
-    hooks::register_get_device_proc_addr -> tracking::noop;
+    hooks::register_create_instance -> observers::create_instance;
+    hooks::register_create_device -> observers::noop;
+    hooks::register_negotiate -> observers::noop;
+    hooks::register_get_instance_proc_addr -> observers::noop;
+    hooks::register_get_physical_device_proc_addr -> observers::noop;
+    hooks::register_get_device_proc_addr -> observers::noop;
 }
 
 fn hook(pointer: *const ()) -> vk::PFN_vkVoidFunction {
@@ -122,7 +120,6 @@ pub(crate) fn registered_device_hook(name: &[u8], tracking: bool) -> vk::PFN_vkV
             b"vkCmdBindDescriptorSets" => hook(hooks::vkCmdBindDescriptorSets as *const ()),
             b"vkCmdSetViewport" => hook(hooks::vkCmdSetViewport as *const ()),
             b"vkCmdSetScissor" => hook(hooks::vkCmdSetScissor as *const ()),
-            b"vkCmdPushConstants" => hook(hooks::vkCmdPushConstants as *const ()),
             b"vkCmdDraw" => hook(hooks::vkCmdDraw as *const ()),
             b"vkCmdDrawIndexed" => hook(hooks::vkCmdDrawIndexed as *const ()),
             b"vkCmdBlitImage" => hook(hooks::vkCmdBlitImage as *const ()),
@@ -139,7 +136,7 @@ mod tests {
         assert!(super::registered_instance_hook(b"vkCreateInstance").is_some());
         assert!(super::registered_device_hook(b"vkQueuePresentKHR", false).is_some());
         assert!(super::registered_device_hook(b"vkCmdSetScissor", true).is_some());
-        assert!(super::registered_device_hook(b"vkCmdPushConstants", true).is_some());
+        assert!(super::registered_device_hook(b"vkCmdBlitImage", true).is_some());
         assert!(super::registered_device_hook(b"vkCmdSetScissor", false).is_none());
         assert!(super::registered_device_hook(b"vkNotARealCommand", true).is_none());
     }

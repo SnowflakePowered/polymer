@@ -63,19 +63,44 @@ struct Capture {
     ready: Timeline,
     consumer: Timeline,
     ipc: Option<LocalSocket>,
+    adapter_luid: AdapterLuid,
+    stream_window: isize,
     next_slot: usize,
     sync_value: u64,
     frame_number: u64,
+  
+    presents: u64,
     deferred_frames: u64,
-    tracked_sources: Vec<DrawCandidate>,
 }
 
 unsafe impl Send for Capture {}
 
-static CAPTURES: OnceLock<Mutex<HashMap<(usize, usize), Capture>>> = OnceLock::new();
 
-fn captures() -> &'static Mutex<HashMap<(usize, usize), Capture>> {
+#[derive(Default)]
+struct WindowCaptures {
+    streams: Vec<Capture>,
+    tracked_sources: Vec<DrawCandidate>,
+    untracked_frames: u32,
+    pending_layout: Vec<(u32, u32)>,
+    pending_frames: u32,
+}
+
+static CAPTURES: OnceLock<Mutex<HashMap<(usize, usize), WindowCaptures>>> = OnceLock::new();
+
+fn captures() -> &'static Mutex<HashMap<(usize, usize), WindowCaptures>> {
     CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The window identity published for a stream. Extra streams get offset
+/// identities so the viewer treats each tracked screen as its own surface
+/// instead of replacing the window's previous stream; the offsets are odd,
+/// which no real window handle can collide with.
+fn stream_window(hwnd: isize, index: usize) -> isize {
+    if index == 0 {
+        hwnd
+    } else {
+        hwnd + (index as isize * 2 - 1)
+    }
 }
 
 /// Called immediately before the real GDI `SwapBuffers`.
@@ -95,51 +120,117 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
     }
     let window_width = (rect.right - rect.left).max(0) as u32;
     let window_height = (rect.bottom - rect.top).max(0) as u32;
-    let observed = take_draw_candidates(context as usize);
+    if window_width == 0 || window_height == 0 {
+        return;
+    }
+    let (observed, trusted) = take_draw_candidates(context as usize);
     let key = (hdc as usize, context as usize);
     let mut map = captures().lock().unwrap_or_else(|error| error.into_inner());
-    let tracked = map.get(&key).map_or(observed.clone(), |capture| {
+    let entry = map.entry(key).or_default();
+    // A trusted graph selection is complete: padding it with slots from an
+    // earlier frame would pin stale page-flip faces alongside live ones.
+    let tracked = if trusted {
+        observed
+    } else {
         merge_tracked_sources(
-            &capture.tracked_sources,
+            &entry.tracked_sources,
             observed,
             tracked_render_target_count().unwrap_or(1),
         )
-    });
-    let (width, height) = if let Some(first) = tracked.first() {
-        let Some(height) = first.height.checked_mul(tracked.len() as u32) else {
-            return;
-        };
-        (first.width, height)
-    } else {
-        (window_width, window_height)
     };
-    if width == 0 || height == 0 {
+    entry.tracked_sources.clone_from(&tracked);
+    // One stream per tracked source, or the classic whole-window stream when
+    // nothing resolves. Tracked layouts ride out short selection gaps and
+    // hold off layout changes until they persist, rather than churning
+    // through transport rebuilds on scene transitions.
+    let window_extent = (window_width, window_height);
+    let current = entry
+        .streams
+        .iter()
+        .map(|capture| (capture.width, capture.height))
+        .collect::<Vec<_>>();
+    let tracked_layout = current.len() > 1 || current.first().is_some_and(|first| *first != window_extent);
+    let proposed = tracked
+        .iter()
+        .map(|source| (source.width, source.height))
+        .collect::<Vec<_>>();
+    let desired = if !proposed.is_empty() {
+        entry.untracked_frames = 0;
+        if proposed == current || !tracked_layout {
+            entry.pending_frames = 0;
+            proposed
+        } else {
+            if entry.pending_layout == proposed {
+                entry.pending_frames += 1;
+            } else {
+                entry.pending_layout = proposed.clone();
+                entry.pending_frames = 1;
+            }
+            if entry.pending_frames >= 60 {
+                entry.pending_frames = 0;
+                proposed
+            } else {
+                current.clone()
+            }
+        }
+    } else if tracked_layout && entry.untracked_frames < 120 {
+        entry.untracked_frames += 1;
+        current.clone()
+    } else {
+        entry.untracked_frames = 0;
+        vec![window_extent]
+    };
+    if desired.iter().any(|(width, height)| *width == 0 || *height == 0) {
         return;
     }
-    let recreate = map.get(&key).is_none_or(|capture| {
-        capture.width != width
-            || capture.height != height
-            || capture.window_width != window_width
-            || capture.window_height != window_height
-    });
-    if recreate {
-        map.remove(&key);
-        if !tracked.is_empty() {
-            log(format!(
-                "snowglass: selected OpenGL render targets {}",
-                tracked
-                    .iter()
-                    .map(|source| format!(
-                        "texture {} layer {} ({:#x}, {}x{})",
-                        source.texture, source.layer, source.target, source.width, source.height
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+    if desired != current && !tracked.is_empty() {
+        log(format!(
+            "snowglass: selected OpenGL render targets {}",
+            tracked
+                .iter()
+                .map(|source| format!(
+                    "texture {} layer {} ({:#x}, {}x{})",
+                    source.texture, source.layer, source.target, source.width, source.height
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    // Window geometry feeds the capture-rect metadata; a resized window
+    // rebuilds every stream.
+    if entry
+        .streams
+        .first()
+        .is_some_and(|capture| (capture.window_width, capture.window_height) != window_extent)
+    {
+        entry.streams.clear();
+    }
+    while entry.streams.len() > desired.len() {
+        entry.streams.pop();
+    }
+    for (index, &(width, height)) in desired.iter().enumerate() {
+        let up_to_date = entry
+            .streams
+            .get(index)
+            .is_some_and(|capture| (capture.width, capture.height) == (width, height));
+        if up_to_date {
+            continue;
         }
-        match unsafe { Capture::new(hwnd as isize, width, height, window_width, window_height) } {
+        match unsafe {
+            Capture::new(
+                stream_window(hwnd as isize, index),
+                width,
+                height,
+                window_width,
+                window_height,
+            )
+        } {
             Ok(capture) => {
-                map.insert(key, capture);
+                if index < entry.streams.len() {
+                    entry.streams[index] = capture;
+                } else {
+                    entry.streams.push(capture);
+                }
             }
             Err(error) => {
                 log(format!(
@@ -149,9 +240,33 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
             }
         }
     }
-    if let Some(capture) = map.get_mut(&key) {
-        capture.tracked_sources.clone_from(&tracked);
-        if let Err(error) = unsafe { capture.copy_frame(StreamId(key.1 as u64), &tracked) } {
+    // While a layout change is being dampened the source list can differ
+    // from the stream list; feed each stream the source matching its extent
+    // and let unmatched streams idle a frame.
+    let mut source_used = vec![false; tracked.len()];
+    for (index, capture) in entry.streams.iter_mut().enumerate() {
+        capture.presents += 1;
+        // A stream can be rejected while the viewer's surfaces are
+        // transiently full; retry the connection periodically.
+        if capture.ipc.is_none() && capture.presents.is_multiple_of(120) {
+            capture.reconnect();
+        }
+        let source = tracked.iter().enumerate().find_map(|(source_index, source)| {
+            (!source_used[source_index]
+                && (source.width, source.height) == (capture.width, capture.height))
+                .then_some(source_index)
+        });
+        if let Some(source_index) = source {
+            source_used[source_index] = true;
+        }
+        let source = source.map(|source_index| &tracked[source_index]);
+        // During a selection gap a tracked stream has no source this frame;
+        // the whole-window fallback only makes sense at window extent.
+        if source.is_none() && (capture.width, capture.height) != window_extent {
+            continue;
+        }
+        let stream_id = StreamId((key.1 as u64) ^ ((index as u64) << 56));
+        if let Err(error) = unsafe { capture.copy_frame(stream_id, source) } {
             capture.deferred_frames = capture.deferred_frames.wrapping_add(1);
             if capture.deferred_frames == 1 || capture.deferred_frames % 600 == 0 {
                 log(format!(
@@ -234,18 +349,36 @@ impl Capture {
             ready,
             consumer,
             ipc,
+            adapter_luid,
+            stream_window: hwnd,
             next_slot: 0,
             sync_value: 0,
             frame_number: 0,
+            presents: 0,
             deferred_frames: 0,
-            tracked_sources: Vec::new(),
         })
+    }
+
+    /// Re-publishes this stream over a fresh viewer connection after a
+    /// rejection or disconnect.
+    fn reconnect(&mut self) {
+        if let Ok(socket) = connect_viewer(
+            &self.slots,
+            self.ready.handle(),
+            self.consumer.handle(),
+            self.adapter_luid,
+            self.stream_window,
+            self.width,
+            self.height,
+        ) {
+            self.ipc = Some(socket);
+        }
     }
 
     unsafe fn copy_frame(
         &mut self,
         stream_id: StreamId,
-        sources: &[DrawCandidate],
+        source: Option<&DrawCandidate>,
     ) -> Result<(), String> {
         let completed = unsafe { self.consumer.completed_value() };
         let Some(slot_index) = (0..self.slots.len())
@@ -264,7 +397,7 @@ impl Capture {
         unsafe {
             glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &mut old_read);
             glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &mut old_draw);
-            if !sources.is_empty() {
+            if source.is_some() {
                 (self.functions.bind_framebuffer)(GL_READ_FRAMEBUFFER, self.read_framebuffer);
             } else {
                 (self.functions.bind_framebuffer)(GL_READ_FRAMEBUFFER, 0);
@@ -280,22 +413,22 @@ impl Capture {
             if scissor_enabled {
                 glDisable(GL_SCISSOR_TEST);
             }
-            if sources.is_empty() {
-                (self.functions.blit_framebuffer)(
-                    0,
-                    0,
-                    self.width as i32,
-                    self.height as i32,
-                    0,
-                    self.height as i32,
-                    self.width as i32,
-                    0,
-                    GL_COLOR_BUFFER_BIT,
-                    GL_NEAREST,
-                );
-            } else {
-                let mut top = 0u32;
-                for source in sources {
+            match source {
+                None => {
+                    (self.functions.blit_framebuffer)(
+                        0,
+                        0,
+                        self.width as i32,
+                        self.height as i32,
+                        0,
+                        self.height as i32,
+                        self.width as i32,
+                        0,
+                        GL_COLOR_BUFFER_BIT,
+                        GL_NEAREST,
+                    );
+                }
+                Some(source) => {
                     if source.target == GL_TEXTURE_2D_ARRAY {
                         (self.functions.framebuffer_texture_layer)(
                             GL_READ_FRAMEBUFFER,
@@ -319,15 +452,12 @@ impl Capture {
                         source.width as i32,
                         source.height as i32,
                         0,
-                        self.height.saturating_sub(top) as i32,
+                        self.height as i32,
                         source.width as i32,
-                        self.height
-                            .saturating_sub(top.saturating_add(source.height))
-                            as i32,
+                        0,
                         GL_COLOR_BUFFER_BIT,
                         GL_NEAREST,
                     );
-                    top = top.saturating_add(source.height);
                 }
             }
             if scissor_enabled {
@@ -345,7 +475,7 @@ impl Capture {
         self.sync_value = sync_value;
         self.next_slot = (slot_index + 1) % self.slots.len();
         self.frame_number = self.frame_number.wrapping_add(1);
-        let bounds = sources.first().map_or(
+        let bounds = source.map_or(
             QuadBounds {
                 x: 0,
                 y: 0,
@@ -376,9 +506,9 @@ impl Capture {
         });
         if self.frame_number <= self.slots.len() as u64 || self.frame_number % 120 == 0 {
             log(format!(
-                "snowglass: submitted OpenGL EXT frame {} from {} target(s) at {}x{} into slot {} (quad {},{} {}x{})",
+                "snowglass: submitted OpenGL EXT frame {} tracked={} at {}x{} into slot {} (quad {},{} {}x{})",
                 self.frame_number,
-                sources.len().max(1),
+                source.is_some(),
                 self.width,
                 self.height,
                 slot_index,
@@ -407,20 +537,13 @@ fn merge_tracked_sources(
     if previous.is_empty() || observed.len() >= limit {
         return observed;
     }
-    let Some(extent) = observed
-        .first()
-        .map(|candidate| (candidate.width, candidate.height))
-    else {
+    if observed.is_empty() {
         return previous.to_vec();
-    };
-    let mut merged = previous
-        .iter()
-        .filter(|candidate| (candidate.width, candidate.height) == extent)
-        .copied()
-        .collect::<Vec<_>>();
-    if merged.is_empty() {
-        return observed;
     }
+    // A partial observation updates the matching slots and keeps the rest;
+    // independently tracked screens may differ in extent, so unmatched
+    // previous entries must survive rather than being filtered to one size.
+    let mut merged = previous.to_vec();
     let mut updated = vec![false; merged.len()];
     for candidate in observed {
         let exact = merged.iter().position(|old| {
@@ -506,5 +629,15 @@ fn connect_viewer(
             ProcessId(viewer_pid),
         )? as i64,
     }))?;
-    Ok(socket)
+    // The viewer acknowledges only accepted streams; a rejection closes the
+    // socket instead. Without waiting for the ack, a rejected stream looks
+    // alive forever (a stalled ring stops sending the frames that would
+    // surface the dead socket) and reconnect retries never trigger.
+    match socket.receive()? {
+        Message::StreamAccepted => Ok(socket),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "viewer did not acknowledge the stream",
+        )),
+    }
 }

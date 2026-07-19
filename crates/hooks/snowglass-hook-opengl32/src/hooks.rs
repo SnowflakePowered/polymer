@@ -56,6 +56,36 @@ chain! {
 }
 
 chain! {
+    pub(crate) dispatch_blit_framebuffer, register_blit_framebuffer;
+    observe BlitFramebuffer;
+    chain BLIT_FRAMEBUFFER_CHAIN, context BlitFramebufferContext;
+    hook BlitFramebufferHook() -> ();
+    abi (
+        src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32,
+        dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32,
+        mask: u32, filter: u32,
+    );
+    resolve with crate::install::call_blit_framebuffer;
+}
+
+chain! {
+    pub(crate) dispatch_copy_image_sub_data, register_copy_image_sub_data;
+    observe CopyImageSubData;
+    chain COPY_IMAGE_SUB_DATA_CHAIN, context CopyImageSubDataContext;
+    hook CopyImageSubDataHook(
+        src_name: u32, src_target: u32,
+        dst_name: u32, dst_target: u32, dst_z: i32,
+        width: i32, height: i32,
+    ) -> ();
+    abi (
+        src_name: u32, src_target: u32, src_level: i32, src_x: i32, src_y: i32, src_z: i32,
+        dst_name: u32, dst_target: u32, dst_level: i32, dst_x: i32, dst_y: i32, dst_z: i32,
+        width: i32, height: i32, depth: i32,
+    );
+    resolve with crate::install::call_copy_image_sub_data;
+}
+
+chain! {
     pub(crate) dispatch_wgl_get_proc_address, register_wgl_get_proc_address;
     around WglGetProcAddress;
     chain WGL_GET_PROC_ADDRESS_CHAIN, context WglGetProcAddressContext;
@@ -87,6 +117,34 @@ pub(crate) unsafe fn track_draw_elements_base_vertex() {
     unsafe { snowglass_producer_opengl::record_draw_candidate() };
 }
 
+pub(crate) unsafe fn track_blit_framebuffer() {
+    // The capture path issues its own blits through the hooked entry points;
+    // observing those would feed the external image textures into the graph.
+    if CAPTURING.with(|capturing| capturing.get()) {
+        return;
+    }
+    unsafe { snowglass_producer_opengl::record_blit_candidate() };
+}
+
+pub(crate) unsafe fn track_copy_image_sub_data(
+    src_name: u32,
+    src_target: u32,
+    dst_name: u32,
+    dst_target: u32,
+    dst_z: i32,
+    width: i32,
+    height: i32,
+) {
+    if CAPTURING.with(|capturing| capturing.get()) {
+        return;
+    }
+    unsafe {
+        snowglass_producer_opengl::record_copy_candidate(
+            src_name, src_target, dst_name, dst_target, dst_z, width, height,
+        )
+    };
+}
+
 pub(crate) unsafe fn route_proc_address(
     name: *const u8,
     mut context: WglGetProcAddressContext<'_>,
@@ -110,6 +168,14 @@ pub(crate) unsafe fn route_proc_address(
         b"glDrawElementsBaseVertex" => {
             crate::install::remember_draw_elements_base_vertex(original);
             crate::sys::draw_elements_base_vertex as *const c_void
+        }
+        b"glBlitFramebuffer" => {
+            crate::install::remember_blit_framebuffer(original);
+            crate::sys::blit_framebuffer as *const c_void
+        }
+        b"glCopyImageSubData" => {
+            crate::install::remember_copy_image_sub_data(original);
+            crate::sys::copy_image_sub_data as *const c_void
         }
         _ => original,
     }

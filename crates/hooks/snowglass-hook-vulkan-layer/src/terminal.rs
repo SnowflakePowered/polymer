@@ -66,7 +66,7 @@ pub(crate) unsafe fn get_device_proc_addr(
     }
     let name = unsafe { CStr::from_ptr(name) };
     if let Some(hook) =
-        crate::registered_device_hook(name.to_bytes(), crate::scissor::tracking_enabled())
+        crate::registered_device_hook(name.to_bytes(), snowglass_producer_vulkan::tracking::tracking_enabled())
     {
         return Some(hook);
     }

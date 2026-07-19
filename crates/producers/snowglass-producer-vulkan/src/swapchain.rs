@@ -127,6 +127,36 @@ impl SwapchainCopyEngine {
         }
     }
 
+    /// The exported ring and timelines this engine copies into, for
+    /// re-publishing the stream over a fresh viewer connection.
+    pub fn transport_parts(
+        &self,
+    ) -> (
+        &ExportImageRing,
+        &ExportTimelineSemaphore,
+        Option<&ExportTimelineSemaphore>,
+    ) {
+        (
+            &self.ring,
+            &self.producer_timeline,
+            self.consumer_timeline.as_ref(),
+        )
+    }
+
+    /// Waits for every in-flight copy to retire. Required before dropping the
+    /// engine while the device is still in use, since dropping destroys the
+    /// command pool the copies were recorded from.
+    pub fn wait_idle(&self) {
+        let fences = self
+            .slots
+            .iter()
+            .map(|slot| slot.fence)
+            .collect::<Vec<_>>();
+        unsafe {
+            let _ = self.device.wait_for_fences(&fences, true, u64::MAX);
+        }
+    }
+
     /// Submits one copy and returns the semaphore that presentation must wait on.
     pub fn submit_copy(
         &mut self,
@@ -137,19 +167,20 @@ impl SwapchainCopyEngine {
         let Some(&source_image) = self.source_images.get(source_image_index as usize) else {
             return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
         };
-        self.submit_image_copy(
+        self.submit_image_copy_inner(
             queue,
             source_image_index,
             source_image,
             self.extent,
             vk::ImageLayout::PRESENT_SRC_KHR,
             application_waits,
+            true,
+            vk::Offset2D::default(),
         )
     }
 
     /// Copies an identified presentation source into a top-left, aspect-preserving
-    /// region of the export image. The allocation remains swapchain-sized so the
-    /// transport does not need to be rebuilt for changing internal resolutions.
+    /// region of the export image.
     pub fn submit_image_copy(
         &mut self,
         queue: vk::Queue,
@@ -215,6 +246,7 @@ impl SwapchainCopyEngine {
         )
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn submit_image_copy_inner(
         &mut self,
         queue: vk::Queue,
@@ -335,19 +367,15 @@ impl SwapchainCopyEngine {
                 );
             }
             let destination_extent = fit_inside(source_extent, self.extent);
+            let subresource = vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
             let blit_region = vk::ImageBlit::default()
-                .src_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .dst_subresource(vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
+                .src_subresource(subresource)
+                .dst_subresource(subresource)
                 .src_offsets([
                     vk::Offset3D {
                         x: source_offset.x,
@@ -386,9 +414,9 @@ impl SwapchainCopyEngine {
                     destination_image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[vk::ImageCopy::default()
-                        .src_subresource(blit_region.src_subresource)
+                        .src_subresource(subresource)
                         .src_offset(blit_region.src_offsets[0])
-                        .dst_subresource(blit_region.dst_subresource)
+                        .dst_subresource(subresource)
                         .extent(vk::Extent3D {
                             width: source_extent.width.min(self.extent.width),
                             height: source_extent.height.min(self.extent.height),
@@ -462,7 +490,7 @@ impl SwapchainCopyEngine {
     }
 }
 
-fn fit_inside(source: vk::Extent2D, bounds: vk::Extent2D) -> vk::Extent2D {
+pub fn fit_inside(source: vk::Extent2D, bounds: vk::Extent2D) -> vk::Extent2D {
     if source.width <= bounds.width && source.height <= bounds.height {
         return source;
     }

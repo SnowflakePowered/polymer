@@ -208,14 +208,6 @@ chain! {
 }
 
 chain! {
-    pub(crate) dispatch_cmd_push_constants, register_cmd_push_constants;
-    observes vkCmdPushConstants;
-    chain CMD_PUSH_CONSTANTS_CHAIN, context CmdPushConstantsContext;
-    hook CmdPushConstantsHook(command_buffer: vk::CommandBuffer, layout: vk::PipelineLayout, stage_flags: vk::ShaderStageFlags, offset: u32, size: u32, values: *const std::ffi::c_void);
-    resolve with command_buffer, c"vkCmdPushConstants": vk::PFN_vkCmdPushConstants;
-}
-
-chain! {
     pub(crate) dispatch_cmd_end_render_pass, register_cmd_end_render_pass;
     observes vkCmdEndRenderPass;
     chain CMD_END_RENDER_PASS_CHAIN, context CmdEndRenderPassContext;

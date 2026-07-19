@@ -7,7 +7,7 @@ mod timeline;
 mod tracking;
 
 pub use swapchain::before_swap_buffers;
-pub use tracking::record_draw_candidate;
+pub use tracking::{record_blit_candidate, record_copy_candidate, record_draw_candidate};
 
 pub const BACKEND_NAME: &str = "opengl";
 

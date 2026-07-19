@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ash.workspace = true
+dashmap.workspace = true
 snowglass-api.workspace = true
 snowglass-protocol.workspace = true
 windows.workspace = true

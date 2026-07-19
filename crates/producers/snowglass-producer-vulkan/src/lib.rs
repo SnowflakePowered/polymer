@@ -10,6 +10,7 @@ mod image_ring;
 mod swapchain;
 #[cfg(windows)]
 mod timeline;
+pub mod tracking;
 
 pub use environment::{
     REQUIRED_DEVICE_EXTENSIONS, VulkanAdapter, VulkanEnvironment, VulkanProbeError,

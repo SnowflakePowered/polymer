@@ -14,5 +14,7 @@ snowglass_hook::register_hooks! {
     hooks::register_draw_arrays -> hooks::track_draw_arrays;
     hooks::register_draw_elements -> hooks::track_draw_elements;
     hooks::register_draw_elements_base_vertex -> hooks::track_draw_elements_base_vertex;
+    hooks::register_blit_framebuffer -> hooks::track_blit_framebuffer;
+    hooks::register_copy_image_sub_data -> hooks::track_copy_image_sub_data;
     hooks::register_wgl_get_proc_address -> hooks::route_proc_address;
 }

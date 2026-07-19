@@ -14,6 +14,22 @@ snowglass_hook::trampoline! {
 }
 
 snowglass_hook::trampoline! {
+    pub(crate) unsafe extern "system" fn blit_framebuffer(
+        src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32,
+        dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32,
+        mask: u32, filter: u32,
+    ) -> () => crate::hooks::dispatch_blit_framebuffer;
+}
+
+snowglass_hook::trampoline! {
+    pub(crate) unsafe extern "system" fn copy_image_sub_data(
+        src_name: u32, src_target: u32, src_level: i32, src_x: i32, src_y: i32, src_z: i32,
+        dst_name: u32, dst_target: u32, dst_level: i32, dst_x: i32, dst_y: i32, dst_z: i32,
+        width: i32, height: i32, depth: i32,
+    ) -> () => crate::hooks::dispatch_copy_image_sub_data;
+}
+
+snowglass_hook::trampoline! {
     pub(crate) unsafe extern "system" fn swap_layer_buffers(hdc: Hdc, planes: u32) -> i32
         => crate::hooks::dispatch_swap_layer_buffers;
 }
