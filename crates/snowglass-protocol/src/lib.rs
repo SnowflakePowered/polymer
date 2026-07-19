@@ -2,7 +2,9 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
+/// Fractional bits used by coordinates in [`PresentationPoint`].
+pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
@@ -141,8 +143,8 @@ pub struct FrameReady {
     /// dimensions determine the image's displayed aspect ratio.
     pub render_width: u32,
     pub render_height: u32,
-    /// Axis-aligned rectangle where the captured image appeared in the target
-    /// presentation coordinate system.
+    /// Axis-aligned bounds of the captured image in the target presentation.
+    /// The exact orientation is described by `presentation_transform`.
     pub capture_x: u32,
     pub capture_y: u32,
     pub capture_width: u32,
@@ -152,7 +154,7 @@ pub struct FrameReady {
     /// extents when the application uses dynamic resolution or a frame graph.
     pub presentation_width: u32,
     pub presentation_height: u32,
-    pub mapping_kind: PresentationMappingKind,
+    pub presentation_transform: PresentationTransform,
     pub frame_number: u64,
     pub sync_value: u64,
     pub timestamp_qpc: u64,
@@ -164,6 +166,7 @@ pub struct FrameReady {
 pub enum PresentationMappingKind {
     Unavailable = 0,
     AxisAligned = 1,
+    Affine = 2,
 }
 
 impl TryFrom<u32> for PresentationMappingKind {
@@ -173,7 +176,117 @@ impl TryFrom<u32> for PresentationMappingKind {
         match value {
             0 => Ok(Self::Unavailable),
             1 => Ok(Self::AxisAligned),
+            2 => Ok(Self::Affine),
             _ => Err(()),
         }
+    }
+}
+
+/// A signed 48.16 fixed-point position in target presentation coordinates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct PresentationPoint {
+    pub x: i64,
+    pub y: i64,
+}
+
+impl PresentationPoint {
+    pub const fn from_pixels(x: i32, y: i32) -> Self {
+        Self {
+            x: (x as i64) << PRESENTATION_COORD_FRACTIONAL_BITS,
+            y: (y as i64) << PRESENTATION_COORD_FRACTIONAL_BITS,
+        }
+    }
+}
+
+/// Maps the display-oriented captured image into the target presentation.
+///
+/// `upper_left`, `upper_right`, and `lower_left` are the presentation-space
+/// positions of the corresponding corners of the valid captured image. The
+/// fourth corner is implied by the parallelogram. This represents translation,
+/// non-uniform scale, reflection, quarter-turn rotation, and general affine
+/// transforms without relying on the texture having reached the swapchain yet.
+/// Storage orientation such as `StreamReady::bottom_up` is applied before this
+/// transform.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct PresentationTransform {
+    pub kind: PresentationMappingKind,
+    pub upper_left: PresentationPoint,
+    pub upper_right: PresentationPoint,
+    pub lower_left: PresentationPoint,
+}
+
+impl PresentationTransform {
+    pub const UNAVAILABLE: Self = Self {
+        kind: PresentationMappingKind::Unavailable,
+        upper_left: PresentationPoint { x: 0, y: 0 },
+        upper_right: PresentationPoint { x: 0, y: 0 },
+        lower_left: PresentationPoint { x: 0, y: 0 },
+    };
+
+    pub fn axis_aligned(x: u32, y: u32, width: u32, height: u32) -> Self {
+        let left = fixed_unsigned(u64::from(x));
+        let top = fixed_unsigned(u64::from(y));
+        let right = fixed_unsigned(u64::from(x) + u64::from(width));
+        let bottom = fixed_unsigned(u64::from(y) + u64::from(height));
+        Self {
+            kind: PresentationMappingKind::AxisAligned,
+            upper_left: PresentationPoint { x: left, y: top },
+            upper_right: PresentationPoint { x: right, y: top },
+            lower_left: PresentationPoint { x: left, y: bottom },
+        }
+    }
+
+    pub const fn affine(
+        upper_left: PresentationPoint,
+        upper_right: PresentationPoint,
+        lower_left: PresentationPoint,
+    ) -> Self {
+        Self {
+            kind: PresentationMappingKind::Affine,
+            upper_left,
+            upper_right,
+            lower_left,
+        }
+    }
+}
+
+fn fixed_unsigned(value: u64) -> i64 {
+    (value as i64) << PRESENTATION_COORD_FRACTIONAL_BITS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_aligned_transform_uses_target_rectangle_corners() {
+        let transform = PresentationTransform::axis_aligned(10, 20, 300, 400);
+        assert_eq!(transform.kind, PresentationMappingKind::AxisAligned);
+        assert_eq!(transform.upper_left, PresentationPoint::from_pixels(10, 20));
+        assert_eq!(
+            transform.upper_right,
+            PresentationPoint::from_pixels(310, 20)
+        );
+        assert_eq!(
+            transform.lower_left,
+            PresentationPoint::from_pixels(10, 420)
+        );
+    }
+
+    #[test]
+    fn affine_transform_preserves_a_quarter_turn() {
+        let transform = PresentationTransform::affine(
+            PresentationPoint::from_pixels(240, 0),
+            PresentationPoint::from_pixels(240, 400),
+            PresentationPoint::from_pixels(0, 0),
+        );
+        assert_eq!(transform.kind, PresentationMappingKind::Affine);
+        assert_eq!(
+            transform.upper_right,
+            PresentationPoint::from_pixels(240, 400)
+        );
+        assert_eq!(transform.lower_left, PresentationPoint::from_pixels(0, 0));
     }
 }

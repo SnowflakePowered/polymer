@@ -5,7 +5,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -215,7 +215,18 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
         capture_height: presentation_rect.3,
         presentation_width: presentation_extent.0,
         presentation_height: presentation_extent.1,
-        mapping_kind: PresentationMappingKind::AxisAligned,
+        presentation_transform: if tracked_source.is_some() {
+            // The current graph tracker identifies the sampled resource and
+            // destination bounds, but not the shader's UV orientation yet.
+            PresentationTransform::UNAVAILABLE
+        } else {
+            PresentationTransform::axis_aligned(
+                presentation_rect.0,
+                presentation_rect.1,
+                presentation_rect.2,
+                presentation_rect.3,
+            )
+        },
         frame_number: state.frame,
         sync_value: submission.sync_value,
         timestamp_qpc: performance_counter().unwrap_or(0),

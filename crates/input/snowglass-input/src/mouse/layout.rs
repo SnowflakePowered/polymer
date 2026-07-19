@@ -71,16 +71,51 @@ impl Point {
     }
 }
 
+/// Maps normalized captured-image coordinates into a presentation coordinate
+/// space. The three points are the destinations of the image's upper-left,
+/// upper-right, and lower-left corners.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AffineMapping {
+    pub upper_left: Point,
+    pub upper_right: Point,
+    pub lower_left: Point,
+}
+
+impl AffineMapping {
+    pub fn axis_aligned(rect: Rect) -> Self {
+        Self {
+            upper_left: Point::new(f64::from(rect.x), f64::from(rect.y)),
+            upper_right: Point::new(f64::from(rect.x) + f64::from(rect.width), f64::from(rect.y)),
+            lower_left: Point::new(
+                f64::from(rect.x),
+                f64::from(rect.y) + f64::from(rect.height),
+            ),
+        }
+    }
+
+    pub fn map(self, u: f64, v: f64) -> Point {
+        Point::new(
+            self.upper_left.x
+                + u * (self.upper_right.x - self.upper_left.x)
+                + v * (self.lower_left.x - self.upper_left.x),
+            self.upper_left.y
+                + u * (self.upper_right.y - self.upper_left.y)
+                + v * (self.lower_left.y - self.upper_left.y),
+        )
+    }
+}
+
 /// Metadata needed to display and interact with one captured surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfaceLayout {
     /// Extent of the valid captured image. This determines its displayed aspect
     /// ratio independently of the allocation that contains it.
     pub image_extent: Extent,
     /// Extent of the target presentation coordinate space.
     pub presentation_extent: Extent,
-    /// Rectangle where this image appeared in the target presentation.
-    pub presentation_rect: Rect,
+    /// Mapping from captured-image coordinates into the target presentation.
+    /// `None` means graph tracking could not prove the final placement.
+    pub presentation_mapping: Option<AffineMapping>,
 }
 
 /// The vertical ordering of surfaces in the viewer.
@@ -104,13 +139,13 @@ pub enum OutsideBehavior {
 }
 
 /// The calculated viewer placement and target mapping for one surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompositePlacement {
     /// Index into the input slice passed to [`vertical_surface_layout`].
     pub surface_index: usize,
     pub viewer_rect: Rect,
     pub presentation_extent: Extent,
-    pub presentation_rect: Rect,
+    pub presentation_mapping: Option<AffineMapping>,
 }
 
 impl CompositePlacement {
@@ -120,9 +155,10 @@ impl CompositePlacement {
 
     /// Maps a viewer position into the target presentation coordinate space.
     pub fn map_to_presentation(self, point: Point, outside: OutsideBehavior) -> Option<Point> {
-        if self.viewer_rect.is_empty() || self.presentation_rect.is_empty() {
+        if self.viewer_rect.is_empty() {
             return None;
         }
+        let mapping = self.presentation_mapping?;
         if outside == OutsideBehavior::Reject && !self.contains(point) {
             return None;
         }
@@ -134,10 +170,7 @@ impl CompositePlacement {
             v = v.clamp(0.0, 1.0);
         }
 
-        Some(Point::new(
-            f64::from(self.presentation_rect.x) + u * f64::from(self.presentation_rect.width),
-            f64::from(self.presentation_rect.y) + v * f64::from(self.presentation_rect.height),
-        ))
+        Some(mapping.map(u, v))
     }
 
     /// Maps a viewer position into the current target client extent.
@@ -230,7 +263,7 @@ pub fn vertical_surface_layout(
                 surface_index,
                 viewer_rect,
                 presentation_extent: surface.presentation_extent,
-                presentation_rect: surface.presentation_rect,
+                presentation_mapping: surface.presentation_mapping,
             })
         })
         .collect()
@@ -248,7 +281,7 @@ mod tests {
         SurfaceLayout {
             image_extent: Extent::new(image_width, image_height),
             presentation_extent: Extent::new(1920, 1080),
-            presentation_rect: Rect::new(0, 0, 1920, 1080),
+            presentation_mapping: Some(AffineMapping::axis_aligned(Rect::new(0, 0, 1920, 1080))),
         }
     }
 
@@ -307,7 +340,7 @@ mod tests {
             surface_index: 0,
             viewer_rect: Rect::new(100, 50, 800, 400),
             presentation_extent: Extent::new(1920, 1080),
-            presentation_rect: Rect::new(200, 100, 1600, 800),
+            presentation_mapping: Some(AffineMapping::axis_aligned(Rect::new(200, 100, 1600, 800))),
         };
         assert_eq!(
             placement.map_to_presentation(Point::new(500.0, 250.0), OutsideBehavior::Reject),
@@ -325,7 +358,7 @@ mod tests {
             surface_index: 0,
             viewer_rect: Rect::new(0, 0, 960, 540),
             presentation_extent: Extent::new(1920, 1080),
-            presentation_rect: Rect::new(0, 0, 1920, 1080),
+            presentation_mapping: Some(AffineMapping::axis_aligned(Rect::new(0, 0, 1920, 1080))),
         };
         assert_eq!(
             placement.map_to_client(
@@ -343,11 +376,29 @@ mod tests {
             surface_index: 0,
             viewer_rect: Rect::new(100, 100, 400, 200),
             presentation_extent: Extent::new(800, 600),
-            presentation_rect: Rect::new(50, 25, 700, 550),
+            presentation_mapping: Some(AffineMapping::axis_aligned(Rect::new(50, 25, 700, 550))),
         };
         assert_eq!(
             placement.map_to_presentation(Point::new(0.0, 400.0), OutsideBehavior::Clamp),
             Some(Point::new(50.0, 575.0))
+        );
+    }
+
+    #[test]
+    fn viewer_position_maps_through_a_clockwise_quarter_turn() {
+        let placement = CompositePlacement {
+            surface_index: 0,
+            viewer_rect: Rect::new(0, 0, 400, 240),
+            presentation_extent: Extent::new(240, 400),
+            presentation_mapping: Some(AffineMapping {
+                upper_left: Point::new(240.0, 0.0),
+                upper_right: Point::new(240.0, 400.0),
+                lower_left: Point::new(0.0, 0.0),
+            }),
+        };
+        assert_eq!(
+            placement.map_to_presentation(Point::new(100.0, 180.0), OutsideBehavior::Reject),
+            Some(Point::new(60.0, 100.0))
         );
     }
 }

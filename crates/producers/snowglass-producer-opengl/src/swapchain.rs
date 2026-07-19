@@ -17,7 +17,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -521,7 +521,18 @@ impl Capture {
             capture_height: bounds.height,
             presentation_width: self.window_width,
             presentation_height: self.window_height,
-            mapping_kind: PresentationMappingKind::AxisAligned,
+            presentation_transform: if source.is_some() {
+                // Bounds alone cannot distinguish a scaled texture from one
+                // rotated by the presentation shader.
+                PresentationTransform::UNAVAILABLE
+            } else {
+                PresentationTransform::axis_aligned(
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height,
+                )
+            },
             frame_number: self.frame_number,
             sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),

@@ -5,7 +5,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -139,7 +139,12 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             capture_height: submission.height,
             presentation_width: state.capture.ring().desc().width,
             presentation_height: state.capture.ring().desc().height,
-            mapping_kind: PresentationMappingKind::AxisAligned,
+            presentation_transform: PresentationTransform::axis_aligned(
+                submission.capture_x,
+                submission.capture_y,
+                submission.width,
+                submission.height,
+            ),
             frame_number: state.frame_number,
             sync_value: submission.sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),

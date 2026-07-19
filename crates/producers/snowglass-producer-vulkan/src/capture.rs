@@ -16,7 +16,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -968,10 +968,33 @@ fn present_swapchain(
                     },
                     presentation_width: swapchain_extent.width,
                     presentation_height: swapchain_extent.height,
-                    mapping_kind: if source.is_some() {
-                        PresentationMappingKind::Unavailable
+                    presentation_transform: if source.is_some() || presentation_source.is_some() {
+                        PresentationTransform::UNAVAILABLE
                     } else {
-                        PresentationMappingKind::AxisAligned
+                        PresentationTransform::axis_aligned(
+                            if cropped {
+                                capture_rect.map_or(0, |rect| rect.offset.x as u32)
+                            } else {
+                                0
+                            },
+                            if cropped {
+                                capture_rect.map_or(0, |rect| rect.offset.y as u32)
+                            } else {
+                                0
+                            },
+                            if cropped {
+                                capture_rect
+                                    .map_or(swapchain_extent.width, |rect| rect.extent.width)
+                            } else {
+                                render_extent.width
+                            },
+                            if cropped {
+                                capture_rect
+                                    .map_or(swapchain_extent.height, |rect| rect.extent.height)
+                            } else {
+                                render_extent.height
+                            },
+                        )
                     },
                     frame_number: stream.frame_number,
                     sync_value: submission.sync_value,
@@ -1089,7 +1112,7 @@ pub fn tracked_submission(
                         capture_height: candidate.extent.height,
                         presentation_width: presentation_extent.width,
                         presentation_height: presentation_extent.height,
-                        mapping_kind: PresentationMappingKind::Unavailable,
+                        presentation_transform: PresentationTransform::UNAVAILABLE,
                         frame_number: stream.frame_number,
                         sync_value: submission.sync_value,
                         timestamp_qpc: performance_counter().unwrap_or(0),

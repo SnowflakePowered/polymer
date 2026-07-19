@@ -6,7 +6,7 @@ use snowglass_input::{
 };
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake, MAX_IMAGE_SLOTS,
-    PresentationMappingKind, StreamId, SurfaceId,
+    PresentationMappingKind, PresentationPoint, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     fs,
@@ -38,7 +38,20 @@ const MESSAGE_SHUTDOWN: u32 = 4;
 const MESSAGE_DIRECT_INPUT_DATA: u32 = 5;
 const MESSAGE_STREAM_ACCEPTED: u32 = 6;
 const MESSAGE_POINTER_INPUT: u32 = 7;
-const PAYLOAD_SIZE: usize = mem::size_of::<WireStreamReady>();
+const PAYLOAD_SIZE: usize = payload_size();
+
+const fn payload_size() -> usize {
+    let stream = mem::size_of::<WireStreamReady>();
+    let frame = mem::size_of::<WireFrameReady>();
+    let pointer = mem::size_of::<WirePointerInput>();
+    if stream > frame {
+        if stream > pointer { stream } else { pointer }
+    } else if frame > pointer {
+        frame
+    } else {
+        pointer
+    }
+}
 
 static WINSOCK: OnceLock<i32> = OnceLock::new();
 
@@ -129,6 +142,12 @@ struct WireFrameReady {
     presentation_width: U32,
     presentation_height: U32,
     mapping_kind: U32,
+    upper_left_x: I64,
+    upper_left_y: I64,
+    upper_right_x: I64,
+    upper_right_y: I64,
+    lower_left_x: I64,
+    lower_left_y: I64,
     frame_number: U64,
     sync_value: U64,
     timestamp_qpc: U64,
@@ -389,7 +408,13 @@ fn encode(message: Message) -> WireMessage {
                     capture_height: U32::new(value.capture_height),
                     presentation_width: U32::new(value.presentation_width),
                     presentation_height: U32::new(value.presentation_height),
-                    mapping_kind: U32::new(value.mapping_kind as u32),
+                    mapping_kind: U32::new(value.presentation_transform.kind as u32),
+                    upper_left_x: I64::new(value.presentation_transform.upper_left.x),
+                    upper_left_y: I64::new(value.presentation_transform.upper_left.y),
+                    upper_right_x: I64::new(value.presentation_transform.upper_right.x),
+                    upper_right_y: I64::new(value.presentation_transform.upper_right.y),
+                    lower_left_x: I64::new(value.presentation_transform.lower_left.x),
+                    lower_left_y: I64::new(value.presentation_transform.lower_left.y),
                     frame_number: U64::new(value.frame_number),
                     sync_value: U64::new(value.sync_value),
                     timestamp_qpc: U64::new(value.timestamp_qpc),
@@ -503,7 +528,21 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 capture_height: value.capture_height.get(),
                 presentation_width: value.presentation_width.get(),
                 presentation_height: value.presentation_height.get(),
-                mapping_kind,
+                presentation_transform: PresentationTransform {
+                    kind: mapping_kind,
+                    upper_left: PresentationPoint {
+                        x: value.upper_left_x.get(),
+                        y: value.upper_left_y.get(),
+                    },
+                    upper_right: PresentationPoint {
+                        x: value.upper_right_x.get(),
+                        y: value.upper_right_y.get(),
+                    },
+                    lower_left: PresentationPoint {
+                        x: value.lower_left_x.get(),
+                        y: value.lower_left_y.get(),
+                    },
+                },
                 frame_number: value.frame_number.get(),
                 sync_value: value.sync_value.get(),
                 timestamp_qpc: value.timestamp_qpc.get(),
@@ -610,7 +649,11 @@ mod tests {
                 capture_height: 488,
                 presentation_width: 1920,
                 presentation_height: 1080,
-                mapping_kind: PresentationMappingKind::AxisAligned,
+                presentation_transform: PresentationTransform::affine(
+                    PresentationPoint::from_pixels(498, 20),
+                    PresentationPoint::from_pixels(498, 640),
+                    PresentationPoint::from_pixels(10, 20),
+                ),
                 frame_number: 100,
                 sync_value: 101,
                 timestamp_qpc: 102,

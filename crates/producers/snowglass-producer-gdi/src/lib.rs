@@ -6,7 +6,7 @@ use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, perfo
 use snowglass_producer_d3d11::D3d11ImageRing;
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationMappingKind, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     sync::{Mutex, OnceLock},
@@ -185,7 +185,12 @@ pub unsafe fn end_paint(hwnd: isize, dc: isize) {
         capture_height: capture.height,
         presentation_width: capture.width,
         presentation_height: capture.height,
-        mapping_kind: PresentationMappingKind::AxisAligned,
+        presentation_transform: PresentationTransform::axis_aligned(
+            0,
+            0,
+            capture.width,
+            capture.height,
+        ),
         frame_number: capture.frame_number,
         sync_value: value,
         timestamp_qpc: performance_counter().unwrap_or(0),
