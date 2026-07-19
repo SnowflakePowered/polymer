@@ -1,5 +1,6 @@
 //! Shared typed-hook infrastructure.
 
+pub mod config;
 mod vtable;
 
 pub use vtable::VtableHook;

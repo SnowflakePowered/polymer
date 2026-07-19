@@ -29,7 +29,7 @@ use windows::{
 pub(crate) fn d3d12_log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    if let Ok(path) = std::env::var("SNOWGLASS_D3D12_LOG_FILE")
+    if let Some(path) = snowglass_hook::config::d3d12_log_file()
         && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

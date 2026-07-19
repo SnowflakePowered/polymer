@@ -59,7 +59,7 @@ pub unsafe fn record_context_draw(context: *mut c_void) {
 }
 
 pub(crate) fn take_swapchain_region(swapchain: *mut c_void) -> Option<D3d11CaptureRegion> {
-    std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET")?;
+    snowglass_hook::config::tracking_enabled().then_some(())?;
     let swapchain = unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }?;
     let texture: ID3D11Texture2D = unsafe { swapchain.GetBuffer(0).ok()? };
     let resource: ID3D11Resource = texture.cast().ok()?;

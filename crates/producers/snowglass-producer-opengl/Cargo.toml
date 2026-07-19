@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 snowglass-api.workspace = true
+snowglass-hook.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true

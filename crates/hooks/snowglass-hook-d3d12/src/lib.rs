@@ -28,7 +28,7 @@ snowglass_hook::register_hooks! {
 fn d3d12_log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    if let Ok(path) = std::env::var("SNOWGLASS_D3D12_LOG_FILE")
+    if let Some(path) = snowglass_hook::config::d3d12_log_file()
         && let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -122,8 +122,8 @@ mod tests {
         );
         let listener = LocalSocketListener::bind(&session).unwrap();
         unsafe {
-            std::env::set_var("SNOWGLASS_SESSION", &session);
-            std::env::set_var("SNOWGLASS_TRACK_RENDER_TARGET", "1");
+            std::env::set_var(snowglass_hook::config::SESSION, &session);
+            std::env::set_var(snowglass_hook::config::TRACK_RENDER_TARGET, "1");
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -356,7 +356,7 @@ mod tests {
             std::mem::forget(swapchain);
             DestroyWindow(window);
             d3d12_log("snowglass-test: window destroyed");
-            std::env::remove_var("SNOWGLASS_SESSION");
+            std::env::remove_var(snowglass_hook::config::SESSION);
         }
     }
 }

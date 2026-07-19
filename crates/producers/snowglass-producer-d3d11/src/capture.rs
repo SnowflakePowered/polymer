@@ -50,7 +50,7 @@ pub unsafe fn before_present(swapchain: *mut c_void) {
             .as_ref()
             .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
         {
-            if std::env::var_os("SNOWGLASS_FORCE_KEYED_MUTEX").is_some() {
+            if snowglass_hook::config::force_keyed_mutex() {
                 &[D3d11RingMode::KeyedMutexNoFence, D3d11RingMode::KeyedMutex]
             } else {
                 &[
@@ -179,7 +179,7 @@ struct ViewerConnection {
 }
 
 fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
-    let session = std::env::var("SNOWGLASS_SESSION")
+    let session = snowglass_hook::config::session()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let mut socket = LocalSocket::connect(&session)?;
     match socket.receive()? {

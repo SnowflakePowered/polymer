@@ -276,7 +276,7 @@ fn connect_viewer(
     adapter_luid: AdapterLuid,
     ring: &D3d11ImageRing,
 ) -> std::io::Result<LocalSocket> {
-    let session = std::env::var("SNOWGLASS_SESSION")
+    let session = snowglass_hook::config::session()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let mut socket = LocalSocket::connect(&session)?;
     let hello = match socket.receive()? {
@@ -338,7 +338,7 @@ fn invalid_pointer() -> Error {
 fn log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    let Ok(path) = std::env::var("SNOWGLASS_GDI_LOG_FILE") else {
+    let Some(path) = snowglass_hook::config::gdi_log_file() else {
         return;
     };
     if let Ok(mut file) = std::fs::OpenOptions::new()

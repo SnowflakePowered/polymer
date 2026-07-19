@@ -63,17 +63,6 @@ pub struct PresentSource {
     pub layout: vk::ImageLayout,
 }
 
-/// Whether tracked render targets resolve through the presentation
-/// dependency graph. Off by default: the graph digs out offscreen screens
-/// behind compositor blits (3DS-style emulators) but its decomposition
-/// heuristics can misfire on games with unusual sampling patterns, so the
-/// hook's scissor and one-hop heuristics remain the default.
-pub fn graph_tracking_enabled() -> bool {
-    static ENABLED: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("SNOWGLASS_GRAPH_TRACKING").is_some());
-    *ENABLED
-}
-
 pub fn note_image(image: vk::Image, extent: vk::Extent2D) {
     IMAGE_EXTENT.insert(image, extent);
 }
@@ -91,7 +80,7 @@ pub fn forget_image(image: vk::Image) {
 }
 
 pub fn record_target(image: vk::Image, score: u64) {
-    if !graph_tracking_enabled() {
+    if !snowglass_hook::config::graph_tracking_enabled() {
         return;
     }
     let Some(extent) = image_extent(image) else {
@@ -122,7 +111,7 @@ fn upsert_target(image: vk::Image, extent: vk::Extent2D, score: u64) {
 }
 
 pub fn record_dependencies(destination: vk::Image, sampled: &[(vk::Image, vk::ImageLayout)]) {
-    if sampled.is_empty() || !graph_tracking_enabled() {
+    if sampled.is_empty() || !snowglass_hook::config::graph_tracking_enabled() {
         return;
     }
     let now = generation();
@@ -143,7 +132,7 @@ pub fn record_dependencies(destination: vk::Image, sampled: &[(vk::Image, vk::Im
 /// An offscreen blit or copy makes the destination a render target fed by
 /// the source; display-transfer emulation moves finished frames this way.
 pub fn record_transfer(source: vk::Image, source_layout: vk::ImageLayout, destination: vk::Image) {
-    if !graph_tracking_enabled() {
+    if !snowglass_hook::config::graph_tracking_enabled() {
         return;
     }
     let Some(extent) = image_extent(destination) else {
@@ -170,7 +159,7 @@ pub fn record_presented(
     sources: &[(vk::Image, vk::ImageLayout)],
     via_blit: bool,
 ) {
-    if sources.is_empty() || !graph_tracking_enabled() {
+    if sources.is_empty() || !snowglass_hook::config::graph_tracking_enabled() {
         return;
     }
     {
@@ -493,38 +482,6 @@ fn deduplicate(values: &mut Vec<vk::Image>) {
 // hook layer's raw command observations.
 // ---------------------------------------------------------------------------
 
-/// Whether render-target tracking is requested at all.
-pub fn tracking_enabled() -> bool {
-    std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_some()
-}
-
-/// The render-target indices to capture, in the caller's requested order.
-/// Each index selects into the deterministically ordered selection and
-/// becomes its own capture stream.
-pub fn tracked_render_target_indices() -> Vec<usize> {
-    static INDICES: LazyLock<Vec<usize>> = LazyLock::new(|| {
-        std::env::var("SNOWGLASS_TRACK_RENDER_TARGETS")
-            .ok()
-            .and_then(|value| {
-                value
-                    .split(',')
-                    .map(|index| index.trim().parse::<usize>().ok())
-                    .collect::<Option<Vec<_>>>()
-            })
-            .filter(|indices| !indices.is_empty())
-            .unwrap_or_else(|| vec![0])
-    });
-    INDICES.clone()
-}
-
-/// How many selection entries the requested indices reach into.
-pub fn tracked_render_target_count() -> usize {
-    tracked_render_target_indices()
-        .iter()
-        .max()
-        .map_or(1, |max| max + 1)
-}
-
 #[derive(Clone, Copy)]
 pub struct RenderTargetCandidate {
     pub image: vk::Image,
@@ -630,7 +587,7 @@ fn record_present_rect(image: vk::Image, rect: vk::Rect2D, draw_area: u64) {
 }
 
 pub fn capture_rect(image: vk::Image, bounds: vk::Extent2D) -> Option<vk::Rect2D> {
-    tracking_enabled()
+    snowglass_hook::config::tracking_enabled()
         .then(|| PRESENT_RECT.get(&image).map(|entry| entry.0))
         .flatten()
         .and_then(|rect| clamp_rect(rect, bounds))

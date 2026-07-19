@@ -4,7 +4,7 @@ use crate::layer::*;
 use snowglass_producer_vulkan::tracking::{self, RenderTargetCandidate};
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
-use snowglass_hook::HookChain;
+use snowglass_hook::{HookChain, config};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_producer_vulkan::{
@@ -192,7 +192,7 @@ pub(crate) fn destroy_surface(surface: vk::SurfaceKHR) {
 }
 
 fn begin_viewer_connection() -> Option<ViewerConnection> {
-    let session = std::env::var("SNOWGLASS_SESSION").ok()?;
+    let session = snowglass_hook::config::session().ok()?;
     let mut socket = match LocalSocket::connect(&session) {
         Ok(socket) => socket,
         Err(error) => {
@@ -403,12 +403,12 @@ pub(crate) unsafe fn handle_queue_present(
                 let capture_rect = tracking::capture_rect(presented_image, state.extent);
                 let rect_is_content = capture_rect.is_some_and(|rect| rect.extent != state.extent);
             
-                let mut resolved = (tracking::tracking_enabled()
-                    && tracking::graph_tracking_enabled())
+                let mut resolved =
+                    (config::tracking_enabled() && config::graph_tracking_enabled())
                 .then(|| {
                     tracking::take_present_sources(
                         presented_image,
-                        tracking::tracked_render_target_count(),
+                        config::tracked_render_target_count().unwrap_or(1),
                     )
                 })
                 .unwrap_or_default();
@@ -435,7 +435,7 @@ pub(crate) unsafe fn handle_queue_present(
                     }
                     resolved = merged;
                 }
-                resolved.truncate(tracking::tracked_render_target_count());
+                resolved.truncate(config::tracked_render_target_count().unwrap_or(1));
                 state.tracked_sources = resolved.iter().map(|source| source.image).collect();
     
                 let now = PRESENTS_SEEN.load(Ordering::Relaxed);
@@ -448,7 +448,8 @@ pub(crate) unsafe fn handle_queue_present(
                 }
                 // The caller tracks selection entries by index; each
                 // requested index becomes its own stream, in request order.
-                let graph_sources = tracking::tracked_render_target_indices()
+                let graph_sources = config::tracked_render_target_indices()
+                    .unwrap_or_else(|| vec![0])
                     .iter()
                     .filter_map(|&index| resolved.get(index).copied())
                     .collect::<Vec<_>>();
@@ -528,7 +529,7 @@ pub(crate) unsafe fn handle_queue_present(
                         *stream = CaptureStream::from_transport(extent, transport);
                     }
                 }
-                let presentation_source = (tracking::tracking_enabled()
+                let presentation_source = (config::tracking_enabled()
                     && graph_sources.is_empty()
                     && !rect_is_content)
                     .then(|| tracking::render_target(presented_image))
@@ -778,7 +779,7 @@ pub(crate) fn queue_submit(
     if result != vk::Result::SUCCESS || submit_count == 0 || submits.is_null() {
         return;
     }
-    if tracking::tracking_enabled() {
+    if config::tracking_enabled() {
         return;
     }
 
@@ -1123,7 +1124,7 @@ pub(crate) fn get_swapchain_images(
             unsafe { std::slice::from_raw_parts(images, *image_count as usize).to_vec() };
         if let Some(mut state) = { SWAPCHAIN.get_mut(&swapchain) } {
             state.images = captured;
-            if tracking::tracking_enabled() {
+            if config::tracking_enabled() {
                 for image in &state.images {
                     SWAPCHAIN_IMAGE.insert(*image, swapchain);
                     tracking::swapchain_image_added(*image);

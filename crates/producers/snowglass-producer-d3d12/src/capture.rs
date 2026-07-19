@@ -263,7 +263,7 @@ unsafe fn swapchain_key(swapchain: *mut c_void) -> Option<usize> {
 }
 
 fn connect_viewer(capture: &D3d12SwapchainCapture) -> std::io::Result<LocalSocket> {
-    let session = std::env::var("SNOWGLASS_SESSION")
+    let session = snowglass_hook::config::session()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
     let mut socket = LocalSocket::connect(&session)?;
     let pid = match socket.receive()? {

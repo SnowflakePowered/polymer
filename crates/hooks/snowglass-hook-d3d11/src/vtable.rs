@@ -83,7 +83,7 @@ static CONTEXTS: LazyLock<DashMap<usize, Box<dyn ContextHook>>> = LazyLock::new(
 /// `output` must be null or point to a COM interface pointer for a live
 /// `ID3D11DeviceContext`.
 pub(crate) unsafe fn install_immediate_context(output: *mut *mut c_void) {
-    if std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_none() || output.is_null() {
+    if !snowglass_hook::config::tracking_enabled() || output.is_null() {
         return;
     }
     let context = unsafe { *output };

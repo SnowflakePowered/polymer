@@ -13,7 +13,7 @@ pub use sys::SnowglassInstallD3d11Hook;
 pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    let Ok(path) = std::env::var("SNOWGLASS_D3D11_LOG_FILE") else {
+    let Some(path) = snowglass_hook::config::d3d11_log_file() else {
         return;
     };
     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -170,8 +170,8 @@ mod tests {
                 .as_nanos()
         );
         let listener = LocalSocketListener::bind(&session).unwrap();
-        unsafe { std::env::set_var("SNOWGLASS_SESSION", &session) };
-        unsafe { std::env::set_var("SNOWGLASS_TRACK_RENDER_TARGET", "1") };
+        unsafe { std::env::set_var(snowglass_hook::config::SESSION, &session) };
+        unsafe { std::env::set_var(snowglass_hook::config::TRACK_RENDER_TARGET, "1") };
         let (message_sender, message_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for _ in 0..2 {
@@ -387,8 +387,8 @@ mod tests {
         unsafe {
             release(context);
             DestroyWindow(window);
-            std::env::remove_var("SNOWGLASS_SESSION");
-            std::env::remove_var("SNOWGLASS_TRACK_RENDER_TARGET");
+            std::env::remove_var(snowglass_hook::config::SESSION);
+            std::env::remove_var(snowglass_hook::config::TRACK_RENDER_TARGET);
         }
     }
 
@@ -407,7 +407,7 @@ mod tests {
                 .as_nanos()
         );
         let listener = LocalSocketListener::bind(&session).unwrap();
-        unsafe { std::env::set_var("SNOWGLASS_SESSION", &session) };
+        unsafe { std::env::set_var(snowglass_hook::config::SESSION, &session) };
         let (message_sender, message_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut socket = listener.accept().unwrap();
@@ -617,7 +617,7 @@ mod tests {
         unsafe {
             release(context);
             DestroyWindow(window);
-            std::env::remove_var("SNOWGLASS_SESSION");
+            std::env::remove_var(snowglass_hook::config::SESSION);
         }
     }
 

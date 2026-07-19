@@ -206,7 +206,7 @@ fn intersect(a: [i32; 4], b: [i32; 4]) -> Option<[i32; 4]> {
 /// blit-presented graph resolution. Trusted selections are complete: the
 /// caller must not pad them from history.
 pub(crate) fn take_draw_candidates(context: usize) -> (Vec<DrawCandidate>, bool) {
-    let Some(limit) = tracked_render_target_count() else {
+    let Some(limit) = snowglass_hook::config::tracked_render_target_count() else {
         return (Vec::new(), false);
     };
     let now = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
@@ -262,7 +262,7 @@ pub(crate) fn take_draw_candidates(context: usize) -> (Vec<DrawCandidate>, bool)
             inputs.retain(|(_, seen)| *seen >= horizon);
             !inputs.is_empty()
         });
-    if !graph_tracking_enabled() {
+    if !snowglass_hook::config::graph_tracking_enabled() {
         return (
             select_screen_cohort(
                 if targets.is_empty() { fallback } else { targets },
@@ -536,43 +536,6 @@ fn deduplicate(values: &mut Vec<TargetKey>) {
     values.retain(|value| seen.insert(*value));
 }
 
-/// Whether tracked render targets resolve through the presentation
-/// dependency graph. Off by default: the graph digs out offscreen screens
-/// behind compositor blits and copies (3DS-style emulators) but its
-/// decomposition heuristics can misfire on games with unusual sampling
-/// patterns, so the cohort heuristics remain the default.
-pub(crate) fn graph_tracking_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("SNOWGLASS_GRAPH_TRACKING").is_some())
-}
-
-/// The render-target indices to capture, in the caller's requested order.
-/// Each index selects into the deterministically ordered selection and
-/// becomes its own capture stream.
-pub(crate) fn tracked_render_target_indices() -> Option<Vec<usize>> {
-    static INDICES: OnceLock<Option<Vec<usize>>> = OnceLock::new();
-    INDICES
-        .get_or_init(|| {
-            if let Some(value) = std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGETS") {
-                let indices = value
-                    .to_str()?
-                    .split(',')
-                    .map(|index| index.trim().parse::<usize>().ok())
-                    .collect::<Option<Vec<_>>>()?;
-                return (!indices.is_empty()).then_some(indices);
-            }
-            std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").map(|_| vec![0])
-        })
-        .clone()
-}
-
-/// How many selection entries the requested indices reach into.
-pub(crate) fn tracked_render_target_count() -> Option<usize> {
-    tracked_render_target_indices()
-        .and_then(|indices| indices.iter().max().copied())
-        .map(|max| max + 1)
-}
-
 /// Keeps the largest group of distinct textures with a common extent. Games
 /// commonly draw a screen using multiple primitives, so repeated observations
 /// of one texture are collapsed. Grouping by extent filters incidental UI and
@@ -616,7 +579,7 @@ fn select_screen_cohort(candidates: Vec<DrawCandidate>, limit: usize) -> Vec<Dra
 
 /// Records sampled textures, framebuffer destinations, and the draw's raster bounds.
 pub unsafe fn record_draw_candidate() {
-    if tracked_render_target_count().is_none() {
+    if snowglass_hook::config::tracked_render_target_count().is_none() {
         return;
     }
     let context = unsafe { current_context() };
@@ -867,7 +830,9 @@ pub unsafe fn record_copy_candidate(
     width: i32,
     height: i32,
 ) {
-    if tracked_render_target_count().is_none() || !graph_tracking_enabled() {
+    if snowglass_hook::config::tracked_render_target_count().is_none()
+        || !snowglass_hook::config::graph_tracking_enabled()
+    {
         return;
     }
     if src_name == 0 || dst_name == 0 || width <= 1 || height <= 1 {
@@ -926,7 +891,9 @@ pub unsafe fn record_copy_candidate(
 /// and a blit into the default framebuffer is a presentation root, since no
 /// default-framebuffer draw exists to observe.
 pub unsafe fn record_blit_candidate() {
-    if tracked_render_target_count().is_none() || !graph_tracking_enabled() {
+    if snowglass_hook::config::tracked_render_target_count().is_none()
+        || !snowglass_hook::config::graph_tracking_enabled()
+    {
         return;
     }
     let context = unsafe { current_context() };

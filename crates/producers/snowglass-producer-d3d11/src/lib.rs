@@ -14,7 +14,7 @@ pub use tracking::record_context_draw;
 pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    let Ok(path) = std::env::var("SNOWGLASS_D3D11_LOG_FILE") else {
+    let Some(path) = snowglass_hook::config::d3d11_log_file() else {
         return;
     };
     if let Ok(mut file) = std::fs::OpenOptions::new()

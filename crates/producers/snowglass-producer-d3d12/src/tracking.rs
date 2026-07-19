@@ -574,7 +574,7 @@ pub unsafe fn record_enhanced_barrier(
 ///
 /// `swapchain` must be null or point to a live `IDXGISwapChain3`.
 pub unsafe fn swapchain_presentation(swapchain: *mut c_void) -> Option<Presentation> {
-    std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET")?;
+    snowglass_hook::config::tracking_enabled().then_some(())?;
     let swapchain = unsafe { IDXGISwapChain3::from_raw_borrowed(&swapchain) }?;
     let index = unsafe { swapchain.GetCurrentBackBufferIndex() };
     let resource: ID3D12Resource = unsafe { swapchain.GetBuffer(index).ok()? };

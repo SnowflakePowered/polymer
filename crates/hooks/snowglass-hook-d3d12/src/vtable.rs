@@ -331,7 +331,7 @@ type InstallFn = unsafe fn(*mut c_void) -> bool;
 /// `output` must be null or point to a COM interface pointer for a live
 /// `ID3D12Device`.
 pub(crate) unsafe fn install_device(output: *mut *mut c_void) {
-    if std::env::var_os("SNOWGLASS_TRACK_RENDER_TARGET").is_none() || output.is_null() {
+    if !snowglass_hook::config::tracking_enabled() || output.is_null() {
         return;
     }
     match unsafe { try_install_device(output) } {

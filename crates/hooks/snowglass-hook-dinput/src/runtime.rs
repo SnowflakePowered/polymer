@@ -3,7 +3,7 @@
 #![allow(non_snake_case)]
 
 use crate::vtable::{IDirectInputDeviceHook, IDirectInputHook};
-use snowglass_hook::HookChain;
+use snowglass_hook::{HookChain, config};
 use snowglass_input::{DirectInputData, DirectInputDevice};
 use snowglass_ipc::{LocalSocket, Message};
 use std::{
@@ -126,7 +126,7 @@ impl InputQueues {
 }
 
 fn dinput_log(message: impl std::fmt::Display) {
-    let Ok(path) = std::env::var("SNOWGLASS_DINPUT_LOG_FILE") else {
+    let Some(path) = config::dinput_log_file() else {
         return;
     };
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
@@ -136,7 +136,7 @@ fn dinput_log(message: impl std::fmt::Display) {
 
 fn start_input_receiver() {
     START_INPUT.call_once(|| {
-        let Ok(session) = std::env::var("SNOWGLASS_SESSION") else {
+        let Ok(session) = config::session() else {
             return;
         };
         thread::spawn(move || receive_input(format!("{session}-input")));
@@ -564,7 +564,7 @@ mod tests {
     fn forwarded_record_is_returned_by_device_get_data() {
         let session = format!("snowglass-dinput-test-{}", std::process::id());
         let listener = LocalSocketListener::bind(&format!("{session}-input")).unwrap();
-        unsafe { std::env::set_var("SNOWGLASS_SESSION", &session) };
+        unsafe { std::env::set_var(config::SESSION, &session) };
         start_input_receiver();
         let mut socket = listener.accept().unwrap();
 

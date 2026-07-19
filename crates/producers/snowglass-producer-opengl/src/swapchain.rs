@@ -10,11 +10,9 @@ use crate::{
     },
     log,
     timeline::Timeline,
-    tracking::{
-        DrawCandidate, QuadBounds, take_draw_candidates, tracked_render_target_count,
-        tracked_render_target_indices,
-    },
+    tracking::{DrawCandidate, QuadBounds, take_draw_candidates},
 };
+use snowglass_hook::config;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
@@ -138,13 +136,13 @@ pub unsafe fn before_swap_buffers(hdc: isize) {
         merge_tracked_sources(
             &entry.tracked_sources,
             observed,
-            tracked_render_target_count().unwrap_or(1),
+            config::tracked_render_target_count().unwrap_or(1),
         )
     };
     entry.tracked_sources.clone_from(&tracked);
     // The caller tracks selection entries by index; each requested index
     // becomes its own stream, in the requested order.
-    let chosen = tracked_render_target_indices()
+    let chosen = config::tracked_render_target_indices()
         .unwrap_or_default()
         .iter()
         .filter_map(|&index| tracked.get(index).copied())
@@ -602,7 +600,7 @@ fn connect_viewer(
     width: u32,
     height: u32,
 ) -> std::io::Result<LocalSocket> {
-    let session = std::env::var("SNOWGLASS_SESSION")
+    let session = snowglass_hook::config::session()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let mut socket = LocalSocket::connect(&session)?;
     let viewer_pid = match socket.receive()? {

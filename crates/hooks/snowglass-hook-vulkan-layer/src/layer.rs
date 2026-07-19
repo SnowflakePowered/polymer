@@ -17,7 +17,7 @@ use std::{
 
 pub(crate) fn layer_log(message: impl std::fmt::Display) {
     eprintln!("{message}");
-    let Ok(path) = std::env::var("SNOWGLASS_LOG_FILE") else {
+    let Some(path) = snowglass_hook::config::layer_log_file() else {
         return;
     };
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {

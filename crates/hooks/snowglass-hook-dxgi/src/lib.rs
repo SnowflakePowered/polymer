@@ -108,7 +108,7 @@ pub unsafe fn install_factory_detours() -> bool {
 pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
     use std::io::Write;
     eprintln!("{message}");
-    let Ok(path) = std::env::var("SNOWGLASS_DXGI_LOG_FILE") else {
+    let Some(path) = snowglass_hook::config::dxgi_log_file() else {
         return;
     };
     if let Ok(mut file) = std::fs::OpenOptions::new()
