@@ -214,11 +214,31 @@ struct ImportedVulkanSurface {
     connection: u64,
     imported: ImportedImageRing,
     flip_y: bool,
+    quarter_turns: u8,
+    rotation: Option<VulkanRotation>,
     latest: Option<FrameReady>,
     last_released_frame: u64,
     video_readbacks: Vec<VulkanVideoReadback>,
     video_cache: Option<VulkanVideoCache>,
     video_completion_value: u64,
+}
+
+
+struct VulkanRotation {
+    stage_image: vk::Image,
+    stage_memory: vk::DeviceMemory,
+    stage_view: vk::ImageView,
+    rotated_image: vk::Image,
+    rotated_memory: vk::DeviceMemory,
+    rotated_view: vk::ImageView,
+    descriptor_set: vk::DescriptorSet,
+}
+
+struct RotationPipeline {
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    descriptor_pool: vk::DescriptorPool,
 }
 
 struct VulkanVideoCache {
@@ -265,6 +285,7 @@ struct DirectCompositor {
     fences: Vec<vk::Fence>,
     frame_index: u64,
     surfaces: Vec<ImportedVulkanSurface>,
+    rotation_pipeline: Option<RotationPipeline>,
     keyed_mutex_enabled: bool,
     egui_renderer: Option<EguiRenderer>,
     publish_video: bool,
@@ -439,6 +460,7 @@ impl ViewerCompositor {
         stream: &StreamReady,
         api: ViewerApi,
         publish_video: bool,
+        quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
         if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
             let matches =
@@ -454,7 +476,7 @@ impl ViewerCompositor {
             let Self::D3d12(value) = self else {
                 unreachable!()
             };
-            return value.import_stream(connection, stream);
+            return value.import_stream(connection, stream, quarter_turns);
         }
 
         let needs_keyed_mutex = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
@@ -475,7 +497,7 @@ impl ViewerCompositor {
         let Self::Vulkan(value) = self else {
             unreachable!()
         };
-        value.import_stream(connection, stream)
+        value.import_stream(connection, stream, quarter_turns)
     }
 
     fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
@@ -870,6 +892,7 @@ impl DirectCompositor {
                 fences,
                 frame_index: 0,
                 surfaces: Vec::new(),
+                rotation_pipeline: None,
                 keyed_mutex_enabled: enable_keyed_mutex,
                 egui_renderer: Some(egui_renderer),
                 publish_video,
@@ -882,6 +905,7 @@ impl DirectCompositor {
         &mut self,
         connection: u64,
         stream: &StreamReady,
+        quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
         self.disconnect_stream(connection)?;
         let imported = ImportedImageRing::import_into(
@@ -890,6 +914,26 @@ impl DirectCompositor {
             self.physical_device,
             stream,
         )?;
+        let quarter_turns = quarter_turns % 4;
+        let rotation = if quarter_turns % 2 == 1 {
+            self.ensure_rotation_pipeline()?;
+            let pipeline = self
+                .rotation_pipeline
+                .as_ref()
+                .expect("rotation pipeline was just created");
+            Some(unsafe {
+                create_vulkan_rotation(
+                    &self.instance,
+                    &self.device,
+                    self.physical_device,
+                    imported.width,
+                    imported.height,
+                    pipeline,
+                )?
+            })
+        } else {
+            None
+        };
         let video_readbacks = if self.publish_video && self.video_queue.is_none() {
             unsafe {
                 create_vulkan_video_readbacks(
@@ -924,12 +968,88 @@ impl DirectCompositor {
             connection,
             imported,
             flip_y: stream.bottom_up,
+            quarter_turns,
+            rotation,
             latest: None,
             last_released_frame: 0,
             video_readbacks,
             video_cache,
             video_completion_value: 0,
         });
+        Ok(())
+    }
+
+    fn ensure_rotation_pipeline(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.rotation_pipeline.is_some() {
+            return Ok(());
+        }
+        // SAFETY: every created object is owned by the returned pipeline and
+        // destroyed together after the device idles; the shader module is
+        // consumed by pipeline creation.
+        unsafe {
+            let bindings = [
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            ];
+            let descriptor_set_layout = self.device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                None,
+            )?;
+            let push_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .size(3 * size_of::<u32>() as u32);
+            let pipeline_layout = self.device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+                    .push_constant_ranges(std::slice::from_ref(&push_range)),
+                None,
+            )?;
+            let words = ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
+                "rotate_quarter.comp.spv"
+            )))?;
+            let module = self
+                .device
+                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)?;
+            let pipelines = self.device.create_compute_pipelines(
+                vk::PipelineCache::null(),
+                &[vk::ComputePipelineCreateInfo::default()
+                    .stage(
+                        vk::PipelineShaderStageCreateInfo::default()
+                            .stage(vk::ShaderStageFlags::COMPUTE)
+                            .module(module)
+                            .name(c"main"),
+                    )
+                    .layout(pipeline_layout)],
+                None,
+            );
+            self.device.destroy_shader_module(module, None);
+            let pipeline = pipelines.map_err(|(_, error)| error)?[0];
+            // One set per surface; the surface limit is 16.
+            let pool_size = vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(32);
+            let descriptor_pool = self.device.create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+                    .max_sets(16)
+                    .pool_sizes(std::slice::from_ref(&pool_size)),
+                None,
+            )?;
+            self.rotation_pipeline = Some(RotationPipeline {
+                descriptor_set_layout,
+                pipeline_layout,
+                pipeline,
+                descriptor_pool,
+            });
+        }
         Ok(())
     }
 
@@ -975,6 +1095,14 @@ impl DirectCompositor {
             if let Some(cache) = surface.video_cache {
                 destroy_vulkan_video_cache(&self.device, cache);
             }
+            if let Some(rotation) = surface.rotation {
+                let pool = self
+                    .rotation_pipeline
+                    .as_ref()
+                    .expect("rotation images require the rotation pipeline")
+                    .descriptor_pool;
+                destroy_vulkan_rotation(&self.device, pool, rotation);
+            }
         };
         Ok(())
     }
@@ -1000,6 +1128,14 @@ impl DirectCompositor {
                 );
                 if let Some(cache) = surface.video_cache.take() {
                     destroy_vulkan_video_cache(&self.device, cache);
+                }
+                if let Some(rotation) = surface.rotation.take() {
+                    let pool = self
+                        .rotation_pipeline
+                        .as_ref()
+                        .expect("rotation images require the rotation pipeline")
+                        .descriptor_pool;
+                    destroy_vulkan_rotation(&self.device, pool, rotation);
                 }
             };
         }
@@ -1265,53 +1401,193 @@ impl DirectCompositor {
                         imported.width,
                         imported.height,
                     );
+                    let turned = surface.quarter_turns % 2 == 1;
+                    let (display_width, display_height) = if turned {
+                        (content_height, content_width)
+                    } else {
+                        (content_width, content_height)
+                    };
                     let (offset_x, offset_y, width, height) = fit_extent(
-                        content_width,
-                        content_height,
+                        display_width,
+                        display_height,
                         self.extent.width,
                         cell_height,
                     );
-                    let row = vertical_layout_index(
-                        visible_index,
-                        visible_count,
-                        reverse_surface_rows,
-                    );
+                    let row =
+                        vertical_layout_index(visible_index, visible_count, reverse_surface_rows);
                     let offset_y = offset_y + (row * cell_height) as i32;
-                    let source_y = source_y_offsets(content_height, surface.flip_y);
-                    self.device.cmd_blit_image(
-                        command,
-                        source,
-                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                        destination,
-                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        &[vk::ImageBlit::default()
-                            .src_subresource(color_layers())
-                            .src_offsets([
-                                vk::Offset3D {
-                                    y: source_y[0],
-                                    ..Default::default()
-                                },
-                                vk::Offset3D {
-                                    x: content_width as i32,
-                                    y: source_y[1],
-                                    z: 1,
-                                },
-                            ])
-                            .dst_subresource(color_layers())
-                            .dst_offsets([
-                                vk::Offset3D {
-                                    x: offset_x,
-                                    y: offset_y,
-                                    z: 0,
-                                },
-                                vk::Offset3D {
-                                    x: offset_x + width,
-                                    y: offset_y + height,
-                                    z: 1,
-                                },
-                            ])],
-                        vk::Filter::LINEAR,
-                    );
+                    let destination_offsets = [
+                        vk::Offset3D {
+                            x: offset_x,
+                            y: offset_y,
+                            z: 0,
+                        },
+                        vk::Offset3D {
+                            x: offset_x + width,
+                            y: offset_y + height,
+                            z: 1,
+                        },
+                    ];
+                    if let Some(rotation) = &surface.rotation {
+                        // Do rotation via compute shader
+                        let pipeline = self
+                            .rotation_pipeline
+                            .as_ref()
+                            .expect("rotation images require the rotation pipeline");
+                        let stage_to_transfer = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::MEMORY_READ)
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .image(rotation.stage_image)
+                            .subresource_range(color_range());
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::ALL_COMMANDS,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[stage_to_transfer],
+                        );
+                        self.device.cmd_blit_image(
+                            command,
+                            source,
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            rotation.stage_image,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            &[vk::ImageBlit::default()
+                                .src_subresource(color_layers())
+                                .src_offsets(blit_source_offsets(
+                                    content_width,
+                                    content_height,
+                                    surface.flip_y,
+                                    0,
+                                ))
+                                .dst_subresource(color_layers())
+                                .dst_offsets([
+                                    vk::Offset3D::default(),
+                                    vk::Offset3D {
+                                        x: content_width as i32,
+                                        y: content_height as i32,
+                                        z: 1,
+                                    },
+                                ])],
+                            vk::Filter::NEAREST,
+                        );
+                        let stage_to_compute = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .new_layout(vk::ImageLayout::GENERAL)
+                            .image(rotation.stage_image)
+                            .subresource_range(color_range());
+                        let rotated_to_compute = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::MEMORY_READ)
+                            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::GENERAL)
+                            .image(rotation.rotated_image)
+                            .subresource_range(color_range());
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[stage_to_compute, rotated_to_compute],
+                        );
+                        self.device.cmd_bind_pipeline(
+                            command,
+                            vk::PipelineBindPoint::COMPUTE,
+                            pipeline.pipeline,
+                        );
+                        self.device.cmd_bind_descriptor_sets(
+                            command,
+                            vk::PipelineBindPoint::COMPUTE,
+                            pipeline.pipeline_layout,
+                            0,
+                            &[rotation.descriptor_set],
+                            &[],
+                        );
+                        let push = [
+                            content_width,
+                            content_height,
+                            u32::from(surface.quarter_turns),
+                        ];
+                        self.device.cmd_push_constants(
+                            command,
+                            pipeline.pipeline_layout,
+                            vk::ShaderStageFlags::COMPUTE,
+                            0,
+                            std::slice::from_raw_parts(
+                                push.as_ptr().cast::<u8>(),
+                                size_of_val(&push),
+                            ),
+                        );
+                        self.device.cmd_dispatch(
+                            command,
+                            content_height.div_ceil(16),
+                            content_width.div_ceil(16),
+                            1,
+                        );
+                        let rotated_to_transfer = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                            .old_layout(vk::ImageLayout::GENERAL)
+                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                            .image(rotation.rotated_image)
+                            .subresource_range(color_range());
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[rotated_to_transfer],
+                        );
+                        self.device.cmd_blit_image(
+                            command,
+                            rotation.rotated_image,
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            destination,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            &[vk::ImageBlit::default()
+                                .src_subresource(color_layers())
+                                .src_offsets([
+                                    vk::Offset3D::default(),
+                                    vk::Offset3D {
+                                        x: content_height as i32,
+                                        y: content_width as i32,
+                                        z: 1,
+                                    },
+                                ])
+                                .dst_subresource(color_layers())
+                                .dst_offsets(destination_offsets)],
+                            vk::Filter::LINEAR,
+                        );
+                    } else {
+                        self.device.cmd_blit_image(
+                            command,
+                            source,
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            destination,
+                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            &[vk::ImageBlit::default()
+                                .src_subresource(color_layers())
+                                .src_offsets(blit_source_offsets(
+                                    content_width,
+                                    content_height,
+                                    surface.flip_y,
+                                    surface.quarter_turns,
+                                ))
+                                .dst_subresource(color_layers())
+                                .dst_offsets(destination_offsets)],
+                            vk::Filter::LINEAR,
+                        );
+                    }
                     if video_publish_ready
                         && video_publish_budget > 0
                         && let Some(cache) = surface.video_cache.as_mut()
@@ -1659,6 +1935,15 @@ impl Drop for DirectCompositor {
             if let Some(semaphore) = self.video_completion.take() {
                 self.device.destroy_semaphore(semaphore, None);
             }
+            if let Some(pipeline) = self.rotation_pipeline.take() {
+                self.device.destroy_pipeline(pipeline.pipeline, None);
+                self.device
+                    .destroy_pipeline_layout(pipeline.pipeline_layout, None);
+                self.device
+                    .destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
+                self.device
+                    .destroy_descriptor_pool(pipeline.descriptor_pool, None);
+            }
             self.device.destroy_command_pool(self.command_pool, None);
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer, None);
@@ -1700,6 +1985,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_target()?;
     let target = options.target;
     let track_render_targets = options.track_render_targets;
+    // Rotation is applied viewer-side while compositing; the producer only
+    // needs the selection indices. Entry order matches stream arrival order,
+    // which is how `stream_index` values are assigned below.
+    let render_target_rotations = track_render_targets
+        .as_ref()
+        .map(|targets| {
+            targets
+                .iter()
+                .map(|target| target.quarter_turns)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let tracked_render_target_indices = track_render_targets.map(|targets| {
+        targets
+            .iter()
+            .map(|target| target.index)
+            .collect::<Vec<_>>()
+    });
     let webrtc_targets = options.webrtc.clone();
     let surface_limit = options.surfaces.max(
         webrtc_targets
@@ -1739,7 +2042,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &target,
         &executable_dir,
         &session,
-        track_render_targets,
+        tracked_render_target_indices,
         options.graph_tracking,
         options.force_keyed_mutex,
         &hooks,
@@ -2121,12 +2424,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 let publish_stream = webrtc_targets
                                     .as_ref()
                                     .is_some_and(|targets| targets.contains(&stream_index));
+                                let quarter_turns = render_target_rotations
+                                    .get(stream_index as usize)
+                                    .copied()
+                                    .unwrap_or(0);
                                 match compositor.import_stream(
                                     &window,
                                     connection,
                                     &stream,
                                     viewer_api,
                                     publish_video,
+                                    quarter_turns,
                                 ) {
                                     Ok(()) => {
                                         stream_indices.insert(connection, stream_index);
@@ -2263,6 +2571,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     let input = egui_state.take_egui_input(&window);
+                    let webrtc_stats = webrtc.as_ref().map(webrtc::Publisher::stats);
                     let output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
                             ui.horizontal(|ui| {
@@ -2582,9 +2891,18 @@ fn spawn_target_monitor(
     });
 }
 
+/// One `--track-render-targets` entry: an index into the detected selection
+/// plus the number of counterclockwise quarter turns applied to that target
+/// when compositing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TrackedRenderTarget {
+    index: u32,
+    quarter_turns: u8,
+}
+
 struct ViewerOptions {
     target: Vec<String>,
-    track_render_targets: Option<Vec<u32>>,
+    track_render_targets: Option<Vec<TrackedRenderTarget>>,
     graph_tracking: bool,
     surfaces: u32,
     skip_surfaces: u32,
@@ -2604,7 +2922,9 @@ struct ViewerArguments {
     api: ViewerApi,
 
     /// Track render targets by index into the detected selection, as a
-    /// comma-separated list
+    /// comma-separated list. An entry may append `:TURNS` to rotate that
+    /// target counterclockwise by quarter turns when compositing
+    /// (`0:1,1` shows target 0 rotated 90 degrees above target 1).
     #[arg(
         long,
         visible_alias = "track-render-target",
@@ -2614,7 +2934,7 @@ struct ViewerArguments {
         value_name = "INDEXES",
         value_parser = parse_render_target_index
     )]
-    track_render_targets: Option<Vec<u32>>,
+    track_render_targets: Option<Vec<TrackedRenderTarget>>,
 
     /// Resolve tracked render targets through the presentation dependency
     /// graph (offscreen screens behind compositor blits and copies) instead
@@ -2703,9 +3023,9 @@ impl ViewerArguments {
                 return Err("WebRTC render-target indices must be unique".into());
             }
         }
-        if let Some(indices) = &self.track_render_targets {
+        if let Some(targets) = &self.track_render_targets {
             let mut unique = HashSet::new();
-            if indices.iter().any(|index| !unique.insert(*index)) {
+            if targets.iter().any(|target| !unique.insert(target.index)) {
                 return Err("render-target indices must be unique".into());
             }
         }
@@ -2739,8 +3059,12 @@ fn parse_arguments(
     .into_options()
 }
 
-fn parse_render_target_index(value: &str) -> Result<u32, String> {
-    let index = value
+fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String> {
+    let (index, turns) = match value.split_once(':') {
+        Some((index, turns)) => (index, Some(turns)),
+        None => (value, None),
+    };
+    let index = index
         .parse::<u32>()
         .map_err(|_| format!("invalid render-target index '{value}'; expected 0..=15"))?;
     if index >= 16 {
@@ -2748,7 +3072,18 @@ fn parse_render_target_index(value: &str) -> Result<u32, String> {
             "invalid render-target index '{value}'; expected 0..=15"
         ));
     }
-    Ok(index)
+    let quarter_turns = match turns {
+        Some(turns) => {
+            (turns.parse::<u32>().map_err(|_| {
+                format!("invalid rotation '{turns}'; expected counterclockwise quarter turns")
+            })? % 4) as u8
+        }
+        None => 0,
+    };
+    Ok(TrackedRenderTarget {
+        index,
+        quarter_turns,
+    })
 }
 
 fn parse_webrtc_target(value: &str) -> Result<u32, String> {
@@ -2789,6 +3124,13 @@ mod argument_tests {
 
     fn arguments(values: &[&str]) -> Result<ViewerOptions, Box<dyn Error>> {
         parse_arguments(values.iter().map(|value| (*value).to_owned()))
+    }
+
+    fn tracked(index: u32, quarter_turns: u8) -> TrackedRenderTarget {
+        TrackedRenderTarget {
+            index,
+            quarter_turns,
+        }
     }
 
     #[test]
@@ -2868,7 +3210,7 @@ mod argument_tests {
             "target-argument",
         ])?;
         assert_eq!(options.api, ViewerApi::Vulkan);
-        assert_eq!(options.track_render_targets, Some(vec![0]));
+        assert_eq!(options.track_render_targets, Some(vec![tracked(0, 0)]));
         assert!(!options.isolate);
         assert!(options.force_keyed_mutex);
         assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
@@ -2879,15 +3221,29 @@ mod argument_tests {
     fn accepts_render_target_indices_and_defaults_to_zero() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             arguments(&["--track-render-targets", "0,1", "--", "game.exe"])?.track_render_targets,
-            Some(vec![0, 1])
+            Some(vec![tracked(0, 0), tracked(1, 0)])
         );
         assert_eq!(
             arguments(&["--track-render-targets", "--", "game.exe"])?.track_render_targets,
-            Some(vec![0])
+            Some(vec![tracked(0, 0)])
         );
         assert_eq!(
             arguments(&["--track-render-targets=1", "--", "game.exe"])?.track_render_targets,
-            Some(vec![1])
+            Some(vec![tracked(1, 0)])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_render_target_rotations_in_quarter_turns() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            arguments(&["--track-render-targets", "0:1,1", "--", "game.exe"])?.track_render_targets,
+            Some(vec![tracked(0, 1), tracked(1, 0)])
+        );
+        // Quarter turns wrap around the unit circle.
+        assert_eq!(
+            arguments(&["--track-render-targets=0:4,1:7", "--", "game.exe"])?.track_render_targets,
+            Some(vec![tracked(0, 0), tracked(1, 3)])
         );
         Ok(())
     }
@@ -2896,6 +3252,10 @@ mod argument_tests {
     fn rejects_invalid_render_target_indices() {
         assert!(arguments(&["--track-render-targets", "16", "--", "game.exe"]).is_err());
         assert!(arguments(&["--track-render-targets=0,0", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--track-render-targets=0:x", "--", "game.exe"]).is_err());
+        assert!(arguments(&["--track-render-targets=0:", "--", "game.exe"]).is_err());
+        // Rotation does not distinguish otherwise duplicate indices.
+        assert!(arguments(&["--track-render-targets=0:1,0:2", "--", "game.exe"]).is_err());
     }
 
     #[test]
@@ -3005,13 +3365,36 @@ mod argument_tests {
         assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
     }
 
+    fn offset_tuples(offsets: [vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {
+        offsets.map(|offset| (offset.x, offset.y, offset.z))
+    }
+
     #[test]
     fn bottom_up_streams_reverse_vulkan_source_y() {
-        assert_eq!(source_y_offsets(720, true), [720, 0]);
-        assert_eq!(source_y_offsets(720, false), [0, 720]);
+        assert_eq!(
+            offset_tuples(blit_source_offsets(1280, 720, true, 0)),
+            [(0, 720, 0), (1280, 0, 1)]
+        );
+        assert_eq!(
+            offset_tuples(blit_source_offsets(1280, 720, false, 0)),
+            [(0, 0, 0), (1280, 720, 1)]
+        );
         assert_eq!(vertical_layout_index(0, 2, true), 1);
         assert_eq!(vertical_layout_index(1, 2, true), 0);
         assert_eq!(vertical_layout_index(0, 2, false), 0);
+    }
+
+    #[test]
+    fn half_turns_mirror_vulkan_blit_source_offsets() {
+        assert_eq!(
+            offset_tuples(blit_source_offsets(1280, 720, false, 2)),
+            [(1280, 720, 0), (0, 0, 1)]
+        );
+        // A flipped half turn cancels the vertical mirror.
+        assert_eq!(
+            offset_tuples(blit_source_offsets(1280, 720, true, 2)),
+            [(1280, 0, 0), (0, 720, 1)]
+        );
     }
 }
 
@@ -3662,6 +4045,153 @@ unsafe fn destroy_vulkan_video_cache(device: &ash::Device, cache: VulkanVideoCac
     }
 }
 
+/// Rotation intermediates always use RGBA8: blits convert the imported format
+/// on the way in and the swapchain format on the way out, and RGBA8 storage
+/// images are universally supported.
+const ROTATION_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
+
+unsafe fn create_vulkan_rotation(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    width: u32,
+    height: u32,
+    pipeline: &RotationPipeline,
+) -> Result<VulkanRotation, vk::Result> {
+    unsafe {
+        let (stage_image, stage_memory) = create_vulkan_rotation_image(
+            instance,
+            device,
+            physical_device,
+            width,
+            height,
+            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE,
+        )?;
+        let (rotated_image, rotated_memory) = create_vulkan_rotation_image(
+            instance,
+            device,
+            physical_device,
+            height,
+            width,
+            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+        )?;
+        let view = |image| {
+            device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(ROTATION_FORMAT)
+                    .subresource_range(color_range()),
+                None,
+            )
+        };
+        let stage_view = view(stage_image)?;
+        let rotated_view = view(rotated_image)?;
+        let descriptor_set = device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pipeline.descriptor_pool)
+                .set_layouts(std::slice::from_ref(&pipeline.descriptor_set_layout)),
+        )?[0];
+        let stage_info = vk::DescriptorImageInfo::default()
+            .image_view(stage_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let rotated_info = vk::DescriptorImageInfo::default()
+            .image_view(rotated_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        device.update_descriptor_sets(
+            &[
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(std::slice::from_ref(&stage_info)),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(std::slice::from_ref(&rotated_info)),
+            ],
+            &[],
+        );
+        Ok(VulkanRotation {
+            stage_image,
+            stage_memory,
+            stage_view,
+            rotated_image,
+            rotated_memory,
+            rotated_view,
+            descriptor_set,
+        })
+    }
+}
+
+unsafe fn create_vulkan_rotation_image(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    width: u32,
+    height: u32,
+    usage: vk::ImageUsageFlags,
+) -> Result<(vk::Image, vk::DeviceMemory), vk::Result> {
+    unsafe {
+        let image = device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(ROTATION_FORMAT)
+                .extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(usage)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED),
+            None,
+        )?;
+        let requirements = device.get_image_memory_requirements(image);
+        let properties = instance.get_physical_device_memory_properties(physical_device);
+        let memory_type = properties.memory_types[..properties.memory_type_count as usize]
+            .iter()
+            .enumerate()
+            .find(|(index, memory)| {
+                requirements.memory_type_bits & (1 << index) != 0
+                    && memory
+                        .property_flags
+                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .map(|(index, _)| index as u32)
+            .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
+        let memory = device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type),
+            None,
+        )?;
+        device.bind_image_memory(image, memory, 0)?;
+        Ok((image, memory))
+    }
+}
+
+unsafe fn destroy_vulkan_rotation(
+    device: &ash::Device,
+    descriptor_pool: vk::DescriptorPool,
+    rotation: VulkanRotation,
+) {
+    unsafe {
+        let _ = device.free_descriptor_sets(descriptor_pool, &[rotation.descriptor_set]);
+        device.destroy_image_view(rotation.stage_view, None);
+        device.destroy_image_view(rotation.rotated_view, None);
+        device.destroy_image(rotation.stage_image, None);
+        device.destroy_image(rotation.rotated_image, None);
+        device.free_memory(rotation.stage_memory, None);
+        device.free_memory(rotation.rotated_memory, None);
+    }
+}
+
 unsafe fn create_vulkan_video_readbacks(
     instance: &ash::Instance,
     device: &ash::Device,
@@ -3928,12 +4458,37 @@ fn fit_inside(
     )
 }
 
-fn source_y_offsets(height: u32, flip_y: bool) -> [i32; 2] {
-    if flip_y {
+/// Source offsets for a compositing blit. Mirrored blits express vertical
+/// flips and half turns; quarter turns transpose through the rotation compute
+/// pass instead and pass zero turns here.
+fn blit_source_offsets(
+    width: u32,
+    height: u32,
+    flip_y: bool,
+    quarter_turns: u8,
+) -> [vk::Offset3D; 2] {
+    let mut x = [0, width as i32];
+    let mut y = if flip_y {
         [height as i32, 0]
     } else {
         [0, height as i32]
+    };
+    if quarter_turns == 2 {
+        x.reverse();
+        y.reverse();
     }
+    [
+        vk::Offset3D {
+            x: x[0],
+            y: y[0],
+            z: 0,
+        },
+        vk::Offset3D {
+            x: x[1],
+            y: y[1],
+            z: 1,
+        },
+    ]
 }
 
 fn vertical_layout_index(index: u32, count: u32, flip_y: bool) -> u32 {

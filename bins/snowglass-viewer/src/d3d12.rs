@@ -56,6 +56,7 @@ struct ImportedSurface {
     descriptor: u32,
     imported: ImportedD3d12Stream,
     flip_y: bool,
+    quarter_turns: u8,
     cache: ID3D12Resource,
     cache_state: D3D12_RESOURCE_STATES,
     latest: Option<FrameReady>,
@@ -224,6 +225,7 @@ impl D3d12Compositor {
         &mut self,
         connection: u64,
         stream: &StreamReady,
+        quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
         self.disconnect_stream(connection)?;
         let imported = self.consumer.import(stream)?;
@@ -267,6 +269,7 @@ impl D3d12Compositor {
             descriptor: FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
             imported,
             flip_y: stream.bottom_up,
+            quarter_turns: quarter_turns % 4,
             cache,
             cache_state: D3D12_RESOURCE_STATE_COMMON,
             latest: None,
@@ -610,8 +613,13 @@ impl D3d12Compositor {
                     surface.imported.width,
                     surface.imported.height,
                 );
+                let (display_w, display_h) = if surface.quarter_turns % 2 == 1 {
+                    (crop_h, crop_w)
+                } else {
+                    (crop_w, crop_h)
+                };
                 let (x, local_y, w, h) =
-                    super::fit_extent(crop_w, crop_h, self.extent.0, cell_height);
+                    super::fit_extent(display_w, display_h, self.extent.0, cell_height);
                 let row =
                     super::vertical_layout_index(position as u32, visible, reverse_surface_rows);
                 let y = row as i32 * cell_height as i32 + local_y;
@@ -623,7 +631,17 @@ impl D3d12Compositor {
                 let v = crop_h as f32 / surface.imported.height as f32;
                 (
                     surface.descriptor,
-                    quad(l, t, r, b, u, v, surface.flip_y, [255; 4]),
+                    quad(
+                        l,
+                        t,
+                        r,
+                        b,
+                        u,
+                        v,
+                        surface.flip_y,
+                        surface.quarter_turns,
+                        [255; 4],
+                    ),
                 )
             })
             .collect::<Vec<_>>();
@@ -904,6 +922,7 @@ impl Drop for D3d12Compositor {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn quad(
     l: f32,
     t: f32,
@@ -912,6 +931,7 @@ fn quad(
     u: f32,
     v: f32,
     flip_y: bool,
+    quarter_turns: u8,
     color: [u8; 4],
 ) -> [GpuVertex; 6] {
     let p = |position, uv| GpuVertex {
@@ -920,13 +940,15 @@ fn quad(
         color,
     };
     let (top_v, bottom_v) = if flip_y { (v, 0.0) } else { (0.0, v) };
+    let corners = [[0.0, top_v], [u, top_v], [u, bottom_v], [0.0, bottom_v]];
+    let uv = |corner: usize| corners[(corner + quarter_turns as usize) % 4];
     [
-        p([l, t], [0.0, top_v]),
-        p([r, t], [u, top_v]),
-        p([r, b], [u, bottom_v]),
-        p([l, t], [0.0, top_v]),
-        p([r, b], [u, bottom_v]),
-        p([l, b], [0.0, bottom_v]),
+        p([l, t], uv(0)),
+        p([r, t], uv(1)),
+        p([r, b], uv(2)),
+        p([l, t], uv(0)),
+        p([r, b], uv(2)),
+        p([l, b], uv(3)),
     ]
 }
 
@@ -1338,12 +1360,33 @@ mod tests {
 
     #[test]
     fn opengl_quad_reverses_texture_v() {
-        let normal = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, [255; 4]);
-        let flipped = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, true, [255; 4]);
+        let normal = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, 0, [255; 4]);
+        let flipped = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, true, 0, [255; 4]);
 
         assert_eq!(normal[0].uv[1], 0.0);
         assert_eq!(normal[2].uv[1], 0.5);
         assert_eq!(flipped[0].uv[1], 0.5);
         assert_eq!(flipped[2].uv[1], 0.0);
+    }
+
+    #[test]
+    fn quarter_turns_rotate_texture_corners_counterclockwise() {
+        // One counterclockwise quarter turn shows the source's top-right
+        // corner at the destination's top-left.
+        let turned = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, 1, [255; 4]);
+        assert_eq!(turned[0].uv, [0.75, 0.0]);
+        assert_eq!(turned[1].uv, [0.75, 0.5]);
+        assert_eq!(turned[2].uv, [0.0, 0.5]);
+        assert_eq!(turned[5].uv, [0.0, 0.0]);
+
+        // A half turn mirrors both axes.
+        let half = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, 2, [255; 4]);
+        assert_eq!(half[0].uv, [0.75, 0.5]);
+        assert_eq!(half[2].uv, [0.0, 0.0]);
+
+        // A flipped half turn cancels the vertical mirror.
+        let flipped_half = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, true, 2, [255; 4]);
+        assert_eq!(flipped_half[0].uv, [0.75, 0.0]);
+        assert_eq!(flipped_half[2].uv, [0.0, 0.5]);
     }
 }

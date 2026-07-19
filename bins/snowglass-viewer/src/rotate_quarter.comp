@@ -1,0 +1,26 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D source_image;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D rotated_image;
+
+layout(push_constant) uniform Push {
+    // Source content extent in pixels; the rotated extent is its transpose.
+    uint width;
+    uint height;
+    // Counterclockwise quarter turns: 1 or 3. Zero and half turns are
+    // handled by plain and mirrored blits instead.
+    uint turns;
+} push;
+
+void main() {
+    ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 rotated_extent = ivec2(push.height, push.width);
+    if (any(greaterThanEqual(position, rotated_extent))) {
+        return;
+    }
+    ivec2 source = push.turns == 1
+        ? ivec2(int(push.width) - 1 - position.y, position.x)
+        : ivec2(position.y, int(push.height) - 1 - position.x);
+    imageStore(rotated_image, position, imageLoad(source_image, source));
+}
