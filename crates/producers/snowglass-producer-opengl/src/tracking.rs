@@ -265,7 +265,7 @@ pub(crate) fn take_draw_candidates(context: usize) -> (Vec<DrawCandidate>, bool)
     if !snowglass_hook::config::graph_tracking_enabled() {
         return (
             select_screen_cohort(
-                if targets.is_empty() { fallback } else { targets },
+                if fallback.is_empty() { targets } else { fallback },
                 limit,
             ),
             false,
@@ -347,11 +347,7 @@ pub(crate) fn take_draw_candidates(context: usize) -> (Vec<DrawCandidate>, bool)
     }
     (
         select_screen_cohort(
-            if targets.is_empty() {
-                fallback
-            } else {
-                targets
-            },
+            if fallback.is_empty() { targets } else { fallback },
             limit,
         ),
         false,

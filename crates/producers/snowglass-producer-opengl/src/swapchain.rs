@@ -422,6 +422,7 @@ impl Capture {
             if scissor_enabled {
                 glDisable(GL_SCISSOR_TEST);
             }
+    
             match source {
                 None => {
                     (self.functions.blit_framebuffer)(
@@ -430,9 +431,9 @@ impl Capture {
                         self.width as i32,
                         self.height as i32,
                         0,
-                        self.height as i32,
-                        self.width as i32,
                         0,
+                        self.width as i32,
+                        self.height as i32,
                         GL_COLOR_BUFFER_BIT,
                         GL_NEAREST,
                     );
@@ -461,9 +462,9 @@ impl Capture {
                         source.width as i32,
                         source.height as i32,
                         0,
-                        self.height as i32,
-                        source.width as i32,
                         0,
+                        source.width as i32,
+                        self.height as i32,
                         GL_COLOR_BUFFER_BIT,
                         GL_NEAREST,
                     );
