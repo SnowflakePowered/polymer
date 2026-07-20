@@ -3,9 +3,9 @@
 pub mod config;
 mod vtable;
 
-pub use vtable::VtableHook;
 #[doc(hidden)]
 pub use paste::paste as __paste;
+pub use vtable::VtableHook;
 
 #[cfg(test)]
 fn register_hooks() {}
@@ -14,6 +14,20 @@ fn register_hooks() {}
 pub trait HookChain<'a, T: 'a> {
     /// Advances to the next registered hook, if one remains.
     fn fp_next(&mut self) -> Option<&'a T>;
+}
+
+/// Advances a terminal-backed hook chain and invokes its continuation.
+///
+/// The context is passed to the continuation after the listed ABI arguments.
+/// This consumes the context, so clone or copy anything needed after the call
+/// before invoking `next!`.
+#[macro_export]
+macro_rules! next {
+    ($context:ident $(, $argument:expr)* $(,)?) => {{
+        let continuation = *$crate::HookChain::fp_next(&mut $context)
+            .expect("hook chain has no continuation");
+        unsafe { continuation($($argument,)* $context) }
+    }};
 }
 
 /// Registration order used while visiting a hook chain.

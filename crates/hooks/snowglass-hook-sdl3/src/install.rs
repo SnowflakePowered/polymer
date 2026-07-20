@@ -1,7 +1,7 @@
 //! SDL3 module discovery and detour ownership.
 
 use crate::api;
-use snowglass_hook::{HookChain, config};
+use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
 use snowglass_platform_windows::InlineDetour;
 use std::{
@@ -53,26 +53,32 @@ snowglass_hook::function_table_hook! {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
 
         #[slot = DYNAPI_GET_GAMEPADS]
-        context struct {
-            installation: &'static Installation = installation(),
-        }
+        #[hooks(prepare_gamepads)]
         unsafe extern "C" fn get_gamepads_dispatch(
             count: *mut i32,
-        ) -> *mut api::JoystickId;
+        ) -> *mut api::JoystickId {
+            context struct {
+                installation: &'static Installation = installation(),
+            }
+        }
 
         #[slot = DYNAPI_GET_JOYSTICKS]
-        context struct {
-            installation: &'static Installation = installation(),
-        }
+        #[hooks(prepare_joysticks)]
         unsafe extern "C" fn get_joysticks_dispatch(
             count: *mut i32,
-        ) -> *mut api::JoystickId;
+        ) -> *mut api::JoystickId {
+            context struct {
+                installation: &'static Installation = installation(),
+            }
+        }
 
         #[slot = DYNAPI_UPDATE_JOYSTICKS]
-        context struct {
-            installation: &'static Installation = installation(),
+        #[hooks(flush_gamepads)]
+        unsafe extern "C" fn update_joysticks_dispatch() {
+            context struct {
+                installation: &'static Installation = installation(),
+            }
         }
-        unsafe extern "C" fn update_joysticks_dispatch();
     }
 }
 
@@ -147,10 +153,8 @@ unsafe fn install(module: HMODULE) {
         log("SDL3 found, but its virtual joystick exports are unavailable");
         return;
     };
-    let dynapi_entry = InlineDetour::new(
-        dynapi_entry_target,
-        dynapi_entry_hook as api::DynapiEntryFn,
-    );
+    let dynapi_entry =
+        InlineDetour::new(dynapi_entry_target, dynapi_entry_hook as api::DynapiEntryFn);
     if INSTALLATION
         .set(Installation {
             dynapi_entry,
@@ -162,9 +166,6 @@ unsafe fn install(module: HMODULE) {
     {
         return;
     }
-    register_get_gamepads_dispatch(prepare_gamepads);
-    register_get_joysticks_dispatch(prepare_joysticks);
-    register_update_joysticks_dispatch(flush_gamepads);
     let installation = INSTALLATION.get().expect("SDL3 installation was set");
     if installation.dynapi_entry.enable().is_err() {
         log("failed to enable SDL3 dynamic API detour");
@@ -205,8 +206,7 @@ unsafe fn prepare_joysticks(
     mut next: GetJoysticksDispatchContext<'_>,
 ) -> *mut api::JoystickId {
     prepare_enumeration(next.installation);
-    let continuation = *next.fp_next().expect("function-table chain has a base");
-    unsafe { continuation(count, next) }
+    snowglass_hook::next!(next, count)
 }
 
 unsafe fn prepare_gamepads(
@@ -214,8 +214,7 @@ unsafe fn prepare_gamepads(
     mut next: GetGamepadsDispatchContext<'_>,
 ) -> *mut api::JoystickId {
     prepare_enumeration(next.installation);
-    let continuation = *next.fp_next().expect("function-table chain has a base");
-    unsafe { continuation(count, next) }
+    snowglass_hook::next!(next, count)
 }
 
 fn prepare_enumeration(installation: &Installation) {
@@ -241,8 +240,7 @@ unsafe fn flush_gamepads(mut next: UpdateJoysticksDispatchContext<'_>) {
         .unwrap_or_else(|error| error.into_inner());
     next.installation.runtime.flush(&mut *backend);
     drop(backend);
-    let continuation = *next.fp_next().expect("function-table chain has a base");
-    unsafe { continuation(next) };
+    snowglass_hook::next!(next);
 }
 
 fn log(message: &str) {

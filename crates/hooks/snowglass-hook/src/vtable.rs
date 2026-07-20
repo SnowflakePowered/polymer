@@ -204,17 +204,22 @@ macro_rules! function_table_hook {
 
             $(
                 #[slot = $slot:expr]
+                #[hooks($($initial_hook:path),* $(,)?) ]
+                unsafe extern $abi:literal fn $dispatch:ident(
+                    $($argument:ident: $argument_type:ty),* $(,)?
+                ) $(-> $result:ty)? {
                 context struct {
                     $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
                 }
-                unsafe extern $abi:literal fn $dispatch:ident(
-                    $($argument:ident: $argument_type:ty),* $(,)?
-                ) $(-> $result:ty)?;
+                }
             )+
         }
     ) => { $crate::__paste! {
         $visibility struct $table_hook {
             $($dispatch: unsafe extern $abi fn($($argument_type),*) $(-> $result)?,)+
+            $([<$dispatch _hooks>]: ::std::sync::RwLock<
+                Vec<[<$dispatch:camel Hook>]>,
+            >,)+
         }
 
         impl $table_hook {
@@ -249,7 +254,12 @@ macro_rules! function_table_hook {
                         >(&address)
                     };
                 )+
-                Ok(Self { $($dispatch,)+ })
+                Ok(Self {
+                    $($dispatch,
+                    [<$dispatch _hooks>]: ::std::sync::RwLock::new(vec![
+                        $($initial_hook,)*
+                    ]),)+
+                })
             }
 
             /// Replaces the selected entries with their generated dispatchers.
@@ -270,7 +280,7 @@ macro_rules! function_table_hook {
                     return Err("function table is too small");
                 }
                 let table = table.cast::<usize>();
-                $(unsafe { table.add($slot).write($dispatch as usize) };)+
+                $(unsafe { table.add($slot).write($dispatch as *const () as usize) };)+
                 Ok(())
             }
 
@@ -287,10 +297,6 @@ macro_rules! function_table_hook {
                 [<$dispatch:camel Context>]<'_>,
             ) $(-> $result)?;
 
-            static [<$dispatch:upper _HOOKS>]: ::std::sync::LazyLock<
-                ::std::sync::RwLock<Vec<[<$dispatch:camel Hook>]> >
-            > = ::std::sync::LazyLock::new(|| ::std::sync::RwLock::new(Vec::new()));
-
             $visibility struct [<$dispatch:camel Context>]<'a> {
                 hooks: ::std::slice::Iter<'a, [<$dispatch:camel Hook>]>,
                 terminal: &'a [<$dispatch:camel Hook>],
@@ -306,15 +312,6 @@ macro_rules! function_table_hook {
                 }
             }
 
-            $visibility fn [<register_ $dispatch>](function: [<$dispatch:camel Hook>]) {
-                let mut chain = [<$dispatch:upper _HOOKS>]
-                    .write()
-                    .unwrap_or_else(|error| error.into_inner());
-                if !chain.iter().any(|registered| *registered as usize == function as usize) {
-                    chain.push(function);
-                }
-            }
-
             unsafe extern $abi fn $dispatch(
                 $($argument: $argument_type),*
             ) $(-> $result)? {
@@ -325,8 +322,9 @@ macro_rules! function_table_hook {
                     unsafe { (context.base)($($argument),*) }
                 }
 
-                let base = $resolve().$dispatch();
-                let chain = [<$dispatch:upper _HOOKS>]
+                let table_hook = $resolve();
+                let base = table_hook.$dispatch();
+                let chain = table_hook.[<$dispatch _hooks>]
                     .read()
                     .unwrap_or_else(|error| error.into_inner());
                 let mut hooks = chain.iter();
@@ -604,19 +602,40 @@ mod tests {
         union TestVtable for Capacity;
     }
 
-    static TRAMPOLINE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_FUNCTION_TABLE: OnceLock<TestFunctionTableHook> = OnceLock::new();
 
-    unsafe extern "system" fn original_trampoline(value: usize) {
-        TRAMPOLINE_CALLS.store(value, Ordering::Relaxed);
+    unsafe extern "C" fn function_table_base(value: usize) -> usize {
+        value * 2
     }
 
-    crate::com_trampoline! {
-        unsafe extern "system" fn test_trampoline(value: usize);
-        original Some(original_trampoline as unsafe extern "system" fn(usize));
-        after {
-            TRAMPOLINE_CALLS
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| Some(value * 10))
-                .unwrap();
+    unsafe fn function_table_around(
+        value: usize,
+        mut next: FunctionTableDispatchContext<'_>,
+    ) -> usize {
+        let offset = next.offset;
+        crate::next!(next, value) + offset
+    }
+
+    fn test_function_table() -> &'static TestFunctionTableHook {
+        TEST_FUNCTION_TABLE
+            .get()
+            .expect("test function table captured")
+    }
+
+    crate::function_table_hook! {
+        #[resolve = test_function_table]
+        struct TestFunctionTableHook {
+            const MINIMUM_SLOTS: usize = 2;
+
+            #[slot = 0]
+            #[hooks(function_table_around)]
+            unsafe extern "C" fn function_table_dispatch(value: usize) -> usize {
+                context struct {
+                    offset: usize = 3,
+                }
+            }
+        }
+    }
         }
     }
 
