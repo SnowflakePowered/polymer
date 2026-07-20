@@ -1,14 +1,66 @@
 //! Windows-specific handle, adapter, process, and window utilities.
 
+/// A thread-safe owner for an `ib-hook` inline hook.
+///
+/// Hook state changes take an exclusive lock, while trampoline access only
+/// takes a shared lock. This lets hook installers publish their hook storage
+/// before enabling it, so a detour can always find its original trampoline.
+#[derive(Debug)]
+pub struct InlineDetour<F: ib_hook::FnPtr> {
+    hook: std::sync::RwLock<ib_hook::inline::InlineHook<F>>,
+}
+
+impl<F: ib_hook::FnPtr> InlineDetour<F> {
+    pub const fn new(target: F, detour: F) -> Self {
+        Self {
+            hook: std::sync::RwLock::new(ib_hook::inline::InlineHook::new(target, detour)),
+        }
+    }
+
+    pub fn enable(&self) -> Result<(), i32> {
+        let mut hook = self.hook.write().unwrap_or_else(|error| error.into_inner());
+        let result = hook.enable();
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.0)
+        }
+    }
+
+    pub fn disable(&self) -> Result<(), i32> {
+        let mut hook = self.hook.write().unwrap_or_else(|error| error.into_inner());
+        let result = hook.disable();
+        if result.is_ok() {
+            Ok(())
+        } else {
+            Err(result.0)
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.hook
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_enabled()
+    }
+
+    pub fn trampoline(&self) -> F {
+        self.hook
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .trampoline()
+    }
+}
+
 /// Calls an installed detour's original trampoline, or returns `fallback` if
 /// the detour is absent or disabled.
 pub fn call_original<T, R>(
-    detour: Option<&retour::GenericDetour<T>>,
+    detour: Option<&InlineDetour<T>>,
     fallback: R,
-    call: impl FnOnce(&retour::GenericDetour<T>) -> R,
+    call: impl FnOnce(&InlineDetour<T>) -> R,
 ) -> R
 where
-    T: retour::Function,
+    T: ib_hook::FnPtr,
 {
     match detour {
         Some(detour) if detour.is_enabled() => call(detour),

@@ -1,6 +1,6 @@
 //! Early-process detours for the DXGI factory creation exports.
 
-use retour::GenericDetour;
+use snowglass_platform_windows::InlineDetour;
 use std::{ffi::c_void, sync::OnceLock};
 
 pub(crate) type CreateDxgiFactoryFn =
@@ -32,9 +32,9 @@ unsafe extern "system" {
 }
 
 pub(crate) struct DxgiDetours {
-    pub(crate) create_factory: GenericDetour<CreateDxgiFactoryFn>,
-    pub(crate) create_factory1: GenericDetour<CreateDxgiFactoryFn>,
-    pub(crate) create_factory2: GenericDetour<CreateDxgiFactory2Fn>,
+    pub(crate) create_factory: InlineDetour<CreateDxgiFactoryFn>,
+    pub(crate) create_factory1: InlineDetour<CreateDxgiFactoryFn>,
+    pub(crate) create_factory2: InlineDetour<CreateDxgiFactory2Fn>,
 }
 
 pub(crate) static DETOURS: OnceLock<DxgiDetours> = OnceLock::new();
@@ -46,30 +46,18 @@ pub(crate) unsafe fn install() -> bool {
             && detours.create_factory1.is_enabled()
             && detours.create_factory2.is_enabled();
     }
-    let Ok(create_factory) = (unsafe {
-        GenericDetour::new(
-            system_create_factory as CreateDxgiFactoryFn,
-            crate::sys::create_factory,
-        )
-    }) else {
-        return false;
-    };
-    let Ok(create_factory1) = (unsafe {
-        GenericDetour::new(
-            system_create_factory1 as CreateDxgiFactoryFn,
-            crate::sys::create_factory1,
-        )
-    }) else {
-        return false;
-    };
-    let Ok(create_factory2) = (unsafe {
-        GenericDetour::new(
-            system_create_factory2 as CreateDxgiFactory2Fn,
-            crate::sys::create_factory2,
-        )
-    }) else {
-        return false;
-    };
+    let create_factory = InlineDetour::new(
+        system_create_factory as CreateDxgiFactoryFn,
+        crate::sys::create_factory,
+    );
+    let create_factory1 = InlineDetour::new(
+        system_create_factory1 as CreateDxgiFactoryFn,
+        crate::sys::create_factory1,
+    );
+    let create_factory2 = InlineDetour::new(
+        system_create_factory2 as CreateDxgiFactory2Fn,
+        crate::sys::create_factory2,
+    );
     if DETOURS
         .set(DxgiDetours {
             create_factory,
@@ -85,17 +73,15 @@ pub(crate) unsafe fn install() -> bool {
         });
     }
     let detours = DETOURS.get().expect("detours were just initialized");
-    let enabled = unsafe {
-        detours
-            .create_factory
-            .enable()
-            .and_then(|()| detours.create_factory1.enable())
-            .and_then(|()| detours.create_factory2.enable())
-    };
+    let enabled = detours
+        .create_factory
+        .enable()
+        .and_then(|()| detours.create_factory1.enable())
+        .and_then(|()| detours.create_factory2.enable());
     if enabled.is_err() {
-        let _ = unsafe { detours.create_factory2.disable() };
-        let _ = unsafe { detours.create_factory1.disable() };
-        let _ = unsafe { detours.create_factory.disable() };
+        let _ = detours.create_factory2.disable();
+        let _ = detours.create_factory1.disable();
+        let _ = detours.create_factory.disable();
         return false;
     }
     true

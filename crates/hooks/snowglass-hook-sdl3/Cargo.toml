@@ -8,10 +8,10 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-retour.workspace = true
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
 snowglass-input-sdl.workspace = true
+snowglass-platform-windows.workspace = true
 windows-sys.workspace = true
 
 [lints]

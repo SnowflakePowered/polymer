@@ -1,9 +1,9 @@
 //! SDL2 module discovery and detour ownership.
 
 use crate::api;
-use retour::GenericDetour;
 use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
+use snowglass_platform_windows::InlineDetour;
 use std::{
     fs::OpenOptions,
     io::Write,
@@ -13,8 +13,8 @@ use std::{
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetModuleHandleW};
 
 struct Installation {
-    enumerate: GenericDetour<api::EnumerateFn>,
-    update: GenericDetour<api::UpdateFn>,
+    enumerate: InlineDetour<api::EnumerateFn>,
+    update: InlineDetour<api::UpdateFn>,
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
 }
@@ -101,17 +101,8 @@ unsafe fn install(module: HMODULE) {
         log("SDL2 found, but its virtual joystick exports are unavailable");
         return;
     };
-    let Ok(enumerate) =
-        (unsafe { GenericDetour::new(enumerate_target, enumerate_hook as api::EnumerateFn) })
-    else {
-        log("failed to create SDL2 enumeration detour");
-        return;
-    };
-    let Ok(update) = (unsafe { GenericDetour::new(update_target, update_hook as api::UpdateFn) })
-    else {
-        log("failed to create SDL2 update detour");
-        return;
-    };
+    let enumerate = InlineDetour::new(enumerate_target, enumerate_hook as api::EnumerateFn);
+    let update = InlineDetour::new(update_target, update_hook as api::UpdateFn);
     if INSTALLATION
         .set(Installation {
             enumerate,
@@ -124,12 +115,12 @@ unsafe fn install(module: HMODULE) {
         return;
     }
     let installation = INSTALLATION.get().expect("SDL2 installation was set");
-    if unsafe { installation.enumerate.enable() }.is_err() {
+    if installation.enumerate.enable().is_err() {
         log("failed to enable SDL2 enumeration detour");
         return;
     }
-    if unsafe { installation.update.enable() }.is_err() {
-        let _ = unsafe { installation.enumerate.disable() };
+    if installation.update.enable().is_err() {
+        let _ = installation.enumerate.disable();
         log("failed to enable SDL2 update detour");
         return;
     }
@@ -148,7 +139,7 @@ unsafe extern "C" fn enumerate_hook() -> i32 {
         log(error.0);
     }
     drop(backend);
-    unsafe { installation.enumerate.call() }
+    unsafe { (installation.enumerate.trampoline())() }
 }
 
 unsafe extern "C" fn update_hook() {
@@ -161,7 +152,7 @@ unsafe extern "C" fn update_hook() {
         .unwrap_or_else(|error| error.into_inner());
     installation.runtime.flush(&mut *backend);
     drop(backend);
-    unsafe { installation.update.call() };
+    unsafe { (installation.update.trampoline())() };
 }
 
 fn log(message: &str) {

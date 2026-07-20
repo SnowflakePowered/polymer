@@ -1,4 +1,4 @@
-//! ABI trampolines used by the injector and `retour`.
+//! ABI trampolines used by the injector and inline hooks.
 
 use std::ffi::c_void;
 use windows_sys::{

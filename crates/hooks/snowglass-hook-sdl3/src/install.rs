@@ -1,9 +1,9 @@
 //! SDL3 module discovery and detour ownership.
 
 use crate::api;
-use retour::GenericDetour;
 use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
+use snowglass_platform_windows::InlineDetour;
 use std::{
     fs::OpenOptions,
     io::Write,
@@ -13,9 +13,9 @@ use std::{
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetModuleHandleW};
 
 struct Installation {
-    enumerate_joysticks: GenericDetour<api::EnumerateFn>,
-    enumerate_gamepads: GenericDetour<api::GamepadEnumerateFn>,
-    update: GenericDetour<api::UpdateFn>,
+    enumerate_joysticks: InlineDetour<api::EnumerateFn>,
+    enumerate_gamepads: InlineDetour<api::GamepadEnumerateFn>,
+    update: InlineDetour<api::UpdateFn>,
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
 }
@@ -92,29 +92,15 @@ unsafe fn install(module: HMODULE) {
         log("SDL3 found, but its virtual joystick exports are unavailable");
         return;
     };
-    let Ok(enumerate_joysticks) = (unsafe {
-        GenericDetour::new(
-            enumerate_joysticks_target,
-            enumerate_joysticks_hook as api::EnumerateFn,
-        )
-    }) else {
-        log("failed to create SDL3 joystick enumeration detour");
-        return;
-    };
-    let Ok(enumerate_gamepads) = (unsafe {
-        GenericDetour::new(
-            enumerate_gamepads_target,
-            enumerate_gamepads_hook as api::GamepadEnumerateFn,
-        )
-    }) else {
-        log("failed to create SDL3 gamepad enumeration detour");
-        return;
-    };
-    let Ok(update) = (unsafe { GenericDetour::new(update_target, update_hook as api::UpdateFn) })
-    else {
-        log("failed to create SDL3 update detour");
-        return;
-    };
+    let enumerate_joysticks = InlineDetour::new(
+        enumerate_joysticks_target,
+        enumerate_joysticks_hook as api::EnumerateFn,
+    );
+    let enumerate_gamepads = InlineDetour::new(
+        enumerate_gamepads_target,
+        enumerate_gamepads_hook as api::GamepadEnumerateFn,
+    );
+    let update = InlineDetour::new(update_target, update_hook as api::UpdateFn);
     if INSTALLATION
         .set(Installation {
             enumerate_joysticks,
@@ -128,18 +114,18 @@ unsafe fn install(module: HMODULE) {
         return;
     }
     let installation = INSTALLATION.get().expect("SDL3 installation was set");
-    if unsafe { installation.enumerate_joysticks.enable() }.is_err() {
+    if installation.enumerate_joysticks.enable().is_err() {
         log("failed to enable SDL3 joystick enumeration detour");
         return;
     }
-    if unsafe { installation.enumerate_gamepads.enable() }.is_err() {
-        let _ = unsafe { installation.enumerate_joysticks.disable() };
+    if installation.enumerate_gamepads.enable().is_err() {
+        let _ = installation.enumerate_joysticks.disable();
         log("failed to enable SDL3 gamepad enumeration detour");
         return;
     }
-    if unsafe { installation.update.enable() }.is_err() {
-        let _ = unsafe { installation.enumerate_gamepads.disable() };
-        let _ = unsafe { installation.enumerate_joysticks.disable() };
+    if installation.update.enable().is_err() {
+        let _ = installation.enumerate_gamepads.disable();
+        let _ = installation.enumerate_joysticks.disable();
         log("failed to enable SDL3 update detour");
         return;
     }
@@ -151,7 +137,7 @@ unsafe extern "C" fn enumerate_joysticks_hook(count: *mut i32) -> *mut api::Joys
         return std::ptr::null_mut();
     };
     prepare_enumeration(installation);
-    unsafe { installation.enumerate_joysticks.call(count) }
+    unsafe { (installation.enumerate_joysticks.trampoline())(count) }
 }
 
 unsafe extern "C" fn enumerate_gamepads_hook(count: *mut i32) -> *mut api::JoystickId {
@@ -159,7 +145,7 @@ unsafe extern "C" fn enumerate_gamepads_hook(count: *mut i32) -> *mut api::Joyst
         return std::ptr::null_mut();
     };
     prepare_enumeration(installation);
-    unsafe { installation.enumerate_gamepads.call(count) }
+    unsafe { (installation.enumerate_gamepads.trampoline())(count) }
 }
 
 fn prepare_enumeration(installation: &Installation) {
@@ -182,7 +168,7 @@ unsafe extern "C" fn update_hook() {
         .unwrap_or_else(|error| error.into_inner());
     installation.runtime.flush(&mut *backend);
     drop(backend);
-    unsafe { installation.update.call() };
+    unsafe { (installation.update.trampoline())() };
 }
 
 fn log(message: &str) {

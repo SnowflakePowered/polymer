@@ -1,7 +1,7 @@
 //! Process-wide detour installation and original-procedure routing.
 
 use crate::hooks::Hdc;
-use retour::GenericDetour;
+use snowglass_platform_windows::InlineDetour;
 use snowglass_producer_opengl::Tracking;
 use std::{
     ffi::c_void,
@@ -54,11 +54,11 @@ unsafe extern "system" {
 }
 
 pub(crate) struct OpenGlDetours {
-    pub(crate) swap_buffers: GenericDetour<SwapBuffersFn>,
-    pub(crate) swap_layer_buffers: GenericDetour<SwapLayerBuffersFn>,
-    pub(crate) wgl_get_proc_address: GenericDetour<WglGetProcAddressFn>,
-    core_draw_arrays: GenericDetour<GlDrawArraysFn>,
-    core_draw_elements: GenericDetour<GlDrawElementsFn>,
+    pub(crate) swap_buffers: InlineDetour<SwapBuffersFn>,
+    pub(crate) swap_layer_buffers: InlineDetour<SwapLayerBuffersFn>,
+    pub(crate) wgl_get_proc_address: InlineDetour<WglGetProcAddressFn>,
+    core_draw_arrays: InlineDetour<GlDrawArraysFn>,
+    core_draw_elements: InlineDetour<GlDrawElementsFn>,
     tracking: Arc<Tracking>,
 }
 
@@ -110,7 +110,7 @@ pub(crate) unsafe fn call_draw_arrays(mode: u32, first: i32, count: i32) {
     if let Some(original) = DRAW_ARRAYS.get() {
         unsafe { original(mode, first, count) };
     } else if let Some(detours) = DETOURS.get() {
-        unsafe { detours.core_draw_arrays.call(mode, first, count) };
+        unsafe { (detours.core_draw_arrays.trampoline())(mode, first, count) };
     }
 }
 
@@ -123,11 +123,7 @@ pub(crate) unsafe fn call_draw_elements(
     if let Some(original) = DRAW_ELEMENTS.get() {
         unsafe { original(mode, count, element_type, indices) };
     } else if let Some(detours) = DETOURS.get() {
-        unsafe {
-            detours
-                .core_draw_elements
-                .call(mode, count, element_type, indices)
-        };
+        unsafe { (detours.core_draw_elements.trampoline())(mode, count, element_type, indices) };
     }
 }
 
@@ -197,7 +193,7 @@ pub(crate) unsafe fn call_wgl_get_proc_address(
     _context: crate::hooks::WglGetProcAddressContext<'_>,
 ) -> *const c_void {
     DETOURS.get().map_or(std::ptr::null(), |detours| unsafe {
-        detours.wgl_get_proc_address.call(name)
+        (detours.wgl_get_proc_address.trampoline())(name)
     })
 }
 
@@ -205,51 +201,26 @@ pub(crate) unsafe fn install() -> i32 {
     if let Some(detours) = DETOURS.get() {
         return if all_enabled(detours) { 0 } else { E_FAIL };
     }
-    let swap_buffers = match unsafe {
-        GenericDetour::new(
-            system_swap_buffers as SwapBuffersFn,
-            crate::sys::swap_buffers,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
-    let swap_layer_buffers = match unsafe {
-        GenericDetour::new(
-            system_swap_layer_buffers as SwapLayerBuffersFn,
-            crate::sys::swap_layer_buffers,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
-    let wgl_get_proc_address = match unsafe {
-        GenericDetour::new(
-            system_wgl_get_proc_address as WglGetProcAddressFn,
-            crate::sys::wgl_get_proc_address,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
-    let core_draw_arrays = match unsafe {
-        GenericDetour::new(
-            system_draw_arrays as GlDrawArraysFn,
-            crate::sys::draw_arrays,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
-    let core_draw_elements = match unsafe {
-        GenericDetour::new(
-            system_draw_elements as GlDrawElementsFn,
-            crate::sys::draw_elements,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
+    let swap_buffers = InlineDetour::new(
+        system_swap_buffers as SwapBuffersFn,
+        crate::sys::swap_buffers,
+    );
+    let swap_layer_buffers = InlineDetour::new(
+        system_swap_layer_buffers as SwapLayerBuffersFn,
+        crate::sys::swap_layer_buffers,
+    );
+    let wgl_get_proc_address = InlineDetour::new(
+        system_wgl_get_proc_address as WglGetProcAddressFn,
+        crate::sys::wgl_get_proc_address,
+    );
+    let core_draw_arrays = InlineDetour::new(
+        system_draw_arrays as GlDrawArraysFn,
+        crate::sys::draw_arrays,
+    );
+    let core_draw_elements = InlineDetour::new(
+        system_draw_elements as GlDrawElementsFn,
+        crate::sys::draw_elements,
+    );
     if DETOURS
         .set(OpenGlDetours {
             swap_buffers,
@@ -264,17 +235,15 @@ pub(crate) unsafe fn install() -> i32 {
         return E_FAIL;
     }
     let detours = DETOURS.get().expect("detours were just initialized");
-    let enabled = unsafe {
-        detours
-            .wgl_get_proc_address
-            .enable()
-            .and_then(|()| detours.core_draw_arrays.enable())
-            .and_then(|()| detours.core_draw_elements.enable())
-            .and_then(|()| detours.swap_layer_buffers.enable())
-            .and_then(|()| detours.swap_buffers.enable())
-    };
+    let enabled = detours
+        .wgl_get_proc_address
+        .enable()
+        .and_then(|()| detours.core_draw_arrays.enable())
+        .and_then(|()| detours.core_draw_elements.enable())
+        .and_then(|()| detours.swap_layer_buffers.enable())
+        .and_then(|()| detours.swap_buffers.enable());
     if enabled.is_err() {
-        unsafe { disable_all(detours) };
+        disable_all(detours);
         return E_FAIL;
     }
     0
@@ -288,10 +257,10 @@ fn all_enabled(detours: &OpenGlDetours) -> bool {
         && detours.core_draw_elements.is_enabled()
 }
 
-unsafe fn disable_all(detours: &OpenGlDetours) {
-    let _ = unsafe { detours.swap_buffers.disable() };
-    let _ = unsafe { detours.swap_layer_buffers.disable() };
-    let _ = unsafe { detours.core_draw_elements.disable() };
-    let _ = unsafe { detours.core_draw_arrays.disable() };
-    let _ = unsafe { detours.wgl_get_proc_address.disable() };
+fn disable_all(detours: &OpenGlDetours) {
+    let _ = detours.swap_buffers.disable();
+    let _ = detours.swap_layer_buffers.disable();
+    let _ = detours.core_draw_elements.disable();
+    let _ = detours.core_draw_arrays.disable();
+    let _ = detours.wgl_get_proc_address.disable();
 }

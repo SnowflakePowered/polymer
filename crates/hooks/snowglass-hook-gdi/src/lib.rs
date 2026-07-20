@@ -1,7 +1,7 @@
 //! Early-process GDI paint redirection hooks.
 #![allow(unsafe_code)]
 
-use retour::GenericDetour;
+use snowglass_platform_windows::InlineDetour;
 use std::{cell::Cell, sync::OnceLock};
 use windows_sys::Win32::{
     Foundation::{E_FAIL, HWND, POINT, RECT},
@@ -42,9 +42,9 @@ unsafe extern "system" {
     fn WindowFromDC(hdc: HDC) -> HWND;
 }
 
-static BEGIN_PAINT: OnceLock<GenericDetour<BeginPaintFn>> = OnceLock::new();
-static END_PAINT: OnceLock<GenericDetour<EndPaintFn>> = OnceLock::new();
-static BIT_BLT: OnceLock<GenericDetour<BitBltFn>> = OnceLock::new();
+static BEGIN_PAINT: OnceLock<InlineDetour<BeginPaintFn>> = OnceLock::new();
+static END_PAINT: OnceLock<InlineDetour<EndPaintFn>> = OnceLock::new();
+static BIT_BLT: OnceLock<InlineDetour<BitBltFn>> = OnceLock::new();
 thread_local! { static INSIDE_HOOK: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static REAL_PAINT_DC: Cell<Option<(isize, isize)>> = const { Cell::new(None) }; }
 
@@ -70,7 +70,7 @@ unsafe extern "system" fn begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HD
     let Some(detour) = BEGIN_PAINT.get() else {
         return std::ptr::null_mut();
     };
-    let real = unsafe { detour.call(hwnd, paint) };
+    let real = unsafe { (detour.trampoline())(hwnd, paint) };
     if real.is_null() || paint.is_null() || hwnd.is_null() {
         return real;
     }
@@ -142,7 +142,7 @@ unsafe extern "system" fn bit_blt(
     });
     let Some(replacement) = replacement else {
         return unsafe {
-            detour.call(
+            (detour.trampoline())(
                 destination,
                 x,
                 y,
@@ -160,7 +160,7 @@ unsafe extern "system" fn bit_blt(
         unsafe { MapWindowPoints(hwnd, root, &mut origin, 1) };
     }
     let result = unsafe {
-        detour.call(
+        (detour.trampoline())(
             replacement as HDC,
             x.saturating_add(origin.x),
             y.saturating_add(origin.y),
@@ -186,7 +186,7 @@ unsafe extern "system" fn end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i3
         return 0;
     };
     if paint.is_null() {
-        return unsafe { detour.call(hwnd, paint) };
+        return unsafe { (detour.trampoline())(hwnd, paint) };
     }
     let redirected = unsafe { (*paint).hdc };
     INSIDE_HOOK.with(|inside| {
@@ -201,9 +201,9 @@ unsafe extern "system" fn end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i3
     {
         let mut original = unsafe { *paint };
         original.hdc = real_dc as HDC;
-        unsafe { detour.call(hwnd, &original) }
+        unsafe { (detour.trampoline())(hwnd, &original) }
     } else {
-        unsafe { detour.call(hwnd, paint) }
+        unsafe { (detour.trampoline())(hwnd, paint) }
     }
 }
 
@@ -219,37 +219,21 @@ pub unsafe extern "system" fn SnowglassInstallGdiHook() -> i32 {
             E_FAIL
         };
     }
-    let begin = match unsafe {
-        GenericDetour::new(
-            system_begin_paint as BeginPaintFn,
-            begin_paint as BeginPaintFn,
-        )
-    } {
-        Ok(hook) => hook,
-        Err(_) => return E_FAIL,
-    };
-    let end = match unsafe {
-        GenericDetour::new(system_end_paint as EndPaintFn, end_paint as EndPaintFn)
-    } {
-        Ok(hook) => hook,
-        Err(_) => return E_FAIL,
-    };
-    let blit = match unsafe { GenericDetour::new(system_bit_blt as BitBltFn, bit_blt as BitBltFn) }
-    {
-        Ok(hook) => hook,
-        Err(_) => return E_FAIL,
-    };
+    let begin = InlineDetour::new(
+        system_begin_paint as BeginPaintFn,
+        begin_paint as BeginPaintFn,
+    );
+    let end = InlineDetour::new(system_end_paint as EndPaintFn, end_paint as EndPaintFn);
+    let blit = InlineDetour::new(system_bit_blt as BitBltFn, bit_blt as BitBltFn);
     if BEGIN_PAINT.set(begin).is_err() || END_PAINT.set(end).is_err() || BIT_BLT.set(blit).is_err()
     {
         return E_FAIL;
     }
-    let enabled = unsafe {
-        BIT_BLT
-            .get()
-            .expect("blit hook initialized")
-            .enable()
-            .and_then(|()| END_PAINT.get().expect("end hook initialized").enable())
-            .and_then(|()| BEGIN_PAINT.get().expect("begin hook initialized").enable())
-    };
+    let enabled = BIT_BLT
+        .get()
+        .expect("blit hook initialized")
+        .enable()
+        .and_then(|()| END_PAINT.get().expect("end hook initialized").enable())
+        .and_then(|()| BEGIN_PAINT.get().expect("begin hook initialized").enable());
     if enabled.is_ok() { 0 } else { E_FAIL }
 }

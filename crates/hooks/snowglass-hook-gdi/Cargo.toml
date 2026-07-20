@@ -8,7 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-retour.workspace = true
+snowglass-platform-windows.workspace = true
 snowglass-producer-gdi = { path = "../../producers/snowglass-producer-gdi" }
 windows-sys.workspace = true
 

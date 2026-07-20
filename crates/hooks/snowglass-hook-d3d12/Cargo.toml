@@ -9,7 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 dashmap.workspace = true
-retour.workspace = true
 snowglass-hook.workspace = true
 snowglass-hook-dxgi = { path = "../snowglass-hook-dxgi" }
 snowglass-platform-windows.workspace = true

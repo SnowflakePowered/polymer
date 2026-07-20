@@ -1,7 +1,7 @@
 //! Detour ownership and lifecycle.
 
 use crate::DirectInput8CreateFn;
-use retour::GenericDetour;
+use snowglass_platform_windows::InlineDetour;
 use std::{
     ffi::c_void,
     sync::{Arc, OnceLock},
@@ -15,7 +15,7 @@ use windows_sys::{
 };
 
 struct DirectInputDetour {
-    detour: GenericDetour<DirectInput8CreateFn>,
+    detour: InlineDetour<DirectInput8CreateFn>,
     runtime: Arc<crate::runtime::Runtime>,
 }
 
@@ -38,10 +38,7 @@ pub(crate) unsafe fn install() -> HRESULT {
         };
     }
     let target = DirectInput8Create as DirectInput8CreateFn;
-    let detour = match unsafe { GenericDetour::new(target, crate::sys::direct_input_8_create) } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
+    let detour = InlineDetour::new(target, crate::sys::direct_input_8_create);
     if DIRECT_INPUT_8_CREATE
         .set(DirectInputDetour {
             detour,
@@ -51,13 +48,12 @@ pub(crate) unsafe fn install() -> HRESULT {
     {
         return E_FAIL;
     }
-    match unsafe {
-        DIRECT_INPUT_8_CREATE
-            .get()
-            .expect("detour was set")
-            .detour
-            .enable()
-    } {
+    match DIRECT_INPUT_8_CREATE
+        .get()
+        .expect("detour was set")
+        .detour
+        .enable()
+    {
         Ok(()) => {
             DIRECT_INPUT_8_CREATE
                 .get()
@@ -82,6 +78,6 @@ pub(crate) unsafe extern "system" fn call_original(
             .get()
             .map(|installation| &installation.detour),
         E_FAIL,
-        |detour| unsafe { detour.call(instance, version, interface_id, output, outer) },
+        |detour| unsafe { (detour.trampoline())(instance, version, interface_id, output, outer) },
     )
 }

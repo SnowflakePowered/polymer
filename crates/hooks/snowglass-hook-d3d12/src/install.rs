@@ -1,4 +1,4 @@
-use retour::GenericDetour;
+use snowglass_platform_windows::InlineDetour;
 use std::{ffi::c_void, sync::OnceLock};
 use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
 
@@ -16,25 +16,21 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-pub(crate) static CREATE_DEVICE: OnceLock<GenericDetour<D3D12CreateDeviceFn>> = OnceLock::new();
+pub(crate) static CREATE_DEVICE: OnceLock<InlineDetour<D3D12CreateDeviceFn>> = OnceLock::new();
 
 pub(crate) unsafe fn install() -> i32 {
     crate::register_hooks();
     if let Some(detour) = CREATE_DEVICE.get() {
         return if detour.is_enabled() { 0 } else { E_FAIL };
     }
-    let Ok(detour) = (unsafe {
-        GenericDetour::new(
-            system_create_device as D3D12CreateDeviceFn,
-            crate::sys::create_device,
-        )
-    }) else {
-        return E_FAIL;
-    };
+    let detour = InlineDetour::new(
+        system_create_device as D3D12CreateDeviceFn,
+        crate::sys::create_device,
+    );
     if CREATE_DEVICE.set(detour).is_err() {
         return E_FAIL;
     }
-    match unsafe { CREATE_DEVICE.get().expect("detour was set").enable() } {
+    match CREATE_DEVICE.get().expect("detour was set").enable() {
         Ok(()) => 0,
         Err(_) => E_FAIL,
     }

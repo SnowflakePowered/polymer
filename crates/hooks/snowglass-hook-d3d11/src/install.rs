@@ -1,6 +1,6 @@
 //! Early-process detours for targets that already loaded the system D3D11 DLL.
 
-use retour::RawDetour;
+use snowglass_platform_windows::InlineDetour;
 use std::{ffi::c_void, sync::OnceLock};
 use windows_sys::Win32::Foundation::{E_FAIL, HMODULE};
 
@@ -70,14 +70,11 @@ pub(crate) struct D3D11Detours {
     pub(crate) create_device_and_swapchain: CreateDeviceAndSwapChainDetour,
 }
 
-pub(crate) struct CreateDeviceDetour(RawDetour);
+pub(crate) struct CreateDeviceDetour(InlineDetour<D3D11CreateDeviceFn>);
 
 impl CreateDeviceDetour {
-    unsafe fn new(
-        target: D3D11CreateDeviceFn,
-        detour: D3D11CreateDeviceFn,
-    ) -> retour::Result<Self> {
-        unsafe { RawDetour::new(target as *const (), detour as *const ()).map(Self) }
+    fn new(target: D3D11CreateDeviceFn, detour: D3D11CreateDeviceFn) -> Self {
+        Self(InlineDetour::new(target, detour))
     }
 
     pub(crate) unsafe fn call(
@@ -93,7 +90,7 @@ impl CreateDeviceDetour {
         feature_level: *mut i32,
         immediate_context: *mut *mut c_void,
     ) -> i32 {
-        let original: D3D11CreateDeviceFn = unsafe { std::mem::transmute(self.0.trampoline()) };
+        let original = self.0.trampoline();
         unsafe {
             original(
                 adapter,
@@ -114,23 +111,23 @@ impl CreateDeviceDetour {
         self.0.is_enabled()
     }
 
-    unsafe fn enable(&self) -> retour::Result<()> {
-        unsafe { self.0.enable() }
+    fn enable(&self) -> Result<(), i32> {
+        self.0.enable()
     }
 
-    unsafe fn disable(&self) -> retour::Result<()> {
-        unsafe { self.0.disable() }
+    fn disable(&self) -> Result<(), i32> {
+        self.0.disable()
     }
 }
 
-pub(crate) struct CreateDeviceAndSwapChainDetour(RawDetour);
+pub(crate) struct CreateDeviceAndSwapChainDetour(InlineDetour<D3D11CreateDeviceAndSwapChainFn>);
 
 impl CreateDeviceAndSwapChainDetour {
-    unsafe fn new(
+    fn new(
         target: D3D11CreateDeviceAndSwapChainFn,
         detour: D3D11CreateDeviceAndSwapChainFn,
-    ) -> retour::Result<Self> {
-        unsafe { RawDetour::new(target as *const (), detour as *const ()).map(Self) }
+    ) -> Self {
+        Self(InlineDetour::new(target, detour))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -149,8 +146,7 @@ impl CreateDeviceAndSwapChainDetour {
         feature_level: *mut i32,
         immediate_context: *mut *mut c_void,
     ) -> i32 {
-        let original: D3D11CreateDeviceAndSwapChainFn =
-            unsafe { std::mem::transmute(self.0.trampoline()) };
+        let original = self.0.trampoline();
         unsafe {
             original(
                 adapter,
@@ -173,12 +169,12 @@ impl CreateDeviceAndSwapChainDetour {
         self.0.is_enabled()
     }
 
-    unsafe fn enable(&self) -> retour::Result<()> {
-        unsafe { self.0.enable() }
+    fn enable(&self) -> Result<(), i32> {
+        self.0.enable()
     }
 
-    unsafe fn disable(&self) -> retour::Result<()> {
-        unsafe { self.0.disable() }
+    fn disable(&self) -> Result<(), i32> {
+        self.0.disable()
     }
 }
 
@@ -194,24 +190,14 @@ pub(crate) unsafe fn install() -> i32 {
             E_FAIL
         };
     }
-    let create_device = match unsafe {
-        CreateDeviceDetour::new(
-            system_create_device as D3D11CreateDeviceFn,
-            crate::sys::create_device,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
-    let create_device_and_swapchain = match unsafe {
-        CreateDeviceAndSwapChainDetour::new(
-            system_create_device_and_swapchain as D3D11CreateDeviceAndSwapChainFn,
-            crate::sys::create_device_and_swapchain,
-        )
-    } {
-        Ok(detour) => detour,
-        Err(_) => return E_FAIL,
-    };
+    let create_device = CreateDeviceDetour::new(
+        system_create_device as D3D11CreateDeviceFn,
+        crate::sys::create_device,
+    );
+    let create_device_and_swapchain = CreateDeviceAndSwapChainDetour::new(
+        system_create_device_and_swapchain as D3D11CreateDeviceAndSwapChainFn,
+        crate::sys::create_device_and_swapchain,
+    );
     if DETOURS
         .set(D3D11Detours {
             create_device,
@@ -222,15 +208,13 @@ pub(crate) unsafe fn install() -> i32 {
         return E_FAIL;
     }
     let detours = DETOURS.get().expect("detours were just initialized");
-    let enabled = unsafe {
-        detours
-            .create_device
-            .enable()
-            .and_then(|()| detours.create_device_and_swapchain.enable())
-    };
+    let enabled = detours
+        .create_device
+        .enable()
+        .and_then(|()| detours.create_device_and_swapchain.enable());
     if enabled.is_err() {
-        let _ = unsafe { detours.create_device_and_swapchain.disable() };
-        let _ = unsafe { detours.create_device.disable() };
+        let _ = detours.create_device_and_swapchain.disable();
+        let _ = detours.create_device.disable();
         return E_FAIL;
     }
     0

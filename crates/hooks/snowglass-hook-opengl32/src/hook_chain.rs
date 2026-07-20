@@ -5,7 +5,9 @@ macro_rules! resolve_terminal {
         || {
             $detours
                 .get()
-                .map_or($fallback, |detours| unsafe { detours.$field.call($($argument),*) })
+                .map_or($fallback, |detours| unsafe {
+                    (detours.$field.trampoline())($($argument),*)
+                })
         }
     };
     (($($argument:ident),*); resolve with $terminal:path;) => {

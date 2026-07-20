@@ -17,7 +17,7 @@ macro_rules! resolve_terminal {
             snowglass_platform_windows::call_original(
                 $detours.get().map(|detours| &detours.$field),
                 $fallback,
-                |detour| unsafe { detour.call($($argument),*) },
+                |detour| unsafe { (detour.trampoline())($($argument),*) },
             )
         }
     };

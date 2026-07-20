@@ -3,7 +3,7 @@ macro_rules! resolve_terminal {
         || snowglass_platform_windows::call_original(
             $detour.get(),
             $fallback,
-            |detour| unsafe { detour.call($($argument),*) },
+            |detour| unsafe { (detour.trampoline())($($argument),*) },
         )
     };
 }
