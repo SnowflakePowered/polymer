@@ -1,21 +1,25 @@
 //! SDL3 module discovery and detour ownership.
 
 use crate::api;
-use snowglass_hook::config;
+use snowglass_hook::{HookChain, config};
 use snowglass_input_sdl::Runtime;
 use snowglass_platform_windows::InlineDetour;
 use std::{
+    ffi::c_void,
     fs::OpenOptions,
     io::Write,
+    os::windows::ffi::OsStrExt,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
-use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetModuleHandleW};
+use windows_sys::Win32::{
+    Foundation::HMODULE,
+    System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
+};
 
-struct Installation {
-    enumerate_joysticks: InlineDetour<api::EnumerateFn>,
-    enumerate_gamepads: InlineDetour<api::GamepadEnumerateFn>,
-    update: InlineDetour<api::UpdateFn>,
+pub(crate) struct Installation {
+    dynapi_entry: InlineDetour<api::DynapiEntryFn>,
+    dynapi: OnceLock<Sdl3DynapiHook>,
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
 }
@@ -23,6 +27,7 @@ struct Installation {
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
 static INSTALLATION: OnceLock<Installation> = OnceLock::new();
 static DISCOVERY_STARTED: OnceLock<()> = OnceLock::new();
+static ATTACHMENT_LOGGED: OnceLock<()> = OnceLock::new();
 
 const SDL3_DLL: &[u16] = &[
     b'S' as u16,
@@ -36,6 +41,52 @@ const SDL3_DLL: &[u16] = &[
     0,
 ];
 
+// SDL3's ABI-stable dynamic API table is append-only. These slots come from
+// SDL_dynapi_procs.h and cover the SDL revision pinned by Dolphin.
+const DYNAPI_GET_GAMEPADS: usize = 349;
+const DYNAPI_GET_JOYSTICKS: usize = 395;
+const DYNAPI_UPDATE_JOYSTICKS: usize = 954;
+
+snowglass_hook::function_table_hook! {
+    #[resolve = dynapi]
+    pub(crate) struct Sdl3DynapiHook {
+        const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
+
+        #[slot = DYNAPI_GET_GAMEPADS]
+        context struct {
+            installation: &'static Installation = installation(),
+        }
+        unsafe extern "C" fn get_gamepads_dispatch(
+            count: *mut i32,
+        ) -> *mut api::JoystickId;
+
+        #[slot = DYNAPI_GET_JOYSTICKS]
+        context struct {
+            installation: &'static Installation = installation(),
+        }
+        unsafe extern "C" fn get_joysticks_dispatch(
+            count: *mut i32,
+        ) -> *mut api::JoystickId;
+
+        #[slot = DYNAPI_UPDATE_JOYSTICKS]
+        context struct {
+            installation: &'static Installation = installation(),
+        }
+        unsafe extern "C" fn update_joysticks_dispatch();
+    }
+}
+
+fn installation() -> &'static Installation {
+    INSTALLATION.get().expect("SDL3 installation exists")
+}
+
+fn dynapi() -> &'static Sdl3DynapiHook {
+    installation()
+        .dynapi
+        .get()
+        .expect("SDL3 dynamic API table was captured before dispatch")
+}
+
 fn runtime() -> Arc<Runtime> {
     RUNTIME
         .get_or_init(|| Arc::new(Runtime::new(config::sdl_gamepad_count())))
@@ -48,6 +99,7 @@ pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
     if let Ok(session) = config::session() {
         runtime.start_receiver(format!("{session}-input"));
     }
+    preload_dynamic_api();
     discover_loaded_module();
     if DISCOVERY_STARTED.set(()).is_ok() {
         std::thread::spawn(|| {
@@ -58,6 +110,17 @@ pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
         });
     }
     0
+}
+
+fn preload_dynamic_api() {
+    let Some(path) = std::env::var_os("SDL3_DYNAMIC_API") else {
+        return;
+    };
+    let mut wide = path.encode_wide().collect::<Vec<_>>();
+    wide.push(0);
+    if unsafe { LoadLibraryW(wide.as_ptr()) }.is_null() {
+        log("failed to preload SDL3_DYNAMIC_API runtime");
+    }
 }
 
 fn discover_loaded_module() {
@@ -77,35 +140,21 @@ unsafe fn install(module: HMODULE) {
     if INSTALLATION.get().is_some() {
         return;
     }
-    let Some(enumerate_joysticks_target) = (unsafe { api::symbol(module, c"SDL_GetJoysticks") })
-    else {
-        return;
-    };
-    let Some(enumerate_gamepads_target) = (unsafe { api::symbol(module, c"SDL_GetGamepads") })
-    else {
-        return;
-    };
-    let Some(update_target) = (unsafe { api::symbol(module, c"SDL_UpdateJoysticks") }) else {
+    let Some(dynapi_entry_target) = (unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }) else {
         return;
     };
     let Some(backend) = (unsafe { api::Api::load(module) }) else {
         log("SDL3 found, but its virtual joystick exports are unavailable");
         return;
     };
-    let enumerate_joysticks = InlineDetour::new(
-        enumerate_joysticks_target,
-        enumerate_joysticks_hook as api::EnumerateFn,
+    let dynapi_entry = InlineDetour::new(
+        dynapi_entry_target,
+        dynapi_entry_hook as api::DynapiEntryFn,
     );
-    let enumerate_gamepads = InlineDetour::new(
-        enumerate_gamepads_target,
-        enumerate_gamepads_hook as api::GamepadEnumerateFn,
-    );
-    let update = InlineDetour::new(update_target, update_hook as api::UpdateFn);
     if INSTALLATION
         .set(Installation {
-            enumerate_joysticks,
-            enumerate_gamepads,
-            update,
+            dynapi_entry,
+            dynapi: OnceLock::new(),
             backend: Mutex::new(backend),
             runtime: runtime(),
         })
@@ -113,39 +162,60 @@ unsafe fn install(module: HMODULE) {
     {
         return;
     }
+    register_get_gamepads_dispatch(prepare_gamepads);
+    register_get_joysticks_dispatch(prepare_joysticks);
+    register_update_joysticks_dispatch(flush_gamepads);
     let installation = INSTALLATION.get().expect("SDL3 installation was set");
-    if installation.enumerate_joysticks.enable().is_err() {
-        log("failed to enable SDL3 joystick enumeration detour");
-        return;
-    }
-    if installation.enumerate_gamepads.enable().is_err() {
-        let _ = installation.enumerate_joysticks.disable();
-        log("failed to enable SDL3 gamepad enumeration detour");
-        return;
-    }
-    if installation.update.enable().is_err() {
-        let _ = installation.enumerate_gamepads.disable();
-        let _ = installation.enumerate_joysticks.disable();
-        log("failed to enable SDL3 update detour");
+    if installation.dynapi_entry.enable().is_err() {
+        log("failed to enable SDL3 dynamic API detour");
         return;
     }
     log("installed SDL3 virtual gamepad hooks");
 }
 
-unsafe extern "C" fn enumerate_joysticks_hook(count: *mut i32) -> *mut api::JoystickId {
+unsafe extern "C" fn dynapi_entry_hook(apiver: u32, table: *mut c_void, tablesize: u32) -> i32 {
     let Some(installation) = INSTALLATION.get() else {
-        return std::ptr::null_mut();
+        return -1;
     };
-    prepare_enumeration(installation);
-    unsafe { (installation.enumerate_joysticks.trampoline())(count) }
+    let result = unsafe { (installation.dynapi_entry.trampoline())(apiver, table, tablesize) };
+    if result < 0 || table.is_null() {
+        return result;
+    }
+
+    if installation.dynapi.get().is_none() {
+        let captured = match unsafe { Sdl3DynapiHook::capture(table, tablesize) } {
+            Ok(captured) => captured,
+            Err(error) => {
+                log(error);
+                return result;
+            }
+        };
+        let _ = installation.dynapi.set(captured);
+    }
+    if let Err(error) = unsafe { dynapi().patch(table, tablesize) } {
+        log(error);
+        return result;
+    }
+    log("patched SDL3 dynamic API gamepad entries");
+    result
 }
 
-unsafe extern "C" fn enumerate_gamepads_hook(count: *mut i32) -> *mut api::JoystickId {
-    let Some(installation) = INSTALLATION.get() else {
-        return std::ptr::null_mut();
-    };
-    prepare_enumeration(installation);
-    unsafe { (installation.enumerate_gamepads.trampoline())(count) }
+unsafe fn prepare_joysticks(
+    count: *mut i32,
+    mut next: GetJoysticksDispatchContext<'_>,
+) -> *mut api::JoystickId {
+    prepare_enumeration(next.installation);
+    let continuation = *next.fp_next().expect("function-table chain has a base");
+    unsafe { continuation(count, next) }
+}
+
+unsafe fn prepare_gamepads(
+    count: *mut i32,
+    mut next: GetGamepadsDispatchContext<'_>,
+) -> *mut api::JoystickId {
+    prepare_enumeration(next.installation);
+    let continuation = *next.fp_next().expect("function-table chain has a base");
+    unsafe { continuation(count, next) }
 }
 
 fn prepare_enumeration(installation: &Installation) {
@@ -153,22 +223,26 @@ fn prepare_enumeration(installation: &Installation) {
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if let Err(error) = installation.runtime.prepare_enumeration(&mut *backend) {
-        log(error.0);
+    match installation.runtime.prepare_enumeration(&mut *backend) {
+        Ok(()) => {
+            if ATTACHMENT_LOGGED.set(()).is_ok() {
+                log("attached SDL3 virtual gamepad topology");
+            }
+        }
+        Err(error) => log(error.0),
     }
 }
 
-unsafe extern "C" fn update_hook() {
-    let Some(installation) = INSTALLATION.get() else {
-        return;
-    };
-    let mut backend = installation
+unsafe fn flush_gamepads(mut next: UpdateJoysticksDispatchContext<'_>) {
+    let mut backend = next
+        .installation
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    installation.runtime.flush(&mut *backend);
+    next.installation.runtime.flush(&mut *backend);
     drop(backend);
-    unsafe { (installation.update.trampoline())() };
+    let continuation = *next.fp_next().expect("function-table chain has a base");
+    unsafe { continuation(next) };
 }
 
 fn log(message: &str) {

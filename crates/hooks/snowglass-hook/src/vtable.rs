@@ -192,6 +192,162 @@ pub trait VtableHook: Send + Sync {
     fn original_vtable(&self) -> *const usize;
 }
 
+/// Declares typed around-hook chains for selected entries in a mutable
+/// function-pointer table. The generated dispatcher for each entry is written
+/// into the table, while the captured base function is the chain terminal.
+#[macro_export]
+macro_rules! function_table_hook {
+    (
+        #[resolve = $resolve:path]
+        $visibility:vis struct $table_hook:ident {
+            const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
+
+            $(
+                #[slot = $slot:expr]
+                context struct {
+                    $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+                }
+                unsafe extern $abi:literal fn $dispatch:ident(
+                    $($argument:ident: $argument_type:ty),* $(,)?
+                ) $(-> $result:ty)?;
+            )+
+        }
+    ) => { $crate::__paste! {
+        $visibility struct $table_hook {
+            $($dispatch: unsafe extern $abi fn($($argument_type),*) $(-> $result)?,)+
+        }
+
+        impl $table_hook {
+            $visibility const MINIMUM_SLOTS: $minimum_slots_type = $minimum_slots;
+
+            /// Captures the base functions selected by this hook.
+            ///
+            /// # Safety
+            /// `table` must point to `table_bytes` bytes of readable function
+            /// table storage whose declared entries have the stated ABIs.
+            $visibility unsafe fn capture(
+                table: *mut ::core::ffi::c_void,
+                table_bytes: u32,
+            ) -> Result<Self, &'static str> {
+                if table.is_null() {
+                    return Err("function table is null");
+                }
+                let slots = table_bytes as usize / ::core::mem::size_of::<usize>();
+                if slots < Self::MINIMUM_SLOTS as usize {
+                    return Err("function table is too small");
+                }
+                let table = table.cast::<usize>();
+                $(
+                    let address = unsafe { table.add($slot).read() };
+                    if address == 0 {
+                        return Err("function table contains a null hooked entry");
+                    }
+                    let $dispatch = unsafe {
+                        ::core::mem::transmute_copy::<
+                            usize,
+                            unsafe extern $abi fn($($argument_type),*) $(-> $result)?,
+                        >(&address)
+                    };
+                )+
+                Ok(Self { $($dispatch,)+ })
+            }
+
+            /// Replaces the selected entries with their generated dispatchers.
+            ///
+            /// # Safety
+            /// `table` must point to `table_bytes` bytes of writable function
+            /// table storage with the same layout passed to `capture`.
+            $visibility unsafe fn patch(
+                &self,
+                table: *mut ::core::ffi::c_void,
+                table_bytes: u32,
+            ) -> Result<(), &'static str> {
+                if table.is_null() {
+                    return Err("function table is null");
+                }
+                let slots = table_bytes as usize / ::core::mem::size_of::<usize>();
+                if slots < Self::MINIMUM_SLOTS as usize {
+                    return Err("function table is too small");
+                }
+                let table = table.cast::<usize>();
+                $(unsafe { table.add($slot).write($dispatch as usize) };)+
+                Ok(())
+            }
+
+            $($visibility fn $dispatch(
+                &self,
+            ) -> unsafe extern $abi fn($($argument_type),*) $(-> $result)? {
+                self.$dispatch
+            })+
+        }
+
+        $(
+            $visibility type [<$dispatch:camel Hook>] = unsafe fn(
+                $($argument_type,)*
+                [<$dispatch:camel Context>]<'_>,
+            ) $(-> $result)?;
+
+            static [<$dispatch:upper _HOOKS>]: ::std::sync::LazyLock<
+                ::std::sync::RwLock<Vec<[<$dispatch:camel Hook>]> >
+            > = ::std::sync::LazyLock::new(|| ::std::sync::RwLock::new(Vec::new()));
+
+            $visibility struct [<$dispatch:camel Context>]<'a> {
+                hooks: ::std::slice::Iter<'a, [<$dispatch:camel Hook>]>,
+                terminal: &'a [<$dispatch:camel Hook>],
+                base: unsafe extern $abi fn($($argument_type),*) $(-> $result)?,
+                $($visibility $context_field: $context_field_type,)*
+            }
+
+            impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
+                for [<$dispatch:camel Context>]<'a>
+            {
+                fn fp_next(&mut self) -> Option<&'a [<$dispatch:camel Hook>]> {
+                    Some(self.hooks.next().unwrap_or(self.terminal))
+                }
+            }
+
+            $visibility fn [<register_ $dispatch>](function: [<$dispatch:camel Hook>]) {
+                let mut chain = [<$dispatch:upper _HOOKS>]
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner());
+                if !chain.iter().any(|registered| *registered as usize == function as usize) {
+                    chain.push(function);
+                }
+            }
+
+            unsafe extern $abi fn $dispatch(
+                $($argument: $argument_type),*
+            ) $(-> $result)? {
+                unsafe fn terminal(
+                    $($argument: $argument_type,)*
+                    context: [<$dispatch:camel Context>]<'_>,
+                ) $(-> $result)? {
+                    unsafe { (context.base)($($argument),*) }
+                }
+
+                let base = $resolve().$dispatch();
+                let chain = [<$dispatch:upper _HOOKS>]
+                    .read()
+                    .unwrap_or_else(|error| error.into_inner());
+                let mut hooks = chain.iter();
+                let terminal: [<$dispatch:camel Hook>] = terminal;
+                let next = *hooks.next().unwrap_or(&terminal);
+                unsafe {
+                    next(
+                        $($argument,)*
+                        [<$dispatch:camel Context>] {
+                            hooks,
+                            terminal: &terminal,
+                            base,
+                            $($context_field: $context_field_value,)*
+                        },
+                    )
+                }
+            }
+        )+
+    }};
+}
+
 /// Declares a typed COM vtable hook and implements its shared storage
 /// lifecycle and saved-slot accessors.
 ///

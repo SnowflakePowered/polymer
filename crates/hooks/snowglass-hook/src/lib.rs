@@ -4,6 +4,8 @@ pub mod config;
 mod vtable;
 
 pub use vtable::VtableHook;
+#[doc(hidden)]
+pub use paste::paste as __paste;
 
 #[cfg(test)]
 fn register_hooks() {}

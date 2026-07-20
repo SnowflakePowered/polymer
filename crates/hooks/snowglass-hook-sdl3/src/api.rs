@@ -5,22 +5,20 @@ use snowglass_input::gamepad::{
 };
 use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{
-    ffi::{c_char, c_void},
+    ffi::{CStr, c_char, c_void},
     mem,
 };
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
 
 pub(crate) type JoystickId = u32;
-pub(crate) type EnumerateFn = unsafe extern "C" fn(*mut i32) -> *mut JoystickId;
-pub(crate) type GamepadEnumerateFn = unsafe extern "C" fn(*mut i32) -> *mut JoystickId;
-pub(crate) type UpdateFn = unsafe extern "C" fn();
+pub(crate) type DynapiEntryFn = unsafe extern "C" fn(u32, *mut c_void, u32) -> i32;
 type AttachVirtualFn = unsafe extern "C" fn(*const VirtualJoystickDesc) -> JoystickId;
 type OpenFn = unsafe extern "C" fn(JoystickId) -> *mut c_void;
 type SetAxisFn = unsafe extern "C" fn(*mut c_void, i32, i16) -> bool;
 type SetButtonFn = unsafe extern "C" fn(*mut c_void, i32, bool) -> bool;
 
 const SDL_JOYSTICK_TYPE_GAMEPAD: u16 = 1;
-const NAME: &[u8] = b"Snowglass Virtual Gamepad\0";
+const NAME: &CStr = c"Snowglass Virtual Gamepad";
 
 #[repr(C)]
 struct VirtualJoystickDesc {

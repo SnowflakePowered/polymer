@@ -3643,6 +3643,7 @@ fn launch_target(
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
     let sdl2_hook = layer_dir.join("snowglass_hook_sdl2.dll");
     let sdl3_hook = layer_dir.join("snowglass_hook_sdl3.dll");
+    let sdl3_runtime = layer_dir.join("SDL3.dll");
     let mut libraries: Vec<(&str, &Path, &std::ffi::CStr)> = Vec::new();
     // Both DXGI producers intercept swapchains through the factory-level hooks.
     if hooks
@@ -3720,6 +3721,15 @@ fn launch_target(
             layer_dir.join("snowglass-gdi.log").into_os_string(),
         ),
     ];
+    // SDL3's dynamic API redirects calls from statically linked applications
+    // (including Dolphin) through this DLL, making its public entry points
+    // available to the SDL3 hook. Preserve an explicit caller override.
+    if std::env::var_os("SDL3_DYNAMIC_API").is_none() && sdl3_runtime.is_file() {
+        environment.push((
+            OsString::from("SDL3_DYNAMIC_API"),
+            sdl3_runtime.into_os_string(),
+        ));
+    }
     // The Vulkan producer installs as an instance layer rather than an
     // injected DLL, so its selection travels through the loader environment.
     if hooks.contains(&HookBackend::Vulkan) {
