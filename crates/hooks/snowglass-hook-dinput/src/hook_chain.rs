@@ -1,6 +1,13 @@
 //! DirectInput-specific terminal resolution for shared typed hook chains.
 
 macro_rules! resolve_observer_terminal {
+    (($($argument:ident),*); resolve with detour $detour:path, fallback $fallback:expr;) => {
+        || snowglass_platform_windows::call_original(
+            $detour(),
+            $fallback,
+            |detour| unsafe { (detour.trampoline())($($argument),*) },
+        )
+    };
     (($resolved:ident $(, $argument:ident)*); resolve with $resolver:ident: $resolver_type:ty;) => {
         || unsafe { $resolved($($argument),*) }
     };

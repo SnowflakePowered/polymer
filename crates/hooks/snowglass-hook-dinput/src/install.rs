@@ -2,16 +2,10 @@
 
 use crate::DirectInput8CreateFn;
 use snowglass_platform_windows::InlineDetour;
-use std::{
-    ffi::c_void,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 use windows_sys::{
-    Win32::{
-        Devices::HumanInterfaceDevice::DirectInput8Create,
-        Foundation::{E_FAIL, HINSTANCE},
-    },
-    core::{GUID, HRESULT},
+    Win32::{Devices::HumanInterfaceDevice::DirectInput8Create, Foundation::E_FAIL},
+    core::HRESULT,
 };
 
 struct DirectInputDetour {
@@ -26,6 +20,12 @@ pub(crate) fn runtime() -> Arc<crate::runtime::Runtime> {
         .get()
         .map(|installation| installation.runtime.clone())
         .unwrap_or_default()
+}
+
+pub(crate) fn direct_input_detour() -> Option<&'static InlineDetour<DirectInput8CreateFn>> {
+    DIRECT_INPUT_8_CREATE
+        .get()
+        .map(|installation| &installation.detour)
 }
 
 pub(crate) unsafe fn install() -> HRESULT {
@@ -64,20 +64,4 @@ pub(crate) unsafe fn install() -> HRESULT {
         }
         Err(_) => E_FAIL,
     }
-}
-
-pub(crate) unsafe extern "system" fn call_original(
-    instance: HINSTANCE,
-    version: u32,
-    interface_id: *const GUID,
-    output: *mut *mut c_void,
-    outer: *mut c_void,
-) -> HRESULT {
-    snowglass_platform_windows::call_original(
-        DIRECT_INPUT_8_CREATE
-            .get()
-            .map(|installation| &installation.detour),
-        E_FAIL,
-        |detour| unsafe { (detour.trampoline())(instance, version, interface_id, output, outer) },
-    )
 }

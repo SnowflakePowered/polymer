@@ -3,7 +3,7 @@
 use crate::hook_chain::{__resolve_observer_terminal, chain_hooks};
 use std::ffi::c_void;
 use windows_sys::{
-    Win32::Foundation::HINSTANCE,
+    Win32::Foundation::{E_FAIL, HINSTANCE},
     core::{GUID, HRESULT},
 };
 
@@ -11,7 +11,7 @@ chain_hooks! {
     #![order(reverse)]
 
     #[trampoline]
-    #[terminal(crate::install::call_original)]
+    #[terminal(detour = crate::install::direct_input_detour, fallback = E_FAIL)]
     #[postfix(crate::runtime::direct_input_8_create(
         instance,
         version,
