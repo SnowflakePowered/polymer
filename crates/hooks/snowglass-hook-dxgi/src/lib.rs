@@ -9,25 +9,23 @@ mod sys;
 mod vtable;
 
 pub use runtime::{
-    SwapchainCallbacks, install_factory, install_factory_interface, install_factory_interfaces,
+    SwapchainClaim, SwapchainOwner, SwapchainOwnerHandle, install_factory,
+    install_factory_interface, install_factory_interfaces,
 };
 
-/// Registers producer callbacks with the viewer-injected DXGI hook.
-pub fn register_callbacks(callbacks: SwapchainCallbacks) {
-    if !unsafe { register_callbacks_with_dxgi_hook(&callbacks) } {
+/// Registers a backend's swapchain claim with the viewer-injected DXGI hook.
+pub fn register_claim(claim: SwapchainClaim) {
+    if !unsafe { register_claim_with_dxgi_hook(claim) } {
         // Unit tests can link this crate without loading its cdylib. Production
         // injection always loads the central DXGI hook first.
         register_hooks();
-        runtime::register_callbacks(callbacks);
+        runtime::register_claim(claim);
     }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn SnowglassRegisterDxgiCallbacks(callbacks: *const SwapchainCallbacks) {
-    let Some(callbacks) = (unsafe { callbacks.as_ref() }) else {
-        return;
-    };
-    runtime::register_callbacks(*callbacks);
+pub unsafe extern "system" fn SnowglassRegisterDxgiClaim(claim: SwapchainClaim) {
+    runtime::register_claim(claim);
 }
 
 /// Registers a swapchain created directly by D3D11 with the central hook.
@@ -58,14 +56,13 @@ pub unsafe extern "system" fn SnowglassRegisterDxgiSwapchain(
     unsafe { runtime::register_swapchain(swapchain, creation_device) }
 }
 
-unsafe fn register_callbacks_with_dxgi_hook(callbacks: &SwapchainCallbacks) -> bool {
-    type RegisterFn = unsafe extern "system" fn(*const SwapchainCallbacks);
-    let Some(register) =
-        (unsafe { dxgi_hook_export::<RegisterFn>(c"SnowglassRegisterDxgiCallbacks") })
+unsafe fn register_claim_with_dxgi_hook(claim: SwapchainClaim) -> bool {
+    type RegisterFn = unsafe extern "system" fn(SwapchainClaim);
+    let Some(register) = (unsafe { dxgi_hook_export::<RegisterFn>(c"SnowglassRegisterDxgiClaim") })
     else {
         return false;
     };
-    unsafe { register(callbacks) };
+    unsafe { register(claim) };
     true
 }
 

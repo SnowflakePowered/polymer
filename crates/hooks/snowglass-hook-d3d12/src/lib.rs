@@ -16,18 +16,22 @@ snowglass_hook::register_hooks! {
             unsafe { vtable::install_device(device, context.tracking.clone()) };
         }
     };
-    snowglass_hook_dxgi::register_callbacks -> snowglass_hook_dxgi::SwapchainCallbacks {
-        claim: claim_swapchain,
-        before_present: Some(snowglass_producer_d3d12::before_present),
-        before_resize: Some(snowglass_producer_d3d12::before_resize),
-        after_resize: None,
-        destroyed: Some(snowglass_producer_d3d12::destroyed),
-    };
+    snowglass_hook_dxgi::register_claim -> claim_swapchain;
 }
 
-unsafe fn claim_swapchain(swapchain: *mut std::ffi::c_void, queue: *mut std::ffi::c_void) -> bool {
+unsafe extern "system" fn claim_swapchain(
+    swapchain: *mut std::ffi::c_void,
+    queue: *mut std::ffi::c_void,
+    out: *mut snowglass_hook_dxgi::SwapchainOwnerHandle,
+) -> bool {
     let tracking = unsafe { vtable::queue_tracking(queue) }.unwrap_or_default();
-    unsafe { snowglass_producer_d3d12::claim(swapchain, queue, tracking) }
+    match unsafe { snowglass_producer_d3d12::claim(swapchain, queue, tracking) } {
+        Some(owner) => {
+            unsafe { out.write(owner) };
+            true
+        }
+        None => false,
+    }
 }
 
 fn d3d12_log(message: impl std::fmt::Display) {

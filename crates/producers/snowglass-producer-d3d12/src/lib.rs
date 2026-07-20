@@ -4,7 +4,7 @@
 mod capture;
 pub mod tracking;
 
-pub use capture::{before_present, before_resize, claim, destroyed};
+pub use capture::{SwapchainCapture, claim};
 
 pub use tracking::{Presentation, TrackedResource, Tracking};
 

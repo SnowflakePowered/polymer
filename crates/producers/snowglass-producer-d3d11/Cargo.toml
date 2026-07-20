@@ -8,6 +8,7 @@ license.workspace = true
 dashmap.workspace = true
 snowglass-api.workspace = true
 snowglass-hook.workspace = true
+snowglass-hook-dxgi = { path = "../../hooks/snowglass-hook-dxgi" }
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true

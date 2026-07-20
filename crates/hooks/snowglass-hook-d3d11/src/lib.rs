@@ -28,13 +28,7 @@ pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
 snowglass_hook::register_hooks! {
     hooks::register_create_device -> device::create_device;
     hooks::register_create_device_and_swapchain -> device::create_device_and_swapchain;
-    snowglass_hook_dxgi::register_callbacks -> snowglass_hook_dxgi::SwapchainCallbacks {
-        claim: device::claim_swapchain,
-        before_present: Some(snowglass_producer_d3d11::before_present),
-        before_resize: Some(snowglass_producer_d3d11::before_resize),
-        after_resize: None,
-        destroyed: Some(snowglass_producer_d3d11::destroyed),
-    };
+    snowglass_hook_dxgi::register_claim -> device::claim_swapchain;
 }
 
 #[cfg(test)]

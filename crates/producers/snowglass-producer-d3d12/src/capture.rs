@@ -1,6 +1,7 @@
 //! Swapchain capture state, copy submission, and viewer handoff.
 
 use crate::{D3d12CaptureSourceState, D3d12SwapchainCapture, Tracking};
+use snowglass_hook_dxgi::{SwapchainOwner, SwapchainOwnerHandle};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
@@ -8,9 +9,8 @@ use snowglass_protocol::{
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
-    collections::HashMap,
     ffi::c_void,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 use windows::{
     Win32::Graphics::Direct3D12::ID3D12CommandQueue,
@@ -24,32 +24,29 @@ struct CaptureState {
     copy_errors: u64,
 }
 
-/// A swapchain the viewer declined stays parked until it resizes or is
-/// destroyed, so a rejected surface does not reconnect on every present.
-enum CaptureEntry {
+/// The capture ring for one swapchain. A ring is created lazily on the first
+/// present and dropped when the swapchain resizes; a swapchain the viewer
+/// declined stays parked until it resizes or is destroyed, so a rejected
+/// surface does not reconnect on every present.
+enum Capture {
+    Idle,
     Active(Box<CaptureState>),
     Declined,
 }
-#[derive(Clone)]
-struct QueueState {
+
+/// Per-swapchain capture state stored in the swapchain's hook context.
+///
+/// The queue and device tracking are fixed at claim time; the ring behind the
+/// mutex is created on demand and released across resizes.
+pub struct SwapchainCapture {
+    stream_id: u64,
     queue: ID3D12CommandQueue,
     tracking: Arc<Tracking>,
+    capture: Mutex<Capture>,
 }
 
-static QUEUES: OnceLock<Mutex<HashMap<usize, QueueState>>> = OnceLock::new();
-static CAPTURES: OnceLock<Mutex<HashMap<usize, CaptureEntry>>> = OnceLock::new();
-static ALIASES: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
-fn queues() -> &'static Mutex<HashMap<usize, QueueState>> {
-    QUEUES.get_or_init(Default::default)
-}
-fn captures() -> &'static Mutex<HashMap<usize, CaptureEntry>> {
-    CAPTURES.get_or_init(Default::default)
-}
-fn aliases() -> &'static Mutex<HashMap<usize, usize>> {
-    ALIASES.get_or_init(Default::default)
-}
-
-/// Claims a DXGI swapchain created for a D3D12 command queue.
+/// Claims a DXGI swapchain created for a D3D12 command queue, returning the
+/// per-swapchain owner the central hook drives from its trampolines.
 ///
 /// # Safety
 ///
@@ -58,248 +55,192 @@ pub unsafe fn claim(
     swapchain: *mut c_void,
     creation_device: *mut c_void,
     tracking: Arc<Tracking>,
-) -> bool {
+) -> Option<SwapchainOwnerHandle> {
     if creation_device.is_null() {
-        return false;
+        return None;
     }
-    let (key, queue) = unsafe {
-        let Some(key) = swapchain_key(swapchain) else {
-            return false;
-        };
-        let Some(unknown) = IUnknown::from_raw_borrowed(&creation_device) else {
-            return false;
-        };
-        let Ok(queue) = unknown.cast::<ID3D12CommandQueue>() else {
-            return false;
-        };
-        (key, queue)
-    };
-    queues()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(key, QueueState { queue, tracking });
-    aliases()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(swapchain as usize, key);
-    true
+    let stream_id = unsafe { swapchain_key(swapchain) }? as u64;
+    let queue = unsafe { IUnknown::from_raw_borrowed(&creation_device) }?
+        .cast::<ID3D12CommandQueue>()
+        .ok()?;
+    Some(SwapchainOwnerHandle::new(SwapchainCapture {
+        stream_id,
+        queue,
+        tracking,
+        capture: Mutex::new(Capture::Idle),
+    }))
 }
 
-/// Captures the image that is about to be presented.
-///
-/// # Safety
-///
-/// `swapchain` must point to a live DXGI swapchain previously passed to [`claim`].
-pub unsafe fn before_present(swapchain: *mut c_void) {
-    let Some(key) = (unsafe { swapchain_key(swapchain) }) else {
-        return;
-    };
-    aliases()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(swapchain as usize, key);
-    let queue_state = queues()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&key)
-        .cloned();
-    let Some(queue_state) = queue_state else {
-        return;
-    };
-    let presentation = unsafe { queue_state.tracking.swapchain_presentation(swapchain) };
-    let tracked_region = presentation.as_ref().and_then(|value| value.region);
-    let tracked_source = presentation
-        .as_ref()
-        .and_then(|value| value.source.as_ref())
-        .filter(|source| {
-            source
-                .state
-                .is_some_and(|state| matches!(state, D3d12CaptureSourceState::Legacy(_)))
-        });
-    let mut states = captures().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(source) = tracked_source
-        && states.get(&key).is_some_and(|entry| match entry {
-            CaptureEntry::Active(state) => {
+impl SwapchainOwner for SwapchainCapture {
+    /// Captures the image that is about to be presented.
+    ///
+    /// # Safety
+    ///
+    /// `swapchain` must point to the live swapchain being presented.
+    unsafe fn before_present(&self, swapchain: *mut c_void) {
+        let presentation = unsafe { self.tracking.swapchain_presentation(swapchain) };
+        let tracked_region = presentation.as_ref().and_then(|value| value.region);
+        let tracked_source = presentation
+            .as_ref()
+            .and_then(|value| value.source.as_ref())
+            .filter(|source| {
+                source
+                    .state
+                    .is_some_and(|state| matches!(state, D3d12CaptureSourceState::Legacy(_)))
+            });
+        let mut capture = self.capture.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(source) = tracked_source
+            && matches!(&*capture, Capture::Active(state) if {
                 let desc = state.capture.desc();
                 (desc.width, desc.height, desc.format)
                     != (source.width, source.height, source.format)
-            }
-            CaptureEntry::Declined => false,
-        })
-    {
-        states.remove(&key);
-    }
-    if let std::collections::hash_map::Entry::Vacant(entry) = states.entry(key) {
-        crate::d3d12_log("snowglass: creating D3D12 shared capture ring");
-        let capture = match unsafe {
-            D3d12SwapchainCapture::new(
-                swapchain,
-                queue_state.queue.as_raw(),
-                3,
-                tracked_source.map(|source| &source.resource),
-                queue_state.tracking.enhanced_barriers_supported(),
+            })
+        {
+            *capture = Capture::Idle;
+        }
+        if matches!(&*capture, Capture::Idle) {
+            crate::d3d12_log("snowglass: creating D3D12 shared capture ring");
+            let ring = match unsafe {
+                D3d12SwapchainCapture::new(
+                    swapchain,
+                    self.queue.as_raw(),
+                    3,
+                    tracked_source.map(|source| &source.resource),
+                    self.tracking.enhanced_barriers_supported(),
+                )
+            } {
+                Ok(value) => value,
+                Err(error) => {
+                    crate::d3d12_log(format!("snowglass: D3D12 capture creation failed: {error}"));
+                    return;
+                }
+            };
+            crate::d3d12_log("snowglass: connecting D3D12 capture ring to viewer");
+            let ipc = connect_viewer(&ring).ok();
+            let desc = ring.desc();
+            crate::d3d12_log(format!(
+                "snowglass: attached D3D12 {}x{} {}-slot shared texture ring",
+                desc.width, desc.height, desc.slots
+            ));
+            *capture = Capture::Active(Box::new(CaptureState {
+                capture: ring,
+                ipc,
+                frame: 0,
+                copy_errors: 0,
+            }));
+        }
+        let Capture::Active(state) = &mut *capture else {
+            return;
+        };
+        let submission = match unsafe {
+            state.capture.copy_frame(
+                tracked_region,
+                tracked_source.map(|source| {
+                    (
+                        &source.resource,
+                        source.state.expect("tracked source state was filtered"),
+                    )
+                }),
             )
         } {
-            Ok(value) => value,
+            Ok(Some(submission)) => submission,
+            Ok(None) => return,
             Err(error) => {
-                crate::d3d12_log(format!("snowglass: D3D12 capture creation failed: {error}"));
+                state.copy_errors = state.copy_errors.wrapping_add(1);
+                if state.copy_errors == 1 || state.copy_errors % 120 == 0 {
+                    crate::d3d12_log(format!(
+                        "snowglass: D3D12 capture copy failed: {error} (count={})",
+                        state.copy_errors
+                    ));
+                }
                 return;
             }
         };
-        crate::d3d12_log("snowglass: connecting D3D12 capture ring to viewer");
-        let ipc = connect_viewer(&capture).ok();
-        let desc = capture.desc();
-        crate::d3d12_log(format!(
-            "snowglass: attached D3D12 {}x{} {}-slot shared texture ring",
-            desc.width, desc.height, desc.slots
-        ));
-        entry.insert(CaptureEntry::Active(Box::new(CaptureState {
-            capture,
-            ipc,
-            frame: 0,
-            copy_errors: 0,
-        })));
-    }
-    let Some(CaptureEntry::Active(state)) = states.get_mut(&key) else {
-        return;
-    };
-    let submission = match unsafe {
-        state.capture.copy_frame(
-            tracked_region,
-            tracked_source.map(|source| {
-                (
-                    &source.resource,
-                    source.state.expect("tracked source state was filtered"),
-                )
-            }),
-        )
-    } {
-        Ok(Some(submission)) => submission,
-        Ok(None) => return,
-        Err(error) => {
-            state.copy_errors = state.copy_errors.wrapping_add(1);
-            if state.copy_errors == 1 || state.copy_errors % 120 == 0 {
-                crate::d3d12_log(format!(
-                    "snowglass: D3D12 capture copy failed: {error} (count={})",
-                    state.copy_errors
-                ));
-            }
-            return;
+        state.frame = state.frame.wrapping_add(1);
+        if state.frame == 1 || state.frame % 120 == 0 {
+            crate::d3d12_log(format!(
+                "snowglass: submitted D3D12 capture {}x{} at {},{} (count={})",
+                submission.width,
+                submission.height,
+                submission.capture_x,
+                submission.capture_y,
+                state.frame
+            ));
         }
-    };
-    state.frame = state.frame.wrapping_add(1);
-    if state.frame == 1 || state.frame % 120 == 0 {
-        crate::d3d12_log(format!(
-            "snowglass: submitted D3D12 capture {}x{} at {},{} (count={})",
-            submission.width,
-            submission.height,
-            submission.capture_x,
-            submission.capture_y,
-            state.frame
-        ));
-    }
-    let capture_desc = state.capture.desc();
-    let presentation_extent = presentation
-        .as_ref()
-        .map_or((capture_desc.width, capture_desc.height), |value| {
-            value.target_extent
-        });
-    let presentation_rect = if tracked_source.is_some() {
-        (0, 0, presentation_extent.0, presentation_extent.1)
-    } else {
-        (
-            submission.capture_x,
-            submission.capture_y,
-            submission.width,
-            submission.height,
-        )
-    };
-    let message = Message::FrameReady(FrameReady {
-        stream_id: StreamId(key as u64),
-        slot: submission.slot,
-        render_width: submission.width,
-        render_height: submission.height,
-        capture_x: presentation_rect.0,
-        capture_y: presentation_rect.1,
-        capture_width: presentation_rect.2,
-        capture_height: presentation_rect.3,
-        presentation_width: presentation_extent.0,
-        presentation_height: presentation_extent.1,
-        presentation_flip_y: false,
-        presentation_transform: if tracked_source.is_some() {
-            // The current graph tracker identifies the sampled resource and
-            // destination bounds, but not the shader's UV orientation yet.
-            PresentationTransform::UNAVAILABLE
+        let capture_desc = state.capture.desc();
+        let presentation_extent = presentation
+            .as_ref()
+            .map_or((capture_desc.width, capture_desc.height), |value| {
+                value.target_extent
+            });
+        let presentation_rect = if tracked_source.is_some() {
+            (0, 0, presentation_extent.0, presentation_extent.1)
         } else {
-            PresentationTransform::axis_aligned(
-                presentation_rect.0,
-                presentation_rect.1,
-                presentation_rect.2,
-                presentation_rect.3,
+            (
+                submission.capture_x,
+                submission.capture_y,
+                submission.width,
+                submission.height,
             )
-        },
-        frame_number: state.frame,
-        sync_value: submission.sync_value,
-        timestamp_qpc: performance_counter().unwrap_or(0),
-    });
-    if state
-        .ipc
-        .as_mut()
-        .is_some_and(|ipc| ipc.send(message).is_err())
-    {
-        // The viewer declined or preempted this stream; release the ring
-        // instead of copying frames nobody consumes.
-        crate::d3d12_log("snowglass: viewer released D3D12 stream; capture parked until resize");
-        states.insert(key, CaptureEntry::Declined);
+        };
+        let message = Message::FrameReady(FrameReady {
+            stream_id: StreamId(self.stream_id),
+            slot: submission.slot,
+            render_width: submission.width,
+            render_height: submission.height,
+            capture_x: presentation_rect.0,
+            capture_y: presentation_rect.1,
+            capture_width: presentation_rect.2,
+            capture_height: presentation_rect.3,
+            presentation_width: presentation_extent.0,
+            presentation_height: presentation_extent.1,
+            presentation_transform: if tracked_source.is_some() {
+                // The current graph tracker identifies the sampled resource and
+                // destination bounds, but not the shader's UV orientation yet.
+                PresentationTransform::UNAVAILABLE
+            } else {
+                PresentationTransform::axis_aligned(
+                    presentation_rect.0,
+                    presentation_rect.1,
+                    presentation_rect.2,
+                    presentation_rect.3,
+                )
+            },
+            frame_number: state.frame,
+            sync_value: submission.sync_value,
+            timestamp_qpc: performance_counter().unwrap_or(0),
+        });
+        if state
+            .ipc
+            .as_mut()
+            .is_some_and(|ipc| ipc.send(message).is_err())
+        {
+            // The viewer declined or preempted this stream; release the ring
+            // instead of copying frames nobody consumes.
+            crate::d3d12_log(
+                "snowglass: viewer released D3D12 stream; capture parked until resize",
+            );
+            *capture = Capture::Declined;
+        }
     }
-}
 
-/// Releases capture and tracking references before the swapchain buffers resize.
-///
-/// # Safety
-///
-/// `swapchain` must point to a live DXGI swapchain previously passed to [`claim`].
-pub unsafe fn before_resize(swapchain: *mut c_void) {
-    let Some(key) = (unsafe { swapchain_key(swapchain) }) else {
-        return;
-    };
-    let removed = captures()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&key);
-    crate::d3d12_log(format!(
-        "snowglass: D3D12 resize released capture state: {}",
-        matches!(removed, Some(CaptureEntry::Active(_)))
-    ));
-    if let Some(queue) = queues()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&key)
-        .cloned()
-    {
-        unsafe { queue.tracking.before_swapchain_resize(swapchain) };
+    /// Releases the capture ring and tracking references before the swapchain
+    /// buffers resize.
+    ///
+    /// # Safety
+    ///
+    /// `swapchain` must point to the live swapchain being resized.
+    unsafe fn before_resize(&self, swapchain: *mut c_void) {
+        let previous = std::mem::replace(
+            &mut *self.capture.lock().unwrap_or_else(|e| e.into_inner()),
+            Capture::Idle,
+        );
+        crate::d3d12_log(format!(
+            "snowglass: D3D12 resize released capture state: {}",
+            matches!(previous, Capture::Active(_))
+        ));
+        unsafe { self.tracking.before_swapchain_resize(swapchain) };
     }
-}
-
-/// Releases all producer state associated with a destroyed swapchain.
-///
-/// # Safety
-///
-/// `swapchain` must be the pointer previously passed to [`claim`].
-pub unsafe fn destroyed(swapchain: *mut c_void) {
-    let key = aliases()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&(swapchain as usize))
-        .unwrap_or(swapchain as usize);
-    captures()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&key);
-    queues()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&key);
 }
 
 unsafe fn swapchain_key(swapchain: *mut c_void) -> Option<usize> {

@@ -68,7 +68,9 @@ pub(crate) type FactoryCreateSwapchainForCompositionFn = unsafe extern "system" 
 /// The layout-erased view of a hooked swapchain stored in the runtime
 /// registry.
 pub(crate) trait SwapchainHook: snowglass_hook::VtableHook {
-    fn owner(&self) -> &std::sync::RwLock<Option<crate::runtime::SwapchainCallbacks>>;
+    fn owner(
+        &self,
+    ) -> &std::sync::RwLock<Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>>;
     fn query_interface(&self) -> QueryInterfaceFn;
     fn release(&self) -> ReleaseFn;
     fn present(&self) -> PresentFn;
@@ -103,7 +105,7 @@ snowglass_hook::impl_com_hook! {
             /// The backend that claimed this swapchain, assigned after
             /// installation once a registered claim accepts the creation
             /// device.
-            owner: std::sync::RwLock<Option<crate::runtime::SwapchainCallbacks>>,
+            owner: std::sync::RwLock<Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>>,
         };
         patch |patched| {
         // SAFETY: the slots written below were copied above, so each place

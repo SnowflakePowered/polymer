@@ -2,9 +2,19 @@
 
 use std::ffi::c_void;
 
-pub(crate) unsafe fn claim_swapchain(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
+pub(crate) unsafe extern "system" fn claim_swapchain(
+    swapchain: *mut c_void,
+    creation_device: *mut c_void,
+    out: *mut snowglass_hook_dxgi::SwapchainOwnerHandle,
+) -> bool {
     let tracking = unsafe { crate::vtable::device_tracking(creation_device) }.unwrap_or_default();
-    unsafe { snowglass_producer_d3d11::claim(swapchain, creation_device, tracking) }
+    match unsafe { snowglass_producer_d3d11::claim(swapchain, creation_device, tracking) } {
+        Some(owner) => {
+            unsafe { out.write(owner) };
+            true
+        }
+        None => false,
+    }
 }
 
 pub(crate) unsafe fn create_device(
