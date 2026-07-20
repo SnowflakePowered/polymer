@@ -234,9 +234,9 @@ macro_rules! function_table_hook {
                 )+
                 Ok(Self {
                     $($dispatch,
-                    [<$dispatch _hooks>]: ::std::sync::RwLock::new(vec![
-                        $($($infix,)*)?
-                    ]),)+
+                    [<$dispatch _hooks>]: ::std::sync::RwLock::new(
+                        $crate::__chain_hooks!(@infix_slice $(infix($($infix),*))?).to_vec()
+                    ),)+
                 })
             }
 
@@ -314,9 +314,18 @@ macro_rules! function_table_hook {
                     base,
                     $($context_field: &$context_field,)*
                 };
-                $crate::__chain_hooks!(@visit_prefix forward;
-                    ($($argument),*); &_prefix_context; $(prefix($($prefix)*))?
+                let prefix: &[unsafe fn(
+                    $($argument_type,)*
+                    &[<$dispatch:camel Context>]<'_>,
+                )] = $crate::__chain_hooks!(@prefix_slice
+                    [$(($argument, $argument_type))*]
+                    [[<$dispatch:camel Context>]]
+                    [];
+                    $(prefix($($prefix)*))?
                 );
+                for observer in prefix {
+                    unsafe { observer($($argument,)* &_prefix_context) };
+                }
                 let next = *hooks.next().unwrap_or(&terminal);
                 let result = unsafe {
                     next(
@@ -335,13 +344,27 @@ macro_rules! function_table_hook {
                     base,
                     $($context_field: &$context_field,)*
                 };
-                $crate::__chain_hooks!(@visit_postfix forward;
-                    ($($argument),*); result; &_postfix_context; $(postfix($($postfix)*))?
+                let postfix: &[unsafe fn(
+                    $($argument_type,)*
+                    $crate::function_table_hook!(@result_type $($result)?),
+                    &[<$dispatch:camel Context>]<'_>,
+                )] = $crate::__chain_hooks!(@postfix_slice
+                    [$(($argument, $argument_type))*]
+                    [$crate::function_table_hook!(@result_type $($result)?)]
+                    [[<$dispatch:camel Context>]]
+                    [];
+                    $(postfix($($postfix)*))?
                 );
+                for observer in postfix {
+                    unsafe { observer($($argument,)* result, &_postfix_context) };
+                }
                 result
             }
         )+
     }};
+
+    (@result_type $result:ty) => { $result };
+    (@result_type) => { () };
 }
 
 /// Declares a typed COM vtable hook and implements its shared storage
@@ -365,6 +388,8 @@ macro_rules! function_table_hook {
 /// context by value and may call `next!`, and
 /// `#[postfix(observer(arguments..., result))]` runs after continuation.
 /// Prefix and postfix observers receive the context by shared reference.
+/// Trivial observers can be declared inline as `#[prefix(|context| expr)]`
+/// and `#[postfix(|result, context| expr)]`.
 #[macro_export]
 macro_rules! impl_com_hook {
     (
@@ -923,8 +948,8 @@ mod tests {
             #[slot = 0]
             #[prefix(function_table_prefix(value))]
             #[infix(function_table_around)]
-            #[postfix(|result, next| {
-                assert_eq!((result, *next.offset), (11, 3));
+            #[postfix(|result, context| {
+                assert_eq!((result, *context.offset), (11, 3));
                 FUNCTION_TABLE_PHASES.fetch_add(100, Ordering::Relaxed);
             })]
             unsafe extern "C" fn function_table_dispatch(value: usize) -> usize {

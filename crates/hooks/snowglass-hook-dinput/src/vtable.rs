@@ -131,7 +131,11 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetEventNotification]
         #[fallback = 0x8000_4005u32 as i32]
-        #[prefix(crate::runtime::set_event_notification(this, event))]
+        #[prefix(|context| context.runtime.set_event_notification(
+            this as usize,
+            *context.device,
+            event as usize,
+        ))]
         unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT {
             context |state| {
                 runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),

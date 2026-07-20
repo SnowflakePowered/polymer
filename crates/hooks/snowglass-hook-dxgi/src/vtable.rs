@@ -76,7 +76,9 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDXGISwapChain_Vtbl]
         #[base = Present]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
-        #[prefix(crate::runtime::before_present(this))]
+        #[prefix(|context| unsafe {
+            crate::runtime::before_present(this, context.owner)
+        })]
         unsafe extern "system" fn present(this: *mut c_void, sync_interval: u32, flags: u32) -> i32 {
             context |state| {
                 owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.owner().read().unwrap_or_else(|error| error.into_inner()).clone(),
@@ -96,7 +98,9 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDXGISwapChain1_Vtbl]
         #[base = Present1]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
-        #[prefix(crate::runtime::before_present1(this))]
+        #[prefix(|context| unsafe {
+            crate::runtime::before_present(this, context.owner)
+        })]
         unsafe extern "system" fn present1(this: *mut c_void, sync_interval: u32, flags: u32, parameters: *const c_void) -> i32 {
             context |state| {
                 owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.owner().read().unwrap_or_else(|error| error.into_inner()).clone(),
