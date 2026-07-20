@@ -400,6 +400,90 @@ impl Tracking {
             .remove(&context)
             .unwrap_or_default()
     }
+
+    /// Clears the accumulated dependency graph and render-target history so the
+    /// next frames rebuild it from scratch. A live renderer-scale switch
+    /// reallocates the screen textures mid-stream; the incremental selection
+    /// otherwise carries stale edges from the old resolution and re-resolves
+    /// only one of the two screens, where a from-empty rebuild (exactly what a
+    /// fresh launch does) recovers both. `texture_info` is kept — it is
+    /// re-measured on demand and holds no cross-frame selection state.
+    pub(crate) fn reset_graph(&self) {
+        self.render_targets
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.dependencies
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.renderbuffer_inputs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.presented_textures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.draw_candidates
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+
+    /// Re-validates a held selection against the live GPU texture state,
+    /// dropping slots whose texture was reallocated to a different extent or
+    /// deleted — a renderer scale switch does both. This re-measures each
+    /// texture rather than trusting the cached `texture_info`, which is not
+    /// refreshed for a screen the application stopped binding. Without it a
+    /// resolution switch leaves the capture blitting a stale-extent region
+    /// from a texture that now holds differently sized content (the reported
+    /// mismatch), and the stale slot blocks the new-extent selection.
+    ///
+    /// Called on the swap thread with the presenting context current, so the
+    /// direct-state-access queries are safe. Sources whose live extent still
+    /// matches are kept; those whose texture cannot be measured (the query is
+    /// unavailable) are kept as well, so a driver without DSA degrades to the
+    /// prior behavior rather than dropping everything.
+    pub(crate) fn refresh_sources(&self, sources: &[DrawCandidate]) -> Vec<DrawCandidate> {
+        if sources.is_empty() {
+            return Vec::new();
+        }
+        let Some(query) = *self
+            .get_texture_level_parameter
+            .get_or_init(|| unsafe { proc(b"glGetTextureLevelParameteriv\0") })
+        else {
+            return sources.to_vec();
+        };
+        let mut info = self
+            .texture_info
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        sources
+            .iter()
+            .filter(|source| {
+                let mut width = 0;
+                let mut height = 0;
+                unsafe {
+                    query(source.texture, 0, GL_TEXTURE_WIDTH, &mut width);
+                    query(source.texture, 0, GL_TEXTURE_HEIGHT, &mut height);
+                }
+                // A deleted texture answers 0; a live one answers its current
+                // extent, which the cache is updated to match so downstream
+                // measurements and the merge agree on the reallocated size.
+                if width <= 1 || height <= 1 {
+                    info.remove(&source.texture);
+                    return false;
+                }
+                if let Some(entry) = info.get_mut(&source.texture) {
+                    entry.1 = width as u32;
+                    entry.2 = height as u32;
+                }
+                (width as u32, height as u32) == (source.width, source.height)
+            })
+            .copied()
+            .collect()
+    }
 }
 
 /// Page-flipped guest framebuffers alternate two textures for one screen, and
@@ -1297,6 +1381,23 @@ mod tests {
             window_bounds: false,
             score,
         }
+    }
+
+    #[test]
+    fn refresh_without_a_measurement_query_is_a_no_op() {
+        // No GL context in unit tests, so the direct-state-access query fails
+        // to resolve; refresh must then keep the held selection verbatim
+        // rather than drop everything.
+        let tracking = Tracking::default();
+        let sources = [candidate(11, 256, 192, 1), candidate(12, 256, 192, 1)];
+        let refreshed = tracking.refresh_sources(&sources);
+        assert_eq!(
+            refreshed
+                .iter()
+                .map(|source| source.texture)
+                .collect::<Vec<_>>(),
+            vec![11, 12]
+        );
     }
 
     #[test]

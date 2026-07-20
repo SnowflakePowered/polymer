@@ -210,11 +210,25 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         let entry = map.entry(key).or_default();
         // A trusted graph selection is complete: padding it with slots from an
         // earlier frame would pin stale page-flip faces alongside live ones.
+        // Held slots are re-validated first: a renderer scale switch orphans
+        // the old screen textures, and stale slots would otherwise block the
+        // new-extent selection from being adopted while the capture keeps
+        // blitting ids that now hold other content.
         let tracked = if trusted {
             observed
         } else {
+            let refreshed = tracking.refresh_sources(&entry.tracked_sources);
+            // A dropped held source means its texture was reallocated or
+            // deleted — a live renderer-scale switch. The incremental graph
+            // carries stale edges from the old resolution and re-resolves only
+            // one screen; resetting lets the next frames rebuild both from
+            // scratch, exactly as a fresh launch does.
+            if refreshed.len() < entry.tracked_sources.len() {
+                log("snowglass: OpenGL render targets reallocated; resetting tracking graph");
+                tracking.reset_graph();
+            }
             merge_tracked_sources(
-                &entry.tracked_sources,
+                &refreshed,
                 observed,
                 config::tracked_render_target_count().unwrap_or(1),
             )
