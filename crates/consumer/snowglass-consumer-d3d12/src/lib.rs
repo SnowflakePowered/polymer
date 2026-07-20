@@ -221,7 +221,7 @@ impl ImportedD3d12Stream {
         Ok(())
     }
 
-    /// Returns an acquired `slot` to the producer. 
+    /// Returns an acquired `slot` to the producer.
     pub fn release_slot(&self, slot: u32) -> windows::core::Result<()> {
         let StreamSync::KeyedMutex(sync) = &self.sync else {
             return Ok(());

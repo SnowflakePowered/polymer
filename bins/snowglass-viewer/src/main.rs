@@ -4,10 +4,7 @@ use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_hook::config;
-use snowglass_input::mouse::{
-    PointerPhase,
-    layout::Extent,
-};
+use snowglass_input::mouse::{PointerPhase, layout::Extent};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
     KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, forward_character,
@@ -3675,16 +3672,8 @@ fn launch_target(
         dinput_hook.as_path(),
         c"SnowglassInstallDinputHook",
     ));
-    libraries.push((
-        "SDL2",
-        sdl2_hook.as_path(),
-        c"SnowglassInstallSdl2Hook",
-    ));
-    libraries.push((
-        "SDL3",
-        sdl3_hook.as_path(),
-        c"SnowglassInstallSdl3Hook",
-    ));
+    libraries.push(("SDL2", sdl2_hook.as_path(), c"SnowglassInstallSdl2Hook"));
+    libraries.push(("SDL3", sdl3_hook.as_path(), c"SnowglassInstallSdl3Hook"));
     for &(name, hook, _) in &libraries {
         if hook.is_file() {
             continue;

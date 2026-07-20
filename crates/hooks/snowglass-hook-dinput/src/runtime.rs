@@ -113,62 +113,62 @@ impl Runtime {
         };
         self.input.start_receiver(format!("{session}-input"));
     }
-}
 
-unsafe fn hook_direct_input(runtime: &Runtime, interface: *mut c_void) {
-    if interface.is_null() {
-        return;
+    pub(crate) unsafe fn release(
+        this: *mut c_void,
+        next: crate::hooks::DirectInputReleaseContext<'_>,
+    ) -> u32 {
+        let (original_vtable, patched_vtable, original_release) = {
+            let hooks = next
+                .runtime
+                .direct_input_hooks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(hook) = hooks.get(&(this as usize)) else {
+                return 0;
+            };
+            (
+                hook.vtable.original_vtable(),
+                hook.vtable.patched_vtable(),
+                hook.vtable.release(),
+            )
+        };
+        let object_vtable = this.cast::<*const usize>();
+        unsafe { *object_vtable = original_vtable };
+        let remaining = unsafe { original_release(this) };
+        if remaining == 0 {
+            next.runtime
+                .direct_input_hooks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&(this as usize));
+        } else {
+            unsafe { *object_vtable = patched_vtable };
+        }
+        remaining
     }
-    let key = interface as usize;
-    let mut hooks = runtime
-        .direct_input_hooks
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if hooks.contains_key(&key) {
-        return;
-    }
-    // SAFETY: a successful DirectInput8Create result is a COM object whose first
-    // field is an IDirectInput8A/W vtable pointer. Both variants share this layout.
-    let object_vtable = interface.cast::<*const usize>();
-    let Some(vtable) = (unsafe { IDirectInputHook::clone_from(*object_vtable) }) else {
-        return;
-    };
-    unsafe { *object_vtable = vtable.patched_vtable() };
-    hooks.insert(key, DirectInputHook { vtable });
-}
 
-pub(crate) unsafe fn direct_input_release(
-    this: *mut c_void,
-    next: crate::hooks::DirectInputReleaseContext<'_>,
-) -> u32 {
-    let (original_vtable, patched_vtable, original_release) = {
-        let hooks = next
-            .runtime
+    unsafe fn install(runtime: &Runtime, interface: *mut c_void) {
+        if interface.is_null() {
+            return;
+        }
+        let key = interface as usize;
+        let mut hooks = runtime
             .direct_input_hooks
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0;
+        if hooks.contains_key(&key) {
+            return;
+        }
+        // SAFETY: a successful DirectInput8Create result is a COM object whose first
+        // field is an IDirectInput8A/W vtable pointer. Both variants share this layout.
+        let object_vtable = interface.cast::<*const usize>();
+        let Some(vtable) = (unsafe { IDirectInputHook::clone_from(*object_vtable) }) else {
+            return;
         };
-        (
-            hook.vtable.original_vtable(),
-            hook.vtable.patched_vtable(),
-            hook.vtable.release(),
-        )
-    };
-    let object_vtable = this.cast::<*const usize>();
-    unsafe { *object_vtable = original_vtable };
-    let remaining = unsafe { original_release(this) };
-    if remaining == 0 {
-        next.runtime
-            .direct_input_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&(this as usize));
-    } else {
-        unsafe { *object_vtable = patched_vtable };
+        unsafe { *object_vtable = vtable.patched_vtable() };
+        hooks.insert(key, DirectInputHook { vtable });
     }
-    remaining
 }
 
 pub(crate) unsafe fn create_device(
@@ -444,7 +444,7 @@ pub(crate) unsafe fn direct_input_8_create(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
     if result >= 0 && !output.is_null() {
-        unsafe { hook_direct_input(&context.runtime, *output) };
+        unsafe { Runtime::install(&context.runtime, *output) };
     }
     let _ = (instance, outer);
 }

@@ -210,10 +210,7 @@ impl CaptureState {
                             || "?".to_owned(),
                             |rect| format!(
                                 "{},{}+{}x{}",
-                                rect.offset.x,
-                                rect.offset.y,
-                                rect.extent.width,
-                                rect.extent.height
+                                rect.offset.x, rect.offset.y, rect.extent.width, rect.extent.height
                             )
                         )
                     )
@@ -1026,8 +1023,8 @@ impl CaptureState {
         let presented_image = state.images.get(image_index as usize).copied()?;
         let capture_rect = tracking.capture_rect(presented_image, state.extent);
         let rect_is_content = capture_rect.is_some_and(|rect| rect.extent != state.extent);
-       
-       // reset track on reallocatio
+
+        // reset track on reallocatio
         let reallocated = tracking.sources_reallocated(&state.tracked_sources);
         let mut resolved = (config::tracking_enabled() && config::graph_tracking_enabled())
             .then(|| {
@@ -1873,8 +1870,7 @@ mod tests {
             width: 400,
             height: 480,
         };
-        let dimensions =
-            |extent: vk::Extent2D| (extent.width, extent.height);
+        let dimensions = |extent: vk::Extent2D| (extent.width, extent.height);
         let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
         assert_eq!(initial[1].source_window, 20);
         assert_eq!(dimensions(initial[1].presentation_extent), (400, 480));

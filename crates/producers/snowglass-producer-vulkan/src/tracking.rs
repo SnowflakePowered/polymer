@@ -1058,7 +1058,10 @@ mod tests {
         let (top, bottom) = (image(1), image(2));
         tracking.note_image(top, extent(400, 240));
         tracking.note_image(bottom, extent(320, 240));
-        let sources = [present_source(top, 400, 240), present_source(bottom, 320, 240)];
+        let sources = [
+            present_source(top, 400, 240),
+            present_source(bottom, 320, 240),
+        ];
         assert!(!tracking.sources_reallocated(&sources));
 
         // A resolution switch destroys the old screen; its extent record goes

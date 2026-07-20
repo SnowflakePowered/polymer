@@ -978,11 +978,7 @@ impl Tracking {
         let stride = if stride <= 0 { 8 } else { stride as usize };
         let mut pointer = std::ptr::null_mut();
         unsafe {
-            (reader.get_vertex_attrib_pointer_v)(
-                0,
-                GL_VERTEX_ATTRIB_ARRAY_POINTER,
-                &mut pointer,
-            );
+            (reader.get_vertex_attrib_pointer_v)(0, GL_VERTEX_ATTRIB_ARRAY_POINTER, &mut pointer);
         }
         let offset = (pointer as usize).checked_add(first as usize * stride)?;
         let mut data = vec![0u8; (count as usize - 1) * stride + 8];

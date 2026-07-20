@@ -147,11 +147,7 @@ impl SwapchainCopyEngine {
     /// engine while the device is still in use, since dropping destroys the
     /// command pool the copies were recorded from.
     pub fn wait_idle(&self) {
-        let fences = self
-            .slots
-            .iter()
-            .map(|slot| slot.fence)
-            .collect::<Vec<_>>();
+        let fences = self.slots.iter().map(|slot| slot.fence).collect::<Vec<_>>();
         unsafe {
             let _ = self.device.wait_for_fences(&fences, true, u64::MAX);
         }

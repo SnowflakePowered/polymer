@@ -82,7 +82,6 @@ struct Capture {
 
 unsafe impl Send for Capture {}
 
-
 #[derive(Default)]
 struct WindowCaptures {
     streams: Vec<Capture>,
@@ -126,7 +125,9 @@ const SELECTION_HORIZON: u64 = 240;
 static WINDOW_ORDER: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 fn window_order(hwnd: isize) -> usize {
-    let mut windows = WINDOW_ORDER.lock().unwrap_or_else(|error| error.into_inner());
+    let mut windows = WINDOW_ORDER
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if let Some(position) = windows.iter().position(|window| *window == hwnd) {
         position
     } else {
@@ -256,7 +257,9 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         })
         .collect::<Vec<_>>();
     selection.sort_unstable();
-    let entry = map.get_mut(&key).expect("window captures entry inserted above");
+    let entry = map
+        .get_mut(&key)
+        .expect("window captures entry inserted above");
     let requested = config::tracked_render_target_indices().unwrap_or_default();
     let mut chosen = entry
         .tracked_sources
@@ -772,13 +775,15 @@ mod tests {
         ];
         selection.sort_unstable();
         assert_eq!(
-            selection.iter().position(|&item| item
-                == selection_identity(&source(2, 240, 400), 1, 0)),
+            selection
+                .iter()
+                .position(|&item| item == selection_identity(&source(2, 240, 400), 1, 0)),
             Some(0)
         );
         assert_eq!(
-            selection.iter().position(|&item| item
-                == selection_identity(&source(1, 240, 320), 0, 0)),
+            selection
+                .iter()
+                .position(|&item| item == selection_identity(&source(1, 240, 320), 0, 0)),
             Some(1)
         );
     }

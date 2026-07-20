@@ -32,7 +32,7 @@ chain! {
         runtime: std::sync::Arc<crate::runtime::Runtime> = crate::install::runtime(),
     };
     hook DirectInputReleaseHook(this: *mut c_void) -> u32;
-    resolve with crate::runtime::direct_input_release;
+    resolve with crate::runtime::Runtime::release;
 }
 
 chain! {

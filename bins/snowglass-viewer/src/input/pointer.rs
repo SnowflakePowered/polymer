@@ -391,10 +391,7 @@ fn letterboxed_mapping(
     if full.is_empty() || mapping != AffineMapping::axis_aligned(full) {
         return Some(mapping);
     }
-    Some(
-        aspect_fit(surface.image_extent, full)
-            .map_or(mapping, AffineMapping::axis_aligned),
-    )
+    Some(aspect_fit(surface.image_extent, full).map_or(mapping, AffineMapping::axis_aligned))
 }
 
 fn pointer_button_bit(button: u32) -> u32 {
