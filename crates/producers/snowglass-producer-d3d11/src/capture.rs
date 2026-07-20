@@ -78,10 +78,30 @@ impl SwapchainOwner for SwapchainCapture {
     ///
     /// `swapchain` must point to the live swapchain being presented.
     unsafe fn before_present(&self, swapchain: *mut c_void) {
+        let presentation = self.tracking.take_swapchain_presentation(swapchain);
+        let tracked_source = presentation
+            .as_ref()
+            .and_then(|presentation| presentation.source.as_ref());
+        // A tracked source is copied in source coordinates. The recorded draw
+        // region describes where that source landed in the swapchain and is
+        // used only as presentation metadata.
+        let copy_region = tracked_source
+            .is_none()
+            .then(|| presentation.as_ref().map(|value| value.region))
+            .flatten();
         let mut capture = self
             .capture
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if let Some(source) = tracked_source
+            && matches!(&*capture, Capture::Active(state) if {
+                let desc = state.capture.ring().desc();
+                (desc.width, desc.height, desc.format)
+                    != (source.width, source.height, source.format)
+            })
+        {
+            *capture = Capture::Idle;
+        }
         if matches!(*capture, Capture::Idle) {
             let connection = match begin_viewer_connection() {
                 Ok(connection) => Some(connection),
@@ -111,7 +131,14 @@ impl SwapchainOwner for SwapchainCapture {
             };
             let mut ring = None;
             for (index, &mode) in mode_chain.iter().enumerate() {
-                match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode) } {
+                match unsafe {
+                    D3d11SwapchainCapture::new_with_source(
+                        swapchain,
+                        3,
+                        mode,
+                        tracked_source.map(|source| &source.resource),
+                    )
+                } {
                     Ok(value) => {
                         ring = Some(value);
                         break;
@@ -158,8 +185,11 @@ impl SwapchainOwner for SwapchainCapture {
         let Capture::Active(state) = &mut *capture else {
             return;
         };
-        let tracked_region = self.tracking.take_swapchain_region(swapchain);
-        let submission = match unsafe { state.capture.copy_frame(tracked_region) } {
+        let submission = match unsafe {
+            state
+                .capture
+                .copy_frame_from(copy_region, tracked_source.map(|source| &source.resource))
+        } {
             Ok(submission) => submission,
             Err(error) => {
                 state.copy_failures += 1;
@@ -179,22 +209,44 @@ impl SwapchainOwner for SwapchainCapture {
                 submission.width, submission.height, state.frame_number
             ));
         }
+        let capture_desc = state.capture.ring().desc();
+        let presentation_extent = presentation
+            .as_ref()
+            .map_or((capture_desc.width, capture_desc.height), |presentation| {
+                presentation.target_extent
+            });
+        let presentation_rect = presentation.as_ref().map_or(
+            (
+                submission.capture_x,
+                submission.capture_y,
+                submission.width,
+                submission.height,
+            ),
+            |presentation| {
+                (
+                    presentation.region.x,
+                    presentation.region.y,
+                    presentation.region.width,
+                    presentation.region.height,
+                )
+            },
+        );
         let message = Message::FrameReady(FrameReady {
             stream_id: StreamId(self.stream_id),
             slot: submission.slot,
             render_width: submission.width,
             render_height: submission.height,
-            capture_x: submission.capture_x,
-            capture_y: submission.capture_y,
-            capture_width: submission.width,
-            capture_height: submission.height,
-            presentation_width: state.capture.ring().desc().width,
-            presentation_height: state.capture.ring().desc().height,
+            capture_x: presentation_rect.0,
+            capture_y: presentation_rect.1,
+            capture_width: presentation_rect.2,
+            capture_height: presentation_rect.3,
+            presentation_width: presentation_extent.0,
+            presentation_height: presentation_extent.1,
             presentation_transform: PresentationTransform::axis_aligned(
-                submission.capture_x,
-                submission.capture_y,
-                submission.width,
-                submission.height,
+                presentation_rect.0,
+                presentation_rect.1,
+                presentation_rect.2,
+                presentation_rect.3,
             ),
             frame_number: state.frame_number,
             sync_value: submission.sync_value,

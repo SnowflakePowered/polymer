@@ -607,20 +607,15 @@ impl Tracking {
         let index = unsafe { swapchain.GetCurrentBackBufferIndex() };
         let resource: ID3D12Resource = unsafe { swapchain.GetBuffer(index).ok()? };
         let candidate = self.present_regions.get(&Self::identity_key(&resource))?;
-        let region_is_content = (candidate.region.x, candidate.region.y) != (0, 0)
-            || (candidate.region.width, candidate.region.height) != candidate.target_extent;
-        let source = (!region_is_content)
-            .then(|| candidate.source.clone())
-            .flatten()
-            .map(|mut source| {
-                source.state = self
-                    .resource_states
-                    .get(&Self::identity_key(&source.resource))
-                    .map(|entry| *entry);
-                source
-            });
+        let source = candidate.source.clone().map(|mut source| {
+            source.state = self
+                .resource_states
+                .get(&Self::identity_key(&source.resource))
+                .map(|entry| *entry);
+            source
+        });
         Some(Presentation {
-            region: region_is_content.then_some(candidate.region),
+            region: Some(candidate.region),
             source,
             target_extent: candidate.target_extent,
         })

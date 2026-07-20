@@ -79,7 +79,6 @@ impl SwapchainOwner for SwapchainCapture {
     /// `swapchain` must point to the live swapchain being presented.
     unsafe fn before_present(&self, swapchain: *mut c_void) {
         let presentation = unsafe { self.tracking.swapchain_presentation(swapchain) };
-        let tracked_region = presentation.as_ref().and_then(|value| value.region);
         let tracked_source = presentation
             .as_ref()
             .and_then(|value| value.source.as_ref())
@@ -88,6 +87,13 @@ impl SwapchainOwner for SwapchainCapture {
                     .state
                     .is_some_and(|state| matches!(state, D3d12CaptureSourceState::Legacy(_)))
             });
+        // A tracked source is copied in its own coordinate system. The draw
+        // region belongs to the destination backbuffer and is carried only as
+        // presentation metadata for pointer mapping.
+        let copy_region = tracked_source
+            .is_none()
+            .then(|| presentation.as_ref().and_then(|value| value.region))
+            .flatten();
         let mut capture = self.capture.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(source) = tracked_source
             && matches!(&*capture, Capture::Active(state) if {
@@ -134,7 +140,7 @@ impl SwapchainOwner for SwapchainCapture {
         };
         let submission = match unsafe {
             state.capture.copy_frame(
-                tracked_region,
+                copy_region,
                 tracked_source.map(|source| {
                     (
                         &source.resource,
@@ -173,16 +179,15 @@ impl SwapchainOwner for SwapchainCapture {
             .map_or((capture_desc.width, capture_desc.height), |value| {
                 value.target_extent
             });
-        let presentation_rect = if tracked_source.is_some() {
-            (0, 0, presentation_extent.0, presentation_extent.1)
-        } else {
+        let presentation_rect = presentation.as_ref().and_then(|value| value.region).map_or(
             (
                 submission.capture_x,
                 submission.capture_y,
                 submission.width,
                 submission.height,
-            )
-        };
+            ),
+            |region| (region.x, region.y, region.width, region.height),
+        );
         let message = Message::FrameReady(FrameReady {
             stream_id: StreamId(self.stream_id),
             slot: submission.slot,
@@ -194,18 +199,12 @@ impl SwapchainOwner for SwapchainCapture {
             capture_height: presentation_rect.3,
             presentation_width: presentation_extent.0,
             presentation_height: presentation_extent.1,
-            presentation_transform: if tracked_source.is_some() {
-                // The current graph tracker identifies the sampled resource and
-                // destination bounds, but not the shader's UV orientation yet.
-                PresentationTransform::UNAVAILABLE
-            } else {
-                PresentationTransform::axis_aligned(
-                    presentation_rect.0,
-                    presentation_rect.1,
-                    presentation_rect.2,
-                    presentation_rect.3,
-                )
-            },
+            presentation_transform: PresentationTransform::axis_aligned(
+                presentation_rect.0,
+                presentation_rect.1,
+                presentation_rect.2,
+                presentation_rect.3,
+            ),
             frame_number: state.frame,
             sync_value: submission.sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),

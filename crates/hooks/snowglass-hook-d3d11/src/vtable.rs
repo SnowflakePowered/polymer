@@ -23,6 +23,10 @@ snowglass_hook::vtable! {
 
 type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
 type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
+type DrawIndexedInstancedFn = unsafe extern "system" fn(*mut c_void, u32, u32, u32, i32, u32);
+type DrawInstancedFn = unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32);
+type DrawAutoFn = unsafe extern "system" fn(*mut c_void);
+type DrawIndirectFn = unsafe extern "system" fn(*mut c_void, *mut c_void, u32);
 type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d11::Tracking>) -> bool;
 
 snowglass_hook::com_vtable! {
@@ -37,6 +41,11 @@ trait ContextHook: snowglass_hook::VtableHook {
     fn tracking(&self) -> &Arc<snowglass_producer_d3d11::Tracking>;
     fn draw(&self) -> DrawFn;
     fn draw_indexed(&self) -> DrawIndexedFn;
+    fn draw_indexed_instanced(&self) -> DrawIndexedInstancedFn;
+    fn draw_instanced(&self) -> DrawInstancedFn;
+    fn draw_auto(&self) -> DrawAutoFn;
+    fn draw_indexed_instanced_indirect(&self) -> DrawIndirectFn;
+    fn draw_instanced_indirect(&self) -> DrawIndirectFn;
 }
 
 snowglass_hook::impl_com_hook! {
@@ -53,6 +62,11 @@ snowglass_hook::impl_com_hook! {
             let table = patched.as_mut_ptr::<ID3D11DeviceContext_Vtbl>();
             (*table).Draw = draw_trampoline;
             (*table).DrawIndexed = draw_indexed_trampoline;
+            (*table).DrawIndexedInstanced = draw_indexed_instanced_trampoline;
+            (*table).DrawInstanced = draw_instanced_trampoline;
+            (*table).DrawAuto = draw_auto_trampoline;
+            (*table).DrawIndexedInstancedIndirect = draw_indexed_instanced_indirect_trampoline;
+            (*table).DrawInstancedIndirect = draw_instanced_indirect_trampoline;
         }
         }
 
@@ -62,6 +76,21 @@ snowglass_hook::impl_com_hook! {
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexed]
         fn draw_indexed(&self) -> DrawIndexedFn;
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = DrawIndexedInstanced]
+        fn draw_indexed_instanced(&self) -> DrawIndexedInstancedFn;
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = DrawInstanced]
+        fn draw_instanced(&self) -> DrawInstancedFn;
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = DrawAuto]
+        fn draw_auto(&self) -> DrawAutoFn;
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = DrawIndexedInstancedIndirect]
+        fn draw_indexed_instanced_indirect(&self) -> DrawIndirectFn;
+        #[vtable = ID3D11DeviceContext_Vtbl]
+        #[base = DrawInstancedIndirect]
+        fn draw_instanced_indirect(&self) -> DrawIndirectFn;
     }
 }
 
@@ -168,6 +197,77 @@ snowglass_hook::com_trampoline! {
         start_vertex: u32,
     );
     original CONTEXTS.get(&(this as usize)).map(|state| state.draw());
+    after {
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
+    }
+}
+
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_indexed_instanced_trampoline(
+        this: *mut c_void,
+        index_count_per_instance: u32,
+        instance_count: u32,
+        start_index: u32,
+        base_vertex: i32,
+        start_instance: u32,
+    );
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed_instanced());
+    after {
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
+    }
+}
+
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_instanced_trampoline(
+        this: *mut c_void,
+        vertex_count_per_instance: u32,
+        instance_count: u32,
+        start_vertex: u32,
+        start_instance: u32,
+    );
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_instanced());
+    after {
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
+    }
+}
+
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_auto_trampoline(this: *mut c_void);
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_auto());
+    after {
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
+    }
+}
+
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_indexed_instanced_indirect_trampoline(
+        this: *mut c_void,
+        argument_buffer: *mut c_void,
+        argument_offset: u32,
+    );
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed_instanced_indirect());
+    after {
+        if let Some(tracking) = context_tracking(this) {
+            unsafe { tracking.record_context_draw(this) };
+        }
+    }
+}
+
+snowglass_hook::com_trampoline! {
+    unsafe extern "system" fn draw_instanced_indirect_trampoline(
+        this: *mut c_void,
+        argument_buffer: *mut c_void,
+        argument_offset: u32,
+    );
+    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_instanced_indirect());
     after {
         if let Some(tracking) = context_tracking(this) {
             unsafe { tracking.record_context_draw(this) };

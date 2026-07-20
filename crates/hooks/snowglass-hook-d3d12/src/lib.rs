@@ -303,6 +303,15 @@ mod tests {
             assert_eq!(frame.sync_value, 1);
             assert_eq!((frame.capture_x, frame.capture_y), (8, 4));
             assert_eq!((frame.render_width, frame.render_height), (48, 48));
+            assert_eq!((frame.capture_width, frame.capture_height), (48, 48));
+            assert_eq!(
+                (frame.presentation_width, frame.presentation_height),
+                (64, 64)
+            );
+            assert_eq!(
+                frame.presentation_transform,
+                snowglass_protocol::PresentationTransform::axis_aligned(8, 4, 48, 48)
+            );
 
             d3d12_log("snowglass-test: importing D3D12 handles into Vulkan");
             let mut imported = snowglass_consumer_vulkan::ImportedStream::import(&ready)
