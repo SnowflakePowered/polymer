@@ -1,21 +1,18 @@
-use crate::{
-    hooks,
-    vtable::{FactoryHook, IDXGIFactoryHook, IDXGISwapchainHook, SwapchainHook, Vtable},
+use crate::vtable::{
+    FACTORIES, IDXGIFactoryHook, IDXGISwapchainHook, SWAPCHAINS, SwapchainHook, Vtable,
 };
-use snowglass_hook::HookChain;
 use std::{
-    collections::HashMap,
     ffi::c_void,
-    sync::{Arc, LazyLock, OnceLock, RwLock},
+    sync::{Arc, LazyLock, RwLock},
 };
 use windows::{
     Win32::Graphics::Dxgi::{
-        DXGI_ERROR_INVALID_CALL, IDXGIFactory, IDXGIFactory_Vtbl, IDXGIFactory1,
-        IDXGIFactory1_Vtbl, IDXGIFactory2, IDXGIFactory2_Vtbl, IDXGIFactory3, IDXGIFactory3_Vtbl,
-        IDXGIFactory4, IDXGIFactory4_Vtbl, IDXGIFactory5, IDXGIFactory5_Vtbl, IDXGIFactory6,
-        IDXGIFactory6_Vtbl, IDXGIFactory7, IDXGIFactory7_Vtbl, IDXGISwapChain, IDXGISwapChain_Vtbl,
-        IDXGISwapChain1, IDXGISwapChain1_Vtbl, IDXGISwapChain2, IDXGISwapChain2_Vtbl,
-        IDXGISwapChain3, IDXGISwapChain3_Vtbl, IDXGISwapChain4, IDXGISwapChain4_Vtbl,
+        IDXGIFactory, IDXGIFactory_Vtbl, IDXGIFactory1, IDXGIFactory1_Vtbl, IDXGIFactory2,
+        IDXGIFactory2_Vtbl, IDXGIFactory3, IDXGIFactory3_Vtbl, IDXGIFactory4, IDXGIFactory4_Vtbl,
+        IDXGIFactory5, IDXGIFactory5_Vtbl, IDXGIFactory6, IDXGIFactory6_Vtbl, IDXGIFactory7,
+        IDXGIFactory7_Vtbl, IDXGISwapChain, IDXGISwapChain_Vtbl, IDXGISwapChain1,
+        IDXGISwapChain1_Vtbl, IDXGISwapChain2, IDXGISwapChain2_Vtbl, IDXGISwapChain3,
+        IDXGISwapChain3_Vtbl, IDXGISwapChain4, IDXGISwapChain4_Vtbl,
     },
     core::{GUID, Interface},
 };
@@ -189,17 +186,6 @@ pub type SwapchainClaim =
     unsafe extern "system" fn(*mut c_void, *mut c_void, *mut SwapchainOwnerHandle) -> bool;
 
 static CLAIMS: LazyLock<RwLock<Vec<SwapchainClaim>>> = LazyLock::new(Default::default);
-static SWAPCHAINS: OnceLock<RwLock<HashMap<usize, Arc<dyn SwapchainHook>>>> = OnceLock::new();
-static FACTORIES: OnceLock<RwLock<HashMap<usize, Arc<dyn FactoryHook>>>> = OnceLock::new();
-
-fn swapchains() -> &'static RwLock<HashMap<usize, Arc<dyn SwapchainHook>>> {
-    SWAPCHAINS.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-fn factories() -> &'static RwLock<HashMap<usize, Arc<dyn FactoryHook>>> {
-    FACTORIES.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
 pub fn register_claim(claim: SwapchainClaim) {
     let mut registered = CLAIMS.write().unwrap_or_else(|error| error.into_inner());
     if !registered
@@ -265,23 +251,8 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     installed
 }
 
-/// The backend that claimed a hooked swapchain, if any. The owner is cloned out
-/// so callbacks run without holding the swapchain or hook-context locks.
-fn swapchain_owner(swapchain: *mut c_void) -> Option<Arc<SwapchainOwnerHandle>> {
-    swapchain_method(swapchain, |hook| {
-        hook.owner()
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-    })
-    .flatten()
-}
-
 fn set_swapchain_owner(swapchain: *mut c_void, owner: Option<Arc<SwapchainOwnerHandle>>) {
-    let states = swapchains()
-        .read()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some(state) = states.get(&(swapchain as usize)) {
+    if let Some(state) = SWAPCHAINS.get(&(swapchain as usize)) {
         *state
             .owner()
             .write()
@@ -301,10 +272,8 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
         return false;
     }
     let key = swapchain as usize;
-    let mut states = swapchains()
-        .write()
-        .unwrap_or_else(|error| error.into_inner());
-    let vtable = if let Some(existing) = states.get(&key) {
+    let current = unsafe { *swapchain.cast::<*const usize>() };
+    let (original, owner) = if let Some(existing) = SWAPCHAINS.get(&key) {
         // A widening re-clone replaces the hook object; carry the recorded
         // owner into the replacement.
         let owner = RwLock::new(
@@ -314,26 +283,18 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
                 .unwrap_or_else(|error| error.into_inner())
                 .clone(),
         );
-        let current = unsafe { *swapchain.cast::<*const usize>() };
         if current == existing.patched_vtable() {
             if A::supported_by(existing.vtable_type()) {
                 return true;
             }
-            unsafe { IDXGISwapchainHook::<A>::clone_from(existing.original_vtable(), owner) }
+            (existing.original_vtable(), owner)
         } else {
-            unsafe { IDXGISwapchainHook::<A>::clone_from(current, owner) }
+            (current, owner)
         }
     } else {
-        let original = unsafe { *swapchain.cast::<*const usize>() };
-        unsafe { IDXGISwapchainHook::<A>::clone_from(original, RwLock::new(None)) }
+        (current, RwLock::new(None))
     };
-    let Some(vtable) = vtable else {
-        return false;
-    };
-    let state: Arc<dyn SwapchainHook> = Arc::new(vtable);
-    unsafe { *swapchain.cast::<*const usize>() = state.patched_vtable() };
-    states.insert(key, state);
-    true
+    unsafe { IDXGISwapchainHook::<A>::install_from(swapchain, original, owner) }
 }
 
 /// # Safety
@@ -393,29 +354,20 @@ unsafe fn install_factory_kind<A: Vtable>(factory: *mut c_void) -> bool {
         return false;
     }
     let key = factory as usize;
-    let mut states = factories()
-        .write()
-        .unwrap_or_else(|error| error.into_inner());
-    let vtable = if let Some(existing) = states.get(&key) {
-        let current = unsafe { *factory.cast::<*const usize>() };
+    let current = unsafe { *factory.cast::<*const usize>() };
+    let original = if let Some(existing) = FACTORIES.get(&key) {
         if current == existing.patched_vtable() {
             if A::supported_by(existing.vtable_type()) {
                 return true;
             }
-            unsafe { IDXGIFactoryHook::<A>::clone_from(existing.original_vtable()) }
+            existing.original_vtable()
         } else {
-            unsafe { IDXGIFactoryHook::<A>::clone_and_patch(factory) }
+            current
         }
     } else {
-        unsafe { IDXGIFactoryHook::<A>::clone_and_patch(factory) }
+        current
     };
-    let Some(vtable) = vtable else {
-        return false;
-    };
-    let state: Arc<dyn FactoryHook> = Arc::new(vtable);
-    unsafe { *factory.cast::<*const usize>() = state.patched_vtable() };
-    states.insert(key, state);
-    true
+    unsafe { IDXGIFactoryHook::<A>::install_from(factory, original) }
 }
 
 fn factory_install(interface_id: &GUID) -> Option<InstallFn> {
@@ -484,42 +436,6 @@ fn swapchain_install(interface_id: &GUID) -> Option<InstallFn> {
     .find_map(|(candidate, install)| (interface_id == candidate).then_some(install))
 }
 
-pub(crate) fn swapchain_method<T>(
-    swapchain: *mut c_void,
-    select: impl FnOnce(&dyn SwapchainHook) -> T,
-) -> Option<T> {
-    let states = swapchains()
-        .read()
-        .unwrap_or_else(|error| error.into_inner());
-    states
-        .get(&(swapchain as usize))
-        .map(|state| select(&**state))
-}
-
-pub(crate) fn factory_method<T: Copy>(
-    factory: *mut c_void,
-    select: impl FnOnce(&dyn FactoryHook) -> Option<T>,
-) -> Option<T> {
-    let states = factories()
-        .read()
-        .unwrap_or_else(|error| error.into_inner());
-    states
-        .get(&(factory as usize))
-        .and_then(|state| select(&**state))
-}
-
-pub(crate) fn query_method(
-    factory_or_swapchain: *mut c_void,
-) -> Option<crate::vtable::QueryInterfaceFn> {
-    if let Some(method) = swapchain_method(factory_or_swapchain, |vtable| vtable.query_interface())
-    {
-        return Some(method);
-    }
-    factory_method(factory_or_swapchain, |vtable| {
-        Some(vtable.query_interface())
-    })
-}
-
 pub(crate) unsafe fn created_factory(
     _interface_id: *const c_void,
     factory: *mut *mut c_void,
@@ -553,21 +469,89 @@ pub(crate) unsafe fn factory_created_swapchain(
     unsafe { register_swapchain(swapchain, device) };
 }
 
-pub(crate) unsafe fn query_interface(
+pub(crate) unsafe fn factory_create_swapchain(
+    this: *mut c_void,
+    device: *mut c_void,
+    desc: *const c_void,
+    swapchain: *mut *mut c_void,
+    mut next: crate::vtable::FactoryCreateSwapchainContext<'_>,
+) -> i32 {
+    let result = snowglass_hook::next!(next, this, device, desc, swapchain);
+    unsafe { factory_created_swapchain(device, swapchain, result) };
+    result
+}
+
+pub(crate) unsafe fn factory_create_swapchain_for_hwnd(
+    this: *mut c_void,
+    device: *mut c_void,
+    window: *mut c_void,
+    desc: *const c_void,
+    fullscreen_desc: *const c_void,
+    restrict_to_output: *mut c_void,
+    swapchain: *mut *mut c_void,
+    mut next: crate::vtable::FactoryCreateSwapchainForHwndContext<'_>,
+) -> i32 {
+    let result = snowglass_hook::next!(
+        next,
+        this,
+        device,
+        window,
+        desc,
+        fullscreen_desc,
+        restrict_to_output,
+        swapchain
+    );
+    unsafe { factory_created_swapchain(device, swapchain, result) };
+    result
+}
+
+pub(crate) unsafe fn factory_create_swapchain_for_core_window(
+    this: *mut c_void,
+    device: *mut c_void,
+    window: *mut c_void,
+    desc: *const c_void,
+    restrict_to_output: *mut c_void,
+    swapchain: *mut *mut c_void,
+    mut next: crate::vtable::FactoryCreateSwapchainForCoreWindowContext<'_>,
+) -> i32 {
+    let result = snowglass_hook::next!(
+        next,
+        this,
+        device,
+        window,
+        desc,
+        restrict_to_output,
+        swapchain
+    );
+    unsafe { factory_created_swapchain(device, swapchain, result) };
+    result
+}
+
+pub(crate) unsafe fn factory_create_swapchain_for_composition(
+    this: *mut c_void,
+    device: *mut c_void,
+    desc: *const c_void,
+    restrict_to_output: *mut c_void,
+    swapchain: *mut *mut c_void,
+    mut next: crate::vtable::FactoryCreateSwapchainForCompositionContext<'_>,
+) -> i32 {
+    let result = snowglass_hook::next!(next, this, device, desc, restrict_to_output, swapchain);
+    unsafe { factory_created_swapchain(device, swapchain, result) };
+    result
+}
+
+pub(crate) unsafe fn swapchain_query_interface(
     this: *mut c_void,
     interface_id: *const c_void,
     output: *mut *mut c_void,
-    mut next: hooks::QueryInterfaceContext<'_>,
+    mut next: crate::vtable::SwapchainQueryInterfaceContext<'_>,
 ) -> i32 {
-    let Some(continuation) = next.fp_next().copied() else {
-        return 0x8000_4002u32 as i32;
-    };
-    let result = unsafe { continuation(this, interface_id, output, next) };
+    let owner = next.owner.clone();
+    let result = snowglass_hook::next!(next, this, interface_id, output);
     if result >= 0 && !interface_id.is_null() && !output.is_null() {
         let interface_id = unsafe { &*interface_id.cast::<GUID>() };
         let swapchain = unsafe { *output };
         if !swapchain.is_null() {
-            let owner = swapchain_owner(this);
             if let Some(install) = swapchain_install(interface_id) {
                 unsafe { install(swapchain) };
             } else {
@@ -581,6 +565,22 @@ pub(crate) unsafe fn query_interface(
             if let Some(owner) = owner {
                 set_swapchain_owner(swapchain, Some(owner));
             }
+        }
+    }
+    result
+}
+
+pub(crate) unsafe fn factory_query_interface(
+    this: *mut c_void,
+    interface_id: *const c_void,
+    output: *mut *mut c_void,
+    mut next: crate::vtable::FactoryQueryInterfaceContext<'_>,
+) -> i32 {
+    let result = snowglass_hook::next!(next, this, interface_id, output);
+    if result >= 0 && !interface_id.is_null() && !output.is_null() {
+        let output = unsafe { *output };
+        if !output.is_null() {
+            unsafe { install_factory_interface(output, interface_id) };
         }
     }
     result
@@ -603,17 +603,15 @@ pub(crate) unsafe fn present(
     this: *mut c_void,
     sync_interval: u32,
     flags: u32,
-    mut next: hooks::PresentContext<'_>,
+    mut next: crate::vtable::PresentContext<'_>,
 ) -> i32 {
-    if let Some(owner) = swapchain_owner(this) {
+    let owner = next.owner.clone();
+    if let Some(owner) = owner {
         guarded(this, "before_present", || unsafe {
             owner.before_present(this)
         });
     }
-    let Some(continuation) = next.fp_next().copied() else {
-        return DXGI_ERROR_INVALID_CALL.0;
-    };
-    unsafe { continuation(this, sync_interval, flags, next) }
+    snowglass_hook::next!(next, this, sync_interval, flags)
 }
 
 pub(crate) unsafe fn present1(
@@ -621,17 +619,15 @@ pub(crate) unsafe fn present1(
     sync_interval: u32,
     flags: u32,
     parameters: *const c_void,
-    mut next: hooks::Present1Context<'_>,
+    mut next: crate::vtable::Present1Context<'_>,
 ) -> i32 {
-    if let Some(owner) = swapchain_owner(this) {
+    let owner = next.owner.clone();
+    if let Some(owner) = owner {
         guarded(this, "before_present", || unsafe {
             owner.before_present(this)
         });
     }
-    let Some(continuation) = next.fp_next().copied() else {
-        return DXGI_ERROR_INVALID_CALL.0;
-    };
-    unsafe { continuation(this, sync_interval, flags, parameters, next) }
+    snowglass_hook::next!(next, this, sync_interval, flags, parameters)
 }
 
 pub(crate) unsafe fn resize_buffers(
@@ -641,18 +637,15 @@ pub(crate) unsafe fn resize_buffers(
     height: u32,
     format: u32,
     flags: u32,
-    mut next: hooks::ResizeBuffersContext<'_>,
+    mut next: crate::vtable::ResizeBuffersContext<'_>,
 ) -> i32 {
-    let owner = swapchain_owner(this);
+    let owner = next.owner.clone();
     if let Some(owner) = &owner {
         guarded(this, "before_resize", || unsafe {
             owner.before_resize(this)
         });
     }
-    let Some(continuation) = next.fp_next().copied() else {
-        return DXGI_ERROR_INVALID_CALL.0;
-    };
-    let result = unsafe { continuation(this, buffer_count, width, height, format, flags, next) };
+    let result = snowglass_hook::next!(next, this, buffer_count, width, height, format, flags);
     if let Some(owner) = &owner {
         guarded(this, "after_resize", || unsafe {
             owner.after_resize(this, result)
@@ -661,80 +654,15 @@ pub(crate) unsafe fn resize_buffers(
     result
 }
 
-pub(crate) unsafe fn release(this: *mut c_void, _next: hooks::ReleaseContext<'_>) -> u32 {
-    let swapchain_state = {
-        let states = swapchains()
-            .read()
-            .unwrap_or_else(|error| error.into_inner());
-        states.get(&(this as usize)).cloned()
-    };
-    if let Some(state) = swapchain_state {
-        // The cloned vtable spans only the COM interface methods, but a final
-        // release destroys the object through implementation virtuals stored
-        // beyond them (dxgi.dll dispatches its deleting destructor from the
-        // object's vtable). Restore the original vtable across the downstream
-        // release so destruction never reads past the clone.
-        unsafe { *this.cast::<*const usize>() = state.original_vtable() };
-        let references = unsafe { (state.release())(this) };
-        if references == 0 {
-            swapchains()
-                .write()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&(this as usize));
-            let owner = state
-                .owner()
-                .write()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
-            if let Some(owner) = owner {
-                // `owner` is the last reference; dropping it after `destroyed`
-                // releases the backend's per-swapchain capture state.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                    owner.destroyed(this)
-                }));
-            }
-        } else {
-            let states = swapchains()
-                .read()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Some(current) = states.get(&(this as usize)) {
-                unsafe { *this.cast::<*const usize>() = current.patched_vtable() };
-            }
-        }
-        return references;
+pub(crate) unsafe fn swapchain_destroyed(this: *mut c_void, state: &dyn SwapchainHook) {
+    let owner = state
+        .owner()
+        .write()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+    if let Some(owner) = owner {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            owner.destroyed(this)
+        }));
     }
-    0
-}
-
-pub(crate) unsafe fn factory_release(
-    this: *mut c_void,
-    _next: hooks::FactoryReleaseContext<'_>,
-) -> u32 {
-    let factory_state = {
-        let states = factories()
-            .read()
-            .unwrap_or_else(|error| error.into_inner());
-        states.get(&(this as usize)).cloned()
-    };
-    if let Some(state) = factory_state {
-        // See `release`: factory destruction must also run on the original,
-        // full-length vtable rather than the interface-only clone.
-        unsafe { *this.cast::<*const usize>() = state.original_vtable() };
-        let references = unsafe { (state.release())(this) };
-        if references == 0 {
-            factories()
-                .write()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&(this as usize));
-        } else {
-            let states = factories()
-                .read()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Some(current) = states.get(&(this as usize)) {
-                unsafe { *this.cast::<*const usize>() = current.patched_vtable() };
-            }
-        }
-        return references;
-    }
-    0
 }

@@ -4,6 +4,8 @@ pub mod config;
 mod vtable;
 
 #[doc(hidden)]
+pub use dashmap::DashMap as __DashMap;
+#[doc(hidden)]
 pub use paste::paste as __paste;
 pub use vtable::VtableHook;
 

@@ -120,14 +120,6 @@ snowglass_hook::register_hooks! {
     hooks::register_create_factory -> runtime::created_factory;
     hooks::register_create_factory1 -> runtime::created_factory;
     hooks::register_create_factory2 -> runtime::created_factory;
-    hooks::register_query_interface -> runtime::query_interface;
-    hooks::register_factory_create_swapchain -> runtime::factory_created_swapchain;
-    hooks::register_factory_create_swapchain_for_hwnd -> runtime::factory_created_swapchain;
-    hooks::register_factory_create_swapchain_for_core_window -> runtime::factory_created_swapchain;
-    hooks::register_factory_create_swapchain_for_composition -> runtime::factory_created_swapchain;
-    hooks::register_present -> runtime::present;
-    hooks::register_present1 -> runtime::present1;
-    hooks::register_resize_buffers -> runtime::resize_buffers;
 }
 
 #[cfg(test)]

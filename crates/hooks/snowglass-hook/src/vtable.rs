@@ -153,30 +153,6 @@ macro_rules! widest_interfaces {
     }};
 }
 
-/// Declares a void-returning COM interception terminal that forwards to an
-/// optional original method before running its observation block.
-#[macro_export]
-macro_rules! com_trampoline {
-    (
-        $(#[$attribute:meta])*
-        $visibility:vis unsafe extern "system" fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        );
-        original $original:expr;
-        after $after:block
-    ) => {
-        $(#[$attribute])*
-        $visibility unsafe extern "system" fn $name(
-            $($argument: $argument_type),*
-        ) {
-            if let Some(original) = $original {
-                unsafe { original($($argument),*) };
-            }
-            $after
-        }
-    };
-}
-
 /// The common layout-erased view of a cloned COM vtable.
 pub trait VtableHook: Send + Sync {
     /// The number of slots spanned by the cloned layout.
@@ -208,9 +184,9 @@ macro_rules! function_table_hook {
                 unsafe extern $abi:literal fn $dispatch:ident(
                     $($argument:ident: $argument_type:ty),* $(,)?
                 ) $(-> $result:ty)? {
-                context struct {
-                    $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
-                }
+                    context struct {
+                        $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
+                    }
                 }
             )+
         }
@@ -355,13 +331,268 @@ macro_rules! function_table_hook {
 /// available only when the clone's concrete vtable type includes the layout
 /// named by its `vtable` attribute.
 ///
-/// An optional `context` clause declares additional fields carried by the
-/// hook, mirroring the field-list syntax of the detour chain contexts. Each
-/// field becomes a `clone_from` parameter in declaration order and is exposed
-/// through a same-named accessor, keeping per-object state owned by the hook
-/// itself rather than a parallel registry entry.
+/// The `#[release]` body uses `context struct` to declare fields carried by
+/// each registered hook object. Every other hooked method declares its
+/// per-call context inside its body with `context |state| { ... }`, where
+/// `state` exposes those persistent fields. The macro owns registration,
+/// vtable publication, chain dispatch, and the release lifecycle.
 #[macro_export]
 macro_rules! impl_com_hook {
+    (
+        $visibility:vis registry $registry:ident;
+        $visibility_trait:vis trait $hook_trait:ident;
+        impl $hook_trait_impl:ident for $hook:ident {
+            vtable $storage:ty;
+
+            #[release $( (destroyed = $destroyed:path) )?]
+            unsafe extern "system" fn $release_dispatch:ident(
+                $release_this:ident: $release_this_type:ty $(,)?
+            ) -> u32 {
+                context struct {
+                    $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)?
+                }
+            }
+
+            $(
+                #[vtable = $vtable:ty]
+                #[base = $base:ident]
+                $(#[fallback = $fallback:expr])?
+                #[hooks($($chain_hook:path),* $(,)?)]
+                unsafe extern "system" fn $dispatch:ident(
+                    $this:ident: $this_type:ty
+                    $(, $argument:ident: $argument_type:ty)* $(,)?
+                ) $(-> $result:ty)? {
+                    context |$state:ident| {
+                        $($dispatch_field:ident: $dispatch_field_type:ty = $dispatch_field_value:expr),*
+                        $(,)?
+                    }
+                }
+            )+
+        }
+    ) => { $crate::__paste! {
+        const _: () = {
+            fn assert_same_trait<T: ?Sized>() {}
+            let _ = assert_same_trait::<dyn $hook_trait_impl>;
+        };
+
+        $visibility_trait trait $hook_trait: $crate::VtableHook {
+            $(fn $context(&self) -> &$context_type;)*
+            fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32;
+            $(fn [<base_ $dispatch>](&self) -> Option<unsafe extern "system" fn(
+                $this_type,
+                $($argument_type),*
+            ) $(-> $result)?>;)+
+        }
+
+        $visibility static $registry: ::std::sync::LazyLock<
+            $crate::__DashMap<usize, ::std::sync::Arc<dyn $hook_trait>>
+        > = ::std::sync::LazyLock::new(Default::default);
+
+        $visibility struct $hook<A: Vtable> {
+            patched: Box<$storage>,
+            saved: $storage,
+            original: ::core::ptr::NonNull<::core::ffi::c_void>,
+            vtable: ::core::marker::PhantomData<A>,
+            $($(#[$context_attribute])* $context: $context_type,)*
+        }
+
+        unsafe impl<A: Vtable> Send for $hook<A> {}
+        unsafe impl<A: Vtable> Sync for $hook<A> {}
+
+        impl<A: Vtable> $hook<A> {
+            /// Clones, registers, and publishes a patched vtable for `object`.
+            ///
+            /// # Safety
+            /// `object` must be null or point to a live COM object whose
+            /// vtable spans at least `A::SLOTS` entries.
+            $visibility unsafe fn install(
+                object: *mut ::core::ffi::c_void,
+                $($context: $context_type),*
+            ) -> bool {
+                if object.is_null() {
+                    return false;
+                }
+                let object_vtable = object.cast::<*const usize>();
+                let original_pointer = unsafe { *object_vtable };
+                unsafe { Self::install_from(object, original_pointer, $($context),*) }
+            }
+
+            /// Installs using an explicitly selected original vtable, allowing
+            /// callers to upgrade an already-hooked object to a wider layout.
+            ///
+            /// # Safety
+            /// `object` must identify a live COM object and `original_pointer`
+            /// must span at least `A::SLOTS` entries.
+            $visibility unsafe fn install_from(
+                object: *mut ::core::ffi::c_void,
+                original_pointer: *const usize,
+                $($context: $context_type),*
+            ) -> bool {
+                if object.is_null() {
+                    return false;
+                }
+                let object_vtable = object.cast::<*const usize>();
+                let Some(original) = ::core::ptr::NonNull::new(
+                    original_pointer.cast_mut().cast::<::core::ffi::c_void>()
+                ) else {
+                    return false;
+                };
+                let saved = unsafe { <$storage>::read(original, A::SLOTS) };
+                let mut patched = Box::new(unsafe { <$storage>::read(original, A::SLOTS) });
+                unsafe {
+                    let unknown = patched.as_mut_ptr::<::windows::core::IUnknown_Vtbl>();
+                    (*unknown).Release = ::core::mem::transmute(
+                        $release_dispatch as unsafe extern "system" fn($release_this_type) -> u32
+                    );
+                    $(if A::supports(::core::any::TypeId::of::<$vtable>()) {
+                        let table = patched.as_mut_ptr::<$vtable>();
+                        (*table).$base = ::core::mem::transmute(
+                            $dispatch as unsafe extern "system" fn(
+                                $this_type,
+                                $($argument_type),*
+                            ) $(-> $result)?
+                        );
+                    })+
+                }
+                let state: ::std::sync::Arc<dyn $hook_trait> = ::std::sync::Arc::new(Self {
+                    patched,
+                    saved,
+                    original,
+                    vtable: ::core::marker::PhantomData,
+                    $($context,)*
+                });
+                let patched_vtable = state.patched_vtable();
+                $registry.insert(object as usize, state);
+                unsafe { *object_vtable = patched_vtable };
+                true
+            }
+        }
+
+        impl<A: Vtable> $crate::VtableHook for $hook<A> {
+            fn slots(&self) -> usize { A::SLOTS }
+            fn vtable_type(&self) -> ::core::any::TypeId { ::core::any::TypeId::of::<A>() }
+            fn patched_vtable(&self) -> *const usize {
+                ::core::ptr::from_ref(self.patched.as_ref()).cast()
+            }
+            fn original_vtable(&self) -> *const usize { self.original.as_ptr().cast() }
+        }
+
+        impl<A: Vtable> $hook_trait for $hook<A> {
+            $(fn $context(&self) -> &$context_type { &self.$context })*
+            fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32 {
+                unsafe {
+                    ::core::mem::transmute(
+                        (*::core::ptr::from_ref(&self.saved)
+                            .cast::<::windows::core::IUnknown_Vtbl>()).Release
+                    )
+                }
+            }
+            $(fn [<base_ $dispatch>](&self) -> Option<unsafe extern "system" fn(
+                $this_type,
+                $($argument_type),*
+            ) $(-> $result)?> {
+                A::supports(::core::any::TypeId::of::<$vtable>()).then(|| unsafe {
+                    ::core::mem::transmute(
+                        (*::core::ptr::from_ref(&self.saved).cast::<$vtable>()).$base
+                    )
+                })
+            })+
+        }
+
+        $visibility unsafe extern "system" fn $release_dispatch(
+            $release_this: $release_this_type,
+        ) -> u32 {
+            let key = $release_this as usize;
+            let Some(state) = $registry.get(&key).map(|entry| ::std::sync::Arc::clone(entry.value()))
+            else {
+                return 0;
+            };
+            let base = state.[<base_ $release_dispatch>]();
+            let original_vtable = state.original_vtable();
+            let patched_vtable = state.patched_vtable();
+            let object_vtable = $release_this.cast::<*const usize>();
+            unsafe { *object_vtable = original_vtable };
+            let remaining = unsafe { base($release_this) };
+            if remaining == 0 {
+                $registry.remove_if(&key, |_, current| current.patched_vtable() == patched_vtable);
+                $(unsafe { $destroyed($release_this, &*state) };)?
+            } else if $registry
+                .get(&key)
+                .is_some_and(|current| current.patched_vtable() == patched_vtable)
+            {
+                unsafe { *object_vtable = patched_vtable };
+            }
+            remaining
+        }
+
+        $(
+            $visibility type [<$dispatch:camel Hook>] = unsafe fn(
+                $this_type,
+                $($argument_type,)*
+                [<$dispatch:camel Context>]<'_>,
+            ) $(-> $result)?;
+
+            $visibility struct [<$dispatch:camel Context>]<'a> {
+                hooks: ::core::slice::Iter<'a, [<$dispatch:camel Hook>]>,
+                terminal: &'a [<$dispatch:camel Hook>],
+                base: unsafe extern "system" fn($this_type, $($argument_type),*) $(-> $result)?,
+                $($visibility $dispatch_field: $dispatch_field_type,)*
+            }
+
+            impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
+                for [<$dispatch:camel Context>]<'a>
+            {
+                fn fp_next(&mut self) -> Option<&'a [<$dispatch:camel Hook>]> {
+                    Some(self.hooks.next().unwrap_or(self.terminal))
+                }
+            }
+
+            $visibility unsafe extern "system" fn $dispatch(
+                $this: $this_type,
+                $($argument: $argument_type),*
+            ) $(-> $result)? {
+                unsafe fn terminal(
+                    $this: $this_type,
+                    $($argument: $argument_type,)*
+                    context: [<$dispatch:camel Context>]<'_>,
+                ) $(-> $result)? {
+                    unsafe { (context.base)($this, $($argument),*) }
+                }
+
+                let Some($state) = $registry
+                    .get(&($this as usize))
+                    .map(|entry| ::std::sync::Arc::clone(entry.value()))
+                else {
+                    $crate::impl_com_hook!(@missing $($fallback)?);
+                };
+                let Some(base) = $state.[<base_ $dispatch>]() else {
+                    $crate::impl_com_hook!(@missing $($fallback)?);
+                };
+                $(let $dispatch_field = $dispatch_field_value;)*
+                drop($state);
+                let hooks: &[[<$dispatch:camel Hook>]] = &[$($chain_hook),*];
+                let mut remaining = hooks.iter();
+                let terminal: [<$dispatch:camel Hook>] = terminal;
+                let next = *remaining.next().unwrap_or(&terminal);
+                unsafe {
+                    next(
+                        $this,
+                        $($argument,)*
+                        [<$dispatch:camel Context>] {
+                            hooks: remaining,
+                            terminal: &terminal,
+                            base,
+                            $($dispatch_field,)*
+                        },
+                    )
+                }
+            }
+        )+
+    }};
+
+    (@missing $fallback:expr) => { return $fallback };
+    (@missing) => { return };
+
     (
         impl $hook:ident {
             vtable $storage:ty;
@@ -581,8 +812,8 @@ macro_rules! impl_com_hook {
 #[cfg(test)]
 mod tests {
     use std::any::TypeId;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
+    use std::mem::size_of_val;
+    use std::sync::OnceLock;
     struct Base;
     struct Derived;
     struct Other;
@@ -636,9 +867,6 @@ mod tests {
             }
         }
     }
-        }
-    }
-
     #[test]
     fn vtable_support_follows_declared_type_hierarchy() {
         assert_eq!(Base::slots(), Base::SLOTS);
@@ -660,9 +888,21 @@ mod tests {
     }
 
     #[test]
-    fn com_trampoline_forwards_before_observing() {
-        TRAMPOLINE_CALLS.store(0, Ordering::Relaxed);
-        unsafe { test_trampoline(2) };
-        assert_eq!(TRAMPOLINE_CALLS.load(Ordering::Relaxed), 20);
+    fn function_table_chain_owns_hooks_and_reaches_captured_base() {
+        let mut table = [function_table_base as *const () as usize, 0xfeedusize];
+        let captured = unsafe {
+            TestFunctionTableHook::capture(table.as_mut_ptr().cast(), size_of_val(&table) as u32)
+        }
+        .unwrap();
+        TEST_FUNCTION_TABLE.set(captured).ok().unwrap();
+        unsafe {
+            test_function_table()
+                .patch(table.as_mut_ptr().cast(), size_of_val(&table) as u32)
+                .unwrap();
+        }
+        let dispatch: unsafe extern "C" fn(usize) -> usize =
+            unsafe { std::mem::transmute(table[0]) };
+        assert_eq!(unsafe { dispatch(4) }, 11);
+        assert_eq!(table[1], 0xfeed);
     }
 }

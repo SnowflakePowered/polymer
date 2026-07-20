@@ -11,6 +11,16 @@ use windows::{
     core::IUnknown_Vtbl,
 };
 
+#[cfg(test)]
+pub(crate) type PresentFn = unsafe extern "system" fn(*mut c_void, u32, u32) -> i32;
+#[cfg(test)]
+pub(crate) type ResizeBuffersFn =
+    unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32, u32) -> i32;
+#[cfg(test)]
+pub(crate) type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
+#[cfg(test)]
+pub(crate) type Present1Fn = unsafe extern "system" fn(*mut c_void, u32, u32, *const c_void) -> i32;
+
 snowglass_hook::vtable! {
     [
         IDXGISwapChain_Vtbl,
@@ -31,63 +41,6 @@ snowglass_hook::vtable! {
     ],
 }
 
-pub(crate) type QueryInterfaceFn =
-    unsafe extern "system" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32;
-pub(crate) type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
-pub(crate) type PresentFn = unsafe extern "system" fn(*mut c_void, u32, u32) -> i32;
-pub(crate) type Present1Fn = unsafe extern "system" fn(*mut c_void, u32, u32, *const c_void) -> i32;
-pub(crate) type ResizeBuffersFn =
-    unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32, u32) -> i32;
-pub(crate) type FactoryCreateSwapchainFn =
-    unsafe extern "system" fn(*mut c_void, *mut c_void, *const c_void, *mut *mut c_void) -> i32;
-pub(crate) type FactoryCreateSwapchainForHwndFn = unsafe extern "system" fn(
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    *const c_void,
-    *const c_void,
-    *mut c_void,
-    *mut *mut c_void,
-) -> i32;
-pub(crate) type FactoryCreateSwapchainForCoreWindowFn = unsafe extern "system" fn(
-    *mut c_void,
-    *mut c_void,
-    *mut c_void,
-    *const c_void,
-    *mut c_void,
-    *mut *mut c_void,
-) -> i32;
-pub(crate) type FactoryCreateSwapchainForCompositionFn = unsafe extern "system" fn(
-    *mut c_void,
-    *mut c_void,
-    *const c_void,
-    *mut c_void,
-    *mut *mut c_void,
-) -> i32;
-
-/// The layout-erased view of a hooked swapchain stored in the runtime
-/// registry.
-pub(crate) trait SwapchainHook: snowglass_hook::VtableHook {
-    fn owner(
-        &self,
-    ) -> &std::sync::RwLock<Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>>;
-    fn query_interface(&self) -> QueryInterfaceFn;
-    fn release(&self) -> ReleaseFn;
-    fn present(&self) -> PresentFn;
-    fn resize_buffers(&self) -> ResizeBuffersFn;
-    fn present1(&self) -> Option<Present1Fn>;
-}
-
-/// The layout-erased view of a hooked factory stored in the runtime registry.
-pub(crate) trait FactoryHook: snowglass_hook::VtableHook {
-    fn query_interface(&self) -> QueryInterfaceFn;
-    fn release(&self) -> ReleaseFn;
-    fn create_swapchain(&self) -> Option<FactoryCreateSwapchainFn>;
-    fn create_swapchain_for_hwnd(&self) -> Option<FactoryCreateSwapchainForHwndFn>;
-    fn create_swapchain_for_core_window(&self) -> Option<FactoryCreateSwapchainForCoreWindowFn>;
-    fn create_swapchain_for_composition(&self) -> Option<FactoryCreateSwapchainForCompositionFn>;
-}
-
 snowglass_hook::com_vtable! {
     pub(crate) union IDXGISwapchainVtable for IDXGISwapChain4_Vtbl;
 }
@@ -99,115 +52,107 @@ snowglass_hook::com_vtable! {
 }
 
 snowglass_hook::impl_com_hook! {
+    pub(crate) registry SWAPCHAINS;
+    pub(crate) trait SwapchainHook;
     impl SwapchainHook for IDXGISwapchainHook {
         vtable IDXGISwapchainVtable;
-        context {
-            /// The backend that claimed this swapchain, assigned after
-            /// installation once a registered claim accepts the creation
-            /// device.
-            owner: std::sync::RwLock<Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>>,
-        };
-        patch |patched| {
-        // SAFETY: the slots written below were copied above, so each place
-        // projection targets an initialized entry within the clone.
-        unsafe {
-            let unknown = patched.as_mut_ptr::<IUnknown_Vtbl>();
-            (*unknown).QueryInterface =
-                std::mem::transmute(crate::sys::query_interface as QueryInterfaceFn);
-            (*unknown).Release = crate::sys::release;
-            let table = patched.as_mut_ptr::<IDXGISwapChain_Vtbl>();
-            (*table).Present = std::mem::transmute(crate::sys::present as PresentFn);
-            (*table).ResizeBuffers =
-                std::mem::transmute(crate::sys::resize_buffers as ResizeBuffersFn);
-            if A::supports(std::any::TypeId::of::<IDXGISwapChain1_Vtbl>()) {
-                let table1 = patched.as_mut_ptr::<IDXGISwapChain1_Vtbl>();
-                (*table1).Present1 = std::mem::transmute(crate::sys::present1 as Present1Fn);
+        #[release(destroyed = crate::runtime::swapchain_destroyed)]
+        unsafe extern "system" fn swapchain_release(this: *mut c_void) -> u32 {
+            context struct {
+                owner: std::sync::RwLock<Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>>,
             }
-        }
         }
 
         #[vtable = IUnknown_Vtbl]
         #[base = QueryInterface]
-        fn query_interface(&self) -> QueryInterfaceFn;
-        #[vtable = IUnknown_Vtbl]
-        #[base = Release]
-        fn release(&self) -> ReleaseFn;
+        #[fallback = 0x8000_4002u32 as i32]
+        #[hooks(crate::runtime::swapchain_query_interface)]
+        unsafe extern "system" fn swapchain_query_interface(this: *mut c_void, interface_id: *const c_void, output: *mut *mut c_void) -> i32 {
+            context |state| {
+                owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.owner().read().unwrap_or_else(|error| error.into_inner()).clone(),
+            }
+        }
+
         #[vtable = IDXGISwapChain_Vtbl]
         #[base = Present]
-        fn present(&self) -> PresentFn;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::present)]
+        unsafe extern "system" fn present(this: *mut c_void, sync_interval: u32, flags: u32) -> i32 {
+            context |state| {
+                owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.owner().read().unwrap_or_else(|error| error.into_inner()).clone(),
+            }
+        }
+
         #[vtable = IDXGISwapChain_Vtbl]
         #[base = ResizeBuffers]
-        fn resize_buffers(&self) -> ResizeBuffersFn;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::resize_buffers)]
+        unsafe extern "system" fn resize_buffers(this: *mut c_void, buffer_count: u32, width: u32, height: u32, format: u32, flags: u32) -> i32 {
+            context |state| {
+                owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.owner().read().unwrap_or_else(|error| error.into_inner()).clone(),
+            }
+        }
+
         #[vtable = IDXGISwapChain1_Vtbl]
         #[base = Present1]
-        fn present1(&self) -> Option<Present1Fn>;
-    }
-}
-
-impl<A: Vtable> IDXGIFactoryHook<A> {
-    /// # Safety
-    ///
-    /// `object` must be null or point to a live COM object whose vtable spans
-    /// at least [`A::SLOTS`](Vtable::SLOTS) entries.
-    pub(crate) unsafe fn clone_and_patch(object: *mut c_void) -> Option<Self> {
-        if object.is_null() {
-            return None;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::present1)]
+        unsafe extern "system" fn present1(this: *mut c_void, sync_interval: u32, flags: u32, parameters: *const c_void) -> i32 {
+            context |state| {
+                owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.owner().read().unwrap_or_else(|error| error.into_inner()).clone(),
+            }
         }
-        let original = unsafe { *object.cast::<*const usize>() };
-        unsafe { Self::clone_from(original) }
     }
 }
 
 snowglass_hook::impl_com_hook! {
+    pub(crate) registry FACTORIES;
+    pub(crate) trait FactoryHook;
     impl FactoryHook for IDXGIFactoryHook {
         vtable IDXGIFactoryVtable;
-        patch |patched| {
-        // SAFETY: the slots written below were copied above, so each place
-        // projection targets an initialized entry within the clone.
-        unsafe {
-            let unknown = patched.as_mut_ptr::<IUnknown_Vtbl>();
-            (*unknown).QueryInterface =
-                std::mem::transmute(crate::sys::query_interface as QueryInterfaceFn);
-            (*unknown).Release = crate::sys::factory_release;
-            let table = patched.as_mut_ptr::<IDXGIFactory_Vtbl>();
-            (*table).CreateSwapChain = std::mem::transmute(
-                crate::sys::factory_create_swapchain as FactoryCreateSwapchainFn,
-            );
-            if A::supports(std::any::TypeId::of::<IDXGIFactory2_Vtbl>()) {
-                let table2 = patched.as_mut_ptr::<IDXGIFactory2_Vtbl>();
-                (*table2).CreateSwapChainForHwnd = std::mem::transmute(
-                    crate::sys::factory_create_swapchain_for_hwnd
-                        as FactoryCreateSwapchainForHwndFn,
-                );
-                (*table2).CreateSwapChainForCoreWindow = std::mem::transmute(
-                    crate::sys::factory_create_swapchain_for_core_window
-                        as FactoryCreateSwapchainForCoreWindowFn,
-                );
-                (*table2).CreateSwapChainForComposition = std::mem::transmute(
-                    crate::sys::factory_create_swapchain_for_composition
-                        as FactoryCreateSwapchainForCompositionFn,
-                );
-            }
-        }
+        #[release]
+        unsafe extern "system" fn factory_release(this: *mut c_void) -> u32 {
+            context struct {}
         }
 
         #[vtable = IUnknown_Vtbl]
         #[base = QueryInterface]
-        fn query_interface(&self) -> QueryInterfaceFn;
-        #[vtable = IUnknown_Vtbl]
-        #[base = Release]
-        fn release(&self) -> ReleaseFn;
+        #[fallback = 0x8000_4002u32 as i32]
+        #[hooks(crate::runtime::factory_query_interface)]
+        unsafe extern "system" fn factory_query_interface(this: *mut c_void, interface_id: *const c_void, output: *mut *mut c_void) -> i32 {
+            context |_state| {}
+        }
+
         #[vtable = IDXGIFactory_Vtbl]
         #[base = CreateSwapChain]
-        fn create_swapchain(&self) -> Option<FactoryCreateSwapchainFn>;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::factory_create_swapchain)]
+        unsafe extern "system" fn factory_create_swapchain(this: *mut c_void, device: *mut c_void, desc: *const c_void, swapchain: *mut *mut c_void) -> i32 {
+            context |_state| {}
+        }
+
         #[vtable = IDXGIFactory2_Vtbl]
         #[base = CreateSwapChainForHwnd]
-        fn create_swapchain_for_hwnd(&self) -> Option<FactoryCreateSwapchainForHwndFn>;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::factory_create_swapchain_for_hwnd)]
+        unsafe extern "system" fn factory_create_swapchain_for_hwnd(this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, fullscreen_desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32 {
+            context |_state| {}
+        }
+
         #[vtable = IDXGIFactory2_Vtbl]
         #[base = CreateSwapChainForCoreWindow]
-        fn create_swapchain_for_core_window(&self) -> Option<FactoryCreateSwapchainForCoreWindowFn>;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::factory_create_swapchain_for_core_window)]
+        unsafe extern "system" fn factory_create_swapchain_for_core_window(this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32 {
+            context |_state| {}
+        }
+
         #[vtable = IDXGIFactory2_Vtbl]
         #[base = CreateSwapChainForComposition]
-        fn create_swapchain_for_composition(&self) -> Option<FactoryCreateSwapchainForCompositionFn>;
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[hooks(crate::runtime::factory_create_swapchain_for_composition)]
+        unsafe extern "system" fn factory_create_swapchain_for_composition(this: *mut c_void, device: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32 {
+            context |_state| {}
+        }
     }
 }

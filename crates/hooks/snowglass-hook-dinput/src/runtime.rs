@@ -2,17 +2,16 @@
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
 
-use crate::vtable::{IDirectInputDeviceHook, IDirectInputHook};
-use snowglass_hook::{HookChain, config};
+use crate::vtable::{DeviceHookState, IDirectInputDeviceHook, IDirectInputHook};
+use snowglass_hook::config;
 use snowglass_input::DirectInputDevice;
 use snowglass_input_dinput::Runtime as InputRuntime;
 use std::{
-    collections::HashMap,
     ffi::c_void,
     fs::OpenOptions,
     io::Write,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -31,8 +30,6 @@ pub(crate) struct Runtime {
     logged_keyboard_poll: AtomicBool,
     logged_keyboard_pressed: AtomicBool,
     input: Arc<InputRuntime>,
-    direct_input_hooks: Mutex<HashMap<usize, DirectInputHook>>,
-    device_hooks: Mutex<HashMap<usize, DeviceHook>>,
 }
 
 impl Default for Runtime {
@@ -42,54 +39,7 @@ impl Default for Runtime {
             logged_keyboard_poll: AtomicBool::new(false),
             logged_keyboard_pressed: AtomicBool::new(false),
             input: Arc::new(InputRuntime::new(input_log)),
-            direct_input_hooks: Mutex::new(HashMap::new()),
-            device_hooks: Mutex::new(HashMap::new()),
         }
-    }
-}
-
-pub(crate) struct DirectInputHook {
-    vtable: IDirectInputHook,
-}
-
-pub(crate) struct DeviceHook {
-    vtable: IDirectInputDeviceHook,
-    device: DirectInputDevice,
-}
-
-impl Runtime {
-    pub(crate) fn direct_input_method<T: Copy>(
-        &self,
-        this: *mut c_void,
-        select: impl FnOnce(&IDirectInputHook) -> T,
-    ) -> Option<crate::vtable::OriginalMethod<T>> {
-        let hooks = self
-            .direct_input_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let hook = hooks.get(&(this as usize))?;
-        Some(crate::vtable::OriginalMethod {
-            original_vtable: hook.vtable.original_vtable(),
-            intercepted_vtable: hook.vtable.patched_vtable(),
-            function: select(&hook.vtable),
-        })
-    }
-
-    pub(crate) fn device_method<T: Copy>(
-        &self,
-        this: *mut c_void,
-        select: impl FnOnce(&IDirectInputDeviceHook) -> T,
-    ) -> Option<crate::vtable::OriginalMethod<T>> {
-        let hooks = self
-            .device_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let hook = hooks.get(&(this as usize))?;
-        Some(crate::vtable::OriginalMethod {
-            original_vtable: hook.vtable.original_vtable(),
-            intercepted_vtable: hook.vtable.patched_vtable(),
-            function: select(&hook.vtable),
-        })
     }
 }
 
@@ -113,72 +63,25 @@ impl Runtime {
         };
         self.input.start_receiver(format!("{session}-input"));
     }
+}
 
-    pub(crate) unsafe fn release(
-        this: *mut c_void,
-        next: crate::hooks::DirectInputReleaseContext<'_>,
-    ) -> u32 {
-        let (original_vtable, patched_vtable, original_release) = {
-            let hooks = next
-                .runtime
-                .direct_input_hooks
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let Some(hook) = hooks.get(&(this as usize)) else {
-                return 0;
-            };
-            (
-                hook.vtable.original_vtable(),
-                hook.vtable.patched_vtable(),
-                hook.vtable.release(),
-            )
-        };
-        let object_vtable = this.cast::<*const usize>();
-        unsafe { *object_vtable = original_vtable };
-        let remaining = unsafe { original_release(this) };
-        if remaining == 0 {
-            next.runtime
-                .direct_input_hooks
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&(this as usize));
-        } else {
-            unsafe { *object_vtable = patched_vtable };
-        }
-        remaining
-    }
-
-    unsafe fn install(runtime: &Runtime, interface: *mut c_void) {
-        if interface.is_null() {
-            return;
-        }
-        let key = interface as usize;
-        let mut hooks = runtime
-            .direct_input_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if hooks.contains_key(&key) {
-            return;
-        }
-        // SAFETY: a successful DirectInput8Create result is a COM object whose first
-        // field is an IDirectInput8A/W vtable pointer. Both variants share this layout.
-        let object_vtable = interface.cast::<*const usize>();
-        let Some(vtable) = (unsafe { IDirectInputHook::clone_from(*object_vtable) }) else {
-            return;
-        };
-        unsafe { *object_vtable = vtable.patched_vtable() };
-        hooks.insert(key, DirectInputHook { vtable });
-    }
+unsafe fn install_direct_input(runtime: Arc<Runtime>, interface: *mut c_void) {
+    unsafe {
+        IDirectInputHook::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A_Vtbl>::install(
+            interface, runtime,
+        )
+    };
 }
 
 pub(crate) unsafe fn create_device(
-    _this: *mut c_void,
+    this: *mut c_void,
     class: *const GUID,
     output: *mut *mut c_void,
-    _outer: *mut c_void,
-    result: HRESULT,
-    context: &crate::hooks::CreateDeviceContext,
-) {
+    outer: *mut c_void,
+    mut next: crate::vtable::CreateDeviceContext<'_>,
+) -> HRESULT {
+    let runtime = next.runtime.clone();
+    let result = snowglass_hook::next!(next, this, class, output, outer);
     if !class.is_null() {
         let class = unsafe { &*class };
         dinput_log(format!(
@@ -203,12 +106,13 @@ pub(crate) unsafe fn create_device(
             None
         };
         if let Some(device_class) = device_class {
-            unsafe { hook_device(&context.runtime, *output, device_class) };
+            unsafe { hook_device(runtime, *output, device_class) };
             dinput_log(format!(
                 "snowglass: hooked {device_class:?} DirectInput device"
             ));
         }
     }
+    result
 }
 
 fn guid_eq(left: &GUID, right: &GUID) -> bool {
@@ -218,48 +122,23 @@ fn guid_eq(left: &GUID, right: &GUID) -> bool {
         && left.data4 == right.data4
 }
 
-unsafe fn hook_device(runtime: &Runtime, interface: *mut c_void, device: DirectInputDevice) {
-    if interface.is_null() {
-        return;
-    }
-    let key = interface as usize;
-    let mut hooks = runtime
-        .device_hooks
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if hooks.contains_key(&key) {
-        return;
-    }
-    let object_vtable = interface.cast::<*const usize>();
-    let Some(vtable) = (unsafe { IDirectInputDeviceHook::clone_from(*object_vtable) }) else {
-        return;
+unsafe fn hook_device(runtime: Arc<Runtime>, interface: *mut c_void, device: DirectInputDevice) {
+    unsafe {
+        IDirectInputDeviceHook::<
+            windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A_Vtbl,
+        >::install(interface, runtime, device)
     };
-    unsafe { *object_vtable = vtable.patched_vtable() };
-    hooks.insert(key, DeviceHook { vtable, device });
 }
 
 pub(crate) unsafe fn get_device_state(
     this: *mut c_void,
     size: u32,
     output: *mut c_void,
-    mut next: crate::hooks::GetDeviceStateContext<'_>,
+    mut next: crate::vtable::GetDeviceStateContext<'_>,
 ) -> HRESULT {
-    let device = {
-        let hooks = next
-            .runtime
-            .device_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
-        };
-        hook.device
-    };
+    let device = next.device;
     if !next.runtime.input.connected() {
-        let continuation = *next
-            .fp_next()
-            .expect("DirectInput hook chains always have a terminal");
-        return unsafe { continuation(this, size, output, next) };
+        return snowglass_hook::next!(next, this, size, output);
     }
     if output.is_null() {
         return 0x8007_0057u32 as i32;
@@ -309,61 +188,20 @@ pub(crate) unsafe fn get_device_state(
     0
 }
 
-pub(crate) unsafe fn device_release(
-    this: *mut c_void,
-    next: crate::hooks::DeviceReleaseContext<'_>,
-) -> u32 {
-    let (original_vtable, patched_vtable, original_release) = {
-        let hooks = next
-            .runtime
-            .device_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0;
-        };
-        (
-            hook.vtable.original_vtable(),
-            hook.vtable.patched_vtable(),
-            hook.vtable.release(),
-        )
-    };
-    let object_vtable = this.cast::<*const usize>();
-    unsafe { *object_vtable = original_vtable };
-    let remaining = unsafe { original_release(this) };
-    if remaining == 0 {
-        next.runtime
-            .device_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&(this as usize));
-        next.runtime.input.remove_device(this as usize);
-    } else {
-        unsafe { *object_vtable = patched_vtable };
-    }
-    remaining
+pub(crate) unsafe fn device_destroyed(this: *mut c_void, state: &dyn DeviceHookState) {
+    state.runtime().input.remove_device(this as usize);
 }
 
 pub(crate) unsafe fn set_event_notification(
     this: *mut c_void,
     event: *mut c_void,
-    context: &crate::hooks::SetEventNotificationContext,
-) {
-    let device = {
-        let hooks = context
-            .runtime
-            .device_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return;
-        };
-        hook.device
-    };
-    context
-        .runtime
+    mut next: crate::vtable::SetEventNotificationContext<'_>,
+) -> HRESULT {
+    let runtime = next.runtime.clone();
+    runtime
         .input
-        .set_event_notification(this as usize, device, event as usize);
+        .set_event_notification(this as usize, next.device, event as usize);
+    snowglass_hook::next!(next, this, event)
 }
 
 pub(crate) unsafe fn get_device_data(
@@ -372,24 +210,11 @@ pub(crate) unsafe fn get_device_data(
     output: *mut DIDEVICEOBJECTDATA,
     count: *mut u32,
     flags: u32,
-    mut next: crate::hooks::GetDeviceDataContext<'_>,
+    mut next: crate::vtable::GetDeviceDataContext<'_>,
 ) -> HRESULT {
-    let device = {
-        let hooks = next
-            .runtime
-            .device_hooks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(hook) = hooks.get(&(this as usize)) else {
-            return 0x8000_4005u32 as i32;
-        };
-        hook.device
-    };
+    let device = next.device;
     if !next.runtime.input.connected() {
-        let continuation = *next
-            .fp_next()
-            .expect("DirectInput hook chains always have a terminal");
-        return unsafe { continuation(this, object_size, output, count, flags, next) };
+        return snowglass_hook::next!(next, this, object_size, output, count, flags);
     }
     if count.is_null() {
         return 0x8007_0057u32 as i32;
@@ -444,7 +269,7 @@ pub(crate) unsafe fn direct_input_8_create(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
     if result >= 0 && !output.is_null() {
-        unsafe { Runtime::install(&context.runtime, *output) };
+        unsafe { install_direct_input(context.runtime.clone(), *output) };
     }
     let _ = (instance, outer);
 }
@@ -513,7 +338,7 @@ mod tests {
             original_set_event_stub as *const () as usize;
         let mut object_vtable = original_vtable.as_ptr();
         let keyboard = (&raw mut object_vtable).cast::<c_void>();
-        unsafe { hook_device(&runtime, keyboard, DirectInputDevice::Keyboard) };
+        unsafe { hook_device(runtime.clone(), keyboard, DirectInputDevice::Keyboard) };
         let event = unsafe {
             windows_sys::Win32::System::Threading::CreateEventW(
                 std::ptr::null(),

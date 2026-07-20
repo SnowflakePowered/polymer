@@ -1,6 +1,5 @@
-use dashmap::DashMap;
 use std::ffi::c_void;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use windows::{
     Win32::Graphics::Direct3D11::{
         ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1,
@@ -21,80 +20,115 @@ snowglass_hook::vtable! {
     ],
 }
 
-type DrawIndexedFn = unsafe extern "system" fn(*mut c_void, u32, u32, i32);
-type DrawFn = unsafe extern "system" fn(*mut c_void, u32, u32);
-type DrawIndexedInstancedFn = unsafe extern "system" fn(*mut c_void, u32, u32, u32, i32, u32);
-type DrawInstancedFn = unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32);
-type DrawAutoFn = unsafe extern "system" fn(*mut c_void);
-type DrawIndirectFn = unsafe extern "system" fn(*mut c_void, *mut c_void, u32);
 type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d11::Tracking>) -> bool;
 
 snowglass_hook::com_vtable! {
     union ID3D11DeviceContextVtable for ID3D11DeviceContext4_Vtbl;
 }
 
-/// The layout-erased view of a hooked immediate context stored in the
-/// registry. `Draw`/`DrawIndexed` live in the base `ID3D11DeviceContext`
-/// layout common to every generation, so the exposed continuations do not
-/// depend on the cloned width.
-trait ContextHook: snowglass_hook::VtableHook {
-    fn tracking(&self) -> &Arc<snowglass_producer_d3d11::Tracking>;
-    fn draw(&self) -> DrawFn;
-    fn draw_indexed(&self) -> DrawIndexedFn;
-    fn draw_indexed_instanced(&self) -> DrawIndexedInstancedFn;
-    fn draw_instanced(&self) -> DrawInstancedFn;
-    fn draw_auto(&self) -> DrawAutoFn;
-    fn draw_indexed_instanced_indirect(&self) -> DrawIndirectFn;
-    fn draw_instanced_indirect(&self) -> DrawIndirectFn;
-}
-
 snowglass_hook::impl_com_hook! {
+    pub(crate) registry CONTEXTS;
+    trait ContextHook;
     impl ContextHook for ID3D11DeviceContextHook {
         vtable ID3D11DeviceContextVtable;
-        context {
-            /// Device-scoped tracking shared with the swapchains this device presents.
-            tracking: Arc<snowglass_producer_d3d11::Tracking>,
-        };
-        patch |patched| {
-        // SAFETY: the slots written below were copied above, so each place
-        // projection targets an initialized entry within the clone.
-        unsafe {
-            let table = patched.as_mut_ptr::<ID3D11DeviceContext_Vtbl>();
-            (*table).Draw = draw_trampoline;
-            (*table).DrawIndexed = draw_indexed_trampoline;
-            (*table).DrawIndexedInstanced = draw_indexed_instanced_trampoline;
-            (*table).DrawInstanced = draw_instanced_trampoline;
-            (*table).DrawAuto = draw_auto_trampoline;
-            (*table).DrawIndexedInstancedIndirect = draw_indexed_instanced_indirect_trampoline;
-            (*table).DrawInstancedIndirect = draw_instanced_indirect_trampoline;
-        }
+        #[release]
+        unsafe extern "system" fn context_release(this: *mut c_void) -> u32 {
+            context struct {
+                /// Device-scoped tracking shared with the swapchains this device presents.
+                tracking: Arc<snowglass_producer_d3d11::Tracking>,
+            }
         }
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = Draw]
-        fn draw(&self) -> DrawFn;
+        #[hooks(record_draw)]
+        unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
+
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexed]
-        fn draw_indexed(&self) -> DrawIndexedFn;
+        #[hooks(record_draw_indexed)]
+        unsafe extern "system" fn draw_indexed(
+            this: *mut c_void,
+            index_count: u32,
+            start_index: u32,
+            base_vertex: i32,
+        ) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
+
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexedInstanced]
-        fn draw_indexed_instanced(&self) -> DrawIndexedInstancedFn;
+        #[hooks(record_draw_indexed_instanced)]
+        unsafe extern "system" fn draw_indexed_instanced(
+            this: *mut c_void,
+            index_count_per_instance: u32,
+            instance_count: u32,
+            start_index: u32,
+            base_vertex: i32,
+            start_instance: u32,
+        ) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
+
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawInstanced]
-        fn draw_instanced(&self) -> DrawInstancedFn;
+        #[hooks(record_draw_instanced)]
+        unsafe extern "system" fn draw_instanced(
+            this: *mut c_void,
+            vertex_count_per_instance: u32,
+            instance_count: u32,
+            start_vertex: u32,
+            start_instance: u32,
+        ) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
+
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawAuto]
-        fn draw_auto(&self) -> DrawAutoFn;
+        #[hooks(record_draw_auto)]
+        unsafe extern "system" fn draw_auto(this: *mut c_void) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
+
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexedInstancedIndirect]
-        fn draw_indexed_instanced_indirect(&self) -> DrawIndirectFn;
+        #[hooks(record_draw_indexed_instanced_indirect)]
+        unsafe extern "system" fn draw_indexed_instanced_indirect(
+            this: *mut c_void,
+            argument_buffer: *mut c_void,
+            argument_offset: u32,
+        ) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
+
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawInstancedIndirect]
-        fn draw_instanced_indirect(&self) -> DrawIndirectFn;
+        #[hooks(record_draw_instanced_indirect)]
+        unsafe extern "system" fn draw_instanced_indirect(
+            this: *mut c_void,
+            argument_buffer: *mut c_void,
+            argument_offset: u32,
+        ) {
+            context |state| {
+                tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
+            }
+        }
     }
 }
-
-static CONTEXTS: LazyLock<DashMap<usize, Box<dyn ContextHook>>> = LazyLock::new(Default::default);
 
 /// Installs draw interception on a device's immediate context so the producer
 /// can track render regions.
@@ -169,123 +203,51 @@ unsafe fn install_context_kind<A: Vtable>(
     context: *mut c_void,
     tracking: Arc<snowglass_producer_d3d11::Tracking>,
 ) -> bool {
-    if context.is_null() {
-        return false;
-    }
-    let object_vtable = context.cast::<*const usize>();
-    let current = unsafe { *object_vtable };
-    let Some(hook) = (unsafe { ID3D11DeviceContextHook::<A>::clone_from(current, tracking) })
-    else {
-        return false;
+    unsafe { ID3D11DeviceContextHook::<A>::install(context, tracking) }
+}
+
+macro_rules! record_context_draw_hook {
+    ($hook:ident, $context:ident($($argument:ident: $argument_type:ty),* $(,)?)) => {
+        unsafe fn $hook(
+            this: *mut c_void,
+            $($argument: $argument_type,)*
+            mut next: $context<'_>,
+        ) {
+            let tracking = next.tracking.clone();
+            snowglass_hook::next!(next, this, $($argument),*);
+            unsafe { tracking.record_context_draw(this) };
+        }
     };
-    let state: Box<dyn ContextHook> = Box::new(hook);
-    unsafe { *object_vtable = state.patched_vtable() };
-    CONTEXTS.insert(context as usize, state);
-    true
 }
 
-fn context_tracking(context: *mut c_void) -> Option<Arc<snowglass_producer_d3d11::Tracking>> {
-    CONTEXTS
-        .get(&(context as usize))
-        .map(|state| state.tracking().clone())
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_trampoline(
-        this: *mut c_void,
-        vertex_count: u32,
-        start_vertex: u32,
-    );
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_indexed_instanced_trampoline(
-        this: *mut c_void,
-        index_count_per_instance: u32,
-        instance_count: u32,
-        start_index: u32,
-        base_vertex: i32,
-        start_instance: u32,
-    );
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed_instanced());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_instanced_trampoline(
-        this: *mut c_void,
-        vertex_count_per_instance: u32,
-        instance_count: u32,
-        start_vertex: u32,
-        start_instance: u32,
-    );
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_instanced());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_auto_trampoline(this: *mut c_void);
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_auto());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_indexed_instanced_indirect_trampoline(
-        this: *mut c_void,
-        argument_buffer: *mut c_void,
-        argument_offset: u32,
-    );
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed_instanced_indirect());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_instanced_indirect_trampoline(
-        this: *mut c_void,
-        argument_buffer: *mut c_void,
-        argument_offset: u32,
-    );
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_instanced_indirect());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
-
-snowglass_hook::com_trampoline! {
-    unsafe extern "system" fn draw_indexed_trampoline(
-        this: *mut c_void,
-        index_count: u32,
-        start_index: u32,
-        base_vertex: i32,
-    );
-    original CONTEXTS.get(&(this as usize)).map(|state| state.draw_indexed());
-    after {
-        if let Some(tracking) = context_tracking(this) {
-            unsafe { tracking.record_context_draw(this) };
-        }
-    }
-}
+record_context_draw_hook!(record_draw, DrawContext(
+    vertex_count: u32,
+    start_vertex: u32,
+));
+record_context_draw_hook!(record_draw_indexed, DrawIndexedContext(
+    index_count: u32,
+    start_index: u32,
+    base_vertex: i32,
+));
+record_context_draw_hook!(record_draw_indexed_instanced, DrawIndexedInstancedContext(
+    index_count_per_instance: u32,
+    instance_count: u32,
+    start_index: u32,
+    base_vertex: i32,
+    start_instance: u32,
+));
+record_context_draw_hook!(record_draw_instanced, DrawInstancedContext(
+    vertex_count_per_instance: u32,
+    instance_count: u32,
+    start_vertex: u32,
+    start_instance: u32,
+));
+record_context_draw_hook!(record_draw_auto, DrawAutoContext());
+record_context_draw_hook!(record_draw_indexed_instanced_indirect, DrawIndexedInstancedIndirectContext(
+    argument_buffer: *mut c_void,
+    argument_offset: u32,
+));
+record_context_draw_hook!(record_draw_instanced_indirect, DrawInstancedIndirectContext(
+    argument_buffer: *mut c_void,
+    argument_offset: u32,
+));

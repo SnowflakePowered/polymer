@@ -17,7 +17,6 @@ use std::ffi::c_void;
 use windows::Win32::Devices::HumanInterfaceDevice::{
     IDirectInput8A_Vtbl, IDirectInput8W_Vtbl, IDirectInputDevice8A_Vtbl, IDirectInputDevice8W_Vtbl,
 };
-use windows::core::IUnknown_Vtbl;
 use windows_sys::{
     Win32::Devices::HumanInterfaceDevice::DIDEVICEOBJECTDATA,
     core::{GUID, HRESULT},
@@ -30,30 +29,18 @@ snowglass_hook::vtable! {
     [IDirectInputDevice8W_Vtbl],
 }
 
-/// A continuation resolved from a hooked object, together with the vtable
-/// pointers needed to unhook the object across the downstream call.
-pub(crate) struct OriginalMethod<T> {
-    pub(crate) original_vtable: *const usize,
-    pub(crate) intercepted_vtable: *const usize,
-    pub(crate) function: T,
-}
-
-pub(crate) const DIRECT_INPUT_VTABLE_LEN: usize = <IDirectInput8A_Vtbl as Vtable>::SLOTS;
+#[cfg(test)]
 pub(crate) const DEVICE_VTABLE_LEN: usize = <IDirectInputDevice8A_Vtbl as Vtable>::SLOTS;
 
-pub(crate) type CreateDeviceFn =
-    unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void, *mut c_void) -> HRESULT;
+#[cfg(test)]
 pub(crate) type GetDeviceStateFn =
     unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> HRESULT;
-pub(crate) type AcquireFn = unsafe extern "system" fn(*mut c_void) -> HRESULT;
-pub(crate) type SetDataFormatFn = unsafe extern "system" fn(*mut c_void, *const c_void) -> HRESULT;
-pub(crate) type SetCooperativeLevelFn =
-    unsafe extern "system" fn(*mut c_void, *mut c_void, u32) -> HRESULT;
+#[cfg(test)]
 pub(crate) type GetDeviceDataFn =
     unsafe extern "system" fn(*mut c_void, u32, *mut DIDEVICEOBJECTDATA, *mut u32, u32) -> HRESULT;
+#[cfg(test)]
 pub(crate) type SetEventNotificationFn =
     unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT;
-pub(crate) type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
 
 snowglass_hook::com_vtable! {
     /// Overlays the ABI-identical ANSI and wide `IDirectInput8` vtables.
@@ -69,73 +56,97 @@ const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
 
 snowglass_hook::impl_com_hook! {
-    impl IDirectInputHook {
+    pub(crate) registry DIRECT_INPUT_HOOKS;
+    pub(crate) trait DirectInputHookState;
+    impl DirectInputHookState for IDirectInputHook {
         vtable IDirectInputVtable;
-        slots DIRECT_INPUT_VTABLE_LEN;
-        patch |patched| {
-        // SAFETY: the slots written below were copied above, so each place
-        // projection targets an initialized entry within the clone.
-        unsafe {
-            let table = patched.as_mut_ptr::<IDirectInput8A_Vtbl>();
-            (*table).base__.Release = crate::sys::direct_input_release;
-            (*table).CreateDevice =
-                std::mem::transmute(crate::sys::create_device as CreateDeviceFn);
-        }
+        #[release]
+        unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32 {
+            context struct {
+                runtime: std::sync::Arc<crate::runtime::Runtime>,
+            }
         }
 
-        #[vtable = IUnknown_Vtbl]
-        #[base = Release]
-        fn release(&self) -> ReleaseFn;
         #[vtable = IDirectInput8A_Vtbl]
         #[base = CreateDevice]
-        fn create_device(&self) -> CreateDeviceFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks(crate::runtime::create_device)]
+        unsafe extern "system" fn create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT {
+            context |state| {
+                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
+            }
+        }
     }
 }
 
 snowglass_hook::impl_com_hook! {
-    impl IDirectInputDeviceHook {
+    pub(crate) registry DEVICE_HOOKS;
+    pub(crate) trait DeviceHookState;
+    impl DeviceHookState for IDirectInputDeviceHook {
         vtable IDirectInputDeviceVtable;
-        slots DEVICE_VTABLE_LEN;
-        patch |patched| {
-        // SAFETY: the slots written below were copied above, so each place
-        // projection targets an initialized entry within the clone.
-        unsafe {
-            let table = patched.as_mut_ptr::<IDirectInputDevice8A_Vtbl>();
-            (*table).base__.Release = crate::sys::device_release;
-            (*table).Acquire = std::mem::transmute(crate::sys::acquire as AcquireFn);
-            (*table).GetDeviceState =
-                std::mem::transmute(crate::sys::get_device_state as GetDeviceStateFn);
-            (*table).GetDeviceData =
-                std::mem::transmute(crate::sys::get_device_data as GetDeviceDataFn);
-            (*table).SetDataFormat =
-                std::mem::transmute(crate::sys::set_data_format as SetDataFormatFn);
-            (*table).SetEventNotification =
-                std::mem::transmute(crate::sys::set_event_notification as SetEventNotificationFn);
-            (*table).SetCooperativeLevel =
-                std::mem::transmute(crate::sys::set_cooperative_level as SetCooperativeLevelFn);
-        }
+        #[release(destroyed = crate::runtime::device_destroyed)]
+        unsafe extern "system" fn device_release(this: *mut c_void) -> u32 {
+            context struct {
+                runtime: std::sync::Arc<crate::runtime::Runtime>,
+                device: snowglass_input::DirectInputDevice,
+            }
         }
 
-        #[vtable = IUnknown_Vtbl]
-        #[base = Release]
-        fn release(&self) -> ReleaseFn;
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = Acquire]
-        fn acquire(&self) -> AcquireFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks()]
+        unsafe extern "system" fn acquire(this: *mut c_void) -> HRESULT {
+            context |_state| {}
+        }
+
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = GetDeviceState]
-        fn get_device_state(&self) -> GetDeviceStateFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks(crate::runtime::get_device_state)]
+        unsafe extern "system" fn get_device_state(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT {
+            context |state| {
+                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
+                device: snowglass_input::DirectInputDevice = *state.device(),
+            }
+        }
+
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = GetDeviceData]
-        fn get_device_data(&self) -> GetDeviceDataFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks(crate::runtime::get_device_data)]
+        unsafe extern "system" fn get_device_data(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT {
+            context |state| {
+                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
+                device: snowglass_input::DirectInputDevice = *state.device(),
+            }
+        }
+
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetDataFormat]
-        fn set_data_format(&self) -> SetDataFormatFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks()]
+        unsafe extern "system" fn set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT {
+            context |_state| {}
+        }
+
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetEventNotification]
-        fn set_event_notification(&self) -> SetEventNotificationFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks(crate::runtime::set_event_notification)]
+        unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT {
+            context |state| {
+                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
+                device: snowglass_input::DirectInputDevice = *state.device(),
+            }
+        }
+
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetCooperativeLevel]
-        fn set_cooperative_level(&self) -> SetCooperativeLevelFn;
+        #[fallback = 0x8000_4005u32 as i32]
+        #[hooks()]
+        unsafe extern "system" fn set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT {
+            context |_state| {}
+        }
     }
 }
