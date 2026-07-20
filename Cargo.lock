@@ -3088,6 +3088,7 @@ dependencies = [
  "retour",
  "snowglass-hook",
  "snowglass-input",
+ "snowglass-input-dinput",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "windows",
@@ -3132,6 +3133,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-hook-sdl2"
+version = "0.1.0"
+dependencies = [
+ "retour",
+ "snowglass-hook",
+ "snowglass-input",
+ "snowglass-input-sdl",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "snowglass-hook-sdl3"
+version = "0.1.0"
+dependencies = [
+ "retour",
+ "snowglass-hook",
+ "snowglass-input",
+ "snowglass-input-sdl",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "snowglass-hook-vulkan-layer"
 version = "0.1.0"
 dependencies = [
@@ -3148,6 +3171,34 @@ dependencies = [
 [[package]]
 name = "snowglass-input"
 version = "0.1.0"
+
+[[package]]
+name = "snowglass-input-dinput"
+version = "0.1.0"
+dependencies = [
+ "snowglass-input",
+ "snowglass-input-win32",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "snowglass-input-sdl"
+version = "0.1.0"
+dependencies = [
+ "snowglass-input",
+ "snowglass-ipc",
+]
+
+[[package]]
+name = "snowglass-input-win32"
+version = "0.1.0"
+dependencies = [
+ "snowglass-input",
+ "snowglass-platform-windows",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "snowglass-ipc"
@@ -3265,6 +3316,7 @@ dependencies = [
  "snowglass-consumer-vulkan",
  "snowglass-hook",
  "snowglass-input",
+ "snowglass-input-dinput",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",

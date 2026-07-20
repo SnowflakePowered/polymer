@@ -2808,6 +2808,7 @@ fn spawn_ipc(
                             Message::Shutdown => return Ok(()),
                             Message::DirectInputData(_) => {}
                             Message::PointerInput(_) => {}
+                            Message::GamepadUpdate(_) => {}
                             Message::Hello(_) => {}
                             Message::StreamAccepted => {}
                         }
@@ -3643,6 +3644,8 @@ fn launch_target(
     let opengl_hook = layer_dir.join("snowglass_hook_opengl32.dll");
     let gdi_hook = layer_dir.join("snowglass_hook_gdi.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
+    let sdl2_hook = layer_dir.join("snowglass_hook_sdl2.dll");
+    let sdl3_hook = layer_dir.join("snowglass_hook_sdl3.dll");
     let mut libraries: Vec<(&str, &Path, &std::ffi::CStr)> = Vec::new();
     // Both DXGI producers intercept swapchains through the factory-level hooks.
     if hooks
@@ -3672,6 +3675,16 @@ fn launch_target(
         dinput_hook.as_path(),
         c"SnowglassInstallDinputHook",
     ));
+    libraries.push((
+        "SDL2",
+        sdl2_hook.as_path(),
+        c"SnowglassInstallSdl2Hook",
+    ));
+    libraries.push((
+        "SDL3",
+        sdl3_hook.as_path(),
+        c"SnowglassInstallSdl3Hook",
+    ));
     for &(name, hook, _) in &libraries {
         if hook.is_file() {
             continue;
@@ -3692,6 +3705,10 @@ fn launch_target(
         (
             OsString::from(config::DINPUT_LOG_FILE),
             layer_dir.join("snowglass-dinput.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::SDL_LOG_FILE),
+            layer_dir.join("snowglass-sdl.log").into_os_string(),
         ),
         (
             OsString::from(config::DXGI_LOG_FILE),

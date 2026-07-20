@@ -602,7 +602,7 @@ impl Capture {
             if scissor_enabled {
                 glDisable(GL_SCISSOR_TEST);
             }
-    
+
             match source {
                 None => {
                     (self.functions.blit_framebuffer)(

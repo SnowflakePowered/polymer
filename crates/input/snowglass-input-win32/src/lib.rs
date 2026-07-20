@@ -1,4 +1,6 @@
-//! Guest-desktop Win32 mouse-message forwarding.
+//! Win32 mouse window-message forwarding.
+
+#![allow(unsafe_code)]
 
 use snowglass_input::mouse::{PointerInput, PointerPhase};
 use snowglass_platform_windows::{NativeWindow, ProcessId, client_size, is_process_window};
@@ -17,13 +19,17 @@ use windows_sys::Win32::{
     },
 };
 
+/// Converts normalized pointer input into mouse messages for an HWND owned by
+/// the current process.
 #[derive(Default)]
-pub(crate) struct WindowMessageForwarder {
+pub struct WindowMessageForwarder {
     pointer_buttons: Mutex<HashMap<(u64, u32), u32>>,
 }
 
 impl WindowMessageForwarder {
-    pub(crate) fn apply(&self, event: PointerInput) -> bool {
+    /// Posts the messages represented by `event`, returning whether its target
+    /// was a valid, non-empty window owned by this process.
+    pub fn apply(&self, event: PointerInput) -> bool {
         if event.target_window == 0 || event.coordinate_width == 0 || event.coordinate_height == 0 {
             return false;
         }

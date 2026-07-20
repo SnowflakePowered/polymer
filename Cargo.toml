@@ -69,6 +69,9 @@ snowglass-protocol = { path = "crates/snowglass-protocol" }
 snowglass-ipc = { path = "crates/snowglass-ipc" }
 snowglass-platform-windows = { path = "crates/snowglass-platform-windows" }
 snowglass-input = { path = "crates/input/snowglass-input" }
+snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
+snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
+snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
 [workspace.lints.rust]

@@ -1,0 +1,15 @@
+[package]
+name = "snowglass-input-dinput"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-input.workspace = true
+snowglass-input-win32.workspace = true
+snowglass-ipc.workspace = true
+snowglass-platform-windows.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true

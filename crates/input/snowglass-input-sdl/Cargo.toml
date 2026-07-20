@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-input-sdl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+snowglass-input.workspace = true
+snowglass-ipc.workspace = true
+
+[lints]
+workspace = true

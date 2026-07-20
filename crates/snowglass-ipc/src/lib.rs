@@ -2,6 +2,7 @@
 
 use snowglass_input::{
     DirectInputData, DirectInputDevice,
+    gamepad::{GamepadSlot, GamepadState, GamepadUpdate},
     mouse::{PointerInput, PointerPhase, PointerSource},
 };
 use snowglass_protocol::{
@@ -25,7 +26,7 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
-    byteorder::little_endian::{I32, I64, U32, U64},
+    byteorder::little_endian::{I16, I32, I64, U16, U32, U64},
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,19 +39,19 @@ const MESSAGE_SHUTDOWN: u32 = 4;
 const MESSAGE_DIRECT_INPUT_DATA: u32 = 5;
 const MESSAGE_STREAM_ACCEPTED: u32 = 6;
 const MESSAGE_POINTER_INPUT: u32 = 7;
+const MESSAGE_GAMEPAD_UPDATE: u32 = 8;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
     let stream = mem::size_of::<WireStreamReady>();
     let frame = mem::size_of::<WireFrameReady>();
     let pointer = mem::size_of::<WirePointerInput>();
-    if stream > frame {
-        if stream > pointer { stream } else { pointer }
-    } else if frame > pointer {
-        frame
-    } else {
-        pointer
-    }
+    let gamepad = mem::size_of::<WireGamepadUpdate>();
+    max(max(stream, frame), max(pointer, gamepad))
+}
+
+const fn max(left: usize, right: usize) -> usize {
+    if left > right { left } else { right }
 }
 
 static WINSOCK: OnceLock<i32> = OnceLock::new();
@@ -89,6 +90,7 @@ pub enum Message {
     Shutdown,
     DirectInputData(DirectInputData),
     PointerInput(PointerInput),
+    GamepadUpdate(GamepadUpdate),
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
 }
@@ -182,6 +184,21 @@ struct WirePointerInput {
     wheel_vertical: I32,
     timestamp: U32,
     sequence: U32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireGamepadUpdate {
+    slot: U32,
+    sequence: U32,
+    connected: U32,
+    buttons: U32,
+    left_x: I16,
+    left_y: I16,
+    right_x: I16,
+    right_y: I16,
+    left_trigger: U16,
+    right_trigger: U16,
 }
 
 pub struct LocalSocketListener {
@@ -461,6 +478,24 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
+        Message::GamepadUpdate(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_GAMEPAD_UPDATE,
+                &WireGamepadUpdate {
+                    slot: U32::new(u32::from(value.slot.get())),
+                    sequence: U32::new(value.sequence),
+                    connected: U32::new(value.connected as u32),
+                    buttons: U32::new(value.state.buttons),
+                    left_x: I16::new(value.state.left_stick[0]),
+                    left_y: I16::new(value.state.left_stick[1]),
+                    right_x: I16::new(value.state.right_stick[0]),
+                    right_y: I16::new(value.state.right_stick[1]),
+                    left_trigger: U16::new(value.state.left_trigger),
+                    right_trigger: U16::new(value.state.right_trigger),
+                },
+            );
+        }
         Message::StreamAccepted => {
             wire.kind = U32::new(MESSAGE_STREAM_ACCEPTED);
         }
@@ -590,6 +625,30 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 sequence: value.sequence.get(),
             }))
         }
+        MESSAGE_GAMEPAD_UPDATE => {
+            let value = payload::<WireGamepadUpdate>(wire)?;
+            let slot = u8::try_from(value.slot.get())
+                .ok()
+                .and_then(GamepadSlot::new)
+                .ok_or_else(|| invalid_data("invalid gamepad slot"))?;
+            let connected = match value.connected.get() {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid_data("invalid gamepad connection state")),
+            };
+            Ok(Message::GamepadUpdate(GamepadUpdate {
+                slot,
+                sequence: value.sequence.get(),
+                connected,
+                state: GamepadState {
+                    buttons: value.buttons.get(),
+                    left_stick: [value.left_x.get(), value.left_y.get()],
+                    right_stick: [value.right_x.get(), value.right_y.get()],
+                    left_trigger: value.left_trigger.get(),
+                    right_trigger: value.right_trigger.get(),
+                },
+            }))
+        }
         _ => Err(invalid_data("unknown message type")),
     }
 }
@@ -683,6 +742,18 @@ mod tests {
                 wheel_vertical: 0,
                 timestamp: 123,
                 sequence: 457,
+            }),
+            Message::GamepadUpdate(GamepadUpdate {
+                slot: GamepadSlot::new(2).unwrap(),
+                sequence: 458,
+                connected: true,
+                state: GamepadState {
+                    buttons: 0x5,
+                    left_stick: [-123, 456],
+                    right_stick: [-789, 1_234],
+                    left_trigger: 12_345,
+                    right_trigger: 54_321,
+                },
             }),
             Message::StreamAccepted,
         ];

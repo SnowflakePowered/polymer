@@ -18,6 +18,7 @@ serde_json = "1.0"
 snowglass-consumer-vulkan = { path = "../../crates/consumer/snowglass-consumer-vulkan" }
 snowglass-consumer-d3d12 = { path = "../../crates/consumer/snowglass-consumer-d3d12" }
 snowglass-input.workspace = true
+snowglass-input-dinput.workspace = true
 snowglass-hook.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true

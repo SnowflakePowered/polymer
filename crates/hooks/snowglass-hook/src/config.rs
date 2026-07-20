@@ -5,6 +5,8 @@ use std::{ffi::OsString, path::PathBuf};
 pub const SESSION: &str = "SNOWGLASS_SESSION";
 pub const LAYER_LOG_FILE: &str = "SNOWGLASS_LOG_FILE";
 pub const DINPUT_LOG_FILE: &str = "SNOWGLASS_DINPUT_LOG_FILE";
+pub const SDL_LOG_FILE: &str = "SNOWGLASS_SDL_LOG_FILE";
+pub const SDL_GAMEPADS: &str = "SNOWGLASS_SDL_GAMEPADS";
 pub const DXGI_LOG_FILE: &str = "SNOWGLASS_DXGI_LOG_FILE";
 pub const D3D11_LOG_FILE: &str = "SNOWGLASS_D3D11_LOG_FILE";
 pub const D3D12_LOG_FILE: &str = "SNOWGLASS_D3D12_LOG_FILE";
@@ -25,6 +27,19 @@ pub fn layer_log_file() -> Option<PathBuf> {
 
 pub fn dinput_log_file() -> Option<PathBuf> {
     path(DINPUT_LOG_FILE)
+}
+
+pub fn sdl_log_file() -> Option<PathBuf> {
+    path(SDL_LOG_FILE)
+}
+
+/// Fixed virtual-pad topology exposed for the lifetime of the target process.
+pub fn sdl_gamepad_count() -> usize {
+    std::env::var(SDL_GAMEPADS)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1)
+        .clamp(1, 4)
 }
 
 pub fn dxgi_log_file() -> Option<PathBuf> {
