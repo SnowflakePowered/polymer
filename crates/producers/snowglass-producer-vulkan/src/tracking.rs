@@ -265,6 +265,39 @@ impl Tracking {
             .collect()
     }
 
+    /// Whether any held source names an image that has been destroyed — a
+    /// render-target reallocation, e.g. an internal-resolution change. This is
+    /// distinct from a source merely aging out of the selection stores:
+    /// `image_extent` tracks live image existence and is cleared only by
+    /// `vkDestroyImage` (via [`forget_image`]), not by the staleness horizon,
+    /// so its absence does not fire during feedback-loop bridging where the
+    /// images are still live.
+    ///
+    /// [`forget_image`]: Self::forget_image
+    pub fn sources_reallocated(&self, sources: &[PresentSource]) -> bool {
+        sources
+            .iter()
+            .any(|source| !self.image_extent.contains_key(&source.image))
+    }
+
+    /// Clears the accumulated dependency graph and render-target history so the
+    /// next presents rebuild it from scratch. A live render-target
+    /// reallocation (a resolution switch destroys the offscreen screens and
+    /// creates new ones) otherwise leaves the incremental selection carrying
+    /// stale edges from the old layout and re-resolving only part of the new
+    /// one, where a from-empty rebuild recovers every screen. The descriptive
+    /// stores (`image_extent`, `image_info`, view and framebuffer maps,
+    /// descriptor bindings, cohorts, swapchain images) are kept — they reflect
+    /// live objects and are repopulated by observation, not selection state.
+    pub fn reset_graph(&self) {
+        self.targets.clear();
+        self.dependencies.clear();
+        self.placements.clear();
+        self.presented.clear();
+        self.render_target.clear();
+        self.command_candidate.clear();
+    }
+
     /// Selects up to `limit` offscreen sources for the presented swapchain
     /// image, walking presentation roots through the dependency graph. Each
     /// returned source is one whole screen; the caller streams them separately.
@@ -1008,6 +1041,65 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    fn present_source(image: vk::Image, width: u32, height: u32) -> PresentSource {
+        PresentSource {
+            image,
+            extent: extent(width, height),
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            presentation_rect: None,
+        }
+    }
+
+    #[test]
+    fn sources_reallocated_detects_a_destroyed_image() {
+        let tracking = Tracking::default();
+        let (top, bottom) = (image(1), image(2));
+        tracking.note_image(top, extent(400, 240));
+        tracking.note_image(bottom, extent(320, 240));
+        let sources = [present_source(top, 400, 240), present_source(bottom, 320, 240)];
+        assert!(!tracking.sources_reallocated(&sources));
+
+        // A resolution switch destroys the old screen; its extent record goes
+        // with it, and the held selection is now reallocated.
+        tracking.forget_image(bottom);
+        assert!(tracking.sources_reallocated(&sources));
+    }
+
+    #[test]
+    fn reset_graph_clears_selection_but_keeps_live_images() {
+        let tracking = Tracking::default();
+        let (destination, source) = (image(1), image(2));
+        tracking.note_image(destination, extent(400, 240));
+        tracking.note_image(source, extent(400, 240));
+        // Populate the accumulators directly: the record_* entry points are
+        // gated behind the graph-tracking env flag, which is unset in tests.
+        tracking.upsert_target(destination, extent(400, 240), 96_000);
+        tracking
+            .dependencies
+            .insert(destination, vec![(source, tracking.generation())]);
+        tracking.placements.insert(
+            (destination, source),
+            vec![EdgePlacement {
+                source_rect: rect(0, 0, 400, 240),
+                destination_rect: rect(0, 0, 400, 240),
+                seen: tracking.generation(),
+            }],
+        );
+        tracking.presented.insert(destination, vec![(source, true)]);
+        assert!(tracking.targets.contains_key(&destination));
+
+        tracking.reset_graph();
+
+        // Selection accumulators are cleared so the graph rebuilds fresh.
+        assert!(tracking.targets.is_empty());
+        assert!(tracking.dependencies.is_empty());
+        assert!(tracking.placements.is_empty());
+        assert!(tracking.presented.is_empty());
+        // Live-object descriptors survive: the images still exist.
+        assert!(tracking.image_extent(destination).is_some());
+        assert!(tracking.image_extent(source).is_some());
     }
 
     #[test]

@@ -1026,11 +1026,9 @@ impl CaptureState {
         let presented_image = state.images.get(image_index as usize).copied()?;
         let capture_rect = tracking.capture_rect(presented_image, state.extent);
         let rect_is_content = capture_rect.is_some_and(|rect| rect.extent != state.extent);
-        // The dependency graph resolves the offscreen images that fed this
-        // present; it supersedes the single-source fallbacks. A take can
-        // transiently fail (feedback loops make every root prune every other),
-        // so an empty result re-resolves the last good selection while its
-        // images are still live, and a partial one updates matching slots.
+       
+       // reset track on reallocatio
+        let reallocated = tracking.sources_reallocated(&state.tracked_sources);
         let mut resolved = (config::tracking_enabled() && config::graph_tracking_enabled())
             .then(|| {
                 tracking.take_present_sources(
@@ -1040,6 +1038,10 @@ impl CaptureState {
             })
             .unwrap_or_default();
         let previous = tracking.refresh_sources(&state.tracked_sources);
+        if reallocated {
+            log("snowglass: Vulkan render targets reallocated; resetting tracking graph");
+            tracking.reset_graph();
+        }
         if resolved.is_empty() {
             resolved = previous;
         } else if resolved.len() < previous.len() {
