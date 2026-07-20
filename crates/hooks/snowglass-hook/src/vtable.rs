@@ -180,7 +180,9 @@ macro_rules! function_table_hook {
 
             $(
                 #[slot = $slot:expr]
-                #[hooks($($initial_hook:path),* $(,)?) ]
+                $(#[prefix($($prefix:tt)*)])?
+                $(#[infix($($infix:path),* $(,)? )])?
+                $(#[postfix($($postfix:tt)*)])?
                 unsafe extern $abi:literal fn $dispatch:ident(
                     $($argument:ident: $argument_type:ty),* $(,)?
                 ) $(-> $result:ty)? {
@@ -233,7 +235,7 @@ macro_rules! function_table_hook {
                 Ok(Self {
                     $($dispatch,
                     [<$dispatch _hooks>]: ::std::sync::RwLock::new(vec![
-                        $($initial_hook,)*
+                        $($($infix,)*)?
                     ]),)+
                 })
             }
@@ -277,7 +279,7 @@ macro_rules! function_table_hook {
                 hooks: ::std::slice::Iter<'a, [<$dispatch:camel Hook>]>,
                 terminal: &'a [<$dispatch:camel Hook>],
                 base: unsafe extern $abi fn($($argument_type),*) $(-> $result)?,
-                $($visibility $context_field: $context_field_type,)*
+                $($visibility $context_field: &'a $context_field_type,)*
             }
 
             impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
@@ -300,23 +302,43 @@ macro_rules! function_table_hook {
 
                 let table_hook = $resolve();
                 let base = table_hook.$dispatch();
+                $(let $context_field = $context_field_value;)*
                 let chain = table_hook.[<$dispatch _hooks>]
                     .read()
                     .unwrap_or_else(|error| error.into_inner());
                 let mut hooks = chain.iter();
                 let terminal: [<$dispatch:camel Hook>] = terminal;
+                let _prefix_context = [<$dispatch:camel Context>] {
+                    hooks: hooks.clone(),
+                    terminal: &terminal,
+                    base,
+                    $($context_field: &$context_field,)*
+                };
+                $crate::__chain_hooks!(@visit_prefix forward;
+                    ($($argument),*); &_prefix_context; $(prefix($($prefix)*))?
+                );
                 let next = *hooks.next().unwrap_or(&terminal);
-                unsafe {
+                let result = unsafe {
                     next(
                         $($argument,)*
                         [<$dispatch:camel Context>] {
                             hooks,
                             terminal: &terminal,
                             base,
-                            $($context_field: $context_field_value,)*
+                            $($context_field: &$context_field,)*
                         },
                     )
-                }
+                };
+                let _postfix_context = [<$dispatch:camel Context>] {
+                    hooks: [].iter(),
+                    terminal: &terminal,
+                    base,
+                    $($context_field: &$context_field,)*
+                };
+                $crate::__chain_hooks!(@visit_postfix forward;
+                    ($($argument),*); result; &_postfix_context; $(postfix($($postfix)*))?
+                );
+                result
             }
         )+
     }};
@@ -336,6 +358,13 @@ macro_rules! function_table_hook {
 /// per-call context inside its body with `context |state| { ... }`, where
 /// `state` exposes those persistent fields. The macro owns registration,
 /// vtable publication, chain dispatch, and the release lifecycle.
+///
+/// Methods accept the same phase shorthands as `chain_hooks!`:
+/// `#[prefix(observer(arguments...))]` runs read-only observers before the
+/// continuation, `#[infix(hook, ...)]` declares hooks that receive the
+/// context by value and may call `next!`, and
+/// `#[postfix(observer(arguments..., result))]` runs after continuation.
+/// Prefix and postfix observers receive the context by shared reference.
 #[macro_export]
 macro_rules! impl_com_hook {
     (
@@ -357,7 +386,9 @@ macro_rules! impl_com_hook {
                 #[vtable = $vtable:ty]
                 #[base = $base:ident]
                 $(#[fallback = $fallback:expr])?
-                #[hooks($($chain_hook:path),* $(,)?)]
+                $(#[prefix($($prefix:tt)*)])?
+                $(#[infix($($infix:path),* $(,)? )])?
+                $(#[postfix($($postfix:tt)*)])?
                 unsafe extern "system" fn $dispatch:ident(
                     $this:ident: $this_type:ty
                     $(, $argument:ident: $argument_type:ty)* $(,)?
@@ -536,7 +567,7 @@ macro_rules! impl_com_hook {
                 hooks: ::core::slice::Iter<'a, [<$dispatch:camel Hook>]>,
                 terminal: &'a [<$dispatch:camel Hook>],
                 base: unsafe extern "system" fn($this_type, $($argument_type),*) $(-> $result)?,
-                $($visibility $dispatch_field: $dispatch_field_type,)*
+                $($visibility $dispatch_field: &'a $dispatch_field_type,)*
             }
 
             impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
@@ -570,11 +601,21 @@ macro_rules! impl_com_hook {
                 };
                 $(let $dispatch_field = $dispatch_field_value;)*
                 drop($state);
-                let hooks: &[[<$dispatch:camel Hook>]] = &[$($chain_hook),*];
+                let hooks: &[[<$dispatch:camel Hook>]] =
+                    $crate::__chain_hooks!(@infix_slice $(infix($($infix),*))?);
                 let mut remaining = hooks.iter();
                 let terminal: [<$dispatch:camel Hook>] = terminal;
+                let context = [<$dispatch:camel Context>] {
+                    hooks: remaining.clone(),
+                    terminal: &terminal,
+                    base,
+                    $($dispatch_field: &$dispatch_field,)*
+                };
+                $crate::__chain_hooks!(@visit_prefix forward;
+                    ($this $(, $argument)*); &context; $(prefix($($prefix)*))?
+                );
                 let next = *remaining.next().unwrap_or(&terminal);
-                unsafe {
+                let result = unsafe {
                     next(
                         $this,
                         $($argument,)*
@@ -582,10 +623,20 @@ macro_rules! impl_com_hook {
                             hooks: remaining,
                             terminal: &terminal,
                             base,
-                            $($dispatch_field,)*
+                            $($dispatch_field: &$dispatch_field,)*
                         },
                     )
-                }
+                };
+                let context = [<$dispatch:camel Context>] {
+                    hooks: [].iter(),
+                    terminal: &terminal,
+                    base,
+                    $($dispatch_field: &$dispatch_field,)*
+                };
+                $crate::__chain_hooks!(@visit_postfix forward;
+                    ($this $(, $argument)*); result; &context; $(postfix($($postfix)*))?
+                );
+                result
             }
         )+
     }};
@@ -813,7 +864,10 @@ macro_rules! impl_com_hook {
 mod tests {
     use std::any::TypeId;
     use std::mem::size_of_val;
-    use std::sync::OnceLock;
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    };
     struct Base;
     struct Derived;
     struct Other;
@@ -834,6 +888,7 @@ mod tests {
     }
 
     static TEST_FUNCTION_TABLE: OnceLock<TestFunctionTableHook> = OnceLock::new();
+    static FUNCTION_TABLE_PHASES: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "C" fn function_table_base(value: usize) -> usize {
         value * 2
@@ -843,8 +898,15 @@ mod tests {
         value: usize,
         mut next: FunctionTableDispatchContext<'_>,
     ) -> usize {
+        FUNCTION_TABLE_PHASES.fetch_add(10, Ordering::Relaxed);
         let offset = next.offset;
         crate::next!(next, value) + offset
+    }
+
+    unsafe fn function_table_prefix(value: usize, context: &FunctionTableDispatchContext<'_>) {
+        assert_eq!(value, 4);
+        assert_eq!(*context.offset, 3);
+        FUNCTION_TABLE_PHASES.fetch_add(1, Ordering::Relaxed);
     }
 
     fn test_function_table() -> &'static TestFunctionTableHook {
@@ -859,7 +921,12 @@ mod tests {
             const MINIMUM_SLOTS: usize = 2;
 
             #[slot = 0]
-            #[hooks(function_table_around)]
+            #[prefix(function_table_prefix(value))]
+            #[infix(function_table_around)]
+            #[postfix(|result, next| {
+                assert_eq!((result, *next.offset), (11, 3));
+                FUNCTION_TABLE_PHASES.fetch_add(100, Ordering::Relaxed);
+            })]
             unsafe extern "C" fn function_table_dispatch(value: usize) -> usize {
                 context struct {
                     offset: usize = 3,
@@ -889,6 +956,7 @@ mod tests {
 
     #[test]
     fn function_table_chain_owns_hooks_and_reaches_captured_base() {
+        FUNCTION_TABLE_PHASES.store(0, Ordering::Relaxed);
         let mut table = [function_table_base as *const () as usize, 0xfeedusize];
         let captured = unsafe {
             TestFunctionTableHook::capture(table.as_mut_ptr().cast(), size_of_val(&table) as u32)
@@ -903,6 +971,7 @@ mod tests {
         let dispatch: unsafe extern "C" fn(usize) -> usize =
             unsafe { std::mem::transmute(table[0]) };
         assert_eq!(unsafe { dispatch(4) }, 11);
+        assert_eq!(FUNCTION_TABLE_PHASES.load(Ordering::Relaxed), 111);
         assert_eq!(table[1], 0xfeed);
     }
 }

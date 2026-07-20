@@ -53,7 +53,7 @@ snowglass_hook::function_table_hook! {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
 
         #[slot = DYNAPI_GET_GAMEPADS]
-        #[hooks(prepare_gamepads)]
+        #[prefix(|next| prepare_enumeration(next.installation))]
         unsafe extern "C" fn get_gamepads_dispatch(
             count: *mut i32,
         ) -> *mut api::JoystickId {
@@ -63,7 +63,7 @@ snowglass_hook::function_table_hook! {
         }
 
         #[slot = DYNAPI_GET_JOYSTICKS]
-        #[hooks(prepare_joysticks)]
+        #[prefix(|next| prepare_enumeration(next.installation))]
         unsafe extern "C" fn get_joysticks_dispatch(
             count: *mut i32,
         ) -> *mut api::JoystickId {
@@ -73,7 +73,7 @@ snowglass_hook::function_table_hook! {
         }
 
         #[slot = DYNAPI_UPDATE_JOYSTICKS]
-        #[hooks(flush_gamepads)]
+        #[prefix(|next| flush_gamepads(next.installation))]
         unsafe extern "C" fn update_joysticks_dispatch() {
             context struct {
                 installation: &'static Installation = installation(),
@@ -201,22 +201,6 @@ unsafe extern "C" fn dynapi_entry_hook(apiver: u32, table: *mut c_void, tablesiz
     result
 }
 
-unsafe fn prepare_joysticks(
-    count: *mut i32,
-    mut next: GetJoysticksDispatchContext<'_>,
-) -> *mut api::JoystickId {
-    prepare_enumeration(next.installation);
-    snowglass_hook::next!(next, count)
-}
-
-unsafe fn prepare_gamepads(
-    count: *mut i32,
-    mut next: GetGamepadsDispatchContext<'_>,
-) -> *mut api::JoystickId {
-    prepare_enumeration(next.installation);
-    snowglass_hook::next!(next, count)
-}
-
 fn prepare_enumeration(installation: &Installation) {
     let mut backend = installation
         .backend
@@ -232,15 +216,12 @@ fn prepare_enumeration(installation: &Installation) {
     }
 }
 
-unsafe fn flush_gamepads(mut next: UpdateJoysticksDispatchContext<'_>) {
-    let mut backend = next
-        .installation
+fn flush_gamepads(installation: &Installation) {
+    let mut backend = installation
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    next.installation.runtime.flush(&mut *backend);
-    drop(backend);
-    snowglass_hook::next!(next);
+    installation.runtime.flush(&mut *backend);
 }
 
 fn log(message: &str) {

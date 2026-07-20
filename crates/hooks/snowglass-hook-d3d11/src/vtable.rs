@@ -41,7 +41,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = Draw]
-        #[hooks(record_draw)]
+        #[postfix(record_draw(this, vertex_count, start_vertex))]
         unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32) {
             context |state| {
                 tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
@@ -50,7 +50,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexed]
-        #[hooks(record_draw_indexed)]
+        #[postfix(record_draw_indexed(this, index_count, start_index, base_vertex))]
         unsafe extern "system" fn draw_indexed(
             this: *mut c_void,
             index_count: u32,
@@ -64,7 +64,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexedInstanced]
-        #[hooks(record_draw_indexed_instanced)]
+        #[postfix(record_draw_indexed_instanced(this, index_count_per_instance, instance_count, start_index, base_vertex, start_instance))]
         unsafe extern "system" fn draw_indexed_instanced(
             this: *mut c_void,
             index_count_per_instance: u32,
@@ -80,7 +80,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawInstanced]
-        #[hooks(record_draw_instanced)]
+        #[postfix(record_draw_instanced(this, vertex_count_per_instance, instance_count, start_vertex, start_instance))]
         unsafe extern "system" fn draw_instanced(
             this: *mut c_void,
             vertex_count_per_instance: u32,
@@ -95,7 +95,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawAuto]
-        #[hooks(record_draw_auto)]
+        #[postfix(record_draw_auto(this))]
         unsafe extern "system" fn draw_auto(this: *mut c_void) {
             context |state| {
                 tracking: Arc<snowglass_producer_d3d11::Tracking> = state.tracking().clone(),
@@ -104,7 +104,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawIndexedInstancedIndirect]
-        #[hooks(record_draw_indexed_instanced_indirect)]
+        #[postfix(record_draw_indexed_instanced_indirect(this, argument_buffer, argument_offset))]
         unsafe extern "system" fn draw_indexed_instanced_indirect(
             this: *mut c_void,
             argument_buffer: *mut c_void,
@@ -117,7 +117,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D11DeviceContext_Vtbl]
         #[base = DrawInstancedIndirect]
-        #[hooks(record_draw_instanced_indirect)]
+        #[postfix(record_draw_instanced_indirect(this, argument_buffer, argument_offset))]
         unsafe extern "system" fn draw_instanced_indirect(
             this: *mut c_void,
             argument_buffer: *mut c_void,
@@ -211,11 +211,10 @@ macro_rules! record_context_draw_hook {
         unsafe fn $hook(
             this: *mut c_void,
             $($argument: $argument_type,)*
-            mut next: $context<'_>,
+            context: &$context<'_>,
         ) {
-            let tracking = next.tracking.clone();
-            snowglass_hook::next!(next, this, $($argument),*);
-            unsafe { tracking.record_context_draw(this) };
+            let _ = ($($argument,)*);
+            unsafe { context.tracking.record_context_draw(this) };
         }
     };
 }

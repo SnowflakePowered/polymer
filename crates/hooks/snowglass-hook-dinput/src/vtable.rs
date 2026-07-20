@@ -70,7 +70,7 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInput8A_Vtbl]
         #[base = CreateDevice]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks(crate::runtime::create_device)]
+        #[postfix(crate::runtime::create_device(class, output, result))]
         unsafe extern "system" fn create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT {
             context |state| {
                 runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
@@ -95,7 +95,6 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = Acquire]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks()]
         unsafe extern "system" fn acquire(this: *mut c_void) -> HRESULT {
             context |_state| {}
         }
@@ -103,7 +102,7 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = GetDeviceState]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks(crate::runtime::get_device_state)]
+        #[infix(crate::runtime::get_device_state)]
         unsafe extern "system" fn get_device_state(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT {
             context |state| {
                 runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
@@ -114,7 +113,7 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = GetDeviceData]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks(crate::runtime::get_device_data)]
+        #[infix(crate::runtime::get_device_data)]
         unsafe extern "system" fn get_device_data(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT {
             context |state| {
                 runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
@@ -125,7 +124,6 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetDataFormat]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks()]
         unsafe extern "system" fn set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT {
             context |_state| {}
         }
@@ -133,7 +131,7 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetEventNotification]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks(crate::runtime::set_event_notification)]
+        #[prefix(crate::runtime::set_event_notification(this, event))]
         unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT {
             context |state| {
                 runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
@@ -144,7 +142,6 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetCooperativeLevel]
         #[fallback = 0x8000_4005u32 as i32]
-        #[hooks()]
         unsafe extern "system" fn set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT {
             context |_state| {}
         }
