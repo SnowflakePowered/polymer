@@ -89,9 +89,7 @@ macro_rules! __chain_hooks {
         $(#[postfix($($postfix:tt)*)])?
         $visibility:vis unsafe extern $abi:literal fn $name:ident(
             $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
+        ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
         $crate::__chain_hooks!(@items $order, $resolve;
@@ -143,9 +141,7 @@ macro_rules! __chain_hooks {
         $(#[postfix($($postfix:tt)*)])?
         $visibility:vis unsafe extern $abi:literal fn $name:ident(
             $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
+        ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
         $crate::__chain_hooks!(@items $order, $resolve;
@@ -166,12 +162,10 @@ macro_rules! __chain_hooks {
         $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
     };
 
+    // These two entry arms stay separate because a `ty` fragment cannot be
+    // followed by an arbitrary token-tree fragment in `macro_rules!`.
     (@items $order:ident, $resolve:ident;
-        #[terminal(
-            $resolver_argument:ident,
-            $symbol:literal: $module:ident::$function_type:ident,
-            fallback = $fallback:expr $(,)?
-        )]
+        #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
         $(#[infix($($infix:path),* $(,)? )])?
         $(#[postfix($($postfix:tt)*)])?
@@ -180,288 +174,121 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve;
-            #[terminal($resolver_argument, $symbol: $module::$function_type, fallback = $fallback)]
-            $(#[prefix($($prefix)*)])?
-            $(#[infix($($infix),*)])?
-            $(#[postfix($($postfix)*)])?
+        $crate::__chain_hooks!(@normalize_terminal $order, $resolve;
+            [$($terminal)*]
+            [$(prefix($($prefix)*))?]
+            [$(infix($($infix),*))?]
+            [$(postfix($($postfix)*))?]
             $visibility unsafe extern $abi fn $name(
                 $($argument: $argument_type),*
             ) $(-> $result)? { no context; }
-            $($remaining)*
+            then { $($remaining)* }
         );
     };
 
     (@items $order:ident, $resolve:ident;
-        #[terminal($resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident)]
+        #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
         $(#[infix($($infix:path),* $(,)? )])?
         $(#[postfix($($postfix:tt)*)])?
         $visibility:vis unsafe extern $abi:literal fn $name:ident(
             $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)?;
+        ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve;
-            #[terminal($resolver_argument, $symbol: $module::$function_type)]
-            $(#[prefix($($prefix)*)])?
-            $(#[infix($($infix),*)])?
-            $(#[postfix($($postfix)*)])?
+        $crate::__chain_hooks!(@normalize_terminal $order, $resolve;
+            [$($terminal)*]
+            [$(prefix($($prefix)*))?]
+            [$(infix($($infix),*))?]
+            [$(postfix($($postfix)*))?]
             $visibility unsafe extern $abi fn $name(
                 $($argument: $argument_type),*
-            ) $(-> $result)? { no context; }
-            $($remaining)*
+            ) $(-> $result)? { $($body)* }
+            then { $($remaining)* }
         );
     };
 
-    (@items $order:ident, $resolve:ident;
-        #[terminal(
-            $resolver_argument:ident,
-            $symbol:literal: $module:ident::$function_type:ident,
-            fallback = $fallback:expr $(,)?
-        )]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
-        $($remaining:tt)*
+    (@normalize_terminal $order:ident, $resolve:ident;
+        [$resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident,
+            fallback = $fallback:expr $(,)?]
+        $($item:tt)*
     ) => {
-        $crate::__chain_hooks! {
-            @emit $order, $resolve;
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
             [resolve with $resolver_argument, $symbol: $module::$function_type -> $fallback;]
-            [$(prefix($($prefix)*))?]
-            [$(infix($($infix),*))?]
-            [$(postfix($($postfix)*))?]
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)? { $($body)* }
-        }
-        $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
+            $($item)*
+        );
     };
 
-    (@items $order:ident, $resolve:ident;
-        #[terminal($resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident)]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
-        $($remaining:tt)*
+    (@normalize_terminal $order:ident, $resolve:ident;
+        [$resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident]
+        $($item:tt)*
     ) => {
-        $crate::__chain_hooks! {
-            @emit $order, $resolve;
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
             [resolve with $resolver_argument, $symbol: $module::$function_type;]
-            [$(prefix($($prefix)*))?]
-            [$(infix($($infix),*))?]
-            [$(postfix($($postfix)*))?]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident;
+        [detour = $root:ident $(::$segment:ident)* . $field:ident,
+            fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
+            [resolve with detour $root $(::$segment)*, $field -> $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident;
+        [detour = $detour:path, fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
+            [resolve with detour $detour, fallback $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident;
+        [$resolver_argument:ident: $resolver_type:ty]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
+            [resolve with $resolver_argument: $resolver_type;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident;
+        [$terminal:path]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
+            [resolve with $terminal;]
+            $($item)*
+        );
+    };
+
+    (@finish_item $order:ident, $resolve:ident;
+        [$($resolve_tokens:tt)*]
+        [$($prefix:tt)*]
+        [$($infix:tt)*]
+        [$($postfix:tt)*]
+        $visibility:vis unsafe extern $abi:literal fn $name:ident(
+            $($argument:ident: $argument_type:ty),*
+        ) $(-> $result:ty)? { $($body:tt)* }
+        then { $($remaining:tt)* }
+    ) => {
+        $crate::__chain_hooks! {
+            @emit $order, $resolve;
+            [$($resolve_tokens)*]
+            [$($prefix)*]
+            [$($infix)*]
+            [$($postfix)*]
             $visibility unsafe extern $abi fn $name(
                 $($argument: $argument_type),*
             ) $(-> $result)? { $($body)* }
-        }
-        $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal(detour = $detour:path, fallback = $fallback:expr $(,)?) ]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)?;
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks!(@items $order, $resolve;
-            #[terminal(detour = $detour, fallback = $fallback)]
-            $(#[prefix($($prefix)*)])?
-            $(#[infix($($infix),*)])?
-            $(#[postfix($($postfix)*)])?
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)? { no context; }
-            $($remaining)*
-        );
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal($resolver:ident: $resolver_type:ty)]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)?;
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks!(@items $order, $resolve;
-            #[terminal($resolver: $resolver_type)]
-            $(#[prefix($($prefix)*)])?
-            $(#[infix($($infix),*)])?
-            $(#[postfix($($postfix)*)])?
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)? { no context; }
-            $($remaining)*
-        );
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal($terminal:path)]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)?;
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks!(@items $order, $resolve;
-            #[terminal($terminal)]
-            $(#[prefix($($prefix)*)])?
-            $(#[infix($($infix),*)])?
-            $(#[postfix($($postfix)*)])?
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)? { no context; }
-            $($remaining)*
-        );
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal(
-            detour = $root:ident $(::$segment:ident)* . $field:ident,
-            fallback = $fallback:expr $(,)?
-        )]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)?;
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks!(@items $order, $resolve;
-            #[terminal(detour = $root $(::$segment)* . $field, fallback = $fallback)]
-            $(#[prefix($($prefix)*)])?
-            $(#[infix($($infix),*)])?
-            $(#[postfix($($postfix)*)])?
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)? { no context; }
-            $($remaining)*
-        );
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal(detour = $detour:path, fallback = $fallback:expr $(,)?) ]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks! {
-            @emit $order, $resolve;
-            [resolve with detour $detour, fallback $fallback;]
-            [$(prefix($($prefix)*))?]
-            [$(infix($($infix),*))?]
-            [$(postfix($($postfix)*))?]
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)?
-            { $($body)* }
-        }
-        $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal($resolver_argument:ident: $resolver_type:ty)]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks! {
-            @emit $order, $resolve;
-            [resolve with $resolver_argument: $resolver_type;]
-            [$(prefix($($prefix)*))?]
-            [$(infix($($infix),*))?]
-            [$(postfix($($postfix)*))?]
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)?
-            { $($body)* }
-        }
-        $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal($terminal:path)]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks! {
-            @emit $order, $resolve;
-            [resolve with $terminal;]
-            [$(prefix($($prefix)*))?]
-            [$(infix($($infix),*))?]
-            [$(postfix($($postfix)*))?]
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)?
-            { $($body)* }
-        }
-        $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
-    };
-
-    (@items $order:ident, $resolve:ident;
-        #[terminal(
-            detour = $root:ident $(::$segment:ident)* . $field:ident,
-            fallback = $fallback:expr $(,)?
-        )]
-        $(#[prefix($($prefix:tt)*)])?
-        $(#[infix($($infix:path),* $(,)? )])?
-        $(#[postfix($($postfix:tt)*)])?
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),* $(,)?
-        ) $(-> $result:ty)? {
-            $($body:tt)*
-        }
-        $($remaining:tt)*
-    ) => {
-        $crate::__chain_hooks! {
-            @emit $order, $resolve;
-            [resolve with detour $root $(::$segment)*, $field -> $fallback;]
-            [$(prefix($($prefix)*))?]
-            [$(infix($($infix),*))?]
-            [$(postfix($($postfix)*))?]
-            $visibility unsafe extern $abi fn $name(
-                $($argument: $argument_type),*
-            ) $(-> $result)?
-            { $($body)* }
         }
         $crate::__chain_hooks!(@items $order, $resolve; $($remaining)*);
     };
@@ -499,23 +326,6 @@ macro_rules! __chain_hooks {
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context yes;
             fields { $($field: $field_type = $field_value),* }
-        );
-    };
-
-    (@emit $order:ident, $resolve:ident;
-        [$($resolve_tokens:tt)*]
-        [$($prefix:tt)*]
-        [$($infix:tt)*]
-        [$($postfix:tt)*]
-        $visibility:vis unsafe extern $abi:literal fn $name:ident(
-            $($argument:ident: $argument_type:ty),*
-        ) -> $result:ty;
-    ) => {
-        $crate::__chain_hooks!(@generate $order, $resolve;
-            [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
-            $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
-            callback_context no;
-            fields {}
         );
     };
 
@@ -717,7 +527,7 @@ macro_rules! __chain_hooks {
     (@prefix_adapters
         [$(($argument:ident, $argument_type:ty))*]
         [$context:ident]
-        [yes]
+        [$callback_context:ident]
         [$($adapter:expr,)*];
     ) => { &[$($adapter),*] };
     (@prefix_adapters
@@ -745,48 +555,32 @@ macro_rules! __chain_hooks {
     (@prefix_adapters
         [$(($argument:ident, $argument_type:ty))*]
         [$context:ident]
-        [no]
-        [$($adapter:expr,)*];
-    ) => { &[$($adapter),*] };
-    (@prefix_adapters
-        [$(($argument:ident, $argument_type:ty))*]
-        [$context:ident]
-        [no]
+        [$callback_context:ident]
         [$($adapter:expr,)*];
         $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
     ) => {
         $crate::__chain_hooks!(@prefix_adapters
             [$(($argument, $argument_type))*]
             [$context]
-            [no]
+            [$callback_context]
             [$($adapter,)*
-                |$($argument: $argument_type,)* _context: &$context<'_>| {
+                |$($argument: $argument_type,)* context: &$context<'_>| {
                     let _ = ($(&$argument,)*);
-                    unsafe { $($hook)::+ ($($hook_argument),*) }
+                    $crate::__chain_hooks!(@call_prefix [$callback_context] context;
+                        [$($hook)::+]; $($hook_argument),*
+                    )
                 },
             ];
             $($($remaining)*)?
         )
     };
-    (@prefix_adapters
-        [$(($argument:ident, $argument_type:ty))*]
-        [$context:ident]
-        [yes]
-        [$($adapter:expr,)*];
-        $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
-    ) => {
-        $crate::__chain_hooks!(@prefix_adapters
-            [$(($argument, $argument_type))*]
-            [$context]
-            [yes]
-            [$($adapter,)*
-                |$($argument: $argument_type,)* context: &$context<'_>| {
-                    let _ = ($(&$argument,)*);
-                    unsafe { $($hook)::+ ($($hook_argument,)* context) }
-                },
-            ];
-            $($($remaining)*)?
-        )
+
+    (@call_prefix [no] $context:expr; [$($hook:ident)::+]; $($argument:ident),*) => {{
+        let _ = $context;
+        unsafe { $($hook)::+ ($($argument),*) }
+    }};
+    (@call_prefix [yes] $context:expr; [$($hook:ident)::+]; $($argument:ident),*) => {
+        unsafe { $($hook)::+ ($($argument,)* $context) }
     };
 
     (@postfix_slice [$($abi:tt)*] [$result_type:ty] [$context:ident] [$callback_context:ident] [$($adapter:expr,)*];) => {
@@ -808,7 +602,7 @@ macro_rules! __chain_hooks {
         [$(($argument:ident, $argument_type:ty))*]
         [$result_type:ty]
         [$context:ident]
-        [yes]
+        [$callback_context:ident]
         [$($adapter:expr,)*];
     ) => { &[$($adapter),*] };
     (@postfix_adapters
@@ -841,14 +635,7 @@ macro_rules! __chain_hooks {
         [$(($argument:ident, $argument_type:ty))*]
         [$result_type:ty]
         [$context:ident]
-        [no]
-        [$($adapter:expr,)*];
-    ) => { &[$($adapter),*] };
-    (@postfix_adapters
-        [$(($argument:ident, $argument_type:ty))*]
-        [$result_type:ty]
-        [$context:ident]
-        [no]
+        [$callback_context:ident]
         [$($adapter:expr,)*];
         $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
     ) => {
@@ -856,11 +643,12 @@ macro_rules! __chain_hooks {
             [$(($argument, $argument_type))*]
             [$result_type]
             [$context]
-            [no]
+            [$callback_context]
             [$($adapter,)*
-                |$($argument: $argument_type,)* result: $result_type, _context: &$context<'_>| {
+                |$($argument: $argument_type,)* result: $result_type, context: &$context<'_>| {
                     let _ = ($(&$argument,)*);
-                    $crate::__chain_hooks!(@call_post_no_context result; [$($hook)::+]; [];
+                    $crate::__chain_hooks!(@call_post_mode [$callback_context]
+                        result; context; [$($hook)::+];
                         $($hook_argument),*
                     )
                 },
@@ -868,146 +656,38 @@ macro_rules! __chain_hooks {
             $($($remaining)*)?
         )
     };
-    (@postfix_adapters
-        [$(($argument:ident, $argument_type:ty))*]
-        [$result_type:ty]
-        [$context:ident]
-        [yes]
-        [$($adapter:expr,)*];
-        $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
+
+    (@call_post_mode [no] $result:ident; $context:expr; [$($hook:ident)::+];
+        $($argument:ident),*
+    ) => {{
+        let _ = $context;
+        $crate::__chain_hooks!(@call_post $result; []; [$($hook)::+]; []; $($argument),*)
+    }};
+    (@call_post_mode [yes] $result:ident; $context:expr; [$($hook:ident)::+];
+        $($argument:ident),*
     ) => {
-        $crate::__chain_hooks!(@postfix_adapters
-            [$(($argument, $argument_type))*]
-            [$result_type]
-            [$context]
-            [yes]
-            [$($adapter,)*
-                |$($argument: $argument_type,)* result: $result_type, context: &$context<'_>| {
-                    let _ = ($(&$argument,)*);
-                    $crate::__chain_hooks!(@call_post result; context; [$($hook)::+]; [];
-                        $($hook_argument),*
-                    )
-                },
-            ];
-            $($($remaining)*)?
+        $crate::__chain_hooks!(@call_post $result; [$context,]; [$($hook)::+]; [];
+            $($argument),*
         )
     };
 
     (@is_reverse forward) => { false };
     (@is_reverse reverse) => { true };
 
-    (@visit_prefix $order:ident; ($($argument:ident),*); $context:expr;) => {};
-    (@visit_prefix forward; ($($argument:ident),*); $context:expr;
-        prefix($($hooks:tt)*)
-    ) => { $crate::__chain_hooks!(@prefix_forward ($($argument),*); $context; $($hooks)*); };
-    (@visit_prefix reverse; ($($argument:ident),*); $context:expr;
-        prefix($($hooks:tt)*)
-    ) => { $crate::__chain_hooks!(@prefix_reverse ($($argument),*); $context; $($hooks)*); };
-
-    (@prefix_forward ($($argument:ident),*); $context:expr;) => {};
-    (@prefix_forward ($($argument:ident),*); $context:expr;
-        |$next:ident| $observer:expr $(, $($remaining:tt)*)?
-    ) => {
-        let $next = $context;
-        $observer;
-        $crate::__chain_hooks!(@prefix_forward ($($argument),*); $context; $($($remaining)*)?);
+    (@call_post $result:ident; [$($suffix:expr,)*]; [$($hook:ident)::+]; [$($mapped:expr,)*];) => {
+        unsafe { $($hook)::+ ($($mapped,)* $($suffix),*) }
     };
-    (@prefix_forward ($($argument:ident),*); $context:expr;
-        $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
-    ) => {
-        unsafe { $($hook)::+ ($($hook_argument,)* $context) };
-        $crate::__chain_hooks!(@prefix_forward ($($argument),*); $context; $($($remaining)*)?);
-    };
-    (@prefix_reverse ($($argument:ident),*); $context:expr;) => {};
-    (@prefix_reverse ($($argument:ident),*); $context:expr;
-        |$next:ident| $observer:expr $(, $($remaining:tt)*)?
-    ) => {
-        $crate::__chain_hooks!(@prefix_reverse ($($argument),*); $context; $($($remaining)*)?);
-        let $next = $context;
-        $observer;
-    };
-    (@prefix_reverse ($($argument:ident),*); $context:expr;
-        $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
-    ) => {
-        $crate::__chain_hooks!(@prefix_reverse ($($argument),*); $context; $($($remaining)*)?);
-        unsafe { $($hook)::+ ($($hook_argument,)* $context) };
-    };
-
-    (@visit_postfix $order:ident; ($($argument:ident),*); $result:ident; $context:expr;) => {};
-    (@visit_postfix forward; ($($argument:ident),*); $result:ident; $context:expr;
-        postfix($($hooks:tt)*)
-    ) => { $crate::__chain_hooks!(@postfix_forward ($($argument),*); $result; $context; $($hooks)*); };
-    (@visit_postfix reverse; ($($argument:ident),*); $result:ident; $context:expr;
-        postfix($($hooks:tt)*)
-    ) => { $crate::__chain_hooks!(@postfix_reverse ($($argument),*); $result; $context; $($hooks)*); };
-
-    (@postfix_forward ($($argument:ident),*); $result:ident; $context:expr;) => {};
-    (@postfix_forward ($($argument:ident),*); $result:ident; $context:expr;
-        |$projection_result:ident, $projection_context:ident| $observer:expr
-        $(, $($remaining:tt)*)?
-    ) => {
-        let $projection_result = $result;
-        let $projection_context = $context;
-        $observer;
-        $crate::__chain_hooks!(@postfix_forward
-            ($($argument),*); $result; $context; $($($remaining)*)?
-        );
-    };
-    (@postfix_forward ($($argument:ident),*); $result:ident; $context:expr;
-        $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
-    ) => {
-        $crate::__chain_hooks!(@call_post $result; $context; [$($hook)::+]; []; $($hook_argument),*);
-        $crate::__chain_hooks!(@postfix_forward ($($argument),*); $result; $context; $($($remaining)*)?);
-    };
-    (@postfix_reverse ($($argument:ident),*); $result:ident; $context:expr;) => {};
-    (@postfix_reverse ($($argument:ident),*); $result:ident; $context:expr;
-        |$projection_result:ident, $projection_context:ident| $observer:expr
-        $(, $($remaining:tt)*)?
-    ) => {
-        $crate::__chain_hooks!(@postfix_reverse
-            ($($argument),*); $result; $context; $($($remaining)*)?
-        );
-        let $projection_result = $result;
-        let $projection_context = $context;
-        $observer;
-    };
-    (@postfix_reverse ($($argument:ident),*); $result:ident; $context:expr;
-        $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
-    ) => {
-        $crate::__chain_hooks!(@postfix_reverse ($($argument),*); $result; $context; $($($remaining)*)?);
-        $crate::__chain_hooks!(@call_post $result; $context; [$($hook)::+]; []; $($hook_argument),*);
-    };
-    (@call_post $result:ident; $context:expr; [$($hook:ident)::+]; [$($mapped:expr,)*];) => {
-        unsafe { $($hook)::+ ($($mapped,)* $context) }
-    };
-    (@call_post $result:ident; $context:expr; [$($hook:ident)::+]; [$($mapped:expr,)*];
+    (@call_post $result:ident; [$($suffix:expr,)*]; [$($hook:ident)::+]; [$($mapped:expr,)*];
         result $(, $($remaining:ident),*)?
     ) => {
-        $crate::__chain_hooks!(@call_post $result; $context; [$($hook)::+];
+        $crate::__chain_hooks!(@call_post $result; [$($suffix,)*]; [$($hook)::+];
             [$($mapped,)* $result,]; $($($remaining),*)?
         )
     };
-    (@call_post $result:ident; $context:expr; [$($hook:ident)::+]; [$($mapped:expr,)*];
+    (@call_post $result:ident; [$($suffix:expr,)*]; [$($hook:ident)::+]; [$($mapped:expr,)*];
         $argument:ident $(, $($remaining:ident),*)?
     ) => {
-        $crate::__chain_hooks!(@call_post $result; $context; [$($hook)::+];
-            [$($mapped,)* $argument,]; $($($remaining),*)?
-        )
-    };
-    (@call_post_no_context $result:ident; [$($hook:ident)::+]; [$($mapped:expr,)*];) => {
-        unsafe { $($hook)::+ ($($mapped),*) }
-    };
-    (@call_post_no_context $result:ident; [$($hook:ident)::+]; [$($mapped:expr,)*];
-        result $(, $($remaining:ident),*)?
-    ) => {
-        $crate::__chain_hooks!(@call_post_no_context $result; [$($hook)::+];
-            [$($mapped,)* $result,]; $($($remaining),*)?
-        )
-    };
-    (@call_post_no_context $result:ident; [$($hook:ident)::+]; [$($mapped:expr,)*];
-        $argument:ident $(, $($remaining:ident),*)?
-    ) => {
-        $crate::__chain_hooks!(@call_post_no_context $result; [$($hook)::+];
+        $crate::__chain_hooks!(@call_post $result; [$($suffix,)*]; [$($hook)::+];
             [$($mapped,)* $argument,]; $($($remaining),*)?
         )
     };

@@ -642,9 +642,20 @@ macro_rules! impl_com_hook {
                     base,
                     $($dispatch_field: &$dispatch_field,)*
                 };
-                $crate::__chain_hooks!(@visit_prefix forward;
-                    ($this $(, $argument)*); &context; $(prefix($($prefix)*))?
+                let prefix: &[fn(
+                    $this_type,
+                    $($argument_type,)*
+                    &[<$dispatch:camel Context>]<'_>,
+                )] = $crate::__chain_hooks!(@prefix_slice
+                    [($this, $this_type) $(($argument, $argument_type))*]
+                    [[<$dispatch:camel Context>]]
+                    [yes]
+                    [];
+                    $(prefix($($prefix)*))?
                 );
+                for observer in prefix {
+                    observer($this, $($argument,)* &context);
+                }
                 let next = *remaining.next().unwrap_or(&terminal);
                 let result = unsafe {
                     next(
@@ -664,14 +675,29 @@ macro_rules! impl_com_hook {
                     base,
                     $($dispatch_field: &$dispatch_field,)*
                 };
-                $crate::__chain_hooks!(@visit_postfix forward;
-                    ($this $(, $argument)*); result; &context; $(postfix($($postfix)*))?
+                let postfix: &[fn(
+                    $this_type,
+                    $($argument_type,)*
+                    $crate::impl_com_hook!(@result_type $($result)?),
+                    &[<$dispatch:camel Context>]<'_>,
+                )] = $crate::__chain_hooks!(@postfix_slice
+                    [($this, $this_type) $(($argument, $argument_type))*]
+                    [$crate::impl_com_hook!(@result_type $($result)?)]
+                    [[<$dispatch:camel Context>]]
+                    [yes]
+                    [];
+                    $(postfix($($postfix)*))?
                 );
+                for observer in postfix {
+                    observer($this, $($argument,)* result, &context);
+                }
                 result
             }
         )+
     }};
 
+    (@result_type $result:ty) => { $result };
+    (@result_type) => { () };
     (@missing $fallback:expr) => { return $fallback };
     (@missing) => { return };
 
