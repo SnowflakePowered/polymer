@@ -9,6 +9,7 @@ use crate::interop::{
 };
 use std::{
     collections::{HashMap, HashSet},
+    ffi::c_void,
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -17,7 +18,7 @@ use std::{
 
 const STALE_HORIZON: u64 = 8;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct QuadBounds {
     pub(crate) x: u32,
     pub(crate) y: u32,
@@ -33,7 +34,12 @@ pub(crate) struct DrawCandidate {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) bounds: QuadBounds,
-    score: u64,
+    /// Whether `bounds` is the raster area of a draw into the default
+    /// framebuffer. Only such bounds describe where the content lands in the
+    /// window; bounds observed on offscreen draws are in that framebuffer's
+    /// own coordinate space and must not be used as presentation placement.
+    pub(crate) window_bounds: bool,
+    pub(crate) score: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -55,6 +61,21 @@ type GlGetFramebufferAttachmentParameteriv =
     unsafe extern "system" fn(Glenum, Glenum, Glenum, *mut i32);
 type GlGetTextureLevelParameteriv = unsafe extern "system" fn(Gluint, i32, Glenum, *mut i32);
 
+/// Function pointers used to read a present draw's quad geometry and its
+/// transform uniforms back from the pipeline.
+#[derive(Clone, Copy)]
+struct QuadReader {
+    get_vertex_attrib_iv: unsafe extern "system" fn(Gluint, Glenum, *mut i32),
+    get_vertex_attrib_pointer_v: unsafe extern "system" fn(Gluint, Glenum, *mut *mut c_void),
+    get_buffer_sub_data: unsafe extern "system" fn(Glenum, isize, isize, *mut c_void),
+    bind_buffer: unsafe extern "system" fn(Glenum, Gluint),
+    get_program_iv: unsafe extern "system" fn(Gluint, Glenum, *mut i32),
+    get_active_uniform:
+        unsafe extern "system" fn(Gluint, Gluint, i32, *mut i32, *mut i32, *mut Glenum, *mut u8),
+    get_uniform_location: unsafe extern "system" fn(Gluint, *const u8) -> i32,
+    get_uniform_fv: unsafe extern "system" fn(Gluint, i32, *mut f32),
+}
+
 /// Process-wide state shared by the installed OpenGL hook contexts.
 #[derive(Default)]
 pub struct Tracking {
@@ -64,10 +85,15 @@ pub struct Tracking {
     texture_info: Mutex<HashMap<Gluint, (Glenum, u32, u32)>>,
     dependencies: Mutex<HashMap<TargetKey, Vec<(Gluint, u64)>>>,
     presented_textures: Mutex<HashMap<usize, Vec<(Gluint, bool)>>>,
+    /// Present-draw quads observed this frame, in draw order: the sampled
+    /// texture and where its quad lands in the window (bottom-up).
+    presented_quads: Mutex<HashMap<usize, Vec<(Gluint, QuadBounds)>>>,
     renderbuffer_inputs: Mutex<HashMap<Gluint, Vec<(Gluint, u64)>>>,
     active_texture: OnceLock<GlActiveTexture>,
     get_framebuffer_attachment: OnceLock<GlGetFramebufferAttachmentParameteriv>,
     get_texture_level_parameter: OnceLock<Option<GlGetTextureLevelParameteriv>>,
+    quad_reader: OnceLock<Option<QuadReader>>,
+    quad_logs: AtomicU64,
 }
 
 const GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: Glenum = 0x8CD0;
@@ -77,6 +103,19 @@ const GL_TEXTURE: Glenum = 0x1702;
 const GL_RENDERBUFFER: Glenum = 0x8D41;
 const GL_MAX_DRAW_BUFFERS: Glenum = 0x8824;
 const GL_DRAW_BUFFER0: Glenum = 0x8825;
+const GL_FLOAT: Glenum = 0x1406;
+const GL_ARRAY_BUFFER: Glenum = 0x8892;
+const GL_ARRAY_BUFFER_BINDING: Glenum = 0x8894;
+const GL_CURRENT_PROGRAM: Glenum = 0x8B8D;
+const GL_ACTIVE_UNIFORMS: Glenum = 0x8B86;
+const GL_FLOAT_VEC2: Glenum = 0x8B50;
+const GL_FLOAT_MAT2X3: Glenum = 0x8B65;
+const GL_VERTEX_ATTRIB_ARRAY_ENABLED: Glenum = 0x8622;
+const GL_VERTEX_ATTRIB_ARRAY_SIZE: Glenum = 0x8623;
+const GL_VERTEX_ATTRIB_ARRAY_STRIDE: Glenum = 0x8624;
+const GL_VERTEX_ATTRIB_ARRAY_TYPE: Glenum = 0x8625;
+const GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING: Glenum = 0x889F;
+const GL_VERTEX_ATTRIB_ARRAY_POINTER: Glenum = 0x8645;
 
 impl Tracking {
     fn generation(&self) -> u64 {
@@ -303,6 +342,7 @@ impl Tracking {
                         width,
                         height,
                     },
+                    window_bounds: false,
                     score: u64::from(width) * u64::from(height),
                 });
             }
@@ -330,6 +370,7 @@ impl Tracking {
                     width: candidate.width,
                     height: candidate.height,
                 };
+                candidate.window_bounds = false;
             }
             return (graph_selected, true);
         }
@@ -347,6 +388,17 @@ impl Tracking {
             ),
             false,
         )
+    }
+
+    /// Takes the present-draw quads observed since the last swap: the sampled
+    /// texture and where its quad lands in the window (bottom-up), in draw
+    /// order. The capture layer pairs these with the final selection.
+    pub(crate) fn take_present_quads(&self, context: usize) -> Vec<(Gluint, QuadBounds)> {
+        self.presented_quads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&context)
+            .unwrap_or_default()
     }
 }
 
@@ -571,7 +623,7 @@ fn select_screen_cohort(candidates: Vec<DrawCandidate>, limit: usize) -> Vec<Dra
 
 /// Records sampled textures, framebuffer destinations, and the draw's raster bounds.
 impl Tracking {
-    pub unsafe fn record_draw_candidate(&self) {
+    pub unsafe fn record_draw_candidate(&self, arrays_range: Option<(i32, i32)>) {
         if snowglass_hook::config::tracked_render_target_count().is_none() {
             return;
         }
@@ -611,6 +663,24 @@ impl Tracking {
             width: raster[2] as u32,
             height: raster[3] as u32,
         };
+        // A present draw's raster area is usually the whole window; the quad
+        // it actually draws is the real placement (screen gaps, layouts). It
+        // is kept out of the candidate bounds — placement pairing happens
+        // against the final selection, per present, in the capture layer.
+        let mut present_quad = None;
+        if draw_framebuffer == 0
+            && let Some((first, count)) = arrays_range
+            && let Some(quad) = unsafe { self.present_quad_bounds(first, count, viewport) }
+        {
+            let logs = self.quad_logs.fetch_add(1, Ordering::Relaxed);
+            if logs < 32 || logs.is_multiple_of(600) {
+                crate::log(format!(
+                    "snowglass: present quad first={first} count={count} -> {},{} {}x{} (bottom-up, viewport {}x{})",
+                    quad.x, quad.y, quad.width, quad.height, viewport[2], viewport[3]
+                ));
+            }
+            present_quad = Some(quad);
+        }
         let raster_area = u64::from(bounds.width) * u64::from(bounds.height);
         let mut sampled = Vec::<DrawCandidate>::new();
         let active_unit = (old_active as u32).saturating_sub(GL_TEXTURE0);
@@ -651,6 +721,7 @@ impl Tracking {
                     width: width as u32,
                     height: height as u32,
                     bounds,
+                    window_bounds: draw_framebuffer == 0,
                     score: raster_area
                         .saturating_mul(width as u64 * height as u64)
                         .saturating_mul(aspect_match),
@@ -723,6 +794,7 @@ impl Tracking {
                     width: bounds.width,
                     height: bounds.height,
                     bounds,
+                    window_bounds: false,
                     score: raster_area,
                 };
                 self.upsert_render_target(candidate);
@@ -735,6 +807,14 @@ impl Tracking {
             .iter()
             .max_by_key(|candidate| candidate.score)
             .copied();
+        if let (Some(quad), Some(candidate)) = (present_quad, best) {
+            self.presented_quads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(context as usize)
+                .or_default()
+                .push((candidate.texture, quad));
+        }
         if let Some(candidate) = best {
             let mut candidates = self
                 .draw_candidates
@@ -752,6 +832,188 @@ impl Tracking {
                 candidates.push(candidate);
             }
         }
+    }
+
+    fn quad_reader(&self) -> Option<QuadReader> {
+        *self.quad_reader.get_or_init(|| {
+            Some(QuadReader {
+                get_vertex_attrib_iv: unsafe { proc(b"glGetVertexAttribiv\0") }?,
+                get_vertex_attrib_pointer_v: unsafe { proc(b"glGetVertexAttribPointerv\0") }?,
+                get_buffer_sub_data: unsafe { proc(b"glGetBufferSubData\0") }?,
+                bind_buffer: unsafe { proc(b"glBindBuffer\0") }?,
+                get_program_iv: unsafe { proc(b"glGetProgramiv\0") }?,
+                get_active_uniform: unsafe { proc(b"glGetActiveUniform\0") }?,
+                get_uniform_location: unsafe { proc(b"glGetUniformLocation\0") }?,
+                get_uniform_fv: unsafe { proc(b"glGetUniformfv\0") }?,
+            })
+        })
+    }
+
+    /// Reads a present draw's vertex positions back from the bound vertex
+    /// buffer and evaluates the common 2D presentation pattern: screen-local
+    /// quads transformed by a single `mat2x3` uniform into a layout space
+    /// whose extent is a single `vec2` uniform (the melonDS present shader,
+    /// but written by many Qt-based frontends). Returns the quad's placement
+    /// in bottom-up window coordinates, matching raster-derived bounds. Any
+    /// draw that does not match the pattern resolves to None and keeps the
+    /// conservative raster bounds.
+    unsafe fn present_quad_bounds(
+        &self,
+        first: i32,
+        count: i32,
+        viewport: [i32; 4],
+    ) -> Option<QuadBounds> {
+        if !(3..=8).contains(&count) || first < 0 || viewport[2] <= 0 || viewport[3] <= 0 {
+            return None;
+        }
+        let reader = self.quad_reader()?;
+        let mut program = 0;
+        unsafe { glGetIntegerv(GL_CURRENT_PROGRAM, &mut program) };
+        if program <= 0 {
+            return None;
+        }
+        let program = program as u32;
+        // Attribute 0 must be an enabled, buffer-backed vec2 float array —
+        // the position layout of a 2D screen quad.
+        let attrib = |name: Glenum| {
+            let mut value = 0;
+            unsafe { (reader.get_vertex_attrib_iv)(0, name, &mut value) };
+            value
+        };
+        if attrib(GL_VERTEX_ATTRIB_ARRAY_ENABLED) == 0
+            || attrib(GL_VERTEX_ATTRIB_ARRAY_SIZE) != 2
+            || attrib(GL_VERTEX_ATTRIB_ARRAY_TYPE) != GL_FLOAT as i32
+        {
+            return None;
+        }
+        let buffer = attrib(GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+        if buffer <= 0 {
+            return None;
+        }
+        let stride = attrib(GL_VERTEX_ATTRIB_ARRAY_STRIDE);
+        let stride = if stride <= 0 { 8 } else { stride as usize };
+        let mut pointer = std::ptr::null_mut();
+        unsafe {
+            (reader.get_vertex_attrib_pointer_v)(
+                0,
+                GL_VERTEX_ATTRIB_ARRAY_POINTER,
+                &mut pointer,
+            );
+        }
+        let offset = (pointer as usize).checked_add(first as usize * stride)?;
+        let mut data = vec![0u8; (count as usize - 1) * stride + 8];
+        let mut old_buffer = 0;
+        unsafe {
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &mut old_buffer);
+            (reader.bind_buffer)(GL_ARRAY_BUFFER, buffer as u32);
+            (reader.get_buffer_sub_data)(
+                GL_ARRAY_BUFFER,
+                offset as isize,
+                data.len() as isize,
+                data.as_mut_ptr().cast(),
+            );
+            (reader.bind_buffer)(GL_ARRAY_BUFFER, old_buffer as u32);
+        }
+        let mut low = (f32::MAX, f32::MAX);
+        let mut high = (f32::MIN, f32::MIN);
+        for vertex in 0..count as usize {
+            let at = vertex * stride;
+            let x = f32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
+            let y = f32::from_le_bytes(data.get(at + 4..at + 8)?.try_into().ok()?);
+            if !x.is_finite() || !y.is_finite() {
+                return None;
+            }
+            low = (low.0.min(x), low.1.min(y));
+            high = (high.0.max(x), high.1.max(y));
+        }
+        // The pattern requires exactly one mat2x3 transform and one vec2
+        // layout extent among the program's uniforms; a second of either
+        // kind makes the interpretation ambiguous.
+        let mut uniform_count = 0;
+        unsafe { (reader.get_program_iv)(program, GL_ACTIVE_UNIFORMS, &mut uniform_count) };
+        let mut transform = None;
+        let mut layout_extent = None;
+        for index in 0..uniform_count.max(0) as u32 {
+            let mut name = [0u8; 128];
+            let (mut length, mut size, mut kind) = (0, 0, 0);
+            unsafe {
+                (reader.get_active_uniform)(
+                    program,
+                    index,
+                    name.len() as i32 - 1,
+                    &mut length,
+                    &mut size,
+                    &mut kind,
+                    name.as_mut_ptr(),
+                );
+            }
+            if kind != GL_FLOAT_MAT2X3 && kind != GL_FLOAT_VEC2 {
+                continue;
+            }
+            let location = unsafe { (reader.get_uniform_location)(program, name.as_ptr()) };
+            if location < 0 {
+                continue;
+            }
+            if kind == GL_FLOAT_MAT2X3 {
+                if transform.is_some() {
+                    return None;
+                }
+                let mut values = [0f32; 6];
+                unsafe { (reader.get_uniform_fv)(program, location, values.as_mut_ptr()) };
+                transform = Some(values);
+            } else {
+                if layout_extent.is_some() {
+                    return None;
+                }
+                let mut values = [0f32; 2];
+                unsafe { (reader.get_uniform_fv)(program, location, values.as_mut_ptr()) };
+                layout_extent = Some(values);
+            }
+        }
+        let transform = transform?;
+        let [layout_width, layout_height] = layout_extent?;
+        if !(layout_width > 0.0 && layout_height > 0.0) {
+            return None;
+        }
+        // `vec3(position, 1) * mat2x3`: each output component dots the input
+        // with one stored column (the upload's transpose flag is already
+        // resolved into the stored values).
+        let map = |x: f32, y: f32| {
+            (
+                transform[0] * x + transform[1] * y + transform[2],
+                transform[3] * x + transform[4] * y + transform[5],
+            )
+        };
+        let corners = [
+            map(low.0, low.1),
+            map(high.0, low.1),
+            map(low.0, high.1),
+            map(high.0, high.1),
+        ];
+        let mut lo = (f32::MAX, f32::MAX);
+        let mut hi = (f32::MIN, f32::MIN);
+        for (x, y) in corners {
+            lo = (lo.0.min(x), lo.1.min(y));
+            hi = (hi.0.max(x), hi.1.max(y));
+        }
+        // Layout space is top-down (the shader flips y into GL's bottom-up
+        // clip space): normalize by the layout extent, scale to the
+        // viewport, and store bottom-up to match raster-derived bounds.
+        let width = viewport[2] as f32;
+        let height = viewport[3] as f32;
+        let left = (lo.0 / layout_width * width).round().clamp(0.0, width) as u32;
+        let top = (lo.1 / layout_height * height).round().clamp(0.0, height) as u32;
+        let right = (hi.0 / layout_width * width).round().clamp(0.0, width) as u32;
+        let bottom = (hi.1 / layout_height * height).round().clamp(0.0, height) as u32;
+        if right <= left || bottom <= top {
+            return None;
+        }
+        Some(QuadBounds {
+            x: left,
+            y: viewport[3] as u32 - bottom,
+            width: right - left,
+            height: bottom - top,
+        })
     }
 
     fn framebuffer_attachment_query(&self) -> Option<GlGetFramebufferAttachmentParameteriv> {
@@ -873,6 +1135,7 @@ impl Tracking {
                 width: texture_width,
                 height: texture_height,
             },
+            window_bounds: false,
             score: u64::from(texture_width) * u64::from(texture_height),
         };
         self.upsert_render_target(candidate);
@@ -1002,6 +1265,7 @@ impl Tracking {
                 width,
                 height,
             },
+            window_bounds: false,
             score: u64::from(width) * u64::from(height),
         };
         self.upsert_render_target(candidate);
@@ -1030,6 +1294,7 @@ mod tests {
                 width: 256,
                 height: 384,
             },
+            window_bounds: false,
             score,
         }
     }

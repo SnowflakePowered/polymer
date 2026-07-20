@@ -39,7 +39,7 @@ chain! {
     chain DRAW_ARRAYS_CHAIN, context DrawArraysContext {
         tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
     };
-    hook DrawArraysHook() -> ();
+    hook DrawArraysHook(first: i32, count: i32) -> ();
     abi (mode: u32, first: i32, count: i32);
     resolve with crate::install::call_draw_arrays;
 }
@@ -130,16 +130,16 @@ pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuf
     });
 }
 
-pub(crate) unsafe fn track_draw_arrays(context: &DrawArraysContext) {
-    unsafe { context.tracking.record_draw_candidate() };
+pub(crate) unsafe fn track_draw_arrays(first: i32, count: i32, context: &DrawArraysContext) {
+    unsafe { context.tracking.record_draw_candidate(Some((first, count))) };
 }
 
 pub(crate) unsafe fn track_draw_elements(context: &DrawElementsContext) {
-    unsafe { context.tracking.record_draw_candidate() };
+    unsafe { context.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn track_draw_elements_base_vertex(context: &DrawElementsBaseVertexContext) {
-    unsafe { context.tracking.record_draw_candidate() };
+    unsafe { context.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {

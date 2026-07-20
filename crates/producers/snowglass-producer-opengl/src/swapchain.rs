@@ -20,9 +20,13 @@ use snowglass_protocol::{
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
+    cmp::Reverse,
     collections::HashMap,
     ffi::c_void,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use windows::Win32::{
     Foundation::HANDLE,
@@ -65,12 +69,13 @@ struct Capture {
     consumer: Timeline,
     ipc: Option<LocalSocket>,
     adapter_luid: AdapterLuid,
-    stream_window: isize,
+    surface_id: SurfaceId,
+    source_window: isize,
     bottom_up: bool,
     next_slot: usize,
     sync_value: u64,
     frame_number: u64,
-  
+
     presents: u64,
     deferred_frames: u64,
 }
@@ -85,6 +90,20 @@ struct WindowCaptures {
     untracked_frames: u32,
     pending_layout: Vec<(u32, u32)>,
     pending_frames: u32,
+    /// The real HWND this capture presents to; every stream routes input here.
+    hwnd: isize,
+    /// Position in HWND first-seen order, pairing same-extent sources across
+    /// windows deterministically.
+    window_order: usize,
+    /// Swap-clock stamp of the last presentation. Idle windows drop out of
+    /// the cross-window selection instead of pinning stale entries.
+    last_swap: u64,
+    /// Last known present-quad placement per global selection index
+    /// (bottom-up window coordinates). Pairing can transiently fail (an
+    /// overlay draw joins the present); the placement holds until the next
+    /// successful pairing or a window resize.
+    placements: HashMap<usize, QuadBounds>,
+    placement_extent: (u32, u32),
 }
 
 static CAPTURES: OnceLock<Mutex<HashMap<(usize, usize), WindowCaptures>>> = OnceLock::new();
@@ -93,16 +112,72 @@ fn captures() -> &'static Mutex<HashMap<(usize, usize), WindowCaptures>> {
     CAPTURES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The window identity published for a stream. Extra streams get offset
-/// identities so the viewer treats each tracked screen as its own surface
-/// instead of replacing the window's previous stream; the offsets are odd,
-/// which no real window handle can collide with.
-fn stream_window(hwnd: isize, index: usize) -> isize {
-    if index == 0 {
-        hwnd
+/// Global swap counter used as the staleness clock for the cross-window
+/// selection.
+static SWAP_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// Swaps (across all windows) a window may go without presenting before its
+/// tracked sources leave the cross-window selection.
+const SELECTION_HORIZON: u64 = 240;
+
+/// Stable HWND order comes from first presentation rather than per-swap
+/// state: two windows presenting same-extent screens need a deterministic
+/// pairing that survives swap interleaving.
+static WINDOW_ORDER: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+fn window_order(hwnd: isize) -> usize {
+    let mut windows = WINDOW_ORDER.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(position) = windows.iter().position(|window| *window == hwnd) {
+        position
     } else {
-        hwnd + (index as isize * 2 - 1)
+        windows.push(hwnd);
+        windows.len() - 1
     }
+}
+
+/// Graph selections are indexed independently of the window that presents
+/// them, exactly like the Vulkan producer. Keeping this identity stable
+/// preserves viewer ordering and CLI rotation across windows and swaps.
+fn graph_surface_id(index: usize) -> SurfaceId {
+    const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
+    SurfaceId(GRAPH_SURFACE_TAG | index as u64)
+}
+
+/// One tracked source's deterministic identity in the cross-window selection:
+/// tallest/widest first, then window creation order, then the window's own
+/// selection order. Sorting these tuples yields the global index space that
+/// `--track-render-targets` selects from.
+type SelectionIdentity = (Reverse<u32>, Reverse<u32>, usize, usize);
+
+fn selection_identity(source: &DrawCandidate, order: usize, index: usize) -> SelectionIdentity {
+    (Reverse(source.height), Reverse(source.width), order, index)
+}
+
+/// Pairs the present-draw quads observed this frame with the selected
+/// sources. When the frame drew exactly as many quads as sources were
+/// selected, selection order pairs with draw order — page-flipped faces hop
+/// between textures frame to frame, so texture identity is only consulted
+/// when the counts cannot pair, and then only when a source's texture was
+/// drawn by exactly one quad. Returns one placement per selected source.
+fn pair_present_quads(
+    selected: &[(usize, DrawCandidate)],
+    quads: &[(u32, QuadBounds)],
+) -> Vec<Option<QuadBounds>> {
+    if !quads.is_empty() && quads.len() == selected.len() {
+        return quads.iter().map(|&(_, quad)| Some(quad)).collect();
+    }
+    selected
+        .iter()
+        .map(|(_, source)| {
+            let mut matching = quads
+                .iter()
+                .filter(|(texture, _)| *texture == source.texture);
+            match (matching.next(), matching.next()) {
+                (Some(&(_, quad)), None) => Some(quad),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Called immediately before the real GDI `SwapBuffers`.
@@ -126,33 +201,93 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         return;
     }
     let (observed, trusted) = tracking.take_draw_candidates(context as usize);
+    let present_quads = tracking.take_present_quads(context as usize);
     let key = (hdc as usize, context as usize);
+    let now = SWAP_CLOCK.fetch_add(1, Ordering::Relaxed) + 1;
+    let order = window_order(hwnd as isize);
     let mut map = captures().lock().unwrap_or_else(|error| error.into_inner());
-    let entry = map.entry(key).or_default();
-    // A trusted graph selection is complete: padding it with slots from an
-    // earlier frame would pin stale page-flip faces alongside live ones.
-    let tracked = if trusted {
-        observed
-    } else {
-        merge_tracked_sources(
-            &entry.tracked_sources,
-            observed,
-            config::tracked_render_target_count().unwrap_or(1),
-        )
-    };
-    entry.tracked_sources.clone_from(&tracked);
-    // The caller tracks selection entries by index; each requested index
-    // becomes its own stream, in the requested order.
-    let chosen = config::tracked_render_target_indices()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|&index| tracked.get(index).copied())
+    {
+        let entry = map.entry(key).or_default();
+        // A trusted graph selection is complete: padding it with slots from an
+        // earlier frame would pin stale page-flip faces alongside live ones.
+        let tracked = if trusted {
+            observed
+        } else {
+            merge_tracked_sources(
+                &entry.tracked_sources,
+                observed,
+                config::tracked_render_target_count().unwrap_or(1),
+            )
+        };
+        entry.tracked_sources = tracked;
+        entry.hwnd = hwnd as isize;
+        entry.window_order = order;
+        entry.last_swap = now;
+    }
+    // The requested indices select from the deterministic cross-window
+    // selection — the union of every live window's tracked sources, tallest/
+    // widest first — so `--track-render-targets 0,1` means the same screens
+    // whether an application presents them in one window or several. Each
+    // window then streams only the selected sources it presents itself,
+    // which makes the stream's input HWND simply the presenting window.
+    let mut selection = map
+        .values()
+        .filter(|captures| captures.last_swap.saturating_add(SELECTION_HORIZON) >= now)
+        .flat_map(|captures| {
+            captures
+                .tracked_sources
+                .iter()
+                .enumerate()
+                .map(|(index, source)| selection_identity(source, captures.window_order, index))
+        })
         .collect::<Vec<_>>();
-    // One stream per tracked source, or the classic whole-window stream when
-    // nothing resolves. Tracked layouts ride out short selection gaps and
-    // hold off layout changes until they persist, rather than churning
+    selection.sort_unstable();
+    let entry = map.get_mut(&key).expect("window captures entry inserted above");
+    let requested = config::tracked_render_target_indices().unwrap_or_default();
+    let mut chosen = entry
+        .tracked_sources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            let identity = selection_identity(source, order, index);
+            let global = selection.iter().position(|item| *item == identity)?;
+            requested.contains(&global).then_some((global, *source))
+        })
+        .collect::<Vec<_>>();
+    chosen.sort_unstable_by_key(|&(global, _)| global);
+    // Present-draw quads carry the real window placement (screen gaps,
+    // asymmetric layouts). Successful pairings are remembered per selection
+    // index so a transiently unpairable frame (an overlay joins the present)
+    // keeps the last real placement; a resize invalidates them.
+    if entry.placement_extent != (window_width, window_height) {
+        entry.placements.clear();
+        entry.placement_extent = (window_width, window_height);
+    }
+    for (pairing, &(global, _)) in pair_present_quads(&chosen, &present_quads)
+        .into_iter()
+        .zip(&chosen)
+    {
+        if let Some(quad) = pairing
+            && entry.placements.insert(global, quad) != Some(quad)
+        {
+            log(format!(
+                "snowglass: present placement {global} -> {},{} {}x{} (bottom-up, window {window_width}x{window_height})",
+                quad.x, quad.y, quad.width, quad.height
+            ));
+        }
+    }
+    for (global, source) in &mut chosen {
+        if let Some(&quad) = entry.placements.get(global) {
+            source.bounds = quad;
+            source.window_bounds = true;
+        }
+    }
+    // One stream per selected source, or the classic whole-window stream
+    // when nothing resolves. Tracked layouts ride out short selection gaps
+    // and hold off layout changes until they persist, rather than churning
     // through transport rebuilds on scene transitions.
     let window_extent = (window_width, window_height);
+    let window_surface = SurfaceId(hwnd as u64);
     let current = entry
         .streams
         .iter()
@@ -162,68 +297,81 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         current.len() > 1 || current.first().is_some_and(|first| *first != window_extent);
     let proposed = chosen
         .iter()
-        .map(|source| (source.width, source.height))
+        .map(|&(global, source)| (source.width, source.height, graph_surface_id(global)))
+        .collect::<Vec<_>>();
+    let proposed_extents = proposed
+        .iter()
+        .map(|&(width, height, _)| (width, height))
+        .collect::<Vec<_>>();
+    // A held layout keeps the existing stream identities so selection gaps
+    // and dampened changes never rebuild transports.
+    let held = entry
+        .streams
+        .iter()
+        .map(|capture| (capture.width, capture.height, capture.surface_id))
         .collect::<Vec<_>>();
     let desired = if !proposed.is_empty() {
         entry.untracked_frames = 0;
-        if proposed == current || !tracked_layout {
+        if proposed_extents == current || !tracked_layout {
             entry.pending_frames = 0;
             proposed
         } else {
-            if entry.pending_layout == proposed {
+            if entry.pending_layout == proposed_extents {
                 entry.pending_frames += 1;
             } else {
-                entry.pending_layout = proposed.clone();
+                entry.pending_layout = proposed_extents;
                 entry.pending_frames = 1;
             }
             if entry.pending_frames >= 60 {
                 entry.pending_frames = 0;
                 proposed
             } else {
-                current.clone()
+                held
             }
         }
     } else if tracked_layout && entry.untracked_frames < 120 {
         entry.untracked_frames += 1;
-        current.clone()
+        held
     } else {
         entry.untracked_frames = 0;
-        vec![window_extent]
+        vec![(window_width, window_height, window_surface)]
     };
-    if desired.iter().any(|(width, height)| *width == 0 || *height == 0) {
+    if desired
+        .iter()
+        .any(|&(width, height, _)| width == 0 || height == 0)
+    {
         return;
     }
-    if desired != current && !chosen.is_empty() {
+    let desired_extents = desired
+        .iter()
+        .map(|&(width, height, _)| (width, height))
+        .collect::<Vec<_>>();
+    if desired_extents != current && !chosen.is_empty() {
         log(format!(
             "snowglass: selected OpenGL render targets {}",
             chosen
                 .iter()
-                .map(|source| format!(
-                    "texture {} layer {} ({:#x}, {}x{})",
+                .map(|(global, source)| format!(
+                    "{global}: texture {} layer {} ({:#x}, {}x{})",
                     source.texture, source.layer, source.target, source.width, source.height
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
     }
-    // Window geometry feeds the capture-rect metadata; a resized window
-    // rebuilds every stream.
-    if entry
-        .streams
-        .first()
-        .is_some_and(|capture| (capture.window_width, capture.window_height) != window_extent)
-    {
-        entry.streams.clear();
-    }
     while entry.streams.len() > desired.len() {
         entry.streams.pop();
     }
-    for (index, &(width, height)) in desired.iter().enumerate() {
-        let up_to_date = entry
-            .streams
-            .get(index)
-            .is_some_and(|capture| (capture.width, capture.height) == (width, height));
+    for (index, &(width, height, surface)) in desired.iter().enumerate() {
+        let up_to_date = entry.streams.get(index).is_some_and(|capture| {
+            (capture.width, capture.height, capture.surface_id) == (width, height, surface)
+        });
         if up_to_date {
+            // Window geometry travels per frame; a resize must not rebuild
+            // the transport, only refresh the presentation metadata.
+            let capture = &mut entry.streams[index];
+            capture.window_width = window_width;
+            capture.window_height = window_height;
             continue;
         }
         // The whole-window fallback reads the bottom-up default framebuffer;
@@ -231,7 +379,8 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         let bottom_up = chosen.is_empty() && (width, height) == window_extent;
         match unsafe {
             Capture::new(
-                stream_window(hwnd as isize, index),
+                surface,
+                hwnd as isize,
                 width,
                 height,
                 window_width,
@@ -265,15 +414,18 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         if capture.ipc.is_none() && capture.presents.is_multiple_of(120) {
             capture.reconnect();
         }
-        let source = chosen.iter().enumerate().find_map(|(source_index, source)| {
-            (!source_used[source_index]
-                && (source.width, source.height) == (capture.width, capture.height))
-                .then_some(source_index)
-        });
+        let source = chosen
+            .iter()
+            .enumerate()
+            .find_map(|(source_index, (_, source))| {
+                (!source_used[source_index]
+                    && (source.width, source.height) == (capture.width, capture.height))
+                    .then_some(source_index)
+            });
         if let Some(source_index) = source {
             source_used[source_index] = true;
         }
-        let source = source.map(|source_index| &chosen[source_index]);
+        let source = source.map(|source_index| &chosen[source_index].1);
         // During a selection gap a tracked stream has no source this frame;
         // the whole-window fallback only makes sense at window extent.
         if source.is_none() && (capture.width, capture.height) != window_extent {
@@ -294,7 +446,8 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
 
 impl Capture {
     unsafe fn new(
-        hwnd: isize,
+        surface_id: SurfaceId,
+        source_window: isize,
         width: u32,
         height: u32,
         window_width: u32,
@@ -336,7 +489,8 @@ impl Capture {
             ready.handle(),
             consumer.handle(),
             adapter_luid,
-            hwnd,
+            surface_id,
+            source_window,
             width,
             height,
             bottom_up,
@@ -350,7 +504,8 @@ impl Capture {
             }
         };
         log(format!(
-            "snowglass: attached OpenGL EXT external-object ring {width}x{height} (window {window_width}x{window_height})"
+            "snowglass: attached OpenGL EXT external-object ring {width}x{height} (surface {:#x}, window {source_window:#x} {window_width}x{window_height})",
+            surface_id.0
         ));
         Ok(Self {
             width,
@@ -366,7 +521,8 @@ impl Capture {
             consumer,
             ipc,
             adapter_luid,
-            stream_window: hwnd,
+            surface_id,
+            source_window,
             bottom_up,
             next_slot: 0,
             sync_value: 0,
@@ -384,7 +540,8 @@ impl Capture {
             self.ready.handle(),
             self.consumer.handle(),
             self.adapter_luid,
-            self.stream_window,
+            self.surface_id,
+            self.source_window,
             self.width,
             self.height,
             self.bottom_up,
@@ -494,14 +651,14 @@ impl Capture {
         self.sync_value = sync_value;
         self.next_slot = (slot_index + 1) % self.slots.len();
         self.frame_number = self.frame_number.wrapping_add(1);
-        let bounds = source.map_or(
-            QuadBounds {
-                x: 0,
-                y: 0,
-                width: self.window_width,
-                height: self.window_height,
-            },
-            |value| QuadBounds {
+        // Where the content lands in the window's client area, top-down.
+        // Only bounds known to be window coordinates — present-quad
+        // placements and default-framebuffer rasters — are used; sources
+        // observed on offscreen draws claim the whole window instead, and
+        // the viewer infers the placement (stacked same-window layout or
+        // the centered letterbox the compositors themselves use).
+        let bounds = match source {
+            Some(value) if value.window_bounds => QuadBounds {
                 x: value.bounds.x,
                 y: self
                     .window_height
@@ -509,7 +666,13 @@ impl Capture {
                 width: value.bounds.width,
                 height: value.bounds.height,
             },
-        );
+            _ => QuadBounds {
+                x: 0,
+                y: 0,
+                width: self.window_width,
+                height: self.window_height,
+            },
+        };
         let message = Message::FrameReady(FrameReady {
             stream_id,
             slot: slot_index as u32,
@@ -521,18 +684,12 @@ impl Capture {
             capture_height: bounds.height,
             presentation_width: self.window_width,
             presentation_height: self.window_height,
-            presentation_transform: if source.is_some() {
-                // Bounds alone cannot distinguish a scaled texture from one
-                // rotated by the presentation shader.
-                PresentationTransform::UNAVAILABLE
-            } else {
-                PresentationTransform::axis_aligned(
-                    bounds.x,
-                    bounds.y,
-                    bounds.width,
-                    bounds.height,
-                )
-            },
+            presentation_transform: PresentationTransform::axis_aligned(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            ),
             frame_number: self.frame_number,
             sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),
@@ -559,6 +716,117 @@ impl Capture {
             self.ipc = None;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interop::GL_TEXTURE_2D;
+
+    fn source(texture: u32, width: u32, height: u32) -> DrawCandidate {
+        DrawCandidate {
+            texture,
+            target: GL_TEXTURE_2D,
+            layer: 0,
+            width,
+            height,
+            bounds: QuadBounds {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            window_bounds: false,
+            score: 0,
+        }
+    }
+
+    #[test]
+    fn graph_surface_identity_matches_the_vulkan_producer() {
+        assert_eq!(graph_surface_id(0), SurfaceId(0x5347_0000_0000_0000));
+        assert_eq!(graph_surface_id(1), SurfaceId(0x5347_0000_0000_0001));
+    }
+
+    #[test]
+    fn cross_window_selection_orders_tallest_first_regardless_of_window_arrival() {
+        // The bottom-screen window (240x320) was seen first, but the taller
+        // top screen must still take global index 0.
+        let mut selection = vec![
+            selection_identity(&source(1, 240, 320), 0, 0),
+            selection_identity(&source(2, 240, 400), 1, 0),
+        ];
+        selection.sort_unstable();
+        assert_eq!(
+            selection.iter().position(|&item| item
+                == selection_identity(&source(2, 240, 400), 1, 0)),
+            Some(0)
+        );
+        assert_eq!(
+            selection.iter().position(|&item| item
+                == selection_identity(&source(1, 240, 320), 0, 0)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn same_extent_screens_pair_by_window_creation_order() {
+        // Two windows each present one 256x192 screen: the first-created
+        // window keeps global index 0 no matter how swaps interleave.
+        let mut selection = vec![
+            selection_identity(&source(2, 256, 192), 1, 0),
+            selection_identity(&source(1, 256, 192), 0, 0),
+        ];
+        selection.sort_unstable();
+        assert_eq!(selection[0], selection_identity(&source(1, 256, 192), 0, 0));
+        assert_eq!(selection[1], selection_identity(&source(2, 256, 192), 1, 0));
+    }
+
+    fn quad(y: u32) -> QuadBounds {
+        QuadBounds {
+            x: 26,
+            y,
+            width: 312,
+            height: 233,
+        }
+    }
+
+    #[test]
+    fn present_quads_pair_with_selection_in_draw_order_when_counts_match() {
+        // Page-flipped faces hop between textures frame to frame (both quads
+        // sample the current face), so equal counts pair by draw order.
+        let selected = [(0, source(12, 256, 192)), (1, source(11, 256, 192))];
+        let quads = [(11, quad(312)), (11, quad(0))];
+        assert_eq!(
+            pair_present_quads(&selected, &quads),
+            vec![Some(quad(312)), Some(quad(0))]
+        );
+    }
+
+    #[test]
+    fn unpairable_present_quads_match_by_unique_texture_only() {
+        let selected = [(0, source(12, 256, 192)), (1, source(11, 256, 192))];
+        // An overlay draw joined the present: counts cannot pair, and only
+        // the source drawn by exactly one quad resolves.
+        let quads = [(11, quad(312)), (12, quad(0)), (12, quad(100))];
+        assert_eq!(
+            pair_present_quads(&selected, &quads),
+            vec![None, Some(quad(312))]
+        );
+        assert_eq!(pair_present_quads(&selected, &[]), vec![None, None]);
+    }
+
+    #[test]
+    fn single_window_selection_preserves_its_own_order_for_equal_extents() {
+        // A cohort of same-extent screens in one window keeps the window's
+        // selection order as the global order.
+        let mut selection = vec![
+            selection_identity(&source(1, 256, 192), 0, 0),
+            selection_identity(&source(2, 256, 192), 0, 1),
+        ];
+        selection.sort_unstable();
+        assert_eq!(selection[0].3, 0);
+        assert_eq!(selection[1].3, 1);
     }
 }
 
@@ -621,7 +889,8 @@ fn connect_viewer(
     ready_handle: HANDLE,
     consumer_handle: HANDLE,
     adapter_luid: AdapterLuid,
-    hwnd: isize,
+    surface_id: SurfaceId,
+    source_window: isize,
     width: u32,
     height: u32,
     bottom_up: bool,
@@ -646,9 +915,9 @@ fn connect_viewer(
     }
     socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),
-        surface_id: SurfaceId(hwnd as u64),
+        surface_id,
         adapter_luid,
-        source_window: hwnd as i64,
+        source_window: source_window as i64,
         width,
         height,
         format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
