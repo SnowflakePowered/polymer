@@ -40,7 +40,6 @@ pub(crate) struct DxgiDetours {
 pub(crate) static DETOURS: OnceLock<DxgiDetours> = OnceLock::new();
 
 pub(crate) unsafe fn install() -> bool {
-    crate::register_hooks();
     if let Some(detours) = DETOURS.get() {
         return detours.create_factory.is_enabled()
             && detours.create_factory1.is_enabled()
@@ -48,15 +47,15 @@ pub(crate) unsafe fn install() -> bool {
     }
     let create_factory = InlineDetour::new(
         system_create_factory as CreateDxgiFactoryFn,
-        crate::sys::create_factory,
+        crate::hooks::create_factory,
     );
     let create_factory1 = InlineDetour::new(
         system_create_factory1 as CreateDxgiFactoryFn,
-        crate::sys::create_factory1,
+        crate::hooks::create_factory1,
     );
     let create_factory2 = InlineDetour::new(
         system_create_factory2 as CreateDxgiFactory2Fn,
-        crate::sys::create_factory2,
+        crate::hooks::create_factory2,
     );
     if DETOURS
         .set(DxgiDetours {

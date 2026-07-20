@@ -25,12 +25,6 @@ pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
     }
 }
 
-snowglass_hook::register_hooks! {
-    hooks::register_create_device -> device::create_device;
-    hooks::register_create_device_and_swapchain -> device::create_device_and_swapchain;
-    snowglass_hook_dxgi::register_claim -> device::claim_swapchain;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +108,7 @@ mod tests {
     #[test]
     fn successful_call_with_null_optional_outputs_is_ignored() {
         let _test_lock = test_lock();
+        let tracking = Default::default();
         unsafe {
             device::create_device(
                 std::ptr::null_mut(),
@@ -121,9 +116,7 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
-                &hooks::CreateDeviceContext {
-                    tracking: Default::default(),
-                },
+                &hooks::CreateDeviceContext::from_fields(&tracking),
             );
             device::create_device_and_swapchain(
                 std::ptr::null_mut(),
@@ -132,9 +125,7 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
-                &hooks::CreateDeviceAndSwapChainContext {
-                    tracking: Default::default(),
-                },
+                &hooks::CreateDeviceAndSwapchainContext::from_fields(&tracking),
             );
         }
     }

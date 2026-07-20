@@ -18,10 +18,6 @@ pub(crate) type DirectInput8CreateFn = unsafe extern "system" fn(
 
 pub use sys::SnowglassInstallDinputHook;
 
-snowglass_hook::register_hooks! {
-    hooks::register_direct_input_8_create -> runtime::direct_input_8_create;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

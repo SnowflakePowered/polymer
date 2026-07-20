@@ -9,16 +9,6 @@ mod vtable;
 
 pub use sys::SnowglassInstallD3d12Hook;
 
-snowglass_hook::register_hooks! {
-    hooks::register_create_device -> |device, result, context: &hooks::CreateDeviceContext| {
-        if result >= 0 {
-            d3d12_log("snowglass: intercepted D3D12CreateDevice");
-            unsafe { vtable::install_device(device, context.tracking.clone()) };
-        }
-    };
-    snowglass_hook_dxgi::register_claim -> claim_swapchain;
-}
-
 unsafe extern "system" fn claim_swapchain(
     swapchain: *mut std::ffi::c_void,
     queue: *mut std::ffi::c_void,

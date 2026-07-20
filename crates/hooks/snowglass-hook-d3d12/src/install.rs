@@ -19,13 +19,13 @@ unsafe extern "system" {
 pub(crate) static CREATE_DEVICE: OnceLock<InlineDetour<D3D12CreateDeviceFn>> = OnceLock::new();
 
 pub(crate) unsafe fn install() -> i32 {
-    crate::register_hooks();
+    snowglass_hook_dxgi::register_claim(crate::claim_swapchain);
     if let Some(detour) = CREATE_DEVICE.get() {
         return if detour.is_enabled() { 0 } else { E_FAIL };
     }
     let detour = InlineDetour::new(
         system_create_device as D3D12CreateDeviceFn,
-        crate::sys::create_device,
+        crate::hooks::create_device,
     );
     if CREATE_DEVICE.set(detour).is_err() {
         return E_FAIL;

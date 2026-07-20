@@ -114,7 +114,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = RSSetViewports]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_viewports(this, count, viewports)
         })]
         unsafe extern "system" fn set_viewports(this: *mut c_void, count: u32, viewports: *const D3D12_VIEWPORT) {
@@ -125,7 +125,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = RSSetScissorRects]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_scissors(this, count, scissors)
         })]
         unsafe extern "system" fn set_scissors(this: *mut c_void, count: u32, scissors: *const RECT) {
@@ -136,7 +136,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = DrawInstanced]
-        #[postfix(|context, _result| context.tracking.record_draw(this))]
+        #[postfix(|_result, context| context.tracking.record_draw(this))]
         unsafe extern "system" fn draw_instanced(this: *mut c_void, vertex_count: u32, instance_count: u32, start_vertex: u32, start_instance: u32) {
             context |state| {
                 tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
@@ -145,7 +145,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = DrawIndexedInstanced]
-        #[postfix(|context, _result| context.tracking.record_draw(this))]
+        #[postfix(|_result, context| context.tracking.record_draw(this))]
         unsafe extern "system" fn draw_indexed_instanced(this: *mut c_void, index_count: u32, instance_count: u32, start_index: u32, base_vertex: i32, start_instance: u32) {
             context |state| {
                 tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
@@ -154,7 +154,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = ResourceBarrier]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_resource_barrier(this, count, barriers)
         })]
         unsafe extern "system" fn resource_barrier(this: *mut c_void, count: u32, barriers: *const D3D12_RESOURCE_BARRIER) {
@@ -165,7 +165,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = SetGraphicsRootDescriptorTable]
-        #[postfix(|context, _result| {
+        #[postfix(|_result, context| {
             context.tracking.record_root_descriptor_table(this, root_index, descriptor)
         })]
         unsafe extern "system" fn set_graphics_root_descriptor_table(this: *mut c_void, root_index: u32, descriptor: D3D12_GPU_DESCRIPTOR_HANDLE) {
@@ -176,7 +176,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = SetGraphicsRootSignature]
-        #[postfix(|context, _result| context.tracking.record_root_signature(this))]
+        #[postfix(|_result, context| context.tracking.record_root_signature(this))]
         unsafe extern "system" fn set_graphics_root_signature(this: *mut c_void, signature: *mut c_void) {
             context |state| {
                 tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
@@ -185,7 +185,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = OMSetRenderTargets]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_render_targets(this, count, descriptors)
         })]
         unsafe extern "system" fn om_set_render_targets(this: *mut c_void, count: u32, descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE, contiguous: BOOL, depth: *const D3D12_CPU_DESCRIPTOR_HANDLE) {
@@ -196,7 +196,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12GraphicsCommandList7_Vtbl]
         #[base = Barrier]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_enhanced_barrier(this, count, groups)
         })]
         unsafe extern "system" fn enhanced_barrier(this: *mut c_void, count: u32, groups: *const D3D12_BARRIER_GROUP) {
@@ -251,7 +251,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CreateShaderResourceView]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_shader_resource_view(resource, desc, destination)
         })]
         unsafe extern "system" fn create_shader_resource_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) {
@@ -262,7 +262,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CreateRenderTargetView]
-        #[postfix(|context, _result| unsafe {
+        #[postfix(|_result, context| unsafe {
             context.tracking.record_render_target_view(resource, desc, destination)
         })]
         unsafe extern "system" fn create_render_target_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_RENDER_TARGET_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) {
@@ -273,7 +273,7 @@ snowglass_hook::impl_com_hook! {
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CopyDescriptorsSimple]
-        #[postfix(|context, _result| {
+        #[postfix(|_result, context| {
             context.tracking.record_copy_descriptors_simple(
                 count,
                 destination,
@@ -468,6 +468,13 @@ fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) ->
 
 fn device_tracking(device: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
     device_method(device, |hook| hook.tracking().clone())
+}
+
+#[cfg(test)]
+pub(crate) fn list_tracking(list: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
+    COMMAND_LISTS
+        .get(&(list as usize))
+        .map(|hook| hook.tracking().clone())
 }
 
 /// Resolves the tracking context associated with a D3D12 command queue's device.

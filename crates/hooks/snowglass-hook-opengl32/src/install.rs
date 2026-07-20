@@ -188,10 +188,7 @@ pub(crate) unsafe fn call_copy_image_sub_data(
     }
 }
 
-pub(crate) unsafe fn call_wgl_get_proc_address(
-    name: *const u8,
-    _context: crate::hooks::WglGetProcAddressContext<'_>,
-) -> *const c_void {
+pub(crate) unsafe fn call_wgl_get_proc_address(name: *const u8) -> *const c_void {
     DETOURS.get().map_or(std::ptr::null(), |detours| unsafe {
         (detours.wgl_get_proc_address.trampoline())(name)
     })
@@ -203,23 +200,23 @@ pub(crate) unsafe fn install() -> i32 {
     }
     let swap_buffers = InlineDetour::new(
         system_swap_buffers as SwapBuffersFn,
-        crate::sys::swap_buffers,
+        crate::hooks::swap_buffers,
     );
     let swap_layer_buffers = InlineDetour::new(
         system_swap_layer_buffers as SwapLayerBuffersFn,
-        crate::sys::swap_layer_buffers,
+        crate::hooks::swap_layer_buffers,
     );
     let wgl_get_proc_address = InlineDetour::new(
         system_wgl_get_proc_address as WglGetProcAddressFn,
-        crate::sys::wgl_get_proc_address,
+        crate::hooks::wgl_get_proc_address,
     );
     let core_draw_arrays = InlineDetour::new(
         system_draw_arrays as GlDrawArraysFn,
-        crate::sys::draw_arrays,
+        crate::hooks::draw_arrays,
     );
     let core_draw_elements = InlineDetour::new(
         system_draw_elements as GlDrawElementsFn,
-        crate::sys::draw_elements,
+        crate::hooks::draw_elements,
     );
     if DETOURS
         .set(OpenGlDetours {

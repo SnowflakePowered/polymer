@@ -5,7 +5,6 @@ mod hook_chain;
 mod hooks;
 mod install;
 mod runtime;
-mod sys;
 mod vtable;
 
 pub use runtime::{
@@ -18,7 +17,6 @@ pub fn register_claim(claim: SwapchainClaim) {
     if !unsafe { register_claim_with_dxgi_hook(claim) } {
         // Unit tests can link this crate without loading its cdylib. Production
         // injection always loads the central DXGI hook first.
-        register_hooks();
         runtime::register_claim(claim);
     }
 }
@@ -44,7 +42,6 @@ pub unsafe fn register_swapchain(
     {
         return unsafe { register(swapchain, creation_device) };
     }
-    register_hooks();
     unsafe { runtime::register_swapchain(swapchain, creation_device) }
 }
 
@@ -114,12 +111,6 @@ pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
     {
         let _ = writeln!(file, "{message}");
     }
-}
-
-snowglass_hook::register_hooks! {
-    hooks::register_create_factory -> runtime::created_factory;
-    hooks::register_create_factory1 -> runtime::created_factory;
-    hooks::register_create_factory2 -> runtime::created_factory;
 }
 
 #[cfg(test)]

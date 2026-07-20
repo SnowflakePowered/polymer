@@ -40,7 +40,7 @@ pub(crate) unsafe fn create_device_and_swapchain(
     _feature_level: *mut i32,
     immediate_context: *mut *mut c_void,
     result: i32,
-    context: &crate::hooks::CreateDeviceAndSwapChainContext,
+    context: &crate::hooks::CreateDeviceAndSwapchainContext,
 ) {
     if result < 0 || swapchain.is_null() {
         return;

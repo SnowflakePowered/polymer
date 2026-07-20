@@ -10,20 +10,12 @@ macro_rules! resolve_observer_terminal {
 }
 pub(crate) use resolve_observer_terminal as __resolve_observer_terminal;
 
-snowglass_hook::define_chain_macro! {
-    pub(crate) chain => {
-        observer {
-            order snowglass_hook::ChainOrder::Reverse;
+macro_rules! chain_hooks {
+    ($($tokens:tt)*) => {
+        snowglass_hook::__chain_hooks! {
             resolve with __resolve_observer_terminal;
+            $($tokens)*
         }
-        post {
-            order snowglass_hook::ChainOrder::Reverse;
-            resolve with __resolve_observer_terminal;
-        }
-        around {
-            order reverse;
-            resolve with __resolve_observer_terminal;
-        }
-    },
-    $
+    };
 }
+pub(crate) use chain_hooks;

@@ -63,6 +63,15 @@ impl Runtime {
         };
         self.input.start_receiver(format!("{session}-input"));
     }
+
+    pub(crate) fn set_event_notification(
+        &self,
+        key: usize,
+        device: DirectInputDevice,
+        event: usize,
+    ) {
+        self.input.set_event_notification(key, device, event);
+    }
 }
 
 unsafe fn install_direct_input(runtime: Arc<Runtime>, interface: *mut c_void) {
@@ -74,14 +83,12 @@ unsafe fn install_direct_input(runtime: Arc<Runtime>, interface: *mut c_void) {
 }
 
 pub(crate) unsafe fn create_device(
-    this: *mut c_void,
     class: *const GUID,
     output: *mut *mut c_void,
-    outer: *mut c_void,
-    mut next: crate::vtable::CreateDeviceContext<'_>,
-) -> HRESULT {
-    let runtime = next.runtime.clone();
-    let result = snowglass_hook::next!(next, this, class, output, outer);
+    result: HRESULT,
+    context: &crate::vtable::CreateDeviceContext<'_>,
+) {
+    let runtime = context.runtime.clone();
     if !class.is_null() {
         let class = unsafe { &*class };
         dinput_log(format!(
@@ -112,7 +119,6 @@ pub(crate) unsafe fn create_device(
             ));
         }
     }
-    result
 }
 
 fn guid_eq(left: &GUID, right: &GUID) -> bool {
@@ -192,18 +198,6 @@ pub(crate) unsafe fn device_destroyed(this: *mut c_void, state: &dyn DeviceHookS
     state.runtime().input.remove_device(this as usize);
 }
 
-pub(crate) unsafe fn set_event_notification(
-    this: *mut c_void,
-    event: *mut c_void,
-    mut next: crate::vtable::SetEventNotificationContext<'_>,
-) -> HRESULT {
-    let runtime = next.runtime.clone();
-    runtime
-        .input
-        .set_event_notification(this as usize, next.device, event as usize);
-    snowglass_hook::next!(next, this, event)
-}
-
 pub(crate) unsafe fn get_device_data(
     this: *mut c_void,
     object_size: u32,
@@ -221,7 +215,7 @@ pub(crate) unsafe fn get_device_data(
     }
 
     let requested = if output.is_null() {
-        next.runtime.input.buffered_len(device)
+        next.runtime.input.buffered_len(*device)
     } else {
         (unsafe { *count }) as usize
     };
@@ -233,7 +227,7 @@ pub(crate) unsafe fn get_device_data(
         return 0x8007_0057u32 as i32;
     }
     let peek = flags & DIGDD_PEEK != 0;
-    let events = next.runtime.input.buffered_data(device, requested, peek);
+    let events = next.runtime.input.buffered_data(*device, requested, peek);
     unsafe { *count = events.len() as u32 };
     for (index, event) in events.iter().copied().enumerate() {
         let destination = unsafe { (output.cast::<u8>()).add(index * object_size as usize) };

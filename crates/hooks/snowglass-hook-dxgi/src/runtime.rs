@@ -451,10 +451,11 @@ pub(crate) unsafe fn created_factory(
     unsafe { install_factory_interfaces(factory) };
 }
 
-pub(crate) unsafe fn factory_created_swapchain(
+pub(crate) unsafe fn factory_created_swapchain<C>(
     device: *mut c_void,
     swapchain: *mut *mut c_void,
     result: i32,
+    _context: &C,
 ) {
     crate::dxgi_log(format!(
         "snowglass: DXGI swapchain creation returned {result:#x}"
@@ -467,77 +468,6 @@ pub(crate) unsafe fn factory_created_swapchain(
         return;
     }
     unsafe { register_swapchain(swapchain, device) };
-}
-
-pub(crate) unsafe fn factory_create_swapchain(
-    this: *mut c_void,
-    device: *mut c_void,
-    desc: *const c_void,
-    swapchain: *mut *mut c_void,
-    mut next: crate::vtable::FactoryCreateSwapchainContext<'_>,
-) -> i32 {
-    let result = snowglass_hook::next!(next, this, device, desc, swapchain);
-    unsafe { factory_created_swapchain(device, swapchain, result) };
-    result
-}
-
-pub(crate) unsafe fn factory_create_swapchain_for_hwnd(
-    this: *mut c_void,
-    device: *mut c_void,
-    window: *mut c_void,
-    desc: *const c_void,
-    fullscreen_desc: *const c_void,
-    restrict_to_output: *mut c_void,
-    swapchain: *mut *mut c_void,
-    mut next: crate::vtable::FactoryCreateSwapchainForHwndContext<'_>,
-) -> i32 {
-    let result = snowglass_hook::next!(
-        next,
-        this,
-        device,
-        window,
-        desc,
-        fullscreen_desc,
-        restrict_to_output,
-        swapchain
-    );
-    unsafe { factory_created_swapchain(device, swapchain, result) };
-    result
-}
-
-pub(crate) unsafe fn factory_create_swapchain_for_core_window(
-    this: *mut c_void,
-    device: *mut c_void,
-    window: *mut c_void,
-    desc: *const c_void,
-    restrict_to_output: *mut c_void,
-    swapchain: *mut *mut c_void,
-    mut next: crate::vtable::FactoryCreateSwapchainForCoreWindowContext<'_>,
-) -> i32 {
-    let result = snowglass_hook::next!(
-        next,
-        this,
-        device,
-        window,
-        desc,
-        restrict_to_output,
-        swapchain
-    );
-    unsafe { factory_created_swapchain(device, swapchain, result) };
-    result
-}
-
-pub(crate) unsafe fn factory_create_swapchain_for_composition(
-    this: *mut c_void,
-    device: *mut c_void,
-    desc: *const c_void,
-    restrict_to_output: *mut c_void,
-    swapchain: *mut *mut c_void,
-    mut next: crate::vtable::FactoryCreateSwapchainForCompositionContext<'_>,
-) -> i32 {
-    let result = snowglass_hook::next!(next, this, device, desc, restrict_to_output, swapchain);
-    unsafe { factory_created_swapchain(device, swapchain, result) };
-    result
 }
 
 pub(crate) unsafe fn swapchain_query_interface(
@@ -599,35 +529,13 @@ fn guarded(this: *mut c_void, stage: &str, run: impl FnOnce()) {
     }
 }
 
-pub(crate) unsafe fn present(
-    this: *mut c_void,
-    sync_interval: u32,
-    flags: u32,
-    mut next: crate::vtable::PresentContext<'_>,
-) -> i32 {
-    let owner = next.owner.clone();
+pub(crate) unsafe fn before_present(this: *mut c_void, owner: &Option<Arc<SwapchainOwnerHandle>>) {
+    let owner = owner.clone();
     if let Some(owner) = owner {
         guarded(this, "before_present", || unsafe {
             owner.before_present(this)
         });
     }
-    snowglass_hook::next!(next, this, sync_interval, flags)
-}
-
-pub(crate) unsafe fn present1(
-    this: *mut c_void,
-    sync_interval: u32,
-    flags: u32,
-    parameters: *const c_void,
-    mut next: crate::vtable::Present1Context<'_>,
-) -> i32 {
-    let owner = next.owner.clone();
-    if let Some(owner) = owner {
-        guarded(this, "before_present", || unsafe {
-            owner.before_present(this)
-        });
-    }
-    snowglass_hook::next!(next, this, sync_interval, flags, parameters)
 }
 
 pub(crate) unsafe fn resize_buffers(

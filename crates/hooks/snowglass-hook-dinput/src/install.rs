@@ -38,7 +38,7 @@ pub(crate) unsafe fn install() -> HRESULT {
         };
     }
     let target = DirectInput8Create as DirectInput8CreateFn;
-    let detour = InlineDetour::new(target, crate::sys::direct_input_8_create);
+    let detour = InlineDetour::new(target, crate::hooks::direct_input_8_create);
     if DIRECT_INPUT_8_CREATE
         .set(DirectInputDetour {
             detour,

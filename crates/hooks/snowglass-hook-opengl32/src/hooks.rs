@@ -1,8 +1,6 @@
 //! Typed OpenGL hook declarations and capture callbacks.
 
-use crate::hook_chain::{
-    __resolve_around_terminal, __resolve_terminal, around_chain, chain, observer_chain,
-};
+use crate::hook_chain::{__resolve_terminal, chain_hooks};
 use snowglass_hook::HookChain;
 use snowglass_producer_opengl::Tracking;
 use std::{
@@ -12,100 +10,101 @@ use std::{
 
 pub(crate) type Hdc = *mut c_void;
 
-chain! {
-    pub(crate) dispatch_swap_buffers, register_swap_buffers;
-    observe SwapBuffers;
-    chain SWAP_BUFFERS_CHAIN, context SwapBuffersContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook SwapBuffersHook(hdc: Hdc) -> i32;
-    resolve with detour crate::install::DETOURS, swap_buffers -> 0;
-}
+chain_hooks! {
+    #![order(reverse)]
 
-chain! {
-    pub(crate) dispatch_swap_layer_buffers, register_swap_layer_buffers;
-    observe SwapLayerBuffers;
-    chain SWAP_LAYER_BUFFERS_CHAIN, context SwapLayerBuffersContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook SwapLayerBuffersHook(hdc: Hdc) -> i32;
-    abi (hdc: Hdc, planes: u32);
-    resolve with detour crate::install::DETOURS, swap_layer_buffers -> 0;
-}
+    #[trampoline]
+    #[terminal(detour = crate::install::DETOURS.swap_buffers, fallback = 0)]
+    #[prefix(capture_swap_buffers(hdc))]
+    pub(crate) unsafe extern "system" fn swap_buffers(hdc: Hdc) -> i32 {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
 
-chain! {
-    pub(crate) dispatch_draw_arrays, register_draw_arrays;
-    observe DrawArrays;
-    chain DRAW_ARRAYS_CHAIN, context DrawArraysContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook DrawArraysHook(first: i32, count: i32) -> ();
-    abi (mode: u32, first: i32, count: i32);
-    resolve with crate::install::call_draw_arrays;
-}
+    #[trampoline]
+    #[terminal(detour = crate::install::DETOURS.swap_layer_buffers, fallback = 0)]
+    #[prefix(capture_swap_layer_buffers(hdc))]
+    pub(crate) unsafe extern "system" fn swap_layer_buffers(hdc: Hdc, planes: u32) -> i32 {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
 
-chain! {
-    pub(crate) dispatch_draw_elements, register_draw_elements;
-    observe DrawElements;
-    chain DRAW_ELEMENTS_CHAIN, context DrawElementsContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook DrawElementsHook() -> ();
-    abi (mode: u32, count: i32, element_type: u32, indices: *const c_void);
-    resolve with crate::install::call_draw_elements;
-}
+    #[trampoline]
+    #[terminal(crate::install::call_draw_arrays)]
+    #[prefix(track_draw_arrays(first, count))]
+    pub(crate) unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32) {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
 
-chain! {
-    pub(crate) dispatch_draw_elements_base_vertex, register_draw_elements_base_vertex;
-    observe DrawElementsBaseVertex;
-    chain DRAW_ELEMENTS_BASE_VERTEX_CHAIN, context DrawElementsBaseVertexContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook DrawElementsBaseVertexHook() -> ();
-    abi (mode: u32, count: i32, element_type: u32, indices: *const c_void, base_vertex: i32);
-    resolve with crate::install::call_draw_elements_base_vertex;
-}
+    #[trampoline]
+    #[terminal(crate::install::call_draw_elements)]
+    #[prefix(track_draw_elements())]
+    pub(crate) unsafe extern "system" fn draw_elements(
+        mode: u32,
+        count: i32,
+        element_type: u32,
+        indices: *const c_void,
+    ) {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
 
-chain! {
-    pub(crate) dispatch_blit_framebuffer, register_blit_framebuffer;
-    observe BlitFramebuffer;
-    chain BLIT_FRAMEBUFFER_CHAIN, context BlitFramebufferContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook BlitFramebufferHook() -> ();
-    abi (
+    #[trampoline]
+    #[terminal(crate::install::call_draw_elements_base_vertex)]
+    #[prefix(track_draw_elements_base_vertex())]
+    pub(crate) unsafe extern "system" fn draw_elements_base_vertex(
+        mode: u32,
+        count: i32,
+        element_type: u32,
+        indices: *const c_void,
+        base_vertex: i32,
+    ) {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
+
+    #[trampoline]
+    #[terminal(crate::install::call_blit_framebuffer)]
+    #[prefix(track_blit_framebuffer())]
+    pub(crate) unsafe extern "system" fn blit_framebuffer(
         src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32,
         dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32,
         mask: u32, filter: u32,
-    );
-    resolve with crate::install::call_blit_framebuffer;
-}
+    ) {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
 
-chain! {
-    pub(crate) dispatch_copy_image_sub_data, register_copy_image_sub_data;
-    observe CopyImageSubData;
-    chain COPY_IMAGE_SUB_DATA_CHAIN, context CopyImageSubDataContext {
-        tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-    };
-    hook CopyImageSubDataHook(
-        src_name: u32, src_target: u32,
-        dst_name: u32, dst_target: u32, dst_z: i32,
-        width: i32, height: i32,
-    ) -> ();
-    abi (
+    #[trampoline]
+    #[terminal(crate::install::call_copy_image_sub_data)]
+    #[prefix(track_copy_image_sub_data(
+        src_name, src_target, dst_name, dst_target, dst_z, width, height
+    ))]
+    pub(crate) unsafe extern "system" fn copy_image_sub_data(
         src_name: u32, src_target: u32, src_level: i32, src_x: i32, src_y: i32, src_z: i32,
         dst_name: u32, dst_target: u32, dst_level: i32, dst_x: i32, dst_y: i32, dst_z: i32,
         width: i32, height: i32, depth: i32,
-    );
-    resolve with crate::install::call_copy_image_sub_data;
-}
+    ) {
+        context struct {
+            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        }
+    }
 
-chain! {
-    pub(crate) dispatch_wgl_get_proc_address, register_wgl_get_proc_address;
-    around WglGetProcAddress;
-    chain WGL_GET_PROC_ADDRESS_CHAIN, context WglGetProcAddressContext;
-    hook WglGetProcAddressHook(name: *const u8) -> *const c_void;
-    resolve with crate::install::call_wgl_get_proc_address;
+    #[trampoline]
+    #[terminal(crate::install::call_wgl_get_proc_address)]
+    #[infix(route_proc_address)]
+    pub(crate) unsafe extern "system" fn wgl_get_proc_address(
+        name: *const u8,
+    ) -> *const c_void {
+        context struct {}
+    }
 }
 
 thread_local! { static CAPTURING: Cell<bool> = const { Cell::new(false) }; }
@@ -185,23 +184,23 @@ pub(crate) unsafe fn route_proc_address(
     match unsafe { CStr::from_ptr(name.cast()) }.to_bytes() {
         b"glDrawArrays" => {
             crate::install::remember_draw_arrays(original);
-            crate::sys::draw_arrays as *const c_void
+            crate::hooks::draw_arrays as *const c_void
         }
         b"glDrawElements" => {
             crate::install::remember_draw_elements(original);
-            crate::sys::draw_elements as *const c_void
+            crate::hooks::draw_elements as *const c_void
         }
         b"glDrawElementsBaseVertex" => {
             crate::install::remember_draw_elements_base_vertex(original);
-            crate::sys::draw_elements_base_vertex as *const c_void
+            crate::hooks::draw_elements_base_vertex as *const c_void
         }
         b"glBlitFramebuffer" => {
             crate::install::remember_blit_framebuffer(original);
-            crate::sys::blit_framebuffer as *const c_void
+            crate::hooks::blit_framebuffer as *const c_void
         }
         b"glCopyImageSubData" => {
             crate::install::remember_copy_image_sub_data(original);
-            crate::sys::copy_image_sub_data as *const c_void
+            crate::hooks::copy_image_sub_data as *const c_void
         }
         _ => original,
     }

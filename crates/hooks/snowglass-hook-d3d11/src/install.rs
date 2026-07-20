@@ -181,6 +181,7 @@ impl CreateDeviceAndSwapChainDetour {
 pub(crate) static DETOURS: OnceLock<D3D11Detours> = OnceLock::new();
 
 pub(crate) unsafe fn install() -> i32 {
+    snowglass_hook_dxgi::register_claim(crate::device::claim_swapchain);
     if let Some(detours) = DETOURS.get() {
         return if detours.create_device.is_enabled()
             && detours.create_device_and_swapchain.is_enabled()
@@ -192,11 +193,11 @@ pub(crate) unsafe fn install() -> i32 {
     }
     let create_device = CreateDeviceDetour::new(
         system_create_device as D3D11CreateDeviceFn,
-        crate::sys::create_device,
+        crate::hooks::create_device,
     );
     let create_device_and_swapchain = CreateDeviceAndSwapChainDetour::new(
         system_create_device_and_swapchain as D3D11CreateDeviceAndSwapChainFn,
-        crate::sys::create_device_and_swapchain,
+        crate::hooks::create_device_and_swapchain,
     );
     if DETOURS
         .set(D3D11Detours {

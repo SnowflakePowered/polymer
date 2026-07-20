@@ -235,7 +235,9 @@ macro_rules! function_table_hook {
                 Ok(Self {
                     $($dispatch,
                     [<$dispatch _hooks>]: ::std::sync::RwLock::new(
-                        $crate::__chain_hooks!(@infix_slice $(infix($($infix),*))?).to_vec()
+                        $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
+                            $(infix($($infix),*))?
+                        ).to_vec()
                     ),)+
                 })
             }
@@ -320,6 +322,7 @@ macro_rules! function_table_hook {
                 )] = $crate::__chain_hooks!(@prefix_slice
                     [$(($argument, $argument_type))*]
                     [[<$dispatch:camel Context>]]
+                    [yes]
                     [];
                     $(prefix($($prefix)*))?
                 );
@@ -352,6 +355,7 @@ macro_rules! function_table_hook {
                     [$(($argument, $argument_type))*]
                     [$crate::function_table_hook!(@result_type $($result)?)]
                     [[<$dispatch:camel Context>]]
+                    [yes]
                     [];
                     $(postfix($($postfix)*))?
                 );
@@ -627,7 +631,9 @@ macro_rules! impl_com_hook {
                 $(let $dispatch_field = $dispatch_field_value;)*
                 drop($state);
                 let hooks: &[[<$dispatch:camel Hook>]] =
-                    $crate::__chain_hooks!(@infix_slice $(infix($($infix),*))?);
+                    $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
+                        $(infix($($infix),*))?
+                    );
                 let mut remaining = hooks.iter();
                 let terminal: [<$dispatch:camel Hook>] = terminal;
                 let context = [<$dispatch:camel Context>] {
