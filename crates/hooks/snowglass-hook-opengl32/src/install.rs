@@ -5,7 +5,7 @@ use snowglass_platform_windows::InlineDetour;
 use snowglass_producer_opengl::Tracking;
 use std::{
     ffi::c_void,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 use windows_sys::Win32::Foundation::E_FAIL;
 
@@ -53,16 +53,74 @@ unsafe extern "system" {
     fn system_draw_elements(mode: u32, count: i32, element_type: u32, indices: *const c_void);
 }
 
-pub(crate) struct OpenGlDetours {
-    pub(crate) swap_buffers: InlineDetour<SwapBuffersFn>,
-    pub(crate) swap_layer_buffers: InlineDetour<SwapLayerBuffersFn>,
-    pub(crate) wgl_get_proc_address: InlineDetour<WglGetProcAddressFn>,
-    core_draw_arrays: InlineDetour<GlDrawArraysFn>,
-    core_draw_elements: InlineDetour<GlDrawElementsFn>,
+struct OpenGlRuntime {
     tracking: Arc<Tracking>,
 }
 
-pub(crate) static DETOURS: OnceLock<OpenGlDetours> = OnceLock::new();
+struct DrawArraysTerminal(InlineDetour<GlDrawArraysFn>);
+
+impl snowglass_hook::TerminalLifecycle for DrawArraysTerminal {
+    fn enable(&self) -> Result<(), i32> {
+        self.0.enable()
+    }
+    fn disable(&self) -> Result<(), i32> {
+        self.0.disable()
+    }
+}
+
+impl crate::hooks::DrawArraysTerminal for DrawArraysTerminal {
+    unsafe fn call(&self, mode: u32, first: i32, count: i32) {
+        if let Some(original) = DRAW_ARRAYS.get() {
+            unsafe { original(mode, first, count) };
+        } else {
+            unsafe { (self.0.trampoline())(mode, first, count) };
+        }
+    }
+}
+
+struct DrawElementsTerminal(InlineDetour<GlDrawElementsFn>);
+
+impl snowglass_hook::TerminalLifecycle for DrawElementsTerminal {
+    fn enable(&self) -> Result<(), i32> {
+        self.0.enable()
+    }
+    fn disable(&self) -> Result<(), i32> {
+        self.0.disable()
+    }
+}
+
+impl crate::hooks::DrawElementsTerminal for DrawElementsTerminal {
+    unsafe fn call(&self, mode: u32, count: i32, element_type: u32, indices: *const c_void) {
+        if let Some(original) = DRAW_ELEMENTS.get() {
+            unsafe { original(mode, count, element_type, indices) };
+        } else {
+            unsafe { (self.0.trampoline())(mode, count, element_type, indices) };
+        }
+    }
+}
+
+type SwapBuffersInstallation =
+    snowglass_hook::TerminalInstallation<dyn crate::hooks::SwapBuffersTerminal>;
+type SwapLayerBuffersInstallation =
+    snowglass_hook::TerminalInstallation<dyn crate::hooks::SwapLayerBuffersTerminal>;
+type WglGetProcAddressInstallation =
+    snowglass_hook::TerminalInstallation<dyn crate::hooks::WglGetProcAddressTerminal>;
+type DrawArraysInstallation =
+    snowglass_hook::TerminalInstallation<dyn crate::hooks::DrawArraysTerminal>;
+type DrawElementsInstallation =
+    snowglass_hook::TerminalInstallation<dyn crate::hooks::DrawElementsTerminal>;
+
+struct OpenGlInstallation {
+    swap_buffers: Option<SwapBuffersInstallation>,
+    swap_layer_buffers: Option<SwapLayerBuffersInstallation>,
+    wgl_get_proc_address: Option<WglGetProcAddressInstallation>,
+    draw_arrays: Option<DrawArraysInstallation>,
+    draw_elements: Option<DrawElementsInstallation>,
+    complete: bool,
+}
+
+static INSTALLATION: Mutex<Option<OpenGlInstallation>> = Mutex::new(None);
+static RUNTIME: Mutex<Option<Arc<OpenGlRuntime>>> = Mutex::new(None);
 static DRAW_ARRAYS: OnceLock<GlDrawArraysFn> = OnceLock::new();
 static DRAW_ELEMENTS: OnceLock<GlDrawElementsFn> = OnceLock::new();
 static DRAW_ELEMENTS_BASE_VERTEX: OnceLock<GlDrawElementsBaseVertexFn> = OnceLock::new();
@@ -70,9 +128,11 @@ static BLIT_FRAMEBUFFER: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
 static COPY_IMAGE_SUB_DATA: OnceLock<GlCopyImageSubDataFn> = OnceLock::new();
 
 pub(crate) fn tracking() -> Arc<Tracking> {
-    DETOURS
-        .get()
-        .map(|detours| detours.tracking.clone())
+    RUNTIME
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .map(|runtime| runtime.tracking.clone())
         .unwrap_or_default()
 }
 
@@ -104,27 +164,6 @@ pub(crate) fn remember_blit_framebuffer(address: *const c_void) {
 pub(crate) fn remember_copy_image_sub_data(address: *const c_void) {
     let function = unsafe { std::mem::transmute::<*const c_void, GlCopyImageSubDataFn>(address) };
     let _ = COPY_IMAGE_SUB_DATA.set(function);
-}
-
-pub(crate) unsafe fn call_draw_arrays(mode: u32, first: i32, count: i32) {
-    if let Some(original) = DRAW_ARRAYS.get() {
-        unsafe { original(mode, first, count) };
-    } else if let Some(detours) = DETOURS.get() {
-        unsafe { (detours.core_draw_arrays.trampoline())(mode, first, count) };
-    }
-}
-
-pub(crate) unsafe fn call_draw_elements(
-    mode: u32,
-    count: i32,
-    element_type: u32,
-    indices: *const c_void,
-) {
-    if let Some(original) = DRAW_ELEMENTS.get() {
-        unsafe { original(mode, count, element_type, indices) };
-    } else if let Some(detours) = DETOURS.get() {
-        unsafe { (detours.core_draw_elements.trampoline())(mode, count, element_type, indices) };
-    }
 }
 
 pub(crate) unsafe fn call_draw_elements_base_vertex(
@@ -188,76 +227,127 @@ pub(crate) unsafe fn call_copy_image_sub_data(
     }
 }
 
-pub(crate) unsafe fn call_wgl_get_proc_address(name: *const u8) -> *const c_void {
-    DETOURS.get().map_or(std::ptr::null(), |detours| unsafe {
-        (detours.wgl_get_proc_address.trampoline())(name)
-    })
-}
-
 pub(crate) unsafe fn install() -> i32 {
-    if let Some(detours) = DETOURS.get() {
-        return if all_enabled(detours) { 0 } else { E_FAIL };
+    let mut installation = INSTALLATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(installed) = installation.as_mut() {
+        if installed.complete {
+            return 0;
+        }
+        if !uninstall_group(installed) {
+            return E_FAIL;
+        }
+        *installation = None;
+        *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = None;
     }
-    let swap_buffers = InlineDetour::new(
-        system_swap_buffers as SwapBuffersFn,
-        crate::hooks::swap_buffers,
-    );
-    let swap_layer_buffers = InlineDetour::new(
-        system_swap_layer_buffers as SwapLayerBuffersFn,
-        crate::hooks::swap_layer_buffers,
-    );
-    let wgl_get_proc_address = InlineDetour::new(
-        system_wgl_get_proc_address as WglGetProcAddressFn,
-        crate::hooks::wgl_get_proc_address,
-    );
-    let core_draw_arrays = InlineDetour::new(
-        system_draw_arrays as GlDrawArraysFn,
-        crate::hooks::draw_arrays,
-    );
-    let core_draw_elements = InlineDetour::new(
-        system_draw_elements as GlDrawElementsFn,
-        crate::hooks::draw_elements,
-    );
-    if DETOURS
-        .set(OpenGlDetours {
-            swap_buffers,
-            swap_layer_buffers,
-            wgl_get_proc_address,
-            core_draw_arrays,
-            core_draw_elements,
-            tracking: Arc::default(),
-        })
-        .is_err()
-    {
-        return E_FAIL;
+
+    let runtime = Arc::new(OpenGlRuntime {
+        tracking: Arc::default(),
+    });
+    *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = Some(runtime);
+    let mut group = OpenGlInstallation {
+        swap_buffers: None,
+        swap_layer_buffers: None,
+        wgl_get_proc_address: None,
+        draw_arrays: None,
+        draw_elements: None,
+        complete: false,
+    };
+
+    macro_rules! install_or_rollback {
+        ($field:ident, $install:expr) => {
+            match $install {
+                Ok(guard) => group.$field = Some(guard),
+                Err(_) => {
+                    if !uninstall_group(&mut group) {
+                        *installation = Some(group);
+                    } else {
+                        *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = None;
+                    }
+                    return E_FAIL;
+                }
+            }
+        };
     }
-    let detours = DETOURS.get().expect("detours were just initialized");
-    let enabled = detours
-        .wgl_get_proc_address
-        .enable()
-        .and_then(|()| detours.core_draw_arrays.enable())
-        .and_then(|()| detours.core_draw_elements.enable())
-        .and_then(|()| detours.swap_layer_buffers.enable())
-        .and_then(|()| detours.swap_buffers.enable());
-    if enabled.is_err() {
-        disable_all(detours);
-        return E_FAIL;
-    }
+
+    install_or_rollback!(
+        wgl_get_proc_address,
+        crate::hooks::install_wgl_get_proc_address_terminal(InlineDetour::new(
+            system_wgl_get_proc_address as WglGetProcAddressFn,
+            crate::hooks::wgl_get_proc_address
+        ))
+    );
+    install_or_rollback!(
+        draw_arrays,
+        crate::hooks::install_draw_arrays_terminal(DrawArraysTerminal(InlineDetour::new(
+            system_draw_arrays as GlDrawArraysFn,
+            crate::hooks::draw_arrays
+        )))
+    );
+    install_or_rollback!(
+        draw_elements,
+        crate::hooks::install_draw_elements_terminal(DrawElementsTerminal(InlineDetour::new(
+            system_draw_elements as GlDrawElementsFn,
+            crate::hooks::draw_elements
+        )))
+    );
+    install_or_rollback!(
+        swap_layer_buffers,
+        crate::hooks::install_swap_layer_buffers_terminal(InlineDetour::new(
+            system_swap_layer_buffers as SwapLayerBuffersFn,
+            crate::hooks::swap_layer_buffers
+        ))
+    );
+    install_or_rollback!(
+        swap_buffers,
+        crate::hooks::install_swap_buffers_terminal(InlineDetour::new(
+            system_swap_buffers as SwapBuffersFn,
+            crate::hooks::swap_buffers
+        ))
+    );
+
+    group.complete = true;
+    *installation = Some(group);
     0
 }
 
-fn all_enabled(detours: &OpenGlDetours) -> bool {
-    detours.swap_buffers.is_enabled()
-        && detours.swap_layer_buffers.is_enabled()
-        && detours.wgl_get_proc_address.is_enabled()
-        && detours.core_draw_arrays.is_enabled()
-        && detours.core_draw_elements.is_enabled()
+pub(crate) fn uninstall() -> i32 {
+    let mut installation = INSTALLATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(installed) = installation.as_mut() else {
+        return 0;
+    };
+    if !uninstall_group(installed) {
+        installed.complete = false;
+        return E_FAIL;
+    }
+    *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    *installation = None;
+    0
 }
 
-fn disable_all(detours: &OpenGlDetours) {
-    let _ = detours.swap_buffers.disable();
-    let _ = detours.swap_layer_buffers.disable();
-    let _ = detours.core_draw_elements.disable();
-    let _ = detours.core_draw_arrays.disable();
-    let _ = detours.wgl_get_proc_address.disable();
+fn uninstall_group(installed: &mut OpenGlInstallation) -> bool {
+    macro_rules! uninstall {
+        ($field:ident) => {
+            if installed
+                .$field
+                .as_ref()
+                .is_some_and(|guard| guard.uninstall().is_ok())
+            {
+                installed.$field = None;
+            }
+        };
+    }
+    uninstall!(swap_buffers);
+    uninstall!(swap_layer_buffers);
+    uninstall!(draw_elements);
+    uninstall!(draw_arrays);
+    uninstall!(wgl_get_proc_address);
+    installed.swap_buffers.is_none()
+        && installed.swap_layer_buffers.is_none()
+        && installed.draw_elements.is_none()
+        && installed.draw_arrays.is_none()
+        && installed.wgl_get_proc_address.is_none()
 }

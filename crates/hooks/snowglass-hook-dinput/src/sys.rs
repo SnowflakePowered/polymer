@@ -6,3 +6,8 @@ use windows_sys::core::HRESULT;
 pub unsafe extern "system" fn SnowglassInstallDinputHook() -> HRESULT {
     unsafe { crate::install::install() }
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn SnowglassUninstallDinputHook() -> HRESULT {
+    crate::install::uninstall()
+}

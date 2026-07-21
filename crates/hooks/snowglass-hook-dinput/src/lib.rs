@@ -1,7 +1,6 @@
 //! Early-process DirectInput detour and COM device interception.
 #![allow(unsafe_code)]
 
-mod hook_chain;
 mod hooks;
 mod install;
 mod runtime;
@@ -16,7 +15,7 @@ pub(crate) type DirectInput8CreateFn = unsafe extern "system" fn(
     *mut std::ffi::c_void,
 ) -> windows_sys::core::HRESULT;
 
-pub use sys::SnowglassInstallDinputHook;
+pub use sys::{SnowglassInstallDinputHook, SnowglassUninstallDinputHook};
 
 #[cfg(test)]
 mod tests {
@@ -56,5 +55,9 @@ mod tests {
             )
         };
         assert_eq!(unsafe { release(interface) }, 0);
+
+        assert_eq!(SnowglassUninstallDinputHook(), 0);
+        assert_eq!(unsafe { SnowglassInstallDinputHook() }, 0);
+        assert_eq!(SnowglassUninstallDinputHook(), 0);
     }
 }

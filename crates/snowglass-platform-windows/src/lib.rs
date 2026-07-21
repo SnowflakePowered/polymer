@@ -1,5 +1,7 @@
 //! Windows-specific handle, adapter, process, and window utilities.
 
+static INLINE_HOOK_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A thread-safe owner for an `ib-hook` inline hook.
 ///
 /// Hook state changes take an exclusive lock, while trampoline access only
@@ -18,6 +20,9 @@ impl<F: ib_hook::FnPtr> InlineDetour<F> {
     }
 
     pub fn enable(&self) -> Result<(), i32> {
+        let _mutation = INLINE_HOOK_MUTATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut hook = self.hook.write().unwrap_or_else(|error| error.into_inner());
         let result = hook.enable();
         if result.is_ok() {
@@ -28,6 +33,9 @@ impl<F: ib_hook::FnPtr> InlineDetour<F> {
     }
 
     pub fn disable(&self) -> Result<(), i32> {
+        let _mutation = INLINE_HOOK_MUTATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut hook = self.hook.write().unwrap_or_else(|error| error.into_inner());
         let result = hook.disable();
         if result.is_ok() {
@@ -49,6 +57,24 @@ impl<F: ib_hook::FnPtr> InlineDetour<F> {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .trampoline()
+    }
+}
+
+impl<F: ib_hook::FnPtr> snowglass_hook::TerminalLifecycle for InlineDetour<F> {
+    fn enable(&self) -> Result<(), i32> {
+        InlineDetour::enable(self)
+    }
+
+    fn disable(&self) -> Result<(), i32> {
+        InlineDetour::disable(self)
+    }
+}
+
+impl<F: ib_hook::FnPtr> snowglass_hook::TerminalCallable for InlineDetour<F> {
+    type Function = F;
+
+    fn terminal_callable(&self) -> F {
+        self.trampoline()
     }
 }
 

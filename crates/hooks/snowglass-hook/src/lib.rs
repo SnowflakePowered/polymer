@@ -9,10 +9,294 @@ pub use dashmap::DashMap as __DashMap;
 pub use paste::paste as __paste;
 pub use vtable::VtableHook;
 
+use std::sync::{Arc, Condvar, Mutex};
+
 /// A continuation over a typed hook chain.
 pub trait HookChain<'a, T: 'a> {
     /// Advances to the next registered hook, if one remains.
     fn fp_next(&mut self) -> Option<&'a T>;
+}
+
+/// Owns the backend resources behind an installed terminal callable.
+///
+/// Implementations must publish a usable trampoline before `enable` can route
+/// calls to the generated hook entry point. `disable` is invoked only after
+/// all terminal invocations acquired through the corresponding slot drain.
+pub trait TerminalLifecycle: Send + Sync + 'static {
+    fn enable(&self) -> Result<(), i32>;
+    fn disable(&self) -> Result<(), i32>;
+}
+
+/// Supplies the typed callable owned by an installed terminal lifecycle.
+pub trait TerminalCallable: TerminalLifecycle {
+    type Function: Copy + Send + Sync + 'static;
+
+    fn terminal_callable(&self) -> Self::Function;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalPhase {
+    Installed,
+    Draining,
+}
+
+struct TerminalEntry<T: ?Sized> {
+    generation: u64,
+    phase: TerminalPhase,
+    active: usize,
+    terminal: Arc<T>,
+}
+
+struct TerminalSlotState<T: ?Sized> {
+    next_generation: u64,
+    entry: Option<TerminalEntry<T>>,
+}
+
+/// Replaceable storage for one generated terminal lifecycle object.
+///
+/// An uninstall waits for outstanding [`TerminalCall`] leases. It must not be
+/// initiated from the same thread while that thread owns a lease from this
+/// slot, because doing so would wait on itself.
+pub struct TerminalSlot<T: ?Sized> {
+    state: Mutex<TerminalSlotState<T>>,
+    drained: Condvar,
+}
+
+impl<T: ?Sized> TerminalSlot<T> {
+    pub const fn new() -> Self {
+        Self {
+            state: Mutex::new(TerminalSlotState {
+                next_generation: 1,
+                entry: None,
+            }),
+            drained: Condvar::new(),
+        }
+    }
+
+    /// Acquires one invocation lease, or returns `None` while the terminal is
+    /// absent or being uninstalled. Generated dispatchers translate `None`
+    /// into the terminal declaration's explicit fallback value.
+    pub fn acquire(&'static self) -> Option<TerminalCall<T>> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.entry.as_mut()?;
+        if entry.phase != TerminalPhase::Installed {
+            return None;
+        }
+        entry.active += 1;
+        Some(TerminalCall {
+            slot: self,
+            generation: entry.generation,
+            terminal: Arc::clone(&entry.terminal),
+        })
+    }
+}
+
+impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
+    /// Publishes and enables a new terminal generation.
+    pub fn install(
+        &'static self,
+        terminal: Arc<T>,
+    ) -> Result<TerminalInstallation<T>, TerminalInstallError> {
+        self.retry_failed_cleanup();
+        let generation = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.entry.is_some() {
+                return Err(TerminalInstallError::Occupied);
+            }
+            let generation = state.next_generation;
+            state.next_generation = state.next_generation.wrapping_add(1).max(1);
+            state.entry = Some(TerminalEntry {
+                generation,
+                phase: TerminalPhase::Installed,
+                active: 0,
+                terminal: Arc::clone(&terminal),
+            });
+            generation
+        };
+
+        if let Err(error) = terminal.enable() {
+            self.remove_failed_install(generation, &terminal);
+            return Err(TerminalInstallError::Enable(error));
+        }
+
+        Ok(TerminalInstallation {
+            slot: self,
+            generation,
+        })
+    }
+
+    fn remove_failed_install(&'static self, generation: u64, terminal: &Arc<T>) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(entry) = state
+            .entry
+            .as_mut()
+            .filter(|entry| entry.generation == generation)
+        else {
+            return;
+        };
+        entry.phase = TerminalPhase::Draining;
+        while state.entry.as_ref().is_some_and(|entry| entry.active != 0) {
+            state = self
+                .drained
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        drop(state);
+        let disabled = terminal.disable().is_ok();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if disabled
+            && state
+                .entry
+                .as_ref()
+                .is_some_and(|entry| entry.generation == generation)
+        {
+            state.entry = None;
+        }
+    }
+
+    fn retry_failed_cleanup(&'static self) {
+        let candidate = {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.entry.as_ref().and_then(|entry| {
+                (entry.phase == TerminalPhase::Draining && entry.active == 0)
+                    .then(|| (entry.generation, Arc::clone(&entry.terminal)))
+            })
+        };
+        let Some((generation, terminal)) = candidate else {
+            return;
+        };
+        if terminal.disable().is_err() {
+            return;
+        }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.entry.as_ref().is_some_and(|entry| {
+            entry.generation == generation && entry.phase == TerminalPhase::Draining
+        }) {
+            state.entry = None;
+        }
+    }
+
+    fn uninstall(&'static self, generation: u64) -> Result<(), TerminalUninstallError> {
+        let terminal = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let Some(entry) = state.entry.as_mut() else {
+                return Err(TerminalUninstallError::Stale);
+            };
+            if entry.generation != generation || entry.phase != TerminalPhase::Installed {
+                return Err(TerminalUninstallError::Stale);
+            }
+            entry.phase = TerminalPhase::Draining;
+            while state.entry.as_ref().is_some_and(|entry| entry.active != 0) {
+                state = self
+                    .drained
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            Arc::clone(
+                &state
+                    .entry
+                    .as_ref()
+                    .expect("terminal entry exists")
+                    .terminal,
+            )
+        };
+
+        if let Err(error) = terminal.disable() {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some(entry) = state
+                .entry
+                .as_mut()
+                .filter(|entry| entry.generation == generation)
+            {
+                entry.phase = TerminalPhase::Installed;
+            }
+            return Err(TerminalUninstallError::Disable(error));
+        }
+
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state
+            .entry
+            .as_ref()
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            state.entry = None;
+        }
+        Ok(())
+    }
+}
+
+impl<T: ?Sized> Default for TerminalSlot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A lease keeping one terminal generation alive for an entire invocation.
+pub struct TerminalCall<T: ?Sized + 'static> {
+    slot: &'static TerminalSlot<T>,
+    generation: u64,
+    terminal: Arc<T>,
+}
+
+impl<T: ?Sized> TerminalCall<T> {
+    pub fn terminal(&self) -> &T {
+        &self.terminal
+    }
+}
+
+impl<T: ?Sized> Drop for TerminalCall<T> {
+    fn drop(&mut self) {
+        let mut state = self
+            .slot
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(entry) = state
+            .entry
+            .as_mut()
+            .filter(|entry| entry.generation == self.generation)
+        else {
+            return;
+        };
+        entry.active = entry
+            .active
+            .checked_sub(1)
+            .expect("terminal lease underflow");
+        if entry.active == 0 && entry.phase == TerminalPhase::Draining {
+            self.slot.drained.notify_all();
+        }
+    }
+}
+
+/// Authority to uninstall one exact terminal generation.
+#[must_use = "dropping the installation immediately uninstalls its terminal"]
+pub struct TerminalInstallation<T: TerminalLifecycle + ?Sized + 'static> {
+    slot: &'static TerminalSlot<T>,
+    generation: u64,
+}
+
+impl<T: TerminalLifecycle + ?Sized> Drop for TerminalInstallation<T> {
+    fn drop(&mut self) {
+        let _ = self.slot.uninstall(self.generation);
+    }
+}
+
+impl<T: TerminalLifecycle + ?Sized> TerminalInstallation<T> {
+    pub fn uninstall(&self) -> Result<(), TerminalUninstallError> {
+        self.slot.uninstall(self.generation)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalInstallError {
+    Occupied,
+    Enable(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalUninstallError {
+    Stale,
+    Disable(i32),
 }
 
 /// Advances a terminal-backed hook chain and invokes its continuation.
@@ -31,22 +315,30 @@ macro_rules! next {
 
 /// Declares static typed hook chains using function-shaped Rust syntax.
 ///
-/// Backend crates normally wrap this hidden macro so they can supply their
-/// terminal resolver while callers only choose `#![order(forward)]` or
-/// `#![order(reverse)]`. Hook and context names are inferred from the declared
-/// function name in the same way as [`function_table_hook!`]. Mark an entry
-/// with `#[trampoline]` when its declared function is used as an ABI detour
-/// target. `#[trampoline(abi = "...")]` overrides that entry point's ABI while
-/// leaving the chain declaration as the source of its signature.
+/// Each terminal is declared as `direct = path`, `installed` with a fallback,
+/// or a backend-defined `dynamic(...)` source. Dynamic sources select their
+/// callback with `#![terminal_resolver(name)]`; direct and installed-only
+/// declarations need no resolver. Hook and context names are inferred from the
+/// declared function name in the same way as [`function_table_hook!`]. Mark an
+/// entry with `#[trampoline]` when its declared function is used as an ABI
+/// detour target. `#[trampoline(abi = "...")]` overrides that entry point's ABI
+/// while leaving the chain declaration as the source of its signature.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __chain_hooks {
     (
-        resolve with $resolve:ident;
+        #![terminal_resolver($resolve:ident)]
         #![order($order:ident)]
         $($items:tt)*
     ) => {
         $crate::__chain_hooks!(@items $order, $resolve; $($items)*);
+    };
+
+    (
+        #![order($order:ident)]
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver; $($items)*);
     };
 
     (@items $order:ident, $resolve:ident;) => {};
@@ -174,7 +466,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@normalize_terminal $order, $resolve;
+        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi;
             [$($terminal)*]
             [$(prefix($($prefix)*))?]
             [$(infix($($infix),*))?]
@@ -196,7 +488,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@normalize_terminal $order, $resolve;
+        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi;
             [$($terminal)*]
             [$(prefix($($prefix)*))?]
             [$(infix($($infix),*))?]
@@ -208,64 +500,34 @@ macro_rules! __chain_hooks {
         );
     };
 
-    (@normalize_terminal $order:ident, $resolve:ident;
-        [$resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident,
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal;
+        [direct = $terminal:path]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
+            [direct terminal $terminal;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal;
+        [installed, fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve;
+            [installed abi $terminal_abi with fallback $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal;
+        [dynamic($resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident),
             fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
         $crate::__chain_hooks!(@finish_item $order, $resolve;
-            [resolve with $resolver_argument, $symbol: $module::$function_type -> $fallback;]
-            $($item)*
-        );
-    };
-
-    (@normalize_terminal $order:ident, $resolve:ident;
-        [$resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident]
-        $($item:tt)*
-    ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve;
-            [resolve with $resolver_argument, $symbol: $module::$function_type;]
-            $($item)*
-        );
-    };
-
-    (@normalize_terminal $order:ident, $resolve:ident;
-        [detour = $root:ident $(::$segment:ident)* . $field:ident,
-            fallback = $fallback:expr $(,)?]
-        $($item:tt)*
-    ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve;
-            [resolve with detour $root $(::$segment)*, $field -> $fallback;]
-            $($item)*
-        );
-    };
-
-    (@normalize_terminal $order:ident, $resolve:ident;
-        [detour = $detour:path, fallback = $fallback:expr $(,)?]
-        $($item:tt)*
-    ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve;
-            [resolve with detour $detour, fallback $fallback;]
-            $($item)*
-        );
-    };
-
-    (@normalize_terminal $order:ident, $resolve:ident;
-        [$resolver_argument:ident: $resolver_type:ty]
-        $($item:tt)*
-    ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve;
-            [resolve with $resolver_argument: $resolver_type;]
-            $($item)*
-        );
-    };
-
-    (@normalize_terminal $order:ident, $resolve:ident;
-        [$terminal:path]
-        $($item:tt)*
-    ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve;
-            [resolve with $terminal;]
+            [dynamic proc $resolver_argument, $symbol: $module::$function_type;
+                fallback $fallback;]
             $($item)*
         );
     };
@@ -357,6 +619,17 @@ macro_rules! __chain_hooks {
         callback_context $callback_context:ident;
         fields { $($field:ident: $field_type:ty = $field_value:expr),* }
     ) => { $crate::__paste! {
+        $crate::__chain_hooks!(@declare_terminal
+            [$($resolve_tokens)*]
+            [$visibility]
+            [[<$name:camel Terminal>]]
+            [[<$name:camel TerminalFn>]]
+            [[<$name:upper _TERMINAL>]]
+            [[<install_ $name _terminal>]]
+            [$($argument: $argument_type),*]
+            [$result]
+        );
+
         $visibility type [<$name:camel Hook>] = unsafe fn(
             $($argument_type,)*
             [<$name:camel Context>]<'_>,
@@ -420,10 +693,12 @@ macro_rules! __chain_hooks {
                 $($argument: $argument_type,)*
                 _context: [<$name:camel Context>]<'_>,
             ) -> $result {
-                ($resolve! {
-                    ($($argument),*);
-                    $($resolve_tokens)*
-                })()
+                $crate::__chain_hooks!(@call_terminal
+                    [$resolve]
+                    [$($resolve_tokens)*]
+                    [[<$name:upper _TERMINAL>]]
+                    [$($argument),*]
+                )
             }
 
             $(let $field = $field_value;)*
@@ -502,6 +777,93 @@ macro_rules! __chain_hooks {
             unsafe { [<__chain_dispatch_ $name>]($($argument),*) }
         }
     }};
+
+    (@declare_terminal
+        [installed abi $terminal_abi:literal with fallback $fallback:expr;]
+        [$visibility:vis]
+        [$terminal_trait:ident]
+        [$terminal_fn:ident]
+        [$slot:ident]
+        [$install:ident]
+        [$($argument:ident: $argument_type:ty),*]
+        [$result:ty]
+    ) => {
+        $visibility type $terminal_fn = unsafe extern $terminal_abi fn(
+            $($argument_type),*
+        ) -> $result;
+
+        $visibility trait $terminal_trait: $crate::TerminalLifecycle {
+            unsafe fn call(&self, $($argument: $argument_type),*) -> $result;
+        }
+
+        impl<T> $terminal_trait for T
+        where
+            T: $crate::TerminalCallable<Function = $terminal_fn>,
+        {
+            unsafe fn call(&self, $($argument: $argument_type),*) -> $result {
+                let terminal = $crate::TerminalCallable::terminal_callable(self);
+                unsafe { terminal($($argument),*) }
+            }
+        }
+
+        static $slot: $crate::TerminalSlot<dyn $terminal_trait> =
+            $crate::TerminalSlot::new();
+
+        $visibility fn $install<T>(
+            terminal: T,
+        ) -> Result<
+            $crate::TerminalInstallation<dyn $terminal_trait>,
+            $crate::TerminalInstallError,
+        >
+        where
+            T: $terminal_trait,
+        {
+            let terminal: ::std::sync::Arc<dyn $terminal_trait> =
+                ::std::sync::Arc::new(terminal);
+            $slot.install(terminal)
+        }
+    };
+    (@declare_terminal
+        [$($resolve_tokens:tt)*]
+        [$visibility:vis]
+        [$terminal_trait:ident]
+        [$terminal_fn:ident]
+        [$slot:ident]
+        [$install:ident]
+        [$($argument:ident: $argument_type:ty),*]
+        [$result:ty]
+    ) => {};
+
+    (@call_terminal
+        [$resolve:ident]
+        [installed abi $terminal_abi:literal with fallback $fallback:expr;]
+        [$slot:ident]
+        [$($argument:ident),*]
+    ) => {
+        match $slot.acquire() {
+            Some(terminal) => unsafe { terminal.terminal().call($($argument),*) },
+            None => $fallback,
+        }
+    };
+    (@call_terminal
+        [$resolve:ident]
+        [direct terminal $terminal:path;]
+        [$slot:ident]
+        [$($argument:ident),*]
+    ) => {
+        unsafe { $terminal($($argument),*) }
+    };
+    (@call_terminal
+        [$resolve:ident]
+        [$($resolve_tokens:tt)*]
+        [$slot:ident]
+        [$($argument:ident),*]
+    ) => {
+        ($resolve! {
+            ($($argument),*);
+            $($resolve_tokens)*
+        })()
+    };
 
     (@infix_slice) => { &[] };
     (@infix_slice infix($($hook:path),* $(,)?)) => { &[$($hook),*] };
@@ -695,7 +1057,10 @@ macro_rules! __chain_hooks {
 
 #[cfg(test)]
 mod static_chain_tests {
-    use std::sync::Mutex;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     static FORWARD_EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
@@ -708,21 +1073,6 @@ mod static_chain_tests {
     unsafe fn forward_terminal(value: usize) -> usize {
         FORWARD_EVENTS.lock().unwrap().push("terminal");
         value * 2
-    }
-
-    macro_rules! resolve_terminal {
-        (($($argument:ident),*); resolve with $terminal:path;) => {
-            || unsafe { $terminal($($argument),*) }
-        };
-    }
-
-    macro_rules! chain_hooks {
-        ($($tokens:tt)*) => {
-            crate::__chain_hooks! {
-                resolve with resolve_terminal;
-                $($tokens)*
-            }
-        };
     }
 
     unsafe fn prefix_one(value: usize, context: &OperationContext<'_>) {
@@ -775,10 +1125,10 @@ mod static_chain_tests {
         FORWARD_EVENTS.lock().unwrap().push("forward-postfix");
     }
 
-    chain_hooks! {
+    crate::__chain_hooks! {
         #![order(reverse)]
 
-        #[terminal(terminal)]
+        #[terminal(direct = terminal)]
         #[prefix(prefix_one(value), prefix_two())]
         #[infix(infix_one, infix_two)]
         #[postfix(postfix_one(result), postfix_two(value, result))]
@@ -789,10 +1139,54 @@ mod static_chain_tests {
         }
     }
 
-    chain_hooks! {
+    crate::__chain_hooks! {
         #![order(forward)]
 
-        #[terminal(forward_terminal)]
+        #[terminal(installed, fallback = usize::MAX)]
+        pub(crate) unsafe extern "system" fn installed_operation(value: usize) -> usize;
+    }
+
+    static ENABLES: AtomicUsize = AtomicUsize::new(0);
+    static DISABLES: AtomicUsize = AtomicUsize::new(0);
+
+    struct InstalledTerminal(InstalledOperationTerminalFn);
+
+    impl crate::TerminalLifecycle for InstalledTerminal {
+        fn enable(&self) -> Result<(), i32> {
+            ENABLES.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn disable(&self) -> Result<(), i32> {
+            DISABLES.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    impl crate::TerminalCallable for InstalledTerminal {
+        type Function = InstalledOperationTerminalFn;
+
+        fn terminal_callable(&self) -> Self::Function {
+            self.0
+        }
+    }
+
+    unsafe extern "system" fn times_two(value: usize) -> usize {
+        value * 2
+    }
+
+    unsafe extern "system" fn times_four(value: usize) -> usize {
+        value * 4
+    }
+
+    unsafe extern "system" fn times_five(value: usize) -> usize {
+        value * 5
+    }
+
+    crate::__chain_hooks! {
+        #![order(forward)]
+
+        #[terminal(direct = forward_terminal)]
         #[prefix(forward_prefix())]
         #[infix(forward_infix)]
         #[postfix(forward_postfix(result))]
@@ -832,5 +1226,135 @@ mod static_chain_tests {
                 "forward-postfix",
             ]
         );
+    }
+
+    #[test]
+    fn installed_terminal_can_be_uninstalled_and_reinstalled() {
+        ENABLES.store(0, Ordering::Relaxed);
+        DISABLES.store(0, Ordering::Relaxed);
+
+        assert_eq!(unsafe { installed_operation(3) }, usize::MAX);
+        let first = install_installed_operation_terminal(InstalledTerminal(times_two)).unwrap();
+        assert_eq!(unsafe { installed_operation(3) }, 6);
+        first.uninstall().unwrap();
+        assert_eq!(unsafe { installed_operation(3) }, usize::MAX);
+
+        let second = install_installed_operation_terminal(InstalledTerminal(times_four)).unwrap();
+        assert_eq!(unsafe { installed_operation(3) }, 12);
+        second.uninstall().unwrap();
+
+        let dropped = install_installed_operation_terminal(InstalledTerminal(times_five)).unwrap();
+        assert_eq!(unsafe { installed_operation(3) }, 15);
+        drop(dropped);
+        assert_eq!(unsafe { installed_operation(3) }, usize::MAX);
+        assert_eq!(ENABLES.load(Ordering::Relaxed), 3);
+        assert_eq!(DISABLES.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn uninstall_drains_invocation_leases_before_disabling() {
+        trait TestTerminal: crate::TerminalLifecycle {}
+
+        struct Lifecycle(Arc<AtomicUsize>);
+
+        impl crate::TerminalLifecycle for Lifecycle {
+            fn enable(&self) -> Result<(), i32> {
+                Ok(())
+            }
+
+            fn disable(&self) -> Result<(), i32> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        impl TestTerminal for Lifecycle {}
+
+        static SLOT: crate::TerminalSlot<dyn TestTerminal> = crate::TerminalSlot::new();
+
+        let disables = Arc::new(AtomicUsize::new(0));
+        let terminal: Arc<dyn TestTerminal> = Arc::new(Lifecycle(Arc::clone(&disables)));
+        let installation = SLOT.install(terminal).unwrap();
+        let invocation = SLOT.acquire().unwrap();
+        let uninstall = std::thread::spawn(move || installation.uninstall());
+
+        while SLOT.acquire().is_some() {
+            std::thread::yield_now();
+        }
+        assert_eq!(disables.load(Ordering::SeqCst), 0);
+        drop(invocation);
+        assert_eq!(uninstall.join().unwrap(), Ok(()));
+        assert_eq!(disables.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_enable_releases_the_slot_for_retry() {
+        trait TestTerminal: crate::TerminalLifecycle {}
+
+        struct Lifecycle(bool);
+
+        impl crate::TerminalLifecycle for Lifecycle {
+            fn enable(&self) -> Result<(), i32> {
+                if self.0 { Ok(()) } else { Err(17) }
+            }
+
+            fn disable(&self) -> Result<(), i32> {
+                Ok(())
+            }
+        }
+
+        impl TestTerminal for Lifecycle {}
+
+        static SLOT: crate::TerminalSlot<dyn TestTerminal> = crate::TerminalSlot::new();
+
+        let failing: Arc<dyn TestTerminal> = Arc::new(Lifecycle(false));
+        assert!(matches!(
+            SLOT.install(failing),
+            Err(crate::TerminalInstallError::Enable(17))
+        ));
+        let succeeding: Arc<dyn TestTerminal> = Arc::new(Lifecycle(true));
+        let installed = SLOT.install(succeeding).unwrap();
+        installed.uninstall().unwrap();
+    }
+
+    #[test]
+    fn failed_disable_restores_the_generation_and_stale_handles_cannot_remove_a_reinstall() {
+        trait TestTerminal: crate::TerminalLifecycle {}
+
+        struct Lifecycle(Arc<AtomicUsize>);
+
+        impl crate::TerminalLifecycle for Lifecycle {
+            fn enable(&self) -> Result<(), i32> {
+                Ok(())
+            }
+
+            fn disable(&self) -> Result<(), i32> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(23)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        impl TestTerminal for Lifecycle {}
+
+        static SLOT: crate::TerminalSlot<dyn TestTerminal> = crate::TerminalSlot::new();
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let terminal: Arc<dyn TestTerminal> = Arc::new(Lifecycle(Arc::clone(&attempts)));
+        let first = SLOT.install(terminal).unwrap();
+        assert_eq!(
+            first.uninstall(),
+            Err(crate::TerminalUninstallError::Disable(23))
+        );
+        assert!(SLOT.acquire().is_some());
+        first.uninstall().unwrap();
+
+        let replacement: Arc<dyn TestTerminal> = Arc::new(Lifecycle(Arc::new(AtomicUsize::new(1))));
+        let second = SLOT.install(replacement).unwrap();
+        assert_eq!(first.uninstall(), Err(crate::TerminalUninstallError::Stale));
+        assert!(SLOT.acquire().is_some());
+        second.uninstall().unwrap();
     }
 }

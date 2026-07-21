@@ -1,18 +1,14 @@
 #![allow(clippy::too_many_arguments)] // Signatures are fixed by the D3D11 ABI.
 
-use crate::hook_chain::{__resolve_terminal, chain_hooks};
 use snowglass_producer_d3d11::Tracking;
 use std::ffi::c_void;
 use windows_sys::Win32::Foundation::{E_FAIL, HMODULE};
 
-chain_hooks! {
+snowglass_hook::__chain_hooks! {
     #![order(reverse)]
 
     #[trampoline(abi = "system-unwind")]
-    #[terminal(
-        detour = crate::install::DETOURS.create_device,
-        fallback = E_FAIL,
-    )]
+    #[terminal(installed, fallback = E_FAIL)]
     #[postfix(
         crate::device::create_device(
             adapter,
@@ -40,10 +36,7 @@ chain_hooks! {
     }
 
     #[trampoline(abi = "system-unwind")]
-    #[terminal(
-        detour = crate::install::DETOURS.create_device_and_swapchain,
-        fallback = E_FAIL,
-    )]
+    #[terminal(installed, fallback = E_FAIL)]
     #[postfix(
         crate::device::create_device_and_swapchain(
             adapter,

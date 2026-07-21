@@ -1,13 +1,12 @@
 //! D3D12 export detours, DXGI ownership, and swapchain capture.
 #![allow(unsafe_code)]
 
-mod hook_chain;
 mod hooks;
 mod install;
 mod sys;
 mod vtable;
 
-pub use sys::SnowglassInstallD3d12Hook;
+pub use sys::{SnowglassInstallD3d12Hook, SnowglassUninstallD3d12Hook};
 
 unsafe extern "system" fn claim_swapchain(
     swapchain: *mut std::ffi::c_void,

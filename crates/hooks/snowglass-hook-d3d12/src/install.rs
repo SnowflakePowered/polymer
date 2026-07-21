@@ -1,5 +1,5 @@
 use snowglass_platform_windows::InlineDetour;
-use std::{ffi::c_void, sync::OnceLock};
+use std::{ffi::c_void, sync::Mutex};
 use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
 
 pub(crate) type D3D12CreateDeviceFn =
@@ -16,22 +16,43 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-pub(crate) static CREATE_DEVICE: OnceLock<InlineDetour<D3D12CreateDeviceFn>> = OnceLock::new();
+type Installation = snowglass_hook::TerminalInstallation<dyn crate::hooks::CreateDeviceTerminal>;
+
+static INSTALLATION: Mutex<Option<Installation>> = Mutex::new(None);
 
 pub(crate) unsafe fn install() -> i32 {
     snowglass_hook_dxgi::register_claim(crate::claim_swapchain);
-    if let Some(detour) = CREATE_DEVICE.get() {
-        return if detour.is_enabled() { 0 } else { E_FAIL };
+    let mut installation = INSTALLATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if installation.is_some() {
+        return 0;
     }
     let detour = InlineDetour::new(
         system_create_device as D3D12CreateDeviceFn,
         crate::hooks::create_device,
     );
-    if CREATE_DEVICE.set(detour).is_err() {
-        return E_FAIL;
+    match crate::hooks::install_create_device_terminal(detour) {
+        Ok(installed) => {
+            *installation = Some(installed);
+            0
+        }
+        Err(_) => E_FAIL,
     }
-    match CREATE_DEVICE.get().expect("detour was set").enable() {
-        Ok(()) => 0,
+}
+
+pub(crate) fn uninstall() -> i32 {
+    let mut installation = INSTALLATION
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(installed) = installation.as_ref() else {
+        return 0;
+    };
+    match installed.uninstall() {
+        Ok(()) => {
+            *installation = None;
+            0
+        }
         Err(_) => E_FAIL,
     }
 }

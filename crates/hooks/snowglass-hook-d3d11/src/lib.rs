@@ -2,13 +2,12 @@
 #![allow(unsafe_code)]
 
 mod device;
-mod hook_chain;
 mod hooks;
 mod install;
 mod sys;
 mod vtable;
 
-pub use sys::SnowglassInstallD3d11Hook;
+pub use sys::{SnowglassInstallD3d11Hook, SnowglassUninstallD3d11Hook};
 
 pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
     use std::io::Write;

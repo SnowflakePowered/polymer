@@ -1,15 +1,14 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::hook_chain::{__resolve_terminal, chain_hooks};
 use snowglass_producer_d3d12::Tracking;
 use std::ffi::c_void;
 use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
 
-chain_hooks! {
+snowglass_hook::__chain_hooks! {
     #![order(reverse)]
 
     #[trampoline]
-    #[terminal(detour = crate::install::CREATE_DEVICE, fallback = E_FAIL)]
+    #[terminal(installed, fallback = E_FAIL)]
     #[postfix(created_device(device, result))]
     pub(crate) unsafe extern "system" fn create_device(
         adapter: *mut c_void,

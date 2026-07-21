@@ -3288,6 +3288,7 @@ name = "snowglass-platform-windows"
 version = "0.1.0"
 dependencies = [
  "ib-hook",
+ "snowglass-hook",
  "snowglass-protocol",
  "windows-sys 0.61.2",
 ]

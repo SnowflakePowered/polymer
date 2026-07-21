@@ -26,8 +26,8 @@ macro_rules! resolve_proc {
 }
 pub(crate) use resolve_proc;
 
-macro_rules! resolve_observer_terminal {
-    (($($abi_arg:ident),*); resolve with $resolve_arg:ident, $name:literal: $next_module:ident::$next_ty:ident;) => {
+macro_rules! vulkan_terminal {
+    (($($abi_arg:ident),*); dynamic proc $resolve_arg:ident, $name:literal: $next_module:ident::$next_ty:ident; fallback ();) => {
         || {
             let resolved: Option<$next_module::$next_ty> =
                 crate::hook_chain::resolve_proc!($resolve_arg, $resolve_arg, $name, $next_module::$next_ty);
@@ -36,25 +36,12 @@ macro_rules! resolve_observer_terminal {
             }
         }
     };
-    (($($abi_arg:ident),*); resolve with $resolve_arg:ident, $name:literal: $next_module:ident::$next_ty:ident -> $fallback:expr;) => {
+    (($($abi_arg:ident),*); dynamic proc $resolve_arg:ident, $name:literal: $next_module:ident::$next_ty:ident; fallback $fallback:expr;) => {
         || {
             let resolved: Option<$next_module::$next_ty> =
                 crate::hook_chain::resolve_proc!($resolve_arg, $resolve_arg, $name, $next_module::$next_ty);
             resolved.map_or($fallback, |next| unsafe { next($($abi_arg),*) })
         }
     };
-    (($($abi_arg:ident),*); resolve with $terminal:path;) => {
-        || unsafe { $terminal($($abi_arg),*) }
-    };
 }
-pub(crate) use resolve_observer_terminal as __resolve_observer_terminal;
-
-macro_rules! chain_hooks {
-    ($($tokens:tt)*) => {
-        snowglass_hook::__chain_hooks! {
-            resolve with __resolve_observer_terminal;
-            $($tokens)*
-        }
-    };
-}
-pub(crate) use chain_hooks;
+pub(crate) use vulkan_terminal;

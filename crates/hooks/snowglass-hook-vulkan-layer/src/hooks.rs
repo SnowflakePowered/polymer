@@ -1,15 +1,16 @@
 //! Declarations for typed Vulkan hook chains.
 
-use crate::hook_chain::{__resolve_observer_terminal, chain_hooks};
+use crate::hook_chain::vulkan_terminal;
 use crate::{layer, observers, swapchain};
 use ash::vk;
 use snowglass_producer_vulkan::{capture, tracking};
 
-chain_hooks! {
+snowglass_hook::__chain_hooks! {
+    #![terminal_resolver(vulkan_terminal)]
     #![order(forward)]
 
     #[export(vkCmdDraw)]
-    #[terminal(command_buffer, c"vkCmdDraw": vk::PFN_vkCmdDraw)]
+    #[terminal(dynamic(command_buffer, c"vkCmdDraw": vk::PFN_vkCmdDraw), fallback = ())]
     #[prefix(observers::cmd_draw(command_buffer))]
     pub(crate) unsafe extern "system" fn cmd_draw(
         command_buffer: vk::CommandBuffer,
@@ -24,7 +25,7 @@ chain_hooks! {
     }
 
     #[export(vkGetDeviceQueue)]
-    #[terminal(device, c"vkGetDeviceQueue": vk::PFN_vkGetDeviceQueue)]
+    #[terminal(dynamic(device, c"vkGetDeviceQueue": vk::PFN_vkGetDeviceQueue), fallback = ())]
     #[postfix(observers::get_device_queue(device, queue_family_index, queue))]
     pub(crate) unsafe extern "system" fn get_device_queue(
         device: vk::Device,
@@ -34,7 +35,7 @@ chain_hooks! {
     );
 
     #[export(vkGetDeviceQueue2)]
-    #[terminal(device, c"vkGetDeviceQueue2": vk::PFN_vkGetDeviceQueue2)]
+    #[terminal(dynamic(device, c"vkGetDeviceQueue2": vk::PFN_vkGetDeviceQueue2), fallback = ())]
     #[postfix(observers::get_device_queue2(device, queue_info, queue))]
     pub(crate) unsafe extern "system" fn get_device_queue2(
         device: vk::Device,
@@ -43,7 +44,7 @@ chain_hooks! {
     );
 
     #[export(vkQueueSubmit)]
-    #[terminal(queue, c"vkQueueSubmit": vk::PFN_vkQueueSubmit, fallback = vk::Result::ERROR_DEVICE_LOST)]
+    #[terminal(dynamic(queue, c"vkQueueSubmit": vk::PFN_vkQueueSubmit), fallback = vk::Result::ERROR_DEVICE_LOST)]
     #[postfix(swapchain::queue_submit(queue, submit_count, submits, result))]
     pub(crate) unsafe extern "system" fn queue_submit(
         queue: vk::Queue,
@@ -58,7 +59,7 @@ chain_hooks! {
     }
 
     #[export(vkCreateSwapchainKHR)]
-    #[terminal(crate::terminal::create_swapchain)]
+    #[terminal(direct = crate::terminal::create_swapchain)]
     #[postfix(swapchain::create_swapchain(device, create_info, swapchain, result))]
     pub(crate) unsafe extern "system" fn create_swapchain(
         device: vk::Device,
@@ -73,7 +74,7 @@ chain_hooks! {
     }
 
     #[export(vkDestroySwapchainKHR)]
-    #[terminal(device, c"vkDestroySwapchainKHR": vk::PFN_vkDestroySwapchainKHR)]
+    #[terminal(dynamic(device, c"vkDestroySwapchainKHR": vk::PFN_vkDestroySwapchainKHR), fallback = ())]
     #[prefix(swapchain::destroy_swapchain(swapchain))]
     pub(crate) unsafe extern "system" fn destroy_swapchain(
         device: vk::Device,
@@ -86,7 +87,7 @@ chain_hooks! {
     }
 
     #[export(vkGetSwapchainImagesKHR)]
-    #[terminal(device, c"vkGetSwapchainImagesKHR": vk::PFN_vkGetSwapchainImagesKHR, fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
+    #[terminal(dynamic(device, c"vkGetSwapchainImagesKHR": vk::PFN_vkGetSwapchainImagesKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
     #[postfix(swapchain::get_swapchain_images(swapchain, image_count, images, result))]
     pub(crate) unsafe extern "system" fn get_swapchain_images(
         device: vk::Device,
@@ -100,7 +101,7 @@ chain_hooks! {
     }
 
     #[export(vkQueuePresentKHR)]
-    #[terminal(queue, c"vkQueuePresentKHR": vk::PFN_vkQueuePresentKHR, fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
+    #[terminal(dynamic(queue, c"vkQueuePresentKHR": vk::PFN_vkQueuePresentKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
     #[infix(swapchain::handle_queue_present)]
     pub(crate) unsafe extern "system" fn queue_present(
         queue: vk::Queue,
@@ -113,7 +114,7 @@ chain_hooks! {
     }
 
     #[export(vkCreateWin32SurfaceKHR)]
-    #[terminal(instance, c"vkCreateWin32SurfaceKHR": vk::PFN_vkCreateWin32SurfaceKHR, fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
+    #[terminal(dynamic(instance, c"vkCreateWin32SurfaceKHR": vk::PFN_vkCreateWin32SurfaceKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
     #[postfix(swapchain::create_win32_surface(create_info, surface, result))]
     pub(crate) unsafe extern "system" fn create_win32_surface(
         instance: vk::Instance,
@@ -127,7 +128,7 @@ chain_hooks! {
     }
 
     #[export(vkDestroySurfaceKHR)]
-    #[terminal(instance, c"vkDestroySurfaceKHR": vk::PFN_vkDestroySurfaceKHR)]
+    #[terminal(dynamic(instance, c"vkDestroySurfaceKHR": vk::PFN_vkDestroySurfaceKHR), fallback = ())]
     #[prefix(swapchain::destroy_surface(surface))]
     pub(crate) unsafe extern "system" fn destroy_surface(
         instance: vk::Instance,
@@ -140,7 +141,7 @@ chain_hooks! {
     }
 
     #[export(vkEnumeratePhysicalDevices)]
-    #[terminal(instance, c"vkEnumeratePhysicalDevices": vk::PFN_vkEnumeratePhysicalDevices, fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
+    #[terminal(dynamic(instance, c"vkEnumeratePhysicalDevices": vk::PFN_vkEnumeratePhysicalDevices), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
     #[postfix(observers::enumerate_physical_devices(instance, count, devices, result))]
     pub(crate) unsafe extern "system" fn enumerate_physical_devices(
         instance: vk::Instance,
@@ -149,7 +150,7 @@ chain_hooks! {
     ) -> vk::Result;
 
     #[export(vkDestroyInstance)]
-    #[terminal(instance, c"vkDestroyInstance": vk::PFN_vkDestroyInstance, fallback = ())]
+    #[terminal(dynamic(instance, c"vkDestroyInstance": vk::PFN_vkDestroyInstance), fallback = ())]
     #[infix(layer::handle_destroy_instance)]
     pub(crate) unsafe extern "system" fn destroy_instance(
         instance: vk::Instance,
@@ -157,7 +158,7 @@ chain_hooks! {
     );
 
     #[export(vkCreateInstance)]
-    #[terminal(crate::terminal::create_instance)]
+    #[terminal(direct = crate::terminal::create_instance)]
     #[postfix(observers::create_instance(result))]
     pub(crate) unsafe extern "system" fn create_instance(
         create_info: *const vk::InstanceCreateInfo<'_>,
@@ -166,7 +167,7 @@ chain_hooks! {
     ) -> vk::Result;
 
     #[export(vkCreateDevice)]
-    #[terminal(crate::terminal::create_device)]
+    #[terminal(direct = crate::terminal::create_device)]
     #[prefix(observers::noop())]
     pub(crate) unsafe extern "system" fn create_device(
         physical_device: vk::PhysicalDevice,
@@ -176,14 +177,14 @@ chain_hooks! {
     ) -> vk::Result;
 
     #[export(vkNegotiateLoaderLayerInterfaceVersion)]
-    #[terminal(crate::terminal::negotiate)]
+    #[terminal(direct = crate::terminal::negotiate)]
     #[prefix(observers::noop())]
     pub(crate) unsafe extern "system" fn negotiate(
         interface: *mut crate::layer::VkNegotiateLayerInterface,
     ) -> vk::Result;
 
     #[export(vkGetInstanceProcAddr)]
-    #[terminal(crate::terminal::get_instance_proc_addr)]
+    #[terminal(direct = crate::terminal::get_instance_proc_addr)]
     #[prefix(observers::noop())]
     pub(crate) unsafe extern "system" fn get_instance_proc_addr(
         instance: vk::Instance,
@@ -191,7 +192,7 @@ chain_hooks! {
     ) -> vk::PFN_vkVoidFunction;
 
     #[export(vk_layerGetPhysicalDeviceProcAddr)]
-    #[terminal(crate::terminal::get_physical_device_proc_addr)]
+    #[terminal(direct = crate::terminal::get_physical_device_proc_addr)]
     #[prefix(observers::noop())]
     pub(crate) unsafe extern "system" fn get_physical_device_proc_addr(
         instance: vk::Instance,
@@ -199,7 +200,7 @@ chain_hooks! {
     ) -> vk::PFN_vkVoidFunction;
 
     #[export(vkGetDeviceProcAddr)]
-    #[terminal(crate::terminal::get_device_proc_addr)]
+    #[terminal(direct = crate::terminal::get_device_proc_addr)]
     #[prefix(observers::noop())]
     pub(crate) unsafe extern "system" fn get_device_proc_addr(
         device: vk::Device,
@@ -207,7 +208,7 @@ chain_hooks! {
     ) -> vk::PFN_vkVoidFunction;
 
     #[export(vkDestroyDevice)]
-    #[terminal(device, c"vkDestroyDevice": vk::PFN_vkDestroyDevice, fallback = ())]
+    #[terminal(dynamic(device, c"vkDestroyDevice": vk::PFN_vkDestroyDevice), fallback = ())]
     #[infix(layer::handle_destroy_device)]
     pub(crate) unsafe extern "system" fn destroy_device(
         device: vk::Device,
@@ -219,7 +220,7 @@ chain_hooks! {
     }
 
     #[export(vkBeginCommandBuffer)]
-    #[terminal(command_buffer, c"vkBeginCommandBuffer": vk::PFN_vkBeginCommandBuffer, fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
+    #[terminal(dynamic(command_buffer, c"vkBeginCommandBuffer": vk::PFN_vkBeginCommandBuffer), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
     #[prefix(observers::begin_command_buffer(command_buffer))]
     pub(crate) unsafe extern "system" fn begin_command_buffer(
         command_buffer: vk::CommandBuffer,
@@ -231,7 +232,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdDrawIndexed)]
-    #[terminal(command_buffer, c"vkCmdDrawIndexed": vk::PFN_vkCmdDrawIndexed)]
+    #[terminal(dynamic(command_buffer, c"vkCmdDrawIndexed": vk::PFN_vkCmdDrawIndexed), fallback = ())]
     #[prefix(observers::cmd_draw_indexed(command_buffer))]
     pub(crate) unsafe extern "system" fn cmd_draw_indexed(
         command_buffer: vk::CommandBuffer,
@@ -247,7 +248,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdSetViewport)]
-    #[terminal(command_buffer, c"vkCmdSetViewport": vk::PFN_vkCmdSetViewport)]
+    #[terminal(dynamic(command_buffer, c"vkCmdSetViewport": vk::PFN_vkCmdSetViewport), fallback = ())]
     #[prefix(observers::cmd_set_viewport(command_buffer, first, count, viewports))]
     pub(crate) unsafe extern "system" fn cmd_set_viewport(
         command_buffer: vk::CommandBuffer,
@@ -261,7 +262,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdSetScissor)]
-    #[terminal(command_buffer, c"vkCmdSetScissor": vk::PFN_vkCmdSetScissor)]
+    #[terminal(dynamic(command_buffer, c"vkCmdSetScissor": vk::PFN_vkCmdSetScissor), fallback = ())]
     #[prefix(observers::cmd_set_scissor(command_buffer, first, count, scissors))]
     pub(crate) unsafe extern "system" fn cmd_set_scissor(
         command_buffer: vk::CommandBuffer,
@@ -275,7 +276,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdEndRenderPass)]
-    #[terminal(command_buffer, c"vkCmdEndRenderPass": vk::PFN_vkCmdEndRenderPass)]
+    #[terminal(dynamic(command_buffer, c"vkCmdEndRenderPass": vk::PFN_vkCmdEndRenderPass), fallback = ())]
     #[prefix(observers::cmd_end_render_pass(command_buffer))]
     pub(crate) unsafe extern "system" fn cmd_end_render_pass(
         command_buffer: vk::CommandBuffer,
@@ -286,7 +287,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdBeginRenderPass)]
-    #[terminal(command_buffer, c"vkCmdBeginRenderPass": vk::PFN_vkCmdBeginRenderPass)]
+    #[terminal(dynamic(command_buffer, c"vkCmdBeginRenderPass": vk::PFN_vkCmdBeginRenderPass), fallback = ())]
     #[prefix(observers::cmd_begin_render_pass(command_buffer, begin, contents))]
     pub(crate) unsafe extern "system" fn cmd_begin_render_pass(
         command_buffer: vk::CommandBuffer,
@@ -299,7 +300,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdBindDescriptorSets)]
-    #[terminal(command_buffer, c"vkCmdBindDescriptorSets": vk::PFN_vkCmdBindDescriptorSets)]
+    #[terminal(dynamic(command_buffer, c"vkCmdBindDescriptorSets": vk::PFN_vkCmdBindDescriptorSets), fallback = ())]
     #[prefix(observers::cmd_bind_descriptor_sets(command_buffer, bind_point, layout, first_set, set_count, sets, dynamic_offset_count, dynamic_offsets))]
     pub(crate) unsafe extern "system" fn cmd_bind_descriptor_sets(
         command_buffer: vk::CommandBuffer,
@@ -317,7 +318,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdPushDescriptorSetKHR)]
-    #[terminal(command_buffer, c"vkCmdPushDescriptorSetKHR": vk::PFN_vkCmdPushDescriptorSetKHR)]
+    #[terminal(dynamic(command_buffer, c"vkCmdPushDescriptorSetKHR": vk::PFN_vkCmdPushDescriptorSetKHR), fallback = ())]
     #[prefix(observers::cmd_push_descriptor_set(command_buffer, bind_point, layout, set, write_count, writes))]
     pub(crate) unsafe extern "system" fn cmd_push_descriptor_set(
         command_buffer: vk::CommandBuffer,
@@ -333,7 +334,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdBlitImage)]
-    #[terminal(command_buffer, c"vkCmdBlitImage": vk::PFN_vkCmdBlitImage)]
+    #[terminal(dynamic(command_buffer, c"vkCmdBlitImage": vk::PFN_vkCmdBlitImage), fallback = ())]
     #[prefix(observers::cmd_blit_image(command_buffer, source_image, source_layout, destination_image, destination_layout, region_count, regions, filter))]
     pub(crate) unsafe extern "system" fn cmd_blit_image(
         command_buffer: vk::CommandBuffer,
@@ -351,7 +352,7 @@ chain_hooks! {
     }
 
     #[export(vkCmdCopyImage)]
-    #[terminal(command_buffer, c"vkCmdCopyImage": vk::PFN_vkCmdCopyImage)]
+    #[terminal(dynamic(command_buffer, c"vkCmdCopyImage": vk::PFN_vkCmdCopyImage), fallback = ())]
     #[prefix(observers::cmd_copy_image(command_buffer, source_image, source_layout, destination_image, destination_layout, region_count, regions))]
     pub(crate) unsafe extern "system" fn cmd_copy_image(
         command_buffer: vk::CommandBuffer,
@@ -368,7 +369,7 @@ chain_hooks! {
     }
 
     #[export(vkCreateImage)]
-    #[terminal(crate::terminal::create_image)]
+    #[terminal(direct = crate::terminal::create_image)]
     #[postfix(observers::create_image(create_info, image, result))]
     pub(crate) unsafe extern "system" fn create_image(
         device: vk::Device,
@@ -382,7 +383,7 @@ chain_hooks! {
     }
 
     #[export(vkCreateImageView)]
-    #[terminal(device, c"vkCreateImageView": vk::PFN_vkCreateImageView, fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
+    #[terminal(dynamic(device, c"vkCreateImageView": vk::PFN_vkCreateImageView), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
     #[postfix(observers::create_image_view(create_info, view, result))]
     pub(crate) unsafe extern "system" fn create_image_view(
         device: vk::Device,
@@ -396,7 +397,7 @@ chain_hooks! {
     }
 
     #[export(vkCreateFramebuffer)]
-    #[terminal(device, c"vkCreateFramebuffer": vk::PFN_vkCreateFramebuffer, fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
+    #[terminal(dynamic(device, c"vkCreateFramebuffer": vk::PFN_vkCreateFramebuffer), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
     #[postfix(observers::create_framebuffer(create_info, framebuffer, result))]
     pub(crate) unsafe extern "system" fn create_framebuffer(
         device: vk::Device,
@@ -410,7 +411,7 @@ chain_hooks! {
     }
 
     #[export(vkDestroyImage)]
-    #[terminal(device, c"vkDestroyImage": vk::PFN_vkDestroyImage)]
+    #[terminal(dynamic(device, c"vkDestroyImage": vk::PFN_vkDestroyImage), fallback = ())]
     #[prefix(observers::destroy_image(image))]
     pub(crate) unsafe extern "system" fn destroy_image(
         device: vk::Device,
@@ -423,7 +424,7 @@ chain_hooks! {
     }
 
     #[export(vkDestroyImageView)]
-    #[terminal(device, c"vkDestroyImageView": vk::PFN_vkDestroyImageView)]
+    #[terminal(dynamic(device, c"vkDestroyImageView": vk::PFN_vkDestroyImageView), fallback = ())]
     #[prefix(observers::destroy_image_view(view))]
     pub(crate) unsafe extern "system" fn destroy_image_view(
         device: vk::Device,
@@ -436,7 +437,7 @@ chain_hooks! {
     }
 
     #[export(vkDestroyFramebuffer)]
-    #[terminal(device, c"vkDestroyFramebuffer": vk::PFN_vkDestroyFramebuffer)]
+    #[terminal(dynamic(device, c"vkDestroyFramebuffer": vk::PFN_vkDestroyFramebuffer), fallback = ())]
     #[prefix(observers::destroy_framebuffer(framebuffer))]
     pub(crate) unsafe extern "system" fn destroy_framebuffer(
         device: vk::Device,
@@ -449,7 +450,7 @@ chain_hooks! {
     }
 
     #[export(vkUpdateDescriptorSets)]
-    #[terminal(device, c"vkUpdateDescriptorSets": vk::PFN_vkUpdateDescriptorSets)]
+    #[terminal(dynamic(device, c"vkUpdateDescriptorSets": vk::PFN_vkUpdateDescriptorSets), fallback = ())]
     #[prefix(observers::update_descriptor_sets(write_count, writes))]
     pub(crate) unsafe extern "system" fn update_descriptor_sets(
         device: vk::Device,

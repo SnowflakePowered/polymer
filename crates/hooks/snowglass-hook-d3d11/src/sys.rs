@@ -10,3 +10,9 @@
 pub unsafe extern "system" fn SnowglassInstallD3d11Hook() -> i32 {
     unsafe { crate::install::install() }
 }
+
+/// Uninstalls the process-wide D3D11 export detours.
+#[unsafe(no_mangle)]
+pub extern "system" fn SnowglassUninstallD3d11Hook() -> i32 {
+    crate::install::uninstall()
+}

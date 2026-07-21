@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ib-hook.workspace = true
+snowglass-hook.workspace = true
 snowglass-protocol.workspace = true
 windows-sys.workspace = true
 

@@ -1,6 +1,5 @@
 //! Typed OpenGL hook declarations and capture callbacks.
 
-use crate::hook_chain::{__resolve_terminal, chain_hooks};
 use snowglass_hook::HookChain;
 use snowglass_producer_opengl::Tracking;
 use std::{
@@ -10,11 +9,11 @@ use std::{
 
 pub(crate) type Hdc = *mut c_void;
 
-chain_hooks! {
+snowglass_hook::__chain_hooks! {
     #![order(reverse)]
 
     #[trampoline]
-    #[terminal(detour = crate::install::DETOURS.swap_buffers, fallback = 0)]
+    #[terminal(installed, fallback = 0)]
     #[prefix(capture_swap_buffers(hdc))]
     pub(crate) unsafe extern "system" fn swap_buffers(hdc: Hdc) -> i32 {
         context struct {
@@ -23,7 +22,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(detour = crate::install::DETOURS.swap_layer_buffers, fallback = 0)]
+    #[terminal(installed, fallback = 0)]
     #[prefix(capture_swap_layer_buffers(hdc))]
     pub(crate) unsafe extern "system" fn swap_layer_buffers(hdc: Hdc, planes: u32) -> i32 {
         context struct {
@@ -32,7 +31,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(crate::install::call_draw_arrays)]
+    #[terminal(installed, fallback = ())]
     #[prefix(track_draw_arrays(first, count))]
     pub(crate) unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32) {
         context struct {
@@ -41,7 +40,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(crate::install::call_draw_elements)]
+    #[terminal(installed, fallback = ())]
     #[prefix(track_draw_elements())]
     pub(crate) unsafe extern "system" fn draw_elements(
         mode: u32,
@@ -55,7 +54,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(crate::install::call_draw_elements_base_vertex)]
+    #[terminal(direct = crate::install::call_draw_elements_base_vertex)]
     #[prefix(track_draw_elements_base_vertex())]
     pub(crate) unsafe extern "system" fn draw_elements_base_vertex(
         mode: u32,
@@ -70,7 +69,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(crate::install::call_blit_framebuffer)]
+    #[terminal(direct = crate::install::call_blit_framebuffer)]
     #[prefix(track_blit_framebuffer())]
     pub(crate) unsafe extern "system" fn blit_framebuffer(
         src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32,
@@ -83,7 +82,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(crate::install::call_copy_image_sub_data)]
+    #[terminal(direct = crate::install::call_copy_image_sub_data)]
     #[prefix(track_copy_image_sub_data(
         src_name, src_target, dst_name, dst_target, dst_z, width, height
     ))]
@@ -98,7 +97,7 @@ chain_hooks! {
     }
 
     #[trampoline]
-    #[terminal(crate::install::call_wgl_get_proc_address)]
+    #[terminal(installed, fallback = std::ptr::null())]
     #[infix(route_proc_address)]
     pub(crate) unsafe extern "system" fn wgl_get_proc_address(
         name: *const u8,

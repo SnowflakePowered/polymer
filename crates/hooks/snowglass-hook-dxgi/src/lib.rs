@@ -1,7 +1,6 @@
 //! DXGI swapchain interception shared by D3D11 and D3D12.
 #![allow(unsafe_code)]
 
-mod hook_chain;
 mod hooks;
 mod install;
 mod runtime;
@@ -86,6 +85,15 @@ pub unsafe extern "system" fn SnowglassInstallDxgiHook() -> i32 {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn SnowglassUninstallDxgiHook() -> i32 {
+    if install::uninstall() {
+        0
+    } else {
+        windows_sys::Win32::Foundation::E_FAIL
+    }
+}
+
 /// Installs process-wide detours over the DXGI factory creation exports so
 /// every factory the application creates receives the per-object vtable hooks
 /// at creation time.
@@ -96,6 +104,14 @@ pub unsafe extern "system" fn SnowglassInstallDxgiHook() -> i32 {
 /// concurrently unload the DXGI module while installation is in progress.
 pub unsafe fn install_factory_detours() -> bool {
     unsafe { install::install() }
+}
+
+/// Removes the process-wide DXGI factory detours.
+///
+/// A later call to [`install_factory_detours`] installs a fresh terminal
+/// generation and enables all three detours again.
+pub fn uninstall_factory_detours() -> bool {
+    install::uninstall()
 }
 
 pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
