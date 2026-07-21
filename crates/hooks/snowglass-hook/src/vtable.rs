@@ -656,18 +656,21 @@ macro_rules! impl_com_hook {
                 for observer in prefix {
                     observer($this, $($argument,)* &context);
                 }
-                let next = *remaining.next().unwrap_or(&terminal);
-                let result = unsafe {
-                    next(
-                        $this,
-                        $($argument,)*
-                        [<$dispatch:camel Context>] {
-                            hooks: remaining,
-                            terminal: &terminal,
-                            base,
-                            $($dispatch_field: &$dispatch_field,)*
-                        },
-                    )
+                let result = if let Some(next) = remaining.next() {
+                    unsafe {
+                        next(
+                            $this,
+                            $($argument,)*
+                            [<$dispatch:camel Context>] {
+                                hooks: remaining,
+                                terminal: &terminal,
+                                base,
+                                $($dispatch_field: &$dispatch_field,)*
+                            },
+                        )
+                    }
+                } else {
+                    unsafe { base($this, $($argument),*) }
                 };
                 let context = [<$dispatch:camel Context>] {
                     hooks: [].iter(),
