@@ -50,15 +50,6 @@ impl D3d11SwapchainCapture {
         slots: u32,
         mode: D3d11RingMode,
     ) -> windows::core::Result<Self> {
-        unsafe { Self::new_with_source(swapchain, slots, mode, None) }
-    }
-
-    pub unsafe fn new_with_source(
-        swapchain: *mut c_void,
-        slots: u32,
-        mode: D3d11RingMode,
-        tracked_source: Option<&ID3D11Texture2D>,
-    ) -> windows::core::Result<Self> {
         if swapchain.is_null() || slots == 0 {
             return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
         }
@@ -77,11 +68,8 @@ impl D3d11SwapchainCapture {
             Err(_) if mode == D3d11RingMode::KeyedMutexNoFence => None,
             Err(error) => return Err(contextual(error, "ID3D11DeviceContext4 query")),
         };
-        let source = match tracked_source {
-            Some(source) => source.clone(),
-            None => unsafe { swapchain.GetBuffer(0) }
-                .map_err(|error| contextual(error, "IDXGISwapChain::GetBuffer"))?,
-        };
+        let source: ID3D11Texture2D = unsafe { swapchain.GetBuffer(0) }
+            .map_err(|error| contextual(error, "IDXGISwapChain::GetBuffer"))?;
         let swapchain_desc = unsafe { swapchain.GetDesc() }
             .map_err(|error| contextual(error, "IDXGISwapChain::GetDesc"))?;
 
@@ -118,41 +106,18 @@ impl D3d11SwapchainCapture {
         &mut self,
         tracked_region: Option<D3d11CaptureRegion>,
     ) -> windows::core::Result<D3d11CopySubmission> {
-        unsafe { self.copy_frame_from(tracked_region, None) }
-    }
-
-    pub unsafe fn copy_frame_from(
-        &mut self,
-        tracked_region: Option<D3d11CaptureRegion>,
-        tracked_source: Option<&ID3D11Texture2D>,
-    ) -> windows::core::Result<D3d11CopySubmission> {
-        let source = match tracked_source {
-            Some(source) => source.clone(),
-            None => unsafe { self.swapchain.GetBuffer(0)? },
-        };
-        let mut actual_desc = D3D11_TEXTURE2D_DESC::default();
-        unsafe { source.GetDesc(&mut actual_desc) };
-        if (actual_desc.Width, actual_desc.Height, actual_desc.Format)
-            != (
-                self.source_desc.Width,
-                self.source_desc.Height,
-                self.source_desc.Format,
-            )
-        {
-            return Err(Error::new(
-                HRESULT(0x8007_0057u32 as i32),
-                "capture source no longer matches the shared texture ring",
-            ));
-        }
-        let region = (tracked_source.is_none() && actual_desc.SampleDesc.Count == 1)
+        let source: ID3D11Texture2D = unsafe { self.swapchain.GetBuffer(0)? };
+        let region = (self.source_desc.SampleDesc.Count == 1)
             .then_some(tracked_region)
             .flatten()
-            .and_then(|region| clamp_region(region, actual_desc.Width, actual_desc.Height))
+            .and_then(|region| {
+                clamp_region(region, self.source_desc.Width, self.source_desc.Height)
+            })
             .unwrap_or(D3d11CaptureRegion {
                 x: 0,
                 y: 0,
-                width: actual_desc.Width,
-                height: actual_desc.Height,
+                width: self.source_desc.Width,
+                height: self.source_desc.Height,
             });
         let next_value = self.sync_value.wrapping_add(1).max(1);
         let slot = match self.ring.mode() {
@@ -207,10 +172,10 @@ impl D3d11SwapchainCapture {
             }
         }
         let destination = &ring_slot.texture;
-        if actual_desc.SampleDesc.Count > 1 {
+        if self.source_desc.SampleDesc.Count > 1 {
             unsafe {
                 self.context
-                    .ResolveSubresource(destination, 0, &source, 0, actual_desc.Format)
+                    .ResolveSubresource(destination, 0, &source, 0, self.source_desc.Format)
             };
         } else {
             let source_box = D3D11_BOX {

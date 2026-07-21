@@ -607,13 +607,21 @@ impl Tracking {
         let index = unsafe { swapchain.GetCurrentBackBufferIndex() };
         let resource: ID3D12Resource = unsafe { swapchain.GetBuffer(index).ok()? };
         let candidate = self.present_regions.get(&Self::identity_key(&resource))?;
-        let source = candidate.source.clone().map(|mut source| {
-            source.state = self
-                .resource_states
-                .get(&Self::identity_key(&source.resource))
-                .map(|entry| *entry);
-            source
-        });
+        let region_is_content = Self::region_is_content(candidate.region, candidate.target_extent);
+        // Sub-rectangle draws are safely captured from the presented
+        // backbuffer. Promoting an arbitrary shader input in this case can
+        // transition a resource whose recorded state no longer matches queue
+        // execution, causing device removal in frame-graph renderers.
+        let source = (!region_is_content)
+            .then(|| candidate.source.clone())
+            .flatten()
+            .map(|mut source| {
+                source.state = self
+                    .resource_states
+                    .get(&Self::identity_key(&source.resource))
+                    .map(|entry| *entry);
+                source
+            });
         Some(Presentation {
             region: Some(candidate.region),
             source,
@@ -686,6 +694,10 @@ impl Tracking {
         })
     }
 
+    fn region_is_content(region: D3d12CaptureRegion, target_extent: (u32, u32)) -> bool {
+        (region.x, region.y) != (0, 0) || (region.width, region.height) != target_extent
+    }
+
     fn identity_key(resource: &ID3D12Resource) -> usize {
         resource
             .cast::<IUnknown>()
@@ -731,5 +743,27 @@ mod tests {
 
         assert!(first.commands.contains_key(&1));
         assert!(!second.commands.contains_key(&1));
+    }
+
+    #[test]
+    fn subrectangle_presentation_stays_on_the_backbuffer_capture_path() {
+        assert!(Tracking::region_is_content(
+            D3d12CaptureRegion {
+                x: 0,
+                y: 59,
+                width: 627,
+                height: 516,
+            },
+            (627, 633),
+        ));
+        assert!(!Tracking::region_is_content(
+            D3d12CaptureRegion {
+                x: 0,
+                y: 0,
+                width: 627,
+                height: 633,
+            },
+            (627, 633),
+        ));
     }
 }

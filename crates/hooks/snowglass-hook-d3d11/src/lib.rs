@@ -37,9 +37,9 @@ mod tests {
     use windows::{
         Win32::Graphics::{
             Direct3D11::{
-                D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC,
-                D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext,
-                ID3D11RenderTargetView, ID3D11ShaderResourceView, ID3D11Texture2D,
+                D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+                D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
+                ID3D11ShaderResourceView, ID3D11Texture2D,
             },
             Dxgi::{
                 CreateDXGIFactory1, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
@@ -265,37 +265,41 @@ mod tests {
         let context_ref = unsafe { ID3D11DeviceContext::from_raw_borrowed(&context) }
             .expect("D3D11 returned a null context");
         unsafe { context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]) };
-        let source_desc = D3D11_TEXTURE2D_DESC {
-            Width: 64,
-            Height: 64,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE).0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        let mut sampled_source = None;
-        unsafe { device.CreateTexture2D(&source_desc, None, Some(&mut sampled_source)) }
-            .expect("D3D11 did not create the sampled presentation source");
-        let sampled_source = sampled_source.expect("D3D11 returned a null sampled source");
-        let mut sampled_target = None;
-        unsafe { device.CreateRenderTargetView(&sampled_source, None, Some(&mut sampled_target)) }
-            .expect("D3D11 did not create the sampled source render target");
-        let sampled_target = sampled_target.expect("D3D11 returned a null sampled source target");
-        unsafe { context_ref.ClearRenderTargetView(&sampled_target, &[0.75, 0.25, 0.5, 1.0]) };
-        let mut sampled_view: Option<ID3D11ShaderResourceView> = None;
-        unsafe { device.CreateShaderResourceView(&sampled_source, None, Some(&mut sampled_view)) }
-            .expect("D3D11 did not create the sampled source view");
-        let sampled_view = sampled_view.expect("D3D11 returned a null sampled source view");
+        let mut unrelated_source = None;
+        unsafe {
+            device.CreateTexture2D(
+                &D3D11_TEXTURE2D_DESC {
+                    Width: 64,
+                    Height: 64,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                },
+                None,
+                Some(&mut unrelated_source),
+            )
+        }
+        .expect("D3D11 did not create the unrelated shader resource");
+        let unrelated_source = unrelated_source.expect("D3D11 returned a null shader resource");
+        let mut unrelated_view: Option<ID3D11ShaderResourceView> = None;
+        unsafe {
+            device.CreateShaderResourceView(&unrelated_source, None, Some(&mut unrelated_view))
+        }
+        .expect("D3D11 did not create the unrelated shader resource view");
+        let unrelated_view = unrelated_view.expect("D3D11 returned a null shader resource view");
         unsafe {
             context_ref.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
-            context_ref.PSSetShaderResources(0, Some(&[Some(sampled_view.clone())]));
+            // Bound shader inputs are not sufficient evidence that a resource
+            // is safe to transition into the capture path at Present.
+            context_ref.PSSetShaderResources(0, Some(&[Some(unrelated_view)]));
             context_ref.RSSetViewports(Some(&[D3D11_VIEWPORT {
                 TopLeftX: 8.0,
                 TopLeftY: 4.0,
@@ -332,9 +336,7 @@ mod tests {
         let Message::FrameReady(frame) = frame else {
             panic!("expected FrameReady, got {frame:?}");
         };
-        // The graph-tracked source remains native-sized while the presentation
-        // rectangle describes its placement in the swapchain.
-        assert_eq!((frame.render_width, frame.render_height), (64, 64));
+        assert_eq!((frame.render_width, frame.render_height), (48, 48));
         assert_eq!((frame.capture_x, frame.capture_y), (8, 4));
         assert_eq!((frame.capture_width, frame.capture_height), (48, 48));
         assert_eq!(
@@ -389,7 +391,7 @@ mod tests {
             .expect("Vulkan D3D11 readback stalled");
         assert_eq!(
             read,
-            ("read", Some(format!("{}:[191, 64, 127, 255]", 64 * 64 * 4))),
+            ("read", Some(format!("{}:[64, 127, 191, 255]", 64 * 64 * 4))),
             "{read:?}"
         );
         import_thread.join().expect("Vulkan import thread panicked");

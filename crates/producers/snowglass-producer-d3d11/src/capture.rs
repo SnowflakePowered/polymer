@@ -79,29 +79,11 @@ impl SwapchainOwner for SwapchainCapture {
     /// `swapchain` must point to the live swapchain being presented.
     unsafe fn before_present(&self, swapchain: *mut c_void) {
         let presentation = self.tracking.take_swapchain_presentation(swapchain);
-        let tracked_source = presentation
-            .as_ref()
-            .and_then(|presentation| presentation.source.as_ref());
-        // A tracked source is copied in source coordinates. The recorded draw
-        // region describes where that source landed in the swapchain and is
-        // used only as presentation metadata.
-        let copy_region = tracked_source
-            .is_none()
-            .then(|| presentation.as_ref().map(|value| value.region))
-            .flatten();
+        let tracked_region = presentation.as_ref().map(|value| value.region);
         let mut capture = self
             .capture
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(source) = tracked_source
-            && matches!(&*capture, Capture::Active(state) if {
-                let desc = state.capture.ring().desc();
-                (desc.width, desc.height, desc.format)
-                    != (source.width, source.height, source.format)
-            })
-        {
-            *capture = Capture::Idle;
-        }
         if matches!(*capture, Capture::Idle) {
             let connection = match begin_viewer_connection() {
                 Ok(connection) => Some(connection),
@@ -131,14 +113,7 @@ impl SwapchainOwner for SwapchainCapture {
             };
             let mut ring = None;
             for (index, &mode) in mode_chain.iter().enumerate() {
-                match unsafe {
-                    D3d11SwapchainCapture::new_with_source(
-                        swapchain,
-                        3,
-                        mode,
-                        tracked_source.map(|source| &source.resource),
-                    )
-                } {
+                match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode) } {
                     Ok(value) => {
                         ring = Some(value);
                         break;
@@ -185,11 +160,7 @@ impl SwapchainOwner for SwapchainCapture {
         let Capture::Active(state) = &mut *capture else {
             return;
         };
-        let submission = match unsafe {
-            state
-                .capture
-                .copy_frame_from(copy_region, tracked_source.map(|source| &source.resource))
-        } {
+        let submission = match unsafe { state.capture.copy_frame(tracked_region) } {
             Ok(submission) => submission,
             Err(error) => {
                 state.copy_failures += 1;
