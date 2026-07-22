@@ -1,7 +1,6 @@
 //! Process-wide detour installation and original-procedure routing.
 
 use crate::hooks::Hdc;
-use snowglass_platform_windows::InlineDetour;
 use snowglass_producer_opengl::Tracking;
 use std::{
     ffi::c_void,
@@ -58,73 +57,59 @@ unsafe extern "system" {
 #[derive(Default)]
 pub(crate) struct OpenGlRuntime {
     pub(crate) tracking: Arc<Tracking>,
+    pub(crate) draw_arrays: OnceLock<GlDrawArraysFn>,
+    pub(crate) draw_elements: OnceLock<GlDrawElementsFn>,
+    pub(crate) draw_elements_base_vertex: OnceLock<GlDrawElementsBaseVertexFn>,
+    pub(crate) blit_framebuffer: OnceLock<GlBlitFramebufferFn>,
+    pub(crate) copy_image_sub_data: OnceLock<GlCopyImageSubDataFn>,
 }
 
-pub(crate) fn draw_arrays_continuation(detour: &InlineDetour<GlDrawArraysFn>) -> GlDrawArraysFn {
-    DRAW_ARRAYS
-        .get()
-        .copied()
-        .unwrap_or_else(|| detour.trampoline())
-}
+impl OpenGlRuntime {
+    pub(crate) fn remember_draw_arrays(&self, address: *const c_void) {
+        if address != system_draw_arrays as *const c_void {
+            let function = unsafe { std::mem::transmute::<*const c_void, GlDrawArraysFn>(address) };
+            let _ = self.draw_arrays.set(function);
+        }
+    }
 
-pub(crate) fn draw_elements_continuation(
-    detour: &InlineDetour<GlDrawElementsFn>,
-) -> GlDrawElementsFn {
-    DRAW_ELEMENTS
-        .get()
-        .copied()
-        .unwrap_or_else(|| detour.trampoline())
-}
+    pub(crate) fn remember_draw_elements(&self, address: *const c_void) {
+        if address != system_draw_elements as *const c_void {
+            let function =
+                unsafe { std::mem::transmute::<*const c_void, GlDrawElementsFn>(address) };
+            let _ = self.draw_elements.set(function);
+        }
+    }
 
-static DRAW_ARRAYS: OnceLock<GlDrawArraysFn> = OnceLock::new();
-static DRAW_ELEMENTS: OnceLock<GlDrawElementsFn> = OnceLock::new();
-static DRAW_ELEMENTS_BASE_VERTEX: OnceLock<GlDrawElementsBaseVertexFn> = OnceLock::new();
-static BLIT_FRAMEBUFFER: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
-static COPY_IMAGE_SUB_DATA: OnceLock<GlCopyImageSubDataFn> = OnceLock::new();
+    pub(crate) fn remember_draw_elements_base_vertex(&self, address: *const c_void) {
+        let function =
+            unsafe { std::mem::transmute::<*const c_void, GlDrawElementsBaseVertexFn>(address) };
+        let _ = self.draw_elements_base_vertex.set(function);
+    }
 
-pub(crate) fn remember_draw_arrays(address: *const c_void) {
-    if address != system_draw_arrays as *const c_void {
-        let function = unsafe { std::mem::transmute::<*const c_void, GlDrawArraysFn>(address) };
-        let _ = DRAW_ARRAYS.set(function);
+    pub(crate) fn remember_blit_framebuffer(&self, address: *const c_void) {
+        let function =
+            unsafe { std::mem::transmute::<*const c_void, GlBlitFramebufferFn>(address) };
+        let _ = self.blit_framebuffer.set(function);
+    }
+
+    pub(crate) fn remember_copy_image_sub_data(&self, address: *const c_void) {
+        let function =
+            unsafe { std::mem::transmute::<*const c_void, GlCopyImageSubDataFn>(address) };
+        let _ = self.copy_image_sub_data.set(function);
     }
 }
 
-pub(crate) fn remember_draw_elements(address: *const c_void) {
-    if address != system_draw_elements as *const c_void {
-        let function = unsafe { std::mem::transmute::<*const c_void, GlDrawElementsFn>(address) };
-        let _ = DRAW_ELEMENTS.set(function);
-    }
-}
-
-pub(crate) fn remember_draw_elements_base_vertex(address: *const c_void) {
-    let function =
-        unsafe { std::mem::transmute::<*const c_void, GlDrawElementsBaseVertexFn>(address) };
-    let _ = DRAW_ELEMENTS_BASE_VERTEX.set(function);
-}
-
-pub(crate) fn remember_blit_framebuffer(address: *const c_void) {
-    let function = unsafe { std::mem::transmute::<*const c_void, GlBlitFramebufferFn>(address) };
-    let _ = BLIT_FRAMEBUFFER.set(function);
-}
-
-pub(crate) fn remember_copy_image_sub_data(address: *const c_void) {
-    let function = unsafe { std::mem::transmute::<*const c_void, GlCopyImageSubDataFn>(address) };
-    let _ = COPY_IMAGE_SUB_DATA.set(function);
-}
-
-pub(crate) unsafe fn call_draw_elements_base_vertex(
+pub(crate) unsafe fn unavailable_draw_elements_base_vertex(
     mode: u32,
     count: i32,
     element_type: u32,
     indices: *const c_void,
     base_vertex: i32,
 ) {
-    if let Some(original) = DRAW_ELEMENTS_BASE_VERTEX.get() {
-        unsafe { original(mode, count, element_type, indices, base_vertex) };
-    }
+    let _ = (mode, count, element_type, indices, base_vertex);
 }
 
-pub(crate) unsafe fn call_blit_framebuffer(
+pub(crate) unsafe fn unavailable_blit_framebuffer(
     src_x0: i32,
     src_y0: i32,
     src_x1: i32,
@@ -136,17 +121,13 @@ pub(crate) unsafe fn call_blit_framebuffer(
     mask: u32,
     filter: u32,
 ) {
-    if let Some(original) = BLIT_FRAMEBUFFER.get() {
-        unsafe {
-            original(
-                src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
-            )
-        };
-    }
+    let _ = (
+        src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
+    );
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) unsafe fn call_copy_image_sub_data(
+pub(crate) unsafe fn unavailable_copy_image_sub_data(
     src_name: u32,
     src_target: u32,
     src_level: i32,
@@ -163,14 +144,10 @@ pub(crate) unsafe fn call_copy_image_sub_data(
     height: i32,
     depth: i32,
 ) {
-    if let Some(original) = COPY_IMAGE_SUB_DATA.get() {
-        unsafe {
-            original(
-                src_name, src_target, src_level, src_x, src_y, src_z, dst_name, dst_target,
-                dst_level, dst_x, dst_y, dst_z, width, height, depth,
-            )
-        };
-    }
+    let _ = (
+        src_name, src_target, src_level, src_x, src_y, src_z, dst_name, dst_target, dst_level,
+        dst_x, dst_y, dst_z, width, height, depth,
+    );
 }
 
 pub(crate) unsafe fn install() -> i32 {

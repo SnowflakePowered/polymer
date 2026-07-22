@@ -21,7 +21,7 @@ pub(crate) struct Sdl3TableState {
 }
 
 pub(crate) struct Sdl3EntryState {
-    module: usize,
+    module: snowglass_hook::__PointerKey,
     target: api::DynapiEntryFn,
 }
 
@@ -32,7 +32,8 @@ impl Default for Sdl3EntryState {
         let target = unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }
             .expect("SDL3 dynamic API entry target was resolved before installation");
         Self {
-            module: module as usize,
+            module: snowglass_hook::__PointerKey::new(module.cast())
+                .expect("SDL3 module was resolved as non-null"),
             target,
         }
     }
@@ -63,7 +64,8 @@ fn dynapi_entry_target() -> api::DynapiEntryFn {
 
 fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     let module = Sdl3EntryInstallation::with_state(|state| state.module)
-        .ok_or("SDL3 entry-hook state is not installed")? as HMODULE;
+        .ok_or("SDL3 entry-hook state is not installed")?
+        .as_ptr();
     let backend =
         unsafe { api::Api::load(module) }.ok_or("SDL3 virtual joystick exports are unavailable")?;
     Ok(Sdl3TableState {
