@@ -113,7 +113,7 @@ snowglass_hook::impl_com_hook! {
         #[infix(track_reset)]
         unsafe extern "system" fn reset(this: *mut c_void, allocator: *mut c_void, initial_state: *mut c_void) -> HRESULT {
             #[context] |state| {
-                patched_vtable: *const usize = state.patched_vtable(),
+                patched_vtable: *const c_void = state.patched_vtable(),
             }
         }
 
@@ -390,7 +390,7 @@ unsafe fn track_reset(
     // d3d12.dll re-initializes the recycled command list inside Reset and
     // rewrites the object's vtable pointer, discarding the per-object clone.
     // Reinstall the clone after forwarding so tracking survives the reset.
-    unsafe { *this.cast::<*const usize>() = *patched_vtable };
+    unsafe { *this.cast::<*const c_void>() = *patched_vtable };
     if result.is_ok() {
         tracking.command_reset(this);
     }

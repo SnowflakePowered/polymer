@@ -14,6 +14,29 @@ pub use windows_core::GUID as __GUID;
 
 use std::sync::{Arc, Condvar, Mutex};
 
+/// Provenance-preserving identity key for pointers stored in hook registries.
+#[doc(hidden)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct __PointerKey(core::ptr::NonNull<core::ffi::c_void>);
+
+impl __PointerKey {
+    #[doc(hidden)]
+    pub fn new(pointer: *mut core::ffi::c_void) -> Option<Self> {
+        core::ptr::NonNull::new(pointer).map(Self)
+    }
+
+    #[doc(hidden)]
+    pub fn as_ptr(self) -> *mut core::ffi::c_void {
+        self.0.as_ptr()
+    }
+}
+
+// SAFETY: registry keys are used only for pointer identity. They are never
+// dereferenced through this wrapper, and moving or sharing a pointer value does
+// not grant access to its pointee.
+unsafe impl Send for __PointerKey {}
+unsafe impl Sync for __PointerKey {}
+
 /// A continuation over a typed hook chain.
 pub trait HookChain<'a, T: 'a> {
     /// Advances to the next registered hook, if one remains.

@@ -32,7 +32,7 @@ macro_rules! vtable {
         impl Vtable for $vtbl {
             const SLOTS: usize =
                 ::core::mem::size_of::<<$vtbl as ::windows::core::Interface>::Vtable>()
-                    / ::core::mem::size_of::<usize>();
+                    / ::core::mem::size_of::<*const ::core::ffi::c_void>();
 
             fn supports(vtable: ::core::any::TypeId) -> bool {
                 vtable == ::core::any::TypeId::of::<$vtbl>()
@@ -56,7 +56,8 @@ macro_rules! vtable {
     (@raw_hierarchy [$($base:ty,)*] $vtbl:ty $(, $derived:ty)*) => {
         impl Vtable for $vtbl {
             const SLOTS: usize =
-                ::core::mem::size_of::<$vtbl>() / ::core::mem::size_of::<usize>();
+                ::core::mem::size_of::<$vtbl>()
+                    / ::core::mem::size_of::<*const ::core::ffi::c_void>();
 
             fn supports(vtable: ::core::any::TypeId) -> bool {
                 vtable == ::core::any::TypeId::of::<$vtbl>()
@@ -104,7 +105,8 @@ macro_rules! com_vtable {
         $(#[$attribute])*
         #[repr(C)]
         $visibility union $name {
-            raw: [usize; ::core::mem::size_of::<$capacity>() / ::core::mem::size_of::<usize>()],
+            raw: [*const ::core::ffi::c_void;
+                ::core::mem::size_of::<$capacity>() / ::core::mem::size_of::<*const ::core::ffi::c_void>()],
             capacity: ::core::mem::ManuallyDrop<$capacity>,
         }
 
@@ -112,7 +114,8 @@ macro_rules! com_vtable {
             ::core::mem::size_of::<$name>() == ::core::mem::size_of::<$capacity>()
         );
         const _: () = assert!(
-            ::core::mem::size_of::<$capacity>() % ::core::mem::size_of::<usize>() == 0
+            ::core::mem::size_of::<$capacity>()
+                % ::core::mem::size_of::<*const ::core::ffi::c_void>() == 0
         );
 
         impl $name {
@@ -129,16 +132,16 @@ macro_rules! com_vtable {
                 assert!(
                     slots
                         <= ::core::mem::size_of::<$capacity>()
-                            / ::core::mem::size_of::<usize>()
+                            / ::core::mem::size_of::<*const ::core::ffi::c_void>()
                 );
                 let mut cloned = Self {
-                    raw: [0; ::core::mem::size_of::<$capacity>()
-                        / ::core::mem::size_of::<usize>()],
+                    raw: [::core::ptr::null(); ::core::mem::size_of::<$capacity>()
+                        / ::core::mem::size_of::<*const ::core::ffi::c_void>()],
                 };
                 unsafe {
                     ::core::ptr::copy_nonoverlapping(
-                        original.as_ptr().cast::<usize>().cast_const(),
-                        (&raw mut cloned.raw).cast::<usize>(),
+                        original.as_ptr().cast::<*const ::core::ffi::c_void>().cast_const(),
+                        (&raw mut cloned.raw).cast::<*const ::core::ffi::c_void>(),
                         slots,
                     );
                 }
@@ -211,17 +214,17 @@ pub trait VtableHook: Send + Sync {
     fn vtable_type(&self) -> ::core::any::TypeId;
 
     /// The cloned and patched vtable installed on the COM object.
-    fn patched_vtable(&self) -> *const usize;
+    fn patched_vtable(&self) -> *const ::core::ffi::c_void;
 
     /// The original vtable restored while releasing the COM object.
-    fn original_vtable(&self) -> *const usize;
+    fn original_vtable(&self) -> *const ::core::ffi::c_void;
 }
 
 /// ABI-transparent storage used by [`impl_com_proxy!`].
 #[doc(hidden)]
 #[repr(C)]
 pub struct ComProxy {
-    vtable: *const usize,
+    vtable: *const ::core::ffi::c_void,
     inner: *mut ::core::ffi::c_void,
     references: ::core::sync::atomic::AtomicU32,
     iid: windows_core::GUID,
@@ -330,7 +333,7 @@ unsafe extern "system" fn com_proxy_forward<const SLOT: usize>() {
         "mov rcx, [rcx + 8]",
         "mov rax, [rcx]",
         "jmp qword ptr [rax + {offset}]",
-        offset = const SLOT * ::core::mem::size_of::<usize>(),
+        offset = const SLOT * ::core::mem::size_of::<*const ::core::ffi::c_void>(),
     )
 }
 
@@ -342,7 +345,7 @@ unsafe extern "system" fn com_proxy_forward<const SLOT: usize>() {
         "ldr x16, [x0]",
         "ldr x16, [x16, #{offset}]",
         "br x16",
-        offset = const SLOT * ::core::mem::size_of::<usize>(),
+        offset = const SLOT * ::core::mem::size_of::<*const ::core::ffi::c_void>(),
     )
 }
 
@@ -419,7 +422,7 @@ macro_rules! function_table_hook {
 
         struct [<$table_hook Installation>] {
             hook: ::std::sync::Arc<$table_hook>,
-            tables: ::std::vec::Vec<(usize, u32)>,
+            tables: ::std::vec::Vec<($crate::__PointerKey, u32)>,
             state: ::std::sync::Arc<$state>,
         }
 
@@ -460,7 +463,8 @@ macro_rules! function_table_hook {
                 }
                 let installation = registry.as_mut().expect("function table installation exists");
                 unsafe { installation.hook.patch(table, table_bytes)? };
-                let address = table as usize;
+                let address = $crate::__PointerKey::new(table)
+                    .expect("function table was validated as non-null");
                 if !installation.tables.iter().any(|entry| entry.0 == address) {
                     installation.tables.push((address, table_bytes));
                 }
@@ -485,7 +489,7 @@ macro_rules! function_table_hook {
                 while index != 0 {
                     index -= 1;
                     let (address, table_bytes) = installation.tables[index];
-                    match unsafe { installation.hook.restore(address as *mut _, table_bytes) } {
+                    match unsafe { installation.hook.restore(address.as_ptr(), table_bytes) } {
                         Ok(()) => { installation.tables.remove(index); }
                         Err(error) => { first_error.get_or_insert(error); }
                     }
@@ -625,19 +629,20 @@ macro_rules! function_table_hook {
                 if table.is_null() {
                     return Err("function table is null");
                 }
-                let slots = table_bytes as usize / ::core::mem::size_of::<usize>();
+                let slots = table_bytes as usize
+                    / ::core::mem::size_of::<*mut ::core::ffi::c_void>();
                 if slots < Self::MINIMUM_SLOTS as usize {
                     return Err("function table is too small");
                 }
-                let table = table.cast::<usize>();
+                let table = table.cast::<*mut ::core::ffi::c_void>();
                 $(
                     let address = unsafe { table.add($slot).read() };
-                    if address == 0 {
+                    if address.is_null() {
                         return Err("function table contains a null hooked entry");
                     }
                     let $dispatch = unsafe {
                         ::core::mem::transmute_copy::<
-                            usize,
+                            *mut ::core::ffi::c_void,
                             unsafe extern $abi fn($($argument_type),*) $(-> $result)?,
                         >(&address)
                     };
@@ -665,12 +670,17 @@ macro_rules! function_table_hook {
                 if table.is_null() {
                     return Err("function table is null");
                 }
-                let slots = table_bytes as usize / ::core::mem::size_of::<usize>();
+                let slots = table_bytes as usize
+                    / ::core::mem::size_of::<*mut ::core::ffi::c_void>();
                 if slots < Self::MINIMUM_SLOTS as usize {
                     return Err("function table is too small");
                 }
-                let table = table.cast::<usize>();
-                $(unsafe { table.add($slot).write($dispatch as *const () as usize) };)+
+                let table = table.cast::<*mut ::core::ffi::c_void>();
+                $(unsafe {
+                    table.add($slot).write(
+                        ($dispatch as *const ()).cast_mut().cast::<::core::ffi::c_void>()
+                    )
+                };)+
                 Ok(())
             }
 
@@ -687,13 +697,16 @@ macro_rules! function_table_hook {
                 if table.is_null() {
                     return Err("function table is null");
                 }
-                let slots = table_bytes as usize / ::core::mem::size_of::<usize>();
+                let slots = table_bytes as usize
+                    / ::core::mem::size_of::<*mut ::core::ffi::c_void>();
                 if slots < Self::MINIMUM_SLOTS as usize {
                     return Err("function table is too small");
                 }
-                let table = table.cast::<usize>();
+                let table = table.cast::<*mut ::core::ffi::c_void>();
                 $(unsafe {
-                    table.add($slot).write(self.$dispatch as *const () as usize)
+                    table.add($slot).write(
+                        (self.$dispatch as *const ()).cast_mut().cast::<::core::ffi::c_void>()
+                    )
                 };)+
                 Ok(())
             }
@@ -1028,8 +1041,13 @@ macro_rules! __impl_com_dispatch {
                 unsafe { (context.base)($this, $($argument),*) }
             }
 
+            let Some(key) = $crate::__PointerKey::new(
+                $this.cast::<::core::ffi::c_void>()
+            ) else {
+                $crate::impl_com_hook!(@missing $($fallback)?);
+            };
             let Some($hook_state) = $registry
-                .get(&($this as usize))
+                .get(&key)
                 .map(|entry| ::std::sync::Arc::clone(entry.value()))
             else {
                 $crate::impl_com_hook!(@missing $($fallback)?);
@@ -1178,7 +1196,7 @@ macro_rules! impl_com_hook {
 
         #[allow(non_upper_case_globals)]
         static [<__ $release_dispatch _registry>]: ::std::sync::LazyLock<
-            $crate::__DashMap<usize, ::std::sync::Arc<dyn $hook_trait>>
+            $crate::__DashMap<$crate::__PointerKey, ::std::sync::Arc<dyn $hook_trait>>
         > = ::std::sync::LazyLock::new(Default::default);
 
         $visibility_trait struct $hook;
@@ -1206,10 +1224,12 @@ macro_rules! impl_com_hook {
                 if object.is_null() {
                     return false;
                 }
+                let key = $crate::__PointerKey::new(object)
+                    .expect("COM object was validated as non-null");
                 [<__ $release_dispatch _registry>]
-                    .get(&(object as usize))
+                    .get(&key)
                     .is_some_and(|state| unsafe {
-                        *object.cast::<*const usize>() == state.patched_vtable()
+                        *object.cast::<*const ::core::ffi::c_void>() == state.patched_vtable()
                     })
             }
 
@@ -1217,8 +1237,9 @@ macro_rules! impl_com_hook {
                 object: *mut ::core::ffi::c_void,
                 select: impl FnOnce(&$common_context) -> T,
             ) -> Option<T> {
+                let key = $crate::__PointerKey::new(object)?;
                 [<__ $release_dispatch _registry>]
-                    .get(&(object as usize))
+                    .get(&key)
                     .map(|state| select(state.state()))
             })?
 
@@ -1287,10 +1308,12 @@ macro_rules! impl_com_hook {
                 if object.is_null() {
                     return false;
                 }
-                let object_vtable = object.cast::<*const usize>();
+                let key = $crate::__PointerKey::new(object)
+                    .expect("COM object was validated as non-null");
+                let object_vtable = object.cast::<*const ::core::ffi::c_void>();
                 let current = unsafe { *object_vtable };
                 let original_pointer = if let Some(existing) =
-                    [<__ $release_dispatch _registry>].get(&(object as usize))
+                    [<__ $release_dispatch _registry>].get(&key)
                 {
                     if current == existing.patched_vtable() {
                         if A::supported_by(existing.vtable_type()) {
@@ -1321,14 +1344,14 @@ macro_rules! impl_com_hook {
             /// must span at least `A::SLOTS` entries.
             $visibility_trait unsafe fn install_object_from<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
-                original_pointer: *const usize,
+                original_pointer: *const ::core::ffi::c_void,
                 $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 if object.is_null() {
                     return false;
                 }
-                let object_vtable = object.cast::<*const usize>();
+                let object_vtable = object.cast::<*const ::core::ffi::c_void>();
                 let Some(original) = ::core::ptr::NonNull::new(
                     original_pointer.cast_mut().cast::<::core::ffi::c_void>()
                 ) else {
@@ -1361,7 +1384,9 @@ macro_rules! impl_com_hook {
                     $($context,)*
                 });
                 let patched_vtable = state.patched_vtable();
-                [<__ $release_dispatch _registry>].insert(object as usize, state);
+                let key = $crate::__PointerKey::new(object)
+                    .expect("COM object was validated as non-null");
+                [<__ $release_dispatch _registry>].insert(key, state);
                 unsafe { *object_vtable = patched_vtable };
                 true
             }
@@ -1370,10 +1395,12 @@ macro_rules! impl_com_hook {
         impl<A: Vtable> $crate::VtableHook for [<$hook State>]<A> {
             fn slots(&self) -> usize { A::SLOTS }
             fn vtable_type(&self) -> ::core::any::TypeId { ::core::any::TypeId::of::<A>() }
-            fn patched_vtable(&self) -> *const usize {
+            fn patched_vtable(&self) -> *const ::core::ffi::c_void {
                 ::core::ptr::from_ref(self.patched.as_ref()).cast()
             }
-            fn original_vtable(&self) -> *const usize { self.original.as_ptr().cast() }
+            fn original_vtable(&self) -> *const ::core::ffi::c_void {
+                self.original.as_ptr().cast_const()
+            }
         }
 
         impl<A: Vtable> $hook_trait for [<$hook State>]<A> {
@@ -1402,7 +1429,11 @@ macro_rules! impl_com_hook {
         $visibility_trait unsafe extern "system" fn $release_dispatch(
             $release_this: $release_this_type,
         ) -> u32 {
-            let key = $release_this as usize;
+            let Some(key) = $crate::__PointerKey::new(
+                $release_this.cast::<::core::ffi::c_void>()
+            ) else {
+                return 0;
+            };
             let Some(state) = [<__ $release_dispatch _registry>]
                 .get(&key)
                 .map(|entry| ::std::sync::Arc::clone(entry.value()))
@@ -1412,7 +1443,7 @@ macro_rules! impl_com_hook {
             let base = state.[<base_ $release_dispatch>]();
             let original_vtable = state.original_vtable();
             let patched_vtable = state.patched_vtable();
-            let object_vtable = $release_this.cast::<*const usize>();
+            let object_vtable = $release_this.cast::<*const ::core::ffi::c_void>();
             unsafe { *object_vtable = original_vtable };
             let remaining = unsafe { base($release_this) };
             if remaining == 0 {
@@ -1488,7 +1519,7 @@ macro_rules! impl_com_hook {
             /// `original` must be null or point to a vtable spanning at least
             /// the configured number of slots.
             pub(crate) unsafe fn clone_from(
-                original: *const usize
+                original: *const ::core::ffi::c_void
                 $($(, $context: $context_type)*)?
             ) -> Option<Self> {
                 let original = ::core::ptr::NonNull::new(
@@ -1514,13 +1545,13 @@ macro_rules! impl_com_hook {
             )*)?
 
             /// The vtable pointer that intercepts the hooked object.
-            pub(crate) fn patched_vtable(&self) -> *const usize {
+            pub(crate) fn patched_vtable(&self) -> *const ::core::ffi::c_void {
                 ::core::ptr::from_ref(self.patched.as_ref()).cast()
             }
 
             /// The object's original vtable pointer.
-            pub(crate) fn original_vtable(&self) -> *const usize {
-                self.original.as_ptr().cast()
+            pub(crate) fn original_vtable(&self) -> *const ::core::ffi::c_void {
+                self.original.as_ptr().cast_const()
             }
 
             $crate::impl_com_hook!(@inherent_methods $($methods)*);
@@ -1565,7 +1596,7 @@ macro_rules! impl_com_hook {
             /// `original` must be null or point to a vtable spanning at least
             /// [`A::SLOTS`](Vtable::SLOTS) entries.
             pub(crate) unsafe fn clone_from(
-                original: *const usize
+                original: *const ::core::ffi::c_void
                 $($(, $context: $context_type)*)?
             ) -> Option<Self> {
                 let original = ::core::ptr::NonNull::new(
@@ -1594,12 +1625,12 @@ macro_rules! impl_com_hook {
                 ::core::any::TypeId::of::<A>()
             }
 
-            fn patched_vtable(&self) -> *const usize {
+            fn patched_vtable(&self) -> *const ::core::ffi::c_void {
                 ::core::ptr::from_ref(self.patched.as_ref()).cast()
             }
 
-            fn original_vtable(&self) -> *const usize {
-                self.original.as_ptr().cast()
+            fn original_vtable(&self) -> *const ::core::ffi::c_void {
+                self.original.as_ptr().cast_const()
             }
         }
 
@@ -1816,7 +1847,13 @@ mod tests {
     #[test]
     fn function_table_chain_owns_hooks_and_reaches_captured_base() {
         FUNCTION_TABLE_PHASES.store(0, Ordering::Relaxed);
-        let mut table = [function_table_base as *const () as usize, 0xfeedusize];
+        let untouched = ::core::ptr::NonNull::<::core::ffi::c_void>::dangling().as_ptr();
+        let mut table = [
+            (function_table_base as *const ())
+                .cast_mut()
+                .cast::<::core::ffi::c_void>(),
+            untouched,
+        ];
         let captured = unsafe {
             TestFunctionTableHook::capture(table.as_mut_ptr().cast(), size_of_val(&table) as u32)
         }
@@ -1831,13 +1868,15 @@ mod tests {
             unsafe { std::mem::transmute(table[0]) };
         assert_eq!(unsafe { dispatch(4) }, 11);
         assert_eq!(FUNCTION_TABLE_PHASES.load(Ordering::Relaxed), 111);
-        assert_eq!(table[1], 0xfeed);
+        assert_eq!(table[1], untouched);
     }
 
     #[test]
     fn managed_function_table_exposes_state_with_a_selector() {
         assert_eq!(ManagedFunctionTableHook::with_state(|state| *state), None);
-        let mut table = [managed_function_table_base as *const () as usize];
+        let mut table = [(managed_function_table_base as *const ())
+            .cast_mut()
+            .cast::<::core::ffi::c_void>()];
         let state = unsafe {
             ManagedFunctionTableHook::install(table.as_mut_ptr().cast(), size_of_val(&table) as u32)
         }
@@ -1853,6 +1892,11 @@ mod tests {
 
         ManagedFunctionTableHook::uninstall().unwrap();
         assert_eq!(ManagedFunctionTableHook::with_state(|state| *state), None);
-        assert_eq!(table[0], managed_function_table_base as *const () as usize);
+        assert_eq!(
+            table[0],
+            (managed_function_table_base as *const ())
+                .cast_mut()
+                .cast::<::core::ffi::c_void>()
+        );
     }
 }
