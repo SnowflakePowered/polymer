@@ -9,9 +9,14 @@ use windows_sys::{
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer(state = crate::runtime::Runtime)]
+    pub(crate) struct HookInstallation;
+    #[registry] static INSTALLATION;
+
     #[context]
     pub(crate) struct DirectInputHookContext {
-        pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime> = crate::install::runtime(),
+        pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime> =
+            HookInstallation::active_state(),
     }
 
     #[trampoline]

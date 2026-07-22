@@ -5,7 +5,7 @@ use snowglass_platform_windows::InlineDetour;
 use snowglass_producer_opengl::Tracking;
 use std::{
     ffi::c_void,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
 };
 use windows_sys::Win32::Foundation::E_FAIL;
 
@@ -55,8 +55,9 @@ unsafe extern "system" {
     );
 }
 
-struct OpenGlRuntime {
-    tracking: Arc<Tracking>,
+#[derive(Default)]
+pub(crate) struct OpenGlRuntime {
+    pub(crate) tracking: Arc<Tracking>,
 }
 
 pub(crate) fn draw_arrays_continuation(detour: &InlineDetour<GlDrawArraysFn>) -> GlDrawArraysFn {
@@ -75,42 +76,11 @@ pub(crate) fn draw_elements_continuation(
         .unwrap_or_else(|| detour.trampoline())
 }
 
-type SwapBuffersInstallation =
-    snowglass_hook::TerminalInstallation<dyn crate::hooks::SwapBuffersTerminal>;
-type SwapLayerBuffersInstallation =
-    snowglass_hook::TerminalInstallation<dyn crate::hooks::SwapLayerBuffersTerminal>;
-type WglGetProcAddressInstallation =
-    snowglass_hook::TerminalInstallation<dyn crate::hooks::WglGetProcAddressTerminal>;
-type DrawArraysInstallation =
-    snowglass_hook::TerminalInstallation<dyn crate::hooks::DrawArraysTerminal>;
-type DrawElementsInstallation =
-    snowglass_hook::TerminalInstallation<dyn crate::hooks::DrawElementsTerminal>;
-
-struct OpenGlInstallation {
-    swap_buffers: Option<SwapBuffersInstallation>,
-    swap_layer_buffers: Option<SwapLayerBuffersInstallation>,
-    wgl_get_proc_address: Option<WglGetProcAddressInstallation>,
-    draw_arrays: Option<DrawArraysInstallation>,
-    draw_elements: Option<DrawElementsInstallation>,
-    complete: bool,
-}
-
-static INSTALLATION: Mutex<Option<OpenGlInstallation>> = Mutex::new(None);
-static RUNTIME: Mutex<Option<Arc<OpenGlRuntime>>> = Mutex::new(None);
 static DRAW_ARRAYS: OnceLock<GlDrawArraysFn> = OnceLock::new();
 static DRAW_ELEMENTS: OnceLock<GlDrawElementsFn> = OnceLock::new();
 static DRAW_ELEMENTS_BASE_VERTEX: OnceLock<GlDrawElementsBaseVertexFn> = OnceLock::new();
 static BLIT_FRAMEBUFFER: OnceLock<GlBlitFramebufferFn> = OnceLock::new();
 static COPY_IMAGE_SUB_DATA: OnceLock<GlCopyImageSubDataFn> = OnceLock::new();
-
-pub(crate) fn tracking() -> Arc<Tracking> {
-    RUNTIME
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .map(|runtime| runtime.tracking.clone())
-        .unwrap_or_default()
-}
 
 pub(crate) fn remember_draw_arrays(address: *const c_void) {
     if address != system_draw_arrays as *const c_void {
@@ -204,105 +174,9 @@ pub(crate) unsafe fn call_copy_image_sub_data(
 }
 
 pub(crate) unsafe fn install() -> i32 {
-    let mut installation = INSTALLATION
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some(installed) = installation.as_mut() {
-        if installed.complete {
-            return 0;
-        }
-        if !uninstall_group(installed) {
-            return E_FAIL;
-        }
-        *installation = None;
-        *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = None;
-    }
-
-    let runtime = Arc::new(OpenGlRuntime {
-        tracking: Arc::default(),
-    });
-    *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = Some(runtime);
-    let mut group = OpenGlInstallation {
-        swap_buffers: None,
-        swap_layer_buffers: None,
-        wgl_get_proc_address: None,
-        draw_arrays: None,
-        draw_elements: None,
-        complete: false,
-    };
-
-    macro_rules! install_or_rollback {
-        ($field:ident, $install:expr) => {
-            match $install {
-                Ok(guard) => group.$field = Some(guard),
-                Err(_) => {
-                    if !uninstall_group(&mut group) {
-                        *installation = Some(group);
-                    } else {
-                        *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = None;
-                    }
-                    return E_FAIL;
-                }
-            }
-        };
-    }
-
-    install_or_rollback!(
-        wgl_get_proc_address,
-        crate::hooks::install_wgl_get_proc_address_terminal()
-    );
-    install_or_rollback!(draw_arrays, crate::hooks::install_draw_arrays_terminal());
-    install_or_rollback!(
-        draw_elements,
-        crate::hooks::install_draw_elements_terminal()
-    );
-    install_or_rollback!(
-        swap_layer_buffers,
-        crate::hooks::install_swap_layer_buffers_terminal()
-    );
-    install_or_rollback!(swap_buffers, crate::hooks::install_swap_buffers_terminal());
-
-    group.complete = true;
-    *installation = Some(group);
-    0
+    crate::hooks::HookInstallation::install().map_or(E_FAIL, |()| 0)
 }
 
 pub(crate) fn uninstall() -> i32 {
-    let mut installation = INSTALLATION
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let Some(installed) = installation.as_mut() else {
-        return 0;
-    };
-    if !uninstall_group(installed) {
-        installed.complete = false;
-        return E_FAIL;
-    }
-    *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = None;
-    *installation = None;
-    0
-}
-
-fn uninstall_group(installed: &mut OpenGlInstallation) -> bool {
-    macro_rules! uninstall {
-        ($field:ident) => {
-            if installed
-                .$field
-                .as_ref()
-                .is_some_and(|guard| guard.uninstall().is_ok())
-            {
-                installed.$field = None;
-            }
-        };
-    }
-    uninstall!(swap_buffers);
-    uninstall!(swap_layer_buffers);
-    uninstall!(draw_elements);
-    uninstall!(draw_arrays);
-    uninstall!(wgl_get_proc_address);
-    installed.swap_buffers.is_none()
-        && installed.swap_layer_buffers.is_none()
-        && installed.draw_elements.is_none()
-        && installed.draw_arrays.is_none()
-        && installed.wgl_get_proc_address.is_none()
+    crate::hooks::HookInstallation::uninstall().map_or(E_FAIL, |()| 0)
 }

@@ -384,7 +384,7 @@ mod tests {
         let listener = LocalSocketListener::bind(&format!("{session}-input")).unwrap();
         unsafe { std::env::set_var(config::SESSION, &session) };
         let _ = unsafe { crate::install::install() };
-        let runtime = crate::install::runtime();
+        let runtime = crate::hooks::HookInstallation::active_state();
         runtime.start_input_receiver();
         let mut socket = listener.accept().unwrap();
 

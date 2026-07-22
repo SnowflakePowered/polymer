@@ -3,6 +3,9 @@ use std::ffi::c_void;
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer]
+    pub(crate) struct HookInstallation;
+    #[registry] static INSTALLATION;
 
     #[trampoline]
     #[terminal(installed(

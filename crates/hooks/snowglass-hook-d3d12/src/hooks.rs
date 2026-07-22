@@ -7,6 +7,12 @@ use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
+
+    #[installer]
+    pub(crate) struct HookInstallation;
+
+    #[registry] static INSTALLATION;
+
     #[context]
     pub(crate) struct D3D12HookContext {
         pub(crate) tracking: std::sync::Arc<Tracking> = std::sync::Arc::default(),

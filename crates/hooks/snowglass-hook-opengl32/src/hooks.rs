@@ -1,7 +1,6 @@
 //! Typed OpenGL hook declarations and capture callbacks.
 
 use snowglass_hook::HookChain;
-use snowglass_producer_opengl::Tracking;
 use std::{
     cell::Cell,
     ffi::{CStr, c_void},
@@ -12,9 +11,13 @@ pub(crate) type Hdc = *mut c_void;
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer(state = crate::install::OpenGlRuntime)]
+    pub(crate) struct HookInstallation;
+    #[registry] static INSTALLATION;
     #[context]
     pub(crate) struct OpenGlHookContext {
-        pub(crate) tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+        pub(crate) state: std::sync::Arc<crate::install::OpenGlRuntime> =
+            HookInstallation::active_state(),
     }
 
     #[trampoline]
@@ -101,7 +104,10 @@ pub(crate) unsafe fn capture_swap_buffers(hdc: Hdc, context: &SwapBuffersContext
             return;
         }
         unsafe {
-            snowglass_producer_opengl::before_swap_buffers(&context.common.tracking, hdc as isize)
+            snowglass_producer_opengl::before_swap_buffers(
+                &context.common.state.tracking,
+                hdc as isize,
+            )
         };
         capturing.set(false);
     });
@@ -113,7 +119,10 @@ pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuf
             return;
         }
         unsafe {
-            snowglass_producer_opengl::before_swap_buffers(&context.common.tracking, hdc as isize)
+            snowglass_producer_opengl::before_swap_buffers(
+                &context.common.state.tracking,
+                hdc as isize,
+            )
         };
         capturing.set(false);
     });
@@ -123,17 +132,18 @@ pub(crate) unsafe fn track_draw_arrays(first: i32, count: i32, context: &DrawArr
     unsafe {
         context
             .common
+            .state
             .tracking
             .record_draw_candidate(Some((first, count)))
     };
 }
 
 pub(crate) unsafe fn track_draw_elements(context: &DrawElementsContext) {
-    unsafe { context.common.tracking.record_draw_candidate(None) };
+    unsafe { context.common.state.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn track_draw_elements_base_vertex(context: &DrawElementsBaseVertexContext) {
-    unsafe { context.common.tracking.record_draw_candidate(None) };
+    unsafe { context.common.state.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {
@@ -142,7 +152,7 @@ pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {
     if CAPTURING.with(|capturing| capturing.get()) {
         return;
     }
-    unsafe { context.common.tracking.record_blit_candidate() };
+    unsafe { context.common.state.tracking.record_blit_candidate() };
 }
 
 pub(crate) unsafe fn track_copy_image_sub_data(
@@ -159,7 +169,7 @@ pub(crate) unsafe fn track_copy_image_sub_data(
         return;
     }
     unsafe {
-        context.common.tracking.record_copy_candidate(
+        context.common.state.tracking.record_copy_candidate(
             src_name, src_target, dst_name, dst_target, dst_z, width, height,
         )
     };

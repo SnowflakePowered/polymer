@@ -345,6 +345,93 @@ pub enum TerminalUninstallError {
     Disable(i32),
 }
 
+#[doc(hidden)]
+pub trait ErasedTerminalInstallation: Send {
+    fn uninstall(&self) -> Result<(), TerminalUninstallError>;
+}
+
+impl<T: TerminalLifecycle + ?Sized> ErasedTerminalInstallation for TerminalInstallation<T> {
+    fn uninstall(&self) -> Result<(), TerminalUninstallError> {
+        self.uninstall()
+    }
+}
+
+pub struct HookInstallError<I> {
+    pub source: TerminalInstallError,
+    pub installation: Option<I>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HookRegistryError {
+    Install(TerminalInstallError),
+    Uninstall(TerminalUninstallError),
+}
+
+#[doc(hidden)]
+pub trait ManagedHookInstallation: Sized + Send + 'static {
+    fn create() -> Result<Self, HookInstallError<Self>>;
+    fn uninstall_terminals(&mut self) -> Result<(), TerminalUninstallError>;
+    fn is_complete(&self) -> bool;
+    fn is_empty(&self) -> bool;
+}
+
+pub struct HookInstallationRegistry<I> {
+    installation: Mutex<Option<I>>,
+}
+
+impl<I> HookInstallationRegistry<I> {
+    pub const fn new() -> Self {
+        Self {
+            installation: Mutex::new(None),
+        }
+    }
+}
+
+impl<I: ManagedHookInstallation> HookInstallationRegistry<I> {
+    pub fn install(&self) -> Result<(), HookRegistryError> {
+        let mut slot = self
+            .installation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(installation) = slot.as_mut() {
+            if installation.is_complete() {
+                return Ok(());
+            }
+            installation
+                .uninstall_terminals()
+                .map_err(HookRegistryError::Uninstall)?;
+            *slot = None;
+        }
+        match I::create() {
+            Ok(installation) => {
+                *slot = Some(installation);
+                Ok(())
+            }
+            Err(mut failure) => {
+                *slot = failure.installation.take();
+                Err(HookRegistryError::Install(failure.source))
+            }
+        }
+    }
+
+    pub fn uninstall(&self) -> Result<(), HookRegistryError> {
+        let mut slot = self
+            .installation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(installation) = slot.as_mut() else {
+            return Ok(());
+        };
+        let result = installation
+            .uninstall_terminals()
+            .map_err(HookRegistryError::Uninstall);
+        if installation.is_empty() {
+            *slot = None;
+        }
+        result
+    }
+}
+
 /// Advances a terminal-backed hook chain and invokes its continuation.
 ///
 /// The context is passed to the continuation after the listed ABI arguments.
@@ -364,17 +451,280 @@ macro_rules! next {
 /// Each terminal is declared as `direct = path`, `installed` with a fallback,
 /// or a backend-defined `dynamic(...)` source. An installed raw-hook group can
 /// select its lifecycle owner with `#![detour(Type)]`; each installed terminal
-/// then supplies its own `target` and optional `continuation`. Dynamic sources
-/// select their callback with `#![terminal_resolver(name)]`; direct and
-/// installed-only declarations need no resolver. Hook and context names are
-/// inferred from the declared function name in the same way as
-/// [`function_table_hook!`]. Mark an entry with `#[trampoline]` when its
-/// declared function is used as an ABI detour target. `#[trampoline(abi =
-/// "...")]` overrides that entry point's ABI while leaving the chain
-/// declaration as the source of its signature.
+/// then supplies its own `target` and optional `continuation`. A generated
+/// `#[installer] struct` and `#[registry] static` own transactional installation,
+/// idempotence, partial cleanup, and reinstallation. Dynamic sources select
+/// their callback with `#![terminal_resolver(name)]`; direct and installed-only
+/// declarations need no resolver. Hook and context names are inferred from the
+/// declared function name in the same way as [`function_table_hook!`]. Mark an
+/// entry with `#[trampoline]` when its declared function is used as an ABI
+/// detour target. `#[trampoline(abi = "...")]` overrides that entry point's ABI
+/// while leaving the chain declaration as the source of its signature.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __chain_hooks {
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #[installer(state = $state:ty)]
+        $installer_visibility:vis struct $installer:ident;
+        #[registry] $registry_visibility:vis static $registry:ident;
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@declare_installer
+            [$installer_visibility] [$installer] [state $state] [$($items)*]
+        );
+        impl $crate::ManagedHookInstallation for $installer {
+            fn create() -> Result<Self, $crate::HookInstallError<Self>> { Self::create() }
+            fn uninstall_terminals(&mut self) -> Result<(), $crate::TerminalUninstallError> {
+                self.uninstall_terminals()
+            }
+            fn is_complete(&self) -> bool { self.is_complete() }
+            fn is_empty(&self) -> bool { self.is_empty() }
+        }
+        static $registry:
+            $crate::HookInstallationRegistry<$installer> =
+                $crate::HookInstallationRegistry::new();
+        impl $installer {
+            $installer_visibility fn install() -> Result<(), $crate::HookRegistryError> {
+                $registry.install()
+            }
+            $installer_visibility fn uninstall() -> Result<(), $crate::HookRegistryError> {
+                $registry.uninstall()
+            }
+        }
+        $crate::__chain_hooks! {
+            #![order($order)]
+            #![detour($detour)]
+            $($items)*
+        }
+    };
+
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #[installer]
+        $installer_visibility:vis struct $installer:ident;
+        #[registry] $registry_visibility:vis static $registry:ident;
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@declare_installer
+            [$installer_visibility] [$installer] [stateless] [$($items)*]
+        );
+        impl $crate::ManagedHookInstallation for $installer {
+            fn create() -> Result<Self, $crate::HookInstallError<Self>> { Self::create() }
+            fn uninstall_terminals(&mut self) -> Result<(), $crate::TerminalUninstallError> {
+                self.uninstall_terminals()
+            }
+            fn is_complete(&self) -> bool { self.is_complete() }
+            fn is_empty(&self) -> bool { self.is_empty() }
+        }
+        static $registry:
+            $crate::HookInstallationRegistry<$installer> =
+                $crate::HookInstallationRegistry::new();
+        impl $installer {
+            $installer_visibility fn install() -> Result<(), $crate::HookRegistryError> {
+                $registry.install()
+            }
+            $installer_visibility fn uninstall() -> Result<(), $crate::HookRegistryError> {
+                $registry.uninstall()
+            }
+        }
+        $crate::__chain_hooks! {
+            #![order($order)]
+            #![detour($detour)]
+            $($items)*
+        }
+    };
+
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #[installer(state = $state:ty)]
+        $installer_visibility:vis struct $installer:ident;
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@declare_installer
+            [$installer_visibility] [$installer] [state $state] [$($items)*]
+        );
+        $crate::__chain_hooks! {
+            #![order($order)]
+            #![detour($detour)]
+            $($items)*
+        }
+    };
+
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #[installer]
+        $installer_visibility:vis struct $installer:ident;
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@declare_installer
+            [$installer_visibility] [$installer] [stateless] [$($items)*]
+        );
+        $crate::__chain_hooks! {
+            #![order($order)]
+            #![detour($detour)]
+            $($items)*
+        }
+    };
+
+    (@declare_installer
+        [$visibility:vis] [$installer:ident] [stateless] [$($items:tt)*]
+    ) => {
+        $visibility struct $installer {
+            terminals: ::std::vec::Vec<
+                ::std::boxed::Box<dyn $crate::ErasedTerminalInstallation>
+            >,
+            complete: bool,
+        }
+
+        impl $installer {
+            $visibility fn is_empty(&self) -> bool { self.terminals.is_empty() }
+            $visibility fn is_complete(&self) -> bool { self.complete }
+
+            fn create() -> Result<Self, $crate::HookInstallError<Self>> {
+                let mut installation = Self {
+                    terminals: ::std::vec::Vec::new(),
+                    complete: false,
+                };
+                $crate::__chain_hooks!(@install_terminals installation; $($items)*);
+                installation.complete = true;
+                Ok(installation)
+            }
+
+            fn uninstall_terminals(&mut self) -> Result<(), $crate::TerminalUninstallError> {
+                let mut first_error = None;
+                let mut index = self.terminals.len();
+                while index != 0 {
+                    index -= 1;
+                    match self.terminals[index].uninstall() {
+                        Ok(()) => { self.terminals.remove(index); }
+                        Err(error) => { first_error.get_or_insert(error); }
+                    }
+                }
+                first_error.map_or(Ok(()), Err)
+            }
+        }
+
+        impl Drop for $installer {
+            fn drop(&mut self) { let _ = self.uninstall_terminals(); }
+        }
+    };
+
+    (@declare_installer
+        [$visibility:vis] [$installer:ident] [state $state:ty] [$($items:tt)*]
+    ) => { $crate::__paste! {
+        static [<$installer:upper _STATE>]: ::std::sync::RwLock<
+            Option<::std::sync::Arc<$state>>
+        > = ::std::sync::RwLock::new(None);
+
+        $visibility struct $installer {
+            terminals: ::std::vec::Vec<
+                ::std::boxed::Box<dyn $crate::ErasedTerminalInstallation>
+            >,
+            _state: ::std::sync::Arc<$state>,
+            complete: bool,
+        }
+
+        impl $installer {
+            $visibility fn is_empty(&self) -> bool { self.terminals.is_empty() }
+            $visibility fn is_complete(&self) -> bool { self.complete }
+
+            fn create() -> Result<Self, $crate::HookInstallError<Self>> {
+                let state = ::std::sync::Arc::new(<$state as Default>::default());
+                *[<$installer:upper _STATE>].write()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(state.clone());
+                let mut installation = Self {
+                    terminals: ::std::vec::Vec::new(),
+                    _state: state,
+                    complete: false,
+                };
+                $crate::__chain_hooks!(@install_terminals installation; $($items)*);
+                installation.complete = true;
+                Ok(installation)
+            }
+
+            $visibility fn active_state() -> ::std::sync::Arc<$state> {
+                [<$installer:upper _STATE>].read()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref().cloned().unwrap_or_default()
+            }
+
+            fn uninstall_terminals(&mut self) -> Result<(), $crate::TerminalUninstallError> {
+                let mut first_error = None;
+                let mut index = self.terminals.len();
+                while index != 0 {
+                    index -= 1;
+                    match self.terminals[index].uninstall() {
+                        Ok(()) => { self.terminals.remove(index); }
+                        Err(error) => { first_error.get_or_insert(error); }
+                    }
+                }
+                if self.terminals.is_empty() {
+                    *[<$installer:upper _STATE>].write()
+                        .unwrap_or_else(|error| error.into_inner()) = None;
+                }
+                first_error.map_or(Ok(()), Err)
+            }
+        }
+
+        impl Drop for $installer {
+            fn drop(&mut self) { let _ = self.uninstall_terminals(); }
+        }
+    }};
+
+    (@install_terminals $installation:ident;) => {};
+    (@install_terminals $installation:ident;
+        #[terminal(installed($($terminal:tt)*), fallback = $fallback:expr $(,)?)]
+        $(#[prefix($($prefix:tt)*)])?
+        $(#[infix($($infix:path),* $(,)? )])?
+        $(#[postfix($($postfix:tt)*)])?
+        $visibility:vis unsafe extern $abi:literal fn $name:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        ) -> $result:ty;
+        $($remaining:tt)*
+    ) => { $crate::__paste! {
+        match [<install_ $name _terminal>]() {
+            Ok(terminal) => $installation.terminals.push(::std::boxed::Box::new(terminal)),
+            Err(source) => {
+                let _ = $installation.uninstall_terminals();
+                return Err($crate::HookInstallError {
+                    source,
+                    installation: (!$installation.terminals.is_empty()).then_some($installation),
+                });
+            }
+        }
+        $crate::__chain_hooks!(@install_terminals $installation; $($remaining)*);
+    }};
+    (@install_terminals $installation:ident;
+        #[terminal(installed($($terminal:tt)*), fallback = $fallback:expr $(,)?)]
+        $(#[prefix($($prefix:tt)*)])?
+        $(#[infix($($infix:path),* $(,)? )])?
+        $(#[postfix($($postfix:tt)*)])?
+        $visibility:vis unsafe extern $abi:literal fn $name:ident(
+            $($argument:ident: $argument_type:ty),* $(,)?
+        );
+        $($remaining:tt)*
+    ) => { $crate::__paste! {
+        match [<install_ $name _terminal>]() {
+            Ok(terminal) => $installation.terminals.push(::std::boxed::Box::new(terminal)),
+            Err(source) => {
+                let _ = $installation.uninstall_terminals();
+                return Err($crate::HookInstallError {
+                    source,
+                    installation: (!$installation.terminals.is_empty()).then_some($installation),
+                });
+            }
+        }
+        $crate::__chain_hooks!(@install_terminals $installation; $($remaining)*);
+    }};
+    (@install_terminals $installation:ident; $token:tt $($remaining:tt)*) => {
+        $crate::__chain_hooks!(@install_terminals $installation; $($remaining)*);
+    };
+
     (
         #![terminal_resolver($resolve:ident)]
         #![order($order:ident)]
