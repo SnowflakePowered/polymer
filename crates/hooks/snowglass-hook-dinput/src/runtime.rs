@@ -117,7 +117,7 @@ pub(crate) unsafe fn create_device(
     result: HRESULT,
     context: &crate::vtable::CreateDeviceContext<'_>,
 ) {
-    let runtime = context.common.runtime.clone();
+    let runtime = context.state.runtime.clone();
     if !class.is_null() {
         let class = unsafe { &*class };
         dinput_log(format!(
@@ -143,7 +143,7 @@ pub(crate) unsafe fn create_device(
         };
         if let Some(device_class) = device_class {
             if let Some(proxy) =
-                unsafe { wrap_device(runtime, *output, device_class, context.common.wide) }
+                unsafe { wrap_device(runtime, *output, device_class, context.state.wide) }
             {
                 unsafe { *output = proxy };
             }
@@ -189,8 +189,8 @@ pub(crate) unsafe fn get_device_state(
     output: *mut c_void,
     mut next: crate::vtable::GetDeviceStateContext<'_>,
 ) -> HRESULT {
-    let device = &next.common.device;
-    if !next.common.runtime.input.connected() {
+    let device = &next.state.device;
+    if !next.state.runtime.input.connected() {
         return snowglass_hook::next!(next, this, size, output);
     }
     if output.is_null() {
@@ -198,12 +198,12 @@ pub(crate) unsafe fn get_device_state(
     }
     match device {
         DirectInputDevice::Keyboard => {
-            let state = next.common.runtime.input.keyboard_state();
+            let state = next.state.runtime.input.keyboard_state();
             if size as usize != state.len() {
                 return 0x8007_0057u32 as i32;
             }
             if !next
-                .common
+                .state
                 .runtime
                 .logged_keyboard_poll
                 .swap(true, Ordering::AcqRel)
@@ -212,7 +212,7 @@ pub(crate) unsafe fn get_device_state(
             }
             if state.iter().any(|state| *state != 0)
                 && !next
-                    .common
+                    .state
                     .runtime
                     .logged_keyboard_pressed
                     .swap(true, Ordering::AcqRel)
@@ -229,7 +229,7 @@ pub(crate) unsafe fn get_device_state(
             if size != 16 && size != 20 {
                 return 0x8007_0057u32 as i32;
             }
-            let state = next.common.runtime.input.take_mouse_state();
+            let state = next.state.runtime.input.take_mouse_state();
             let output = output.cast::<u8>();
             for (index, axis) in state.axes.iter().enumerate() {
                 unsafe { std::ptr::write_unaligned(output.add(index * 4).cast::<i32>(), *axis) };
@@ -244,7 +244,7 @@ pub(crate) unsafe fn get_device_state(
 }
 
 pub(crate) unsafe fn device_destroyed(this: *mut c_void, state: &dyn DeviceHookState) {
-    state.common().runtime.input.remove_device(this as usize);
+    state.state().runtime.input.remove_device(this as usize);
 }
 
 pub(crate) unsafe fn get_device_data(
@@ -255,8 +255,8 @@ pub(crate) unsafe fn get_device_data(
     flags: u32,
     mut next: crate::vtable::GetDeviceDataContext<'_>,
 ) -> HRESULT {
-    let device = &next.common.device;
-    if !next.common.runtime.input.connected() {
+    let device = &next.state.device;
+    if !next.state.runtime.input.connected() {
         return snowglass_hook::next!(next, this, object_size, output, count, flags);
     }
     if count.is_null() {
@@ -264,7 +264,7 @@ pub(crate) unsafe fn get_device_data(
     }
 
     let requested = if output.is_null() {
-        next.common.runtime.input.buffered_len(*device)
+        next.state.runtime.input.buffered_len(*device)
     } else {
         (unsafe { *count }) as usize
     };
@@ -277,7 +277,7 @@ pub(crate) unsafe fn get_device_data(
     }
     let peek = flags & DIGDD_PEEK != 0;
     let events = next
-        .common
+        .state
         .runtime
         .input
         .buffered_data(*device, requested, peek);
@@ -296,7 +296,7 @@ pub(crate) unsafe fn get_device_data(
     }
     if !events.is_empty()
         && !next
-            .common
+            .state
             .runtime
             .logged_delivery
             .swap(true, Ordering::AcqRel)

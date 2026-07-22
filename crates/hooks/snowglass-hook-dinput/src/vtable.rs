@@ -56,16 +56,22 @@ snowglass_hook::com_vtable! {
 const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
 
+pub(crate) struct DirectInputContext {
+    pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
+    pub(crate) wide: bool,
+}
+
+pub(crate) struct DeviceContext {
+    pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
+    pub(crate) device: snowglass_input::DirectInputDevice,
+}
+
 snowglass_hook::impl_com_proxy! {
     pub(crate) trait DirectInputHookState;
     impl DirectInputHookState for IDirectInputHook {
         #![vtable = IDirectInputVtable]
         #[registry] pub(crate) static DIRECT_INPUT_HOOKS;
-        #[context]
-        pub(crate) struct DirectInputContext {
-            pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
-            pub(crate) wide: bool,
-        }
+        #[state = DirectInputContext]
         #[release]
         unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32;
 
@@ -81,11 +87,7 @@ snowglass_hook::impl_com_proxy! {
     impl DeviceHookState for IDirectInputDeviceHook {
         #![vtable = IDirectInputDeviceVtable]
         #[registry] pub(crate) static DEVICE_HOOKS;
-        #[context]
-        pub(crate) struct DeviceContext {
-            pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
-            pub(crate) device: snowglass_input::DirectInputDevice,
-        }
+        #[state = DeviceContext]
         #[release(destroyed = crate::runtime::device_destroyed)]
         unsafe extern "system" fn device_release(this: *mut c_void) -> u32;
 
@@ -109,9 +111,9 @@ snowglass_hook::impl_com_proxy! {
 
         #[base = IDirectInputDevice8A::SetEventNotification]
         #[fallback = 0x8000_4005u32 as i32]
-        #[prefix(|context| context.common.runtime.set_event_notification(
+        #[prefix(|context| context.state.runtime.set_event_notification(
             this as usize,
-            context.common.device,
+            context.state.device,
             event as usize,
         ))]
         unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT;

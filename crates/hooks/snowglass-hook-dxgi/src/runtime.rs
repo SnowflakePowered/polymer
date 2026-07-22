@@ -211,7 +211,7 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
 }
 
 fn set_swapchain_owner(swapchain: *mut c_void, owner: Option<Arc<SwapchainOwnerHandle>>) {
-    IDXGISwapchainHook::with_context(swapchain, |context| context.set_owner(owner));
+    IDXGISwapchainHook::with_state(swapchain, |state| state.set_owner(owner));
 }
 
 /// # Safety
@@ -284,7 +284,7 @@ pub(crate) unsafe fn swapchain_query_interface(
     output: *mut *mut c_void,
     mut next: crate::vtable::SwapchainQueryInterfaceContext<'_>,
 ) -> i32 {
-    let context = next.common.clone();
+    let context = next.state.clone();
     let result = snowglass_hook::next!(next, this, interface_id, output);
     if result >= 0 && !interface_id.is_null() && !output.is_null() {
         let interface_id = unsafe { &*interface_id.cast::<GUID>() };
@@ -367,7 +367,7 @@ pub(crate) unsafe fn resize_buffers(
 
 pub(crate) unsafe fn swapchain_destroyed(this: *mut c_void, state: &dyn SwapchainHook) {
     let owner = state
-        .common()
+        .state()
         .owner
         .write()
         .unwrap_or_else(|error| error.into_inner())

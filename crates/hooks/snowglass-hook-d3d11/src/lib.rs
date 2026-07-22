@@ -107,7 +107,9 @@ mod tests {
     #[test]
     fn successful_call_with_null_optional_outputs_is_ignored() {
         let _test_lock = test_lock();
-        let tracking = Default::default();
+        let context = hooks::D3D11HookContext {
+            tracking: Default::default(),
+        };
         unsafe {
             device::create_device(
                 std::ptr::null_mut(),
@@ -115,7 +117,7 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
-                &hooks::CreateDeviceContext::from_fields(&tracking),
+                &hooks::CreateDeviceContext::from_fields(&context),
             );
             device::create_device_and_swapchain(
                 std::ptr::null_mut(),
@@ -124,7 +126,7 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
-                &hooks::CreateDeviceAndSwapchainContext::from_fields(&tracking),
+                &hooks::CreateDeviceAndSwapchainContext::from_fields(&context),
             );
         }
     }

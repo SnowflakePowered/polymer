@@ -808,8 +808,8 @@ macro_rules! function_table_hook {
 /// is `Option<T>` is available only when the clone's concrete vtable type
 /// includes the layout named by its `vtable` attribute.
 ///
-/// The `#[release]` body uses `#[context] struct` to declare fields carried by
-/// each registered hook object. Every other hooked method declares its
+/// The `#[state = Type]` declaration selects state carried by each registered
+/// hook object. The state type is defined outside the macro. Every other hooked method declares its
 /// per-call context inside its body with `#[context] |state| { ... }`, where
 /// `state` exposes those persistent fields. The macro owns registration,
 /// vtable publication, chain dispatch, and the release lifecycle.
@@ -829,10 +829,7 @@ macro_rules! impl_com_proxy {
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
             #[registry] $visibility:vis static $registry:ident;
-            $(#[context]
-            $common_visibility:vis struct $common_context:ident {
-                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
-            })?
+            $(#[state = $common_context:ty])?
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
                 $release_this:ident: $release_this_type:ty $(,)?
@@ -845,10 +842,7 @@ macro_rules! impl_com_proxy {
             impl $hook_trait_impl for $hook {
                 #![vtable = $storage]
                 #[registry] $visibility static $registry;
-                $(#[context]
-                $common_visibility struct $common_context {
-                    $($common_field_visibility $common_field: $common_field_type),*
-                })?
+                $(#[state = $common_context])?
                 #[release $( (destroyed = $destroyed) )?]
                 unsafe extern "system" fn $release_dispatch(
                     $release_this: $release_this_type
@@ -862,10 +856,7 @@ macro_rules! impl_com_proxy {
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
             #[registry] $visibility:vis static $registry:ident;
-            $(#[context]
-            $common_visibility:vis struct $common_context:ident {
-                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
-            })?
+            $(#[state = $common_context:ty])?
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
                 $release_this:ident: $release_this_type:ty $(,)?
@@ -883,10 +874,7 @@ macro_rules! impl_com_proxy {
                 #![vtable = $storage]
                 #[registry] $visibility static $registry;
                 #[interfaces] {}
-                $(#[context]
-                $common_visibility struct $common_context {
-                    $($common_field_visibility $common_field: $common_field_type),*
-                })?
+                $(#[state = $common_context])?
                 #[release $( (destroyed = $destroyed) )?]
                 unsafe extern "system" fn $release_dispatch(
                     $release_this: $release_this_type
@@ -905,14 +893,14 @@ macro_rules! impl_com_proxy {
             $visibility unsafe fn wrap<A: Vtable>(
                 inner: *mut ::core::ffi::c_void,
                 iid: $crate::__GUID,
-                $(common: $common_context,)?
+                $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> Option<*mut ::core::ffi::c_void> {
                 let proxy = unsafe { $crate::ComProxy::new(inner, iid, A::SLOTS)? };
                 if unsafe {
                     Self::install_object::<A>(
                         proxy,
-                        $({ let _: &$common_context = &common; common },)?
+                        $({ let _: &$common_context = &state; state },)?
                         $($context),*
                     )
                 } {
@@ -933,9 +921,9 @@ macro_rules! __impl_com_dispatches {
     (common []; $($rest:tt)*) => {
         $crate::__impl_com_dispatches!(@generate [] []; $($rest)*);
     };
-    (common [$common:ident]; $($rest:tt)*) => {
+    (common [$common:ty]; $($rest:tt)*) => {
         $crate::__impl_com_dispatches!(@generate
-            [pub common: &'a $common,]
+            [pub state: &'a $common,]
             [$common];
             $($rest)*
         );
@@ -982,11 +970,11 @@ macro_rules! __impl_com_dispatch {
     ) => {
         $crate::__impl_com_dispatch!(@generate [$($common_field)*] [] state __state; $($rest)*);
     };
-    ([$($common_field:tt)*] [$common:ident];
+    ([$($common_field:tt)*] [$common:ty];
         $($rest:tt)*
     ) => {
         $crate::__impl_com_dispatch!(@generate
-            [$($common_field)*] [common: __state.common(),] state __state; $($rest)*
+            [$($common_field)*] [state: __state.state(),] state __state; $($rest)*
         );
     };
     (@generate [$($common_field:tt)*] [$($common_value:tt)*] state $hook_state:ident;
@@ -1112,10 +1100,7 @@ macro_rules! impl_com_hook {
             #[interfaces] {
                 $($interface:path),* $(,)?
             }
-            $(#[context]
-            $common_visibility:vis struct $common_context:ident {
-                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
-            })?
+            $(#[state = $common_context:ty])?
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
                 $release_this:ident: $release_this_type:ty $(,)?
@@ -1131,10 +1116,7 @@ macro_rules! impl_com_hook {
                 #[interfaces] {
                     $($interface),*
                 }
-                $(#[context]
-                $common_visibility struct $common_context {
-                    $($common_field_visibility $common_field: $common_field_type),*
-                })?
+                $(#[state = $common_context])?
                 #[release $( (destroyed = $destroyed) )?]
                 unsafe extern "system" fn $release_dispatch(
                     $release_this: $release_this_type
@@ -1151,10 +1133,7 @@ macro_rules! impl_com_hook {
             #[interfaces] {
                 $($interface:path),* $(,)?
             }
-            $(#[context]
-            $common_visibility:vis struct $common_context:ident {
-                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
-            })?
+            $(#[state = $common_context:ty])?
 
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
@@ -1183,17 +1162,13 @@ macro_rules! impl_com_hook {
             )+
         }
     ) => { $crate::__paste! {
-        $($common_visibility struct $common_context {
-            $($common_field_visibility $common_field: $common_field_type,)*
-        })?
-
         const _: () = {
             fn assert_same_trait<T: ?Sized>() {}
             let _ = assert_same_trait::<dyn $hook_trait_impl>;
         };
 
         $visibility_trait trait $hook_trait: $crate::VtableHook {
-            $(fn common(&self) -> &$common_context;)?
+            $(fn state(&self) -> &$common_context;)?
             $(fn $context(&self) -> &$context_type;)*
             fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32;
             $(fn [<base_ $dispatch>](&self) -> Option<unsafe extern "system" fn(
@@ -1213,7 +1188,7 @@ macro_rules! impl_com_hook {
             saved: $storage,
             original: ::core::ptr::NonNull<::core::ffi::c_void>,
             vtable: ::core::marker::PhantomData<A>,
-            $(common: $common_context,)?
+            $(state: $common_context,)?
             $($(#[$context_attribute])* $context: $context_type,)*
         }
 
@@ -1221,18 +1196,18 @@ macro_rules! impl_com_hook {
         unsafe impl<A: Vtable> Sync for [<$hook State>]<A> {}
 
         impl $hook {
-            $($visibility fn with_context<T>(
+            $($visibility fn with_state<T>(
                 object: *mut ::core::ffi::c_void,
                 select: impl FnOnce(&$common_context) -> T,
             ) -> Option<T> {
                 $registry
                     .get(&(object as usize))
-                    .map(|state| select(state.common()))
+                    .map(|state| select(state.state()))
             })?
 
             $visibility unsafe fn install_widest(
                 object: *mut ::core::ffi::c_void,
-                $(common: $common_context,)?
+                $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 let Some(unknown) = (unsafe {
@@ -1241,7 +1216,7 @@ macro_rules! impl_com_hook {
                     )
                 }) else { return false; };
                 $crate::impl_com_hook!(@install_widest unknown;
-                    [$(common: $common_context)?]
+                    [$(state: $common_context)?]
                     [$($context: $context_type),*];
                     $($interface),*
                 )
@@ -1249,7 +1224,7 @@ macro_rules! impl_com_hook {
 
             $visibility unsafe fn install_all_interfaces(
                 object: *mut ::core::ffi::c_void,
-                $(common: $common_context,)?
+                $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 let Some(unknown) = (unsafe {
@@ -1262,7 +1237,7 @@ macro_rules! impl_com_hook {
                     ::core::ptr::NonNull<::core::ffi::c_void>
                 > = ::std::vec::Vec::new();
                 $crate::impl_com_hook!(@install_all unknown, installed, pointers;
-                    [$(common: $common_context)?]
+                    [$(state: $common_context)?]
                     [$($context: $context_type),*];
                     $($interface),*
                 );
@@ -1272,11 +1247,11 @@ macro_rules! impl_com_hook {
             $visibility unsafe fn install_interface(
                 object: *mut ::core::ffi::c_void,
                 interface_id: &$crate::__GUID,
-                $(common: $common_context,)?
+                $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 $crate::impl_com_hook!(@install_interface object, interface_id;
-                    [$(common: $common_context)?]
+                    [$(state: $common_context)?]
                     [$($context: $context_type),*];
                     $($interface),*
                 )
@@ -1289,7 +1264,7 @@ macro_rules! impl_com_hook {
             /// vtable spans at least `A::SLOTS` entries.
             $visibility unsafe fn install_object<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
-                $(common: $common_context,)?
+                $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 if object.is_null() {
@@ -1313,7 +1288,7 @@ macro_rules! impl_com_hook {
                     Self::install_object_from::<A>(
                         object,
                         original_pointer,
-                        $({ let _: &$common_context = &common; common },)?
+                        $({ let _: &$common_context = &state; state },)?
                         $($context),*
                     )
                 }
@@ -1328,7 +1303,7 @@ macro_rules! impl_com_hook {
             $visibility unsafe fn install_object_from<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
                 original_pointer: *const usize,
-                $(common: $common_context,)?
+                $(state: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 if object.is_null() {
@@ -1363,7 +1338,7 @@ macro_rules! impl_com_hook {
                     saved,
                     original,
                     vtable: ::core::marker::PhantomData,
-                    $(common: { let _: &$common_context = &common; common },)?
+                    $(state: { let _: &$common_context = &state; state },)?
                     $($context,)*
                 });
                 let patched_vtable = state.patched_vtable();
@@ -1383,7 +1358,7 @@ macro_rules! impl_com_hook {
         }
 
         impl<A: Vtable> $hook_trait for [<$hook State>]<A> {
-            $(fn common(&self) -> &$common_context { &self.common })?
+            $(fn state(&self) -> &$common_context { &self.state })?
             $(fn $context(&self) -> &$context_type { &self.$context })*
             fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32 {
                 unsafe {
