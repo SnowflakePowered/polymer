@@ -8,6 +8,8 @@ use snowglass_producer_vulkan::{capture, tracking};
 snowglass_hook::__chain_hooks! {
     #![terminal_resolver(vulkan_terminal)]
     #![order(forward)]
+    #[context]
+    pub(crate) struct VulkanHookContext {}
 
     #[export(vkCmdDraw)]
     #[terminal(dynamic(command_buffer, c"vkCmdDraw": vk::PFN_vkCmdDraw), fallback = ())]
@@ -18,15 +20,11 @@ snowglass_hook::__chain_hooks! {
         instance_count: u32,
         first_vertex: u32,
         first_instance: u32,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkGetDeviceQueue)]
     #[terminal(dynamic(device, c"vkGetDeviceQueue": vk::PFN_vkGetDeviceQueue), fallback = ())]
-    #[postfix(observers::get_device_queue(device, queue_family_index, queue))]
+    #[postfix(|_result, _context| observers::get_device_queue(device, queue_family_index, queue))]
     pub(crate) unsafe extern "system" fn get_device_queue(
         device: vk::Device,
         queue_family_index: u32,
@@ -36,7 +34,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkGetDeviceQueue2)]
     #[terminal(dynamic(device, c"vkGetDeviceQueue2": vk::PFN_vkGetDeviceQueue2), fallback = ())]
-    #[postfix(observers::get_device_queue2(device, queue_info, queue))]
+    #[postfix(|_result, _context| observers::get_device_queue2(device, queue_info, queue))]
     pub(crate) unsafe extern "system" fn get_device_queue2(
         device: vk::Device,
         queue_info: *const vk::DeviceQueueInfo2<'_>,
@@ -51,12 +49,7 @@ snowglass_hook::__chain_hooks! {
         submit_count: u32,
         submits: *const vk::SubmitInfo<'_>,
         fence: vk::Fence,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::queue_tracking(queue),
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::queue_capture(queue),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkCreateSwapchainKHR)]
     #[terminal(direct = crate::terminal::create_swapchain)]
@@ -66,39 +59,26 @@ snowglass_hook::__chain_hooks! {
         create_info: *const vk::SwapchainCreateInfoKHR<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
         swapchain: *mut vk::SwapchainKHR,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::device_capture(device),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkDestroySwapchainKHR)]
     #[terminal(dynamic(device, c"vkDestroySwapchainKHR": vk::PFN_vkDestroySwapchainKHR), fallback = ())]
-    #[prefix(swapchain::destroy_swapchain(swapchain))]
+    #[prefix(swapchain::destroy_swapchain(device, swapchain))]
     pub(crate) unsafe extern "system" fn destroy_swapchain(
         device: vk::Device,
         swapchain: vk::SwapchainKHR,
         allocator: *const vk::AllocationCallbacks<'_>,
-    ) {
-        context struct {
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::device_capture(device),
-        }
-    }
+    );
 
     #[export(vkGetSwapchainImagesKHR)]
     #[terminal(dynamic(device, c"vkGetSwapchainImagesKHR": vk::PFN_vkGetSwapchainImagesKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
-    #[postfix(swapchain::get_swapchain_images(swapchain, image_count, images, result))]
+    #[postfix(swapchain::get_swapchain_images(device, swapchain, image_count, images, result))]
     pub(crate) unsafe extern "system" fn get_swapchain_images(
         device: vk::Device,
         swapchain: vk::SwapchainKHR,
         image_count: *mut u32,
         images: *mut vk::Image,
-    ) -> vk::Result {
-        context struct {
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::device_capture(device),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkQueuePresentKHR)]
     #[terminal(dynamic(queue, c"vkQueuePresentKHR": vk::PFN_vkQueuePresentKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
@@ -106,43 +86,30 @@ snowglass_hook::__chain_hooks! {
     pub(crate) unsafe extern "system" fn queue_present(
         queue: vk::Queue,
         present_info: *const vk::PresentInfoKHR<'_>,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::queue_tracking(queue),
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::queue_capture(queue),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkCreateWin32SurfaceKHR)]
     #[terminal(dynamic(instance, c"vkCreateWin32SurfaceKHR": vk::PFN_vkCreateWin32SurfaceKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
-    #[postfix(swapchain::create_win32_surface(create_info, surface, result))]
+    #[postfix(swapchain::create_win32_surface(instance, create_info, surface, result))]
     pub(crate) unsafe extern "system" fn create_win32_surface(
         instance: vk::Instance,
         create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
         surface: *mut vk::SurfaceKHR,
-    ) -> vk::Result {
-        context struct {
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::instance_capture(instance),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkDestroySurfaceKHR)]
     #[terminal(dynamic(instance, c"vkDestroySurfaceKHR": vk::PFN_vkDestroySurfaceKHR), fallback = ())]
-    #[prefix(swapchain::destroy_surface(surface))]
+    #[prefix(swapchain::destroy_surface(instance, surface))]
     pub(crate) unsafe extern "system" fn destroy_surface(
         instance: vk::Instance,
         surface: vk::SurfaceKHR,
         allocator: *const vk::AllocationCallbacks<'_>,
-    ) {
-        context struct {
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::instance_capture(instance),
-        }
-    }
+    );
 
     #[export(vkEnumeratePhysicalDevices)]
     #[terminal(dynamic(instance, c"vkEnumeratePhysicalDevices": vk::PFN_vkEnumeratePhysicalDevices), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
-    #[postfix(observers::enumerate_physical_devices(instance, count, devices, result))]
+    #[postfix(|result, _context| observers::enumerate_physical_devices(instance, count, devices, result))]
     pub(crate) unsafe extern "system" fn enumerate_physical_devices(
         instance: vk::Instance,
         count: *mut u32,
@@ -159,7 +126,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkCreateInstance)]
     #[terminal(direct = crate::terminal::create_instance)]
-    #[postfix(observers::create_instance(result))]
+    #[postfix(|result, _context| observers::create_instance(result))]
     pub(crate) unsafe extern "system" fn create_instance(
         create_info: *const vk::InstanceCreateInfo<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
@@ -168,7 +135,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkCreateDevice)]
     #[terminal(direct = crate::terminal::create_device)]
-    #[prefix(observers::noop())]
+    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn create_device(
         physical_device: vk::PhysicalDevice,
         create_info: *const vk::DeviceCreateInfo<'_>,
@@ -178,14 +145,14 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkNegotiateLoaderLayerInterfaceVersion)]
     #[terminal(direct = crate::terminal::negotiate)]
-    #[prefix(observers::noop())]
+    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn negotiate(
         interface: *mut crate::layer::VkNegotiateLayerInterface,
     ) -> vk::Result;
 
     #[export(vkGetInstanceProcAddr)]
     #[terminal(direct = crate::terminal::get_instance_proc_addr)]
-    #[prefix(observers::noop())]
+    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn get_instance_proc_addr(
         instance: vk::Instance,
         name: *const std::ffi::c_char,
@@ -193,7 +160,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vk_layerGetPhysicalDeviceProcAddr)]
     #[terminal(direct = crate::terminal::get_physical_device_proc_addr)]
-    #[prefix(observers::noop())]
+    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn get_physical_device_proc_addr(
         instance: vk::Instance,
         name: *const std::ffi::c_char,
@@ -201,7 +168,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkGetDeviceProcAddr)]
     #[terminal(direct = crate::terminal::get_device_proc_addr)]
-    #[prefix(observers::noop())]
+    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn get_device_proc_addr(
         device: vk::Device,
         name: *const std::ffi::c_char,
@@ -213,11 +180,7 @@ snowglass_hook::__chain_hooks! {
     pub(crate) unsafe extern "system" fn destroy_device(
         device: vk::Device,
         allocator: *const vk::AllocationCallbacks<'_>,
-    ) {
-        context struct {
-            capture_state: std::sync::Arc<capture::CaptureState> = crate::layer::device_capture(device),
-        }
-    }
+    );
 
     #[export(vkBeginCommandBuffer)]
     #[terminal(dynamic(command_buffer, c"vkBeginCommandBuffer": vk::PFN_vkBeginCommandBuffer), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
@@ -225,11 +188,7 @@ snowglass_hook::__chain_hooks! {
     pub(crate) unsafe extern "system" fn begin_command_buffer(
         command_buffer: vk::CommandBuffer,
         begin_info: *const vk::CommandBufferBeginInfo<'_>,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkCmdDrawIndexed)]
     #[terminal(dynamic(command_buffer, c"vkCmdDrawIndexed": vk::PFN_vkCmdDrawIndexed), fallback = ())]
@@ -241,11 +200,7 @@ snowglass_hook::__chain_hooks! {
         first_index: u32,
         vertex_offset: i32,
         first_instance: u32,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdSetViewport)]
     #[terminal(dynamic(command_buffer, c"vkCmdSetViewport": vk::PFN_vkCmdSetViewport), fallback = ())]
@@ -255,11 +210,7 @@ snowglass_hook::__chain_hooks! {
         first: u32,
         count: u32,
         viewports: *const vk::Viewport,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdSetScissor)]
     #[terminal(dynamic(command_buffer, c"vkCmdSetScissor": vk::PFN_vkCmdSetScissor), fallback = ())]
@@ -269,22 +220,14 @@ snowglass_hook::__chain_hooks! {
         first: u32,
         count: u32,
         scissors: *const vk::Rect2D,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdEndRenderPass)]
     #[terminal(dynamic(command_buffer, c"vkCmdEndRenderPass": vk::PFN_vkCmdEndRenderPass), fallback = ())]
     #[prefix(observers::cmd_end_render_pass(command_buffer))]
     pub(crate) unsafe extern "system" fn cmd_end_render_pass(
         command_buffer: vk::CommandBuffer,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdBeginRenderPass)]
     #[terminal(dynamic(command_buffer, c"vkCmdBeginRenderPass": vk::PFN_vkCmdBeginRenderPass), fallback = ())]
@@ -293,11 +236,7 @@ snowglass_hook::__chain_hooks! {
         command_buffer: vk::CommandBuffer,
         begin: *const vk::RenderPassBeginInfo<'_>,
         contents: vk::SubpassContents,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdBindDescriptorSets)]
     #[terminal(dynamic(command_buffer, c"vkCmdBindDescriptorSets": vk::PFN_vkCmdBindDescriptorSets), fallback = ())]
@@ -311,11 +250,7 @@ snowglass_hook::__chain_hooks! {
         sets: *const vk::DescriptorSet,
         dynamic_offset_count: u32,
         dynamic_offsets: *const u32,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdPushDescriptorSetKHR)]
     #[terminal(dynamic(command_buffer, c"vkCmdPushDescriptorSetKHR": vk::PFN_vkCmdPushDescriptorSetKHR), fallback = ())]
@@ -327,11 +262,7 @@ snowglass_hook::__chain_hooks! {
         set: u32,
         write_count: u32,
         writes: *const vk::WriteDescriptorSet<'_>,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdBlitImage)]
     #[terminal(dynamic(command_buffer, c"vkCmdBlitImage": vk::PFN_vkCmdBlitImage), fallback = ())]
@@ -345,11 +276,7 @@ snowglass_hook::__chain_hooks! {
         region_count: u32,
         regions: *const vk::ImageBlit,
         filter: vk::Filter,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCmdCopyImage)]
     #[terminal(dynamic(command_buffer, c"vkCmdCopyImage": vk::PFN_vkCmdCopyImage), fallback = ())]
@@ -362,105 +289,108 @@ snowglass_hook::__chain_hooks! {
         destination_layout: vk::ImageLayout,
         region_count: u32,
         regions: *const vk::ImageCopy,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::command_tracking(command_buffer),
-        }
-    }
+    );
 
     #[export(vkCreateImage)]
     #[terminal(direct = crate::terminal::create_image)]
-    #[postfix(observers::create_image(create_info, image, result))]
+    #[postfix(observers::create_image(device, create_info, image, result))]
     pub(crate) unsafe extern "system" fn create_image(
         device: vk::Device,
         create_info: *const vk::ImageCreateInfo<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
         image: *mut vk::Image,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkCreateImageView)]
     #[terminal(dynamic(device, c"vkCreateImageView": vk::PFN_vkCreateImageView), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
-    #[postfix(observers::create_image_view(create_info, view, result))]
+    #[postfix(observers::create_image_view(device, create_info, view, result))]
     pub(crate) unsafe extern "system" fn create_image_view(
         device: vk::Device,
         create_info: *const vk::ImageViewCreateInfo<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
         view: *mut vk::ImageView,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkCreateFramebuffer)]
     #[terminal(dynamic(device, c"vkCreateFramebuffer": vk::PFN_vkCreateFramebuffer), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
-    #[postfix(observers::create_framebuffer(create_info, framebuffer, result))]
+    #[postfix(observers::create_framebuffer(device, create_info, framebuffer, result))]
     pub(crate) unsafe extern "system" fn create_framebuffer(
         device: vk::Device,
         create_info: *const vk::FramebufferCreateInfo<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
         framebuffer: *mut vk::Framebuffer,
-    ) -> vk::Result {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
-    }
+    ) -> vk::Result;
 
     #[export(vkDestroyImage)]
     #[terminal(dynamic(device, c"vkDestroyImage": vk::PFN_vkDestroyImage), fallback = ())]
-    #[prefix(observers::destroy_image(image))]
+    #[prefix(observers::destroy_image(device, image))]
     pub(crate) unsafe extern "system" fn destroy_image(
         device: vk::Device,
         image: vk::Image,
         allocator: *const vk::AllocationCallbacks<'_>,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
-    }
+    );
 
     #[export(vkDestroyImageView)]
     #[terminal(dynamic(device, c"vkDestroyImageView": vk::PFN_vkDestroyImageView), fallback = ())]
-    #[prefix(observers::destroy_image_view(view))]
+    #[prefix(observers::destroy_image_view(device, view))]
     pub(crate) unsafe extern "system" fn destroy_image_view(
         device: vk::Device,
         view: vk::ImageView,
         allocator: *const vk::AllocationCallbacks<'_>,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
-    }
+    );
 
     #[export(vkDestroyFramebuffer)]
     #[terminal(dynamic(device, c"vkDestroyFramebuffer": vk::PFN_vkDestroyFramebuffer), fallback = ())]
-    #[prefix(observers::destroy_framebuffer(framebuffer))]
+    #[prefix(observers::destroy_framebuffer(device, framebuffer))]
     pub(crate) unsafe extern "system" fn destroy_framebuffer(
         device: vk::Device,
         framebuffer: vk::Framebuffer,
         allocator: *const vk::AllocationCallbacks<'_>,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
-    }
+    );
 
     #[export(vkUpdateDescriptorSets)]
     #[terminal(dynamic(device, c"vkUpdateDescriptorSets": vk::PFN_vkUpdateDescriptorSets), fallback = ())]
-    #[prefix(observers::update_descriptor_sets(write_count, writes))]
+    #[prefix(observers::update_descriptor_sets(device, write_count, writes))]
     pub(crate) unsafe extern "system" fn update_descriptor_sets(
         device: vk::Device,
         write_count: u32,
         writes: *const vk::WriteDescriptorSet<'_>,
         copy_count: u32,
         copies: *const vk::CopyDescriptorSet<'_>,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<tracking::Tracking> = crate::layer::device_tracking(device),
-        }
+    );
+}
+
+impl VulkanHookContext {
+    pub(crate) fn command_tracking(
+        &self,
+        command_buffer: vk::CommandBuffer,
+    ) -> std::sync::Arc<tracking::Tracking> {
+        crate::layer::command_tracking(command_buffer)
+    }
+
+    pub(crate) fn device_tracking(&self, device: vk::Device) -> std::sync::Arc<tracking::Tracking> {
+        crate::layer::device_tracking(device)
+    }
+
+    pub(crate) fn queue_tracking(&self, queue: vk::Queue) -> std::sync::Arc<tracking::Tracking> {
+        crate::layer::queue_tracking(queue)
+    }
+
+    pub(crate) fn instance_capture(
+        &self,
+        instance: vk::Instance,
+    ) -> std::sync::Arc<capture::CaptureState> {
+        crate::layer::instance_capture(instance)
+    }
+
+    pub(crate) fn device_capture(
+        &self,
+        device: vk::Device,
+    ) -> std::sync::Arc<capture::CaptureState> {
+        crate::layer::device_capture(device)
+    }
+
+    pub(crate) fn queue_capture(&self, queue: vk::Queue) -> std::sync::Arc<capture::CaptureState> {
+        crate::layer::queue_capture(queue)
     }
 }

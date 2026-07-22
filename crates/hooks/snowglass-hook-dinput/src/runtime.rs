@@ -104,7 +104,9 @@ unsafe fn wrap_direct_input(
     };
     unsafe {
         IDirectInputHook::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A_Vtbl>::wrap(
-            interface, iid, runtime, wide,
+            interface,
+            iid,
+            crate::vtable::DirectInputContext { runtime, wide },
         )
     }
 }
@@ -115,7 +117,7 @@ pub(crate) unsafe fn create_device(
     result: HRESULT,
     context: &crate::vtable::CreateDeviceContext<'_>,
 ) {
-    let runtime = context.runtime.clone();
+    let runtime = context.common.runtime.clone();
     if !class.is_null() {
         let class = unsafe { &*class };
         dinput_log(format!(
@@ -141,7 +143,7 @@ pub(crate) unsafe fn create_device(
         };
         if let Some(device_class) = device_class {
             if let Some(proxy) =
-                unsafe { wrap_device(runtime, *output, device_class, *context.wide) }
+                unsafe { wrap_device(runtime, *output, device_class, context.common.wide) }
             {
                 unsafe { *output = proxy };
             }
@@ -173,7 +175,11 @@ unsafe fn wrap_device(
     unsafe {
         IDirectInputDeviceHook::<
             windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A_Vtbl,
-        >::wrap(interface, iid, runtime, device)
+        >::wrap(
+            interface,
+            iid,
+            crate::vtable::DeviceContext { runtime, device },
+        )
     }
 }
 
@@ -183,8 +189,8 @@ pub(crate) unsafe fn get_device_state(
     output: *mut c_void,
     mut next: crate::vtable::GetDeviceStateContext<'_>,
 ) -> HRESULT {
-    let device = next.device;
-    if !next.runtime.input.connected() {
+    let device = &next.common.device;
+    if !next.common.runtime.input.connected() {
         return snowglass_hook::next!(next, this, size, output);
     }
     if output.is_null() {
@@ -192,11 +198,12 @@ pub(crate) unsafe fn get_device_state(
     }
     match device {
         DirectInputDevice::Keyboard => {
-            let state = next.runtime.input.keyboard_state();
+            let state = next.common.runtime.input.keyboard_state();
             if size as usize != state.len() {
                 return 0x8007_0057u32 as i32;
             }
             if !next
+                .common
                 .runtime
                 .logged_keyboard_poll
                 .swap(true, Ordering::AcqRel)
@@ -205,6 +212,7 @@ pub(crate) unsafe fn get_device_state(
             }
             if state.iter().any(|state| *state != 0)
                 && !next
+                    .common
                     .runtime
                     .logged_keyboard_pressed
                     .swap(true, Ordering::AcqRel)
@@ -221,7 +229,7 @@ pub(crate) unsafe fn get_device_state(
             if size != 16 && size != 20 {
                 return 0x8007_0057u32 as i32;
             }
-            let state = next.runtime.input.take_mouse_state();
+            let state = next.common.runtime.input.take_mouse_state();
             let output = output.cast::<u8>();
             for (index, axis) in state.axes.iter().enumerate() {
                 unsafe { std::ptr::write_unaligned(output.add(index * 4).cast::<i32>(), *axis) };
@@ -236,7 +244,7 @@ pub(crate) unsafe fn get_device_state(
 }
 
 pub(crate) unsafe fn device_destroyed(this: *mut c_void, state: &dyn DeviceHookState) {
-    state.runtime().input.remove_device(this as usize);
+    state.common().runtime.input.remove_device(this as usize);
 }
 
 pub(crate) unsafe fn get_device_data(
@@ -247,8 +255,8 @@ pub(crate) unsafe fn get_device_data(
     flags: u32,
     mut next: crate::vtable::GetDeviceDataContext<'_>,
 ) -> HRESULT {
-    let device = next.device;
-    if !next.runtime.input.connected() {
+    let device = &next.common.device;
+    if !next.common.runtime.input.connected() {
         return snowglass_hook::next!(next, this, object_size, output, count, flags);
     }
     if count.is_null() {
@@ -256,7 +264,7 @@ pub(crate) unsafe fn get_device_data(
     }
 
     let requested = if output.is_null() {
-        next.runtime.input.buffered_len(*device)
+        next.common.runtime.input.buffered_len(*device)
     } else {
         (unsafe { *count }) as usize
     };
@@ -268,7 +276,11 @@ pub(crate) unsafe fn get_device_data(
         return 0x8007_0057u32 as i32;
     }
     let peek = flags & DIGDD_PEEK != 0;
-    let events = next.runtime.input.buffered_data(*device, requested, peek);
+    let events = next
+        .common
+        .runtime
+        .input
+        .buffered_data(*device, requested, peek);
     unsafe { *count = events.len() as u32 };
     for (index, event) in events.iter().copied().enumerate() {
         let destination = unsafe { (output.cast::<u8>()).add(index * object_size as usize) };
@@ -282,7 +294,13 @@ pub(crate) unsafe fn get_device_data(
             }
         }
     }
-    if !events.is_empty() && !next.runtime.logged_delivery.swap(true, Ordering::AcqRel) {
+    if !events.is_empty()
+        && !next
+            .common
+            .runtime
+            .logged_delivery
+            .swap(true, Ordering::AcqRel)
+    {
         dinput_log(format!(
             "snowglass: returned first forwarded {device:?} record from GetDeviceData"
         ));
@@ -299,13 +317,13 @@ pub(crate) unsafe fn direct_input_8_create(
     result: HRESULT,
     context: &crate::hooks::DirectInput8CreateContext,
 ) {
-    context.runtime.start_input_receiver();
+    context.common.runtime.start_input_receiver();
     dinput_log(format!(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
     if result >= 0 && !interface_id.is_null() && !output.is_null() && outer.is_null() {
         if let Some(proxy) =
-            unsafe { wrap_direct_input(context.runtime.clone(), *output, &*interface_id) }
+            unsafe { wrap_direct_input(context.common.runtime.clone(), *output, &*interface_id) }
         {
             unsafe { *output = proxy };
         }

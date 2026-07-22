@@ -315,6 +315,93 @@ macro_rules! function_table_hook {
         #[resolve = $resolve:path]
         $visibility:vis struct $table_hook:ident {
             const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
+            #[context]
+            $context_visibility:vis struct $common_context:ident {
+                $($field_visibility:vis $field:ident: $field_type:ty = $field_value:expr),* $(,)?
+            }
+            $(
+                #[slot = $slot:expr]
+                $(#[prefix($($prefix:tt)*)])?
+                $(#[infix($($infix:path),* $(,)? )])?
+                $(#[postfix($($postfix:tt)*)])?
+                unsafe extern $abi:literal fn $dispatch:ident(
+                    $($argument:ident: $argument_type:ty),* $(,)?
+                ) $(-> $result:ty)?
+                $( { #[context] struct {
+                    $($local:ident: $local_type:ty = $local_value:expr),* $(,)?
+                } } )? $(;)?
+            )+
+        }
+    ) => {
+        $context_visibility struct $common_context {
+            $($field_visibility $field: $field_type,)*
+        }
+        $crate::function_table_hook!(@common
+            #[resolve = $resolve]
+            $visibility struct $table_hook {
+                const MINIMUM_SLOTS: $minimum_slots_type = $minimum_slots;
+                common context: $common_context = $common_context {
+                    $($field: $field_value,)*
+                };
+                $(
+                    #[slot = $slot]
+                    $(#[prefix($($prefix)*)])?
+                    $(#[infix($($infix),*)])?
+                    $(#[postfix($($postfix)*)])?
+                    unsafe extern $abi fn $dispatch(
+                        $($argument: $argument_type),*
+                    ) $(-> $result)?
+                    [$(#[context] struct {
+                        $($local: $local_type = $local_value),*
+                    })?]
+                )+
+            }
+        );
+    };
+    (@common
+        #[resolve = $resolve:path]
+        $visibility:vis struct $table_hook:ident {
+            const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
+            common context: $common_context:ty = $common_value:expr;
+            $(
+                #[slot = $slot:expr]
+                $(#[prefix($($prefix:tt)*)])?
+                $(#[infix($($infix:path),* $(,)? )])?
+                $(#[postfix($($postfix:tt)*)])?
+                unsafe extern $abi:literal fn $dispatch:ident(
+                    $($argument:ident: $argument_type:ty),* $(,)?
+                ) $(-> $result:ty)?
+                [$(#[context] struct {
+                    $($local:ident: $local_type:ty = $local_value:expr),* $(,)?
+                })?]
+            )+
+        }
+    ) => {
+        $crate::function_table_hook! {
+            #[resolve = $resolve]
+            $visibility struct $table_hook {
+                const MINIMUM_SLOTS: $minimum_slots_type = $minimum_slots;
+                $(
+                    #[slot = $slot]
+                    $(#[prefix($($prefix)*)])?
+                    $(#[infix($($infix),*)])?
+                    $(#[postfix($($postfix)*)])?
+                    unsafe extern $abi fn $dispatch(
+                        $($argument: $argument_type),*
+                    ) $(-> $result)? {
+                        #[context] struct {
+                            common: $common_context = $common_value,
+                            $($($local: $local_type = $local_value,)*)?
+                        }
+                    }
+                )+
+            }
+        }
+    };
+    (
+        #[resolve = $resolve:path]
+        $visibility:vis struct $table_hook:ident {
+            const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
 
             $(
                 #[slot = $slot:expr]
@@ -324,7 +411,7 @@ macro_rules! function_table_hook {
                 unsafe extern $abi:literal fn $dispatch:ident(
                     $($argument:ident: $argument_type:ty),* $(,)?
                 ) $(-> $result:ty)? {
-                    context struct {
+                    #[context] struct {
                         $($context_field:ident: $context_field_type:ty = $context_field_value:expr),* $(,)?
                     }
                 }
@@ -518,9 +605,9 @@ macro_rules! function_table_hook {
 /// available only when the clone's concrete vtable type includes the layout
 /// named by its `vtable` attribute.
 ///
-/// The `#[release]` body uses `context struct` to declare fields carried by
+/// The `#[release]` body uses `#[context] struct` to declare fields carried by
 /// each registered hook object. Every other hooked method declares its
-/// per-call context inside its body with `context |state| { ... }`, where
+/// per-call context inside its body with `#[context] |state| { ... }`, where
 /// `state` exposes those persistent fields. The macro owns registration,
 /// vtable publication, chain dispatch, and the release lifecycle.
 ///
@@ -535,15 +622,52 @@ macro_rules! function_table_hook {
 #[macro_export]
 macro_rules! impl_com_proxy {
     (
-        $visibility:vis registry $registry:ident;
         $visibility_trait:vis trait $hook_trait:ident;
         impl $hook_trait_impl:ident for $hook:ident {
-            vtable $storage:ty;
+            #![vtable = $storage:ty]
+            #[registry] $visibility:vis static $registry:ident;
+            $(#[context]
+            $common_visibility:vis struct $common_context:ident {
+                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
+            })?
+            #[release $( (destroyed = $destroyed:path) )?]
+            unsafe extern "system" fn $release_dispatch:ident(
+                $release_this:ident: $release_this_type:ty $(,)?
+            ) -> u32;
+            $($methods:tt)*
+        }
+    ) => {
+        $crate::impl_com_proxy! {
+            $visibility_trait trait $hook_trait;
+            impl $hook_trait_impl for $hook {
+                #![vtable = $storage]
+                #[registry] $visibility static $registry;
+                $(#[context]
+                $common_visibility struct $common_context {
+                    $($common_field_visibility $common_field: $common_field_type),*
+                })?
+                #[release $( (destroyed = $destroyed) )?]
+                unsafe extern "system" fn $release_dispatch(
+                    $release_this: $release_this_type
+                ) -> u32 { #[context] struct {} }
+                $($methods)*
+            }
+        }
+    };
+    (
+        $visibility_trait:vis trait $hook_trait:ident;
+        impl $hook_trait_impl:ident for $hook:ident {
+            #![vtable = $storage:ty]
+            #[registry] $visibility:vis static $registry:ident;
+            $(#[context]
+            $common_visibility:vis struct $common_context:ident {
+                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
+            })?
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
                 $release_this:ident: $release_this_type:ty $(,)?
             ) -> u32 {
-                context struct {
+                #[context] struct {
                     $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)?
                 }
             }
@@ -551,15 +675,19 @@ macro_rules! impl_com_proxy {
         }
     ) => {
         $crate::impl_com_hook! {
-            $visibility registry $registry;
             $visibility_trait trait $hook_trait;
             impl $hook_trait_impl for $hook {
-                vtable $storage;
+                #![vtable = $storage]
+                #[registry] $visibility static $registry;
+                $(#[context]
+                $common_visibility struct $common_context {
+                    $($common_field_visibility $common_field: $common_field_type),*
+                })?
                 #[release $( (destroyed = $destroyed) )?]
                 unsafe extern "system" fn $release_dispatch(
                     $release_this: $release_this_type
                 ) -> u32 {
-                    context struct {
+                    #[context] struct {
                         $($(#[$context_attribute])* $context: $context_type),*
                     }
                 }
@@ -573,10 +701,17 @@ macro_rules! impl_com_proxy {
             $visibility unsafe fn wrap(
                 inner: *mut ::core::ffi::c_void,
                 iid: $crate::__GUID,
+                $(common: $common_context,)?
                 $($context: $context_type),*
             ) -> Option<*mut ::core::ffi::c_void> {
                 let proxy = unsafe { $crate::ComProxy::new(inner, iid, A::SLOTS)? };
-                if unsafe { Self::install(proxy, $($context),*) } {
+                if unsafe {
+                    Self::install(
+                        proxy,
+                        $({ let _: &$common_context = &common; common },)?
+                        $($context),*
+                    )
+                } {
                     Some(proxy)
                 } else {
                     // Installation failed before ownership could be published.
@@ -589,18 +724,230 @@ macro_rules! impl_com_proxy {
 }
 
 #[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_com_dispatches {
+    (common []; $($rest:tt)*) => {
+        $crate::__impl_com_dispatches!(@generate [] []; $($rest)*);
+    };
+    (common [$common:ident]; $($rest:tt)*) => {
+        $crate::__impl_com_dispatches!(@generate
+            [pub common: &'a $common,]
+            [$common];
+            $($rest)*
+        );
+    };
+    (@generate $common_fields:tt $common_values:tt;
+        registry $registry:ident;
+        $(
+            $(#[fallback = $fallback:expr])?
+            [$(prefix($($prefix:tt)*))?]
+            [$(infix($($infix:path),* $(,)?))?]
+            [$(postfix($($postfix:tt)*))?]
+            $visibility:vis unsafe extern "system" fn $dispatch:ident(
+                $this:ident: $this_type:ty
+                $(, $argument:ident: $argument_type:ty)* $(,)?
+            ) $(-> $result:ty)?
+            [$(#[context] |$state:ident| {
+                $($dispatch_field:ident: $dispatch_field_type:ty = $dispatch_field_value:expr),*
+                $(,)?
+            })?]
+        )+
+    ) => { $(
+        $crate::__impl_com_dispatch! {
+            $common_fields $common_values;
+            registry $registry;
+            $(#[fallback = $fallback])?
+            [$(prefix($($prefix)*))?]
+            [$(infix($($infix),*))?]
+            [$(postfix($($postfix)*))?]
+            $visibility unsafe extern "system" fn $dispatch(
+                $this: $this_type $(, $argument: $argument_type)*
+            ) $(-> $result)?
+            [$(#[context] |$state| {
+                $($dispatch_field: $dispatch_field_type = $dispatch_field_value),*
+            })?]
+        }
+    )+ };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_com_dispatch {
+    ([$($common_field:tt)*] [];
+        $($rest:tt)*
+    ) => {
+        $crate::__impl_com_dispatch!(@generate [$($common_field)*] [] state __state; $($rest)*);
+    };
+    ([$($common_field:tt)*] [$common:ident];
+        $($rest:tt)*
+    ) => {
+        $crate::__impl_com_dispatch!(@generate
+            [$($common_field)*] [common: __state.common(),] state __state; $($rest)*
+        );
+    };
+    (@generate [$($common_field:tt)*] [$($common_value:tt)*] state $hook_state:ident;
+        registry $registry:ident;
+        $(#[fallback = $fallback:expr])?
+        [$(prefix($($prefix:tt)*))?]
+        [$(infix($($infix:path),* $(,)?))?]
+        [$(postfix($($postfix:tt)*))?]
+        $visibility:vis unsafe extern "system" fn $dispatch:ident(
+            $this:ident: $this_type:ty
+            $(, $argument:ident: $argument_type:ty)* $(,)?
+        ) $(-> $result:ty)?
+        [$(#[context] |$state:ident| {
+            $($dispatch_field:ident: $dispatch_field_type:ty = $dispatch_field_value:expr),*
+            $(,)?
+        })?]
+    ) => { $crate::__paste! {
+        $visibility type [<$dispatch:camel Hook>] = unsafe fn(
+            $this_type,
+            $($argument_type,)*
+            [<$dispatch:camel Context>]<'_>,
+        ) $(-> $result)?;
+
+        $visibility struct [<$dispatch:camel Context>]<'a> {
+            hooks: ::core::slice::Iter<'a, [<$dispatch:camel Hook>]>,
+            terminal: &'a [<$dispatch:camel Hook>],
+            base: unsafe extern "system" fn($this_type, $($argument_type),*) $(-> $result)?,
+            $($common_field)*
+            $($($visibility $dispatch_field: &'a $dispatch_field_type,)*)?
+        }
+
+        impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
+            for [<$dispatch:camel Context>]<'a>
+        {
+            fn fp_next(&mut self) -> Option<&'a [<$dispatch:camel Hook>]> {
+                Some(self.hooks.next().unwrap_or(self.terminal))
+            }
+        }
+
+        $visibility unsafe extern "system" fn $dispatch(
+            $this: $this_type,
+            $($argument: $argument_type),*
+        ) $(-> $result)? {
+            unsafe fn terminal(
+                $this: $this_type,
+                $($argument: $argument_type,)*
+                context: [<$dispatch:camel Context>]<'_>,
+            ) $(-> $result)? {
+                unsafe { (context.base)($this, $($argument),*) }
+            }
+
+            let Some($hook_state) = $registry
+                .get(&($this as usize))
+                .map(|entry| ::std::sync::Arc::clone(entry.value()))
+            else {
+                $crate::impl_com_hook!(@missing $($fallback)?);
+            };
+            let Some(base) = $hook_state.[<base_ $dispatch>]() else {
+                $crate::impl_com_hook!(@missing $($fallback)?);
+            };
+            $($(let $state = &*$hook_state;
+                let $dispatch_field = $dispatch_field_value;)*)?
+            let hooks: &[[<$dispatch:camel Hook>]] =
+                $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
+                    $(infix($($infix),*))?
+                );
+            let mut remaining = hooks.iter();
+            let terminal: [<$dispatch:camel Hook>] = terminal;
+            let context = [<$dispatch:camel Context>] {
+                hooks: remaining.clone(), terminal: &terminal, base,
+                $($common_value)*
+                $($($dispatch_field: &$dispatch_field,)*)?
+            };
+            let prefix: &[fn(
+                $this_type, $($argument_type,)* &[<$dispatch:camel Context>]<'_>,
+            )] = $crate::__chain_hooks!(@prefix_slice
+                [($this, $this_type) $(($argument, $argument_type))*]
+                [[<$dispatch:camel Context>]] [yes] [];
+                $(prefix($($prefix)*))?
+            );
+            for observer in prefix {
+                observer($this, $($argument,)* &context);
+            }
+            let result = if let Some(next) = remaining.next() {
+                unsafe { next($this, $($argument,)* [<$dispatch:camel Context>] {
+                    hooks: remaining, terminal: &terminal, base,
+                    $($common_value)*
+                    $($($dispatch_field: &$dispatch_field,)*)?
+                }) }
+            } else {
+                unsafe { base($this, $($argument),*) }
+            };
+            let context = [<$dispatch:camel Context>] {
+                hooks: [].iter(), terminal: &terminal, base,
+                $($common_value)*
+                $($($dispatch_field: &$dispatch_field,)*)?
+            };
+            let postfix: &[fn(
+                $this_type, $($argument_type,)*
+                $crate::impl_com_hook!(@result_type $($result)?),
+                &[<$dispatch:camel Context>]<'_>,
+            )] = $crate::__chain_hooks!(@postfix_slice
+                [($this, $this_type) $(($argument, $argument_type))*]
+                [$crate::impl_com_hook!(@result_type $($result)?)]
+                [[<$dispatch:camel Context>]] [yes] [];
+                $(postfix($($postfix)*))?
+            );
+            for observer in postfix {
+                observer($this, $($argument,)* result, &context);
+            }
+            result
+        }
+    }};
+}
+
+#[macro_export]
 macro_rules! impl_com_hook {
     (
-        $visibility:vis registry $registry:ident;
         $visibility_trait:vis trait $hook_trait:ident;
         impl $hook_trait_impl:ident for $hook:ident {
-            vtable $storage:ty;
+            #![vtable = $storage:ty]
+            #[registry] $visibility:vis static $registry:ident;
+            $(#[context]
+            $common_visibility:vis struct $common_context:ident {
+                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
+            })?
+            #[release $( (destroyed = $destroyed:path) )?]
+            unsafe extern "system" fn $release_dispatch:ident(
+                $release_this:ident: $release_this_type:ty $(,)?
+            ) -> u32;
+            $($methods:tt)*
+        }
+    ) => {
+        $crate::impl_com_hook! {
+            $visibility_trait trait $hook_trait;
+            impl $hook_trait_impl for $hook {
+                #![vtable = $storage]
+                #[registry] $visibility static $registry;
+                $(#[context]
+                $common_visibility struct $common_context {
+                    $($common_field_visibility $common_field: $common_field_type),*
+                })?
+                #[release $( (destroyed = $destroyed) )?]
+                unsafe extern "system" fn $release_dispatch(
+                    $release_this: $release_this_type
+                ) -> u32 { #[context] struct {} }
+                $($methods)*
+            }
+        }
+    };
+    (
+        $visibility_trait:vis trait $hook_trait:ident;
+        impl $hook_trait_impl:ident for $hook:ident {
+            #![vtable = $storage:ty]
+            #[registry] $visibility:vis static $registry:ident;
+            $(#[context]
+            $common_visibility:vis struct $common_context:ident {
+                $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
+            })?
 
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
                 $release_this:ident: $release_this_type:ty $(,)?
             ) -> u32 {
-                context struct {
+                #[context] struct {
                     $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)?
                 }
             }
@@ -616,7 +963,7 @@ macro_rules! impl_com_hook {
                     $this:ident: $this_type:ty
                     $(, $argument:ident: $argument_type:ty)* $(,)?
                 ) $(-> $result:ty)? $( {
-                    context |$state:ident| {
+                    #[context] |$state:ident| {
                         $($dispatch_field:ident: $dispatch_field_type:ty = $dispatch_field_value:expr),*
                         $(,)?
                     }
@@ -624,12 +971,17 @@ macro_rules! impl_com_hook {
             )+
         }
     ) => { $crate::__paste! {
+        $($common_visibility struct $common_context {
+            $($common_field_visibility $common_field: $common_field_type,)*
+        })?
+
         const _: () = {
             fn assert_same_trait<T: ?Sized>() {}
             let _ = assert_same_trait::<dyn $hook_trait_impl>;
         };
 
         $visibility_trait trait $hook_trait: $crate::VtableHook {
+            $(fn common(&self) -> &$common_context;)?
             $(fn $context(&self) -> &$context_type;)*
             fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32;
             $(fn [<base_ $dispatch>](&self) -> Option<unsafe extern "system" fn(
@@ -647,6 +999,7 @@ macro_rules! impl_com_hook {
             saved: $storage,
             original: ::core::ptr::NonNull<::core::ffi::c_void>,
             vtable: ::core::marker::PhantomData<A>,
+            $(common: $common_context,)?
             $($(#[$context_attribute])* $context: $context_type,)*
         }
 
@@ -661,6 +1014,7 @@ macro_rules! impl_com_hook {
             /// vtable spans at least `A::SLOTS` entries.
             $visibility unsafe fn install(
                 object: *mut ::core::ffi::c_void,
+                $(common: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 if object.is_null() {
@@ -668,7 +1022,14 @@ macro_rules! impl_com_hook {
                 }
                 let object_vtable = object.cast::<*const usize>();
                 let original_pointer = unsafe { *object_vtable };
-                unsafe { Self::install_from(object, original_pointer, $($context),*) }
+                unsafe {
+                    Self::install_from(
+                        object,
+                        original_pointer,
+                        $({ let _: &$common_context = &common; common },)?
+                        $($context),*
+                    )
+                }
             }
 
             /// Installs using an explicitly selected original vtable, allowing
@@ -680,6 +1041,7 @@ macro_rules! impl_com_hook {
             $visibility unsafe fn install_from(
                 object: *mut ::core::ffi::c_void,
                 original_pointer: *const usize,
+                $(common: $common_context,)?
                 $($context: $context_type),*
             ) -> bool {
                 if object.is_null() {
@@ -713,6 +1075,7 @@ macro_rules! impl_com_hook {
                     saved,
                     original,
                     vtable: ::core::marker::PhantomData,
+                    $(common: { let _: &$common_context = &common; common },)?
                     $($context,)*
                 });
                 let patched_vtable = state.patched_vtable();
@@ -732,6 +1095,7 @@ macro_rules! impl_com_hook {
         }
 
         impl<A: Vtable> $hook_trait for $hook<A> {
+            $(fn common(&self) -> &$common_context { &self.common })?
             $(fn $context(&self) -> &$context_type { &self.$context })*
             fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32 {
                 unsafe {
@@ -779,119 +1143,22 @@ macro_rules! impl_com_hook {
             remaining
         }
 
-        $(
-            $visibility type [<$dispatch:camel Hook>] = unsafe fn(
-                $this_type,
-                $($argument_type,)*
-                [<$dispatch:camel Context>]<'_>,
-            ) $(-> $result)?;
-
-            $visibility struct [<$dispatch:camel Context>]<'a> {
-                hooks: ::core::slice::Iter<'a, [<$dispatch:camel Hook>]>,
-                terminal: &'a [<$dispatch:camel Hook>],
-                base: unsafe extern "system" fn($this_type, $($argument_type),*) $(-> $result)?,
-                $($($visibility $dispatch_field: &'a $dispatch_field_type,)*)?
-            }
-
-            impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
-                for [<$dispatch:camel Context>]<'a>
-            {
-                fn fp_next(&mut self) -> Option<&'a [<$dispatch:camel Hook>]> {
-                    Some(self.hooks.next().unwrap_or(self.terminal))
-                }
-            }
-
-            $visibility unsafe extern "system" fn $dispatch(
-                $this: $this_type,
-                $($argument: $argument_type),*
-            ) $(-> $result)? {
-                unsafe fn terminal(
-                    $this: $this_type,
-                    $($argument: $argument_type,)*
-                    context: [<$dispatch:camel Context>]<'_>,
-                ) $(-> $result)? {
-                    unsafe { (context.base)($this, $($argument),*) }
-                }
-
-                let Some(__state) = $registry
-                    .get(&($this as usize))
-                    .map(|entry| ::std::sync::Arc::clone(entry.value()))
-                else {
-                    $crate::impl_com_hook!(@missing $($fallback)?);
-                };
-                let Some(base) = __state.[<base_ $dispatch>]() else {
-                    $crate::impl_com_hook!(@missing $($fallback)?);
-                };
-                $($(let $state = &*__state;
-                    let $dispatch_field = $dispatch_field_value;)*)?
-                drop(__state);
-                let hooks: &[[<$dispatch:camel Hook>]] =
-                    $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
-                        $(infix($($infix),*))?
-                    );
-                let mut remaining = hooks.iter();
-                let terminal: [<$dispatch:camel Hook>] = terminal;
-                let context = [<$dispatch:camel Context>] {
-                    hooks: remaining.clone(),
-                    terminal: &terminal,
-                    base,
-                    $($($dispatch_field: &$dispatch_field,)*)?
-                };
-                let prefix: &[fn(
-                    $this_type,
-                    $($argument_type,)*
-                    &[<$dispatch:camel Context>]<'_>,
-                )] = $crate::__chain_hooks!(@prefix_slice
-                    [($this, $this_type) $(($argument, $argument_type))*]
-                    [[<$dispatch:camel Context>]]
-                    [yes]
-                    [];
-                    $(prefix($($prefix)*))?
-                );
-                for observer in prefix {
-                    observer($this, $($argument,)* &context);
-                }
-                let result = if let Some(next) = remaining.next() {
-                    unsafe {
-                        next(
-                            $this,
-                            $($argument,)*
-                            [<$dispatch:camel Context>] {
-                                hooks: remaining,
-                                terminal: &terminal,
-                                base,
-                                $($($dispatch_field: &$dispatch_field,)*)?
-                            },
-                        )
-                    }
-                } else {
-                    unsafe { base($this, $($argument),*) }
-                };
-                let context = [<$dispatch:camel Context>] {
-                    hooks: [].iter(),
-                    terminal: &terminal,
-                    base,
-                    $($($dispatch_field: &$dispatch_field,)*)?
-                };
-                let postfix: &[fn(
-                    $this_type,
-                    $($argument_type,)*
-                    $crate::impl_com_hook!(@result_type $($result)?),
-                    &[<$dispatch:camel Context>]<'_>,
-                )] = $crate::__chain_hooks!(@postfix_slice
-                    [($this, $this_type) $(($argument, $argument_type))*]
-                    [$crate::impl_com_hook!(@result_type $($result)?)]
-                    [[<$dispatch:camel Context>]]
-                    [yes]
-                    [];
-                    $(postfix($($postfix)*))?
-                );
-                for observer in postfix {
-                    observer($this, $($argument,)* result, &context);
-                }
-                result
-            }
-        )+
+        $crate::__impl_com_dispatches! {
+            common [$($common_context)?];
+            registry $registry;
+            $(
+                $(#[fallback = $fallback])?
+                [$(prefix($($prefix)*))?]
+                [$(infix($($infix),*))?]
+                [$(postfix($($postfix)*))?]
+                $visibility unsafe extern "system" fn $dispatch(
+                    $this: $this_type $(, $argument: $argument_type)*
+                ) $(-> $result)?
+                [$(#[context] |$state| {
+                    $($dispatch_field: $dispatch_field_type = $dispatch_field_value),*
+                })?]
+            )+
+        }
     }};
 
     (@result_type $result:ty) => { $result };
@@ -901,7 +1168,7 @@ macro_rules! impl_com_hook {
 
     (
         impl $hook:ident {
-            vtable $storage:ty;
+            #![vtable = $storage:ty]
             slots $slots:expr;
             $(context { $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)? };)?
             patch |$patched:ident| $patch:block
@@ -977,7 +1244,7 @@ macro_rules! impl_com_hook {
 
     (
         impl $hook_trait:ident for $hook:ident {
-            vtable $storage:ty;
+            #![vtable = $storage:ty]
             $(context { $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)? };)?
             patch |$patched:ident| $patch:block
             $($methods:tt)*
@@ -1154,13 +1421,15 @@ mod tests {
         mut next: FunctionTableDispatchContext<'_>,
     ) -> usize {
         FUNCTION_TABLE_PHASES.fetch_add(10, Ordering::Relaxed);
-        let offset = next.offset;
+        let offset = next.common.offset;
+        assert_eq!(*next.local, 5);
         crate::next!(next, value) + offset
     }
 
     unsafe fn function_table_prefix(value: usize, context: &FunctionTableDispatchContext<'_>) {
         assert_eq!(value, 4);
-        assert_eq!(*context.offset, 3);
+        assert_eq!(context.common.offset, 3);
+        assert_eq!(*context.local, 5);
         FUNCTION_TABLE_PHASES.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1174,17 +1443,22 @@ mod tests {
         #[resolve = test_function_table]
         struct TestFunctionTableHook {
             const MINIMUM_SLOTS: usize = 2;
+            #[context]
+            struct TestFunctionContext {
+                offset: usize = 3,
+            }
 
             #[slot = 0]
             #[prefix(function_table_prefix(value))]
             #[infix(function_table_around)]
             #[postfix(|result, context| {
-                assert_eq!((result, *context.offset), (11, 3));
+                assert_eq!((result, context.common.offset), (11, 3));
+                assert_eq!(*context.local, 5);
                 FUNCTION_TABLE_PHASES.fetch_add(100, Ordering::Relaxed);
             })]
             unsafe extern "C" fn function_table_dispatch(value: usize) -> usize {
-                context struct {
-                    offset: usize = 3,
+                #[context] struct {
+                    local: usize = 5,
                 }
             }
         }

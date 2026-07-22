@@ -8,6 +8,7 @@ use crate::layer::*;
 use ash::vk;
 use snowglass_hook::HookChain;
 pub(crate) fn create_win32_surface(
+    instance: vk::Instance,
     create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>,
     surface: *mut vk::SurfaceKHR,
     result: vk::Result,
@@ -19,16 +20,21 @@ pub(crate) fn create_win32_surface(
         && unsafe { *surface } != vk::SurfaceKHR::null()
     {
         context
-            .capture_state
+            .common
+            .instance_capture(instance)
             .surface_created(unsafe { *surface }, unsafe { (*create_info).hwnd as isize });
     }
 }
 
 pub(crate) fn destroy_surface(
+    instance: vk::Instance,
     surface: vk::SurfaceKHR,
     context: &crate::hooks::DestroySurfaceContext,
 ) {
-    context.capture_state.surface_destroyed(surface);
+    context
+        .common
+        .instance_capture(instance)
+        .surface_destroyed(surface);
 }
 
 pub(crate) fn create_swapchain(
@@ -44,11 +50,11 @@ pub(crate) fn create_swapchain(
     let dispatch =
         unsafe { dispatch_key(device) }.and_then(|key| DEVICE.get(&key).map(|entry| entry.clone()));
     let info = unsafe { &*create_info };
-    context.capture_state.swapchain_created(
+    context.common.device_capture(device).swapchain_created(
         unsafe { *swapchain },
         device,
         dispatch.and_then(|dispatch| dispatch.capture),
-        context.tracking.clone(),
+        context.common.device_tracking(device),
         info.image_extent,
         info.image_format,
         info.surface,
@@ -56,13 +62,18 @@ pub(crate) fn create_swapchain(
 }
 
 pub(crate) fn destroy_swapchain(
+    device: vk::Device,
     swapchain: vk::SwapchainKHR,
     context: &crate::hooks::DestroySwapchainContext,
 ) {
-    context.capture_state.swapchain_destroyed(swapchain);
+    context
+        .common
+        .device_capture(device)
+        .swapchain_destroyed(swapchain);
 }
 
 pub(crate) fn get_swapchain_images(
+    device: vk::Device,
     swapchain: vk::SwapchainKHR,
     image_count: *mut u32,
     images: *mut vk::Image,
@@ -74,7 +85,10 @@ pub(crate) fn get_swapchain_images(
         && !images.is_null()
     {
         let images = unsafe { std::slice::from_raw_parts(images, *image_count as usize) };
-        context.capture_state.swapchain_images(swapchain, images);
+        context
+            .common
+            .device_capture(device)
+            .swapchain_images(swapchain, images);
     }
 }
 
@@ -103,8 +117,8 @@ pub(crate) fn queue_submit(
             )
         });
     }
-    context.capture_state.tracked_submission(
-        &context.tracking,
+    context.common.queue_capture(queue).tracked_submission(
+        &context.common.queue_tracking(queue),
         queue,
         queue_state.queue_family_index,
         &command_buffers,
@@ -151,8 +165,8 @@ pub(crate) unsafe fn handle_queue_present(
         .copied()
         .zip(image_indices.iter().copied())
         .collect::<Vec<_>>();
-    match next.capture_state.present(
-        &next.tracking,
+    match next.common.queue_capture(queue).present(
+        &next.common.queue_tracking(queue),
         queue,
         queue_state.queue_family_index,
         &presents,

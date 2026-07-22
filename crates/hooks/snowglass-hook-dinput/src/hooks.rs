@@ -8,6 +8,10 @@ use windows_sys::{
 
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
+    #[context]
+    pub(crate) struct DirectInputHookContext {
+        pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime> = crate::install::runtime(),
+    }
 
     #[trampoline]
     #[terminal(installed, fallback = E_FAIL)]
@@ -25,9 +29,5 @@ snowglass_hook::__chain_hooks! {
         interface_id: *const GUID,
         output: *mut *mut c_void,
         outer: *mut c_void,
-    ) -> HRESULT {
-        context struct {
-            runtime: std::sync::Arc<crate::runtime::Runtime> = crate::install::runtime(),
-        }
-    }
+    ) -> HRESULT;
 }

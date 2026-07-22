@@ -90,24 +90,24 @@ snowglass_hook::com_vtable! {
 }
 
 snowglass_hook::impl_com_hook! {
-    pub(crate) registry COMMAND_LISTS;
     pub(crate) trait CommandListHook;
     impl CommandListHook for ID3D12GraphicsCommandListHook {
-        vtable ID3D12GraphicsCommandListVtable;
-        #[release]
-        unsafe extern "system" fn command_list_release(this: *mut c_void) -> u32 {
-            context struct {
-                tracking: Arc<snowglass_producer_d3d12::Tracking>,
-            }
+        #![vtable = ID3D12GraphicsCommandListVtable]
+        #[registry] pub(crate) static COMMAND_LISTS;
+        #[context]
+        pub(crate) struct CommandListContext {
+            pub(crate) tracking: Arc<snowglass_producer_d3d12::Tracking>,
         }
+
+        #[release]
+        unsafe extern "system" fn command_list_release(this: *mut c_void) -> u32;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = Reset]
         #[fallback = E_FAIL]
         #[infix(track_reset)]
         unsafe extern "system" fn reset(this: *mut c_void, allocator: *mut c_void, initial_state: *mut c_void) -> HRESULT {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
+            #[context] |state| {
                 patched_vtable: *const usize = state.patched_vtable(),
             }
         }
@@ -115,177 +115,117 @@ snowglass_hook::impl_com_hook! {
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = RSSetViewports]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_viewports(this, count, viewports)
+            context.common.tracking.record_viewports(this, count, viewports)
         })]
-        unsafe extern "system" fn set_viewports(this: *mut c_void, count: u32, viewports: *const D3D12_VIEWPORT) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn set_viewports(this: *mut c_void, count: u32, viewports: *const D3D12_VIEWPORT) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = RSSetScissorRects]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_scissors(this, count, scissors)
+            context.common.tracking.record_scissors(this, count, scissors)
         })]
-        unsafe extern "system" fn set_scissors(this: *mut c_void, count: u32, scissors: *const RECT) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn set_scissors(this: *mut c_void, count: u32, scissors: *const RECT) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = DrawInstanced]
-        #[postfix(|_result, context| context.tracking.record_draw(this))]
-        unsafe extern "system" fn draw_instanced(this: *mut c_void, vertex_count: u32, instance_count: u32, start_vertex: u32, start_instance: u32) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        #[postfix(|_result, context| context.common.tracking.record_draw(this))]
+        unsafe extern "system" fn draw_instanced(this: *mut c_void, vertex_count: u32, instance_count: u32, start_vertex: u32, start_instance: u32) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = DrawIndexedInstanced]
-        #[postfix(|_result, context| context.tracking.record_draw(this))]
-        unsafe extern "system" fn draw_indexed_instanced(this: *mut c_void, index_count: u32, instance_count: u32, start_index: u32, base_vertex: i32, start_instance: u32) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        #[postfix(|_result, context| context.common.tracking.record_draw(this))]
+        unsafe extern "system" fn draw_indexed_instanced(this: *mut c_void, index_count: u32, instance_count: u32, start_index: u32, base_vertex: i32, start_instance: u32) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = ResourceBarrier]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_resource_barrier(this, count, barriers)
+            context.common.tracking.record_resource_barrier(this, count, barriers)
         })]
-        unsafe extern "system" fn resource_barrier(this: *mut c_void, count: u32, barriers: *const D3D12_RESOURCE_BARRIER) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn resource_barrier(this: *mut c_void, count: u32, barriers: *const D3D12_RESOURCE_BARRIER) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = SetGraphicsRootDescriptorTable]
         #[postfix(|_result, context| {
-            context.tracking.record_root_descriptor_table(this, root_index, descriptor)
+            context.common.tracking.record_root_descriptor_table(this, root_index, descriptor)
         })]
-        unsafe extern "system" fn set_graphics_root_descriptor_table(this: *mut c_void, root_index: u32, descriptor: D3D12_GPU_DESCRIPTOR_HANDLE) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn set_graphics_root_descriptor_table(this: *mut c_void, root_index: u32, descriptor: D3D12_GPU_DESCRIPTOR_HANDLE) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = SetGraphicsRootSignature]
-        #[postfix(|_result, context| context.tracking.record_root_signature(this))]
-        unsafe extern "system" fn set_graphics_root_signature(this: *mut c_void, signature: *mut c_void) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        #[postfix(|_result, context| context.common.tracking.record_root_signature(this))]
+        unsafe extern "system" fn set_graphics_root_signature(this: *mut c_void, signature: *mut c_void) ;
 
         #[vtable = ID3D12GraphicsCommandList_Vtbl]
         #[base = OMSetRenderTargets]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_render_targets(this, count, descriptors)
+            context.common.tracking.record_render_targets(this, count, descriptors)
         })]
-        unsafe extern "system" fn om_set_render_targets(this: *mut c_void, count: u32, descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE, contiguous: BOOL, depth: *const D3D12_CPU_DESCRIPTOR_HANDLE) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn om_set_render_targets(this: *mut c_void, count: u32, descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE, contiguous: BOOL, depth: *const D3D12_CPU_DESCRIPTOR_HANDLE) ;
 
         #[vtable = ID3D12GraphicsCommandList7_Vtbl]
         #[base = Barrier]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_enhanced_barrier(this, count, groups)
+            context.common.tracking.record_enhanced_barrier(this, count, groups)
         })]
-        unsafe extern "system" fn enhanced_barrier(this: *mut c_void, count: u32, groups: *const D3D12_BARRIER_GROUP) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn enhanced_barrier(this: *mut c_void, count: u32, groups: *const D3D12_BARRIER_GROUP) ;
     }
 }
 
 snowglass_hook::impl_com_hook! {
-    pub(crate) registry DEVICES;
     pub(crate) trait DeviceHook;
     impl DeviceHook for ID3D12DeviceHook {
-        vtable ID3D12DeviceVtable;
-        #[release]
-        unsafe extern "system" fn device_release(this: *mut c_void) -> u32 {
-            context struct {
-                tracking: Arc<snowglass_producer_d3d12::Tracking>,
-            }
+        #![vtable = ID3D12DeviceVtable]
+        #[registry] pub(crate) static DEVICES;
+        #[context]
+        pub(crate) struct DeviceContext {
+            pub(crate) tracking: Arc<snowglass_producer_d3d12::Tracking>,
         }
+        #[release]
+        unsafe extern "system" fn device_release(this: *mut c_void) -> u32;
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CreateCommandList]
         #[fallback = E_FAIL]
         #[postfix(track_created_command_list(interface_id, output, result))]
-        unsafe extern "system" fn create_command_list(this: *mut c_void, node_mask: u32, list_type: D3D12_COMMAND_LIST_TYPE, allocator: *mut c_void, initial_state: *mut c_void, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn create_command_list(this: *mut c_void, node_mask: u32, list_type: D3D12_COMMAND_LIST_TYPE, allocator: *mut c_void, initial_state: *mut c_void, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT ;
 
         #[vtable = ID3D12Device4_Vtbl]
         #[base = CreateCommandList1]
         #[fallback = E_FAIL]
         #[postfix(track_created_command_list1(interface_id, output, result))]
-        unsafe extern "system" fn create_command_list1(this: *mut c_void, node_mask: u32, list_type: D3D12_COMMAND_LIST_TYPE, flags: D3D12_COMMAND_LIST_FLAGS, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn create_command_list1(this: *mut c_void, node_mask: u32, list_type: D3D12_COMMAND_LIST_TYPE, flags: D3D12_COMMAND_LIST_FLAGS, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT ;
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CreateDescriptorHeap]
         #[fallback = E_FAIL]
         #[postfix(track_descriptor_heap(desc, output, result))]
-        unsafe extern "system" fn create_descriptor_heap(this: *mut c_void, desc: *const D3D12_DESCRIPTOR_HEAP_DESC, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn create_descriptor_heap(this: *mut c_void, desc: *const D3D12_DESCRIPTOR_HEAP_DESC, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT ;
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CreateShaderResourceView]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_shader_resource_view(resource, desc, destination)
+            context.common.tracking.record_shader_resource_view(resource, desc, destination)
         })]
-        unsafe extern "system" fn create_shader_resource_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn create_shader_resource_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) ;
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CreateRenderTargetView]
         #[postfix(|_result, context| unsafe {
-            context.tracking.record_render_target_view(resource, desc, destination)
+            context.common.tracking.record_render_target_view(resource, desc, destination)
         })]
-        unsafe extern "system" fn create_render_target_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_RENDER_TARGET_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn create_render_target_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_RENDER_TARGET_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) ;
 
         #[vtable = ID3D12Device_Vtbl]
         #[base = CopyDescriptorsSimple]
         #[postfix(|_result, context| {
-            context.tracking.record_copy_descriptors_simple(
+            context.common.tracking.record_copy_descriptors_simple(
                 count,
                 destination,
                 source,
                 heap_type,
             )
         })]
-        unsafe extern "system" fn copy_descriptors_simple(this: *mut c_void, count: u32, destination: D3D12_CPU_DESCRIPTOR_HANDLE, source: D3D12_CPU_DESCRIPTOR_HANDLE, heap_type: D3D12_DESCRIPTOR_HEAP_TYPE) {
-            context |state| {
-                tracking: Arc<snowglass_producer_d3d12::Tracking> = state.tracking().clone(),
-            }
-        }
+        unsafe extern "system" fn copy_descriptors_simple(this: *mut c_void, count: u32, destination: D3D12_CPU_DESCRIPTOR_HANDLE, source: D3D12_CPU_DESCRIPTOR_HANDLE, heap_type: D3D12_DESCRIPTOR_HEAP_TYPE) ;
     }
 }
 
@@ -390,7 +330,7 @@ unsafe fn install_device_kind<A: Vtable>(
         }
         None => current,
     };
-    unsafe { ID3D12DeviceHook::<A>::install_from(device, original, tracking) }
+    unsafe { ID3D12DeviceHook::<A>::install_from(device, original, DeviceContext { tracking }) }
 }
 
 /// Installs tracking interception on a command list created by a hooked
@@ -459,7 +399,13 @@ unsafe fn install_command_list_kind<A: Vtable>(
         }
         None => current,
     };
-    unsafe { ID3D12GraphicsCommandListHook::<A>::install_from(list, original, tracking) }
+    unsafe {
+        ID3D12GraphicsCommandListHook::<A>::install_from(
+            list,
+            original,
+            CommandListContext { tracking },
+        )
+    }
 }
 
 fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {
@@ -467,14 +413,14 @@ fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) ->
 }
 
 fn device_tracking(device: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
-    device_method(device, |hook| hook.tracking().clone())
+    device_method(device, |hook| hook.common().tracking.clone())
 }
 
 #[cfg(test)]
 pub(crate) fn list_tracking(list: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
     COMMAND_LISTS
         .get(&(list as usize))
-        .map(|hook| hook.tracking().clone())
+        .map(|hook| hook.common().tracking.clone())
 }
 
 /// Resolves the tracking context associated with a D3D12 command queue's device.
@@ -499,7 +445,7 @@ unsafe fn track_created_command_list(
     context: &CreateCommandListContext<'_>,
 ) {
     if result.is_ok() && !output.is_null() {
-        unsafe { install_command_list(*output, interface_id, context.tracking.clone()) };
+        unsafe { install_command_list(*output, interface_id, context.common.tracking.clone()) };
     }
 }
 
@@ -510,7 +456,7 @@ unsafe fn track_created_command_list1(
     context: &CreateCommandList1Context<'_>,
 ) {
     if result.is_ok() && !output.is_null() {
-        unsafe { install_command_list(*output, interface_id, context.tracking.clone()) };
+        unsafe { install_command_list(*output, interface_id, context.common.tracking.clone()) };
     }
 }
 
@@ -521,7 +467,7 @@ unsafe fn track_descriptor_heap(
     context: &CreateDescriptorHeapContext<'_>,
 ) {
     if result.is_ok() {
-        unsafe { context.tracking.record_descriptor_heap(desc, output) };
+        unsafe { context.common.tracking.record_descriptor_heap(desc, output) };
     }
 }
 
@@ -531,7 +477,7 @@ unsafe fn track_reset(
     initial_state: *mut c_void,
     mut next: ResetContext<'_>,
 ) -> HRESULT {
-    let tracking = next.tracking.clone();
+    let tracking = next.common.tracking.clone();
     let patched_vtable = next.patched_vtable;
     let result = snowglass_hook::next!(next, this, allocator, initial_state);
     // d3d12.dll re-initializes the recycled command list inside Reset and

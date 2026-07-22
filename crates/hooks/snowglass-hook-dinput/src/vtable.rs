@@ -56,43 +56,38 @@ const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
 
 snowglass_hook::impl_com_proxy! {
-    pub(crate) registry DIRECT_INPUT_HOOKS;
     pub(crate) trait DirectInputHookState;
     impl DirectInputHookState for IDirectInputHook {
-        vtable IDirectInputVtable;
-        #[release]
-        unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32 {
-            context struct {
-                runtime: std::sync::Arc<crate::runtime::Runtime>,
-                wide: bool,
-            }
+        #![vtable = IDirectInputVtable]
+        #[registry] pub(crate) static DIRECT_INPUT_HOOKS;
+        #[context]
+        pub(crate) struct DirectInputContext {
+            pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
+            pub(crate) wide: bool,
         }
+        #[release]
+        unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32;
 
         #[vtable = IDirectInput8A_Vtbl]
         #[base = CreateDevice]
         #[fallback = 0x8000_4005u32 as i32]
         #[postfix(crate::runtime::create_device(class, output, result))]
-        unsafe extern "system" fn create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT {
-            context |state| {
-                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
-                wide: bool = *state.wide(),
-            }
-        }
+        unsafe extern "system" fn create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT;
     }
 }
 
 snowglass_hook::impl_com_proxy! {
-    pub(crate) registry DEVICE_HOOKS;
     pub(crate) trait DeviceHookState;
     impl DeviceHookState for IDirectInputDeviceHook {
-        vtable IDirectInputDeviceVtable;
-        #[release(destroyed = crate::runtime::device_destroyed)]
-        unsafe extern "system" fn device_release(this: *mut c_void) -> u32 {
-            context struct {
-                runtime: std::sync::Arc<crate::runtime::Runtime>,
-                device: snowglass_input::DirectInputDevice,
-            }
+        #![vtable = IDirectInputDeviceVtable]
+        #[registry] pub(crate) static DEVICE_HOOKS;
+        #[context]
+        pub(crate) struct DeviceContext {
+            pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
+            pub(crate) device: snowglass_input::DirectInputDevice,
         }
+        #[release(destroyed = crate::runtime::device_destroyed)]
+        unsafe extern "system" fn device_release(this: *mut c_void) -> u32;
 
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = Acquire]
@@ -103,23 +98,13 @@ snowglass_hook::impl_com_proxy! {
         #[base = GetDeviceState]
         #[fallback = 0x8000_4005u32 as i32]
         #[infix(crate::runtime::get_device_state)]
-        unsafe extern "system" fn get_device_state(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT {
-            context |state| {
-                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
-                device: snowglass_input::DirectInputDevice = *state.device(),
-            }
-        }
+        unsafe extern "system" fn get_device_state(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT;
 
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = GetDeviceData]
         #[fallback = 0x8000_4005u32 as i32]
         #[infix(crate::runtime::get_device_data)]
-        unsafe extern "system" fn get_device_data(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT {
-            context |state| {
-                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
-                device: snowglass_input::DirectInputDevice = *state.device(),
-            }
-        }
+        unsafe extern "system" fn get_device_data(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT;
 
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetDataFormat]
@@ -129,17 +114,12 @@ snowglass_hook::impl_com_proxy! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetEventNotification]
         #[fallback = 0x8000_4005u32 as i32]
-        #[prefix(|context| context.runtime.set_event_notification(
+        #[prefix(|context| context.common.runtime.set_event_notification(
             this as usize,
-            *context.device,
+            context.common.device,
             event as usize,
         ))]
-        unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT {
-            context |state| {
-                runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
-                device: snowglass_input::DirectInputDevice = *state.device(),
-            }
-        }
+        unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT;
 
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetCooperativeLevel]

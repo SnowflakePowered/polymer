@@ -51,34 +51,26 @@ snowglass_hook::function_table_hook! {
     #[resolve = dynapi]
     pub(crate) struct Sdl3DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
+        #[context]
+        pub(crate) struct Sdl3DynapiContext {
+            pub(crate) installation: &'static Installation = installation(),
+        }
 
         #[slot = DYNAPI_GET_GAMEPADS]
-        #[prefix(|next| prepare_enumeration(next.installation))]
+        #[prefix(|next| prepare_enumeration(next.common.installation))]
         unsafe extern "C" fn get_gamepads_dispatch(
             count: *mut i32,
-        ) -> *mut api::JoystickId {
-            context struct {
-                installation: &'static Installation = installation(),
-            }
-        }
+        ) -> *mut api::JoystickId;
 
         #[slot = DYNAPI_GET_JOYSTICKS]
-        #[prefix(|next| prepare_enumeration(next.installation))]
+        #[prefix(|next| prepare_enumeration(next.common.installation))]
         unsafe extern "C" fn get_joysticks_dispatch(
             count: *mut i32,
-        ) -> *mut api::JoystickId {
-            context struct {
-                installation: &'static Installation = installation(),
-            }
-        }
+        ) -> *mut api::JoystickId;
 
         #[slot = DYNAPI_UPDATE_JOYSTICKS]
-        #[prefix(|next| flush_gamepads(next.installation))]
-        unsafe extern "C" fn update_joysticks_dispatch() {
-            context struct {
-                installation: &'static Installation = installation(),
-            }
-        }
+        #[prefix(|next| flush_gamepads(next.common.installation))]
+        unsafe extern "C" fn update_joysticks_dispatch();
     }
 }
 

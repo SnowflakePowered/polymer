@@ -254,7 +254,8 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
 fn set_swapchain_owner(swapchain: *mut c_void, owner: Option<Arc<SwapchainOwnerHandle>>) {
     if let Some(state) = SWAPCHAINS.get(&(swapchain as usize)) {
         *state
-            .owner()
+            .common()
+            .owner
             .write()
             .unwrap_or_else(|error| error.into_inner()) = owner;
     }
@@ -278,7 +279,8 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
         // owner into the replacement.
         let owner = RwLock::new(
             existing
-                .owner()
+                .common()
+                .owner
                 .read()
                 .unwrap_or_else(|error| error.into_inner())
                 .clone(),
@@ -294,7 +296,13 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
     } else {
         (current, RwLock::new(None))
     };
-    unsafe { IDXGISwapchainHook::<A>::install_from(swapchain, original, owner) }
+    unsafe {
+        IDXGISwapchainHook::<A>::install_from(
+            swapchain,
+            original,
+            crate::vtable::SwapchainContext { owner },
+        )
+    }
 }
 
 /// # Safety
@@ -564,7 +572,8 @@ pub(crate) unsafe fn resize_buffers(
 
 pub(crate) unsafe fn swapchain_destroyed(this: *mut c_void, state: &dyn SwapchainHook) {
     let owner = state
-        .owner()
+        .common()
+        .owner
         .write()
         .unwrap_or_else(|error| error.into_inner())
         .take();

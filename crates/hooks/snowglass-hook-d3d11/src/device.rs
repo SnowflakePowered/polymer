@@ -28,7 +28,10 @@ pub(crate) unsafe fn create_device(
     if result >= 0 {
         crate::d3d11_log("snowglass: intercepted D3D11CreateDevice");
         unsafe {
-            crate::vtable::install_immediate_context(immediate_context, context.tracking.clone())
+            crate::vtable::install_immediate_context(
+                immediate_context,
+                context.common.tracking.clone(),
+            )
         };
     }
 }
@@ -47,7 +50,7 @@ pub(crate) unsafe fn create_device_and_swapchain(
     }
     crate::d3d11_log("snowglass: intercepted D3D11CreateDeviceAndSwapChain");
     unsafe {
-        crate::vtable::install_immediate_context(immediate_context, context.tracking.clone())
+        crate::vtable::install_immediate_context(immediate_context, context.common.tracking.clone())
     };
     let swapchain = unsafe { *swapchain };
     if !swapchain.is_null() {

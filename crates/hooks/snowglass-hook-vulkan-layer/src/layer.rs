@@ -322,7 +322,7 @@ pub(crate) unsafe fn handle_destroy_device(
     {
         QUEUE.retain(|_, dispatch| dispatch.device != device)
     };
-    next.capture_state.device_destroyed(device);
+    next.common.device_capture(device).device_destroyed(device);
     unsafe { continuation(device, allocator, next) };
 }
 

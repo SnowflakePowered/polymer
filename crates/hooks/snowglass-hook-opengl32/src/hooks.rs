@@ -11,33 +11,25 @@ pub(crate) type Hdc = *mut c_void;
 
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
+    #[context]
+    pub(crate) struct OpenGlHookContext {
+        pub(crate) tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
+    }
 
     #[trampoline]
     #[terminal(installed, fallback = 0)]
     #[prefix(capture_swap_buffers(hdc))]
-    pub(crate) unsafe extern "system" fn swap_buffers(hdc: Hdc) -> i32 {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    pub(crate) unsafe extern "system" fn swap_buffers(hdc: Hdc) -> i32;
 
     #[trampoline]
     #[terminal(installed, fallback = 0)]
     #[prefix(capture_swap_layer_buffers(hdc))]
-    pub(crate) unsafe extern "system" fn swap_layer_buffers(hdc: Hdc, planes: u32) -> i32 {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    pub(crate) unsafe extern "system" fn swap_layer_buffers(hdc: Hdc, planes: u32) -> i32;
 
     #[trampoline]
     #[terminal(installed, fallback = ())]
     #[prefix(track_draw_arrays(first, count))]
-    pub(crate) unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32) {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    pub(crate) unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32);
 
     #[trampoline]
     #[terminal(installed, fallback = ())]
@@ -47,11 +39,7 @@ snowglass_hook::__chain_hooks! {
         count: i32,
         element_type: u32,
         indices: *const c_void,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    );
 
     #[trampoline]
     #[terminal(direct = crate::install::call_draw_elements_base_vertex)]
@@ -62,11 +50,7 @@ snowglass_hook::__chain_hooks! {
         element_type: u32,
         indices: *const c_void,
         base_vertex: i32,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    );
 
     #[trampoline]
     #[terminal(direct = crate::install::call_blit_framebuffer)]
@@ -75,11 +59,7 @@ snowglass_hook::__chain_hooks! {
         src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32,
         dst_x0: i32, dst_y0: i32, dst_x1: i32, dst_y1: i32,
         mask: u32, filter: u32,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    );
 
     #[trampoline]
     #[terminal(direct = crate::install::call_copy_image_sub_data)]
@@ -90,20 +70,14 @@ snowglass_hook::__chain_hooks! {
         src_name: u32, src_target: u32, src_level: i32, src_x: i32, src_y: i32, src_z: i32,
         dst_name: u32, dst_target: u32, dst_level: i32, dst_x: i32, dst_y: i32, dst_z: i32,
         width: i32, height: i32, depth: i32,
-    ) {
-        context struct {
-            tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
-        }
-    }
+    );
 
     #[trampoline]
     #[terminal(installed, fallback = std::ptr::null())]
     #[infix(route_proc_address)]
     pub(crate) unsafe extern "system" fn wgl_get_proc_address(
         name: *const u8,
-    ) -> *const c_void {
-        context struct {}
-    }
+    ) -> *const c_void;
 }
 
 thread_local! { static CAPTURING: Cell<bool> = const { Cell::new(false) }; }
@@ -113,7 +87,9 @@ pub(crate) unsafe fn capture_swap_buffers(hdc: Hdc, context: &SwapBuffersContext
         if capturing.replace(true) {
             return;
         }
-        unsafe { snowglass_producer_opengl::before_swap_buffers(&context.tracking, hdc as isize) };
+        unsafe {
+            snowglass_producer_opengl::before_swap_buffers(&context.common.tracking, hdc as isize)
+        };
         capturing.set(false);
     });
 }
@@ -123,21 +99,28 @@ pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuf
         if capturing.replace(true) {
             return;
         }
-        unsafe { snowglass_producer_opengl::before_swap_buffers(&context.tracking, hdc as isize) };
+        unsafe {
+            snowglass_producer_opengl::before_swap_buffers(&context.common.tracking, hdc as isize)
+        };
         capturing.set(false);
     });
 }
 
 pub(crate) unsafe fn track_draw_arrays(first: i32, count: i32, context: &DrawArraysContext) {
-    unsafe { context.tracking.record_draw_candidate(Some((first, count))) };
+    unsafe {
+        context
+            .common
+            .tracking
+            .record_draw_candidate(Some((first, count)))
+    };
 }
 
 pub(crate) unsafe fn track_draw_elements(context: &DrawElementsContext) {
-    unsafe { context.tracking.record_draw_candidate(None) };
+    unsafe { context.common.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn track_draw_elements_base_vertex(context: &DrawElementsBaseVertexContext) {
-    unsafe { context.tracking.record_draw_candidate(None) };
+    unsafe { context.common.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {
@@ -146,7 +129,7 @@ pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {
     if CAPTURING.with(|capturing| capturing.get()) {
         return;
     }
-    unsafe { context.tracking.record_blit_candidate() };
+    unsafe { context.common.tracking.record_blit_candidate() };
 }
 
 pub(crate) unsafe fn track_copy_image_sub_data(
@@ -163,7 +146,7 @@ pub(crate) unsafe fn track_copy_image_sub_data(
         return;
     }
     unsafe {
-        context.tracking.record_copy_candidate(
+        context.common.tracking.record_copy_candidate(
             src_name, src_target, dst_name, dst_target, dst_z, width, height,
         )
     };

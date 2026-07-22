@@ -15,23 +15,33 @@ pub(crate) fn begin_command_buffer(
     command_buffer: vk::CommandBuffer,
     context: &hooks::BeginCommandBufferContext,
 ) {
-    context.tracking.command_buffer_began(command_buffer);
+    context
+        .common
+        .command_tracking(command_buffer)
+        .command_buffer_began(command_buffer);
 }
 
 /// The draw observer deliberately declares only the dispatchable command
 /// buffer. Vertex topology is irrelevant to capture target selection.
 pub(crate) fn cmd_draw(command_buffer: vk::CommandBuffer, context: &hooks::CmdDrawContext) {
-    context.tracking.command_drew(command_buffer);
+    context
+        .common
+        .command_tracking(command_buffer)
+        .command_drew(command_buffer);
 }
 
 pub(crate) fn cmd_draw_indexed(
     command_buffer: vk::CommandBuffer,
     context: &hooks::CmdDrawIndexedContext,
 ) {
-    context.tracking.command_drew(command_buffer);
+    context
+        .common
+        .command_tracking(command_buffer)
+        .command_drew(command_buffer);
 }
 
 pub(crate) fn create_image(
+    device: vk::Device,
     create_info: *const vk::ImageCreateInfo<'_>,
     image: *mut vk::Image,
     result: vk::Result,
@@ -39,7 +49,7 @@ pub(crate) fn create_image(
 ) {
     if result == vk::Result::SUCCESS && !create_info.is_null() && !image.is_null() {
         let info = unsafe { &*create_info };
-        context.tracking.image_created(
+        context.common.device_tracking(device).image_created(
             unsafe { *image },
             vk::Extent2D {
                 width: info.extent.width,
@@ -51,11 +61,19 @@ pub(crate) fn create_image(
     }
 }
 
-pub(crate) fn destroy_image(image: vk::Image, context: &hooks::DestroyImageContext) {
-    context.tracking.image_destroyed(image);
+pub(crate) fn destroy_image(
+    device: vk::Device,
+    image: vk::Image,
+    context: &hooks::DestroyImageContext,
+) {
+    context
+        .common
+        .device_tracking(device)
+        .image_destroyed(image);
 }
 
 pub(crate) fn create_image_view(
+    device: vk::Device,
     create_info: *const vk::ImageViewCreateInfo<'_>,
     view: *mut vk::ImageView,
     result: vk::Result,
@@ -63,7 +81,7 @@ pub(crate) fn create_image_view(
 ) {
     if result == vk::Result::SUCCESS && !create_info.is_null() && !view.is_null() {
         let info = unsafe { &*create_info };
-        context.tracking.image_view_created(
+        context.common.device_tracking(device).image_view_created(
             unsafe { *view },
             info.image,
             info.subresource_range
@@ -73,11 +91,19 @@ pub(crate) fn create_image_view(
     }
 }
 
-pub(crate) fn destroy_image_view(view: vk::ImageView, context: &hooks::DestroyImageViewContext) {
-    context.tracking.image_view_destroyed(view);
+pub(crate) fn destroy_image_view(
+    device: vk::Device,
+    view: vk::ImageView,
+    context: &hooks::DestroyImageViewContext,
+) {
+    context
+        .common
+        .device_tracking(device)
+        .image_view_destroyed(view);
 }
 
 pub(crate) fn create_framebuffer(
+    device: vk::Device,
     create_info: *const vk::FramebufferCreateInfo<'_>,
     framebuffer: *mut vk::Framebuffer,
     result: vk::Result,
@@ -93,18 +119,24 @@ pub(crate) fn create_framebuffer(
         unsafe { std::slice::from_raw_parts(info.p_attachments, info.attachment_count as usize) }
     };
     context
-        .tracking
+        .common
+        .device_tracking(device)
         .framebuffer_created(unsafe { *framebuffer }, views);
 }
 
 pub(crate) fn destroy_framebuffer(
+    device: vk::Device,
     framebuffer: vk::Framebuffer,
     context: &hooks::DestroyFramebufferContext,
 ) {
-    context.tracking.framebuffer_destroyed(framebuffer);
+    context
+        .common
+        .device_tracking(device)
+        .framebuffer_destroyed(framebuffer);
 }
 
 pub(crate) fn update_descriptor_sets(
+    device: vk::Device,
     write_count: u32,
     writes: *const vk::WriteDescriptorSet<'_>,
     context: &hooks::UpdateDescriptorSetsContext,
@@ -135,7 +167,8 @@ pub(crate) fn update_descriptor_sets(
         })
         .collect::<Vec<_>>();
         context
-            .tracking
+            .common
+            .device_tracking(device)
             .descriptor_images_written(write.dst_set, &entries);
     }
 }
@@ -157,7 +190,8 @@ pub(crate) fn cmd_bind_descriptor_sets(
     }
     let bound = unsafe { std::slice::from_raw_parts(sets, set_count as usize) };
     context
-        .tracking
+        .common
+        .command_tracking(command_buffer)
         .command_bound_descriptor_sets(command_buffer, first_set, bound);
 }
 
@@ -190,7 +224,8 @@ pub(crate) fn cmd_push_descriptor_set(
         }
     }
     context
-        .tracking
+        .common
+        .command_tracking(command_buffer)
         .command_pushed_descriptors(command_buffer, &views);
 }
 
@@ -203,7 +238,8 @@ pub(crate) fn cmd_set_viewport(
 ) {
     if first == 0 && count != 0 && !viewports.is_null() {
         context
-            .tracking
+            .common
+            .command_tracking(command_buffer)
             .command_set_viewport(command_buffer, unsafe { *viewports });
     }
 }
@@ -217,7 +253,8 @@ pub(crate) fn cmd_set_scissor(
 ) {
     if first == 0 && count != 0 && !scissors.is_null() {
         context
-            .tracking
+            .common
+            .command_tracking(command_buffer)
             .command_set_scissor(command_buffer, unsafe { *scissors });
     }
 }
@@ -231,7 +268,8 @@ pub(crate) fn cmd_begin_render_pass(
     let _ = contents;
     if !begin.is_null() {
         context
-            .tracking
+            .common
+            .command_tracking(command_buffer)
             .command_began_render_pass(command_buffer, unsafe { (*begin).framebuffer });
     }
 }
@@ -240,7 +278,10 @@ pub(crate) fn cmd_end_render_pass(
     command_buffer: vk::CommandBuffer,
     context: &hooks::CmdEndRenderPassContext,
 ) {
-    context.tracking.command_ended_render_pass(command_buffer);
+    context
+        .common
+        .command_tracking(command_buffer)
+        .command_ended_render_pass(command_buffer);
 }
 
 pub(crate) fn cmd_blit_image(
@@ -259,27 +300,30 @@ pub(crate) fn cmd_blit_image(
         return;
     }
     let region = unsafe { &*regions };
-    context.tracking.command_blitted(
-        source_image,
-        source_layout,
-        destination_image,
-        vk::Offset2D {
-            x: region.src_offsets[0].x.min(region.src_offsets[1].x),
-            y: region.src_offsets[0].y.min(region.src_offsets[1].y),
-        },
-        vk::Extent2D {
-            width: (region.src_offsets[1].x - region.src_offsets[0].x).unsigned_abs(),
-            height: (region.src_offsets[1].y - region.src_offsets[0].y).unsigned_abs(),
-        },
-        vk::Offset2D {
-            x: region.dst_offsets[0].x.min(region.dst_offsets[1].x),
-            y: region.dst_offsets[0].y.min(region.dst_offsets[1].y),
-        },
-        vk::Extent2D {
-            width: (region.dst_offsets[1].x - region.dst_offsets[0].x).unsigned_abs(),
-            height: (region.dst_offsets[1].y - region.dst_offsets[0].y).unsigned_abs(),
-        },
-    );
+    context
+        .common
+        .command_tracking(command_buffer)
+        .command_blitted(
+            source_image,
+            source_layout,
+            destination_image,
+            vk::Offset2D {
+                x: region.src_offsets[0].x.min(region.src_offsets[1].x),
+                y: region.src_offsets[0].y.min(region.src_offsets[1].y),
+            },
+            vk::Extent2D {
+                width: (region.src_offsets[1].x - region.src_offsets[0].x).unsigned_abs(),
+                height: (region.src_offsets[1].y - region.src_offsets[0].y).unsigned_abs(),
+            },
+            vk::Offset2D {
+                x: region.dst_offsets[0].x.min(region.dst_offsets[1].x),
+                y: region.dst_offsets[0].y.min(region.dst_offsets[1].y),
+            },
+            vk::Extent2D {
+                width: (region.dst_offsets[1].x - region.dst_offsets[0].x).unsigned_abs(),
+                height: (region.dst_offsets[1].y - region.dst_offsets[0].y).unsigned_abs(),
+            },
+        );
 }
 
 pub(crate) fn cmd_copy_image(
@@ -301,21 +345,24 @@ pub(crate) fn cmd_copy_image(
         width: region.extent.width,
         height: region.extent.height,
     };
-    context.tracking.command_blitted(
-        source_image,
-        source_layout,
-        destination_image,
-        vk::Offset2D {
-            x: region.src_offset.x,
-            y: region.src_offset.y,
-        },
-        extent,
-        vk::Offset2D {
-            x: region.dst_offset.x,
-            y: region.dst_offset.y,
-        },
-        extent,
-    );
+    context
+        .common
+        .command_tracking(command_buffer)
+        .command_blitted(
+            source_image,
+            source_layout,
+            destination_image,
+            vk::Offset2D {
+                x: region.src_offset.x,
+                y: region.src_offset.y,
+            },
+            extent,
+            vk::Offset2D {
+                x: region.dst_offset.x,
+                y: region.dst_offset.y,
+            },
+            extent,
+        );
 }
 
 pub(crate) fn get_device_queue(device: vk::Device, queue_family_index: u32, queue: *mut vk::Queue) {
