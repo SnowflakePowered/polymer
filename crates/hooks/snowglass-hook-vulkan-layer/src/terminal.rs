@@ -12,6 +12,7 @@ const LOADER_LAYER_INTERFACE_VERSION: u32 = 2;
 pub(crate) unsafe fn negotiate(
     interface: *mut crate::layer::VkNegotiateLayerInterface,
 ) -> vk::Result {
+    let _ = crate::layer::install_hook_state(Arc::new(crate::layer::VulkanHookState::default()));
     if interface.is_null() {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     }

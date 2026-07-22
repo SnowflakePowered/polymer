@@ -47,8 +47,8 @@ pub(crate) fn create_swapchain(
     if result != vk::Result::SUCCESS || create_info.is_null() || swapchain.is_null() {
         return;
     }
-    let dispatch =
-        unsafe { dispatch_key(device) }.and_then(|key| DEVICE.get(&key).map(|entry| entry.clone()));
+    let dispatch = unsafe { dispatch_key(device) }
+        .and_then(|key| hook_state().device.get(&key).map(|entry| entry.clone()));
     let info = unsafe { &*create_info };
     context.common.device_capture(device).swapchain_created(
         unsafe { *swapchain },
@@ -99,7 +99,7 @@ pub(crate) fn queue_submit(
     result: vk::Result,
     context: &crate::hooks::QueueSubmitContext,
 ) {
-    let Some(queue_state) = ({ QUEUE.get(&queue).map(|entry| entry.clone()) }) else {
+    let Some(queue_state) = ({ hook_state().queue.get(&queue).map(|entry| entry.clone()) }) else {
         return;
     };
     if result != vk::Result::SUCCESS || submit_count == 0 || submits.is_null() {
@@ -133,7 +133,7 @@ pub(crate) unsafe fn handle_queue_present(
     let continuation = *next
         .fp_next()
         .expect("Vulkan around chains always have a terminal");
-    let Some(queue_state) = ({ QUEUE.get(&queue).map(|entry| entry.clone()) }) else {
+    let Some(queue_state) = ({ hook_state().queue.get(&queue).map(|entry| entry.clone()) }) else {
         return vk::Result::ERROR_DEVICE_LOST;
     };
     if present_info.is_null()

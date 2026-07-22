@@ -365,17 +365,27 @@ pub(crate) fn cmd_copy_image(
         );
 }
 
-pub(crate) fn get_device_queue(device: vk::Device, queue_family_index: u32, queue: *mut vk::Queue) {
-    let Some(dispatch) = (unsafe { dispatch_key(device) })
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.clone()))
-    else {
+pub(crate) fn get_device_queue(
+    device: vk::Device,
+    queue_family_index: u32,
+    queue: *mut vk::Queue,
+    context: &hooks::GetDeviceQueueContext,
+) {
+    let Some(dispatch) = (unsafe { dispatch_key(device) }).and_then(|key| {
+        context
+            .common
+            .state
+            .device
+            .get(&key)
+            .map(|entry| entry.clone())
+    }) else {
         return;
     };
     if !queue.is_null() {
         let queue = unsafe { *queue };
         if queue != vk::Queue::default() {
             {
-                QUEUE.insert(
+                context.common.state.queue.insert(
                     queue,
                     QueueDispatchTable {
                         device,
@@ -392,10 +402,16 @@ pub(crate) fn get_device_queue2(
     device: vk::Device,
     queue_info: *const vk::DeviceQueueInfo2<'_>,
     queue: *mut vk::Queue,
+    context: &hooks::GetDeviceQueue2Context,
 ) {
-    let Some(dispatch) = (unsafe { dispatch_key(device) })
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.clone()))
-    else {
+    let Some(dispatch) = (unsafe { dispatch_key(device) }).and_then(|key| {
+        context
+            .common
+            .state
+            .device
+            .get(&key)
+            .map(|entry| entry.clone())
+    }) else {
         return;
     };
     if !queue.is_null() {
@@ -407,7 +423,7 @@ pub(crate) fn get_device_queue2(
                 unsafe { (*queue_info).queue_family_index }
             };
             {
-                QUEUE.insert(
+                context.common.state.queue.insert(
                     queue,
                     QueueDispatchTable {
                         device,
@@ -425,11 +441,12 @@ pub(crate) fn enumerate_physical_devices(
     physical_device_count: *mut u32,
     physical_devices: *mut vk::PhysicalDevice,
     result: vk::Result,
+    context: &hooks::EnumeratePhysicalDevicesContext,
 ) {
     let Some(next_gipa) = instance_gipa(instance) else {
         return;
     };
-    let capture_state = instance_capture(instance);
+    let capture_state = context.common.instance_capture(instance);
     if matches!(result, vk::Result::SUCCESS | vk::Result::INCOMPLETE)
         && !physical_device_count.is_null()
         && !physical_devices.is_null()
@@ -438,7 +455,7 @@ pub(crate) fn enumerate_physical_devices(
             unsafe { std::slice::from_raw_parts(physical_devices, *physical_device_count as usize) }
         {
             {
-                PHYSICAL_DEVICE.insert(
+                context.common.state.physical_device.insert(
                     *physical_device,
                     PhysicalDeviceState {
                         instance,

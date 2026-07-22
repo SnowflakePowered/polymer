@@ -9,7 +9,9 @@ snowglass_hook::__chain_hooks! {
     #![terminal_resolver(vulkan_terminal)]
     #![order(forward)]
     #[context]
-    pub(crate) struct VulkanHookContext {}
+    pub(crate) struct VulkanHookContext {
+        pub(crate) state: std::sync::Arc<crate::layer::VulkanHookState> = crate::layer::hook_state(),
+    }
 
     #[export(vkCmdDraw)]
     #[terminal(dynamic(command_buffer, c"vkCmdDraw": vk::PFN_vkCmdDraw), fallback = ())]
@@ -24,7 +26,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkGetDeviceQueue)]
     #[terminal(dynamic(device, c"vkGetDeviceQueue": vk::PFN_vkGetDeviceQueue), fallback = ())]
-    #[postfix(|_result, _context| observers::get_device_queue(device, queue_family_index, queue))]
+    #[postfix(observers::get_device_queue(device, queue_family_index, queue))]
     pub(crate) unsafe extern "system" fn get_device_queue(
         device: vk::Device,
         queue_family_index: u32,
@@ -34,7 +36,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkGetDeviceQueue2)]
     #[terminal(dynamic(device, c"vkGetDeviceQueue2": vk::PFN_vkGetDeviceQueue2), fallback = ())]
-    #[postfix(|_result, _context| observers::get_device_queue2(device, queue_info, queue))]
+    #[postfix(observers::get_device_queue2(device, queue_info, queue))]
     pub(crate) unsafe extern "system" fn get_device_queue2(
         device: vk::Device,
         queue_info: *const vk::DeviceQueueInfo2<'_>,
@@ -109,7 +111,7 @@ snowglass_hook::__chain_hooks! {
 
     #[export(vkEnumeratePhysicalDevices)]
     #[terminal(dynamic(instance, c"vkEnumeratePhysicalDevices": vk::PFN_vkEnumeratePhysicalDevices), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
-    #[postfix(|result, _context| observers::enumerate_physical_devices(instance, count, devices, result))]
+    #[postfix(observers::enumerate_physical_devices(instance, count, devices, result))]
     pub(crate) unsafe extern "system" fn enumerate_physical_devices(
         instance: vk::Instance,
         count: *mut u32,
@@ -141,13 +143,6 @@ snowglass_hook::__chain_hooks! {
         create_info: *const vk::DeviceCreateInfo<'_>,
         allocator: *const vk::AllocationCallbacks<'_>,
         device: *mut vk::Device,
-    ) -> vk::Result;
-
-    #[export(vkNegotiateLoaderLayerInterfaceVersion)]
-    #[terminal(direct = crate::terminal::negotiate)]
-    #[prefix(|_context| observers::noop())]
-    pub(crate) unsafe extern "system" fn negotiate(
-        interface: *mut crate::layer::VkNegotiateLayerInterface,
     ) -> vk::Result;
 
     #[export(vkGetInstanceProcAddr)]
@@ -360,37 +355,83 @@ snowglass_hook::__chain_hooks! {
     );
 }
 
+snowglass_hook::__chain_hooks! {
+    #![order(forward)]
+
+    #[export(vkNegotiateLoaderLayerInterfaceVersion)]
+    #[terminal(direct = crate::terminal::negotiate)]
+    pub(crate) unsafe extern "system" fn negotiate(
+        interface: *mut crate::layer::VkNegotiateLayerInterface,
+    ) -> vk::Result;
+}
+
 impl VulkanHookContext {
     pub(crate) fn command_tracking(
         &self,
         command_buffer: vk::CommandBuffer,
     ) -> std::sync::Arc<tracking::Tracking> {
-        crate::layer::command_tracking(command_buffer)
+        unsafe { crate::layer::dispatch_key(command_buffer) }
+            .and_then(|key| {
+                self.state
+                    .device
+                    .get(&key)
+                    .map(|entry| entry.tracking.clone())
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn device_tracking(&self, device: vk::Device) -> std::sync::Arc<tracking::Tracking> {
-        crate::layer::device_tracking(device)
+        unsafe { crate::layer::dispatch_key(device) }
+            .and_then(|key| {
+                self.state
+                    .device
+                    .get(&key)
+                    .map(|entry| entry.tracking.clone())
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn queue_tracking(&self, queue: vk::Queue) -> std::sync::Arc<tracking::Tracking> {
-        crate::layer::queue_tracking(queue)
+        self.state
+            .queue
+            .get(&queue)
+            .map(|entry| entry.dispatch.tracking.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn instance_capture(
         &self,
         instance: vk::Instance,
     ) -> std::sync::Arc<capture::CaptureState> {
-        crate::layer::instance_capture(instance)
+        unsafe { crate::layer::dispatch_key(instance) }
+            .and_then(|key| {
+                self.state
+                    .instance
+                    .get(&key)
+                    .map(|entry| entry.capture_state.clone())
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn device_capture(
         &self,
         device: vk::Device,
     ) -> std::sync::Arc<capture::CaptureState> {
-        crate::layer::device_capture(device)
+        unsafe { crate::layer::dispatch_key(device) }
+            .and_then(|key| {
+                self.state
+                    .device
+                    .get(&key)
+                    .map(|entry| entry.capture_state.clone())
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn queue_capture(&self, queue: vk::Queue) -> std::sync::Arc<capture::CaptureState> {
-        crate::layer::queue_capture(queue)
+        self.state
+            .queue
+            .get(&queue)
+            .map(|entry| entry.dispatch.capture_state.clone())
+            .unwrap_or_default()
     }
 }

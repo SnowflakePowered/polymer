@@ -10,8 +10,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     mem,
-    sync::Arc,
-    sync::LazyLock,
+    sync::{Arc, LazyLock, OnceLock},
 };
 
 pub(crate) use snowglass_producer_vulkan::capture::{CaptureDevice, CaptureState};
@@ -112,20 +111,24 @@ pub(crate) struct PhysicalDeviceState {
     pub capture_state: Arc<CaptureState>,
 }
 
-#[allow(clippy::type_complexity)]
-pub(crate) static DEVICE: LazyLock<DashMap<usize, DeviceDispatchTable>> =
-    LazyLock::new(Default::default);
+#[derive(Default)]
+pub(crate) struct VulkanHookState {
+    pub(crate) device: DashMap<usize, DeviceDispatchTable>,
+    pub(crate) instance: DashMap<usize, InstanceDispatchTable>,
+    pub(crate) physical_device: DashMap<vk::PhysicalDevice, PhysicalDeviceState>,
+    pub(crate) queue: DashMap<vk::Queue, QueueDispatchTable>,
+}
 
-#[allow(clippy::type_complexity)]
-pub(crate) static INSTANCE: LazyLock<DashMap<usize, InstanceDispatchTable>> =
-    LazyLock::new(Default::default);
+static HOOK_STATE: OnceLock<Arc<VulkanHookState>> = OnceLock::new();
 
-pub(crate) static PHYSICAL_DEVICE: LazyLock<DashMap<vk::PhysicalDevice, PhysicalDeviceState>> =
-    LazyLock::new(Default::default);
+pub(crate) fn install_hook_state(state: Arc<VulkanHookState>) -> Arc<VulkanHookState> {
+    let _ = HOOK_STATE.set(state);
+    Arc::clone(HOOK_STATE.get().expect("Vulkan hook state was installed"))
+}
 
-#[allow(clippy::type_complexity)]
-pub(crate) static QUEUE: LazyLock<DashMap<vk::Queue, QueueDispatchTable>> =
-    LazyLock::new(Default::default);
+pub(crate) fn hook_state() -> Arc<VulkanHookState> {
+    Arc::clone(HOOK_STATE.get_or_init(|| Arc::new(VulkanHookState::default())))
+}
 
 /// Presentation ownership is process-wide, not VkInstance-wide. Applications
 /// such as Azahar create separate Vulkan instances for sibling presentation
@@ -233,7 +236,7 @@ pub(crate) unsafe fn take_instance_bootstrap(
 pub(crate) fn register_instance_dispatch(created: vk::Instance, bootstrap: InstanceBootstrap) {
     if let Some(key) = unsafe { dispatch_key(created) } {
         {
-            INSTANCE.insert(
+            hook_state().instance.insert(
                 key,
                 InstanceDispatchTable {
                     next_gipa: bootstrap.next_gipa,
@@ -254,10 +257,16 @@ pub(crate) unsafe fn handle_destroy_instance(
         .fp_next()
         .expect("Vulkan around chains always have a terminal");
     {
-        PHYSICAL_DEVICE.retain(|_, state| state.instance != instance)
+        hook_state()
+            .physical_device
+            .retain(|_, state| state.instance != instance)
     };
-    let dispatch = unsafe { dispatch_key(instance) }
-        .and_then(|key| INSTANCE.remove(&key).map(|(_, dispatch)| dispatch));
+    let dispatch = unsafe { dispatch_key(instance) }.and_then(|key| {
+        hook_state()
+            .instance
+            .remove(&key)
+            .map(|(_, dispatch)| dispatch)
+    });
     let _ = dispatch;
     unsafe { continuation(instance, allocator, next) };
 }
@@ -287,13 +296,16 @@ pub(crate) unsafe fn take_device_bootstrap(
 }
 
 pub(crate) fn physical_device_state(device: vk::PhysicalDevice) -> Option<PhysicalDeviceState> {
-    PHYSICAL_DEVICE.get(&device).map(|entry| entry.clone())
+    hook_state()
+        .physical_device
+        .get(&device)
+        .map(|entry| entry.clone())
 }
 
 pub(crate) fn register_device_dispatch(device: vk::Device, dispatch: DeviceDispatchTable) {
     if let Some(key) = unsafe { dispatch_key(device) } {
         {
-            DEVICE.insert(key, dispatch);
+            hook_state().device.insert(key, dispatch);
         }
     }
 }
@@ -314,13 +326,19 @@ pub(crate) unsafe fn handle_destroy_device(
     let continuation = *next
         .fp_next()
         .expect("Vulkan around chains always have a terminal");
-    let dispatch = unsafe { dispatch_key(device) }
-        .and_then(|key| DEVICE.remove(&key).map(|(_, dispatch)| dispatch));
+    let dispatch = unsafe { dispatch_key(device) }.and_then(|key| {
+        hook_state()
+            .device
+            .remove(&key)
+            .map(|(_, dispatch)| dispatch)
+    });
     if let Some(capture) = dispatch.as_ref().and_then(|entry| entry.capture.as_ref()) {
         let _ = unsafe { capture.device.device_wait_idle() };
     }
     {
-        QUEUE.retain(|_, dispatch| dispatch.device != device)
+        hook_state()
+            .queue
+            .retain(|_, dispatch| dispatch.device != device)
     };
     next.common.device_capture(device).device_destroyed(device);
     unsafe { continuation(device, allocator, next) };
@@ -329,8 +347,9 @@ pub(crate) unsafe fn handle_destroy_device(
 pub(crate) fn command_dispatch_data(
     command_buffer: vk::CommandBuffer,
 ) -> Option<(vk::PFN_vkGetDeviceProcAddr, vk::Device)> {
+    let state = hook_state();
     let dispatch = unsafe { dispatch_key(command_buffer) }
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.clone()))?;
+        .and_then(|key| state.device.get(&key).map(|entry| entry.clone()))?;
     let device = dispatch
         .capture
         .as_ref()
@@ -338,69 +357,42 @@ pub(crate) fn command_dispatch_data(
     Some((dispatch.next_gdpa, device))
 }
 
-pub(crate) fn command_tracking(command_buffer: vk::CommandBuffer) -> Arc<Tracking> {
-    unsafe { dispatch_key(command_buffer) }
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.tracking.clone()))
-        .unwrap_or_default()
-}
-
-pub(crate) fn device_tracking(device: vk::Device) -> Arc<Tracking> {
-    unsafe { dispatch_key(device) }
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.tracking.clone()))
-        .unwrap_or_default()
-}
-
-pub(crate) fn queue_tracking(queue: vk::Queue) -> Arc<Tracking> {
-    QUEUE
-        .get(&queue)
-        .map(|entry| entry.dispatch.tracking.clone())
-        .unwrap_or_default()
-}
-
-pub(crate) fn instance_capture(instance: vk::Instance) -> Arc<CaptureState> {
-    unsafe { dispatch_key(instance) }
-        .and_then(|key| INSTANCE.get(&key).map(|entry| entry.capture_state.clone()))
-        .unwrap_or_default()
-}
-
-pub(crate) fn device_capture(device: vk::Device) -> Arc<CaptureState> {
-    unsafe { dispatch_key(device) }
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.capture_state.clone()))
-        .unwrap_or_default()
-}
-
-pub(crate) fn queue_capture(queue: vk::Queue) -> Arc<CaptureState> {
-    QUEUE
-        .get(&queue)
-        .map(|entry| entry.dispatch.capture_state.clone())
-        .unwrap_or_default()
-}
-
 pub(crate) fn instance_gipa(instance: vk::Instance) -> Option<vk::PFN_vkGetInstanceProcAddr> {
     unsafe { dispatch_key(instance) }
-        .and_then(|key| INSTANCE.get(&key).map(|entry| entry.next_gipa))
+        .and_then(|key| hook_state().instance.get(&key).map(|entry| entry.next_gipa))
 }
 
 pub(crate) fn instance_physical_gpa(
     instance: vk::Instance,
 ) -> Option<PfnGetPhysicalDeviceProcAddr> {
-    unsafe { dispatch_key(instance) }
-        .and_then(|key| INSTANCE.get(&key).and_then(|entry| entry.next_physical_gpa))
+    unsafe { dispatch_key(instance) }.and_then(|key| {
+        hook_state()
+            .instance
+            .get(&key)
+            .and_then(|entry| entry.next_physical_gpa)
+    })
 }
 
 pub(crate) fn device_gdpa(device: vk::Device) -> Option<vk::PFN_vkGetDeviceProcAddr> {
-    unsafe { dispatch_key(device) }.and_then(|key| DEVICE.get(&key).map(|entry| entry.next_gdpa))
+    unsafe { dispatch_key(device) }
+        .and_then(|key| hook_state().device.get(&key).map(|entry| entry.next_gdpa))
 }
 
 pub(crate) fn queue_dispatch_data(
     queue: vk::Queue,
 ) -> Option<(vk::PFN_vkGetDeviceProcAddr, vk::Device)> {
-    let state = QUEUE.get(&queue)?;
+    let state = hook_state();
+    let state = state.queue.get(&queue)?;
     Some((state.dispatch.next_gdpa, state.device))
 }
 
 pub(crate) fn capture_enabled(device: vk::Device) -> bool {
     unsafe { dispatch_key(device) }
-        .and_then(|key| DEVICE.get(&key).map(|entry| entry.capture.is_some()))
+        .and_then(|key| {
+            hook_state()
+                .device
+                .get(&key)
+                .map(|entry| entry.capture.is_some())
+        })
         .unwrap_or(false)
 }
