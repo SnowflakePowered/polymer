@@ -148,7 +148,5 @@ pub(crate) unsafe fn device_tracking(
 ) -> Option<Arc<snowglass_producer_d3d11::Tracking>> {
     let device = unsafe { ID3D11Device::from_raw_borrowed(&device) }?;
     let context = unsafe { device.GetImmediateContext() }.ok()?;
-    CONTEXTS
-        .get(&(context.as_raw() as usize))
-        .map(|state| state.common().tracking.clone())
+    ID3D11DeviceContextHook::with_context(context.as_raw(), |context| context.tracking.clone())
 }

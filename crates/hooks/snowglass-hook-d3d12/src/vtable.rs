@@ -323,19 +323,13 @@ unsafe fn install_command_list(
     };
 }
 
-fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {
-    DEVICES.get(&(device as usize)).map(|hook| select(&**hook))
-}
-
 fn device_tracking(device: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
-    device_method(device, |hook| hook.common().tracking.clone())
+    ID3D12DeviceHook::with_context(device, |context| context.tracking.clone())
 }
 
 #[cfg(test)]
 pub(crate) fn list_tracking(list: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
-    COMMAND_LISTS
-        .get(&(list as usize))
-        .map(|hook| hook.common().tracking.clone())
+    ID3D12GraphicsCommandListHook::with_context(list, |context| context.tracking.clone())
 }
 
 /// Resolves the tracking context associated with a D3D12 command queue's device.

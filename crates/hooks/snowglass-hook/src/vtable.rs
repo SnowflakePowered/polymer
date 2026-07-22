@@ -1194,6 +1194,15 @@ macro_rules! impl_com_hook {
         unsafe impl<A: Vtable> Sync for [<$hook State>]<A> {}
 
         impl $hook {
+            $($visibility fn with_context<T>(
+                object: *mut ::core::ffi::c_void,
+                select: impl FnOnce(&$common_context) -> T,
+            ) -> Option<T> {
+                $registry
+                    .get(&(object as usize))
+                    .map(|state| select(state.common()))
+            })?
+
             $visibility unsafe fn install_widest(
                 object: *mut ::core::ffi::c_void,
                 $(common: $common_context,)?
