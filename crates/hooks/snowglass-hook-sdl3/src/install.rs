@@ -9,7 +9,6 @@ use std::{
     io::Write,
     os::windows::ffi::OsStrExt,
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
 };
 use windows_sys::Win32::{
     Foundation::HMODULE,
@@ -23,7 +22,6 @@ pub(crate) struct Sdl3TableState {
 
 static DYNAPI_ENTRY_TARGET: OnceLock<api::DynapiEntryFn> = OnceLock::new();
 static DYNAPI_MODULE: OnceLock<usize> = OnceLock::new();
-static DISCOVERY_STARTED: OnceLock<()> = OnceLock::new();
 static ATTACHMENT_LOGGED: OnceLock<()> = OnceLock::new();
 
 const SDL3_DLL: &[u16] = &[
@@ -113,14 +111,6 @@ snowglass_hook::function_table_hook! {
 pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
     preload_dynamic_api();
     discover_loaded_module();
-    if DISCOVERY_STARTED.set(()).is_ok() {
-        std::thread::spawn(|| {
-            loop {
-                discover_loaded_module();
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        });
-    }
     0
 }
 

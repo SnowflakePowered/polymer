@@ -8,7 +8,6 @@ use std::{
     fs::OpenOptions,
     io::Write,
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
 };
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetModuleHandleW};
 
@@ -21,7 +20,6 @@ struct Installation {
 
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
 static INSTALLATION: OnceLock<Installation> = OnceLock::new();
-static DISCOVERY_STARTED: OnceLock<()> = OnceLock::new();
 
 const SDL2_DLL: &[u16] = &[
     b'S' as u16,
@@ -63,14 +61,6 @@ pub unsafe extern "system" fn SnowglassInstallSdl2Hook() -> i32 {
         runtime.start_receiver(format!("{session}-input"));
     }
     discover_loaded_module();
-    if DISCOVERY_STARTED.set(()).is_ok() {
-        std::thread::spawn(|| {
-            loop {
-                discover_loaded_module();
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        });
-    }
     0
 }
 
