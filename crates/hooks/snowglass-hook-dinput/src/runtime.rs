@@ -15,6 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use windows::core::Interface;
 use windows_sys::{
     Win32::{
         Devices::HumanInterfaceDevice::{
@@ -74,12 +75,38 @@ impl Runtime {
     }
 }
 
-unsafe fn install_direct_input(runtime: Arc<Runtime>, interface: *mut c_void) {
-    unsafe {
-        IDirectInputHook::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A_Vtbl>::install(
-            interface, runtime,
+fn guid_matches_interface<T: Interface>(guid: &GUID) -> bool {
+    windows::core::GUID::from_values(guid.data1, guid.data2, guid.data3, guid.data4) == T::IID
+}
+
+unsafe fn wrap_direct_input(
+    runtime: Arc<Runtime>,
+    interface: *mut c_void,
+    iid: &GUID,
+) -> Option<*mut c_void> {
+    let (wide, iid) = if guid_matches_interface::<
+        windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8W,
+    >(iid)
+    {
+        (
+            true,
+            windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8W::IID,
         )
+    } else if guid_matches_interface::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A>(
+        iid,
+    ) {
+        (
+            false,
+            windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A::IID,
+        )
+    } else {
+        return None;
     };
+    unsafe {
+        IDirectInputHook::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A_Vtbl>::wrap(
+            interface, iid, runtime, wide,
+        )
+    }
 }
 
 pub(crate) unsafe fn create_device(
@@ -113,7 +140,11 @@ pub(crate) unsafe fn create_device(
             None
         };
         if let Some(device_class) = device_class {
-            unsafe { hook_device(runtime, *output, device_class) };
+            if let Some(proxy) =
+                unsafe { wrap_device(runtime, *output, device_class, *context.wide) }
+            {
+                unsafe { *output = proxy };
+            }
             dinput_log(format!(
                 "snowglass: hooked {device_class:?} DirectInput device"
             ));
@@ -128,12 +159,22 @@ fn guid_eq(left: &GUID, right: &GUID) -> bool {
         && left.data4 == right.data4
 }
 
-unsafe fn hook_device(runtime: Arc<Runtime>, interface: *mut c_void, device: DirectInputDevice) {
+unsafe fn wrap_device(
+    runtime: Arc<Runtime>,
+    interface: *mut c_void,
+    device: DirectInputDevice,
+    wide: bool,
+) -> Option<*mut c_void> {
+    let iid = if wide {
+        windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8W::IID
+    } else {
+        windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A::IID
+    };
     unsafe {
         IDirectInputDeviceHook::<
             windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A_Vtbl,
-        >::install(interface, runtime, device)
-    };
+        >::wrap(interface, iid, runtime, device)
+    }
 }
 
 pub(crate) unsafe fn get_device_state(
@@ -262,8 +303,12 @@ pub(crate) unsafe fn direct_input_8_create(
     dinput_log(format!(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
-    if result >= 0 && !output.is_null() {
-        unsafe { install_direct_input(context.runtime.clone(), *output) };
+    if result >= 0 && !interface_id.is_null() && !output.is_null() && outer.is_null() {
+        if let Some(proxy) =
+            unsafe { wrap_direct_input(context.runtime.clone(), *output, &*interface_id) }
+        {
+            unsafe { *output = proxy };
+        }
     }
     let _ = (instance, outer);
 }
@@ -331,8 +376,16 @@ mod tests {
         original_vtable[SET_EVENT_NOTIFICATION_INDEX] =
             original_set_event_stub as *const () as usize;
         let mut object_vtable = original_vtable.as_ptr();
-        let keyboard = (&raw mut object_vtable).cast::<c_void>();
-        unsafe { hook_device(runtime.clone(), keyboard, DirectInputDevice::Keyboard) };
+        let inner_keyboard = (&raw mut object_vtable).cast::<c_void>();
+        let keyboard = unsafe {
+            wrap_device(
+                runtime.clone(),
+                inner_keyboard,
+                DirectInputDevice::Keyboard,
+                false,
+            )
+        }
+        .unwrap();
         let event = unsafe {
             windows_sys::Win32::System::Threading::CreateEventW(
                 std::ptr::null(),

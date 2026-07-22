@@ -55,7 +55,7 @@ snowglass_hook::com_vtable! {
 const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
 
-snowglass_hook::impl_com_hook! {
+snowglass_hook::impl_com_proxy! {
     pub(crate) registry DIRECT_INPUT_HOOKS;
     pub(crate) trait DirectInputHookState;
     impl DirectInputHookState for IDirectInputHook {
@@ -64,6 +64,7 @@ snowglass_hook::impl_com_hook! {
         unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32 {
             context struct {
                 runtime: std::sync::Arc<crate::runtime::Runtime>,
+                wide: bool,
             }
         }
 
@@ -74,12 +75,13 @@ snowglass_hook::impl_com_hook! {
         unsafe extern "system" fn create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT {
             context |state| {
                 runtime: std::sync::Arc<crate::runtime::Runtime> = state.runtime().clone(),
+                wide: bool = *state.wide(),
             }
         }
     }
 }
 
-snowglass_hook::impl_com_hook! {
+snowglass_hook::impl_com_proxy! {
     pub(crate) registry DEVICE_HOOKS;
     pub(crate) trait DeviceHookState;
     impl DeviceHookState for IDirectInputDeviceHook {
@@ -95,9 +97,7 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = Acquire]
         #[fallback = 0x8000_4005u32 as i32]
-        unsafe extern "system" fn acquire(this: *mut c_void) -> HRESULT {
-            context |_state| {}
-        }
+        unsafe extern "system" fn acquire(this: *mut c_void) -> HRESULT;
 
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = GetDeviceState]
@@ -124,9 +124,7 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetDataFormat]
         #[fallback = 0x8000_4005u32 as i32]
-        unsafe extern "system" fn set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT {
-            context |_state| {}
-        }
+        unsafe extern "system" fn set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT;
 
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetEventNotification]
@@ -146,8 +144,6 @@ snowglass_hook::impl_com_hook! {
         #[vtable = IDirectInputDevice8A_Vtbl]
         #[base = SetCooperativeLevel]
         #[fallback = 0x8000_4005u32 as i32]
-        unsafe extern "system" fn set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT {
-            context |_state| {}
-        }
+        unsafe extern "system" fn set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT;
     }
 }

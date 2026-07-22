@@ -7,7 +7,10 @@ mod vtable;
 pub use dashmap::DashMap as __DashMap;
 #[doc(hidden)]
 pub use paste::paste as __paste;
+pub use vtable::ComProxy;
 pub use vtable::VtableHook;
+#[doc(hidden)]
+pub use windows_core::GUID as __GUID;
 
 use std::sync::{Arc, Condvar, Mutex};
 

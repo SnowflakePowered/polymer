@@ -168,6 +168,144 @@ pub trait VtableHook: Send + Sync {
     fn original_vtable(&self) -> *const usize;
 }
 
+/// ABI-transparent storage used by [`impl_com_proxy!`].
+#[doc(hidden)]
+#[repr(C)]
+pub struct ComProxy {
+    vtable: *const usize,
+    inner: *mut ::core::ffi::c_void,
+    references: ::core::sync::atomic::AtomicU32,
+    iid: windows_core::GUID,
+    forwarding: Box<[::core::ptr::NonNull<::core::ffi::c_void>]>,
+}
+
+unsafe impl Send for ComProxy {}
+unsafe impl Sync for ComProxy {}
+
+impl ComProxy {
+    /// Builds a proxy whose untouched slots replace `this` and tail-call the
+    /// corresponding slot on `inner`.
+    pub unsafe fn new(
+        inner: *mut ::core::ffi::c_void,
+        iid: windows_core::GUID,
+        slots: usize,
+    ) -> Option<*mut ::core::ffi::c_void> {
+        if inner.is_null() || slots > COM_PROXY_FORWARDER_CAPACITY {
+            return None;
+        }
+        let mut forwarding: Box<[::core::ptr::NonNull<::core::ffi::c_void>]> =
+            (0..slots)
+                .map(|slot| unsafe {
+                    ::core::ptr::NonNull::new_unchecked(
+                        com_proxy_forwarder(slot) as *const () as *mut _
+                    )
+                })
+                .collect();
+        forwarding[0] = unsafe {
+            ::core::ptr::NonNull::new_unchecked(com_proxy_query_interface as *const () as *mut _)
+        };
+        forwarding[1] = unsafe {
+            ::core::ptr::NonNull::new_unchecked(com_proxy_add_ref as *const () as *mut _)
+        };
+        forwarding[2] = unsafe {
+            ::core::ptr::NonNull::new_unchecked(com_proxy_release as *const () as *mut _)
+        };
+        let mut proxy = Box::new(Self {
+            vtable: forwarding.as_ptr().cast(),
+            inner,
+            references: ::core::sync::atomic::AtomicU32::new(1),
+            iid,
+            forwarding,
+        });
+        let pointer = ::core::ptr::from_mut(proxy.as_mut()).cast();
+        let _ = Box::into_raw(proxy);
+        Some(pointer)
+    }
+
+    pub unsafe fn abandon(pointer: *mut ::core::ffi::c_void) -> *mut ::core::ffi::c_void {
+        let proxy = unsafe { Box::from_raw(pointer.cast::<Self>()) };
+        let inner = proxy.inner;
+        drop(proxy);
+        inner
+    }
+}
+
+unsafe extern "system" fn com_proxy_query_interface(
+    this: *mut ::core::ffi::c_void,
+    iid: *const windows_core::GUID,
+    output: *mut *mut ::core::ffi::c_void,
+) -> i32 {
+    if iid.is_null() || output.is_null() {
+        return 0x8007_0057u32 as i32;
+    }
+    let proxy = unsafe { &*this.cast::<ComProxy>() };
+    let unknown = <windows_core::IUnknown as windows_core::Interface>::IID;
+    if unsafe { *iid } != unknown && unsafe { *iid } != proxy.iid {
+        unsafe { *output = ::core::ptr::null_mut() };
+        return 0x8000_4002u32 as i32;
+    }
+    unsafe { *output = this };
+    unsafe { com_proxy_add_ref(this) };
+    0
+}
+
+unsafe extern "system" fn com_proxy_add_ref(this: *mut ::core::ffi::c_void) -> u32 {
+    unsafe { &*this.cast::<ComProxy>() }
+        .references
+        .fetch_add(1, ::core::sync::atomic::Ordering::Relaxed)
+        + 1
+}
+
+unsafe extern "system" fn com_proxy_release(this: *mut ::core::ffi::c_void) -> u32 {
+    let proxy = unsafe { &*this.cast::<ComProxy>() };
+    let remaining = proxy
+        .references
+        .fetch_sub(1, ::core::sync::atomic::Ordering::Release)
+        - 1;
+    if remaining != 0 {
+        return remaining;
+    }
+    ::core::sync::atomic::fence(::core::sync::atomic::Ordering::Acquire);
+    let inner = proxy.inner;
+    drop(unsafe { <windows_core::IUnknown as windows_core::Interface>::from_raw(inner) });
+    unsafe { drop(Box::from_raw(this.cast::<ComProxy>())) };
+    0
+}
+
+const COM_PROXY_FORWARDER_CAPACITY: usize = 64;
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+unsafe extern "system" fn com_proxy_forward<const SLOT: usize>() {
+    ::core::arch::naked_asm!(
+        "mov rcx, [rcx + 8]",
+        "mov rax, [rcx]",
+        "jmp qword ptr [rax + {offset}]",
+        offset = const SLOT * ::core::mem::size_of::<usize>(),
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+unsafe extern "system" fn com_proxy_forward<const SLOT: usize>() {
+    ::core::arch::naked_asm!(
+        "ldr x0, [x0, #8]",
+        "ldr x16, [x0]",
+        "ldr x16, [x16, #{offset}]",
+        "br x16",
+        offset = const SLOT * ::core::mem::size_of::<usize>(),
+    )
+}
+
+seq_macro::seq!(SLOT in 0..64 {
+    fn com_proxy_forwarder(slot: usize) -> unsafe extern "system" fn() {
+        match slot {
+            #(SLOT => com_proxy_forward::<SLOT>,)*
+            _ => unreachable!("COM proxy slot exceeds forwarding capacity"),
+        }
+    }
+});
+
 /// Declares typed around-hook chains for selected entries in a mutable
 /// function-pointer table. The generated dispatcher for each entry is written
 /// into the table, while the captured base function is the chain terminal.
@@ -395,6 +533,62 @@ macro_rules! function_table_hook {
 /// Trivial observers can be declared inline as `#[prefix(|context| expr)]`
 /// and `#[postfix(|result, context| expr)]`.
 #[macro_export]
+macro_rules! impl_com_proxy {
+    (
+        $visibility:vis registry $registry:ident;
+        $visibility_trait:vis trait $hook_trait:ident;
+        impl $hook_trait_impl:ident for $hook:ident {
+            vtable $storage:ty;
+            #[release $( (destroyed = $destroyed:path) )?]
+            unsafe extern "system" fn $release_dispatch:ident(
+                $release_this:ident: $release_this_type:ty $(,)?
+            ) -> u32 {
+                context struct {
+                    $($(#[$context_attribute:meta])* $context:ident: $context_type:ty),* $(,)?
+                }
+            }
+            $($methods:tt)*
+        }
+    ) => {
+        $crate::impl_com_hook! {
+            $visibility registry $registry;
+            $visibility_trait trait $hook_trait;
+            impl $hook_trait_impl for $hook {
+                vtable $storage;
+                #[release $( (destroyed = $destroyed) )?]
+                unsafe extern "system" fn $release_dispatch(
+                    $release_this: $release_this_type
+                ) -> u32 {
+                    context struct {
+                        $($(#[$context_attribute])* $context: $context_type),*
+                    }
+                }
+                $($methods)*
+            }
+        }
+
+        impl<A: Vtable> $hook<A> {
+            /// Wraps `inner` in a proxy and installs the typed hook on it.
+            /// The proxy takes ownership of the caller's existing COM reference.
+            $visibility unsafe fn wrap(
+                inner: *mut ::core::ffi::c_void,
+                iid: $crate::__GUID,
+                $($context: $context_type),*
+            ) -> Option<*mut ::core::ffi::c_void> {
+                let proxy = unsafe { $crate::ComProxy::new(inner, iid, A::SLOTS)? };
+                if unsafe { Self::install(proxy, $($context),*) } {
+                    Some(proxy)
+                } else {
+                    // Installation failed before ownership could be published.
+                    let _ = unsafe { $crate::ComProxy::abandon(proxy) };
+                    None
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! impl_com_hook {
     (
         $visibility:vis registry $registry:ident;
@@ -421,12 +615,12 @@ macro_rules! impl_com_hook {
                 unsafe extern "system" fn $dispatch:ident(
                     $this:ident: $this_type:ty
                     $(, $argument:ident: $argument_type:ty)* $(,)?
-                ) $(-> $result:ty)? {
+                ) $(-> $result:ty)? $( {
                     context |$state:ident| {
                         $($dispatch_field:ident: $dispatch_field_type:ty = $dispatch_field_value:expr),*
                         $(,)?
                     }
-                }
+                } )? $(;)?
             )+
         }
     ) => { $crate::__paste! {
@@ -596,7 +790,7 @@ macro_rules! impl_com_hook {
                 hooks: ::core::slice::Iter<'a, [<$dispatch:camel Hook>]>,
                 terminal: &'a [<$dispatch:camel Hook>],
                 base: unsafe extern "system" fn($this_type, $($argument_type),*) $(-> $result)?,
-                $($visibility $dispatch_field: &'a $dispatch_field_type,)*
+                $($($visibility $dispatch_field: &'a $dispatch_field_type,)*)?
             }
 
             impl<'a> $crate::HookChain<'a, [<$dispatch:camel Hook>]>
@@ -619,17 +813,18 @@ macro_rules! impl_com_hook {
                     unsafe { (context.base)($this, $($argument),*) }
                 }
 
-                let Some($state) = $registry
+                let Some(__state) = $registry
                     .get(&($this as usize))
                     .map(|entry| ::std::sync::Arc::clone(entry.value()))
                 else {
                     $crate::impl_com_hook!(@missing $($fallback)?);
                 };
-                let Some(base) = $state.[<base_ $dispatch>]() else {
+                let Some(base) = __state.[<base_ $dispatch>]() else {
                     $crate::impl_com_hook!(@missing $($fallback)?);
                 };
-                $(let $dispatch_field = $dispatch_field_value;)*
-                drop($state);
+                $($(let $state = &*__state;
+                    let $dispatch_field = $dispatch_field_value;)*)?
+                drop(__state);
                 let hooks: &[[<$dispatch:camel Hook>]] =
                     $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
                         $(infix($($infix),*))?
@@ -640,7 +835,7 @@ macro_rules! impl_com_hook {
                     hooks: remaining.clone(),
                     terminal: &terminal,
                     base,
-                    $($dispatch_field: &$dispatch_field,)*
+                    $($($dispatch_field: &$dispatch_field,)*)?
                 };
                 let prefix: &[fn(
                     $this_type,
@@ -665,7 +860,7 @@ macro_rules! impl_com_hook {
                                 hooks: remaining,
                                 terminal: &terminal,
                                 base,
-                                $($dispatch_field: &$dispatch_field,)*
+                                $($($dispatch_field: &$dispatch_field,)*)?
                             },
                         )
                     }
@@ -676,7 +871,7 @@ macro_rules! impl_com_hook {
                     hooks: [].iter(),
                     terminal: &terminal,
                     base,
-                    $($dispatch_field: &$dispatch_field,)*
+                    $($($dispatch_field: &$dispatch_field,)*)?
                 };
                 let postfix: &[fn(
                     $this_type,
