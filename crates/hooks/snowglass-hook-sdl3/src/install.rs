@@ -3,7 +3,6 @@
 use crate::api;
 use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
-use snowglass_platform_windows::InlineDetour;
 use std::{
     ffi::c_void,
     fs::OpenOptions,
@@ -17,15 +16,13 @@ use windows_sys::Win32::{
     System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
 };
 
-pub(crate) struct Installation {
-    dynapi_entry: InlineDetour<api::DynapiEntryFn>,
-    dynapi: OnceLock<Sdl3DynapiHook>,
+pub(crate) struct Sdl3TableState {
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
 }
 
-static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
-static INSTALLATION: OnceLock<Installation> = OnceLock::new();
+static DYNAPI_ENTRY_TARGET: OnceLock<api::DynapiEntryFn> = OnceLock::new();
+static DYNAPI_MODULE: OnceLock<usize> = OnceLock::new();
 static DISCOVERY_STARTED: OnceLock<()> = OnceLock::new();
 static ATTACHMENT_LOGGED: OnceLock<()> = OnceLock::new();
 
@@ -47,56 +44,78 @@ const DYNAPI_GET_GAMEPADS: usize = 349;
 const DYNAPI_GET_JOYSTICKS: usize = 395;
 const DYNAPI_UPDATE_JOYSTICKS: usize = 954;
 
+fn dynapi_entry_target() -> api::DynapiEntryFn {
+    *DYNAPI_ENTRY_TARGET
+        .get()
+        .expect("SDL3 dynamic API entry target was resolved before installation")
+}
+
+fn create_table_state() -> Result<Sdl3TableState, &'static str> {
+    let module = *DYNAPI_MODULE
+        .get()
+        .expect("SDL3 module was resolved before table installation") as HMODULE;
+    let backend =
+        unsafe { api::Api::load(module) }.ok_or("SDL3 virtual joystick exports are unavailable")?;
+    Ok(Sdl3TableState {
+        backend: Mutex::new(backend),
+        runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+    })
+}
+
+snowglass_hook::__chain_hooks! {
+    #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer]
+    pub(crate) struct Sdl3EntryInstallation;
+    #[registry] static DYNAPI_ENTRY_INSTALLATION;
+
+    #[trampoline]
+    #[terminal(installed(target = dynapi_entry_target()), fallback = -1)]
+    #[postfix(captured_dynapi_table(table, tablesize, result))]
+    unsafe extern "C" fn dynapi_entry(
+        apiver: u32,
+        table: *mut c_void,
+        tablesize: u32,
+    ) -> i32;
+}
+
 snowglass_hook::function_table_hook! {
-    #[resolve = dynapi]
+    #[installer(state: Sdl3TableState = create_table_state()?)]
+    pub(crate) struct Sdl3DynapiInstallation;
+    #[registry] static DYNAPI_INSTALLATION;
     pub(crate) struct Sdl3DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
         #[context]
         pub(crate) struct Sdl3DynapiContext {
-            pub(crate) installation: &'static Installation = installation(),
+            pub(crate) state: Arc<Sdl3TableState> = Sdl3DynapiInstallation::active_state(),
         }
 
         #[slot = DYNAPI_GET_GAMEPADS]
-        #[prefix(|next| prepare_enumeration(next.common.installation))]
+        #[prefix(|next| prepare_enumeration(
+            &next.common.state,
+        ))]
         unsafe extern "C" fn get_gamepads_dispatch(
             count: *mut i32,
         ) -> *mut api::JoystickId;
 
         #[slot = DYNAPI_GET_JOYSTICKS]
-        #[prefix(|next| prepare_enumeration(next.common.installation))]
+        #[prefix(|next| prepare_enumeration(
+            &next.common.state,
+        ))]
         unsafe extern "C" fn get_joysticks_dispatch(
             count: *mut i32,
         ) -> *mut api::JoystickId;
 
         #[slot = DYNAPI_UPDATE_JOYSTICKS]
-        #[prefix(|next| flush_gamepads(next.common.installation))]
+        #[prefix(|next| flush_gamepads(
+            &next.common.state,
+        ))]
         unsafe extern "C" fn update_joysticks_dispatch();
     }
 }
 
-fn installation() -> &'static Installation {
-    INSTALLATION.get().expect("SDL3 installation exists")
-}
-
-fn dynapi() -> &'static Sdl3DynapiHook {
-    installation()
-        .dynapi
-        .get()
-        .expect("SDL3 dynamic API table was captured before dispatch")
-}
-
-fn runtime() -> Arc<Runtime> {
-    RUNTIME
-        .get_or_init(|| Arc::new(Runtime::new(config::sdl_gamepad_count())))
-        .clone()
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
-    let runtime = runtime();
-    if let Ok(session) = config::session() {
-        runtime.start_receiver(format!("{session}-input"));
-    }
     preload_dynamic_api();
     discover_loaded_module();
     if DISCOVERY_STARTED.set(()).is_ok() {
@@ -122,7 +141,7 @@ fn preload_dynamic_api() {
 }
 
 fn discover_loaded_module() {
-    if INSTALLATION.get().is_none()
+    if DYNAPI_ENTRY_TARGET.get().is_none()
         && let Some(module) = loaded_module(SDL3_DLL)
     {
         unsafe { install(module) };
@@ -135,70 +154,48 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
 }
 
 unsafe fn install(module: HMODULE) {
-    if INSTALLATION.get().is_some() {
+    if DYNAPI_ENTRY_TARGET.get().is_some() {
         return;
     }
     let Some(dynapi_entry_target) = (unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }) else {
         return;
     };
-    let Some(backend) = (unsafe { api::Api::load(module) }) else {
-        log("SDL3 found, but its virtual joystick exports are unavailable");
-        return;
-    };
-    let dynapi_entry =
-        InlineDetour::new(dynapi_entry_target, dynapi_entry_hook as api::DynapiEntryFn);
-    if INSTALLATION
-        .set(Installation {
-            dynapi_entry,
-            dynapi: OnceLock::new(),
-            backend: Mutex::new(backend),
-            runtime: runtime(),
-        })
-        .is_err()
-    {
+    if DYNAPI_MODULE.set(module as usize).is_err() {
         return;
     }
-    let installation = INSTALLATION.get().expect("SDL3 installation was set");
-    if installation.dynapi_entry.enable().is_err() {
+    if DYNAPI_ENTRY_TARGET.set(dynapi_entry_target).is_err() {
+        return;
+    }
+    if Sdl3EntryInstallation::install().is_err() {
         log("failed to enable SDL3 dynamic API detour");
         return;
     }
     log("installed SDL3 virtual gamepad hooks");
 }
 
-unsafe extern "C" fn dynapi_entry_hook(apiver: u32, table: *mut c_void, tablesize: u32) -> i32 {
-    let Some(installation) = INSTALLATION.get() else {
-        return -1;
-    };
-    let result = unsafe { (installation.dynapi_entry.trampoline())(apiver, table, tablesize) };
+unsafe fn captured_dynapi_table(table: *mut c_void, tablesize: u32, result: i32) {
     if result < 0 || table.is_null() {
-        return result;
+        return;
     }
 
-    if installation.dynapi.get().is_none() {
-        let captured = match unsafe { Sdl3DynapiHook::capture(table, tablesize) } {
-            Ok(captured) => captured,
-            Err(error) => {
-                log(error);
-                return result;
-            }
-        };
-        let _ = installation.dynapi.set(captured);
-    }
-    if let Err(error) = unsafe { dynapi().patch(table, tablesize) } {
+    if let Err(error) = unsafe { Sdl3DynapiInstallation::install(table, tablesize) } {
         log(error);
-        return result;
+        return;
+    }
+    if let Ok(session) = config::session() {
+        Sdl3DynapiInstallation::active_state()
+            .runtime
+            .start_receiver(format!("{session}-input"));
     }
     log("patched SDL3 dynamic API gamepad entries");
-    result
 }
 
-fn prepare_enumeration(installation: &Installation) {
-    let mut backend = installation
+fn prepare_enumeration(state: &Sdl3TableState) {
+    let mut backend = state
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    match installation.runtime.prepare_enumeration(&mut *backend) {
+    match state.runtime.prepare_enumeration(&mut *backend) {
         Ok(()) => {
             if ATTACHMENT_LOGGED.set(()).is_ok() {
                 log("attached SDL3 virtual gamepad topology");
@@ -208,12 +205,12 @@ fn prepare_enumeration(installation: &Installation) {
     }
 }
 
-fn flush_gamepads(installation: &Installation) {
-    let mut backend = installation
+fn flush_gamepads(state: &Sdl3TableState) {
+    let mut backend = state
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    installation.runtime.flush(&mut *backend);
+    state.runtime.flush(&mut *backend);
 }
 
 fn log(message: &str) {

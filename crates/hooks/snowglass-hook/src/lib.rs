@@ -999,7 +999,7 @@ macro_rules! __chain_hooks {
     };
 
     (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
-        [installed(detour = $detour:ty, target = $target:path,
+        [installed(detour = $detour:ty, target = $target:expr,
             continuation = $continuation:path $(,)?), fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
@@ -1011,7 +1011,7 @@ macro_rules! __chain_hooks {
     };
 
     (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:tt, [$detour:ty], $common:tt;
-        [installed(target = $target:path,
+        [installed(target = $target:expr,
             continuation = $continuation:path $(,)?), fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
@@ -1023,7 +1023,7 @@ macro_rules! __chain_hooks {
     };
 
     (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:tt, [$detour:ty], $common:tt;
-        [installed(target = $target:path $(,)?), fallback = $fallback:expr $(,)?]
+        [installed(target = $target:expr $(,)?), fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
         $crate::__chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
@@ -1034,7 +1034,7 @@ macro_rules! __chain_hooks {
     };
 
     (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
-        [installed(detour = $detour:ty, target = $target:path $(,)?),
+        [installed(detour = $detour:ty, target = $target:expr $(,)?),
             fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
@@ -1408,7 +1408,7 @@ macro_rules! __chain_hooks {
         }
     };
     (@declare_terminal
-        [owned detour $detour:ty, target $target:path,
+        [owned detour $detour:ty, target $target:expr,
             abi $terminal_abi:literal with fallback $fallback:expr;]
         [$visibility:vis]
         [$terminal_trait:ident]
@@ -1426,7 +1426,7 @@ macro_rules! __chain_hooks {
         );
     };
     (@declare_terminal
-        [owned detour $detour:ty, target $target:path, continuation $continuation:path,
+        [owned detour $detour:ty, target $target:expr, continuation $continuation:path,
             abi $terminal_abi:literal with fallback $fallback:expr;]
         [$visibility:vis]
         [$terminal_trait:ident]
@@ -1444,7 +1444,7 @@ macro_rules! __chain_hooks {
         );
     };
     (@declare_owned_terminal
-        [$detour:ty] [$target:path] [$($continuation:path)?] [$terminal_abi:literal]
+        [$detour:ty] [$target:expr] [$($continuation:path)?] [$terminal_abi:literal]
         [$visibility:vis] [$terminal_trait:ident] [$terminal_fn:ident]
         [$slot:ident] [$install:ident] [$hook:ident]
         [$($argument:ident: $argument_type:ty),*] [$result:ty]
@@ -1509,7 +1509,7 @@ macro_rules! __chain_hooks {
     };
     (@call_terminal
         [$resolve:ident]
-        [owned detour $detour:ty, target $target:path,
+        [owned detour $detour:ty, target $target:expr,
             abi $terminal_abi:literal with fallback $fallback:expr;]
         [$slot:ident]
         [$($argument:ident),*]
@@ -1521,7 +1521,7 @@ macro_rules! __chain_hooks {
     };
     (@call_terminal
         [$resolve:ident]
-        [owned detour $detour:ty, target $target:path, continuation $continuation:path,
+        [owned detour $detour:ty, target $target:expr, continuation $continuation:path,
             abi $terminal_abi:literal with fallback $fallback:expr;]
         [$slot:ident]
         [$($argument:ident),*]

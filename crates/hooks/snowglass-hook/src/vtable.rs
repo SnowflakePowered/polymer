@@ -312,6 +312,109 @@ seq_macro::seq!(SLOT in 0..64 {
 #[macro_export]
 macro_rules! function_table_hook {
     (
+        #[installer] $installer_visibility:vis struct $installer:ident;
+        #[registry] $registry_visibility:vis static $registry:ident;
+        $visibility:vis struct $table_hook:ident {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::function_table_hook! {
+            #[installer(state: () = ())]
+            $installer_visibility struct $installer;
+            #[registry] $registry_visibility static $registry;
+            $visibility struct $table_hook { $($body)* }
+        }
+    };
+
+    (
+        #[installer(state: $state:ty = $state_value:expr)]
+        $installer_visibility:vis struct $installer:ident;
+        #[registry] $registry_visibility:vis static $registry:ident;
+        $visibility:vis struct $table_hook:ident {
+            $($body:tt)*
+        }
+    ) => { $crate::__paste! {
+        $crate::function_table_hook! {
+            #[resolve = [<__resolve_ $installer:snake>]]
+            $visibility struct $table_hook { $($body)* }
+        }
+
+        $installer_visibility struct $installer {
+            hook: ::std::sync::Arc<$table_hook>,
+            tables: ::std::vec::Vec<(usize, u32)>,
+            state: ::std::sync::Arc<$state>,
+        }
+
+        static $registry: ::std::sync::Mutex<Option<$installer>> =
+            ::std::sync::Mutex::new(None);
+
+        fn [<__resolve_ $installer:snake>]() -> ::std::sync::Arc<$table_hook> {
+            $registry.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref().map(|installation| installation.hook.clone())
+                .expect("function table hook is not installed")
+        }
+
+        impl $installer {
+            /// Captures and patches a function table, reusing the captured
+            /// base functions for later publications of the same API table.
+            ///
+            /// # Safety
+            /// `table` must satisfy the generated table hook's capture and
+            /// patch requirements.
+            $installer_visibility unsafe fn install(
+                table: *mut ::core::ffi::c_void,
+                table_bytes: u32,
+            ) -> Result<(), &'static str> {
+                let mut registry = $registry.lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if registry.is_none() {
+                    let hook = ::std::sync::Arc::new(unsafe {
+                        $table_hook::capture(table, table_bytes)?
+                    });
+                    *registry = Some(Self {
+                        hook,
+                        tables: ::std::vec::Vec::new(),
+                        state: ::std::sync::Arc::new($state_value),
+                    });
+                }
+                let installation = registry.as_mut().expect("function table installation exists");
+                unsafe { installation.hook.patch(table, table_bytes)? };
+                let address = table as usize;
+                if !installation.tables.iter().any(|entry| entry.0 == address) {
+                    installation.tables.push((address, table_bytes));
+                }
+                Ok(())
+            }
+
+            $installer_visibility fn uninstall() -> Result<(), &'static str> {
+                let mut registry = $registry.lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let Some(installation) = registry.as_mut() else { return Ok(()); };
+                let mut first_error = None;
+                let mut index = installation.tables.len();
+                while index != 0 {
+                    index -= 1;
+                    let (address, table_bytes) = installation.tables[index];
+                    match unsafe { installation.hook.restore(address as *mut _, table_bytes) } {
+                        Ok(()) => { installation.tables.remove(index); }
+                        Err(error) => { first_error.get_or_insert(error); }
+                    }
+                }
+                if installation.tables.is_empty() { *registry = None; }
+                first_error.map_or(Ok(()), Err)
+            }
+
+            $installer_visibility fn active_state() -> ::std::sync::Arc<$state> {
+                $registry.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref().map(|installation| installation.state.clone())
+                    .expect("function table hook is not installed")
+            }
+        }
+    }};
+
+    (
         #[resolve = $resolve:path]
         $visibility:vis struct $table_hook:ident {
             const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
@@ -486,6 +589,30 @@ macro_rules! function_table_hook {
                 }
                 let table = table.cast::<usize>();
                 $(unsafe { table.add($slot).write($dispatch as *const () as usize) };)+
+                Ok(())
+            }
+
+            /// Restores the captured base functions in a previously patched table.
+            ///
+            /// # Safety
+            /// `table` must identify compatible writable table storage.
+            #[allow(dead_code)]
+            $visibility unsafe fn restore(
+                &self,
+                table: *mut ::core::ffi::c_void,
+                table_bytes: u32,
+            ) -> Result<(), &'static str> {
+                if table.is_null() {
+                    return Err("function table is null");
+                }
+                let slots = table_bytes as usize / ::core::mem::size_of::<usize>();
+                if slots < Self::MINIMUM_SLOTS as usize {
+                    return Err("function table is too small");
+                }
+                let table = table.cast::<usize>();
+                $(unsafe {
+                    table.add($slot).write(self.$dispatch as *const () as usize)
+                };)+
                 Ok(())
             }
 
