@@ -83,7 +83,19 @@ snowglass_hook::impl_com_hook! {
     impl CommandListHook for ID3D12GraphicsCommandListHook {
         #![vtable = ID3D12GraphicsCommandListVtable]
         #[registry] pub(crate) static COMMAND_LISTS;
-        #[interfaces] {}
+        #[interfaces] {
+            ID3D12GraphicsCommandList10,
+            ID3D12GraphicsCommandList9,
+            ID3D12GraphicsCommandList8,
+            ID3D12GraphicsCommandList7,
+            ID3D12GraphicsCommandList6,
+            ID3D12GraphicsCommandList5,
+            ID3D12GraphicsCommandList4,
+            ID3D12GraphicsCommandList3,
+            ID3D12GraphicsCommandList2,
+            ID3D12GraphicsCommandList1,
+            ID3D12GraphicsCommandList,
+        }
         #[context]
         pub(crate) struct CommandListContext {
             pub(crate) tracking: Arc<snowglass_producer_d3d12::Tracking>,
@@ -156,7 +168,23 @@ snowglass_hook::impl_com_hook! {
     impl DeviceHook for ID3D12DeviceHook {
         #![vtable = ID3D12DeviceVtable]
         #[registry] pub(crate) static DEVICES;
-        #[interfaces] {}
+        #[interfaces] {
+            ID3D12Device14,
+            ID3D12Device13,
+            ID3D12Device12,
+            ID3D12Device11,
+            ID3D12Device10,
+            ID3D12Device9,
+            ID3D12Device8,
+            ID3D12Device7,
+            ID3D12Device6,
+            ID3D12Device5,
+            ID3D12Device4,
+            ID3D12Device3,
+            ID3D12Device2,
+            ID3D12Device1,
+            ID3D12Device,
+        }
         #[context]
         pub(crate) struct DeviceContext {
             pub(crate) tracking: Arc<snowglass_producer_d3d12::Tracking>,
@@ -204,9 +232,21 @@ snowglass_hook::impl_com_hook! {
     }
 }
 
-/// A monomorphized per-object install routine, used to dispatch a widest-cast
-/// result to a typed layout.
-type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d12::Tracking>) -> bool;
+impl Clone for CommandListContext {
+    fn clone(&self) -> Self {
+        Self {
+            tracking: self.tracking.clone(),
+        }
+    }
+}
+
+impl Clone for DeviceContext {
+    fn clone(&self) -> Self {
+        Self {
+            tracking: self.tracking.clone(),
+        }
+    }
+}
 
 /// Installs render-target tracking on a device returned by
 /// `D3D12CreateDevice`. Command lists are hooked as the device creates them.
@@ -251,63 +291,12 @@ unsafe fn try_install_device(
         .get(&(base as usize))
         .is_some_and(|hook| unsafe { *base.cast::<*const usize>() == hook.patched_vtable() });
 
-    let interfaces = device_interfaces(&device);
-    let mut installed = false;
-    for (interface, install) in interfaces {
-        installed |= unsafe { install(interface, tracking.clone()) };
-    }
+    let installed =
+        unsafe { ID3D12DeviceHook::install_all_interfaces(base, DeviceContext { tracking }) };
     if !installed {
         return Err("could not clone the device vtable".to_owned());
     }
     Ok(!already_hooked)
-}
-
-fn device_interfaces(device: &ID3D12Device) -> Vec<(*mut c_void, InstallFn)> {
-    snowglass_hook::widest_interfaces! {
-        from device => InstallFn;
-        install install_device_kind;
-        ID3D12Device14 => ID3D12Device14,
-        ID3D12Device13 => ID3D12Device13,
-        ID3D12Device12 => ID3D12Device12,
-        ID3D12Device11 => ID3D12Device11,
-        ID3D12Device10 => ID3D12Device10,
-        ID3D12Device9 => ID3D12Device9,
-        ID3D12Device8 => ID3D12Device8,
-        ID3D12Device7 => ID3D12Device7,
-        ID3D12Device6 => ID3D12Device6,
-        ID3D12Device5 => ID3D12Device5,
-        ID3D12Device4 => ID3D12Device4,
-        ID3D12Device3 => ID3D12Device3,
-        ID3D12Device2 => ID3D12Device2,
-        ID3D12Device1 => ID3D12Device1,
-        ID3D12Device => ID3D12Device,
-    }
-}
-
-unsafe fn install_device_kind<A: Vtable>(
-    device: *mut c_void,
-    tracking: Arc<snowglass_producer_d3d12::Tracking>,
-) -> bool {
-    if device.is_null() {
-        return false;
-    }
-    let current = unsafe { *device.cast::<*const usize>() };
-    let original = match DEVICES.get(&(device as usize)) {
-        Some(existing) => {
-            if current == existing.patched_vtable() {
-                if A::supported_by(existing.vtable_type()) {
-                    return true;
-                }
-                existing.original_vtable()
-            } else {
-                current
-            }
-        }
-        None => current,
-    };
-    unsafe {
-        ID3D12DeviceHook::install_object_from::<A>(device, original, DeviceContext { tracking })
-    }
 }
 
 /// Installs tracking interception on a command list created by a hooked
@@ -324,65 +313,14 @@ unsafe fn install_command_list(
     if list.is_null() || interface_id.is_null() {
         return;
     }
-    let Some(unknown) = (unsafe { IUnknown::from_raw_borrowed(&list) }) else {
-        return;
-    };
-    let Ok(base) = unknown.cast::<ID3D12GraphicsCommandList>() else {
-        return;
-    };
     // Clone the widest interface generation the object implements rather than
     // the generation it was created as: a caller can obtain a wider interface
     // later through QueryInterface (typically the same pointer), and a clone
     // sized to the creation interface would dispatch those wider slots into
     // the uninitialized tail of the clone.
-    let interfaces = snowglass_hook::widest_interfaces! {
-        from &base => InstallFn;
-        install install_command_list_kind;
-        ID3D12GraphicsCommandList10 => ID3D12GraphicsCommandList10,
-        ID3D12GraphicsCommandList9 => ID3D12GraphicsCommandList9,
-        ID3D12GraphicsCommandList8 => ID3D12GraphicsCommandList8,
-        ID3D12GraphicsCommandList7 => ID3D12GraphicsCommandList7,
-        ID3D12GraphicsCommandList6 => ID3D12GraphicsCommandList6,
-        ID3D12GraphicsCommandList5 => ID3D12GraphicsCommandList5,
-        ID3D12GraphicsCommandList4 => ID3D12GraphicsCommandList4,
-        ID3D12GraphicsCommandList3 => ID3D12GraphicsCommandList3,
-        ID3D12GraphicsCommandList2 => ID3D12GraphicsCommandList2,
-        ID3D12GraphicsCommandList1 => ID3D12GraphicsCommandList1,
-        ID3D12GraphicsCommandList => ID3D12GraphicsCommandList,
-    };
-    for (pointer, install) in interfaces {
-        unsafe { install(pointer, tracking.clone()) };
-    }
-}
-
-unsafe fn install_command_list_kind<A: Vtable>(
-    list: *mut c_void,
-    tracking: Arc<snowglass_producer_d3d12::Tracking>,
-) -> bool {
-    if list.is_null() {
-        return false;
-    }
-    let current = unsafe { *list.cast::<*const usize>() };
-    let original = match COMMAND_LISTS.get(&(list as usize)) {
-        Some(existing) => {
-            if current == existing.patched_vtable() {
-                if A::supported_by(existing.vtable_type()) {
-                    return true;
-                }
-                existing.original_vtable()
-            } else {
-                current
-            }
-        }
-        None => current,
-    };
     unsafe {
-        ID3D12GraphicsCommandListHook::install_object_from::<A>(
-            list,
-            original,
-            CommandListContext { tracking },
-        )
-    }
+        ID3D12GraphicsCommandListHook::install_all_interfaces(list, CommandListContext { tracking })
+    };
 }
 
 fn device_method<T>(device: *mut c_void, select: impl FnOnce(&dyn DeviceHook) -> T) -> Option<T> {

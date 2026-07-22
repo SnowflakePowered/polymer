@@ -1196,23 +1196,25 @@ macro_rules! impl_com_hook {
         impl $hook {
             $visibility unsafe fn install_widest(
                 object: *mut ::core::ffi::c_void,
+                $(common: $common_context,)?
+                $($context: $context_type),*
             ) -> bool {
                 let Some(unknown) = (unsafe {
                     <::windows::core::IUnknown as ::windows::core::Interface>::from_raw_borrowed(
                         &object
                     )
                 }) else { return false; };
-                $(if let Ok(interface) = <::windows::core::IUnknown as ::windows::core::Interface>::cast::<$interface>(unknown) {
-                    let pointer = ::windows::core::Interface::as_raw(&interface);
-                    return unsafe { Self::install_object::<$interface>(
-                        pointer,
-                    ) };
-                })*
-                false
+                $crate::impl_com_hook!(@install_widest unknown;
+                    [$(common: $common_context)?]
+                    [$($context: $context_type),*];
+                    $($interface),*
+                )
             }
 
             $visibility unsafe fn install_all_interfaces(
                 object: *mut ::core::ffi::c_void,
+                $(common: $common_context,)?
+                $($context: $context_type),*
             ) -> bool {
                 let Some(unknown) = (unsafe {
                     <::windows::core::IUnknown as ::windows::core::Interface>::from_raw_borrowed(
@@ -1220,25 +1222,28 @@ macro_rules! impl_com_hook {
                     )
                 }) else { return false; };
                 let mut installed = false;
-                $(if let Ok(interface) = <::windows::core::IUnknown as ::windows::core::Interface>::cast::<$interface>(unknown) {
-                    let pointer = ::windows::core::Interface::as_raw(&interface);
-                    installed |= unsafe { Self::install_object::<$interface>(
-                        pointer,
-                    ) };
-                })*
+                let mut pointers: ::std::vec::Vec<
+                    ::core::ptr::NonNull<::core::ffi::c_void>
+                > = ::std::vec::Vec::new();
+                $crate::impl_com_hook!(@install_all unknown, installed, pointers;
+                    [$(common: $common_context)?]
+                    [$($context: $context_type),*];
+                    $($interface),*
+                );
                 installed
             }
 
             $visibility unsafe fn install_interface(
                 object: *mut ::core::ffi::c_void,
                 interface_id: &$crate::__GUID,
+                $(common: $common_context,)?
+                $($context: $context_type),*
             ) -> bool {
-                $(if *interface_id == <$interface as ::windows::core::Interface>::IID {
-                    return unsafe { Self::install_object::<$interface>(
-                        object,
-                    ) };
-                })*
-                false
+                $crate::impl_com_hook!(@install_interface object, interface_id;
+                    [$(common: $common_context)?]
+                    [$($context: $context_type),*];
+                    $($interface),*
+                )
             }
 
             /// Clones, registers, and publishes a patched vtable for `object`.
@@ -1574,6 +1579,38 @@ macro_rules! impl_com_hook {
             $crate::impl_com_hook!(@methods $($methods)*);
         }
     };
+
+    (@install_widest $unknown:ident; [$($common:ident: $common_type:ty)?] [$($context:ident: $context_type:ty),*];) => { false };
+    (@install_widest $unknown:ident; [$($common:ident: $common_type:ty)?] [$($context:ident: $context_type:ty),*]; $interface:path $(, $rest:path)*) => {{
+        if let Ok(interface) = <::windows::core::IUnknown as ::windows::core::Interface>::cast::<$interface>($unknown) {
+            let pointer = ::windows::core::Interface::as_raw(&interface);
+            return unsafe { Self::install_object::<$interface>(pointer, $($common,)? $($context),*) };
+        }
+        $crate::impl_com_hook!(@install_widest $unknown; [$($common: $common_type)?] [$($context: $context_type),*]; $($rest),*)
+    }};
+
+    (@install_all $unknown:ident, $installed:ident, $pointers:ident; [$($common:ident: $common_type:ty)?] [$($context:ident: $context_type:ty),*];) => {};
+    (@install_all $unknown:ident, $installed:ident, $pointers:ident; [$($common:ident: $common_type:ty)?] [$($context:ident: $context_type:ty),*]; $interface:path $(, $rest:path)*) => {
+        if let Ok(interface) = <::windows::core::IUnknown as ::windows::core::Interface>::cast::<$interface>($unknown) {
+            if let Some(pointer) = ::core::ptr::NonNull::new(
+                ::windows::core::Interface::as_raw(&interface)
+            ) {
+                if !$pointers.contains(&pointer) {
+                    $pointers.push(pointer);
+                    $installed |= unsafe { Self::install_object::<$interface>(pointer.as_ptr(), $($common.clone(),)? $($context.clone()),*) };
+                }
+            }
+        }
+        $crate::impl_com_hook!(@install_all $unknown, $installed, $pointers; [$($common: $common_type)?] [$($context: $context_type),*]; $($rest),*);
+    };
+
+    (@install_interface $object:ident, $interface_id:ident; [$($common:ident: $common_type:ty)?] [$($context:ident: $context_type:ty),*];) => { false };
+    (@install_interface $object:ident, $interface_id:ident; [$($common:ident: $common_type:ty)?] [$($context:ident: $context_type:ty),*]; $interface:path $(, $rest:path)*) => {{
+        if *$interface_id == <$interface as ::windows::core::Interface>::IID {
+            return unsafe { Self::install_object::<$interface>($object, $($common,)? $($context),*) };
+        }
+        $crate::impl_com_hook!(@install_interface $object, $interface_id; [$($common: $common_type)?] [$($context: $context_type),*]; $($rest),*)
+    }};
 
     (@methods) => {};
 

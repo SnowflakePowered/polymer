@@ -5,7 +5,7 @@ use windows::{
         ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext1, ID3D11DeviceContext2,
         ID3D11DeviceContext3, ID3D11DeviceContext4,
     },
-    core::{IUnknown, Interface},
+    core::Interface,
 };
 
 snowglass_hook::vtable! {
@@ -18,8 +18,6 @@ snowglass_hook::vtable! {
     ],
 }
 
-type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d11::Tracking>) -> bool;
-
 snowglass_hook::com_vtable! {
     union ID3D11DeviceContextVtable for ID3D11DeviceContext4;
 }
@@ -29,7 +27,13 @@ snowglass_hook::impl_com_hook! {
     impl ContextHook for ID3D11DeviceContextHook {
         #![vtable = ID3D11DeviceContextVtable]
         #[registry] pub(crate) static CONTEXTS;
-        #[interfaces] {}
+        #[interfaces] {
+            ID3D11DeviceContext4,
+            ID3D11DeviceContext3,
+            ID3D11DeviceContext2,
+            ID3D11DeviceContext1,
+            ID3D11DeviceContext,
+        }
         #[context]
         pub(crate) struct ContextHookContext {
             pub(crate) tracking: Arc<snowglass_producer_d3d11::Tracking>,
@@ -94,6 +98,14 @@ snowglass_hook::impl_com_hook! {
     }
 }
 
+impl Clone for ContextHookContext {
+    fn clone(&self) -> Self {
+        Self {
+            tracking: self.tracking.clone(),
+        }
+    }
+}
+
 /// Installs draw interception on a device's immediate context so the producer
 /// can track render regions.
 ///
@@ -122,10 +134,7 @@ pub(crate) unsafe fn install_immediate_context(
     {
         return;
     }
-    let Some(install) = widest_context(context) else {
-        return;
-    };
-    unsafe { install(context, tracking) };
+    unsafe { ID3D11DeviceContextHook::install_widest(context, ContextHookContext { tracking }) };
 }
 
 /// Resolves the tracking context installed on a D3D11 device's immediate
@@ -142,32 +151,4 @@ pub(crate) unsafe fn device_tracking(
     CONTEXTS
         .get(&(context.as_raw() as usize))
         .map(|state| state.common().tracking.clone())
-}
-
-fn widest_context(context: *mut c_void) -> Option<InstallFn> {
-    let unknown = unsafe { IUnknown::from_raw_borrowed(&context) }?;
-    // The immediate context does not tear off, so every generation shares one
-    // pointer; only the widest supported vtable width matters, and it is
-    // installed into the object's original pointer by the caller.
-    snowglass_hook::widest_interfaces! {
-        from unknown => InstallFn;
-        install install_context_kind;
-        ID3D11DeviceContext4 => ID3D11DeviceContext4,
-        ID3D11DeviceContext3 => ID3D11DeviceContext3,
-        ID3D11DeviceContext2 => ID3D11DeviceContext2,
-        ID3D11DeviceContext1 => ID3D11DeviceContext1,
-        ID3D11DeviceContext => ID3D11DeviceContext,
-    }
-    .into_iter()
-    .next()
-    .map(|(_, install)| install)
-}
-
-unsafe fn install_context_kind<A: Vtable>(
-    context: *mut c_void,
-    tracking: Arc<snowglass_producer_d3d11::Tracking>,
-) -> bool {
-    unsafe {
-        ID3D11DeviceContextHook::install_object::<A>(context, ContextHookContext { tracking })
-    }
 }
