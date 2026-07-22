@@ -637,7 +637,7 @@ macro_rules! function_table_hook {
                 Ok(Self {
                     $($dispatch,
                     [<$dispatch _hooks>]: ::std::sync::RwLock::new(
-                        $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
+                        $crate::chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
                             $(infix($($infix),*))?
                         ).to_vec()
                     ),)+
@@ -745,7 +745,7 @@ macro_rules! function_table_hook {
                 let prefix: &[unsafe fn(
                     $($argument_type,)*
                     &[<$dispatch:camel Context>]<'_>,
-                )] = $crate::__chain_hooks!(@prefix_slice
+                )] = $crate::chain_hooks!(@prefix_slice
                     [$(($argument, $argument_type))*]
                     [[<$dispatch:camel Context>]]
                     [yes]
@@ -777,7 +777,7 @@ macro_rules! function_table_hook {
                     $($argument_type,)*
                     $crate::function_table_hook!(@result_type $($result)?),
                     &[<$dispatch:camel Context>]<'_>,
-                )] = $crate::__chain_hooks!(@postfix_slice
+                )] = $crate::chain_hooks!(@postfix_slice
                     [$(($argument, $argument_type))*]
                     [$crate::function_table_hook!(@result_type $($result)?)]
                     [[<$dispatch:camel Context>]]
@@ -1032,7 +1032,7 @@ macro_rules! __impl_com_dispatch {
             $($(let $state = &*$hook_state;
                 let $dispatch_field = $dispatch_field_value;)*)?
             let hooks: &[[<$dispatch:camel Hook>]] =
-                $crate::__chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
+                $crate::chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
                     $(infix($($infix),*))?
                 );
             let mut remaining = hooks.iter();
@@ -1044,7 +1044,7 @@ macro_rules! __impl_com_dispatch {
             };
             let prefix: &[fn(
                 $this_type, $($argument_type,)* &[<$dispatch:camel Context>]<'_>,
-            )] = $crate::__chain_hooks!(@prefix_slice
+            )] = $crate::chain_hooks!(@prefix_slice
                 [($this, $this_type) $(($argument, $argument_type))*]
                 [[<$dispatch:camel Context>]] [yes] [];
                 $(prefix($($prefix)*))?
@@ -1070,7 +1070,7 @@ macro_rules! __impl_com_dispatch {
                 $this_type, $($argument_type,)*
                 $crate::impl_com_hook!(@result_type $($result)?),
                 &[<$dispatch:camel Context>]<'_>,
-            )] = $crate::__chain_hooks!(@postfix_slice
+            )] = $crate::chain_hooks!(@postfix_slice
                 [($this, $this_type) $(($argument, $argument_type))*]
                 [$crate::impl_com_hook!(@result_type $($result)?)]
                 [[<$dispatch:camel Context>]] [yes] [];

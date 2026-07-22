@@ -8,7 +8,7 @@ use std::{
 
 pub(crate) type Hdc = *mut c_void;
 
-snowglass_hook::__chain_hooks! {
+snowglass_hook::chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[installer(state = crate::install::OpenGlRuntime)]

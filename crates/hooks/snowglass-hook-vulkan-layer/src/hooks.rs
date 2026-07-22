@@ -5,7 +5,7 @@ use crate::{layer, observers, swapchain};
 use ash::vk;
 use snowglass_producer_vulkan::{capture, tracking};
 
-snowglass_hook::__chain_hooks! {
+snowglass_hook::chain_hooks! {
     #![terminal_resolver(vulkan_terminal)]
     #![order(forward)]
     #[context]
@@ -355,7 +355,7 @@ snowglass_hook::__chain_hooks! {
     );
 }
 
-snowglass_hook::__chain_hooks! {
+snowglass_hook::chain_hooks! {
     #![order(forward)]
 
     #[export(vkNegotiateLoaderLayerInterfaceVersion)]

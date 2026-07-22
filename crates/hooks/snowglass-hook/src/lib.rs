@@ -464,7 +464,7 @@ macro_rules! next {
 /// while leaving the chain declaration as the source of its signature.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __chain_hooks {
+macro_rules! chain_hooks {
     (
         #![order($order:ident)]
         #![detour($detour:ty)]
@@ -472,7 +472,7 @@ macro_rules! __chain_hooks {
         $installer_visibility:vis struct $installer:ident;
         $($items:tt)*
     ) => { $crate::__paste! {
-        $crate::__chain_hooks!(@declare_installer
+        $crate::chain_hooks!(@declare_installer
             [$installer_visibility] [$installer] [state $state] [$($items)*]
         );
         impl $crate::ManagedHookInstallation for $installer {
@@ -498,7 +498,7 @@ macro_rules! __chain_hooks {
                 [<__ $installer _registry>].uninstall()
             }
         }
-        $crate::__chain_hooks! {
+        $crate::chain_hooks! {
             #![order($order)]
             #![detour($detour)]
             #[context]
@@ -517,7 +517,7 @@ macro_rules! __chain_hooks {
         $installer_visibility:vis struct $installer:ident;
         $($items:tt)*
     ) => { $crate::__paste! {
-        $crate::__chain_hooks!(@declare_installer
+        $crate::chain_hooks!(@declare_installer
             [$installer_visibility] [$installer] [stateless] [$($items)*]
         );
         impl $crate::ManagedHookInstallation for $installer {
@@ -539,7 +539,7 @@ macro_rules! __chain_hooks {
                 [<__ $installer _registry>].uninstall()
             }
         }
-        $crate::__chain_hooks! {
+        $crate::chain_hooks! {
             #![order($order)]
             #![detour($detour)]
             $($items)*
@@ -565,7 +565,7 @@ macro_rules! __chain_hooks {
                     terminals: ::std::vec::Vec::new(),
                     complete: false,
                 };
-                $crate::__chain_hooks!(@install_terminals installation; $($items)*);
+                $crate::chain_hooks!(@install_terminals installation; $($items)*);
                 installation.complete = true;
                 Ok(installation)
             }
@@ -617,7 +617,7 @@ macro_rules! __chain_hooks {
                     _state: state,
                     complete: false,
                 };
-                $crate::__chain_hooks!(@install_terminals installation; $($items)*);
+                $crate::chain_hooks!(@install_terminals installation; $($items)*);
                 installation.complete = true;
                 Ok(installation)
             }
@@ -673,7 +673,7 @@ macro_rules! __chain_hooks {
                 });
             }
         }
-        $crate::__chain_hooks!(@install_terminals $installation; $($remaining)*);
+        $crate::chain_hooks!(@install_terminals $installation; $($remaining)*);
     }};
     (@install_terminals $installation:ident;
         #[terminal(installed($($terminal:tt)*), fallback = $fallback:expr $(,)?)]
@@ -695,10 +695,10 @@ macro_rules! __chain_hooks {
                 });
             }
         }
-        $crate::__chain_hooks!(@install_terminals $installation; $($remaining)*);
+        $crate::chain_hooks!(@install_terminals $installation; $($remaining)*);
     }};
     (@install_terminals $installation:ident; $token:tt $($remaining:tt)*) => {
-        $crate::__chain_hooks!(@install_terminals $installation; $($remaining)*);
+        $crate::chain_hooks!(@install_terminals $installation; $($remaining)*);
     };
 
     (
@@ -714,7 +714,7 @@ macro_rules! __chain_hooks {
         $context_visibility struct $common_context {
             $($field_visibility $field: $field_type,)*
         }
-        $crate::__chain_hooks!(@items $order, $resolve, [$detour],
+        $crate::chain_hooks!(@items $order, $resolve, [$detour],
             [common: $common_context = $common_context { $($field: $field_value,)* }];
             $($items)*
         );
@@ -732,7 +732,7 @@ macro_rules! __chain_hooks {
         $context_visibility struct $common_context {
             $($field_visibility $field: $field_type,)*
         }
-        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [$detour],
+        $crate::chain_hooks!(@items $order, __unused_terminal_resolver, [$detour],
             [common: $common_context = $common_context { $($field: $field_value,)* }];
             $($items)*
         );
@@ -744,7 +744,7 @@ macro_rules! __chain_hooks {
         #![detour($detour:ty)]
         $($items:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, [$detour], []; $($items)*);
+        $crate::chain_hooks!(@items $order, $resolve, [$detour], []; $($items)*);
     };
 
     (
@@ -752,7 +752,7 @@ macro_rules! __chain_hooks {
         #![detour($detour:ty)]
         $($items:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [$detour], []; $($items)*);
+        $crate::chain_hooks!(@items $order, __unused_terminal_resolver, [$detour], []; $($items)*);
     };
 
     (
@@ -767,7 +767,7 @@ macro_rules! __chain_hooks {
         $context_visibility struct $common_context {
             $($field_visibility $field: $field_type,)*
         }
-        $crate::__chain_hooks!(@items $order, $resolve, [],
+        $crate::chain_hooks!(@items $order, $resolve, [],
             [common: $common_context = $common_context { $($field: $field_value,)* }];
             $($items)*
         );
@@ -784,7 +784,7 @@ macro_rules! __chain_hooks {
         $context_visibility struct $common_context {
             $($field_visibility $field: $field_type,)*
         }
-        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [],
+        $crate::chain_hooks!(@items $order, __unused_terminal_resolver, [],
             [common: $common_context = $common_context { $($field: $field_value,)* }];
             $($items)*
         );
@@ -795,14 +795,14 @@ macro_rules! __chain_hooks {
         #![order($order:ident)]
         $($items:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, [], []; $($items)*);
+        $crate::chain_hooks!(@items $order, $resolve, [], []; $($items)*);
     };
 
     (
         #![order($order:ident)]
         $($items:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [], []; $($items)*);
+        $crate::chain_hooks!(@items $order, __unused_terminal_resolver, [], []; $($items)*);
     };
 
     (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;) => {};
@@ -811,7 +811,7 @@ macro_rules! __chain_hooks {
         #[trampoline]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($item)*);
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common; $($item)*);
     };
 
     (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
@@ -825,7 +825,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -848,7 +848,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -871,7 +871,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -886,7 +886,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result)? {
             unsafe { $name($($argument),*) }
         }
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
     };
 
     (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
@@ -900,7 +900,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -915,7 +915,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result)? {
             unsafe { $name($($argument),*) }
         }
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
     };
 
     // These two entry arms stay separate because a `ty` fragment cannot be
@@ -930,7 +930,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi, $detour, $common;
+        $crate::chain_hooks!(@normalize_terminal $order, $resolve, $abi, $detour, $common;
             [$($terminal)*]
             [$(prefix($($prefix)*))?]
             [$(infix($($infix),*))?]
@@ -952,7 +952,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi, $detour, $common;
+        $crate::chain_hooks!(@normalize_terminal $order, $resolve, $abi, $detour, $common;
             [$($terminal)*]
             [$(prefix($($prefix)*))?]
             [$(infix($($infix),*))?]
@@ -968,7 +968,7 @@ macro_rules! __chain_hooks {
         [direct = $terminal:path]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [direct terminal $terminal;]
             $($item)*
         );
@@ -979,7 +979,7 @@ macro_rules! __chain_hooks {
             continuation = $continuation:path $(,)?), fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [owned detour $detour, target $target, continuation $continuation,
                 abi $terminal_abi with fallback $fallback;]
             $($item)*
@@ -991,7 +991,7 @@ macro_rules! __chain_hooks {
             continuation = $continuation:path $(,)?), fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
             [owned detour $detour, target $target, continuation $continuation,
                 abi $terminal_abi with fallback $fallback;]
             $($item)*
@@ -1002,7 +1002,7 @@ macro_rules! __chain_hooks {
         [installed(target = $target:expr $(,)?), fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
             [owned detour $detour, target $target,
                 abi $terminal_abi with fallback $fallback;]
             $($item)*
@@ -1014,7 +1014,7 @@ macro_rules! __chain_hooks {
             fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [owned detour $detour, target $target,
                 abi $terminal_abi with fallback $fallback;]
             $($item)*
@@ -1025,7 +1025,7 @@ macro_rules! __chain_hooks {
         [installed, fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [installed abi $terminal_abi with fallback $fallback;]
             $($item)*
         );
@@ -1036,7 +1036,7 @@ macro_rules! __chain_hooks {
             fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+        $crate::chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [dynamic proc $resolver_argument, $symbol: $module::$function_type;
                 fallback $fallback;]
             $($item)*
@@ -1053,7 +1053,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         then { $($remaining:tt)* }
     ) => {
-        $crate::__chain_hooks! {
+        $crate::chain_hooks! {
             @emit $order, $resolve, $common;
             [$($resolve_tokens)*]
             [$($prefix)*]
@@ -1063,7 +1063,7 @@ macro_rules! __chain_hooks {
                 $($argument: $argument_type),*
             ) $(-> $result)? { $($body)* }
         }
-        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
+        $crate::chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
     };
 
     (@emit $order:ident, $resolve:ident, [];
@@ -1076,7 +1076,7 @@ macro_rules! __chain_hooks {
         ) -> $result:ty
         { no context; }
     ) => {
-        $crate::__chain_hooks!(@generate $order, $resolve;
+        $crate::chain_hooks!(@generate $order, $resolve;
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context no;
@@ -1090,7 +1090,7 @@ macro_rules! __chain_hooks {
             $($argument:ident: $argument_type:ty),*
         ) -> $result:ty { }
     ) => {
-        $crate::__chain_hooks!(@emit $order, $resolve, $common;
+        $crate::chain_hooks!(@emit $order, $resolve, $common;
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result
             { no context; }
@@ -1104,7 +1104,7 @@ macro_rules! __chain_hooks {
             $($argument:ident: $argument_type:ty),*
         ) -> $result:ty { no context; }
     ) => {
-        $crate::__chain_hooks!(@generate $order, $resolve;
+        $crate::chain_hooks!(@generate $order, $resolve;
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context yes;
@@ -1122,7 +1122,7 @@ macro_rules! __chain_hooks {
         ) -> $result:ty
         { #[context] struct { $($field:ident: $field_type:ty = $field_value:expr),* $(,)? } }
     ) => {
-        $crate::__chain_hooks!(@generate $order, $resolve;
+        $crate::chain_hooks!(@generate $order, $resolve;
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context yes;
@@ -1138,7 +1138,7 @@ macro_rules! __chain_hooks {
         ) -> $result:ty
         { #[context] struct { $($field:ident: $field_type:ty = $field_value:expr),* $(,)? } }
     ) => {
-        $crate::__chain_hooks!(@generate $order, $resolve;
+        $crate::chain_hooks!(@generate $order, $resolve;
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context yes;
@@ -1159,7 +1159,7 @@ macro_rules! __chain_hooks {
         )
         $body:tt
     ) => {
-        $crate::__chain_hooks!(@emit $order, $resolve, $common;
+        $crate::chain_hooks!(@emit $order, $resolve, $common;
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> ()
             $body
@@ -1177,7 +1177,7 @@ macro_rules! __chain_hooks {
         callback_context $callback_context:ident;
         fields { $($field:ident: $field_type:ty = $field_value:expr),* }
     ) => { $crate::__paste! {
-        $crate::__chain_hooks!(@declare_terminal
+        $crate::chain_hooks!(@declare_terminal
             [$($resolve_tokens)*]
             [$visibility]
             [[<$name:camel Terminal>]]
@@ -1252,7 +1252,7 @@ macro_rules! __chain_hooks {
                 $($argument: $argument_type,)*
                 _context: [<$name:camel Context>]<'_>,
             ) -> $result {
-                $crate::__chain_hooks!(@call_terminal
+                $crate::chain_hooks!(@call_terminal
                     [$resolve]
                     [$($resolve_tokens)*]
                     [[<$name:upper _TERMINAL>]]
@@ -1263,8 +1263,8 @@ macro_rules! __chain_hooks {
             $(let $field = $field_value;)*
             let terminal: [<$name:camel Hook>] = chain_terminal;
             let hooks: &[[<$name:camel Hook>]] =
-                $crate::__chain_hooks!(@infix_slice $($infix)*);
-            let reverse = $crate::__chain_hooks!(@is_reverse $order);
+                $crate::chain_hooks!(@infix_slice $($infix)*);
+            let reverse = $crate::chain_hooks!(@is_reverse $order);
             let cursor = if reverse { hooks.len() } else { 0 };
             let context = [<$name:camel Context>] {
                 hooks,
@@ -1277,7 +1277,7 @@ macro_rules! __chain_hooks {
             let prefix_hooks: &[fn(
                 $($argument_type,)*
                 &[<$name:camel Context>]<'_>,
-            )] = $crate::__chain_hooks!(@prefix_slice
+            )] = $crate::chain_hooks!(@prefix_slice
                 [$(($argument, $argument_type))*]
                 [[<$name:camel Context>]]
                 [$callback_context]
@@ -1310,7 +1310,7 @@ macro_rules! __chain_hooks {
                 $($argument_type,)*
                 $result,
                 &[<$name:camel Context>]<'_>,
-            )] = $crate::__chain_hooks!(@postfix_slice
+            )] = $crate::chain_hooks!(@postfix_slice
                 [$(($argument, $argument_type))*]
                 [$result]
                 [[<$name:camel Context>]]
@@ -1395,7 +1395,7 @@ macro_rules! __chain_hooks {
         [$($argument:ident: $argument_type:ty),*]
         [$result:ty]
     ) => {
-        $crate::__chain_hooks!(@declare_owned_terminal
+        $crate::chain_hooks!(@declare_owned_terminal
             [$detour] [$target] [] [$terminal_abi] [$visibility]
             [$terminal_trait] [$terminal_fn] [$slot] [$install] [$hook]
             [$($argument: $argument_type),*] [$result]
@@ -1413,7 +1413,7 @@ macro_rules! __chain_hooks {
         [$($argument:ident: $argument_type:ty),*]
         [$result:ty]
     ) => {
-        $crate::__chain_hooks!(@declare_owned_terminal
+        $crate::chain_hooks!(@declare_owned_terminal
             [$detour] [$target] [$continuation] [$terminal_abi] [$visibility]
             [$terminal_trait] [$terminal_fn] [$slot] [$install] [$hook]
             [$($argument: $argument_type),*] [$result]
@@ -1544,7 +1544,7 @@ macro_rules! __chain_hooks {
         [$($adapter:expr,)*];
         prefix($($hooks:tt)*)
     ) => {
-        $crate::__chain_hooks!(@prefix_adapters
+        $crate::chain_hooks!(@prefix_adapters
             [$(($argument, $argument_type))*] [$context] [$callback_context] [$($adapter,)*]; $($hooks)*
         )
     };
@@ -1561,7 +1561,7 @@ macro_rules! __chain_hooks {
         [$($adapter:expr,)*];
         |$projection_context:ident| $observer:expr $(, $($remaining:tt)*)?
     ) => {
-        $crate::__chain_hooks!(@prefix_adapters
+        $crate::chain_hooks!(@prefix_adapters
             [$(($argument, $argument_type))*]
             [$context]
             [yes]
@@ -1583,14 +1583,14 @@ macro_rules! __chain_hooks {
         [$($adapter:expr,)*];
         $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
     ) => {
-        $crate::__chain_hooks!(@prefix_adapters
+        $crate::chain_hooks!(@prefix_adapters
             [$(($argument, $argument_type))*]
             [$context]
             [$callback_context]
             [$($adapter,)*
                 |$($argument: $argument_type,)* context: &$context<'_>| {
                     let _ = ($(&$argument,)*);
-                    $crate::__chain_hooks!(@call_prefix [$callback_context] context;
+                    $crate::chain_hooks!(@call_prefix [$callback_context] context;
                         [$($hook)::+]; $($hook_argument),*
                     )
                 },
@@ -1618,7 +1618,7 @@ macro_rules! __chain_hooks {
         [$($adapter:expr,)*];
         postfix($($hooks:tt)*)
     ) => {
-        $crate::__chain_hooks!(@postfix_adapters
+        $crate::chain_hooks!(@postfix_adapters
             [$(($argument, $argument_type))*] [$result_type] [$context] [$callback_context] [$($adapter,)*]; $($hooks)*
         )
     };
@@ -1638,7 +1638,7 @@ macro_rules! __chain_hooks {
         |$projection_result:ident, $projection_context:ident| $observer:expr
         $(, $($remaining:tt)*)?
     ) => {
-        $crate::__chain_hooks!(@postfix_adapters
+        $crate::chain_hooks!(@postfix_adapters
             [$(($argument, $argument_type))*]
             [$result_type]
             [$context]
@@ -1663,7 +1663,7 @@ macro_rules! __chain_hooks {
         [$($adapter:expr,)*];
         $($hook:ident)::+($($hook_argument:ident),*) $(, $($remaining:tt)*)?
     ) => {
-        $crate::__chain_hooks!(@postfix_adapters
+        $crate::chain_hooks!(@postfix_adapters
             [$(($argument, $argument_type))*]
             [$result_type]
             [$context]
@@ -1671,7 +1671,7 @@ macro_rules! __chain_hooks {
             [$($adapter,)*
                 |$($argument: $argument_type,)* result: $result_type, context: &$context<'_>| {
                     let _ = ($(&$argument,)*);
-                    $crate::__chain_hooks!(@call_post_mode [$callback_context]
+                    $crate::chain_hooks!(@call_post_mode [$callback_context]
                         result; context; [$($hook)::+];
                         $($hook_argument),*
                     )
@@ -1685,12 +1685,12 @@ macro_rules! __chain_hooks {
         $($argument:ident),*
     ) => {{
         let _ = $context;
-        $crate::__chain_hooks!(@call_post $result; []; [$($hook)::+]; []; $($argument),*)
+        $crate::chain_hooks!(@call_post $result; []; [$($hook)::+]; []; $($argument),*)
     }};
     (@call_post_mode [yes] $result:ident; $context:expr; [$($hook:ident)::+];
         $($argument:ident),*
     ) => {
-        $crate::__chain_hooks!(@call_post $result; [$context,]; [$($hook)::+]; [];
+        $crate::chain_hooks!(@call_post $result; [$context,]; [$($hook)::+]; [];
             $($argument),*
         )
     };
@@ -1704,14 +1704,14 @@ macro_rules! __chain_hooks {
     (@call_post $result:ident; [$($suffix:expr,)*]; [$($hook:ident)::+]; [$($mapped:expr,)*];
         result $(, $($remaining:ident),*)?
     ) => {
-        $crate::__chain_hooks!(@call_post $result; [$($suffix,)*]; [$($hook)::+];
+        $crate::chain_hooks!(@call_post $result; [$($suffix,)*]; [$($hook)::+];
             [$($mapped,)* $result,]; $($($remaining),*)?
         )
     };
     (@call_post $result:ident; [$($suffix:expr,)*]; [$($hook:ident)::+]; [$($mapped:expr,)*];
         $argument:ident $(, $($remaining:ident),*)?
     ) => {
-        $crate::__chain_hooks!(@call_post $result; [$($suffix,)*]; [$($hook)::+];
+        $crate::chain_hooks!(@call_post $result; [$($suffix,)*]; [$($hook)::+];
             [$($mapped,)* $argument,]; $($($remaining),*)?
         )
     };
@@ -1787,7 +1787,7 @@ mod static_chain_tests {
         FORWARD_EVENTS.lock().unwrap().push("forward-postfix");
     }
 
-    crate::__chain_hooks! {
+    crate::chain_hooks! {
         #![order(reverse)]
 
         #[terminal(direct = terminal)]
@@ -1801,7 +1801,7 @@ mod static_chain_tests {
         }
     }
 
-    crate::__chain_hooks! {
+    crate::chain_hooks! {
         #![order(forward)]
 
         #[terminal(installed, fallback = usize::MAX)]
@@ -1845,7 +1845,7 @@ mod static_chain_tests {
         value * 5
     }
 
-    crate::__chain_hooks! {
+    crate::chain_hooks! {
         #![order(forward)]
 
         #[terminal(direct = forward_terminal)]
@@ -1859,7 +1859,7 @@ mod static_chain_tests {
         value
     }
 
-    crate::__chain_hooks! {
+    crate::chain_hooks! {
         #![order(forward)]
         #[context]
         struct SharedRawContext {

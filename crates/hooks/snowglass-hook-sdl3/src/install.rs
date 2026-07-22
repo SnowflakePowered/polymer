@@ -20,7 +20,22 @@ pub(crate) struct Sdl3TableState {
     runtime: Arc<Runtime>,
 }
 
-static DYNAPI_ENTRY_TARGET: OnceLock<api::DynapiEntryFn> = OnceLock::new();
+pub(crate) struct Sdl3EntryState {
+    target: api::DynapiEntryFn,
+}
+
+impl Default for Sdl3EntryState {
+    fn default() -> Self {
+        let module = *DYNAPI_MODULE
+            .get()
+            .expect("SDL3 module was resolved before entry-hook installation")
+            as HMODULE;
+        let target = unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }
+            .expect("SDL3 dynamic API entry target was resolved before installation");
+        Self { target }
+    }
+}
+
 static DYNAPI_MODULE: OnceLock<usize> = OnceLock::new();
 static ATTACHMENT_LOGGED: OnceLock<()> = OnceLock::new();
 
@@ -43,9 +58,7 @@ const DYNAPI_GET_JOYSTICKS: usize = 395;
 const DYNAPI_UPDATE_JOYSTICKS: usize = 954;
 
 fn dynapi_entry_target() -> api::DynapiEntryFn {
-    *DYNAPI_ENTRY_TARGET
-        .get()
-        .expect("SDL3 dynamic API entry target was resolved before installation")
+    Sdl3EntryInstallation::__state_sdl3_entry_installation().target
 }
 
 fn create_table_state() -> Result<Sdl3TableState, &'static str> {
@@ -60,10 +73,10 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     })
 }
 
-snowglass_hook::__chain_hooks! {
+snowglass_hook::chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
-    #[installer]
+    #[installer(state = Sdl3EntryState)]
     pub(crate) struct Sdl3EntryInstallation;
 
     #[trampoline]
@@ -124,7 +137,7 @@ fn preload_dynamic_api() {
 }
 
 fn discover_loaded_module() {
-    if DYNAPI_ENTRY_TARGET.get().is_none()
+    if DYNAPI_MODULE.get().is_none()
         && let Some(module) = loaded_module(SDL3_DLL)
     {
         unsafe { install(module) };
@@ -137,16 +150,13 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
 }
 
 unsafe fn install(module: HMODULE) {
-    if DYNAPI_ENTRY_TARGET.get().is_some() {
+    if DYNAPI_MODULE.get().is_some() {
         return;
     }
-    let Some(dynapi_entry_target) = (unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }) else {
+    if (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_none() {
         return;
-    };
+    }
     if DYNAPI_MODULE.set(module as usize).is_err() {
-        return;
-    }
-    if DYNAPI_ENTRY_TARGET.set(dynapi_entry_target).is_err() {
         return;
     }
     if Sdl3EntryInstallation::install().is_err() {
@@ -156,7 +166,12 @@ unsafe fn install(module: HMODULE) {
     log("installed SDL3 virtual gamepad hooks");
 }
 
-unsafe fn captured_dynapi_table(table: *mut c_void, tablesize: u32, result: i32) {
+unsafe fn captured_dynapi_table(
+    table: *mut c_void,
+    tablesize: u32,
+    result: i32,
+    _context: &DynapiEntryContext<'_>,
+) {
     if result < 0 || table.is_null() {
         return;
     }

@@ -4,7 +4,7 @@ use snowglass_producer_d3d12::Tracking;
 use std::ffi::c_void;
 use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
 
-snowglass_hook::__chain_hooks! {
+snowglass_hook::chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
 

@@ -6,7 +6,7 @@ use windows_sys::{
     core::{GUID, HRESULT},
 };
 
-snowglass_hook::__chain_hooks! {
+snowglass_hook::chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[installer(state = crate::runtime::Runtime)]
