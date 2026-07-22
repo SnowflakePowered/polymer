@@ -32,7 +32,12 @@ snowglass_hook::chain_hooks! {
     #[terminal(installed(
         target = crate::install::system_draw_arrays,
     ), fallback = ())]
-    #[prefix(track_draw_arrays(first, count))]
+    #[prefix(|context| unsafe {
+        context
+            .state
+            .tracking
+            .record_draw_candidate(Some((first, count)))
+    })]
     #[infix(route_draw_arrays)]
     pub(crate) unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32);
 
@@ -40,7 +45,9 @@ snowglass_hook::chain_hooks! {
     #[terminal(installed(
         target = crate::install::system_draw_elements,
     ), fallback = ())]
-    #[prefix(track_draw_elements())]
+    #[prefix(|context| unsafe {
+        context.state.tracking.record_draw_candidate(None)
+    })]
     #[infix(route_draw_elements)]
     pub(crate) unsafe extern "system" fn draw_elements(
         mode: u32,
@@ -51,7 +58,9 @@ snowglass_hook::chain_hooks! {
 
     #[trampoline]
     #[terminal(direct = crate::install::unavailable_draw_elements_base_vertex)]
-    #[prefix(track_draw_elements_base_vertex())]
+    #[prefix(|context| unsafe {
+        context.state.tracking.record_draw_candidate(None)
+    })]
     #[infix(route_draw_elements_base_vertex)]
     pub(crate) unsafe extern "system" fn draw_elements_base_vertex(
         mode: u32,
@@ -63,7 +72,13 @@ snowglass_hook::chain_hooks! {
 
     #[trampoline]
     #[terminal(direct = crate::install::unavailable_blit_framebuffer)]
-    #[prefix(track_blit_framebuffer())]
+    #[prefix(|context| {
+        // The capture path issues its own blits through the hooked entry points;
+        // observing those would feed the external image textures into the graph.
+        if !CAPTURING.with(|capturing| capturing.get()) {
+            unsafe { context.state.tracking.record_blit_candidate() }
+        }
+    })]
     #[infix(route_blit_framebuffer)]
     pub(crate) unsafe extern "system" fn blit_framebuffer(
         src_x0: i32, src_y0: i32, src_x1: i32, src_y1: i32,
@@ -73,9 +88,15 @@ snowglass_hook::chain_hooks! {
 
     #[trampoline]
     #[terminal(direct = crate::install::unavailable_copy_image_sub_data)]
-    #[prefix(track_copy_image_sub_data(
-        src_name, src_target, dst_name, dst_target, dst_z, width, height
-    ))]
+    #[prefix(|context| {
+        if !CAPTURING.with(|capturing| capturing.get()) {
+            unsafe {
+                context.state.tracking.record_copy_candidate(
+                    src_name, src_target, dst_name, dst_target, dst_z, width, height,
+                )
+            }
+        }
+    })]
     #[infix(route_copy_image_sub_data)]
     pub(crate) unsafe extern "system" fn copy_image_sub_data(
         src_name: u32, src_target: u32, src_level: i32, src_x: i32, src_y: i32, src_z: i32,
@@ -101,10 +122,7 @@ pub(crate) unsafe fn capture_swap_buffers(hdc: Hdc, context: &SwapBuffersContext
             return;
         }
         unsafe {
-            snowglass_producer_opengl::before_swap_buffers(
-                &context.state.tracking,
-                hdc as isize,
-            )
+            snowglass_producer_opengl::before_swap_buffers(&context.state.tracking, hdc as isize)
         };
         capturing.set(false);
     });
@@ -116,26 +134,10 @@ pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuf
             return;
         }
         unsafe {
-            snowglass_producer_opengl::before_swap_buffers(
-                &context.state.tracking,
-                hdc as isize,
-            )
+            snowglass_producer_opengl::before_swap_buffers(&context.state.tracking, hdc as isize)
         };
         capturing.set(false);
     });
-}
-
-pub(crate) unsafe fn track_draw_arrays(first: i32, count: i32, context: &DrawArraysContext) {
-    unsafe {
-        context
-            .state
-            .tracking
-            .record_draw_candidate(Some((first, count)))
-    };
-}
-
-pub(crate) unsafe fn track_draw_elements(context: &DrawElementsContext) {
-    unsafe { context.state.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn route_draw_arrays(
@@ -165,10 +167,6 @@ pub(crate) unsafe fn route_draw_elements(
     }
 }
 
-pub(crate) unsafe fn track_draw_elements_base_vertex(context: &DrawElementsBaseVertexContext) {
-    unsafe { context.state.tracking.record_draw_candidate(None) };
-}
-
 pub(crate) unsafe fn route_draw_elements_base_vertex(
     mode: u32,
     count: i32,
@@ -180,15 +178,6 @@ pub(crate) unsafe fn route_draw_elements_base_vertex(
     if let Some(original) = next.state.draw_elements_base_vertex.get() {
         unsafe { original(mode, count, element_type, indices, base_vertex) };
     }
-}
-
-pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {
-    // The capture path issues its own blits through the hooked entry points;
-    // observing those would feed the external image textures into the graph.
-    if CAPTURING.with(|capturing| capturing.get()) {
-        return;
-    }
-    unsafe { context.state.tracking.record_blit_candidate() };
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -212,26 +201,6 @@ pub(crate) unsafe fn route_blit_framebuffer(
             )
         };
     }
-}
-
-pub(crate) unsafe fn track_copy_image_sub_data(
-    src_name: u32,
-    src_target: u32,
-    dst_name: u32,
-    dst_target: u32,
-    dst_z: i32,
-    width: i32,
-    height: i32,
-    context: &CopyImageSubDataContext,
-) {
-    if CAPTURING.with(|capturing| capturing.get()) {
-        return;
-    }
-    unsafe {
-        context.state.tracking.record_copy_candidate(
-            src_name, src_target, dst_name, dst_target, dst_z, width, height,
-        )
-    };
 }
 
 #[expect(clippy::too_many_arguments)]
