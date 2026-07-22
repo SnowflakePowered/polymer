@@ -103,7 +103,7 @@ unsafe fn wrap_direct_input(
         return None;
     };
     unsafe {
-        IDirectInputHook::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A_Vtbl>::wrap(
+        IDirectInputHook::wrap::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A>(
             interface,
             iid,
             crate::vtable::DirectInputContext { runtime, wide },
@@ -173,9 +173,9 @@ unsafe fn wrap_device(
         windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A::IID
     };
     unsafe {
-        IDirectInputDeviceHook::<
-            windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A_Vtbl,
-        >::wrap(
+        IDirectInputDeviceHook::wrap::<
+            windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A,
+        >(
             interface,
             iid,
             crate::vtable::DeviceContext { runtime, device },

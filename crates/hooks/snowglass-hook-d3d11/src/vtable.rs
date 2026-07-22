@@ -2,28 +2,26 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use windows::{
     Win32::Graphics::Direct3D11::{
-        ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext_Vtbl, ID3D11DeviceContext1,
-        ID3D11DeviceContext1_Vtbl, ID3D11DeviceContext2, ID3D11DeviceContext2_Vtbl,
-        ID3D11DeviceContext3, ID3D11DeviceContext3_Vtbl, ID3D11DeviceContext4,
-        ID3D11DeviceContext4_Vtbl,
+        ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext1, ID3D11DeviceContext2,
+        ID3D11DeviceContext3, ID3D11DeviceContext4,
     },
     core::{IUnknown, Interface},
 };
 
 snowglass_hook::vtable! {
     [
-        ID3D11DeviceContext_Vtbl,
-        ID3D11DeviceContext1_Vtbl,
-        ID3D11DeviceContext2_Vtbl,
-        ID3D11DeviceContext3_Vtbl,
-        ID3D11DeviceContext4_Vtbl,
+        ID3D11DeviceContext,
+        ID3D11DeviceContext1,
+        ID3D11DeviceContext2,
+        ID3D11DeviceContext3,
+        ID3D11DeviceContext4,
     ],
 }
 
 type InstallFn = unsafe fn(*mut c_void, Arc<snowglass_producer_d3d11::Tracking>) -> bool;
 
 snowglass_hook::com_vtable! {
-    union ID3D11DeviceContextVtable for ID3D11DeviceContext4_Vtbl;
+    union ID3D11DeviceContextVtable for ID3D11DeviceContext4;
 }
 
 snowglass_hook::impl_com_hook! {
@@ -31,6 +29,7 @@ snowglass_hook::impl_com_hook! {
     impl ContextHook for ID3D11DeviceContextHook {
         #![vtable = ID3D11DeviceContextVtable]
         #[registry] pub(crate) static CONTEXTS;
+        #[interfaces] {}
         #[context]
         pub(crate) struct ContextHookContext {
             pub(crate) tracking: Arc<snowglass_producer_d3d11::Tracking>,
@@ -39,13 +38,11 @@ snowglass_hook::impl_com_hook! {
         #[release]
         unsafe extern "system" fn context_release(this: *mut c_void) -> u32;
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = Draw]
+        #[base = ID3D11DeviceContext::Draw]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32);
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = DrawIndexed]
+        #[base = ID3D11DeviceContext::DrawIndexed]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw_indexed(
             this: *mut c_void,
@@ -54,8 +51,7 @@ snowglass_hook::impl_com_hook! {
             base_vertex: i32,
         );
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = DrawIndexedInstanced]
+        #[base = ID3D11DeviceContext::DrawIndexedInstanced]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw_indexed_instanced(
             this: *mut c_void,
@@ -66,8 +62,7 @@ snowglass_hook::impl_com_hook! {
             start_instance: u32,
         );
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = DrawInstanced]
+        #[base = ID3D11DeviceContext::DrawInstanced]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw_instanced(
             this: *mut c_void,
@@ -77,13 +72,11 @@ snowglass_hook::impl_com_hook! {
             start_instance: u32,
         );
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = DrawAuto]
+        #[base = ID3D11DeviceContext::DrawAuto]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw_auto(this: *mut c_void);
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = DrawIndexedInstancedIndirect]
+        #[base = ID3D11DeviceContext::DrawIndexedInstancedIndirect]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw_indexed_instanced_indirect(
             this: *mut c_void,
@@ -91,8 +84,7 @@ snowglass_hook::impl_com_hook! {
             argument_offset: u32,
         );
 
-        #[vtable = ID3D11DeviceContext_Vtbl]
-        #[base = DrawInstancedIndirect]
+        #[base = ID3D11DeviceContext::DrawInstancedIndirect]
         #[postfix(|_result, context| unsafe { context.common.tracking.record_context_draw(this) })]
         unsafe extern "system" fn draw_instanced_indirect(
             this: *mut c_void,
@@ -160,11 +152,11 @@ fn widest_context(context: *mut c_void) -> Option<InstallFn> {
     snowglass_hook::widest_interfaces! {
         from unknown => InstallFn;
         install install_context_kind;
-        ID3D11DeviceContext4 => ID3D11DeviceContext4_Vtbl,
-        ID3D11DeviceContext3 => ID3D11DeviceContext3_Vtbl,
-        ID3D11DeviceContext2 => ID3D11DeviceContext2_Vtbl,
-        ID3D11DeviceContext1 => ID3D11DeviceContext1_Vtbl,
-        ID3D11DeviceContext => ID3D11DeviceContext_Vtbl,
+        ID3D11DeviceContext4 => ID3D11DeviceContext4,
+        ID3D11DeviceContext3 => ID3D11DeviceContext3,
+        ID3D11DeviceContext2 => ID3D11DeviceContext2,
+        ID3D11DeviceContext1 => ID3D11DeviceContext1,
+        ID3D11DeviceContext => ID3D11DeviceContext,
     }
     .into_iter()
     .next()
@@ -175,5 +167,7 @@ unsafe fn install_context_kind<A: Vtable>(
     context: *mut c_void,
     tracking: Arc<snowglass_producer_d3d11::Tracking>,
 ) -> bool {
-    unsafe { ID3D11DeviceContextHook::<A>::install(context, ContextHookContext { tracking }) }
+    unsafe {
+        ID3D11DeviceContextHook::install_object::<A>(context, ContextHookContext { tracking })
+    }
 }

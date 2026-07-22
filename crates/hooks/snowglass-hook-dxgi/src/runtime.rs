@@ -1,18 +1,12 @@
-use crate::vtable::{
-    FACTORIES, IDXGIFactoryHook, IDXGISwapchainHook, SWAPCHAINS, SwapchainHook, Vtable,
-};
+use crate::vtable::{IDXGIFactoryHook, IDXGISwapchainHook, SWAPCHAINS, SwapchainHook, Vtable};
 use std::{
     ffi::c_void,
     sync::{Arc, LazyLock, RwLock},
 };
 use windows::{
     Win32::Graphics::Dxgi::{
-        IDXGIFactory, IDXGIFactory_Vtbl, IDXGIFactory1, IDXGIFactory1_Vtbl, IDXGIFactory2,
-        IDXGIFactory2_Vtbl, IDXGIFactory3, IDXGIFactory3_Vtbl, IDXGIFactory4, IDXGIFactory4_Vtbl,
-        IDXGIFactory5, IDXGIFactory5_Vtbl, IDXGIFactory6, IDXGIFactory6_Vtbl, IDXGIFactory7,
-        IDXGIFactory7_Vtbl, IDXGISwapChain, IDXGISwapChain_Vtbl, IDXGISwapChain1,
-        IDXGISwapChain1_Vtbl, IDXGISwapChain2, IDXGISwapChain2_Vtbl, IDXGISwapChain3,
-        IDXGISwapChain3_Vtbl, IDXGISwapChain4, IDXGISwapChain4_Vtbl,
+        IDXGIFactory, IDXGISwapChain, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain3,
+        IDXGISwapChain4,
     },
     core::{GUID, Interface},
 };
@@ -203,10 +197,10 @@ fn widest_swapchain(swapchain: &IDXGISwapChain) -> Option<(*mut c_void, InstallF
     snowglass_hook::widest_interfaces! {
         from swapchain => InstallFn;
         install install_swapchain;
-        IDXGISwapChain4 => IDXGISwapChain4_Vtbl,
-        IDXGISwapChain3 => IDXGISwapChain3_Vtbl,
-        IDXGISwapChain2 => IDXGISwapChain2_Vtbl,
-        IDXGISwapChain1 => IDXGISwapChain1_Vtbl,
+        IDXGISwapChain4 => IDXGISwapChain4,
+        IDXGISwapChain3 => IDXGISwapChain3,
+        IDXGISwapChain2 => IDXGISwapChain2,
+        IDXGISwapChain1 => IDXGISwapChain1,
     }
     .into_iter()
     .next()
@@ -226,7 +220,7 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     }
     let extended =
         unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }.and_then(widest_swapchain);
-    let mut installed = unsafe { install_swapchain::<IDXGISwapChain_Vtbl>(swapchain) };
+    let mut installed = unsafe { install_swapchain::<IDXGISwapChain>(swapchain) };
     if let Some((extended, install)) = extended {
         installed |= unsafe { install(extended) };
     }
@@ -297,7 +291,7 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
         (current, RwLock::new(None))
     };
     unsafe {
-        IDXGISwapchainHook::<A>::install_from(
+        IDXGISwapchainHook::install_object_from::<A>(
             swapchain,
             original,
             crate::vtable::SwapchainContext { owner },
@@ -309,7 +303,7 @@ pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> boo
 ///
 /// `factory` must be null or point to a live `IDXGIFactory` interface.
 pub unsafe fn install_factory(factory: *mut c_void) -> bool {
-    unsafe { install_factory_kind::<IDXGIFactory_Vtbl>(factory) }
+    unsafe { IDXGIFactoryHook::install_object::<IDXGIFactory>(factory) }
 }
 
 /// Installs per-object hooks for every factory interface supported by a DXGI
@@ -320,26 +314,7 @@ pub unsafe fn install_factory(factory: *mut c_void) -> bool {
 /// `factory` must be null or point to a live `IDXGIFactory` interface for the
 /// duration of this call.
 pub unsafe fn install_factory_interfaces(factory: *mut c_void) -> bool {
-    let Some(factory) = (unsafe { IDXGIFactory::from_raw_borrowed(&factory) }) else {
-        return false;
-    };
-    let interfaces = snowglass_hook::widest_interfaces! {
-        from factory => InstallFn;
-        install install_factory_kind;
-        IDXGIFactory7 => IDXGIFactory7_Vtbl,
-        IDXGIFactory6 => IDXGIFactory6_Vtbl,
-        IDXGIFactory5 => IDXGIFactory5_Vtbl,
-        IDXGIFactory4 => IDXGIFactory4_Vtbl,
-        IDXGIFactory3 => IDXGIFactory3_Vtbl,
-        IDXGIFactory2 => IDXGIFactory2_Vtbl,
-        IDXGIFactory1 => IDXGIFactory1_Vtbl,
-        IDXGIFactory => IDXGIFactory_Vtbl,
-    };
-    interfaces
-        .into_iter()
-        .fold(false, |installed, (pointer, install)| {
-            installed | unsafe { install(pointer) }
-        })
+    unsafe { IDXGIFactoryHook::install_all_interfaces(factory) }
 }
 
 /// # Safety
@@ -351,93 +326,30 @@ pub unsafe fn install_factory_interface(factory: *mut c_void, interface_id: *con
         return false;
     }
     let interface_id = unsafe { &*interface_id.cast::<GUID>() };
-    let Some(install) = factory_install(interface_id) else {
-        return false;
-    };
-    unsafe { install(factory) }
-}
-
-unsafe fn install_factory_kind<A: Vtable>(factory: *mut c_void) -> bool {
-    if factory.is_null() {
-        return false;
-    }
-    let key = factory as usize;
-    let current = unsafe { *factory.cast::<*const usize>() };
-    let original = if let Some(existing) = FACTORIES.get(&key) {
-        if current == existing.patched_vtable() {
-            if A::supported_by(existing.vtable_type()) {
-                return true;
-            }
-            existing.original_vtable()
-        } else {
-            current
-        }
-    } else {
-        current
-    };
-    unsafe { IDXGIFactoryHook::<A>::install_from(factory, original) }
-}
-
-fn factory_install(interface_id: &GUID) -> Option<InstallFn> {
-    [
-        (
-            &IDXGIFactory::IID,
-            install_factory_kind::<IDXGIFactory_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory1::IID,
-            install_factory_kind::<IDXGIFactory1_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory2::IID,
-            install_factory_kind::<IDXGIFactory2_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory3::IID,
-            install_factory_kind::<IDXGIFactory3_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory4::IID,
-            install_factory_kind::<IDXGIFactory4_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory5::IID,
-            install_factory_kind::<IDXGIFactory5_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory6::IID,
-            install_factory_kind::<IDXGIFactory6_Vtbl> as InstallFn,
-        ),
-        (
-            &IDXGIFactory7::IID,
-            install_factory_kind::<IDXGIFactory7_Vtbl> as InstallFn,
-        ),
-    ]
-    .into_iter()
-    .find_map(|(candidate, install)| (interface_id == candidate).then_some(install))
+    unsafe { IDXGIFactoryHook::install_interface(factory, interface_id) }
 }
 
 fn swapchain_install(interface_id: &GUID) -> Option<InstallFn> {
     [
         (
             &IDXGISwapChain::IID,
-            install_swapchain::<IDXGISwapChain_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain> as InstallFn,
         ),
         (
             &IDXGISwapChain1::IID,
-            install_swapchain::<IDXGISwapChain1_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain1> as InstallFn,
         ),
         (
             &IDXGISwapChain2::IID,
-            install_swapchain::<IDXGISwapChain2_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain2> as InstallFn,
         ),
         (
             &IDXGISwapChain3::IID,
-            install_swapchain::<IDXGISwapChain3_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain3> as InstallFn,
         ),
         (
             &IDXGISwapChain4::IID,
-            install_swapchain::<IDXGISwapChain4_Vtbl> as InstallFn,
+            install_swapchain::<IDXGISwapChain4> as InstallFn,
         ),
     ]
     .into_iter()

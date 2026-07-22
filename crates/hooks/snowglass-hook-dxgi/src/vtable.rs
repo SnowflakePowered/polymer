@@ -3,12 +3,11 @@
 use std::ffi::c_void;
 use windows::{
     Win32::Graphics::Dxgi::{
-        IDXGIFactory_Vtbl, IDXGIFactory1_Vtbl, IDXGIFactory2_Vtbl, IDXGIFactory3_Vtbl,
-        IDXGIFactory4_Vtbl, IDXGIFactory5_Vtbl, IDXGIFactory6_Vtbl, IDXGIFactory7_Vtbl,
-        IDXGISwapChain_Vtbl, IDXGISwapChain1_Vtbl, IDXGISwapChain2_Vtbl, IDXGISwapChain3_Vtbl,
-        IDXGISwapChain4_Vtbl,
+        IDXGIFactory, IDXGIFactory1, IDXGIFactory2, IDXGIFactory3, IDXGIFactory4, IDXGIFactory5,
+        IDXGIFactory6, IDXGIFactory7, IDXGISwapChain, IDXGISwapChain1, IDXGISwapChain2,
+        IDXGISwapChain3, IDXGISwapChain4,
     },
-    core::IUnknown_Vtbl,
+    core::IUnknown,
 };
 
 #[cfg(test)]
@@ -23,32 +22,32 @@ pub(crate) type Present1Fn = unsafe extern "system" fn(*mut c_void, u32, u32, *c
 
 snowglass_hook::vtable! {
     [
-        IDXGISwapChain_Vtbl,
-        IDXGISwapChain1_Vtbl,
-        IDXGISwapChain2_Vtbl,
-        IDXGISwapChain3_Vtbl,
-        IDXGISwapChain4_Vtbl,
+        IDXGISwapChain,
+        IDXGISwapChain1,
+        IDXGISwapChain2,
+        IDXGISwapChain3,
+        IDXGISwapChain4,
     ],
     [
-        IDXGIFactory_Vtbl,
-        IDXGIFactory1_Vtbl,
-        IDXGIFactory2_Vtbl,
-        IDXGIFactory3_Vtbl,
-        IDXGIFactory4_Vtbl,
-        IDXGIFactory5_Vtbl,
-        IDXGIFactory6_Vtbl,
-        IDXGIFactory7_Vtbl,
+        IDXGIFactory,
+        IDXGIFactory1,
+        IDXGIFactory2,
+        IDXGIFactory3,
+        IDXGIFactory4,
+        IDXGIFactory5,
+        IDXGIFactory6,
+        IDXGIFactory7,
     ],
 }
 
 snowglass_hook::com_vtable! {
-    pub(crate) union IDXGISwapchainVtable for IDXGISwapChain4_Vtbl;
+    pub(crate) union IDXGISwapchainVtable for IDXGISwapChain4;
 }
 
 snowglass_hook::com_vtable! {
     /// Overlays every factory interface generation on one allocation, mirroring
     /// [`IDXGISwapchainVtable`].
-    pub(crate) union IDXGIFactoryVtable for IDXGIFactory7_Vtbl;
+    pub(crate) union IDXGIFactoryVtable for IDXGIFactory7;
 }
 
 snowglass_hook::impl_com_hook! {
@@ -56,6 +55,7 @@ snowglass_hook::impl_com_hook! {
     impl SwapchainHook for IDXGISwapchainHook {
         #![vtable = IDXGISwapchainVtable]
         #[registry] pub(crate) static SWAPCHAINS;
+        #[interfaces] {}
         #[context]
         pub(crate) struct SwapchainContext {
             pub(crate) owner: std::sync::RwLock<
@@ -65,8 +65,7 @@ snowglass_hook::impl_com_hook! {
         #[release(destroyed = crate::runtime::swapchain_destroyed)]
         unsafe extern "system" fn swapchain_release(this: *mut c_void) -> u32;
 
-        #[vtable = IUnknown_Vtbl]
-        #[base = QueryInterface]
+        #[base = IUnknown::QueryInterface]
         #[fallback = 0x8000_4002u32 as i32]
         #[infix(crate::runtime::swapchain_query_interface)]
         unsafe extern "system" fn swapchain_query_interface(this: *mut c_void, interface_id: *const c_void, output: *mut *mut c_void) -> i32 {
@@ -75,8 +74,7 @@ snowglass_hook::impl_com_hook! {
             }
         }
 
-        #[vtable = IDXGISwapChain_Vtbl]
-        #[base = Present]
+        #[base = IDXGISwapChain::Present]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[prefix(|context| unsafe {
             crate::runtime::before_present(this, context.owner)
@@ -87,8 +85,7 @@ snowglass_hook::impl_com_hook! {
             }
         }
 
-        #[vtable = IDXGISwapChain_Vtbl]
-        #[base = ResizeBuffers]
+        #[base = IDXGISwapChain::ResizeBuffers]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[infix(crate::runtime::resize_buffers)]
         unsafe extern "system" fn resize_buffers(this: *mut c_void, buffer_count: u32, width: u32, height: u32, format: u32, flags: u32) -> i32 {
@@ -97,8 +94,7 @@ snowglass_hook::impl_com_hook! {
             }
         }
 
-        #[vtable = IDXGISwapChain1_Vtbl]
-        #[base = Present1]
+        #[base = IDXGISwapChain1::Present1]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[prefix(|context| unsafe {
             crate::runtime::before_present(this, context.owner)
@@ -116,35 +112,40 @@ snowglass_hook::impl_com_hook! {
     impl FactoryHook for IDXGIFactoryHook {
         #![vtable = IDXGIFactoryVtable]
         #[registry] pub(crate) static FACTORIES;
+        #[interfaces] {
+            IDXGIFactory7,
+            IDXGIFactory6,
+            IDXGIFactory5,
+            IDXGIFactory4,
+            IDXGIFactory3,
+            IDXGIFactory2,
+            IDXGIFactory1,
+            IDXGIFactory,
+        }
         #[release]
         unsafe extern "system" fn factory_release(this: *mut c_void) -> u32;
 
-        #[vtable = IUnknown_Vtbl]
-        #[base = QueryInterface]
+        #[base = IUnknown::QueryInterface]
         #[fallback = 0x8000_4002u32 as i32]
         #[infix(crate::runtime::factory_query_interface)]
         unsafe extern "system" fn factory_query_interface(this: *mut c_void, interface_id: *const c_void, output: *mut *mut c_void) -> i32;
 
-        #[vtable = IDXGIFactory_Vtbl]
-        #[base = CreateSwapChain]
+        #[base = IDXGIFactory::CreateSwapChain]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[postfix(crate::runtime::factory_created_swapchain(device, swapchain, result))]
         unsafe extern "system" fn factory_create_swapchain(this: *mut c_void, device: *mut c_void, desc: *const c_void, swapchain: *mut *mut c_void) -> i32;
 
-        #[vtable = IDXGIFactory2_Vtbl]
-        #[base = CreateSwapChainForHwnd]
+        #[base = IDXGIFactory2::CreateSwapChainForHwnd]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[postfix(crate::runtime::factory_created_swapchain(device, swapchain, result))]
         unsafe extern "system" fn factory_create_swapchain_for_hwnd(this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, fullscreen_desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32;
 
-        #[vtable = IDXGIFactory2_Vtbl]
-        #[base = CreateSwapChainForCoreWindow]
+        #[base = IDXGIFactory2::CreateSwapChainForCoreWindow]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[postfix(crate::runtime::factory_created_swapchain(device, swapchain, result))]
         unsafe extern "system" fn factory_create_swapchain_for_core_window(this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32;
 
-        #[vtable = IDXGIFactory2_Vtbl]
-        #[base = CreateSwapChainForComposition]
+        #[base = IDXGIFactory2::CreateSwapChainForComposition]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[postfix(crate::runtime::factory_created_swapchain(device, swapchain, result))]
         unsafe extern "system" fn factory_create_swapchain_for_composition(this: *mut c_void, device: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32;

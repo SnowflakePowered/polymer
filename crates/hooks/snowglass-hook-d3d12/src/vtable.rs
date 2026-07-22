@@ -21,24 +21,13 @@ use windows::{
             D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_TYPE,
             D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_RENDER_TARGET_VIEW_DESC, D3D12_RESOURCE_BARRIER,
             D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_VIEWPORT, ID3D12CommandQueue, ID3D12Device,
-            ID3D12Device_Vtbl, ID3D12Device1, ID3D12Device1_Vtbl, ID3D12Device2,
-            ID3D12Device2_Vtbl, ID3D12Device3, ID3D12Device3_Vtbl, ID3D12Device4,
-            ID3D12Device4_Vtbl, ID3D12Device5, ID3D12Device5_Vtbl, ID3D12Device6,
-            ID3D12Device6_Vtbl, ID3D12Device7, ID3D12Device7_Vtbl, ID3D12Device8,
-            ID3D12Device8_Vtbl, ID3D12Device9, ID3D12Device9_Vtbl, ID3D12Device10,
-            ID3D12Device10_Vtbl, ID3D12Device11, ID3D12Device11_Vtbl, ID3D12Device12,
-            ID3D12Device12_Vtbl, ID3D12Device13, ID3D12Device13_Vtbl, ID3D12Device14,
-            ID3D12Device14_Vtbl, ID3D12GraphicsCommandList, ID3D12GraphicsCommandList_Vtbl,
-            ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList1_Vtbl,
-            ID3D12GraphicsCommandList2, ID3D12GraphicsCommandList2_Vtbl,
-            ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList3_Vtbl,
-            ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList4_Vtbl,
-            ID3D12GraphicsCommandList5, ID3D12GraphicsCommandList5_Vtbl,
-            ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList6_Vtbl,
-            ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList7_Vtbl,
-            ID3D12GraphicsCommandList8, ID3D12GraphicsCommandList8_Vtbl,
-            ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList9_Vtbl,
-            ID3D12GraphicsCommandList10, ID3D12GraphicsCommandList10_Vtbl,
+            ID3D12Device1, ID3D12Device2, ID3D12Device3, ID3D12Device4, ID3D12Device5,
+            ID3D12Device6, ID3D12Device7, ID3D12Device8, ID3D12Device9, ID3D12Device10,
+            ID3D12Device11, ID3D12Device12, ID3D12Device13, ID3D12Device14,
+            ID3D12GraphicsCommandList, ID3D12GraphicsCommandList1, ID3D12GraphicsCommandList2,
+            ID3D12GraphicsCommandList3, ID3D12GraphicsCommandList4, ID3D12GraphicsCommandList5,
+            ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList7, ID3D12GraphicsCommandList8,
+            ID3D12GraphicsCommandList9, ID3D12GraphicsCommandList10,
         },
     },
     core::{BOOL, GUID, HRESULT, IUnknown, Interface},
@@ -46,47 +35,47 @@ use windows::{
 
 snowglass_hook::vtable! {
     [
-        ID3D12GraphicsCommandList_Vtbl,
-        ID3D12GraphicsCommandList1_Vtbl,
-        ID3D12GraphicsCommandList2_Vtbl,
-        ID3D12GraphicsCommandList3_Vtbl,
-        ID3D12GraphicsCommandList4_Vtbl,
-        ID3D12GraphicsCommandList5_Vtbl,
-        ID3D12GraphicsCommandList6_Vtbl,
-        ID3D12GraphicsCommandList7_Vtbl,
-        ID3D12GraphicsCommandList8_Vtbl,
-        ID3D12GraphicsCommandList9_Vtbl,
-        ID3D12GraphicsCommandList10_Vtbl,
+        ID3D12GraphicsCommandList,
+        ID3D12GraphicsCommandList1,
+        ID3D12GraphicsCommandList2,
+        ID3D12GraphicsCommandList3,
+        ID3D12GraphicsCommandList4,
+        ID3D12GraphicsCommandList5,
+        ID3D12GraphicsCommandList6,
+        ID3D12GraphicsCommandList7,
+        ID3D12GraphicsCommandList8,
+        ID3D12GraphicsCommandList9,
+        ID3D12GraphicsCommandList10,
     ],
     [
-        ID3D12Device_Vtbl,
-        ID3D12Device1_Vtbl,
-        ID3D12Device2_Vtbl,
-        ID3D12Device3_Vtbl,
-        ID3D12Device4_Vtbl,
-        ID3D12Device5_Vtbl,
-        ID3D12Device6_Vtbl,
-        ID3D12Device7_Vtbl,
-        ID3D12Device8_Vtbl,
-        ID3D12Device9_Vtbl,
-        ID3D12Device10_Vtbl,
-        ID3D12Device11_Vtbl,
-        ID3D12Device12_Vtbl,
-        ID3D12Device13_Vtbl,
-        ID3D12Device14_Vtbl,
+        ID3D12Device,
+        ID3D12Device1,
+        ID3D12Device2,
+        ID3D12Device3,
+        ID3D12Device4,
+        ID3D12Device5,
+        ID3D12Device6,
+        ID3D12Device7,
+        ID3D12Device8,
+        ID3D12Device9,
+        ID3D12Device10,
+        ID3D12Device11,
+        ID3D12Device12,
+        ID3D12Device13,
+        ID3D12Device14,
     ],
 }
 
 snowglass_hook::com_vtable! {
     /// Overlays every graphics command-list interface generation on one
     /// allocation. Narrower interfaces are prefixes of this storage.
-    pub(crate) union ID3D12GraphicsCommandListVtable for ID3D12GraphicsCommandList10_Vtbl;
+    pub(crate) union ID3D12GraphicsCommandListVtable for ID3D12GraphicsCommandList10;
 }
 
 snowglass_hook::com_vtable! {
     /// Overlays every device interface generation on one allocation, mirroring
     /// [`ID3D12GraphicsCommandListVtable`].
-    pub(crate) union ID3D12DeviceVtable for ID3D12Device14_Vtbl;
+    pub(crate) union ID3D12DeviceVtable for ID3D12Device14;
 }
 
 snowglass_hook::impl_com_hook! {
@@ -94,6 +83,7 @@ snowglass_hook::impl_com_hook! {
     impl CommandListHook for ID3D12GraphicsCommandListHook {
         #![vtable = ID3D12GraphicsCommandListVtable]
         #[registry] pub(crate) static COMMAND_LISTS;
+        #[interfaces] {}
         #[context]
         pub(crate) struct CommandListContext {
             pub(crate) tracking: Arc<snowglass_producer_d3d12::Tracking>,
@@ -102,8 +92,7 @@ snowglass_hook::impl_com_hook! {
         #[release]
         unsafe extern "system" fn command_list_release(this: *mut c_void) -> u32;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = Reset]
+        #[base = ID3D12GraphicsCommandList::Reset]
         #[fallback = E_FAIL]
         #[infix(track_reset)]
         unsafe extern "system" fn reset(this: *mut c_void, allocator: *mut c_void, initial_state: *mut c_void) -> HRESULT {
@@ -112,58 +101,49 @@ snowglass_hook::impl_com_hook! {
             }
         }
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = RSSetViewports]
+        #[base = ID3D12GraphicsCommandList::RSSetViewports]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_viewports(this, count, viewports)
         })]
         unsafe extern "system" fn set_viewports(this: *mut c_void, count: u32, viewports: *const D3D12_VIEWPORT) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = RSSetScissorRects]
+        #[base = ID3D12GraphicsCommandList::RSSetScissorRects]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_scissors(this, count, scissors)
         })]
         unsafe extern "system" fn set_scissors(this: *mut c_void, count: u32, scissors: *const RECT) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = DrawInstanced]
+        #[base = ID3D12GraphicsCommandList::DrawInstanced]
         #[postfix(|_result, context| context.common.tracking.record_draw(this))]
         unsafe extern "system" fn draw_instanced(this: *mut c_void, vertex_count: u32, instance_count: u32, start_vertex: u32, start_instance: u32) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = DrawIndexedInstanced]
+        #[base = ID3D12GraphicsCommandList::DrawIndexedInstanced]
         #[postfix(|_result, context| context.common.tracking.record_draw(this))]
         unsafe extern "system" fn draw_indexed_instanced(this: *mut c_void, index_count: u32, instance_count: u32, start_index: u32, base_vertex: i32, start_instance: u32) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = ResourceBarrier]
+        #[base = ID3D12GraphicsCommandList::ResourceBarrier]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_resource_barrier(this, count, barriers)
         })]
         unsafe extern "system" fn resource_barrier(this: *mut c_void, count: u32, barriers: *const D3D12_RESOURCE_BARRIER) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = SetGraphicsRootDescriptorTable]
+        #[base = ID3D12GraphicsCommandList::SetGraphicsRootDescriptorTable]
         #[postfix(|_result, context| {
             context.common.tracking.record_root_descriptor_table(this, root_index, descriptor)
         })]
         unsafe extern "system" fn set_graphics_root_descriptor_table(this: *mut c_void, root_index: u32, descriptor: D3D12_GPU_DESCRIPTOR_HANDLE) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = SetGraphicsRootSignature]
+        #[base = ID3D12GraphicsCommandList::SetGraphicsRootSignature]
         #[postfix(|_result, context| context.common.tracking.record_root_signature(this))]
         unsafe extern "system" fn set_graphics_root_signature(this: *mut c_void, signature: *mut c_void) ;
 
-        #[vtable = ID3D12GraphicsCommandList_Vtbl]
-        #[base = OMSetRenderTargets]
+        #[base = ID3D12GraphicsCommandList::OMSetRenderTargets]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_render_targets(this, count, descriptors)
         })]
         unsafe extern "system" fn om_set_render_targets(this: *mut c_void, count: u32, descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE, contiguous: BOOL, depth: *const D3D12_CPU_DESCRIPTOR_HANDLE) ;
 
-        #[vtable = ID3D12GraphicsCommandList7_Vtbl]
-        #[base = Barrier]
+        #[base = ID3D12GraphicsCommandList7::Barrier]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_enhanced_barrier(this, count, groups)
         })]
@@ -176,6 +156,7 @@ snowglass_hook::impl_com_hook! {
     impl DeviceHook for ID3D12DeviceHook {
         #![vtable = ID3D12DeviceVtable]
         #[registry] pub(crate) static DEVICES;
+        #[interfaces] {}
         #[context]
         pub(crate) struct DeviceContext {
             pub(crate) tracking: Arc<snowglass_producer_d3d12::Tracking>,
@@ -183,40 +164,34 @@ snowglass_hook::impl_com_hook! {
         #[release]
         unsafe extern "system" fn device_release(this: *mut c_void) -> u32;
 
-        #[vtable = ID3D12Device_Vtbl]
-        #[base = CreateCommandList]
+        #[base = ID3D12Device::CreateCommandList]
         #[fallback = E_FAIL]
         #[postfix(track_created_command_list(interface_id, output, result))]
         unsafe extern "system" fn create_command_list(this: *mut c_void, node_mask: u32, list_type: D3D12_COMMAND_LIST_TYPE, allocator: *mut c_void, initial_state: *mut c_void, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT ;
 
-        #[vtable = ID3D12Device4_Vtbl]
-        #[base = CreateCommandList1]
+        #[base = ID3D12Device4::CreateCommandList1]
         #[fallback = E_FAIL]
         #[postfix(track_created_command_list1(interface_id, output, result))]
         unsafe extern "system" fn create_command_list1(this: *mut c_void, node_mask: u32, list_type: D3D12_COMMAND_LIST_TYPE, flags: D3D12_COMMAND_LIST_FLAGS, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT ;
 
-        #[vtable = ID3D12Device_Vtbl]
-        #[base = CreateDescriptorHeap]
+        #[base = ID3D12Device::CreateDescriptorHeap]
         #[fallback = E_FAIL]
         #[postfix(track_descriptor_heap(desc, output, result))]
         unsafe extern "system" fn create_descriptor_heap(this: *mut c_void, desc: *const D3D12_DESCRIPTOR_HEAP_DESC, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT ;
 
-        #[vtable = ID3D12Device_Vtbl]
-        #[base = CreateShaderResourceView]
+        #[base = ID3D12Device::CreateShaderResourceView]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_shader_resource_view(resource, desc, destination)
         })]
         unsafe extern "system" fn create_shader_resource_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_SHADER_RESOURCE_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) ;
 
-        #[vtable = ID3D12Device_Vtbl]
-        #[base = CreateRenderTargetView]
+        #[base = ID3D12Device::CreateRenderTargetView]
         #[postfix(|_result, context| unsafe {
             context.common.tracking.record_render_target_view(resource, desc, destination)
         })]
         unsafe extern "system" fn create_render_target_view(this: *mut c_void, resource: *mut c_void, desc: *const D3D12_RENDER_TARGET_VIEW_DESC, destination: D3D12_CPU_DESCRIPTOR_HANDLE) ;
 
-        #[vtable = ID3D12Device_Vtbl]
-        #[base = CopyDescriptorsSimple]
+        #[base = ID3D12Device::CopyDescriptorsSimple]
         #[postfix(|_result, context| {
             context.common.tracking.record_copy_descriptors_simple(
                 count,
@@ -291,21 +266,21 @@ fn device_interfaces(device: &ID3D12Device) -> Vec<(*mut c_void, InstallFn)> {
     snowglass_hook::widest_interfaces! {
         from device => InstallFn;
         install install_device_kind;
-        ID3D12Device14 => ID3D12Device14_Vtbl,
-        ID3D12Device13 => ID3D12Device13_Vtbl,
-        ID3D12Device12 => ID3D12Device12_Vtbl,
-        ID3D12Device11 => ID3D12Device11_Vtbl,
-        ID3D12Device10 => ID3D12Device10_Vtbl,
-        ID3D12Device9 => ID3D12Device9_Vtbl,
-        ID3D12Device8 => ID3D12Device8_Vtbl,
-        ID3D12Device7 => ID3D12Device7_Vtbl,
-        ID3D12Device6 => ID3D12Device6_Vtbl,
-        ID3D12Device5 => ID3D12Device5_Vtbl,
-        ID3D12Device4 => ID3D12Device4_Vtbl,
-        ID3D12Device3 => ID3D12Device3_Vtbl,
-        ID3D12Device2 => ID3D12Device2_Vtbl,
-        ID3D12Device1 => ID3D12Device1_Vtbl,
-        ID3D12Device => ID3D12Device_Vtbl,
+        ID3D12Device14 => ID3D12Device14,
+        ID3D12Device13 => ID3D12Device13,
+        ID3D12Device12 => ID3D12Device12,
+        ID3D12Device11 => ID3D12Device11,
+        ID3D12Device10 => ID3D12Device10,
+        ID3D12Device9 => ID3D12Device9,
+        ID3D12Device8 => ID3D12Device8,
+        ID3D12Device7 => ID3D12Device7,
+        ID3D12Device6 => ID3D12Device6,
+        ID3D12Device5 => ID3D12Device5,
+        ID3D12Device4 => ID3D12Device4,
+        ID3D12Device3 => ID3D12Device3,
+        ID3D12Device2 => ID3D12Device2,
+        ID3D12Device1 => ID3D12Device1,
+        ID3D12Device => ID3D12Device,
     }
 }
 
@@ -330,7 +305,9 @@ unsafe fn install_device_kind<A: Vtable>(
         }
         None => current,
     };
-    unsafe { ID3D12DeviceHook::<A>::install_from(device, original, DeviceContext { tracking }) }
+    unsafe {
+        ID3D12DeviceHook::install_object_from::<A>(device, original, DeviceContext { tracking })
+    }
 }
 
 /// Installs tracking interception on a command list created by a hooked
@@ -361,17 +338,17 @@ unsafe fn install_command_list(
     let interfaces = snowglass_hook::widest_interfaces! {
         from &base => InstallFn;
         install install_command_list_kind;
-        ID3D12GraphicsCommandList10 => ID3D12GraphicsCommandList10_Vtbl,
-        ID3D12GraphicsCommandList9 => ID3D12GraphicsCommandList9_Vtbl,
-        ID3D12GraphicsCommandList8 => ID3D12GraphicsCommandList8_Vtbl,
-        ID3D12GraphicsCommandList7 => ID3D12GraphicsCommandList7_Vtbl,
-        ID3D12GraphicsCommandList6 => ID3D12GraphicsCommandList6_Vtbl,
-        ID3D12GraphicsCommandList5 => ID3D12GraphicsCommandList5_Vtbl,
-        ID3D12GraphicsCommandList4 => ID3D12GraphicsCommandList4_Vtbl,
-        ID3D12GraphicsCommandList3 => ID3D12GraphicsCommandList3_Vtbl,
-        ID3D12GraphicsCommandList2 => ID3D12GraphicsCommandList2_Vtbl,
-        ID3D12GraphicsCommandList1 => ID3D12GraphicsCommandList1_Vtbl,
-        ID3D12GraphicsCommandList => ID3D12GraphicsCommandList_Vtbl,
+        ID3D12GraphicsCommandList10 => ID3D12GraphicsCommandList10,
+        ID3D12GraphicsCommandList9 => ID3D12GraphicsCommandList9,
+        ID3D12GraphicsCommandList8 => ID3D12GraphicsCommandList8,
+        ID3D12GraphicsCommandList7 => ID3D12GraphicsCommandList7,
+        ID3D12GraphicsCommandList6 => ID3D12GraphicsCommandList6,
+        ID3D12GraphicsCommandList5 => ID3D12GraphicsCommandList5,
+        ID3D12GraphicsCommandList4 => ID3D12GraphicsCommandList4,
+        ID3D12GraphicsCommandList3 => ID3D12GraphicsCommandList3,
+        ID3D12GraphicsCommandList2 => ID3D12GraphicsCommandList2,
+        ID3D12GraphicsCommandList1 => ID3D12GraphicsCommandList1,
+        ID3D12GraphicsCommandList => ID3D12GraphicsCommandList,
     };
     for (pointer, install) in interfaces {
         unsafe { install(pointer, tracking.clone()) };
@@ -400,7 +377,7 @@ unsafe fn install_command_list_kind<A: Vtable>(
         None => current,
     };
     unsafe {
-        ID3D12GraphicsCommandListHook::<A>::install_from(
+        ID3D12GraphicsCommandListHook::install_object_from::<A>(
             list,
             original,
             CommandListContext { tracking },

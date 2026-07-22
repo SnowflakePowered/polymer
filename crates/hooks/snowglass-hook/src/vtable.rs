@@ -1,6 +1,18 @@
 #[macro_export]
 macro_rules! vtable {
-    ($([$($vtbl:ty),+ $(,)?]),+ $(,)?) => {
+    ($([$($interface:path),+ $(,)?]),+ $(,)?) => {
+        pub(crate) trait Vtable: 'static {
+            const SLOTS: usize;
+
+            fn slots() -> usize { Self::SLOTS }
+            fn supports(vtable: ::core::any::TypeId) -> bool;
+            fn supported_by(vtable: ::core::any::TypeId) -> bool;
+        }
+
+        $($crate::vtable!(@hierarchy [] $($interface),+);)+
+    };
+
+    (@types $([$($vtbl:ty),+ $(,)?]),+ $(,)?) => {
         pub(crate) trait Vtable: 'static {
             const SLOTS: usize;
 
@@ -13,13 +25,14 @@ macro_rules! vtable {
             fn supported_by(vtable: ::core::any::TypeId) -> bool;
         }
 
-        $($crate::vtable!(@hierarchy [] $($vtbl),+);)+
+        $($crate::vtable!(@raw_hierarchy [] $($vtbl),+);)+
     };
 
     (@hierarchy [$($base:ty,)*] $vtbl:ty $(, $derived:ty)*) => {
         impl Vtable for $vtbl {
             const SLOTS: usize =
-                ::core::mem::size_of::<$vtbl>() / ::core::mem::size_of::<usize>();
+                ::core::mem::size_of::<<$vtbl as ::windows::core::Interface>::Vtable>()
+                    / ::core::mem::size_of::<usize>();
 
             fn supports(vtable: ::core::any::TypeId) -> bool {
                 vtable == ::core::any::TypeId::of::<$vtbl>()
@@ -39,6 +52,30 @@ macro_rules! vtable {
     (@hierarchy_next [$($base:ty,)*] $vtbl:ty $(, $derived:ty)*) => {
         $crate::vtable!(@hierarchy [$($base,)*] $vtbl $(, $derived)*);
     };
+
+    (@raw_hierarchy [$($base:ty,)*] $vtbl:ty $(, $derived:ty)*) => {
+        impl Vtable for $vtbl {
+            const SLOTS: usize =
+                ::core::mem::size_of::<$vtbl>() / ::core::mem::size_of::<usize>();
+
+            fn supports(vtable: ::core::any::TypeId) -> bool {
+                vtable == ::core::any::TypeId::of::<$vtbl>()
+                    $(|| vtable == ::core::any::TypeId::of::<$base>())*
+            }
+
+            fn supported_by(vtable: ::core::any::TypeId) -> bool {
+                vtable == ::core::any::TypeId::of::<$vtbl>()
+                    $(|| vtable == ::core::any::TypeId::of::<$derived>())*
+            }
+        }
+
+        $crate::vtable!(@raw_hierarchy_next [$($base,)* $vtbl,] $($derived),*);
+    };
+
+    (@raw_hierarchy_next [$($base:ty,)*]) => {};
+    (@raw_hierarchy_next [$($base:ty,)*] $vtbl:ty $(, $derived:ty)*) => {
+        $crate::vtable!(@raw_hierarchy [$($base,)*] $vtbl $(, $derived)*);
+    };
 }
 
 /// Declares fixed-capacity storage for an opaque copy of a COM vtable.
@@ -49,6 +86,18 @@ macro_rules! vtable {
 #[macro_export]
 macro_rules! com_vtable {
     (
+        $(#[$attribute:meta])*
+        $visibility:vis union $name:ident for $interface:path;
+    ) => {
+        $crate::com_vtable! {
+            @type
+            $(#[$attribute])*
+            $visibility union $name for <$interface as ::windows::core::Interface>::Vtable;
+        }
+    };
+
+    (
+        @type
         $(#[$attribute:meta])*
         $visibility:vis union $name:ident for $capacity:ty;
     ) => {
@@ -726,11 +775,11 @@ macro_rules! function_table_hook {
 /// Declares a typed COM vtable hook and implements its shared storage
 /// lifecycle and saved-slot accessors.
 ///
-/// The macro emits the hook struct itself: the patched clone, the saved
-/// original slots, the original vtable pointer, and (for the generic form)
-/// the cloned-layout marker. A slot whose return type is `Option<T>` is
-/// available only when the clone's concrete vtable type includes the layout
-/// named by its `vtable` attribute.
+/// The declared hook struct is a stable, non-generic installation namespace.
+/// Its generated private state stores the patched clone, saved original slots,
+/// original vtable pointer, and cloned-layout marker. A slot whose return type
+/// is `Option<T>` is available only when the clone's concrete vtable type
+/// includes the layout named by its `vtable` attribute.
 ///
 /// The `#[release]` body uses `#[context] struct` to declare fields carried by
 /// each registered hook object. Every other hooked method declares its
@@ -806,6 +855,7 @@ macro_rules! impl_com_proxy {
             impl $hook_trait_impl for $hook {
                 #![vtable = $storage]
                 #[registry] $visibility static $registry;
+                #[interfaces] {}
                 $(#[context]
                 $common_visibility struct $common_context {
                     $($common_field_visibility $common_field: $common_field_type),*
@@ -822,10 +872,10 @@ macro_rules! impl_com_proxy {
             }
         }
 
-        impl<A: Vtable> $hook<A> {
+        impl $hook {
             /// Wraps `inner` in a proxy and installs the typed hook on it.
             /// The proxy takes ownership of the caller's existing COM reference.
-            $visibility unsafe fn wrap(
+            $visibility unsafe fn wrap<A: Vtable>(
                 inner: *mut ::core::ffi::c_void,
                 iid: $crate::__GUID,
                 $(common: $common_context,)?
@@ -833,7 +883,7 @@ macro_rules! impl_com_proxy {
             ) -> Option<*mut ::core::ffi::c_void> {
                 let proxy = unsafe { $crate::ComProxy::new(inner, iid, A::SLOTS)? };
                 if unsafe {
-                    Self::install(
+                    Self::install_object::<A>(
                         proxy,
                         $({ let _: &$common_context = &common; common },)?
                         $($context),*
@@ -1032,6 +1082,9 @@ macro_rules! impl_com_hook {
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
             #[registry] $visibility:vis static $registry:ident;
+            #[interfaces] {
+                $($interface:path),* $(,)?
+            }
             $(#[context]
             $common_visibility:vis struct $common_context:ident {
                 $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
@@ -1048,6 +1101,9 @@ macro_rules! impl_com_hook {
             impl $hook_trait_impl for $hook {
                 #![vtable = $storage]
                 #[registry] $visibility static $registry;
+                #[interfaces] {
+                    $($interface),*
+                }
                 $(#[context]
                 $common_visibility struct $common_context {
                     $($common_field_visibility $common_field: $common_field_type),*
@@ -1065,6 +1121,9 @@ macro_rules! impl_com_hook {
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
             #[registry] $visibility:vis static $registry:ident;
+            #[interfaces] {
+                $($interface:path),* $(,)?
+            }
             $(#[context]
             $common_visibility:vis struct $common_context:ident {
                 $($common_field_visibility:vis $common_field:ident: $common_field_type:ty),* $(,)?
@@ -1080,8 +1139,7 @@ macro_rules! impl_com_hook {
             }
 
             $(
-                #[vtable = $vtable:ty]
-                #[base = $base:ident]
+                #[base = $vtable_interface:ident::$base:ident]
                 $(#[fallback = $fallback:expr])?
                 $(#[prefix($($prefix:tt)*)])?
                 $(#[infix($($infix:path),* $(,)? )])?
@@ -1121,7 +1179,9 @@ macro_rules! impl_com_hook {
             $crate::__DashMap<usize, ::std::sync::Arc<dyn $hook_trait>>
         > = ::std::sync::LazyLock::new(Default::default);
 
-        $visibility struct $hook<A: Vtable> {
+        $visibility struct $hook;
+
+        struct [<$hook State>]<A: Vtable> {
             patched: Box<$storage>,
             saved: $storage,
             original: ::core::ptr::NonNull<::core::ffi::c_void>,
@@ -1130,16 +1190,63 @@ macro_rules! impl_com_hook {
             $($(#[$context_attribute])* $context: $context_type,)*
         }
 
-        unsafe impl<A: Vtable> Send for $hook<A> {}
-        unsafe impl<A: Vtable> Sync for $hook<A> {}
+        unsafe impl<A: Vtable> Send for [<$hook State>]<A> {}
+        unsafe impl<A: Vtable> Sync for [<$hook State>]<A> {}
 
-        impl<A: Vtable> $hook<A> {
+        impl $hook {
+            $visibility unsafe fn install_widest(
+                object: *mut ::core::ffi::c_void,
+            ) -> bool {
+                let Some(unknown) = (unsafe {
+                    <::windows::core::IUnknown as ::windows::core::Interface>::from_raw_borrowed(
+                        &object
+                    )
+                }) else { return false; };
+                $(if let Ok(interface) = <::windows::core::IUnknown as ::windows::core::Interface>::cast::<$interface>(unknown) {
+                    let pointer = ::windows::core::Interface::as_raw(&interface);
+                    return unsafe { Self::install_object::<$interface>(
+                        pointer,
+                    ) };
+                })*
+                false
+            }
+
+            $visibility unsafe fn install_all_interfaces(
+                object: *mut ::core::ffi::c_void,
+            ) -> bool {
+                let Some(unknown) = (unsafe {
+                    <::windows::core::IUnknown as ::windows::core::Interface>::from_raw_borrowed(
+                        &object
+                    )
+                }) else { return false; };
+                let mut installed = false;
+                $(if let Ok(interface) = <::windows::core::IUnknown as ::windows::core::Interface>::cast::<$interface>(unknown) {
+                    let pointer = ::windows::core::Interface::as_raw(&interface);
+                    installed |= unsafe { Self::install_object::<$interface>(
+                        pointer,
+                    ) };
+                })*
+                installed
+            }
+
+            $visibility unsafe fn install_interface(
+                object: *mut ::core::ffi::c_void,
+                interface_id: &$crate::__GUID,
+            ) -> bool {
+                $(if *interface_id == <$interface as ::windows::core::Interface>::IID {
+                    return unsafe { Self::install_object::<$interface>(
+                        object,
+                    ) };
+                })*
+                false
+            }
+
             /// Clones, registers, and publishes a patched vtable for `object`.
             ///
             /// # Safety
             /// `object` must be null or point to a live COM object whose
             /// vtable spans at least `A::SLOTS` entries.
-            $visibility unsafe fn install(
+            $visibility unsafe fn install_object<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
                 $(common: $common_context,)?
                 $($context: $context_type),*
@@ -1148,9 +1255,21 @@ macro_rules! impl_com_hook {
                     return false;
                 }
                 let object_vtable = object.cast::<*const usize>();
-                let original_pointer = unsafe { *object_vtable };
+                let current = unsafe { *object_vtable };
+                let original_pointer = if let Some(existing) = $registry.get(&(object as usize)) {
+                    if current == existing.patched_vtable() {
+                        if A::supported_by(existing.vtable_type()) {
+                            return true;
+                        }
+                        existing.original_vtable()
+                    } else {
+                        current
+                    }
+                } else {
+                    current
+                };
                 unsafe {
-                    Self::install_from(
+                    Self::install_object_from::<A>(
                         object,
                         original_pointer,
                         $({ let _: &$common_context = &common; common },)?
@@ -1165,7 +1284,7 @@ macro_rules! impl_com_hook {
             /// # Safety
             /// `object` must identify a live COM object and `original_pointer`
             /// must span at least `A::SLOTS` entries.
-            $visibility unsafe fn install_from(
+            $visibility unsafe fn install_object_from<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
                 original_pointer: *const usize,
                 $(common: $common_context,)?
@@ -1187,8 +1306,8 @@ macro_rules! impl_com_hook {
                     (*unknown).Release = ::core::mem::transmute(
                         $release_dispatch as unsafe extern "system" fn($release_this_type) -> u32
                     );
-                    $(if A::supports(::core::any::TypeId::of::<$vtable>()) {
-                        let table = patched.as_mut_ptr::<$vtable>();
+                    $(if A::supports(::core::any::TypeId::of::<$vtable_interface>()) {
+                        let table = patched.as_mut_ptr::<<$vtable_interface as ::windows::core::Interface>::Vtable>();
                         (*table).$base = ::core::mem::transmute(
                             $dispatch as unsafe extern "system" fn(
                                 $this_type,
@@ -1197,7 +1316,8 @@ macro_rules! impl_com_hook {
                         );
                     })+
                 }
-                let state: ::std::sync::Arc<dyn $hook_trait> = ::std::sync::Arc::new(Self {
+                let state: ::std::sync::Arc<dyn $hook_trait> =
+                    ::std::sync::Arc::new([<$hook State>]::<A> {
                     patched,
                     saved,
                     original,
@@ -1212,7 +1332,7 @@ macro_rules! impl_com_hook {
             }
         }
 
-        impl<A: Vtable> $crate::VtableHook for $hook<A> {
+        impl<A: Vtable> $crate::VtableHook for [<$hook State>]<A> {
             fn slots(&self) -> usize { A::SLOTS }
             fn vtable_type(&self) -> ::core::any::TypeId { ::core::any::TypeId::of::<A>() }
             fn patched_vtable(&self) -> *const usize {
@@ -1221,7 +1341,7 @@ macro_rules! impl_com_hook {
             fn original_vtable(&self) -> *const usize { self.original.as_ptr().cast() }
         }
 
-        impl<A: Vtable> $hook_trait for $hook<A> {
+        impl<A: Vtable> $hook_trait for [<$hook State>]<A> {
             $(fn common(&self) -> &$common_context { &self.common })?
             $(fn $context(&self) -> &$context_type { &self.$context })*
             fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32 {
@@ -1236,9 +1356,9 @@ macro_rules! impl_com_hook {
                 $this_type,
                 $($argument_type),*
             ) $(-> $result)?> {
-                A::supports(::core::any::TypeId::of::<$vtable>()).then(|| unsafe {
+                A::supports(::core::any::TypeId::of::<$vtable_interface>()).then(|| unsafe {
                     ::core::mem::transmute(
-                        (*::core::ptr::from_ref(&self.saved).cast::<$vtable>()).$base
+                        (*::core::ptr::from_ref(&self.saved).cast::<<$vtable_interface as ::windows::core::Interface>::Vtable>()).$base
                     )
                 })
             })+
@@ -1460,15 +1580,14 @@ macro_rules! impl_com_hook {
     (@inherent_methods) => {};
 
     (@inherent_methods
-        #[vtable = $vtable:ty]
-        #[base = $base:ident]
+        #[base = $vtable_interface:ident::$base:ident]
         fn $method:ident(&self) -> $result:ty;
         $($rest:tt)*
     ) => {
         pub(crate) fn $method(&self) -> $result {
             unsafe {
                 ::core::mem::transmute(
-                    (*::core::ptr::from_ref(&self.saved).cast::<$vtable>()).$base
+                    (*::core::ptr::from_ref(&self.saved).cast::<<$vtable_interface as ::windows::core::Interface>::Vtable>()).$base
                 )
             }
         }
@@ -1476,16 +1595,15 @@ macro_rules! impl_com_hook {
     };
 
     (@methods
-        #[vtable = $vtable:ty]
-        #[base = $base:ident]
+        #[base = $vtable_interface:ident::$base:ident]
         fn $method:ident(&self) -> Option<$result:ty>;
         $($rest:tt)*
     ) => {
         fn $method(&self) -> Option<$result> {
-            A::supports(::core::any::TypeId::of::<$vtable>())
+            A::supports(::core::any::TypeId::of::<$vtable_interface>())
                 .then(|| unsafe {
                     ::core::mem::transmute(
-                        (*::core::ptr::from_ref(&self.saved).cast::<$vtable>()).$base
+                        (*::core::ptr::from_ref(&self.saved).cast::<<$vtable_interface as ::windows::core::Interface>::Vtable>()).$base
                     )
                 })
         }
@@ -1493,15 +1611,14 @@ macro_rules! impl_com_hook {
     };
 
     (@methods
-        #[vtable = $vtable:ty]
-        #[base = $base:ident]
+        #[base = $vtable_interface:ident::$base:ident]
         fn $method:ident(&self) -> $result:ty;
         $($rest:tt)*
     ) => {
         fn $method(&self) -> $result {
             unsafe {
                 ::core::mem::transmute(
-                    (*::core::ptr::from_ref(&self.saved).cast::<$vtable>()).$base
+                    (*::core::ptr::from_ref(&self.saved).cast::<<$vtable_interface as ::windows::core::Interface>::Vtable>()).$base
                 )
             }
         }
@@ -1527,12 +1644,12 @@ mod tests {
         second: usize,
     }
 
-    crate::vtable! {
+    crate::vtable! {@types
         [Base, Derived],
         [Other],
     }
 
-    crate::com_vtable! {
+    crate::com_vtable! {@type
         union TestVtable for Capacity;
     }
 

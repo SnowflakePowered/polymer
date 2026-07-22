@@ -135,13 +135,15 @@ mod tests {
     use crate::vtable::Vtable;
     use std::ffi::c_void;
     use windows::{
-        Win32::Graphics::Dxgi::{IDXGISwapChain_Vtbl, IDXGISwapChain1_Vtbl},
+        Win32::Graphics::Dxgi::{
+            IDXGISwapChain, IDXGISwapChain_Vtbl, IDXGISwapChain1, IDXGISwapChain1_Vtbl,
+        },
         core::IUnknown_Vtbl,
     };
 
     const SLOT_SIZE: usize = size_of::<usize>();
-    const SWAPCHAIN_VTABLE_LEN: usize = <IDXGISwapChain_Vtbl as Vtable>::SLOTS;
-    const SWAPCHAIN1_VTABLE_LEN: usize = <IDXGISwapChain1_Vtbl as Vtable>::SLOTS;
+    const SWAPCHAIN_VTABLE_LEN: usize = <IDXGISwapChain as Vtable>::SLOTS;
+    const SWAPCHAIN1_VTABLE_LEN: usize = <IDXGISwapChain1 as Vtable>::SLOTS;
     const QUERY_INTERFACE_INDEX: usize =
         std::mem::offset_of!(IUnknown_Vtbl, QueryInterface) / SLOT_SIZE;
     const RELEASE_INDEX: usize = std::mem::offset_of!(IUnknown_Vtbl, Release) / SLOT_SIZE;
@@ -187,7 +189,7 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
-        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain_Vtbl>(object) });
+        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain>(object) });
         assert_ne!(object_vtable, original.as_ptr());
 
         let patched_present = unsafe {
@@ -230,8 +232,8 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
-        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain_Vtbl>(object) });
-        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain1_Vtbl>(object) });
+        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain>(object) });
+        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain1>(object) });
         let patched_present1 = unsafe {
             std::mem::transmute::<usize, crate::vtable::Present1Fn>(
                 *object_vtable.add(PRESENT1_INDEX),

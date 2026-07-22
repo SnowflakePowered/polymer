@@ -15,7 +15,8 @@
 
 use std::ffi::c_void;
 use windows::Win32::Devices::HumanInterfaceDevice::{
-    IDirectInput8A_Vtbl, IDirectInput8W_Vtbl, IDirectInputDevice8A_Vtbl, IDirectInputDevice8W_Vtbl,
+    IDirectInput8A, IDirectInput8A_Vtbl, IDirectInput8W, IDirectInput8W_Vtbl, IDirectInputDevice8A,
+    IDirectInputDevice8A_Vtbl, IDirectInputDevice8W, IDirectInputDevice8W_Vtbl,
 };
 use windows_sys::{
     Win32::Devices::HumanInterfaceDevice::DIDEVICEOBJECTDATA,
@@ -23,14 +24,14 @@ use windows_sys::{
 };
 
 snowglass_hook::vtable! {
-    [IDirectInput8A_Vtbl],
-    [IDirectInput8W_Vtbl],
-    [IDirectInputDevice8A_Vtbl],
-    [IDirectInputDevice8W_Vtbl],
+    [IDirectInput8A],
+    [IDirectInput8W],
+    [IDirectInputDevice8A],
+    [IDirectInputDevice8W],
 }
 
 #[cfg(test)]
-pub(crate) const DEVICE_VTABLE_LEN: usize = <IDirectInputDevice8A_Vtbl as Vtable>::SLOTS;
+pub(crate) const DEVICE_VTABLE_LEN: usize = <IDirectInputDevice8A as Vtable>::SLOTS;
 
 #[cfg(test)]
 pub(crate) type GetDeviceStateFn =
@@ -44,13 +45,13 @@ pub(crate) type SetEventNotificationFn =
 
 snowglass_hook::com_vtable! {
     /// Overlays the ABI-identical ANSI and wide `IDirectInput8` vtables.
-    pub(crate) union IDirectInputVtable for IDirectInput8A_Vtbl;
+    pub(crate) union IDirectInputVtable for IDirectInput8A;
 }
 const _: () = assert!(size_of::<IDirectInput8A_Vtbl>() == size_of::<IDirectInput8W_Vtbl>());
 
 snowglass_hook::com_vtable! {
     /// Overlays the ABI-identical ANSI and wide `IDirectInputDevice8` vtables.
-    pub(crate) union IDirectInputDeviceVtable for IDirectInputDevice8A_Vtbl;
+    pub(crate) union IDirectInputDeviceVtable for IDirectInputDevice8A;
 }
 const _: () =
     assert!(size_of::<IDirectInputDevice8A_Vtbl>() == size_of::<IDirectInputDevice8W_Vtbl>());
@@ -68,8 +69,7 @@ snowglass_hook::impl_com_proxy! {
         #[release]
         unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32;
 
-        #[vtable = IDirectInput8A_Vtbl]
-        #[base = CreateDevice]
+        #[base = IDirectInput8A::CreateDevice]
         #[fallback = 0x8000_4005u32 as i32]
         #[postfix(crate::runtime::create_device(class, output, result))]
         unsafe extern "system" fn create_device(this: *mut c_void, class: *const GUID, output: *mut *mut c_void, outer: *mut c_void) -> HRESULT;
@@ -89,30 +89,25 @@ snowglass_hook::impl_com_proxy! {
         #[release(destroyed = crate::runtime::device_destroyed)]
         unsafe extern "system" fn device_release(this: *mut c_void) -> u32;
 
-        #[vtable = IDirectInputDevice8A_Vtbl]
-        #[base = Acquire]
+        #[base = IDirectInputDevice8A::Acquire]
         #[fallback = 0x8000_4005u32 as i32]
         unsafe extern "system" fn acquire(this: *mut c_void) -> HRESULT;
 
-        #[vtable = IDirectInputDevice8A_Vtbl]
-        #[base = GetDeviceState]
+        #[base = IDirectInputDevice8A::GetDeviceState]
         #[fallback = 0x8000_4005u32 as i32]
         #[infix(crate::runtime::get_device_state)]
         unsafe extern "system" fn get_device_state(this: *mut c_void, size: u32, output: *mut c_void) -> HRESULT;
 
-        #[vtable = IDirectInputDevice8A_Vtbl]
-        #[base = GetDeviceData]
+        #[base = IDirectInputDevice8A::GetDeviceData]
         #[fallback = 0x8000_4005u32 as i32]
         #[infix(crate::runtime::get_device_data)]
         unsafe extern "system" fn get_device_data(this: *mut c_void, object_size: u32, output: *mut DIDEVICEOBJECTDATA, count: *mut u32, flags: u32) -> HRESULT;
 
-        #[vtable = IDirectInputDevice8A_Vtbl]
-        #[base = SetDataFormat]
+        #[base = IDirectInputDevice8A::SetDataFormat]
         #[fallback = 0x8000_4005u32 as i32]
         unsafe extern "system" fn set_data_format(this: *mut c_void, format: *const c_void) -> HRESULT;
 
-        #[vtable = IDirectInputDevice8A_Vtbl]
-        #[base = SetEventNotification]
+        #[base = IDirectInputDevice8A::SetEventNotification]
         #[fallback = 0x8000_4005u32 as i32]
         #[prefix(|context| context.common.runtime.set_event_notification(
             this as usize,
@@ -121,8 +116,7 @@ snowglass_hook::impl_com_proxy! {
         ))]
         unsafe extern "system" fn set_event_notification(this: *mut c_void, event: *mut c_void) -> HRESULT;
 
-        #[vtable = IDirectInputDevice8A_Vtbl]
-        #[base = SetCooperativeLevel]
+        #[base = IDirectInputDevice8A::SetCooperativeLevel]
         #[fallback = 0x8000_4005u32 as i32]
         unsafe extern "system" fn set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT;
     }
