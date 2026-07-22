@@ -404,7 +404,12 @@ macro_rules! function_table_hook {
                         $($argument: $argument_type),*
                     ) $(-> $result)? {
                         #[context] struct {
-                            state: ::std::sync::Arc<$state> = [<__state_ $table_hook:snake>](),
+                            state: ::std::sync::Arc<$state> =
+                                [<__ $table_hook _registry>].lock()
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .as_ref()
+                                    .map(|installation| installation.state.clone())
+                                    .expect("function table hook is not installed"),
                             $($($local: $local_type = $local_value,)*)?
                         }
                     }
@@ -418,6 +423,7 @@ macro_rules! function_table_hook {
             state: ::std::sync::Arc<$state>,
         }
 
+        #[allow(non_upper_case_globals)]
         static [<__ $table_hook _registry>]:
             ::std::sync::Mutex<Option<[<$table_hook Installation>]>> =
             ::std::sync::Mutex::new(None);
@@ -426,13 +432,6 @@ macro_rules! function_table_hook {
             [<__ $table_hook _registry>].lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref().map(|installation| installation.hook.clone())
-                .expect("function table hook is not installed")
-        }
-
-        fn [<__state_ $table_hook:snake>]() -> ::std::sync::Arc<$state> {
-            [<__ $table_hook _registry>].lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .as_ref().map(|installation| installation.state.clone())
                 .expect("function table hook is not installed")
         }
 
@@ -466,6 +465,15 @@ macro_rules! function_table_hook {
                     installation.tables.push((address, table_bytes));
                 }
                 Ok(installation.state.clone())
+            }
+
+            $visibility fn with_state<T>(
+                select: impl FnOnce(&$state) -> T,
+            ) -> Option<T> {
+                [<__ $table_hook _registry>].lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref()
+                    .map(|installation| select(installation.state.as_ref()))
             }
 
             $visibility fn uninstall() -> Result<(), &'static str> {
@@ -1168,6 +1176,7 @@ macro_rules! impl_com_hook {
             ) $(-> $result)?>;)+
         }
 
+        #[allow(non_upper_case_globals)]
         static [<__ $release_dispatch _registry>]: ::std::sync::LazyLock<
             $crate::__DashMap<usize, ::std::sync::Arc<dyn $hook_trait>>
         > = ::std::sync::LazyLock::new(Default::default);
@@ -1768,6 +1777,22 @@ mod tests {
             }
         }
     }
+
+    unsafe extern "C" fn managed_function_table_base(value: usize) -> usize {
+        value + 1
+    }
+
+    crate::function_table_hook! {
+        #[state: usize = 17]
+        struct ManagedFunctionTableHook {
+            const MINIMUM_SLOTS: usize = 1;
+
+            #[slot = 0]
+            #[prefix(|next| assert_eq!(**next.state, 17))]
+            unsafe extern "C" fn managed_function_table_dispatch(value: usize) -> usize;
+        }
+    }
+
     #[test]
     fn vtable_support_follows_declared_type_hierarchy() {
         assert_eq!(Base::slots(), Base::SLOTS);
@@ -1807,5 +1832,27 @@ mod tests {
         assert_eq!(unsafe { dispatch(4) }, 11);
         assert_eq!(FUNCTION_TABLE_PHASES.load(Ordering::Relaxed), 111);
         assert_eq!(table[1], 0xfeed);
+    }
+
+    #[test]
+    fn managed_function_table_exposes_state_with_a_selector() {
+        assert_eq!(ManagedFunctionTableHook::with_state(|state| *state), None);
+        let mut table = [managed_function_table_base as *const () as usize];
+        let state = unsafe {
+            ManagedFunctionTableHook::install(table.as_mut_ptr().cast(), size_of_val(&table) as u32)
+        }
+        .unwrap();
+        assert_eq!(*state, 17);
+        assert_eq!(
+            ManagedFunctionTableHook::with_state(|state| *state),
+            Some(17)
+        );
+        let dispatch: unsafe extern "C" fn(usize) -> usize =
+            unsafe { std::mem::transmute(table[0]) };
+        assert_eq!(unsafe { dispatch(4) }, 5);
+
+        ManagedFunctionTableHook::uninstall().unwrap();
+        assert_eq!(ManagedFunctionTableHook::with_state(|state| *state), None);
+        assert_eq!(table[0], managed_function_table_base as *const () as usize);
     }
 }

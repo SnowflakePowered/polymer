@@ -8,7 +8,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     os::windows::ffi::OsStrExt,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 use windows_sys::Win32::{
     Foundation::HMODULE,
@@ -21,23 +21,22 @@ pub(crate) struct Sdl3TableState {
 }
 
 pub(crate) struct Sdl3EntryState {
+    module: usize,
     target: api::DynapiEntryFn,
 }
 
 impl Default for Sdl3EntryState {
     fn default() -> Self {
-        let module = *DYNAPI_MODULE
-            .get()
-            .expect("SDL3 module was resolved before entry-hook installation")
-            as HMODULE;
+        let module = loaded_module(SDL3_DLL)
+            .expect("SDL3 module was resolved before entry-hook installation");
         let target = unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }
             .expect("SDL3 dynamic API entry target was resolved before installation");
-        Self { target }
+        Self {
+            module: module as usize,
+            target,
+        }
     }
 }
-
-static DYNAPI_MODULE: OnceLock<usize> = OnceLock::new();
-static ATTACHMENT_LOGGED: OnceLock<()> = OnceLock::new();
 
 const SDL3_DLL: &[u16] = &[
     b'S' as u16,
@@ -58,13 +57,13 @@ const DYNAPI_GET_JOYSTICKS: usize = 395;
 const DYNAPI_UPDATE_JOYSTICKS: usize = 954;
 
 fn dynapi_entry_target() -> api::DynapiEntryFn {
-    Sdl3EntryInstallation::__state_sdl3_entry_installation().target
+    Sdl3EntryInstallation::with_state(|state| state.target)
+        .expect("SDL3 entry-hook state was installed before target resolution")
 }
 
 fn create_table_state() -> Result<Sdl3TableState, &'static str> {
-    let module = *DYNAPI_MODULE
-        .get()
-        .expect("SDL3 module was resolved before table installation") as HMODULE;
+    let module = Sdl3EntryInstallation::with_state(|state| state.module)
+        .ok_or("SDL3 entry-hook state is not installed")? as HMODULE;
     let backend =
         unsafe { api::Api::load(module) }.ok_or("SDL3 virtual joystick exports are unavailable")?;
     Ok(Sdl3TableState {
@@ -137,10 +136,10 @@ fn preload_dynamic_api() {
 }
 
 fn discover_loaded_module() {
-    if DYNAPI_MODULE.get().is_none()
-        && let Some(module) = loaded_module(SDL3_DLL)
+    if let Some(module) = loaded_module(SDL3_DLL)
+        && (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_some()
     {
-        unsafe { install(module) };
+        install();
     }
 }
 
@@ -149,16 +148,7 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
     (!module.is_null()).then_some(module)
 }
 
-unsafe fn install(module: HMODULE) {
-    if DYNAPI_MODULE.get().is_some() {
-        return;
-    }
-    if (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_none() {
-        return;
-    }
-    if DYNAPI_MODULE.set(module as usize).is_err() {
-        return;
-    }
+fn install() {
     if Sdl3EntryInstallation::install().is_err() {
         log("failed to enable SDL3 dynamic API detour");
         return;
@@ -194,13 +184,8 @@ fn prepare_enumeration(state: &Sdl3TableState) {
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    match state.runtime.prepare_enumeration(&mut *backend) {
-        Ok(()) => {
-            if ATTACHMENT_LOGGED.set(()).is_ok() {
-                log("attached SDL3 virtual gamepad topology");
-            }
-        }
-        Err(error) => log(error.0),
+    if let Err(error) = state.runtime.prepare_enumeration(&mut *backend) {
+        log(error.0);
     }
 }
 

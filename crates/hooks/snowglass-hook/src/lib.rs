@@ -483,6 +483,7 @@ macro_rules! chain_hooks {
             fn is_complete(&self) -> bool { self.is_complete() }
             fn is_empty(&self) -> bool { self.is_empty() }
         }
+        #[allow(non_upper_case_globals)]
         static [<__ $installer _registry>]:
             $crate::HookInstallationRegistry<$installer> =
                 $crate::HookInstallationRegistry::new();
@@ -492,10 +493,21 @@ macro_rules! chain_hooks {
                 $crate::HookRegistryError,
             > {
                 [<__ $installer _registry>].install()?;
-                Ok($installer::[<__state_ $installer:snake>]())
+                Ok([<$installer:upper _STATE>].read()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref().cloned()
+                    .expect("raw hook state is not installed"))
             }
             $installer_visibility fn uninstall() -> Result<(), $crate::HookRegistryError> {
                 [<__ $installer _registry>].uninstall()
+            }
+            $installer_visibility fn with_state<T>(
+                select: impl FnOnce(&$state) -> T,
+            ) -> Option<T> {
+                [<$installer:upper _STATE>].read()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_deref()
+                    .map(select)
             }
         }
         $crate::chain_hooks! {
@@ -504,7 +516,10 @@ macro_rules! chain_hooks {
             #[context]
             $installer_visibility struct [<$installer Context>] {
                 $installer_visibility state: ::std::sync::Arc<$state> =
-                    $installer::[<__state_ $installer:snake>](),
+                    [<$installer:upper _STATE>].read()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .as_ref().cloned()
+                        .expect("raw hook state is not installed"),
             }
             $($items)*
         }
@@ -528,6 +543,7 @@ macro_rules! chain_hooks {
             fn is_complete(&self) -> bool { self.is_complete() }
             fn is_empty(&self) -> bool { self.is_empty() }
         }
+        #[allow(non_upper_case_globals)]
         static [<__ $installer _registry>]:
             $crate::HookInstallationRegistry<$installer> =
                 $crate::HookInstallationRegistry::new();
@@ -620,13 +636,6 @@ macro_rules! chain_hooks {
                 $crate::chain_hooks!(@install_terminals installation; $($items)*);
                 installation.complete = true;
                 Ok(installation)
-            }
-
-            fn [<__state_ $installer:snake>]() -> ::std::sync::Arc<$state> {
-                [<$installer:upper _STATE>].read()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .as_ref().cloned()
-                    .expect("raw hook state is not installed")
             }
 
             fn uninstall_terminals(&mut self) -> Result<(), $crate::TerminalUninstallError> {
