@@ -8,7 +8,7 @@ license.workspace = true
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_SystemServices"] }
 
 [lints]
 workspace = true

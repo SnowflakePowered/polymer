@@ -102,7 +102,7 @@ pub(crate) unsafe fn capture_swap_buffers(hdc: Hdc, context: &SwapBuffersContext
         }
         unsafe {
             snowglass_producer_opengl::before_swap_buffers(
-                &context.common.state.tracking,
+                &context.state.tracking,
                 hdc as isize,
             )
         };
@@ -117,7 +117,7 @@ pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuf
         }
         unsafe {
             snowglass_producer_opengl::before_swap_buffers(
-                &context.common.state.tracking,
+                &context.state.tracking,
                 hdc as isize,
             )
         };
@@ -128,7 +128,6 @@ pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuf
 pub(crate) unsafe fn track_draw_arrays(first: i32, count: i32, context: &DrawArraysContext) {
     unsafe {
         context
-            .common
             .state
             .tracking
             .record_draw_candidate(Some((first, count)))
@@ -136,7 +135,7 @@ pub(crate) unsafe fn track_draw_arrays(first: i32, count: i32, context: &DrawArr
 }
 
 pub(crate) unsafe fn track_draw_elements(context: &DrawElementsContext) {
-    unsafe { context.common.state.tracking.record_draw_candidate(None) };
+    unsafe { context.state.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn route_draw_arrays(
@@ -145,7 +144,7 @@ pub(crate) unsafe fn route_draw_arrays(
     count: i32,
     mut next: DrawArraysContext<'_>,
 ) {
-    if let Some(original) = next.common.state.draw_arrays.get() {
+    if let Some(original) = next.state.draw_arrays.get() {
         unsafe { original(mode, first, count) };
     } else {
         snowglass_hook::next!(next, mode, first, count);
@@ -159,7 +158,7 @@ pub(crate) unsafe fn route_draw_elements(
     indices: *const c_void,
     mut next: DrawElementsContext<'_>,
 ) {
-    if let Some(original) = next.common.state.draw_elements.get() {
+    if let Some(original) = next.state.draw_elements.get() {
         unsafe { original(mode, count, element_type, indices) };
     } else {
         snowglass_hook::next!(next, mode, count, element_type, indices);
@@ -167,7 +166,7 @@ pub(crate) unsafe fn route_draw_elements(
 }
 
 pub(crate) unsafe fn track_draw_elements_base_vertex(context: &DrawElementsBaseVertexContext) {
-    unsafe { context.common.state.tracking.record_draw_candidate(None) };
+    unsafe { context.state.tracking.record_draw_candidate(None) };
 }
 
 pub(crate) unsafe fn route_draw_elements_base_vertex(
@@ -178,7 +177,7 @@ pub(crate) unsafe fn route_draw_elements_base_vertex(
     base_vertex: i32,
     next: DrawElementsBaseVertexContext<'_>,
 ) {
-    if let Some(original) = next.common.state.draw_elements_base_vertex.get() {
+    if let Some(original) = next.state.draw_elements_base_vertex.get() {
         unsafe { original(mode, count, element_type, indices, base_vertex) };
     }
 }
@@ -189,7 +188,7 @@ pub(crate) unsafe fn track_blit_framebuffer(context: &BlitFramebufferContext) {
     if CAPTURING.with(|capturing| capturing.get()) {
         return;
     }
-    unsafe { context.common.state.tracking.record_blit_candidate() };
+    unsafe { context.state.tracking.record_blit_candidate() };
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -206,7 +205,7 @@ pub(crate) unsafe fn route_blit_framebuffer(
     filter: u32,
     next: BlitFramebufferContext<'_>,
 ) {
-    if let Some(original) = next.common.state.blit_framebuffer.get() {
+    if let Some(original) = next.state.blit_framebuffer.get() {
         unsafe {
             original(
                 src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1, mask, filter,
@@ -229,7 +228,7 @@ pub(crate) unsafe fn track_copy_image_sub_data(
         return;
     }
     unsafe {
-        context.common.state.tracking.record_copy_candidate(
+        context.state.tracking.record_copy_candidate(
             src_name, src_target, dst_name, dst_target, dst_z, width, height,
         )
     };
@@ -254,7 +253,7 @@ pub(crate) unsafe fn route_copy_image_sub_data(
     depth: i32,
     next: CopyImageSubDataContext<'_>,
 ) {
-    if let Some(original) = next.common.state.copy_image_sub_data.get() {
+    if let Some(original) = next.state.copy_image_sub_data.get() {
         unsafe {
             original(
                 src_name, src_target, src_level, src_x, src_y, src_z, dst_name, dst_target,
@@ -271,7 +270,7 @@ pub(crate) unsafe fn route_proc_address(
     let next = *context
         .fp_next()
         .expect("OpenGL hook chains always have a terminal");
-    let state = context.common.state.clone();
+    let state = context.state.clone();
     let original = unsafe { next(name, context) };
     if name.is_null() || original.is_null() {
         return original;

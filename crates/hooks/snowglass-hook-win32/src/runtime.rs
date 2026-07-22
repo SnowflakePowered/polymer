@@ -53,10 +53,9 @@ pub(crate) unsafe fn get_cursor_pos(
     mut next: crate::hooks::GetCursorPosContext<'_>,
 ) -> i32 {
     if !point.is_null()
-        && let Some((x, y)) = next.common.state.input.cursor_position()
+        && let Some((x, y)) = next.state.input.cursor_position()
     {
         if !next
-            .common
             .state
             .logged_cursor_poll
             .swap(true, Ordering::AcqRel)

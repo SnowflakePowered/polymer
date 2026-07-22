@@ -489,6 +489,29 @@ macro_rules! next {
 #[macro_export]
 macro_rules! chain_hooks {
     (
+        #![terminal_resolver($resolve:ident)]
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #![state($state_type:ty = $state_value:expr)]
+        $($items:tt)*
+    ) => {
+        $crate::chain_hooks!(@items $order, $resolve, [$detour],
+            [state: $state_type = $state_value]; $($items)*
+        );
+    };
+
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #![state($state_type:ty = $state_value:expr)]
+        $($items:tt)*
+    ) => {
+        $crate::chain_hooks!(@items $order, __unused_terminal_resolver, [$detour],
+            [state: $state_type = $state_value]; $($items)*
+        );
+    };
+
+    (
         #![order($order:ident)]
         #![detour($detour:ty)]
         #[installer(state = $state:ty)]
@@ -536,14 +559,12 @@ macro_rules! chain_hooks {
         $crate::chain_hooks! {
             #![order($order)]
             #![detour($detour)]
-            #[context]
-            $installer_visibility struct [<$installer Context>] {
-                $installer_visibility state: ::std::sync::Arc<$state> =
-                    [<$installer:upper _STATE>].read()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .as_ref().cloned()
-                        .expect("raw hook state is not installed"),
-            }
+            #![state(::std::sync::Arc<$state> =
+                [<$installer:upper _STATE>].read()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_ref().cloned()
+                    .expect("raw hook state is not installed")
+            )]
             $($items)*
         }
     }};
@@ -1130,7 +1151,7 @@ macro_rules! chain_hooks {
     };
 
     (@emit $order:ident, $resolve:ident,
-        [common: $common_type:ty = $common_value:expr];
+        [$shared:ident: $common_type:ty = $common_value:expr];
         [$($resolve_tokens:tt)*] [$($prefix:tt)*] [$($infix:tt)*] [$($postfix:tt)*]
         $visibility:vis unsafe extern $abi:literal fn $name:ident(
             $($argument:ident: $argument_type:ty),*
@@ -1140,7 +1161,7 @@ macro_rules! chain_hooks {
             [$($resolve_tokens)*] [$($prefix)*] [$($infix)*] [$($postfix)*]
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context yes;
-            fields { common: $common_type = $common_value }
+            fields { $shared: $common_type = $common_value }
         );
     };
 
@@ -1163,7 +1184,7 @@ macro_rules! chain_hooks {
     };
 
     (@emit $order:ident, $resolve:ident,
-        [common: $common_type:ty = $common_value:expr];
+        [$shared:ident: $common_type:ty = $common_value:expr];
         [$($resolve_tokens:tt)*] [$($prefix:tt)*] [$($infix:tt)*] [$($postfix:tt)*]
         $visibility:vis unsafe extern $abi:literal fn $name:ident(
             $($argument:ident: $argument_type:ty),*
@@ -1175,7 +1196,7 @@ macro_rules! chain_hooks {
             $visibility unsafe extern $abi fn $name($($argument: $argument_type),*) -> $result;
             callback_context yes;
             fields {
-                common: $common_type = $common_value,
+                $shared: $common_type = $common_value,
                 $($field: $field_type = $field_value),*
             }
         );

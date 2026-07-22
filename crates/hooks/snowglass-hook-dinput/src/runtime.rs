@@ -368,13 +368,13 @@ pub(crate) unsafe fn direct_input_8_create(
     result: HRESULT,
     context: &crate::hooks::DirectInput8CreateContext,
 ) {
-    context.common.state.start_input_receiver();
+    context.state.start_input_receiver();
     dinput_log(format!(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
     if result >= 0 && !interface_id.is_null() && !output.is_null() && outer.is_null() {
         if let Some(proxy) =
-            unsafe { wrap_direct_input(context.common.state.clone(), *output, &*interface_id) }
+            unsafe { wrap_direct_input(context.state.clone(), *output, &*interface_id) }
         {
             unsafe { *output = proxy };
         }
