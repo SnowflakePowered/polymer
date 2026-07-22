@@ -37,6 +37,49 @@ pub trait TerminalCallable: TerminalLifecycle {
     fn terminal_callable(&self) -> Self::Function;
 }
 
+/// Constructs one owned detour for a generated terminal entry point.
+pub trait TerminalDetour<F>: TerminalCallable<Function = F> + Sized {
+    fn create(target: F, detour: F) -> Self;
+}
+
+/// Resolves a callable from a lifecycle owner on each terminal invocation.
+pub struct SelectedTerminal<T, S> {
+    lifecycle: T,
+    selector: S,
+}
+
+impl<T, S> SelectedTerminal<T, S> {
+    pub fn new(lifecycle: T, selector: S) -> Self {
+        Self {
+            lifecycle,
+            selector,
+        }
+    }
+}
+
+impl<T: TerminalLifecycle, S: Send + Sync + 'static> TerminalLifecycle for SelectedTerminal<T, S> {
+    fn enable(&self) -> Result<(), i32> {
+        self.lifecycle.enable()
+    }
+
+    fn disable(&self) -> Result<(), i32> {
+        self.lifecycle.disable()
+    }
+}
+
+impl<T, S, F> TerminalCallable for SelectedTerminal<T, S>
+where
+    T: TerminalLifecycle,
+    S: Fn(&T) -> F + Send + Sync + 'static,
+    F: Copy + Send + Sync + 'static,
+{
+    type Function = F;
+
+    fn terminal_callable(&self) -> F {
+        (self.selector)(&self.lifecycle)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TerminalPhase {
     Installed,
@@ -319,19 +362,23 @@ macro_rules! next {
 /// Declares static typed hook chains using function-shaped Rust syntax.
 ///
 /// Each terminal is declared as `direct = path`, `installed` with a fallback,
-/// or a backend-defined `dynamic(...)` source. Dynamic sources select their
-/// callback with `#![terminal_resolver(name)]`; direct and installed-only
-/// declarations need no resolver. Hook and context names are inferred from the
-/// declared function name in the same way as [`function_table_hook!`]. Mark an
-/// entry with `#[trampoline]` when its declared function is used as an ABI
-/// detour target. `#[trampoline(abi = "...")]` overrides that entry point's ABI
-/// while leaving the chain declaration as the source of its signature.
+/// or a backend-defined `dynamic(...)` source. An installed raw-hook group can
+/// select its lifecycle owner with `#![detour(Type)]`; each installed terminal
+/// then supplies its own `target` and optional `continuation`. Dynamic sources
+/// select their callback with `#![terminal_resolver(name)]`; direct and
+/// installed-only declarations need no resolver. Hook and context names are
+/// inferred from the declared function name in the same way as
+/// [`function_table_hook!`]. Mark an entry with `#[trampoline]` when its
+/// declared function is used as an ABI detour target. `#[trampoline(abi =
+/// "...")]` overrides that entry point's ABI while leaving the chain
+/// declaration as the source of its signature.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __chain_hooks {
     (
         #![terminal_resolver($resolve:ident)]
         #![order($order:ident)]
+        #![detour($detour:ty)]
         #[context]
         $context_visibility:vis struct $common_context:ident {
             $($field_visibility:vis $field:ident: $field_type:ty = $field_value:expr),* $(,)?
@@ -341,7 +388,60 @@ macro_rules! __chain_hooks {
         $context_visibility struct $common_context {
             $($field_visibility $field: $field_type,)*
         }
-        $crate::__chain_hooks!(@items $order, $resolve,
+        $crate::__chain_hooks!(@items $order, $resolve, [$detour],
+            [common: $common_context = $common_context { $($field: $field_value,)* }];
+            $($items)*
+        );
+    };
+
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        #[context]
+        $context_visibility:vis struct $common_context:ident {
+            $($field_visibility:vis $field:ident: $field_type:ty = $field_value:expr),* $(,)?
+        }
+        $($items:tt)*
+    ) => {
+        $context_visibility struct $common_context {
+            $($field_visibility $field: $field_type,)*
+        }
+        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [$detour],
+            [common: $common_context = $common_context { $($field: $field_value,)* }];
+            $($items)*
+        );
+    };
+
+    (
+        #![terminal_resolver($resolve:ident)]
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@items $order, $resolve, [$detour], []; $($items)*);
+    };
+
+    (
+        #![order($order:ident)]
+        #![detour($detour:ty)]
+        $($items:tt)*
+    ) => {
+        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [$detour], []; $($items)*);
+    };
+
+    (
+        #![terminal_resolver($resolve:ident)]
+        #![order($order:ident)]
+        #[context]
+        $context_visibility:vis struct $common_context:ident {
+            $($field_visibility:vis $field:ident: $field_type:ty = $field_value:expr),* $(,)?
+        }
+        $($items:tt)*
+    ) => {
+        $context_visibility struct $common_context {
+            $($field_visibility $field: $field_type,)*
+        }
+        $crate::__chain_hooks!(@items $order, $resolve, [],
             [common: $common_context = $common_context { $($field: $field_value,)* }];
             $($items)*
         );
@@ -358,7 +458,7 @@ macro_rules! __chain_hooks {
         $context_visibility struct $common_context {
             $($field_visibility $field: $field_type,)*
         }
-        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver,
+        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [],
             [common: $common_context = $common_context { $($field: $field_value,)* }];
             $($items)*
         );
@@ -369,26 +469,26 @@ macro_rules! __chain_hooks {
         #![order($order:ident)]
         $($items:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, []; $($items)*);
+        $crate::__chain_hooks!(@items $order, $resolve, [], []; $($items)*);
     };
 
     (
         #![order($order:ident)]
         $($items:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, []; $($items)*);
+        $crate::__chain_hooks!(@items $order, __unused_terminal_resolver, [], []; $($items)*);
     };
 
-    (@items $order:ident, $resolve:ident, $common:tt;) => {};
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;) => {};
 
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[trampoline]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $common; $($item)*);
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($item)*);
     };
 
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[trampoline(abi = $trampoline_abi:literal)]
         #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
@@ -399,7 +499,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $common;
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -411,7 +511,7 @@ macro_rules! __chain_hooks {
         );
     };
 
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[trampoline(abi = $trampoline_abi:literal)]
         #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
@@ -422,7 +522,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $common;
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -434,7 +534,7 @@ macro_rules! __chain_hooks {
         );
     };
 
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[export($target:ident)]
         #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
@@ -445,7 +545,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $common;
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -460,10 +560,10 @@ macro_rules! __chain_hooks {
         ) $(-> $result)? {
             unsafe { $name($($argument),*) }
         }
-        $crate::__chain_hooks!(@items $order, $resolve, $common; $($remaining)*);
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
     };
 
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[export($target:ident)]
         #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
@@ -474,7 +574,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@items $order, $resolve, $common;
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common;
             #[terminal($($terminal)*)]
             $(#[prefix($($prefix)*)])?
             $(#[infix($($infix),*)])?
@@ -489,12 +589,12 @@ macro_rules! __chain_hooks {
         ) $(-> $result)? {
             unsafe { $name($($argument),*) }
         }
-        $crate::__chain_hooks!(@items $order, $resolve, $common; $($remaining)*);
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
     };
 
     // These two entry arms stay separate because a `ty` fragment cannot be
     // followed by an arbitrary token-tree fragment in `macro_rules!`.
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
         $(#[infix($($infix:path),* $(,)? )])?
@@ -504,7 +604,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)?;
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi, $common;
+        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi, $detour, $common;
             [$($terminal)*]
             [$(prefix($($prefix)*))?]
             [$(infix($($infix),*))?]
@@ -516,7 +616,7 @@ macro_rules! __chain_hooks {
         );
     };
 
-    (@items $order:ident, $resolve:ident, $common:tt;
+    (@items $order:ident, $resolve:ident, $detour:tt, $common:tt;
         #[terminal($($terminal:tt)*)]
         $(#[prefix($($prefix:tt)*)])?
         $(#[infix($($infix:path),* $(,)? )])?
@@ -526,7 +626,7 @@ macro_rules! __chain_hooks {
         ) $(-> $result:ty)? { $($body:tt)* }
         $($remaining:tt)*
     ) => {
-        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi, $common;
+        $crate::__chain_hooks!(@normalize_terminal $order, $resolve, $abi, $detour, $common;
             [$($terminal)*]
             [$(prefix($($prefix)*))?]
             [$(infix($($infix),*))?]
@@ -538,39 +638,86 @@ macro_rules! __chain_hooks {
         );
     };
 
-    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $common:tt;
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
         [direct = $terminal:path]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $common;
+        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [direct terminal $terminal;]
             $($item)*
         );
     };
 
-    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $common:tt;
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
+        [installed(detour = $detour:ty, target = $target:path,
+            continuation = $continuation:path $(,)?), fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+            [owned detour $detour, target $target, continuation $continuation,
+                abi $terminal_abi with fallback $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:tt, [$detour:ty], $common:tt;
+        [installed(target = $target:path,
+            continuation = $continuation:path $(,)?), fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
+            [owned detour $detour, target $target, continuation $continuation,
+                abi $terminal_abi with fallback $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:tt, [$detour:ty], $common:tt;
+        [installed(target = $target:path $(,)?), fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve, [$detour], $common;
+            [owned detour $detour, target $target,
+                abi $terminal_abi with fallback $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
+        [installed(detour = $detour:ty, target = $target:path $(,)?),
+            fallback = $fallback:expr $(,)?]
+        $($item:tt)*
+    ) => {
+        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
+            [owned detour $detour, target $target,
+                abi $terminal_abi with fallback $fallback;]
+            $($item)*
+        );
+    };
+
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
         [installed, fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $common;
+        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [installed abi $terminal_abi with fallback $fallback;]
             $($item)*
         );
     };
 
-    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $common:tt;
+    (@normalize_terminal $order:ident, $resolve:ident, $terminal_abi:literal, $chain_detour:tt, $common:tt;
         [dynamic($resolver_argument:ident, $symbol:literal: $module:ident::$function_type:ident),
             fallback = $fallback:expr $(,)?]
         $($item:tt)*
     ) => {
-        $crate::__chain_hooks!(@finish_item $order, $resolve, $common;
+        $crate::__chain_hooks!(@finish_item $order, $resolve, $chain_detour, $common;
             [dynamic proc $resolver_argument, $symbol: $module::$function_type;
                 fallback $fallback;]
             $($item)*
         );
     };
 
-    (@finish_item $order:ident, $resolve:ident, $common:tt;
+    (@finish_item $order:ident, $resolve:ident, $detour:tt, $common:tt;
         [$($resolve_tokens:tt)*]
         [$($prefix:tt)*]
         [$($infix:tt)*]
@@ -590,7 +737,7 @@ macro_rules! __chain_hooks {
                 $($argument: $argument_type),*
             ) $(-> $result)? { $($body)* }
         }
-        $crate::__chain_hooks!(@items $order, $resolve, $common; $($remaining)*);
+        $crate::__chain_hooks!(@items $order, $resolve, $detour, $common; $($remaining)*);
     };
 
     (@emit $order:ident, $resolve:ident, [];
@@ -711,6 +858,7 @@ macro_rules! __chain_hooks {
             [[<$name:camel TerminalFn>]]
             [[<$name:upper _TERMINAL>]]
             [[<install_ $name _terminal>]]
+            [$name]
             [$($argument: $argument_type),*]
             [$result]
         );
@@ -870,6 +1018,7 @@ macro_rules! __chain_hooks {
         [$terminal_fn:ident]
         [$slot:ident]
         [$install:ident]
+        [$hook:ident]
         [$($argument:ident: $argument_type:ty),*]
         [$result:ty]
     ) => {
@@ -909,12 +1058,90 @@ macro_rules! __chain_hooks {
         }
     };
     (@declare_terminal
+        [owned detour $detour:ty, target $target:path,
+            abi $terminal_abi:literal with fallback $fallback:expr;]
+        [$visibility:vis]
+        [$terminal_trait:ident]
+        [$terminal_fn:ident]
+        [$slot:ident]
+        [$install:ident]
+        [$hook:ident]
+        [$($argument:ident: $argument_type:ty),*]
+        [$result:ty]
+    ) => {
+        $crate::__chain_hooks!(@declare_owned_terminal
+            [$detour] [$target] [] [$terminal_abi] [$visibility]
+            [$terminal_trait] [$terminal_fn] [$slot] [$install] [$hook]
+            [$($argument: $argument_type),*] [$result]
+        );
+    };
+    (@declare_terminal
+        [owned detour $detour:ty, target $target:path, continuation $continuation:path,
+            abi $terminal_abi:literal with fallback $fallback:expr;]
+        [$visibility:vis]
+        [$terminal_trait:ident]
+        [$terminal_fn:ident]
+        [$slot:ident]
+        [$install:ident]
+        [$hook:ident]
+        [$($argument:ident: $argument_type:ty),*]
+        [$result:ty]
+    ) => {
+        $crate::__chain_hooks!(@declare_owned_terminal
+            [$detour] [$target] [$continuation] [$terminal_abi] [$visibility]
+            [$terminal_trait] [$terminal_fn] [$slot] [$install] [$hook]
+            [$($argument: $argument_type),*] [$result]
+        );
+    };
+    (@declare_owned_terminal
+        [$detour:ty] [$target:path] [$($continuation:path)?] [$terminal_abi:literal]
+        [$visibility:vis] [$terminal_trait:ident] [$terminal_fn:ident]
+        [$slot:ident] [$install:ident] [$hook:ident]
+        [$($argument:ident: $argument_type:ty),*] [$result:ty]
+    ) => {
+        $visibility type $terminal_fn = unsafe extern $terminal_abi fn(
+            $($argument_type),*
+        ) -> $result;
+
+        $visibility trait $terminal_trait: $crate::TerminalLifecycle {
+            unsafe fn call(&self, $($argument: $argument_type),*) -> $result;
+        }
+
+        impl<T> $terminal_trait for T
+        where
+            T: $crate::TerminalCallable<Function = $terminal_fn>,
+        {
+            unsafe fn call(&self, $($argument: $argument_type),*) -> $result {
+                let terminal = $crate::TerminalCallable::terminal_callable(self);
+                unsafe { terminal($($argument),*) }
+            }
+        }
+
+        static $slot: $crate::TerminalSlot<dyn $terminal_trait> =
+            $crate::TerminalSlot::new();
+
+        $visibility fn $install() -> Result<
+            $crate::TerminalInstallation<dyn $terminal_trait>,
+            $crate::TerminalInstallError,
+        > {
+            let terminal = <$detour as $crate::TerminalDetour<$terminal_fn>>::create(
+                $target as $terminal_fn,
+                $hook as $terminal_fn,
+            );
+            $(let terminal = $crate::SelectedTerminal::new(terminal, $continuation);)?
+            let terminal: ::std::sync::Arc<dyn $terminal_trait> =
+                ::std::sync::Arc::new(terminal);
+            $slot.install(terminal)
+        }
+    };
+    (@declare_terminal
         [$($resolve_tokens:tt)*]
         [$visibility:vis]
         [$terminal_trait:ident]
         [$terminal_fn:ident]
         [$slot:ident]
         [$install:ident]
+        [$hook:ident]
         [$($argument:ident: $argument_type:ty),*]
         [$result:ty]
     ) => {};
@@ -922,6 +1149,30 @@ macro_rules! __chain_hooks {
     (@call_terminal
         [$resolve:ident]
         [installed abi $terminal_abi:literal with fallback $fallback:expr;]
+        [$slot:ident]
+        [$($argument:ident),*]
+    ) => {
+        match $slot.acquire() {
+            Some(terminal) => unsafe { terminal.terminal().call($($argument),*) },
+            None => $fallback,
+        }
+    };
+    (@call_terminal
+        [$resolve:ident]
+        [owned detour $detour:ty, target $target:path,
+            abi $terminal_abi:literal with fallback $fallback:expr;]
+        [$slot:ident]
+        [$($argument:ident),*]
+    ) => {
+        match $slot.acquire() {
+            Some(terminal) => unsafe { terminal.terminal().call($($argument),*) },
+            None => $fallback,
+        }
+    };
+    (@call_terminal
+        [$resolve:ident]
+        [owned detour $detour:ty, target $target:path, continuation $continuation:path,
+            abi $terminal_abi:literal with fallback $fallback:expr;]
         [$slot:ident]
         [$($argument:ident),*]
     ) => {

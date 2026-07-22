@@ -9,11 +9,8 @@ use std::{
 };
 use windows_sys::Win32::Foundation::E_FAIL;
 
-type SwapBuffersFn = unsafe extern "system" fn(Hdc) -> i32;
-type SwapLayerBuffersFn = unsafe extern "system" fn(Hdc, u32) -> i32;
-type WglGetProcAddressFn = unsafe extern "system" fn(*const u8) -> *const c_void;
-type GlDrawArraysFn = unsafe extern "system" fn(u32, i32, i32);
-type GlDrawElementsFn = unsafe extern "system" fn(u32, i32, u32, *const c_void);
+pub(crate) type GlDrawArraysFn = unsafe extern "system" fn(u32, i32, i32);
+pub(crate) type GlDrawElementsFn = unsafe extern "system" fn(u32, i32, u32, *const c_void);
 type GlDrawElementsBaseVertexFn = unsafe extern "system" fn(u32, i32, u32, *const c_void, i32);
 type GlBlitFramebufferFn =
     unsafe extern "system" fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32);
@@ -38,65 +35,44 @@ type GlCopyImageSubDataFn = unsafe extern "system" fn(
 #[link(name = "gdi32")]
 unsafe extern "system" {
     #[link_name = "SwapBuffers"]
-    fn system_swap_buffers(hdc: Hdc) -> i32;
+    pub(crate) fn system_swap_buffers(hdc: Hdc) -> i32;
 }
 
 #[link(name = "opengl32")]
 unsafe extern "system" {
     #[link_name = "wglGetProcAddress"]
-    fn system_wgl_get_proc_address(name: *const u8) -> *const c_void;
+    pub(crate) fn system_wgl_get_proc_address(name: *const u8) -> *const c_void;
     #[link_name = "wglSwapLayerBuffers"]
-    fn system_swap_layer_buffers(hdc: Hdc, planes: u32) -> i32;
+    pub(crate) fn system_swap_layer_buffers(hdc: Hdc, planes: u32) -> i32;
     #[link_name = "glDrawArrays"]
-    fn system_draw_arrays(mode: u32, first: i32, count: i32);
+    pub(crate) fn system_draw_arrays(mode: u32, first: i32, count: i32);
     #[link_name = "glDrawElements"]
-    fn system_draw_elements(mode: u32, count: i32, element_type: u32, indices: *const c_void);
+    pub(crate) fn system_draw_elements(
+        mode: u32,
+        count: i32,
+        element_type: u32,
+        indices: *const c_void,
+    );
 }
 
 struct OpenGlRuntime {
     tracking: Arc<Tracking>,
 }
 
-struct DrawArraysTerminal(InlineDetour<GlDrawArraysFn>);
-
-impl snowglass_hook::TerminalLifecycle for DrawArraysTerminal {
-    fn enable(&self) -> Result<(), i32> {
-        self.0.enable()
-    }
-    fn disable(&self) -> Result<(), i32> {
-        self.0.disable()
-    }
+pub(crate) fn draw_arrays_continuation(detour: &InlineDetour<GlDrawArraysFn>) -> GlDrawArraysFn {
+    DRAW_ARRAYS
+        .get()
+        .copied()
+        .unwrap_or_else(|| detour.trampoline())
 }
 
-impl crate::hooks::DrawArraysTerminal for DrawArraysTerminal {
-    unsafe fn call(&self, mode: u32, first: i32, count: i32) {
-        if let Some(original) = DRAW_ARRAYS.get() {
-            unsafe { original(mode, first, count) };
-        } else {
-            unsafe { (self.0.trampoline())(mode, first, count) };
-        }
-    }
-}
-
-struct DrawElementsTerminal(InlineDetour<GlDrawElementsFn>);
-
-impl snowglass_hook::TerminalLifecycle for DrawElementsTerminal {
-    fn enable(&self) -> Result<(), i32> {
-        self.0.enable()
-    }
-    fn disable(&self) -> Result<(), i32> {
-        self.0.disable()
-    }
-}
-
-impl crate::hooks::DrawElementsTerminal for DrawElementsTerminal {
-    unsafe fn call(&self, mode: u32, count: i32, element_type: u32, indices: *const c_void) {
-        if let Some(original) = DRAW_ELEMENTS.get() {
-            unsafe { original(mode, count, element_type, indices) };
-        } else {
-            unsafe { (self.0.trampoline())(mode, count, element_type, indices) };
-        }
-    }
+pub(crate) fn draw_elements_continuation(
+    detour: &InlineDetour<GlDrawElementsFn>,
+) -> GlDrawElementsFn {
+    DRAW_ELEMENTS
+        .get()
+        .copied()
+        .unwrap_or_else(|| detour.trampoline())
 }
 
 type SwapBuffersInstallation =
@@ -273,39 +249,18 @@ pub(crate) unsafe fn install() -> i32 {
 
     install_or_rollback!(
         wgl_get_proc_address,
-        crate::hooks::install_wgl_get_proc_address_terminal(InlineDetour::new(
-            system_wgl_get_proc_address as WglGetProcAddressFn,
-            crate::hooks::wgl_get_proc_address
-        ))
+        crate::hooks::install_wgl_get_proc_address_terminal()
     );
-    install_or_rollback!(
-        draw_arrays,
-        crate::hooks::install_draw_arrays_terminal(DrawArraysTerminal(InlineDetour::new(
-            system_draw_arrays as GlDrawArraysFn,
-            crate::hooks::draw_arrays
-        )))
-    );
+    install_or_rollback!(draw_arrays, crate::hooks::install_draw_arrays_terminal());
     install_or_rollback!(
         draw_elements,
-        crate::hooks::install_draw_elements_terminal(DrawElementsTerminal(InlineDetour::new(
-            system_draw_elements as GlDrawElementsFn,
-            crate::hooks::draw_elements
-        )))
+        crate::hooks::install_draw_elements_terminal()
     );
     install_or_rollback!(
         swap_layer_buffers,
-        crate::hooks::install_swap_layer_buffers_terminal(InlineDetour::new(
-            system_swap_layer_buffers as SwapLayerBuffersFn,
-            crate::hooks::swap_layer_buffers
-        ))
+        crate::hooks::install_swap_layer_buffers_terminal()
     );
-    install_or_rollback!(
-        swap_buffers,
-        crate::hooks::install_swap_buffers_terminal(InlineDetour::new(
-            system_swap_buffers as SwapBuffersFn,
-            crate::hooks::swap_buffers
-        ))
-    );
+    install_or_rollback!(swap_buffers, crate::hooks::install_swap_buffers_terminal());
 
     group.complete = true;
     *installation = Some(group);

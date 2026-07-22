@@ -1,14 +1,10 @@
-use snowglass_platform_windows::InlineDetour;
 use std::{ffi::c_void, sync::Mutex};
 use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
-
-pub(crate) type D3D12CreateDeviceFn =
-    unsafe extern "system" fn(*mut c_void, i32, *const GUID, *mut *mut c_void) -> i32;
 
 #[link(name = "d3d12")]
 unsafe extern "system" {
     #[link_name = "D3D12CreateDevice"]
-    fn system_create_device(
+    pub(crate) fn system_create_device(
         adapter: *mut c_void,
         minimum_feature_level: i32,
         interface_id: *const GUID,
@@ -28,11 +24,7 @@ pub(crate) unsafe fn install() -> i32 {
     if installation.is_some() {
         return 0;
     }
-    let detour = InlineDetour::new(
-        system_create_device as D3D12CreateDeviceFn,
-        crate::hooks::create_device,
-    );
-    match crate::hooks::install_create_device_terminal(detour) {
+    match crate::hooks::install_create_device_terminal() {
         Ok(installed) => {
             *installation = Some(installed);
             0

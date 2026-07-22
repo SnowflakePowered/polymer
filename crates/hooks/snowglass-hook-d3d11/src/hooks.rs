@@ -6,13 +6,16 @@ use windows_sys::Win32::Foundation::{E_FAIL, HMODULE};
 
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[context]
     pub(crate) struct D3D11HookContext {
         pub(crate) tracking: std::sync::Arc<Tracking> = std::sync::Arc::default(),
     }
 
     #[trampoline(abi = "system-unwind")]
-    #[terminal(installed, fallback = E_FAIL)]
+    #[terminal(installed(
+        target = crate::install::system_create_device,
+    ), fallback = E_FAIL)]
     #[postfix(
         crate::device::create_device(
             adapter,
@@ -36,7 +39,9 @@ snowglass_hook::__chain_hooks! {
     ) -> i32;
 
     #[trampoline(abi = "system-unwind")]
-    #[terminal(installed, fallback = E_FAIL)]
+    #[terminal(installed(
+        target = crate::install::system_create_device_and_swapchain,
+    ), fallback = E_FAIL)]
     #[postfix(
         crate::device::create_device_and_swapchain(
             adapter,

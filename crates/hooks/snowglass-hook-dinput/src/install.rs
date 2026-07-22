@@ -1,12 +1,7 @@
 //! Detour ownership and lifecycle.
 
-use crate::DirectInput8CreateFn;
-use snowglass_platform_windows::InlineDetour;
 use std::sync::{Arc, Mutex};
-use windows_sys::{
-    Win32::{Devices::HumanInterfaceDevice::DirectInput8Create, Foundation::E_FAIL},
-    core::HRESULT,
-};
+use windows_sys::{Win32::Foundation::E_FAIL, core::HRESULT};
 
 type Installation =
     snowglass_hook::TerminalInstallation<dyn crate::hooks::DirectInput8CreateTerminal>;
@@ -30,11 +25,9 @@ pub(crate) unsafe fn install() -> HRESULT {
         runtime().start_input_receiver();
         return 0;
     }
-    let target = DirectInput8Create as DirectInput8CreateFn;
-    let detour = InlineDetour::new(target, crate::hooks::direct_input_8_create);
     let runtime = Arc::new(crate::runtime::Runtime::default());
     *RUNTIME.lock().unwrap_or_else(|error| error.into_inner()) = Some(Arc::clone(&runtime));
-    match crate::hooks::install_direct_input_8_create_terminal(detour) {
+    match crate::hooks::install_direct_input_8_create_terminal() {
         Ok(installed) => {
             runtime.start_input_receiver();
             *installation = Some(installed);

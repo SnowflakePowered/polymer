@@ -1,36 +1,7 @@
 //! Early-process detours for targets that already loaded the system D3D11 DLL.
 
-use snowglass_platform_windows::InlineDetour;
 use std::{ffi::c_void, sync::Mutex};
 use windows_sys::Win32::Foundation::{E_FAIL, HMODULE};
-
-pub(crate) type D3D11CreateDeviceFn = unsafe extern "system-unwind" fn(
-    *mut c_void,
-    i32,
-    HMODULE,
-    u32,
-    *const i32,
-    u32,
-    u32,
-    *mut *mut c_void,
-    *mut i32,
-    *mut *mut c_void,
-) -> i32;
-
-pub(crate) type D3D11CreateDeviceAndSwapChainFn = unsafe extern "system-unwind" fn(
-    *mut c_void,
-    i32,
-    HMODULE,
-    u32,
-    *const i32,
-    u32,
-    u32,
-    *const c_void,
-    *mut *mut c_void,
-    *mut *mut c_void,
-    *mut i32,
-    *mut *mut c_void,
-) -> i32;
 
 #[link(name = "d3d11")]
 unsafe extern "system-unwind" {
@@ -91,18 +62,10 @@ pub(crate) unsafe fn install() -> i32 {
         }
         *installation = None;
     }
-    let create_device = InlineDetour::new(
-        system_create_device as D3D11CreateDeviceFn,
-        crate::hooks::create_device,
-    );
-    let create_device_and_swapchain = InlineDetour::new(
-        system_create_device_and_swapchain as D3D11CreateDeviceAndSwapChainFn,
-        crate::hooks::create_device_and_swapchain,
-    );
-    let Ok(create_device) = crate::hooks::install_create_device_terminal(create_device) else {
+    let Ok(create_device) = crate::hooks::install_create_device_terminal() else {
         return E_FAIL;
     };
-    match crate::hooks::install_create_device_and_swapchain_terminal(create_device_and_swapchain) {
+    match crate::hooks::install_create_device_and_swapchain_terminal() {
         Ok(create_device_and_swapchain) => {
             *installation = Some(D3D11Installation {
                 create_device: Some(create_device),

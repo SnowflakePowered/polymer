@@ -8,13 +8,16 @@ use windows_sys::{
 
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[context]
     pub(crate) struct DirectInputHookContext {
         pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime> = crate::install::runtime(),
     }
 
     #[trampoline]
-    #[terminal(installed, fallback = E_FAIL)]
+    #[terminal(installed(
+        target = windows_sys::Win32::Devices::HumanInterfaceDevice::DirectInput8Create,
+    ), fallback = E_FAIL)]
     #[postfix(crate::runtime::direct_input_8_create(
         instance,
         version,

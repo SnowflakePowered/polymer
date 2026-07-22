@@ -78,6 +78,12 @@ impl<F: ib_hook::FnPtr> snowglass_hook::TerminalCallable for InlineDetour<F> {
     }
 }
 
+impl<F: ib_hook::FnPtr> snowglass_hook::TerminalDetour<F> for InlineDetour<F> {
+    fn create(target: F, detour: F) -> Self {
+        Self::new(target, detour)
+    }
+}
+
 /// Calls an installed detour's original trampoline, or returns `fallback` if
 /// the detour is absent or disabled.
 pub fn call_original<T, R>(

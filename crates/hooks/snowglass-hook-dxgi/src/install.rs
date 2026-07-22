@@ -1,24 +1,23 @@
 //! Early-process detours for the DXGI factory creation exports.
 
-use snowglass_platform_windows::InlineDetour;
 use std::{ffi::c_void, sync::Mutex};
-
-pub(crate) type CreateDxgiFactoryFn =
-    unsafe extern "system" fn(*const c_void, *mut *mut c_void) -> i32;
-
-pub(crate) type CreateDxgiFactory2Fn =
-    unsafe extern "system" fn(u32, *const c_void, *mut *mut c_void) -> i32;
 
 #[link(name = "dxgi")]
 unsafe extern "system" {
     #[link_name = "CreateDXGIFactory"]
-    fn system_create_factory(interface_id: *const c_void, factory: *mut *mut c_void) -> i32;
+    pub(crate) fn system_create_factory(
+        interface_id: *const c_void,
+        factory: *mut *mut c_void,
+    ) -> i32;
 
     #[link_name = "CreateDXGIFactory1"]
-    fn system_create_factory1(interface_id: *const c_void, factory: *mut *mut c_void) -> i32;
+    pub(crate) fn system_create_factory1(
+        interface_id: *const c_void,
+        factory: *mut *mut c_void,
+    ) -> i32;
 
     #[link_name = "CreateDXGIFactory2"]
-    fn system_create_factory2(
+    pub(crate) fn system_create_factory2(
         flags: u32,
         interface_id: *const c_void,
         factory: *mut *mut c_void,
@@ -64,23 +63,10 @@ pub(crate) unsafe fn install() -> bool {
         }
     }
 
-    let create_factory = InlineDetour::new(
-        system_create_factory as CreateDxgiFactoryFn,
-        crate::hooks::create_factory,
-    );
-    let create_factory1 = InlineDetour::new(
-        system_create_factory1 as CreateDxgiFactoryFn,
-        crate::hooks::create_factory1,
-    );
-    let create_factory2 = InlineDetour::new(
-        system_create_factory2 as CreateDxgiFactory2Fn,
-        crate::hooks::create_factory2,
-    );
-
-    let Ok(first) = crate::hooks::install_create_factory_terminal(create_factory) else {
+    let Ok(first) = crate::hooks::install_create_factory_terminal() else {
         return false;
     };
-    let second = match crate::hooks::install_create_factory1_terminal(create_factory1) {
+    let second = match crate::hooks::install_create_factory1_terminal() {
         Ok(installed) => installed,
         Err(_) => {
             if first.uninstall().is_err() {
@@ -89,7 +75,7 @@ pub(crate) unsafe fn install() -> bool {
             return false;
         }
     };
-    let third = match crate::hooks::install_create_factory2_terminal(create_factory2) {
+    let third = match crate::hooks::install_create_factory2_terminal() {
         Ok(installed) => installed,
         Err(_) => {
             if second.uninstall().is_err() {

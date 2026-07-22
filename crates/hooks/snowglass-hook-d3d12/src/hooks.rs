@@ -6,13 +6,16 @@ use windows_sys::{Win32::Foundation::E_FAIL, core::GUID};
 
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[context]
     pub(crate) struct D3D12HookContext {
         pub(crate) tracking: std::sync::Arc<Tracking> = std::sync::Arc::default(),
     }
 
     #[trampoline]
-    #[terminal(installed, fallback = E_FAIL)]
+    #[terminal(installed(
+        target = crate::install::system_create_device,
+    ), fallback = E_FAIL)]
     #[postfix(created_device(device, result))]
     pub(crate) unsafe extern "system" fn create_device(
         adapter: *mut c_void,

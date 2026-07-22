@@ -7,14 +7,6 @@ mod runtime;
 mod sys;
 mod vtable;
 
-pub(crate) type DirectInput8CreateFn = unsafe extern "system" fn(
-    windows_sys::Win32::Foundation::HINSTANCE,
-    u32,
-    *const windows_sys::core::GUID,
-    *mut *mut std::ffi::c_void,
-    *mut std::ffi::c_void,
-) -> windows_sys::core::HRESULT;
-
 pub use sys::{SnowglassInstallDinputHook, SnowglassUninstallDinputHook};
 
 #[cfg(test)]

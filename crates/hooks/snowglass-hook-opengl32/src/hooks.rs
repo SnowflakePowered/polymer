@@ -11,28 +11,39 @@ pub(crate) type Hdc = *mut c_void;
 
 snowglass_hook::__chain_hooks! {
     #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[context]
     pub(crate) struct OpenGlHookContext {
         pub(crate) tracking: std::sync::Arc<Tracking> = crate::install::tracking(),
     }
 
     #[trampoline]
-    #[terminal(installed, fallback = 0)]
+    #[terminal(installed(
+        target = crate::install::system_swap_buffers,
+    ), fallback = 0)]
     #[prefix(capture_swap_buffers(hdc))]
     pub(crate) unsafe extern "system" fn swap_buffers(hdc: Hdc) -> i32;
 
     #[trampoline]
-    #[terminal(installed, fallback = 0)]
+    #[terminal(installed(
+        target = crate::install::system_swap_layer_buffers,
+    ), fallback = 0)]
     #[prefix(capture_swap_layer_buffers(hdc))]
     pub(crate) unsafe extern "system" fn swap_layer_buffers(hdc: Hdc, planes: u32) -> i32;
 
     #[trampoline]
-    #[terminal(installed, fallback = ())]
+    #[terminal(installed(
+        target = crate::install::system_draw_arrays,
+        continuation = crate::install::draw_arrays_continuation,
+    ), fallback = ())]
     #[prefix(track_draw_arrays(first, count))]
     pub(crate) unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32);
 
     #[trampoline]
-    #[terminal(installed, fallback = ())]
+    #[terminal(installed(
+        target = crate::install::system_draw_elements,
+        continuation = crate::install::draw_elements_continuation,
+    ), fallback = ())]
     #[prefix(track_draw_elements())]
     pub(crate) unsafe extern "system" fn draw_elements(
         mode: u32,
@@ -73,7 +84,9 @@ snowglass_hook::__chain_hooks! {
     );
 
     #[trampoline]
-    #[terminal(installed, fallback = std::ptr::null())]
+    #[terminal(installed(
+        target = crate::install::system_wgl_get_proc_address,
+    ), fallback = std::ptr::null())]
     #[infix(route_proc_address)]
     pub(crate) unsafe extern "system" fn wgl_get_proc_address(
         name: *const u8,
