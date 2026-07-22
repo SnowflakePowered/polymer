@@ -131,7 +131,6 @@ pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::vtable::Vtable;
     use std::ffi::c_void;
     use windows::{
@@ -189,7 +188,12 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
-        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain>(object) });
+        assert!(unsafe {
+            crate::vtable::IDXGISwapchainHook::install_object::<IDXGISwapChain>(
+                object,
+                crate::vtable::SwapchainContext::default(),
+            )
+        });
         assert_ne!(object_vtable, original.as_ptr());
 
         let patched_present = unsafe {
@@ -232,8 +236,16 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
-        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain>(object) });
-        assert!(unsafe { runtime::install_swapchain::<IDXGISwapChain1>(object) });
+        let context = crate::vtable::SwapchainContext::default();
+        assert!(unsafe {
+            crate::vtable::IDXGISwapchainHook::install_object::<IDXGISwapChain>(
+                object,
+                context.clone(),
+            )
+        });
+        assert!(unsafe {
+            crate::vtable::IDXGISwapchainHook::install_object::<IDXGISwapChain1>(object, context)
+        });
         let patched_present1 = unsafe {
             std::mem::transmute::<usize, crate::vtable::Present1Fn>(
                 *object_vtable.add(PRESENT1_INDEX),

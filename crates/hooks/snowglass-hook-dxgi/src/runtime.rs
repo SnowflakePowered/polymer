@@ -1,19 +1,9 @@
-use crate::vtable::{IDXGIFactoryHook, IDXGISwapchainHook, SWAPCHAINS, SwapchainHook, Vtable};
+use crate::vtable::{IDXGIFactoryHook, IDXGISwapchainHook, SwapchainContext, SwapchainHook};
 use std::{
     ffi::c_void,
     sync::{Arc, LazyLock, RwLock},
 };
-use windows::{
-    Win32::Graphics::Dxgi::{
-        IDXGIFactory, IDXGISwapChain, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain3,
-        IDXGISwapChain4,
-    },
-    core::{GUID, Interface},
-};
-
-/// A monomorphized per-object install routine, used to dispatch a runtime
-/// interface identity (an IID or a widest-cast result) to a typed layout.
-type InstallFn = unsafe fn(*mut c_void) -> bool;
+use windows::{Win32::Graphics::Dxgi::IDXGIFactory, core::GUID};
 
 /// Per-swapchain capture state owned by a backend.
 ///
@@ -190,22 +180,6 @@ pub fn register_claim(claim: SwapchainClaim) {
     }
 }
 
-/// The widest swapchain interface implemented by the object, paired with the
-/// install routine for that layout. The base `IDXGISwapChain` is installed
-/// separately, so it is omitted here.
-fn widest_swapchain(swapchain: &IDXGISwapChain) -> Option<(*mut c_void, InstallFn)> {
-    snowglass_hook::widest_interfaces! {
-        from swapchain => InstallFn;
-        install install_swapchain;
-        IDXGISwapChain4 => IDXGISwapChain4,
-        IDXGISwapChain3 => IDXGISwapChain3,
-        IDXGISwapChain2 => IDXGISwapChain2,
-        IDXGISwapChain1 => IDXGISwapChain1,
-    }
-    .into_iter()
-    .next()
-}
-
 /// Installs interception and assigns the swapchain to the first backend that
 /// claims its DXGI creation object.
 ///
@@ -218,12 +192,9 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     if swapchain.is_null() {
         return false;
     }
-    let extended =
-        unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }.and_then(widest_swapchain);
-    let mut installed = unsafe { install_swapchain::<IDXGISwapChain>(swapchain) };
-    if let Some((extended, install)) = extended {
-        installed |= unsafe { install(extended) };
-    }
+    let context = SwapchainContext::default();
+    let installed =
+        unsafe { IDXGISwapchainHook::install_all_interfaces(swapchain, context.clone()) };
     let owner = CLAIMS
         .read()
         .unwrap_or_else(|error| error.into_inner())
@@ -234,69 +205,13 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
                 .then(|| unsafe { handle.assume_init() })
         });
     if let Some(owner) = owner {
-        // The base and widest interface pointers share one owner, so a present
-        // through either resolves the same capture state.
-        let owner = Arc::new(owner);
-        if let Some((extended, _)) = extended {
-            set_swapchain_owner(extended, Some(owner.clone()));
-        }
-        set_swapchain_owner(swapchain, Some(owner));
+        context.set_owner(Some(Arc::new(owner)));
     }
     installed
 }
 
 fn set_swapchain_owner(swapchain: *mut c_void, owner: Option<Arc<SwapchainOwnerHandle>>) {
-    if let Some(state) = SWAPCHAINS.get(&(swapchain as usize)) {
-        *state
-            .common()
-            .owner
-            .write()
-            .unwrap_or_else(|error| error.into_inner()) = owner;
-    }
-}
-
-/// Installs interception on a swapchain by cloning the vtable layout of
-/// interface generation `A`.
-///
-/// # Safety
-///
-/// `swapchain` must be null or point to a live object implementing the
-/// swapchain interface generation named by `A`.
-pub(crate) unsafe fn install_swapchain<A: Vtable>(swapchain: *mut c_void) -> bool {
-    if swapchain.is_null() {
-        return false;
-    }
-    let key = swapchain as usize;
-    let current = unsafe { *swapchain.cast::<*const usize>() };
-    let (original, owner) = if let Some(existing) = SWAPCHAINS.get(&key) {
-        // A widening re-clone replaces the hook object; carry the recorded
-        // owner into the replacement.
-        let owner = RwLock::new(
-            existing
-                .common()
-                .owner
-                .read()
-                .unwrap_or_else(|error| error.into_inner())
-                .clone(),
-        );
-        if current == existing.patched_vtable() {
-            if A::supported_by(existing.vtable_type()) {
-                return true;
-            }
-            (existing.original_vtable(), owner)
-        } else {
-            (current, owner)
-        }
-    } else {
-        (current, RwLock::new(None))
-    };
-    unsafe {
-        IDXGISwapchainHook::install_object_from::<A>(
-            swapchain,
-            original,
-            crate::vtable::SwapchainContext { owner },
-        )
-    }
+    IDXGISwapchainHook::with_context(swapchain, |context| context.set_owner(owner));
 }
 
 /// # Safety
@@ -327,33 +242,6 @@ pub unsafe fn install_factory_interface(factory: *mut c_void, interface_id: *con
     }
     let interface_id = unsafe { &*interface_id.cast::<GUID>() };
     unsafe { IDXGIFactoryHook::install_interface(factory, interface_id) }
-}
-
-fn swapchain_install(interface_id: &GUID) -> Option<InstallFn> {
-    [
-        (
-            &IDXGISwapChain::IID,
-            install_swapchain::<IDXGISwapChain> as InstallFn,
-        ),
-        (
-            &IDXGISwapChain1::IID,
-            install_swapchain::<IDXGISwapChain1> as InstallFn,
-        ),
-        (
-            &IDXGISwapChain2::IID,
-            install_swapchain::<IDXGISwapChain2> as InstallFn,
-        ),
-        (
-            &IDXGISwapChain3::IID,
-            install_swapchain::<IDXGISwapChain3> as InstallFn,
-        ),
-        (
-            &IDXGISwapChain4::IID,
-            install_swapchain::<IDXGISwapChain4> as InstallFn,
-        ),
-    ]
-    .into_iter()
-    .find_map(|(candidate, install)| (interface_id == candidate).then_some(install))
 }
 
 pub(crate) unsafe fn created_factory(
@@ -396,24 +284,19 @@ pub(crate) unsafe fn swapchain_query_interface(
     output: *mut *mut c_void,
     mut next: crate::vtable::SwapchainQueryInterfaceContext<'_>,
 ) -> i32 {
-    let owner = next.owner.clone();
+    let context = next.common.clone();
     let result = snowglass_hook::next!(next, this, interface_id, output);
     if result >= 0 && !interface_id.is_null() && !output.is_null() {
         let interface_id = unsafe { &*interface_id.cast::<GUID>() };
         let swapchain = unsafe { *output };
         if !swapchain.is_null() {
-            if let Some(install) = swapchain_install(interface_id) {
-                unsafe { install(swapchain) };
-            } else {
+            if !unsafe { IDXGISwapchainHook::install_interface(swapchain, interface_id, context) } {
                 unsafe {
                     install_factory_interface(
                         swapchain,
                         (interface_id as *const GUID).cast::<c_void>(),
                     )
                 };
-            }
-            if let Some(owner) = owner {
-                set_swapchain_owner(swapchain, Some(owner));
             }
         }
     }

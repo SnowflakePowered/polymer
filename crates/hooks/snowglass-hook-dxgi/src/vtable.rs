@@ -55,12 +55,18 @@ snowglass_hook::impl_com_hook! {
     impl SwapchainHook for IDXGISwapchainHook {
         #![vtable = IDXGISwapchainVtable]
         #[registry] pub(crate) static SWAPCHAINS;
-        #[interfaces] {}
+        #[interfaces] {
+            IDXGISwapChain4,
+            IDXGISwapChain3,
+            IDXGISwapChain2,
+            IDXGISwapChain1,
+            IDXGISwapChain,
+        }
         #[context]
         pub(crate) struct SwapchainContext {
-            pub(crate) owner: std::sync::RwLock<
+            pub(crate) owner: std::sync::Arc<std::sync::RwLock<
                 Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>,
-            >,
+            >>,
         }
         #[release(destroyed = crate::runtime::swapchain_destroyed)]
         unsafe extern "system" fn swapchain_release(this: *mut c_void) -> u32;
@@ -68,11 +74,7 @@ snowglass_hook::impl_com_hook! {
         #[base = IUnknown::QueryInterface]
         #[fallback = 0x8000_4002u32 as i32]
         #[infix(crate::runtime::swapchain_query_interface)]
-        unsafe extern "system" fn swapchain_query_interface(this: *mut c_void, interface_id: *const c_void, output: *mut *mut c_void) -> i32 {
-            #[context] |state| {
-                owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.common().owner.read().unwrap_or_else(|error| error.into_inner()).clone(),
-            }
-        }
+        unsafe extern "system" fn swapchain_query_interface(this: *mut c_void, interface_id: *const c_void, output: *mut *mut c_void) -> i32;
 
         #[base = IDXGISwapChain::Present]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
@@ -104,6 +106,34 @@ snowglass_hook::impl_com_hook! {
                 owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>> = state.common().owner.read().unwrap_or_else(|error| error.into_inner()).clone(),
             }
         }
+    }
+}
+
+impl Clone for SwapchainContext {
+    fn clone(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+        }
+    }
+}
+
+impl Default for SwapchainContext {
+    fn default() -> Self {
+        Self {
+            owner: std::sync::Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+}
+
+impl SwapchainContext {
+    pub(crate) fn set_owner(
+        &self,
+        owner: Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>,
+    ) {
+        *self
+            .owner
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = owner;
     }
 }
 
