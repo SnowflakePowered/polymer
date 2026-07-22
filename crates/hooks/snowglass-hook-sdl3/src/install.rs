@@ -80,14 +80,13 @@ snowglass_hook::__chain_hooks! {
 }
 
 snowglass_hook::function_table_hook! {
-    #[installer(state: Sdl3TableState = create_table_state()?)]
-    pub(crate) struct Sdl3DynapiInstallation;
+    #[state: Sdl3TableState = create_table_state()?]
     #[registry] static DYNAPI_INSTALLATION;
     pub(crate) struct Sdl3DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
         #[context]
         pub(crate) struct Sdl3DynapiContext {
-            pub(crate) state: Arc<Sdl3TableState> = Sdl3DynapiInstallation::active_state(),
+            pub(crate) state: Arc<Sdl3TableState> = Sdl3DynapiHook::active_state(),
         }
 
         #[slot = DYNAPI_GET_GAMEPADS]
@@ -178,12 +177,12 @@ unsafe fn captured_dynapi_table(table: *mut c_void, tablesize: u32, result: i32)
         return;
     }
 
-    if let Err(error) = unsafe { Sdl3DynapiInstallation::install(table, tablesize) } {
+    if let Err(error) = unsafe { Sdl3DynapiHook::install(table, tablesize) } {
         log(error);
         return;
     }
     if let Ok(session) = config::session() {
-        Sdl3DynapiInstallation::active_state()
+        Sdl3DynapiHook::active_state()
             .runtime
             .start_receiver(format!("{session}-input"));
     }

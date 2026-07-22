@@ -167,10 +167,10 @@ macro_rules! com_vtable {
 /// `QueryInterface` to a wider interface does not dispatch through the
 /// uninitialized tail of a clone sized to a narrower generation.
 ///
-/// Given an object and an `Interface => Vtbl` list ordered widest-to-narrowest,
+/// Given an object and an interface list ordered widest-to-narrowest,
 /// this expands to a `Vec<(*mut c_void, $install_fn)>` with one entry per
 /// distinct object pointer: the widest interface that resolves to that pointer,
-/// paired with `$install::<Vtbl>` for its generation. Callers that hook every
+/// paired with `$install::<Interface>` for its generation. Callers that hook every
 /// interface install into each entry; callers that want only the widest take
 /// the first entry. Include the base interface as the final list entry when its
 /// pointer should be covered as a fallback.
@@ -184,7 +184,7 @@ macro_rules! widest_interfaces {
     (
         from $object:expr => $install_fn:ty;
         install $install:ident;
-        $($interface:ty => $vtbl:ty),+ $(,)?
+        $($interface:ty),+ $(,)?
     ) => {{
         use ::windows::core::Interface as _;
         let object = $object;
@@ -194,7 +194,7 @@ macro_rules! widest_interfaces {
             if let ::core::result::Result::Ok(interface) = object.cast::<$interface>() {
                 let pointer = interface.as_raw();
                 if !interfaces.iter().any(|(existing, _)| *existing == pointer) {
-                    interfaces.push((pointer, $install::<$vtbl> as $install_fn));
+                    interfaces.push((pointer, $install::<$interface> as $install_fn));
                 }
             }
         )+
@@ -361,57 +361,54 @@ seq_macro::seq!(SLOT in 0..64 {
 #[macro_export]
 macro_rules! function_table_hook {
     (
-        #[installer] $installer_visibility:vis struct $installer:ident;
         #[registry] $registry_visibility:vis static $registry:ident;
         $visibility:vis struct $table_hook:ident {
             $($body:tt)*
         }
     ) => {
         $crate::function_table_hook! {
-            #[installer(state: () = ())]
-            $installer_visibility struct $installer;
+            #[state: () = ()]
             #[registry] $registry_visibility static $registry;
             $visibility struct $table_hook { $($body)* }
         }
     };
 
     (
-        #[installer(state: $state:ty = $state_value:expr)]
-        $installer_visibility:vis struct $installer:ident;
+        #[state: $state:ty = $state_value:expr]
         #[registry] $registry_visibility:vis static $registry:ident;
         $visibility:vis struct $table_hook:ident {
             $($body:tt)*
         }
     ) => { $crate::__paste! {
         $crate::function_table_hook! {
-            #[resolve = [<__resolve_ $installer:snake>]]
+            #[resolve = [<__resolve_ $table_hook:snake>]]
             $visibility struct $table_hook { $($body)* }
         }
 
-        $installer_visibility struct $installer {
+        struct [<$table_hook Installation>] {
             hook: ::std::sync::Arc<$table_hook>,
             tables: ::std::vec::Vec<(usize, u32)>,
             state: ::std::sync::Arc<$state>,
         }
 
-        static $registry: ::std::sync::Mutex<Option<$installer>> =
+        static $registry: ::std::sync::Mutex<Option<[<$table_hook Installation>]>> =
             ::std::sync::Mutex::new(None);
 
-        fn [<__resolve_ $installer:snake>]() -> ::std::sync::Arc<$table_hook> {
+        fn [<__resolve_ $table_hook:snake>]() -> ::std::sync::Arc<$table_hook> {
             $registry.lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref().map(|installation| installation.hook.clone())
                 .expect("function table hook is not installed")
         }
 
-        impl $installer {
+        impl $table_hook {
             /// Captures and patches a function table, reusing the captured
             /// base functions for later publications of the same API table.
             ///
             /// # Safety
             /// `table` must satisfy the generated table hook's capture and
             /// patch requirements.
-            $installer_visibility unsafe fn install(
+            $visibility unsafe fn install(
                 table: *mut ::core::ffi::c_void,
                 table_bytes: u32,
             ) -> Result<(), &'static str> {
@@ -421,7 +418,7 @@ macro_rules! function_table_hook {
                     let hook = ::std::sync::Arc::new(unsafe {
                         $table_hook::capture(table, table_bytes)?
                     });
-                    *registry = Some(Self {
+                    *registry = Some([<$table_hook Installation>] {
                         hook,
                         tables: ::std::vec::Vec::new(),
                         state: ::std::sync::Arc::new($state_value),
@@ -436,7 +433,7 @@ macro_rules! function_table_hook {
                 Ok(())
             }
 
-            $installer_visibility fn uninstall() -> Result<(), &'static str> {
+            $visibility fn uninstall() -> Result<(), &'static str> {
                 let mut registry = $registry.lock()
                     .unwrap_or_else(|error| error.into_inner());
                 let Some(installation) = registry.as_mut() else { return Ok(()); };
@@ -454,7 +451,7 @@ macro_rules! function_table_hook {
                 first_error.map_or(Ok(()), Err)
             }
 
-            $installer_visibility fn active_state() -> ::std::sync::Arc<$state> {
+            $visibility fn active_state() -> ::std::sync::Arc<$state> {
                 $registry.lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .as_ref().map(|installation| installation.state.clone())
