@@ -1,23 +1,19 @@
 //! Early-process GDI paint redirection hooks.
 #![allow(unsafe_code)]
 
-use snowglass_platform_windows::InlineDetour;
-use std::{cell::Cell, sync::OnceLock};
+use snowglass_hook::HookChain;
+use std::cell::Cell;
 use windows_sys::Win32::{
     Foundation::{E_FAIL, HWND, POINT, RECT},
     Graphics::Gdi::{HDC, PAINTSTRUCT},
 };
 
-type BeginPaintFn = unsafe extern "system" fn(HWND, *mut PAINTSTRUCT) -> HDC;
-type EndPaintFn = unsafe extern "system" fn(HWND, *const PAINTSTRUCT) -> i32;
-type BitBltFn = unsafe extern "system" fn(HDC, i32, i32, i32, i32, HDC, i32, i32, u32) -> i32;
-
 #[link(name = "user32")]
 unsafe extern "system" {
     #[link_name = "BeginPaint"]
-    fn system_begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HDC;
+    pub(crate) fn system_begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HDC;
     #[link_name = "EndPaint"]
-    fn system_end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i32;
+    pub(crate) fn system_end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i32;
     fn GetClientRect(hwnd: HWND, rect: *mut RECT) -> i32;
     fn GetAncestor(hwnd: HWND, flags: u32) -> HWND;
     fn MapWindowPoints(from: HWND, to: HWND, points: *mut POINT, count: u32) -> i32;
@@ -28,7 +24,7 @@ const GA_ROOT: u32 = 2;
 #[link(name = "gdi32")]
 unsafe extern "system" {
     #[link_name = "BitBlt"]
-    fn system_bit_blt(
+    pub(crate) fn system_bit_blt(
         destination: HDC,
         x: i32,
         y: i32,
@@ -42,9 +38,31 @@ unsafe extern "system" {
     fn WindowFromDC(hdc: HDC) -> HWND;
 }
 
-static BEGIN_PAINT: OnceLock<InlineDetour<BeginPaintFn>> = OnceLock::new();
-static END_PAINT: OnceLock<InlineDetour<EndPaintFn>> = OnceLock::new();
-static BIT_BLT: OnceLock<InlineDetour<BitBltFn>> = OnceLock::new();
+snowglass_hook::chain_hooks! {
+    #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer]
+    pub(crate) struct HookInstallation;
+
+    #[trampoline]
+    #[terminal(installed(target = system_begin_paint), fallback = std::ptr::null_mut())]
+    #[infix(redirect_begin_paint)]
+    unsafe extern "system" fn begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HDC;
+
+    #[trampoline]
+    #[terminal(installed(target = system_end_paint), fallback = 0)]
+    #[infix(redirect_end_paint)]
+    unsafe extern "system" fn end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i32;
+
+    #[trampoline]
+    #[terminal(installed(target = system_bit_blt), fallback = 0)]
+    #[infix(redirect_bit_blt)]
+    unsafe extern "system" fn bit_blt(
+        destination: HDC, x: i32, y: i32, width: i32, height: i32,
+        source: HDC, source_x: i32, source_y: i32, rop: u32,
+    ) -> i32;
+}
+
 thread_local! { static INSIDE_HOOK: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static REAL_PAINT_DC: Cell<Option<(isize, isize)>> = const { Cell::new(None) }; }
 
@@ -66,11 +84,15 @@ unsafe fn replacement_dc(hwnd: HWND) -> Option<isize> {
     }
 }
 
-unsafe extern "system" fn begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HDC {
-    let Some(detour) = BEGIN_PAINT.get() else {
-        return std::ptr::null_mut();
-    };
-    let real = unsafe { (detour.trampoline())(hwnd, paint) };
+unsafe fn redirect_begin_paint(
+    hwnd: HWND,
+    paint: *mut PAINTSTRUCT,
+    mut context: BeginPaintContext<'_>,
+) -> HDC {
+    let next = *context
+        .fp_next()
+        .expect("GDI hook chains always have a terminal");
+    let real = unsafe { next(hwnd, paint, context) };
     if real.is_null() || paint.is_null() || hwnd.is_null() {
         return real;
     }
@@ -108,7 +130,7 @@ unsafe extern "system" fn begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HD
     }
 }
 
-unsafe extern "system" fn bit_blt(
+unsafe fn redirect_bit_blt(
     destination: HDC,
     x: i32,
     y: i32,
@@ -118,10 +140,11 @@ unsafe extern "system" fn bit_blt(
     source_x: i32,
     source_y: i32,
     rop: u32,
+    mut context: BitBltContext<'_>,
 ) -> i32 {
-    let Some(detour) = BIT_BLT.get() else {
-        return 0;
-    };
+    let next = *context
+        .fp_next()
+        .expect("GDI hook chains always have a terminal");
     let hwnd = unsafe { WindowFromDC(destination) };
     let root = if hwnd.is_null() {
         std::ptr::null_mut()
@@ -142,7 +165,7 @@ unsafe extern "system" fn bit_blt(
     });
     let Some(replacement) = replacement else {
         return unsafe {
-            (detour.trampoline())(
+            next(
                 destination,
                 x,
                 y,
@@ -152,6 +175,7 @@ unsafe extern "system" fn bit_blt(
                 source_x,
                 source_y,
                 rop,
+                context,
             )
         };
     };
@@ -160,7 +184,7 @@ unsafe extern "system" fn bit_blt(
         unsafe { MapWindowPoints(hwnd, root, &mut origin, 1) };
     }
     let result = unsafe {
-        (detour.trampoline())(
+        next(
             replacement as HDC,
             x.saturating_add(origin.x),
             y.saturating_add(origin.y),
@@ -170,6 +194,7 @@ unsafe extern "system" fn bit_blt(
             source_x,
             source_y,
             rop,
+            context,
         )
     };
     INSIDE_HOOK.with(|inside| {
@@ -181,12 +206,16 @@ unsafe extern "system" fn bit_blt(
     result
 }
 
-unsafe extern "system" fn end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i32 {
-    let Some(detour) = END_PAINT.get() else {
-        return 0;
-    };
+unsafe fn redirect_end_paint(
+    hwnd: HWND,
+    paint: *const PAINTSTRUCT,
+    mut context: EndPaintContext<'_>,
+) -> i32 {
+    let next = *context
+        .fp_next()
+        .expect("GDI hook chains always have a terminal");
     if paint.is_null() {
-        return unsafe { (detour.trampoline())(hwnd, paint) };
+        return unsafe { next(hwnd, paint, context) };
     }
     let redirected = unsafe { (*paint).hdc };
     INSIDE_HOOK.with(|inside| {
@@ -201,39 +230,13 @@ unsafe extern "system" fn end_paint(hwnd: HWND, paint: *const PAINTSTRUCT) -> i3
     {
         let mut original = unsafe { *paint };
         original.hdc = real_dc as HDC;
-        unsafe { (detour.trampoline())(hwnd, &original) }
+        unsafe { next(hwnd, &original, context) }
     } else {
-        unsafe { (detour.trampoline())(hwnd, paint) }
+        unsafe { next(hwnd, paint, context) }
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallGdiHook() -> i32 {
-    if let Some(hook) = BEGIN_PAINT.get() {
-        return if hook.is_enabled()
-            && END_PAINT.get().is_some_and(|hook| hook.is_enabled())
-            && BIT_BLT.get().is_some_and(|hook| hook.is_enabled())
-        {
-            0
-        } else {
-            E_FAIL
-        };
-    }
-    let begin = InlineDetour::new(
-        system_begin_paint as BeginPaintFn,
-        begin_paint as BeginPaintFn,
-    );
-    let end = InlineDetour::new(system_end_paint as EndPaintFn, end_paint as EndPaintFn);
-    let blit = InlineDetour::new(system_bit_blt as BitBltFn, bit_blt as BitBltFn);
-    if BEGIN_PAINT.set(begin).is_err() || END_PAINT.set(end).is_err() || BIT_BLT.set(blit).is_err()
-    {
-        return E_FAIL;
-    }
-    let enabled = BIT_BLT
-        .get()
-        .expect("blit hook initialized")
-        .enable()
-        .and_then(|()| END_PAINT.get().expect("end hook initialized").enable())
-        .and_then(|()| BEGIN_PAINT.get().expect("begin hook initialized").enable());
-    if enabled.is_ok() { 0 } else { E_FAIL }
+    HookInstallation::install().map_or(E_FAIL, |()| 0)
 }

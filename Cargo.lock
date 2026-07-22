@@ -3191,6 +3191,7 @@ dependencies = [
 name = "snowglass-hook-gdi"
 version = "0.1.0"
 dependencies = [
+ "snowglass-hook",
  "snowglass-platform-windows",
  "snowglass-producer-gdi",
  "windows-sys 0.61.2",
