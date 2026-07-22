@@ -3,7 +3,6 @@
 #![allow(unsafe_code)]
 
 use snowglass_input::{DirectInputData, DirectInputDevice};
-use snowglass_input_win32::WindowMessageForwarder;
 use snowglass_ipc::{LocalSocket, Message};
 use snowglass_platform_windows::{NativeWindow, forward_raw_key};
 use std::{
@@ -98,12 +97,9 @@ pub struct Runtime {
     receiver_started: AtomicBool,
     connected: AtomicBool,
     logged_keyboard_receive: AtomicBool,
-    logged_pointer_receive: AtomicBool,
-    logged_pointer_delivery: AtomicBool,
-    logged_pointer_rejection: AtomicBool,
+    logged_mouse_receive: AtomicBool,
     queues: Mutex<InputQueues>,
     notifications: Mutex<HashMap<usize, (DirectInputDevice, usize)>>,
-    window_messages: WindowMessageForwarder,
     log: Logger,
 }
 
@@ -113,12 +109,9 @@ impl Runtime {
             receiver_started: AtomicBool::new(false),
             connected: AtomicBool::new(false),
             logged_keyboard_receive: AtomicBool::new(false),
-            logged_pointer_receive: AtomicBool::new(false),
-            logged_pointer_delivery: AtomicBool::new(false),
-            logged_pointer_rejection: AtomicBool::new(false),
+            logged_mouse_receive: AtomicBool::new(false),
             queues: Mutex::new(InputQueues::new()),
             notifications: Mutex::new(HashMap::new()),
-            window_messages: WindowMessageForwarder::default(),
             log,
         }
     }
@@ -218,30 +211,6 @@ impl Runtime {
         while let Ok(message) = socket.receive() {
             match message {
                 Message::DirectInputData(event) => self.apply(event),
-                Message::PointerInput(event) => {
-                    if !self.logged_pointer_receive.swap(true, Ordering::AcqRel) {
-                        (self.log)(&format!(
-                            "snowglass: received first pointer hwnd={:#x} surface={} phase={:?} position=({}, {}) extent={}x{}",
-                            event.target_window,
-                            event.surface_id,
-                            event.phase,
-                            event.x,
-                            event.y,
-                            event.coordinate_width,
-                            event.coordinate_height,
-                        ));
-                    }
-                    if self.window_messages.apply(event) {
-                        if !self.logged_pointer_delivery.swap(true, Ordering::AcqRel) {
-                            (self.log)("snowglass: posted first pointer message to target window");
-                        }
-                    } else if !self.logged_pointer_rejection.swap(true, Ordering::AcqRel) {
-                        (self.log)(&format!(
-                            "snowglass: rejected pointer message for hwnd={:#x}; window is missing, invalid, foreign, or has an empty client area",
-                            event.target_window,
-                        ));
-                    }
-                }
                 Message::Shutdown => break,
                 _ => {}
             }
@@ -256,6 +225,14 @@ impl Runtime {
             (self.log)(&format!(
                 "snowglass: received first keyboard transition offset={:#x} data={:#x}",
                 event.offset, event.data
+            ));
+        }
+        if event.device == DirectInputDevice::Mouse
+            && !self.logged_mouse_receive.swap(true, Ordering::AcqRel)
+        {
+            (self.log)(&format!(
+                "snowglass: received first mouse transition offset={} data={}",
+                event.offset, event.data as i32
             ));
         }
         self.queues
@@ -287,6 +264,7 @@ pub struct DirectInputForwarder {
     sender: mpsc::Sender<Message>,
     sequence: u32,
     started: Instant,
+    mouse_position: Option<(u64, i32, i32, u32, u32)>,
 }
 
 impl DirectInputForwarder {
@@ -295,6 +273,7 @@ impl DirectInputForwarder {
             sender,
             sequence: 0,
             started: Instant::now(),
+            mouse_position: None,
         }
     }
 
@@ -312,12 +291,32 @@ impl DirectInputForwarder {
         }
     }
 
-    pub fn mouse_motion(&mut self, delta: (f64, f64)) {
-        for (offset, value) in [(0, delta.0), (4, delta.1)] {
-            if value != 0.0 {
-                self.send(DirectInputDevice::Mouse, offset, (value as i32) as u32);
+    /// Produces relative DirectInput axes from an absolute position already
+    /// mapped into the target's presentation coordinates.
+    pub fn mouse_position(&mut self, surface_id: u64, x: i32, y: i32, width: u32, height: u32) {
+        let previous = self
+            .mouse_position
+            .replace((surface_id, x, y, width, height));
+        let Some((previous_surface, previous_x, previous_y, previous_width, previous_height)) =
+            previous
+        else {
+            return;
+        };
+        if previous_surface != surface_id || previous_width != width || previous_height != height {
+            return;
+        }
+        for (offset, value) in [
+            (0, x.saturating_sub(previous_x)),
+            (4, y.saturating_sub(previous_y)),
+        ] {
+            if value != 0 {
+                self.send(DirectInputDevice::Mouse, offset, value as u32);
             }
         }
+    }
+
+    pub fn reset_mouse_position(&mut self) {
+        self.mouse_position = None;
     }
 
     pub fn release_mouse_buttons(&mut self, buttons: u32) {
@@ -525,5 +524,32 @@ mod tests {
             vec![first, second]
         );
         assert_eq!(runtime.buffered_len(DirectInputDevice::Keyboard), 0);
+    }
+
+    #[test]
+    fn mapped_mouse_positions_become_relative_axes() {
+        let (sender, receiver) = mpsc::channel();
+        let mut forwarder = DirectInputForwarder::new(sender);
+        forwarder.mouse_position(7, 100, 200, 640, 480);
+        assert!(receiver.try_recv().is_err());
+
+        forwarder.mouse_position(7, 112, 195, 640, 480);
+        let Message::DirectInputData(horizontal) = receiver.recv().unwrap() else {
+            panic!("expected horizontal DirectInput data");
+        };
+        let Message::DirectInputData(vertical) = receiver.recv().unwrap() else {
+            panic!("expected vertical DirectInput data");
+        };
+        assert_eq!((horizontal.offset, horizontal.data), (0, 12));
+        assert_eq!((vertical.offset, vertical.data), (4, (-5i32) as u32));
+    }
+
+    #[test]
+    fn mapped_mouse_rebases_when_the_surface_changes() {
+        let (sender, receiver) = mpsc::channel();
+        let mut forwarder = DirectInputForwarder::new(sender);
+        forwarder.mouse_position(7, 100, 200, 640, 480);
+        forwarder.mouse_position(8, 500, 400, 1280, 720);
+        assert!(receiver.try_recv().is_err());
     }
 }

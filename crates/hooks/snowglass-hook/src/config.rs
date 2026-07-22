@@ -5,6 +5,7 @@ use std::{ffi::OsString, path::PathBuf};
 pub const SESSION: &str = "SNOWGLASS_SESSION";
 pub const LAYER_LOG_FILE: &str = "SNOWGLASS_LOG_FILE";
 pub const DINPUT_LOG_FILE: &str = "SNOWGLASS_DINPUT_LOG_FILE";
+pub const WIN32_LOG_FILE: &str = "SNOWGLASS_WIN32_LOG_FILE";
 pub const SDL_LOG_FILE: &str = "SNOWGLASS_SDL_LOG_FILE";
 pub const SDL_GAMEPADS: &str = "SNOWGLASS_SDL_GAMEPADS";
 pub const DXGI_LOG_FILE: &str = "SNOWGLASS_DXGI_LOG_FILE";
@@ -27,6 +28,10 @@ pub fn layer_log_file() -> Option<PathBuf> {
 
 pub fn dinput_log_file() -> Option<PathBuf> {
     path(DINPUT_LOG_FILE)
+}
+
+pub fn win32_log_file() -> Option<PathBuf> {
+    path(WIN32_LOG_FILE)
 }
 
 pub fn sdl_log_file() -> Option<PathBuf> {

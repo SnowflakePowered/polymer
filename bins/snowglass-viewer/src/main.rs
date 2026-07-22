@@ -33,7 +33,7 @@ use std::{
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::{
     dpi::LogicalSize,
-    event::{DeviceEvent, ElementState, Event, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Event, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
@@ -2100,7 +2100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     pointer_routing.set_cursor(position.x, position.y);
                     let size = window.inner_size();
                     let surfaces = compositor.displayed_surfaces();
-                    pointer_routing.send(
+                    if pointer_routing.send(
                         PointerPhase::Move,
                         0,
                         0,
@@ -2109,7 +2109,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &surfaces,
                         &pointer_targets,
                         &input_tx,
-                    );
+                    ) {
+                        if let Some(mapped) = pointer_routing.last_sent() {
+                            direct_input.mouse_position(
+                                mapped.surface_id,
+                                mapped.x,
+                                mapped.y,
+                                mapped.coordinate_width,
+                                mapped.coordinate_height,
+                            );
+                        }
+                    } else {
+                        direct_input.reset_mouse_position();
+                    }
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     if let Some(button) = mouse_button(button) {
@@ -2711,12 +2723,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 _ => {}
             }
-        }
-        Event::DeviceEvent {
-            event: DeviceEvent::MouseMotion { delta },
-            ..
-        } => {
-            direct_input.mouse_motion(delta);
         }
         _ => {}
     })?;
@@ -3641,6 +3647,7 @@ fn launch_target(
     let opengl_hook = layer_dir.join("snowglass_hook_opengl32.dll");
     let gdi_hook = layer_dir.join("snowglass_hook_gdi.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
+    let win32_hook = layer_dir.join("snowglass_hook_win32.dll");
     let sdl2_hook = layer_dir.join("snowglass_hook_sdl2.dll");
     let sdl3_hook = layer_dir.join("snowglass_hook_sdl3.dll");
     let sdl3_runtime = layer_dir.join("SDL3.dll");
@@ -3673,6 +3680,11 @@ fn launch_target(
         dinput_hook.as_path(),
         c"SnowglassInstallDinputHook",
     ));
+    libraries.push((
+        "Win32 input",
+        win32_hook.as_path(),
+        c"SnowglassInstallWin32Hook",
+    ));
     libraries.push(("SDL2", sdl2_hook.as_path(), c"SnowglassInstallSdl2Hook"));
     libraries.push(("SDL3", sdl3_hook.as_path(), c"SnowglassInstallSdl3Hook"));
     for &(name, hook, _) in &libraries {
@@ -3695,6 +3707,10 @@ fn launch_target(
         (
             OsString::from(config::DINPUT_LOG_FILE),
             layer_dir.join("snowglass-dinput.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::WIN32_LOG_FILE),
+            layer_dir.join("snowglass-win32.log").into_os_string(),
         ),
         (
             OsString::from(config::SDL_LOG_FILE),

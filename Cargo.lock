@@ -3198,13 +3198,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snowglass-hook-input"
-version = "0.1.0"
-dependencies = [
- "snowglass-input",
-]
-
-[[package]]
 name = "snowglass-hook-opengl32"
 version = "0.1.0"
 dependencies = [
@@ -3251,6 +3244,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-hook-win32"
+version = "0.1.0"
+dependencies = [
+ "snowglass-hook",
+ "snowglass-input-win32",
+ "snowglass-platform-windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "snowglass-input"
 version = "0.1.0"
 
@@ -3259,7 +3262,6 @@ name = "snowglass-input-dinput"
 version = "0.1.0"
 dependencies = [
  "snowglass-input",
- "snowglass-input-win32",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "windows-sys 0.61.2",
@@ -3278,6 +3280,7 @@ name = "snowglass-input-win32"
 version = "0.1.0"
 dependencies = [
  "snowglass-input",
+ "snowglass-ipc",
  "snowglass-platform-windows",
  "windows-sys 0.61.2",
 ]

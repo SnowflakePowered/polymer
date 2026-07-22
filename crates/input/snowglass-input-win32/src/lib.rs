@@ -3,8 +3,15 @@
 #![allow(unsafe_code)]
 
 use snowglass_input::mouse::{PointerInput, PointerPhase};
+use snowglass_ipc::{LocalSocket, Message};
 use snowglass_platform_windows::{NativeWindow, ProcessId, client_size, is_process_window};
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use windows_sys::Win32::{
     Foundation::{POINT, WPARAM},
     Graphics::Gdi::ClientToScreen,
@@ -24,6 +31,125 @@ use windows_sys::Win32::{
 #[derive(Default)]
 pub struct WindowMessageForwarder {
     pointer_buttons: Mutex<HashMap<(u64, u32), u32>>,
+}
+
+type Logger = fn(&str);
+
+fn discard_log(_: &str) {}
+
+/// Receives normalized pointer input, forwards Win32 window messages, and
+/// maintains the cursor position exposed by the Win32 hook.
+pub struct Runtime {
+    receiver_started: AtomicBool,
+    connected: AtomicBool,
+    logged_pointer_receive: AtomicBool,
+    logged_pointer_delivery: AtomicBool,
+    logged_pointer_rejection: AtomicBool,
+    cursor_position: Mutex<Option<(i32, i32)>>,
+    window_messages: WindowMessageForwarder,
+    log: Logger,
+}
+
+impl Runtime {
+    pub fn new(log: Logger) -> Self {
+        Self {
+            receiver_started: AtomicBool::new(false),
+            connected: AtomicBool::new(false),
+            logged_pointer_receive: AtomicBool::new(false),
+            logged_pointer_delivery: AtomicBool::new(false),
+            logged_pointer_rejection: AtomicBool::new(false),
+            cursor_position: Mutex::new(None),
+            window_messages: WindowMessageForwarder::default(),
+            log,
+        }
+    }
+
+    pub fn start_receiver(self: &Arc<Self>, socket_name: String) {
+        if self
+            .receiver_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let runtime = self.clone();
+        std::thread::spawn(move || runtime.receive(socket_name));
+    }
+
+    pub fn connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
+    }
+
+    pub fn cursor_position(&self) -> Option<(i32, i32)> {
+        *self
+            .cursor_position
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn receive(self: Arc<Self>, socket_name: String) {
+        let Ok(mut socket) = LocalSocket::connect(&socket_name) else {
+            (self.log)("snowglass: Win32 input socket connection failed");
+            return;
+        };
+        self.connected.store(true, Ordering::Release);
+        (self.log)("snowglass: Win32 input socket connected");
+        while let Ok(message) = socket.receive() {
+            match message {
+                Message::PointerInput(event) => self.apply(event),
+                Message::Shutdown => break,
+                _ => {}
+            }
+        }
+        self.connected.store(false, Ordering::Release);
+    }
+
+    fn apply(&self, event: PointerInput) {
+        if let Some(position) = pointer_screen_position(event) {
+            *self
+                .cursor_position
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(position);
+        }
+        if !self.logged_pointer_receive.swap(true, Ordering::AcqRel) {
+            (self.log)(&format!(
+                "snowglass: received first pointer hwnd={:#x} surface={} phase={:?} position=({}, {}) extent={}x{}",
+                event.target_window,
+                event.surface_id,
+                event.phase,
+                event.x,
+                event.y,
+                event.coordinate_width,
+                event.coordinate_height,
+            ));
+        }
+        if self.window_messages.apply(event) {
+            if !self.logged_pointer_delivery.swap(true, Ordering::AcqRel) {
+                (self.log)("snowglass: posted first pointer message to target window");
+            }
+        } else if !self.logged_pointer_rejection.swap(true, Ordering::AcqRel) {
+            (self.log)(&format!(
+                "snowglass: rejected pointer message for hwnd={:#x}; window is missing, invalid, foreign, or has an empty client area",
+                event.target_window,
+            ));
+        }
+    }
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new(discard_log)
+    }
+}
+
+fn pointer_screen_position(event: PointerInput) -> Option<(i32, i32)> {
+    let window = NativeWindow(event.target_window as isize);
+    let client = client_size(window)?;
+    let mut point = POINT {
+        x: scale_pointer_coordinate(event.x, event.coordinate_width, client.0),
+        y: scale_pointer_coordinate(event.y, event.coordinate_height, client.1),
+    };
+    (unsafe { ClientToScreen(window.0 as _, &mut point) } != 0).then_some((point.x, point.y))
 }
 
 impl WindowMessageForwarder {
@@ -286,14 +412,14 @@ mod tests {
 
         let mut message = MSG::default();
         assert_ne!(
-            unsafe { PeekMessageW(&raw mut message, window, 0, 0, PM_REMOVE) },
+            unsafe { PeekMessageW(&raw mut message, window, 0x0200, 0x020e, PM_REMOVE) },
             0
         );
         assert_eq!(message.message, WM_MOUSEMOVE);
         assert_eq!(message.wParam, MK_LBUTTON as usize);
         assert_eq!(message.lParam, expected);
         assert_ne!(
-            unsafe { PeekMessageW(&raw mut message, window, 0, 0, PM_REMOVE) },
+            unsafe { PeekMessageW(&raw mut message, window, 0x0200, 0x020e, PM_REMOVE) },
             0
         );
         assert_eq!(message.message, WM_LBUTTONDOWN);

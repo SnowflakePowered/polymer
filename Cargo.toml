@@ -12,6 +12,7 @@ members = [
     "crates/input/*",
     "bins/*",
 ]
+exclude = ["crates/hooks/snowglass-hook-input"]
 
 [workspace.package]
 version = "0.1.0"

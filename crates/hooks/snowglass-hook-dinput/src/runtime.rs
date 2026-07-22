@@ -30,6 +30,8 @@ pub(crate) struct Runtime {
     logged_delivery: AtomicBool,
     logged_keyboard_poll: AtomicBool,
     logged_keyboard_pressed: AtomicBool,
+    logged_mouse_poll: AtomicBool,
+    logged_mouse_activity: AtomicBool,
     input: Arc<InputRuntime>,
 }
 
@@ -39,6 +41,8 @@ impl Default for Runtime {
             logged_delivery: AtomicBool::new(false),
             logged_keyboard_poll: AtomicBool::new(false),
             logged_keyboard_pressed: AtomicBool::new(false),
+            logged_mouse_poll: AtomicBool::new(false),
+            logged_mouse_activity: AtomicBool::new(false),
             input: Arc::new(InputRuntime::new(input_log)),
         }
     }
@@ -183,6 +187,33 @@ unsafe fn wrap_device(
     }
 }
 
+pub(crate) unsafe fn acquire(
+    this: *mut c_void,
+    mut next: crate::vtable::AcquireContext<'_>,
+) -> HRESULT {
+    if next.state.runtime.input.connected() {
+        // The target lives on a non-interactive desktop in isolate mode, so the
+        // system device cannot become foreground-acquired. Input is supplied by
+        // Snowglass in that case and does not depend on the system acquisition.
+        return 0;
+    }
+    snowglass_hook::next!(next, this)
+}
+
+pub(crate) unsafe fn set_cooperative_level(
+    this: *mut c_void,
+    window: *mut c_void,
+    flags: u32,
+    mut next: crate::vtable::SetCooperativeLevelContext<'_>,
+) -> HRESULT {
+    if next.state.runtime.input.connected() {
+        // A cooperative level against a window on the hidden desktop can be
+        // rejected even though this proxy owns the complete device state.
+        return 0;
+    }
+    snowglass_hook::next!(next, this, window, flags)
+}
+
 pub(crate) unsafe fn get_device_state(
     this: *mut c_void,
     size: u32,
@@ -229,7 +260,27 @@ pub(crate) unsafe fn get_device_state(
             if size != 16 && size != 20 {
                 return 0x8007_0057u32 as i32;
             }
+            if !next
+                .state
+                .runtime
+                .logged_mouse_poll
+                .swap(true, Ordering::AcqRel)
+            {
+                dinput_log("snowglass: target first polled forwarded mouse state");
+            }
             let state = next.state.runtime.input.take_mouse_state();
+            if (state.axes != [0; 3] || state.buttons != [0; 8])
+                && !next
+                    .state
+                    .runtime
+                    .logged_mouse_activity
+                    .swap(true, Ordering::AcqRel)
+            {
+                dinput_log(format!(
+                    "snowglass: target polled forwarded mouse activity axes={:?}",
+                    state.axes
+                ));
+            }
             let output = output.cast::<u8>();
             for (index, axis) in state.axes.iter().enumerate() {
                 unsafe { std::ptr::write_unaligned(output.add(index * 4).cast::<i32>(), *axis) };
@@ -346,12 +397,31 @@ mod tests {
     use windows::Win32::Devices::HumanInterfaceDevice::IDirectInputDevice8A_Vtbl;
 
     const SLOT_SIZE: usize = size_of::<usize>();
+    type AcquireFn = unsafe extern "system" fn(*mut c_void) -> HRESULT;
+    type SetCooperativeLevelFn =
+        unsafe extern "system" fn(*mut c_void, *mut c_void, u32) -> HRESULT;
     const GET_DEVICE_STATE_INDEX: usize =
         std::mem::offset_of!(IDirectInputDevice8A_Vtbl, GetDeviceState) / SLOT_SIZE;
+    const ACQUIRE_INDEX: usize =
+        std::mem::offset_of!(IDirectInputDevice8A_Vtbl, Acquire) / SLOT_SIZE;
     const GET_DEVICE_DATA_INDEX: usize =
         std::mem::offset_of!(IDirectInputDevice8A_Vtbl, GetDeviceData) / SLOT_SIZE;
     const SET_EVENT_NOTIFICATION_INDEX: usize =
         std::mem::offset_of!(IDirectInputDevice8A_Vtbl, SetEventNotification) / SLOT_SIZE;
+    const SET_COOPERATIVE_LEVEL_INDEX: usize =
+        std::mem::offset_of!(IDirectInputDevice8A_Vtbl, SetCooperativeLevel) / SLOT_SIZE;
+
+    unsafe extern "system" fn original_acquire_stub(_this: *mut c_void) -> HRESULT {
+        0x8007_0015u32 as i32
+    }
+
+    unsafe extern "system" fn original_set_cooperative_level_stub(
+        _this: *mut c_void,
+        _window: *mut c_void,
+        _flags: u32,
+    ) -> HRESULT {
+        0x8007_0015u32 as i32
+    }
 
     unsafe extern "system" fn original_get_data_stub(
         _this: *mut c_void,
@@ -389,10 +459,13 @@ mod tests {
         let mut socket = listener.accept().unwrap();
 
         let mut original_vtable = [0usize; DEVICE_VTABLE_LEN];
+        original_vtable[ACQUIRE_INDEX] = original_acquire_stub as *const () as usize;
         original_vtable[GET_DEVICE_STATE_INDEX] = original_get_state_stub as *const () as usize;
         original_vtable[GET_DEVICE_DATA_INDEX] = original_get_data_stub as *const () as usize;
         original_vtable[SET_EVENT_NOTIFICATION_INDEX] =
             original_set_event_stub as *const () as usize;
+        original_vtable[SET_COOPERATIVE_LEVEL_INDEX] =
+            original_set_cooperative_level_stub as *const () as usize;
         let mut object_vtable = original_vtable.as_ptr();
         let inner_keyboard = (&raw mut object_vtable).cast::<c_void>();
         let keyboard = unsafe {
@@ -414,6 +487,18 @@ mod tests {
         };
         assert!(!event.is_null());
         let keyboard_vtable = unsafe { *keyboard.cast::<*const usize>() };
+        let acquire: AcquireFn =
+            unsafe { std::mem::transmute::<usize, AcquireFn>(*keyboard_vtable.add(ACQUIRE_INDEX)) };
+        assert_eq!(unsafe { acquire(keyboard) }, 0);
+        let set_cooperative_level: SetCooperativeLevelFn = unsafe {
+            std::mem::transmute::<usize, SetCooperativeLevelFn>(
+                *keyboard_vtable.add(SET_COOPERATIVE_LEVEL_INDEX),
+            )
+        };
+        assert_eq!(
+            unsafe { set_cooperative_level(keyboard, std::ptr::null_mut(), 0) },
+            0
+        );
         let set_event: SetEventNotificationFn = unsafe {
             std::mem::transmute::<usize, SetEventNotificationFn>(
                 *keyboard_vtable.add(SET_EVENT_NOTIFICATION_INDEX),

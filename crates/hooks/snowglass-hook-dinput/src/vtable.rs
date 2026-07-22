@@ -91,6 +91,7 @@ snowglass_hook::impl_com_proxy! {
 
         #[base = IDirectInputDevice8A::Acquire]
         #[fallback = 0x8000_4005u32 as i32]
+        #[infix(crate::runtime::acquire)]
         unsafe extern "system" fn acquire(this: *mut c_void) -> HRESULT;
 
         #[base = IDirectInputDevice8A::GetDeviceState]
@@ -118,6 +119,7 @@ snowglass_hook::impl_com_proxy! {
 
         #[base = IDirectInputDevice8A::SetCooperativeLevel]
         #[fallback = 0x8000_4005u32 as i32]
+        #[infix(crate::runtime::set_cooperative_level)]
         unsafe extern "system" fn set_cooperative_level(this: *mut c_void, window: *mut c_void, flags: u32) -> HRESULT;
     }
 }
