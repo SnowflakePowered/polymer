@@ -14,11 +14,6 @@ snowglass_hook::__chain_hooks! {
     #[installer(state = crate::install::OpenGlRuntime)]
     pub(crate) struct HookInstallation;
     #[registry] static INSTALLATION;
-    #[context]
-    pub(crate) struct OpenGlHookContext {
-        pub(crate) state: std::sync::Arc<crate::install::OpenGlRuntime> =
-            HookInstallation::active_state(),
-    }
 
     #[trampoline]
     #[terminal(installed(

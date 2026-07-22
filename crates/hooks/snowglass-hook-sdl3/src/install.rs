@@ -84,14 +84,10 @@ snowglass_hook::function_table_hook! {
     #[registry] static DYNAPI_INSTALLATION;
     pub(crate) struct Sdl3DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
-        #[context]
-        pub(crate) struct Sdl3DynapiContext {
-            pub(crate) state: Arc<Sdl3TableState> = Sdl3DynapiHook::active_state(),
-        }
 
         #[slot = DYNAPI_GET_GAMEPADS]
         #[prefix(|next| prepare_enumeration(
-            &next.common.state,
+            &next.state,
         ))]
         unsafe extern "C" fn get_gamepads_dispatch(
             count: *mut i32,
@@ -99,7 +95,7 @@ snowglass_hook::function_table_hook! {
 
         #[slot = DYNAPI_GET_JOYSTICKS]
         #[prefix(|next| prepare_enumeration(
-            &next.common.state,
+            &next.state,
         ))]
         unsafe extern "C" fn get_joysticks_dispatch(
             count: *mut i32,
@@ -107,7 +103,7 @@ snowglass_hook::function_table_hook! {
 
         #[slot = DYNAPI_UPDATE_JOYSTICKS]
         #[prefix(|next| flush_gamepads(
-            &next.common.state,
+            &next.state,
         ))]
         unsafe extern "C" fn update_joysticks_dispatch();
     }
@@ -177,14 +173,15 @@ unsafe fn captured_dynapi_table(table: *mut c_void, tablesize: u32, result: i32)
         return;
     }
 
-    if let Err(error) = unsafe { Sdl3DynapiHook::install(table, tablesize) } {
-        log(error);
-        return;
-    }
+    let state = match unsafe { Sdl3DynapiHook::install(table, tablesize) } {
+        Ok(state) => state,
+        Err(error) => {
+            log(error);
+            return;
+        }
+    };
     if let Ok(session) = config::session() {
-        Sdl3DynapiHook::active_state()
-            .runtime
-            .start_receiver(format!("{session}-input"));
+        state.runtime.start_receiver(format!("{session}-input"));
     }
     log("patched SDL3 dynamic API gamepad entries");
 }

@@ -13,12 +13,6 @@ snowglass_hook::__chain_hooks! {
     pub(crate) struct HookInstallation;
     #[registry] static INSTALLATION;
 
-    #[context]
-    pub(crate) struct DirectInputHookContext {
-        pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime> =
-            HookInstallation::active_state(),
-    }
-
     #[trampoline]
     #[terminal(installed(
         target = windows_sys::Win32::Devices::HumanInterfaceDevice::DirectInput8Create,

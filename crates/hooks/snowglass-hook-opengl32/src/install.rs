@@ -174,7 +174,7 @@ pub(crate) unsafe fn call_copy_image_sub_data(
 }
 
 pub(crate) unsafe fn install() -> i32 {
-    crate::hooks::HookInstallation::install().map_or(E_FAIL, |()| 0)
+    crate::hooks::HookInstallation::install().map_or(E_FAIL, |_| 0)
 }
 
 pub(crate) fn uninstall() -> i32 {

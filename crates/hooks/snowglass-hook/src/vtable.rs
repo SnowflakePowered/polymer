@@ -358,6 +358,8 @@ seq_macro::seq!(SLOT in 0..64 {
 /// Declares typed around-hook chains for selected entries in a mutable
 /// function-pointer table. The generated dispatcher for each entry is written
 /// into the table, while the captured base function is the chain terminal.
+/// A managed hook declared with `#[state: Type = value]` injects `state` into
+/// every dispatch context and returns its shared `Arc<Type>` from `install`.
 #[macro_export]
 macro_rules! function_table_hook {
     (
@@ -377,12 +379,40 @@ macro_rules! function_table_hook {
         #[state: $state:ty = $state_value:expr]
         #[registry] $registry_visibility:vis static $registry:ident;
         $visibility:vis struct $table_hook:ident {
-            $($body:tt)*
+            const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
+            $(
+                #[slot = $slot:expr]
+                $(#[prefix($($prefix:tt)*)])?
+                $(#[infix($($infix:path),* $(,)? )])?
+                $(#[postfix($($postfix:tt)*)])?
+                unsafe extern $abi:literal fn $dispatch:ident(
+                    $($argument:ident: $argument_type:ty),* $(,)?
+                ) $(-> $result:ty)?
+                $( { #[context] struct {
+                    $($local:ident: $local_type:ty = $local_value:expr),* $(,)?
+                } } )? $(;)?
+            )+
         }
     ) => { $crate::__paste! {
         $crate::function_table_hook! {
             #[resolve = [<__resolve_ $table_hook:snake>]]
-            $visibility struct $table_hook { $($body)* }
+            $visibility struct $table_hook {
+                const MINIMUM_SLOTS: $minimum_slots_type = $minimum_slots;
+                $(
+                    #[slot = $slot]
+                    $(#[prefix($($prefix)*)])?
+                    $(#[infix($($infix),*)])?
+                    $(#[postfix($($postfix)*)])?
+                    unsafe extern $abi fn $dispatch(
+                        $($argument: $argument_type),*
+                    ) $(-> $result)? {
+                        #[context] struct {
+                            state: ::std::sync::Arc<$state> = [<__state_ $table_hook:snake>](),
+                            $($($local: $local_type = $local_value,)*)?
+                        }
+                    }
+                )+
+            }
         }
 
         struct [<$table_hook Installation>] {
@@ -401,6 +431,13 @@ macro_rules! function_table_hook {
                 .expect("function table hook is not installed")
         }
 
+        fn [<__state_ $table_hook:snake>]() -> ::std::sync::Arc<$state> {
+            $registry.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref().map(|installation| installation.state.clone())
+                .expect("function table hook is not installed")
+        }
+
         impl $table_hook {
             /// Captures and patches a function table, reusing the captured
             /// base functions for later publications of the same API table.
@@ -411,7 +448,7 @@ macro_rules! function_table_hook {
             $visibility unsafe fn install(
                 table: *mut ::core::ffi::c_void,
                 table_bytes: u32,
-            ) -> Result<(), &'static str> {
+            ) -> Result<::std::sync::Arc<$state>, &'static str> {
                 let mut registry = $registry.lock()
                     .unwrap_or_else(|error| error.into_inner());
                 if registry.is_none() {
@@ -430,7 +467,7 @@ macro_rules! function_table_hook {
                 if !installation.tables.iter().any(|entry| entry.0 == address) {
                     installation.tables.push((address, table_bytes));
                 }
-                Ok(())
+                Ok(installation.state.clone())
             }
 
             $visibility fn uninstall() -> Result<(), &'static str> {
@@ -449,13 +486,6 @@ macro_rules! function_table_hook {
                 }
                 if installation.tables.is_empty() { *registry = None; }
                 first_error.map_or(Ok(()), Err)
-            }
-
-            $visibility fn active_state() -> ::std::sync::Arc<$state> {
-                $registry.lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .as_ref().map(|installation| installation.state.clone())
-                    .expect("function table hook is not installed")
             }
         }
     }};

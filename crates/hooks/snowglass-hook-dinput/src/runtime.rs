@@ -317,13 +317,13 @@ pub(crate) unsafe fn direct_input_8_create(
     result: HRESULT,
     context: &crate::hooks::DirectInput8CreateContext,
 ) {
-    context.common.runtime.start_input_receiver();
+    context.common.state.start_input_receiver();
     dinput_log(format!(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     ));
     if result >= 0 && !interface_id.is_null() && !output.is_null() && outer.is_null() {
         if let Some(proxy) =
-            unsafe { wrap_direct_input(context.common.runtime.clone(), *output, &*interface_id) }
+            unsafe { wrap_direct_input(context.common.state.clone(), *output, &*interface_id) }
         {
             unsafe { *output = proxy };
         }
@@ -384,7 +384,7 @@ mod tests {
         let listener = LocalSocketListener::bind(&format!("{session}-input")).unwrap();
         unsafe { std::env::set_var(config::SESSION, &session) };
         let _ = unsafe { crate::install::install() };
-        let runtime = crate::hooks::HookInstallation::active_state();
+        let runtime = crate::hooks::HookInstallation::install().unwrap();
         runtime.start_input_receiver();
         let mut socket = listener.accept().unwrap();
 

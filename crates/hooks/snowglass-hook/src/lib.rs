@@ -457,7 +457,9 @@ macro_rules! next {
 /// their callback with `#![terminal_resolver(name)]`; direct and installed-only
 /// declarations need no resolver. Hook and context names are inferred from the
 /// declared function name in the same way as [`function_table_hook!`]. Mark an
-/// entry with `#[trampoline]` when its declared function is used as an ABI
+/// installer with `state = Type` to inject its shared state into every hook
+/// context and return the state from `install`. Mark an entry with
+/// `#[trampoline]` when its declared function is used as an ABI
 /// detour target. `#[trampoline(abi = "...")]` overrides that entry point's ABI
 /// while leaving the chain declaration as the source of its signature.
 #[doc(hidden)]
@@ -470,7 +472,7 @@ macro_rules! __chain_hooks {
         $installer_visibility:vis struct $installer:ident;
         #[registry] $registry_visibility:vis static $registry:ident;
         $($items:tt)*
-    ) => {
+    ) => { $crate::__paste! {
         $crate::__chain_hooks!(@declare_installer
             [$installer_visibility] [$installer] [state $state] [$($items)*]
         );
@@ -486,8 +488,12 @@ macro_rules! __chain_hooks {
             $crate::HookInstallationRegistry<$installer> =
                 $crate::HookInstallationRegistry::new();
         impl $installer {
-            $installer_visibility fn install() -> Result<(), $crate::HookRegistryError> {
-                $registry.install()
+            $installer_visibility fn install() -> Result<
+                ::std::sync::Arc<$state>,
+                $crate::HookRegistryError,
+            > {
+                $registry.install()?;
+                Ok($installer::[<__state_ $installer:snake>]())
             }
             $installer_visibility fn uninstall() -> Result<(), $crate::HookRegistryError> {
                 $registry.uninstall()
@@ -496,9 +502,14 @@ macro_rules! __chain_hooks {
         $crate::__chain_hooks! {
             #![order($order)]
             #![detour($detour)]
+            #[context]
+            $installer_visibility struct [<$installer Context>] {
+                $installer_visibility state: ::std::sync::Arc<$state> =
+                    $installer::[<__state_ $installer:snake>](),
+            }
             $($items)*
         }
-    };
+    }};
 
     (
         #![order($order:ident)]
@@ -543,16 +554,21 @@ macro_rules! __chain_hooks {
         #[installer(state = $state:ty)]
         $installer_visibility:vis struct $installer:ident;
         $($items:tt)*
-    ) => {
+    ) => { $crate::__paste! {
         $crate::__chain_hooks!(@declare_installer
             [$installer_visibility] [$installer] [state $state] [$($items)*]
         );
         $crate::__chain_hooks! {
             #![order($order)]
             #![detour($detour)]
+            #[context]
+            $installer_visibility struct [<$installer Context>] {
+                $installer_visibility state: ::std::sync::Arc<$state> =
+                    $installer::[<__state_ $installer:snake>](),
+            }
             $($items)*
         }
-    };
+    }};
 
     (
         #![order($order:ident)]
@@ -647,10 +663,11 @@ macro_rules! __chain_hooks {
                 Ok(installation)
             }
 
-            $visibility fn active_state() -> ::std::sync::Arc<$state> {
+            fn [<__state_ $installer:snake>]() -> ::std::sync::Arc<$state> {
                 [<$installer:upper _STATE>].read()
                     .unwrap_or_else(|error| error.into_inner())
-                    .as_ref().cloned().unwrap_or_default()
+                    .as_ref().cloned()
+                    .expect("raw hook state is not installed")
             }
 
             fn uninstall_terminals(&mut self) -> Result<(), $crate::TerminalUninstallError> {

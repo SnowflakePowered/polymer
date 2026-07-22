@@ -4,8 +4,8 @@ use windows_sys::{Win32::Foundation::E_FAIL, core::HRESULT};
 
 pub(crate) unsafe fn install() -> HRESULT {
     match crate::hooks::HookInstallation::install() {
-        Ok(()) => {
-            crate::hooks::HookInstallation::active_state().start_input_receiver();
+        Ok(runtime) => {
+            runtime.start_input_receiver();
             0
         }
         Err(_) => E_FAIL,
