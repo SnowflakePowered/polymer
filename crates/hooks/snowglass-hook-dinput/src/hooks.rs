@@ -11,7 +11,6 @@ snowglass_hook::__chain_hooks! {
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[installer(state = crate::runtime::Runtime)]
     pub(crate) struct HookInstallation;
-    #[registry] static INSTALLATION;
 
     #[trampoline]
     #[terminal(installed(

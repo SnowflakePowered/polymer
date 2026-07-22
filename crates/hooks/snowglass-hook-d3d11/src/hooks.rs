@@ -9,7 +9,6 @@ snowglass_hook::__chain_hooks! {
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[installer]
     pub(crate) struct HookInstallation;
-    #[registry] static INSTALLATION;
     #[context]
     pub(crate) struct D3D11HookContext {
         pub(crate) tracking: std::sync::Arc<Tracking> = std::sync::Arc::default(),

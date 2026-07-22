@@ -65,7 +65,6 @@ snowglass_hook::__chain_hooks! {
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[installer]
     pub(crate) struct Sdl3EntryInstallation;
-    #[registry] static DYNAPI_ENTRY_INSTALLATION;
 
     #[trampoline]
     #[terminal(installed(target = dynapi_entry_target()), fallback = -1)]
@@ -79,7 +78,6 @@ snowglass_hook::__chain_hooks! {
 
 snowglass_hook::function_table_hook! {
     #[state: Sdl3TableState = create_table_state()?]
-    #[registry] static DYNAPI_INSTALLATION;
     pub(crate) struct Sdl3DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
 

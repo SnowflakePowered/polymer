@@ -363,21 +363,18 @@ seq_macro::seq!(SLOT in 0..64 {
 #[macro_export]
 macro_rules! function_table_hook {
     (
-        #[registry] $registry_visibility:vis static $registry:ident;
         $visibility:vis struct $table_hook:ident {
             $($body:tt)*
         }
     ) => {
         $crate::function_table_hook! {
             #[state: () = ()]
-            #[registry] $registry_visibility static $registry;
             $visibility struct $table_hook { $($body)* }
         }
     };
 
     (
         #[state: $state:ty = $state_value:expr]
-        #[registry] $registry_visibility:vis static $registry:ident;
         $visibility:vis struct $table_hook:ident {
             const MINIMUM_SLOTS: $minimum_slots_type:ty = $minimum_slots:expr;
             $(
@@ -421,18 +418,19 @@ macro_rules! function_table_hook {
             state: ::std::sync::Arc<$state>,
         }
 
-        static $registry: ::std::sync::Mutex<Option<[<$table_hook Installation>]>> =
+        static [<__ $table_hook _registry>]:
+            ::std::sync::Mutex<Option<[<$table_hook Installation>]>> =
             ::std::sync::Mutex::new(None);
 
         fn [<__resolve_ $table_hook:snake>]() -> ::std::sync::Arc<$table_hook> {
-            $registry.lock()
+            [<__ $table_hook _registry>].lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref().map(|installation| installation.hook.clone())
                 .expect("function table hook is not installed")
         }
 
         fn [<__state_ $table_hook:snake>]() -> ::std::sync::Arc<$state> {
-            $registry.lock()
+            [<__ $table_hook _registry>].lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref().map(|installation| installation.state.clone())
                 .expect("function table hook is not installed")
@@ -449,7 +447,7 @@ macro_rules! function_table_hook {
                 table: *mut ::core::ffi::c_void,
                 table_bytes: u32,
             ) -> Result<::std::sync::Arc<$state>, &'static str> {
-                let mut registry = $registry.lock()
+                let mut registry = [<__ $table_hook _registry>].lock()
                     .unwrap_or_else(|error| error.into_inner());
                 if registry.is_none() {
                     let hook = ::std::sync::Arc::new(unsafe {
@@ -471,7 +469,7 @@ macro_rules! function_table_hook {
             }
 
             $visibility fn uninstall() -> Result<(), &'static str> {
-                let mut registry = $registry.lock()
+                let mut registry = [<__ $table_hook _registry>].lock()
                     .unwrap_or_else(|error| error.into_inner());
                 let Some(installation) = registry.as_mut() else { return Ok(()); };
                 let mut first_error = None;
@@ -828,7 +826,6 @@ macro_rules! impl_com_proxy {
         $visibility_trait:vis trait $hook_trait:ident;
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
-            #[registry] $visibility:vis static $registry:ident;
             $(#[state = $common_context:ty])?
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
@@ -841,7 +838,6 @@ macro_rules! impl_com_proxy {
             $visibility_trait trait $hook_trait;
             impl $hook_trait_impl for $hook {
                 #![vtable = $storage]
-                #[registry] $visibility static $registry;
                 $(#[state = $common_context])?
                 #[release $( (destroyed = $destroyed) )?]
                 unsafe extern "system" fn $release_dispatch(
@@ -855,7 +851,6 @@ macro_rules! impl_com_proxy {
         $visibility_trait:vis trait $hook_trait:ident;
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
-            #[registry] $visibility:vis static $registry:ident;
             $(#[state = $common_context:ty])?
             #[release $( (destroyed = $destroyed:path) )?]
             unsafe extern "system" fn $release_dispatch:ident(
@@ -872,7 +867,6 @@ macro_rules! impl_com_proxy {
             $visibility_trait trait $hook_trait;
             impl $hook_trait_impl for $hook {
                 #![vtable = $storage]
-                #[registry] $visibility static $registry;
                 #[interfaces] {}
                 $(#[state = $common_context])?
                 #[release $( (destroyed = $destroyed) )?]
@@ -890,7 +884,7 @@ macro_rules! impl_com_proxy {
         impl $hook {
             /// Wraps `inner` in a proxy and installs the typed hook on it.
             /// The proxy takes ownership of the caller's existing COM reference.
-            $visibility unsafe fn wrap<A: Vtable>(
+            $visibility_trait unsafe fn wrap<A: Vtable>(
                 inner: *mut ::core::ffi::c_void,
                 iid: $crate::__GUID,
                 $(state: $common_context,)?
@@ -1096,7 +1090,6 @@ macro_rules! impl_com_hook {
         $visibility_trait:vis trait $hook_trait:ident;
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
-            #[registry] $visibility:vis static $registry:ident;
             #[interfaces] {
                 $($interface:path),* $(,)?
             }
@@ -1112,7 +1105,6 @@ macro_rules! impl_com_hook {
             $visibility_trait trait $hook_trait;
             impl $hook_trait_impl for $hook {
                 #![vtable = $storage]
-                #[registry] $visibility static $registry;
                 #[interfaces] {
                     $($interface),*
                 }
@@ -1129,7 +1121,6 @@ macro_rules! impl_com_hook {
         $visibility_trait:vis trait $hook_trait:ident;
         impl $hook_trait_impl:ident for $hook:ident {
             #![vtable = $storage:ty]
-            #[registry] $visibility:vis static $registry:ident;
             #[interfaces] {
                 $($interface:path),* $(,)?
             }
@@ -1177,11 +1168,11 @@ macro_rules! impl_com_hook {
             ) $(-> $result)?>;)+
         }
 
-        $visibility static $registry: ::std::sync::LazyLock<
+        static [<__ $release_dispatch _registry>]: ::std::sync::LazyLock<
             $crate::__DashMap<usize, ::std::sync::Arc<dyn $hook_trait>>
         > = ::std::sync::LazyLock::new(Default::default);
 
-        $visibility struct $hook;
+        $visibility_trait struct $hook;
 
         struct [<$hook State>]<A: Vtable> {
             patched: Box<$storage>,
@@ -1196,16 +1187,33 @@ macro_rules! impl_com_hook {
         unsafe impl<A: Vtable> Sync for [<$hook State>]<A> {}
 
         impl $hook {
-            $($visibility fn with_state<T>(
+            /// Returns whether `object` currently publishes this hook's vtable.
+            ///
+            /// # Safety
+            /// `object` must be null or point to a live COM object.
+            $visibility_trait unsafe fn is_installed(
+                object: *mut ::core::ffi::c_void,
+            ) -> bool {
+                if object.is_null() {
+                    return false;
+                }
+                [<__ $release_dispatch _registry>]
+                    .get(&(object as usize))
+                    .is_some_and(|state| unsafe {
+                        *object.cast::<*const usize>() == state.patched_vtable()
+                    })
+            }
+
+            $($visibility_trait fn with_state<T>(
                 object: *mut ::core::ffi::c_void,
                 select: impl FnOnce(&$common_context) -> T,
             ) -> Option<T> {
-                $registry
+                [<__ $release_dispatch _registry>]
                     .get(&(object as usize))
                     .map(|state| select(state.state()))
             })?
 
-            $visibility unsafe fn install_widest(
+            $visibility_trait unsafe fn install_widest(
                 object: *mut ::core::ffi::c_void,
                 $(state: $common_context,)?
                 $($context: $context_type),*
@@ -1222,7 +1230,7 @@ macro_rules! impl_com_hook {
                 )
             }
 
-            $visibility unsafe fn install_all_interfaces(
+            $visibility_trait unsafe fn install_all_interfaces(
                 object: *mut ::core::ffi::c_void,
                 $(state: $common_context,)?
                 $($context: $context_type),*
@@ -1244,7 +1252,7 @@ macro_rules! impl_com_hook {
                 installed
             }
 
-            $visibility unsafe fn install_interface(
+            $visibility_trait unsafe fn install_interface(
                 object: *mut ::core::ffi::c_void,
                 interface_id: &$crate::__GUID,
                 $(state: $common_context,)?
@@ -1262,7 +1270,7 @@ macro_rules! impl_com_hook {
             /// # Safety
             /// `object` must be null or point to a live COM object whose
             /// vtable spans at least `A::SLOTS` entries.
-            $visibility unsafe fn install_object<A: Vtable>(
+            $visibility_trait unsafe fn install_object<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
                 $(state: $common_context,)?
                 $($context: $context_type),*
@@ -1272,7 +1280,9 @@ macro_rules! impl_com_hook {
                 }
                 let object_vtable = object.cast::<*const usize>();
                 let current = unsafe { *object_vtable };
-                let original_pointer = if let Some(existing) = $registry.get(&(object as usize)) {
+                let original_pointer = if let Some(existing) =
+                    [<__ $release_dispatch _registry>].get(&(object as usize))
+                {
                     if current == existing.patched_vtable() {
                         if A::supported_by(existing.vtable_type()) {
                             return true;
@@ -1300,7 +1310,7 @@ macro_rules! impl_com_hook {
             /// # Safety
             /// `object` must identify a live COM object and `original_pointer`
             /// must span at least `A::SLOTS` entries.
-            $visibility unsafe fn install_object_from<A: Vtable>(
+            $visibility_trait unsafe fn install_object_from<A: Vtable>(
                 object: *mut ::core::ffi::c_void,
                 original_pointer: *const usize,
                 $(state: $common_context,)?
@@ -1342,7 +1352,7 @@ macro_rules! impl_com_hook {
                     $($context,)*
                 });
                 let patched_vtable = state.patched_vtable();
-                $registry.insert(object as usize, state);
+                [<__ $release_dispatch _registry>].insert(object as usize, state);
                 unsafe { *object_vtable = patched_vtable };
                 true
             }
@@ -1380,11 +1390,13 @@ macro_rules! impl_com_hook {
             })+
         }
 
-        $visibility unsafe extern "system" fn $release_dispatch(
+        $visibility_trait unsafe extern "system" fn $release_dispatch(
             $release_this: $release_this_type,
         ) -> u32 {
             let key = $release_this as usize;
-            let Some(state) = $registry.get(&key).map(|entry| ::std::sync::Arc::clone(entry.value()))
+            let Some(state) = [<__ $release_dispatch _registry>]
+                .get(&key)
+                .map(|entry| ::std::sync::Arc::clone(entry.value()))
             else {
                 return 0;
             };
@@ -1395,9 +1407,10 @@ macro_rules! impl_com_hook {
             unsafe { *object_vtable = original_vtable };
             let remaining = unsafe { base($release_this) };
             if remaining == 0 {
-                $registry.remove_if(&key, |_, current| current.patched_vtable() == patched_vtable);
+                [<__ $release_dispatch _registry>]
+                    .remove_if(&key, |_, current| current.patched_vtable() == patched_vtable);
                 $(unsafe { $destroyed($release_this, &*state) };)?
-            } else if $registry
+            } else if [<__ $release_dispatch _registry>]
                 .get(&key)
                 .is_some_and(|current| current.patched_vtable() == patched_vtable)
             {
@@ -1408,13 +1421,13 @@ macro_rules! impl_com_hook {
 
         $crate::__impl_com_dispatches! {
             common [$($common_context)?];
-            registry $registry;
+            registry [<__ $release_dispatch _registry>];
             $(
                 $(#[fallback = $fallback])?
                 [$(prefix($($prefix)*))?]
                 [$(infix($($infix),*))?]
                 [$(postfix($($postfix)*))?]
-                $visibility unsafe extern "system" fn $dispatch(
+                $visibility_trait unsafe extern "system" fn $dispatch(
                     $this: $this_type $(, $argument: $argument_type)*
                 ) $(-> $result)?
                 [$(#[context] |$state| {

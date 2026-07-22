@@ -452,8 +452,8 @@ macro_rules! next {
 /// or a backend-defined `dynamic(...)` source. An installed raw-hook group can
 /// select its lifecycle owner with `#![detour(Type)]`; each installed terminal
 /// then supplies its own `target` and optional `continuation`. A generated
-/// `#[installer] struct` and `#[registry] static` own transactional installation,
-/// idempotence, partial cleanup, and reinstallation. Dynamic sources select
+/// A generated private registry owns transactional installation, idempotence,
+/// partial cleanup, and reinstallation. Dynamic sources select
 /// their callback with `#![terminal_resolver(name)]`; direct and installed-only
 /// declarations need no resolver. Hook and context names are inferred from the
 /// declared function name in the same way as [`function_table_hook!`]. Mark an
@@ -470,7 +470,6 @@ macro_rules! __chain_hooks {
         #![detour($detour:ty)]
         #[installer(state = $state:ty)]
         $installer_visibility:vis struct $installer:ident;
-        #[registry] $registry_visibility:vis static $registry:ident;
         $($items:tt)*
     ) => { $crate::__paste! {
         $crate::__chain_hooks!(@declare_installer
@@ -484,7 +483,7 @@ macro_rules! __chain_hooks {
             fn is_complete(&self) -> bool { self.is_complete() }
             fn is_empty(&self) -> bool { self.is_empty() }
         }
-        static $registry:
+        static [<__ $installer _registry>]:
             $crate::HookInstallationRegistry<$installer> =
                 $crate::HookInstallationRegistry::new();
         impl $installer {
@@ -492,11 +491,11 @@ macro_rules! __chain_hooks {
                 ::std::sync::Arc<$state>,
                 $crate::HookRegistryError,
             > {
-                $registry.install()?;
+                [<__ $installer _registry>].install()?;
                 Ok($installer::[<__state_ $installer:snake>]())
             }
             $installer_visibility fn uninstall() -> Result<(), $crate::HookRegistryError> {
-                $registry.uninstall()
+                [<__ $installer _registry>].uninstall()
             }
         }
         $crate::__chain_hooks! {
@@ -516,9 +515,8 @@ macro_rules! __chain_hooks {
         #![detour($detour:ty)]
         #[installer]
         $installer_visibility:vis struct $installer:ident;
-        #[registry] $registry_visibility:vis static $registry:ident;
         $($items:tt)*
-    ) => {
+    ) => { $crate::__paste! {
         $crate::__chain_hooks!(@declare_installer
             [$installer_visibility] [$installer] [stateless] [$($items)*]
         );
@@ -530,62 +528,23 @@ macro_rules! __chain_hooks {
             fn is_complete(&self) -> bool { self.is_complete() }
             fn is_empty(&self) -> bool { self.is_empty() }
         }
-        static $registry:
+        static [<__ $installer _registry>]:
             $crate::HookInstallationRegistry<$installer> =
                 $crate::HookInstallationRegistry::new();
         impl $installer {
             $installer_visibility fn install() -> Result<(), $crate::HookRegistryError> {
-                $registry.install()
+                [<__ $installer _registry>].install()
             }
             $installer_visibility fn uninstall() -> Result<(), $crate::HookRegistryError> {
-                $registry.uninstall()
+                [<__ $installer _registry>].uninstall()
             }
         }
         $crate::__chain_hooks! {
             #![order($order)]
             #![detour($detour)]
-            $($items)*
-        }
-    };
-
-    (
-        #![order($order:ident)]
-        #![detour($detour:ty)]
-        #[installer(state = $state:ty)]
-        $installer_visibility:vis struct $installer:ident;
-        $($items:tt)*
-    ) => { $crate::__paste! {
-        $crate::__chain_hooks!(@declare_installer
-            [$installer_visibility] [$installer] [state $state] [$($items)*]
-        );
-        $crate::__chain_hooks! {
-            #![order($order)]
-            #![detour($detour)]
-            #[context]
-            $installer_visibility struct [<$installer Context>] {
-                $installer_visibility state: ::std::sync::Arc<$state> =
-                    $installer::[<__state_ $installer:snake>](),
-            }
             $($items)*
         }
     }};
-
-    (
-        #![order($order:ident)]
-        #![detour($detour:ty)]
-        #[installer]
-        $installer_visibility:vis struct $installer:ident;
-        $($items:tt)*
-    ) => {
-        $crate::__chain_hooks!(@declare_installer
-            [$installer_visibility] [$installer] [stateless] [$($items)*]
-        );
-        $crate::__chain_hooks! {
-            #![order($order)]
-            #![detour($detour)]
-            $($items)*
-        }
-    };
 
     (@declare_installer
         [$visibility:vis] [$installer:ident] [stateless] [$($items:tt)*]

@@ -90,7 +90,6 @@ snowglass_hook::impl_com_hook! {
     pub(crate) trait CommandListHook;
     impl CommandListHook for ID3D12GraphicsCommandListHook {
         #![vtable = ID3D12GraphicsCommandListVtable]
-        #[registry] pub(crate) static COMMAND_LISTS;
         #[interfaces] {
             ID3D12GraphicsCommandList10,
             ID3D12GraphicsCommandList9,
@@ -172,7 +171,6 @@ snowglass_hook::impl_com_hook! {
     pub(crate) trait DeviceHook;
     impl DeviceHook for ID3D12DeviceHook {
         #![vtable = ID3D12DeviceVtable]
-        #[registry] pub(crate) static DEVICES;
         #[interfaces] {
             ID3D12Device14,
             ID3D12Device13,
@@ -289,9 +287,7 @@ unsafe fn try_install_device(
         });
     }
     let base = device.as_raw();
-    let already_hooked = DEVICES
-        .get(&(base as usize))
-        .is_some_and(|hook| unsafe { *base.cast::<*const usize>() == hook.patched_vtable() });
+    let already_hooked = unsafe { ID3D12DeviceHook::is_installed(base) };
 
     let installed =
         unsafe { ID3D12DeviceHook::install_all_interfaces(base, DeviceContext { tracking }) };

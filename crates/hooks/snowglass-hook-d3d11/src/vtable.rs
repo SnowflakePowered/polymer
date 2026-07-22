@@ -30,7 +30,6 @@ snowglass_hook::impl_com_hook! {
     trait ContextHook;
     impl ContextHook for ID3D11DeviceContextHook {
         #![vtable = ID3D11DeviceContextVtable]
-        #[registry] pub(crate) static CONTEXTS;
         #[interfaces] {
             ID3D11DeviceContext4,
             ID3D11DeviceContext3,
@@ -129,10 +128,7 @@ pub(crate) unsafe fn install_immediate_context(
     if current.is_null() {
         return;
     }
-    if CONTEXTS
-        .get(&(context as usize))
-        .is_some_and(|state| state.patched_vtable() == current)
-    {
+    if unsafe { ID3D11DeviceContextHook::is_installed(context) } {
         return;
     }
     unsafe { ID3D11DeviceContextHook::install_widest(context, ContextHookContext { tracking }) };

@@ -70,7 +70,6 @@ snowglass_hook::impl_com_proxy! {
     pub(crate) trait DirectInputHookState;
     impl DirectInputHookState for IDirectInputHook {
         #![vtable = IDirectInputVtable]
-        #[registry] pub(crate) static DIRECT_INPUT_HOOKS;
         #[state = DirectInputContext]
         #[release]
         unsafe extern "system" fn direct_input_release(this: *mut c_void) -> u32;
@@ -86,7 +85,6 @@ snowglass_hook::impl_com_proxy! {
     pub(crate) trait DeviceHookState;
     impl DeviceHookState for IDirectInputDeviceHook {
         #![vtable = IDirectInputDeviceVtable]
-        #[registry] pub(crate) static DEVICE_HOOKS;
         #[state = DeviceContext]
         #[release(destroyed = crate::runtime::device_destroyed)]
         unsafe extern "system" fn device_release(this: *mut c_void) -> u32;

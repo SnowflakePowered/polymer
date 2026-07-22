@@ -11,7 +11,6 @@ snowglass_hook::__chain_hooks! {
     #[installer]
     pub(crate) struct HookInstallation;
 
-    #[registry] static INSTALLATION;
 
     #[context]
     pub(crate) struct D3D12HookContext {

@@ -60,7 +60,6 @@ snowglass_hook::impl_com_hook! {
     pub(crate) trait SwapchainHook;
     impl SwapchainHook for IDXGISwapchainHook {
         #![vtable = IDXGISwapchainVtable]
-        #[registry] pub(crate) static SWAPCHAINS;
         #[interfaces] {
             IDXGISwapChain4,
             IDXGISwapChain3,
@@ -142,7 +141,6 @@ snowglass_hook::impl_com_hook! {
     pub(crate) trait FactoryHook;
     impl FactoryHook for IDXGIFactoryHook {
         #![vtable = IDXGIFactoryVtable]
-        #[registry] pub(crate) static FACTORIES;
         #[interfaces] {
             IDXGIFactory7,
             IDXGIFactory6,
