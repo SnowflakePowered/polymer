@@ -54,6 +54,7 @@ struct EguiTexture {
 struct ImportedSurface {
     connection: u64,
     surface_id: u64,
+    target_window: i64,
     descriptor: u32,
     imported: ImportedD3d12Stream,
     flip_y: bool,
@@ -94,7 +95,7 @@ pub(crate) struct D3d12Compositor {
     publish_video: bool,
     video_completion_fence: ID3D12Fence,
     video_completion_value: u64,
-    completed_video: Vec<super::webrtc::VideoFrame>,
+    completed_video: Vec<crate::webrtc::VideoFrame>,
 }
 
 impl D3d12Compositor {
@@ -282,6 +283,7 @@ impl D3d12Compositor {
         self.surfaces.push(ImportedSurface {
             connection,
             surface_id: stream.surface_id.0,
+            target_window: stream.source_window,
             descriptor: FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
             imported,
             flip_y: stream.bottom_up,
@@ -293,7 +295,7 @@ impl D3d12Compositor {
             video_completion_value: 0,
         });
         self.surfaces
-            .sort_by_key(|surface| super::surface_sort_key(surface.surface_id));
+            .sort_by_key(|surface| crate::surface_sort_key(surface.surface_id));
         self.refresh_surface_descriptors()?;
         Ok(())
     }
@@ -318,19 +320,21 @@ impl D3d12Compositor {
             .iter()
             .filter_map(|surface| {
                 let frame = surface.display_frame?;
-                let (width, height) = super::fit_inside(
+                let (width, height) = crate::fit_inside(
                     frame.render_width.max(1),
                     frame.render_height.max(1),
                     surface.imported.width,
                     surface.imported.height,
                 );
                 let image_extent = if surface.quarter_turns % 2 == 1 {
-                    super::Extent::new(height, width)
+                    crate::Extent::new(height, width)
                 } else {
-                    super::Extent::new(width, height)
+                    crate::Extent::new(width, height)
                 };
                 Some(crate::input::pointer::DisplayedSurface {
                     connection: surface.connection,
+                    surface_id: surface.surface_id,
+                    target_window: surface.target_window,
                     image_extent,
                     flip_y: surface.flip_y,
                     frame,
@@ -443,7 +447,7 @@ impl D3d12Compositor {
             && unsafe { self.video_completion_fence.GetCompletedValue() }
                 >= self.video_completion_value;
         let mut video_publish_budget = if video_publish_ready {
-            super::webrtc::FRAME_CHANNEL_CAPACITY
+            crate::webrtc::FRAME_CHANNEL_CAPACITY
         } else {
             0
         };
@@ -599,11 +603,11 @@ impl D3d12Compositor {
                 {
                     surface.video_completion_value = completion_value;
                 }
-                self.completed_video.push(super::webrtc::VideoFrame {
+                self.completed_video.push(crate::webrtc::VideoFrame {
                     connection,
                     width,
                     height,
-                    data: super::webrtc::VideoFrameData::D3d12(super::webrtc::D3d12Frame {
+                    data: crate::webrtc::VideoFrameData::D3d12(crate::webrtc::D3d12Frame {
                         device: self.consumer.device().clone(),
                         resource,
                         state: D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -627,7 +631,7 @@ impl D3d12Compositor {
         Ok(true)
     }
 
-    pub(crate) fn take_video_frames(&mut self) -> Vec<super::webrtc::VideoFrame> {
+    pub(crate) fn take_video_frames(&mut self) -> Vec<crate::webrtc::VideoFrame> {
         std::mem::take(&mut self.completed_video)
     }
 
@@ -652,21 +656,21 @@ impl D3d12Compositor {
             .iter()
             .filter_map(|surface| {
                 let frame = surface.display_frame?;
-                let (width, height) = super::fit_inside(
+                let (width, height) = crate::fit_inside(
                     frame.render_width.max(1),
                     frame.render_height.max(1),
                     surface.imported.width,
                     surface.imported.height,
                 );
                 Some(if surface.quarter_turns % 2 == 1 {
-                    super::Extent::new(height, width)
+                    crate::Extent::new(height, width)
                 } else {
-                    super::Extent::new(width, height)
+                    crate::Extent::new(width, height)
                 })
             })
             .collect::<Vec<_>>();
         let custom_rectangles = crate::layout::active_rectangles(
-            super::Extent::new(self.extent.0, self.extent.1),
+            crate::Extent::new(self.extent.0, self.extent.1),
             &layout_images,
             reverse_surface_rows,
         );
@@ -677,7 +681,7 @@ impl D3d12Compositor {
             .enumerate()
             .map(|(position, surface)| {
                 let frame = surface.display_frame.expect("filtered display frame");
-                let (crop_w, crop_h) = super::fit_inside(
+                let (crop_w, crop_h) = crate::fit_inside(
                     frame.render_width.max(1),
                     frame.render_height.max(1),
                     surface.imported.width,
@@ -695,8 +699,8 @@ impl D3d12Compositor {
                     (rect.x, rect.y, rect.width as i32, rect.height as i32)
                 } else {
                     let (x, local_y, w, h) =
-                        super::fit_extent(display_w, display_h, self.extent.0, cell_height);
-                    let row = super::vertical_layout_index(
+                        crate::fit_extent(display_w, display_h, self.extent.0, cell_height);
+                    let row = crate::vertical_layout_index(
                         position as u32,
                         visible,
                         reverse_surface_rows,

@@ -774,18 +774,22 @@ mod argument_tests {
         0x5347_0000_0000_0000 | index
     }
 
-    fn offset_tuples(offsets: [vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {
+    fn offset_tuples(offsets: [ash::vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {
         offsets.map(|offset| (offset.x, offset.y, offset.z))
     }
 
     #[test]
     fn bottom_up_streams_reverse_vulkan_source_y() {
         assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, true, 0)),
+            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+                1280, 720, true, 0,
+            )),
             [(0, 720, 0), (1280, 0, 1)]
         );
         assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, false, 0)),
+            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+                1280, 720, false, 0,
+            )),
             [(0, 0, 0), (1280, 720, 1)]
         );
         assert_eq!(vertical_layout_index(0, 2, true), 1);
@@ -796,12 +800,16 @@ mod argument_tests {
     #[test]
     fn half_turns_mirror_vulkan_blit_source_offsets() {
         assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, false, 2)),
+            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+                1280, 720, false, 2,
+            )),
             [(1280, 720, 0), (0, 0, 1)]
         );
         // A flipped half turn cancels the vertical mirror.
         assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, true, 2)),
+            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+                1280, 720, true, 2,
+            )),
             [(1280, 0, 0), (0, 720, 1)]
         );
     }

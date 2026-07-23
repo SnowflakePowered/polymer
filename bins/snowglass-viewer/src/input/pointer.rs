@@ -7,30 +7,27 @@ use snowglass_input::mouse::{
 };
 use snowglass_ipc::Message;
 use snowglass_protocol::{FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind};
-use std::{collections::HashMap, sync::mpsc, time::Instant};
+use std::{sync::mpsc, time::Instant};
 use winit::event::MouseButton;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct DisplayedSurface {
     pub(crate) connection: u64,
+    pub(crate) surface_id: u64,
+    pub(crate) target_window: i64,
     pub(crate) image_extent: Extent,
     pub(crate) flip_y: bool,
     pub(crate) frame: FrameReady,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PointerTarget {
+pub(crate) struct MappedPointer {
+    pub(crate) connection: u64,
     pub(crate) surface_id: u64,
     pub(crate) target_window: i64,
-}
-
-#[derive(Clone, Copy)]
-struct PointerDestination {
-    connection: u64,
-    target: PointerTarget,
-    frame: FrameReady,
-    position: Point,
-    normalized_position: Point,
+    pub(crate) frame: FrameReady,
+    pub(crate) position: Point,
+    pub(crate) normalized_position: Point,
 }
 
 #[derive(Clone, Copy)]
@@ -93,28 +90,15 @@ impl PointerRoutingState {
         button: u32,
         wheel_horizontal: i32,
         wheel_vertical: i32,
-        viewer_extent: Extent,
-        surfaces: &[DisplayedSurface],
-        targets: &HashMap<u64, PointerTarget>,
+        presentation: &crate::renderer::Presentation,
         sender: &mpsc::Sender<Message>,
     ) -> bool {
         let captured = self.captured_connection;
-        let outside = if captured.is_some() {
-            OutsideBehavior::Clamp
-        } else {
-            OutsideBehavior::Reject
-        };
-        let Some(destination) = pointer_destination(
-            self.cursor,
-            captured,
-            outside,
-            viewer_extent,
-            surfaces,
-            targets,
-        ) else {
+        let Some(destination) = presentation.map_pointer(self.cursor, captured) else {
             if phase == PointerPhase::ButtonDown && !self.logged_button_rejection {
                 self.logged_button_rejection = true;
-                let mapped = surfaces
+                let mapped = presentation
+                    .surfaces()
                     .iter()
                     .filter(|surface| {
                         surface.frame.presentation_transform.kind
@@ -125,9 +109,9 @@ impl PointerRoutingState {
                     "snowglass: pointer button was not routed at ({:.1}, {:.1}); displayed surfaces={}, mapped surfaces={}, pointer targets={}",
                     self.cursor.x,
                     self.cursor.y,
-                    surfaces.len(),
+                    presentation.surfaces().len(),
                     mapped,
-                    targets.len(),
+                    presentation.surfaces().len(),
                 );
             }
             return false;
@@ -158,8 +142,8 @@ impl PointerRoutingState {
             .clamp(0.0, f64::from(height.saturating_sub(1))) as i32;
         let sent = sender
             .send(Message::PointerInput(PointerInput {
-                surface_id: destination.target.surface_id,
-                target_window: destination.target.target_window,
+                surface_id: destination.surface_id,
+                target_window: destination.target_window,
                 frame_number: destination.frame.frame_number,
                 source: PointerSource::Mouse,
                 phase,
@@ -181,7 +165,7 @@ impl PointerRoutingState {
             self.last_sent = Some(PointerSendEvent {
                 count: self.sent_count,
                 phase,
-                surface_id: destination.target.surface_id,
+                surface_id: destination.surface_id,
                 x,
                 y,
                 coordinate_width: width,
@@ -195,12 +179,7 @@ impl PointerRoutingState {
             self.logged_route = true;
             eprintln!(
                 "snowglass: routed pointer to surface {} hwnd={:#x} presentation=({}, {})/{}x{}",
-                destination.target.surface_id,
-                destination.target.target_window,
-                x,
-                y,
-                width,
-                height,
+                destination.surface_id, destination.target_window, x, y, width, height,
             );
         }
         if matches!(phase, PointerPhase::ButtonUp | PointerPhase::Cancel) && self.buttons == 0 {
@@ -212,25 +191,14 @@ impl PointerRoutingState {
     pub(crate) fn cancel(
         &mut self,
         connection: u64,
-        viewer_extent: Extent,
-        surfaces: &[DisplayedSurface],
-        targets: &HashMap<u64, PointerTarget>,
+        presentation: &crate::renderer::Presentation,
         sender: &mpsc::Sender<Message>,
     ) -> Option<u32> {
         if self.captured_connection != Some(connection) {
             return None;
         }
         let buttons = self.buttons;
-        self.send(
-            PointerPhase::Cancel,
-            0,
-            0,
-            0,
-            viewer_extent,
-            surfaces,
-            targets,
-            sender,
-        );
+        self.send(PointerPhase::Cancel, 0, 0, 0, presentation, sender);
         self.buttons = 0;
         self.captured_connection = None;
         Some(buttons)
@@ -264,20 +232,38 @@ fn presentation_mapping(frame: FrameReady) -> Option<AffineMapping> {
     })
 }
 
+pub(crate) fn map_pointer(
+    presentation: &crate::renderer::Presentation,
+    point: Point,
+    captured_connection: Option<u64>,
+) -> Option<MappedPointer> {
+    let outside = if captured_connection.is_some() {
+        OutsideBehavior::Clamp
+    } else {
+        OutsideBehavior::Reject
+    };
+    pointer_destination(
+        point,
+        captured_connection,
+        outside,
+        presentation.viewer_extent(),
+        presentation.surfaces(),
+    )
+}
+
 fn pointer_destination(
     point: Point,
     captured_connection: Option<u64>,
     outside: OutsideBehavior,
     viewer_extent: Extent,
     surfaces: &[DisplayedSurface],
-    targets: &HashMap<u64, PointerTarget>,
-) -> Option<PointerDestination> {
+) -> Option<MappedPointer> {
     let order = if surfaces.len() > 1 && surfaces.iter().all(|surface| surface.flip_y) {
         VerticalOrder::BottomToTop
     } else {
         VerticalOrder::TopToBottom
     };
-    let presentation_mappings = presentation_mappings(surfaces, targets, order);
+    let presentation_mappings = presentation_mappings(surfaces, order);
     let layouts = surfaces
         .iter()
         .zip(presentation_mappings)
@@ -322,9 +308,10 @@ fn pointer_destination(
         let position = placement.map_to_presentation(point, outside)?;
         let normalized_position =
             normalized_surface_position(placement.viewer_rect, point, outside)?;
-        Some(PointerDestination {
+        Some(MappedPointer {
             connection: surface.connection,
-            target: *targets.get(&surface.connection)?,
+            surface_id: surface.surface_id,
+            target_window: surface.target_window,
             frame: surface.frame,
             position,
             normalized_position,
@@ -349,7 +336,6 @@ fn normalized_surface_position(
 
 fn presentation_mappings(
     surfaces: &[DisplayedSurface],
-    targets: &HashMap<u64, PointerTarget>,
     order: VerticalOrder,
 ) -> Vec<Option<AffineMapping>> {
     let explicit = surfaces
@@ -373,17 +359,13 @@ fn presentation_mappings(
         first_surface.frame.presentation_width,
         first_surface.frame.presentation_height,
     );
-    let Some(target_window) = targets
-        .get(&first_surface.connection)
-        .map(|target| target.target_window)
-        .filter(|window| *window != 0)
+    let Some(target_window) =
+        (first_surface.target_window != 0).then_some(first_surface.target_window)
     else {
         return letterboxed(explicit);
     };
     let same_target = surfaces.iter().all(|surface| {
-        targets
-            .get(&surface.connection)
-            .is_some_and(|target| target.target_window == target_window)
+        surface.target_window == target_window
             && Extent::new(
                 surface.frame.presentation_width,
                 surface.frame.presentation_height,
@@ -475,31 +457,24 @@ mod tests {
     fn normalized_surface_maps_into_an_offset_presentation_rectangle() {
         let surfaces = [DisplayedSurface {
             connection: 7,
+            surface_id: 99,
+            target_window: 123,
             // The compositor has already applied the configured quarter turn.
             image_extent: Extent::new(400, 240),
             flip_y: false,
             frame: frame(PresentationTransform::axis_aligned(80, 120, 960, 576)),
         }];
-        let targets = HashMap::from([(
-            7,
-            PointerTarget {
-                surface_id: 99,
-                target_window: 123,
-            },
-        )]);
-
         let destination = pointer_destination(
             Point::new(200.0, 420.0),
             None,
             OutsideBehavior::Reject,
             Extent::new(800, 600),
             &surfaces,
-            &targets,
         )
         .expect("point is inside the displayed surface");
 
         assert_eq!(destination.connection, 7);
-        assert_eq!(destination.target.surface_id, 99);
+        assert_eq!(destination.surface_id, 99);
         assert_eq!(destination.frame.frame_number, 42);
         assert_eq!(destination.position, Point::new(320.0, 552.0));
         assert!((destination.normalized_position.x - 200.0 / 799.0).abs() < f64::EPSILON);
@@ -523,18 +498,12 @@ mod tests {
     fn unavailable_presentation_mapping_does_not_route_input() {
         let surfaces = [DisplayedSurface {
             connection: 7,
+            surface_id: 99,
+            target_window: 123,
             image_extent: Extent::new(400, 240),
             flip_y: false,
             frame: frame(PresentationTransform::UNAVAILABLE),
         }];
-        let targets = HashMap::from([(
-            7,
-            PointerTarget {
-                surface_id: 99,
-                target_window: 123,
-            },
-        )]);
-
         assert!(
             pointer_destination(
                 Point::new(200.0, 420.0),
@@ -542,7 +511,6 @@ mod tests {
                 OutsideBehavior::Reject,
                 Extent::new(800, 600),
                 &surfaces,
-                &targets,
             )
             .is_none()
         );
@@ -558,41 +526,27 @@ mod tests {
         let surfaces = [
             DisplayedSurface {
                 connection: 7,
+                surface_id: 99,
+                target_window: 123,
                 image_extent: Extent::new(400, 240),
                 flip_y: false,
                 frame: top,
             },
             DisplayedSurface {
                 connection: 8,
+                surface_id: 100,
+                target_window: 123,
                 image_extent: Extent::new(320, 240),
                 flip_y: false,
                 frame: bottom,
             },
         ];
-        let targets = HashMap::from([
-            (
-                7,
-                PointerTarget {
-                    surface_id: 99,
-                    target_window: 123,
-                },
-            ),
-            (
-                8,
-                PointerTarget {
-                    surface_id: 100,
-                    target_window: 123,
-                },
-            ),
-        ]);
-
         let destination = pointer_destination(
             Point::new(400.0, 720.0),
             None,
             OutsideBehavior::Reject,
             Extent::new(800, 960),
             &surfaces,
-            &targets,
         )
         .expect("point is inside the normalized bottom screen");
 
@@ -613,34 +567,21 @@ mod tests {
         let surfaces = [
             DisplayedSurface {
                 connection: 7,
+                surface_id: 99,
+                target_window: 123,
                 image_extent: Extent::new(400, 240),
                 flip_y: false,
                 frame: top,
             },
             DisplayedSurface {
                 connection: 8,
+                surface_id: 100,
+                target_window: 456,
                 image_extent: Extent::new(320, 240),
                 flip_y: false,
                 frame: bottom,
             },
         ];
-        let targets = HashMap::from([
-            (
-                7,
-                PointerTarget {
-                    surface_id: 99,
-                    target_window: 123,
-                },
-            ),
-            (
-                8,
-                PointerTarget {
-                    surface_id: 100,
-                    target_window: 456,
-                },
-            ),
-        ]);
-
         // The 320x240 bottom screen aspect-fits to 400x300 centered in its
         // 400x480 window, so its top edge sits at presentation y = 90.
         let destination = pointer_destination(
@@ -649,7 +590,6 @@ mod tests {
             OutsideBehavior::Reject,
             Extent::new(800, 960),
             &surfaces,
-            &targets,
         )
         .expect("point is at the top edge of the displayed bottom screen");
         assert_eq!(destination.connection, 8);
@@ -663,7 +603,6 @@ mod tests {
             OutsideBehavior::Reject,
             Extent::new(800, 960),
             &surfaces,
-            &targets,
         )
         .expect("point is inside the displayed top screen");
         assert_eq!(destination.connection, 7);
@@ -674,30 +613,18 @@ mod tests {
     fn button_capture_clamps_moves_until_release() {
         let surfaces = [DisplayedSurface {
             connection: 7,
+            surface_id: 99,
+            target_window: 123,
             image_extent: Extent::new(400, 240),
             flip_y: false,
             frame: frame(PresentationTransform::axis_aligned(80, 120, 960, 576)),
         }];
-        let targets = HashMap::from([(
-            7,
-            PointerTarget {
-                surface_id: 99,
-                target_window: 123,
-            },
-        )]);
+        let presentation =
+            crate::renderer::Presentation::new(Extent::new(800, 600), surfaces.to_vec());
         let (sender, receiver) = mpsc::channel();
         let mut routing = PointerRoutingState::new(Instant::now());
         routing.set_cursor(200.0, 420.0);
-        assert!(routing.send(
-            PointerPhase::ButtonDown,
-            1,
-            0,
-            0,
-            Extent::new(800, 600),
-            &surfaces,
-            &targets,
-            &sender,
-        ));
+        assert!(routing.send(PointerPhase::ButtonDown, 1, 0, 0, &presentation, &sender,));
         let Message::PointerInput(down) = receiver.recv().expect("button event") else {
             panic!("expected pointer input");
         };
@@ -711,31 +638,13 @@ mod tests {
         assert_eq!((sent.coordinate_width, sent.coordinate_height), (1280, 720));
 
         routing.set_cursor(-100.0, -100.0);
-        assert!(routing.send(
-            PointerPhase::Move,
-            0,
-            0,
-            0,
-            Extent::new(800, 600),
-            &surfaces,
-            &targets,
-            &sender,
-        ));
+        assert!(routing.send(PointerPhase::Move, 0, 0, 0, &presentation, &sender,));
         let Message::PointerInput(moved) = receiver.recv().expect("captured move") else {
             panic!("expected pointer input");
         };
         assert_eq!((moved.x, moved.y), (80, 120));
 
-        assert!(routing.send(
-            PointerPhase::ButtonUp,
-            1,
-            0,
-            0,
-            Extent::new(800, 600),
-            &surfaces,
-            &targets,
-            &sender,
-        ));
+        assert!(routing.send(PointerPhase::ButtonUp, 1, 0, 0, &presentation, &sender,));
         let Message::PointerInput(up) = receiver.recv().expect("button release") else {
             panic!("expected pointer input");
         };

@@ -1,9 +1,9 @@
-use super::pointer::{DisplayedSurface, PointerRoutingState, PointerTarget};
+use super::pointer::PointerRoutingState;
+use crate::renderer::Presentation;
 use snowglass_input::gamepad::LatestGamepadMailbox;
-use snowglass_input::mouse::layout::Extent;
 use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -145,13 +145,11 @@ pub(crate) fn spawn_input_ipc(
 pub(crate) fn cancel_pointer_connection(
     connection: u64,
     routing: &mut PointerRoutingState,
-    viewer_extent: Extent,
-    surfaces: &[DisplayedSurface],
-    targets: &HashMap<u64, PointerTarget>,
+    presentation: &Presentation,
     sender: &mpsc::Sender<Message>,
     direct_input: &mut DirectInputForwarder,
 ) {
-    let Some(buttons) = routing.cancel(connection, viewer_extent, surfaces, targets, sender) else {
+    let Some(buttons) = routing.cancel(connection, presentation, sender) else {
         return;
     };
     direct_input.release_mouse_buttons(buttons);

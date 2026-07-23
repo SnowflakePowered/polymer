@@ -2415,7 +2415,8 @@ mod tests {
                         return None;
                     }
                     let families = instance.get_physical_device_queue_family_properties(physical);
-                    let operations = crate::queue_family_video_operations(&instance, physical);
+                    let operations =
+                        crate::renderer::vulkan::queue_family_video_operations(&instance, physical);
                     let graphics = families.iter().position(|family| {
                         family.queue_flags.contains(vk::QueueFlags::GRAPHICS)
                             && family.queue_count >= 2
