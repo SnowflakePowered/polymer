@@ -4,6 +4,7 @@ use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserInput, ParserState,
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser,
 };
+use cssparser_color::Color;
 use snowglass_input::mouse::layout::{Extent, Rect, aspect_fit};
 use taffy::prelude::*;
 
@@ -14,6 +15,7 @@ thread_local! {
 pub(crate) const DEFAULT_CSS: &str = r#"#viewer {
     display: flex;
     flex-direction: column;
+    background-color: #ff00ff;
 }
 
 .render-target {
@@ -47,11 +49,21 @@ pub(crate) fn active_rectangles(
     Some(rectangles)
 }
 
+pub(crate) fn clear_color() -> [f32; 4] {
+    ACTIVE_LAYOUT.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .map_or([1.0, 0.0, 1.0, 1.0], RenderTargetLayout::viewer_background)
+    })
+}
+
 #[derive(Clone, Debug)]
 struct Rule {
     selectors: Vec<String>,
     style: Style,
     properties: Vec<String>,
+    background_color: Option<[f32; 4]>,
 }
 
 /// A cssparser stylesheet whose supported layout declarations are consumed by
@@ -88,13 +100,24 @@ impl RenderTargetLayout {
             let declarations = parse_declarations_with_cssparser(body)?;
             let normalized = declarations
                 .iter()
+                .filter(|(name, _)| name != "background-color")
                 .map(|(name, value)| format!("{name}:{value}"))
                 .collect::<Vec<_>>()
                 .join(";");
             rules.push(Rule {
                 selectors,
                 style: parse_taffy_style(&normalized)?,
-                properties: declarations.iter().map(|(name, _)| name.clone()).collect(),
+                background_color: declarations
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == "background-color")
+                    .map(|(_, value)| parse_color(value))
+                    .transpose()?,
+                properties: declarations
+                    .iter()
+                    .filter(|(name, _)| name != "background-color")
+                    .map(|(name, _)| name.clone())
+                    .collect(),
             });
             rest = &rest[body_end + 1..];
         }
@@ -171,6 +194,22 @@ impl RenderTargetLayout {
     }
 
     fn apply(&self, selectors: &[&str], target: &mut Style) {
+        for (_, _, rule) in self.matching_rules(selectors) {
+            merge_style(target, &rule.style, &rule.properties);
+        }
+    }
+
+    fn viewer_background(&self) -> [f32; 4] {
+        let mut color = [1.0, 0.0, 1.0, 1.0];
+        for (_, _, rule) in self.matching_rules(&["viewer", "#viewer"]) {
+            if let Some(value) = rule.background_color {
+                color = value;
+            }
+        }
+        color
+    }
+
+    fn matching_rules<'a>(&'a self, selectors: &[&str]) -> Vec<(u8, usize, &'a Rule)> {
         let mut matching = self
             .rules
             .iter()
@@ -190,9 +229,7 @@ impl RenderTargetLayout {
             })
             .collect::<Vec<_>>();
         matching.sort_by_key(|(specificity, source_order, _)| (*specificity, *source_order));
-        for (_, _, rule) in matching {
-            merge_style(target, &rule.style, &rule.properties);
-        }
+        matching
     }
 }
 
@@ -301,6 +338,35 @@ fn parse_taffy_style(css: &str) -> Result<Style, String> {
         }
     }
     Ok(style)
+}
+
+fn parse_color(value: &str) -> Result<[f32; 4], String> {
+    let mut input = ParserInput::new(value);
+    let mut input = Parser::new(&mut input);
+    let color = Color::parse(&mut input).map_err(|error| {
+        format!(
+            "invalid `background-color: {value}` at {:?}",
+            error.location
+        )
+    })?;
+    input.expect_exhausted().map_err(|error| {
+        format!(
+            "invalid `background-color: {value}` at {:?}",
+            error.location
+        )
+    })?;
+    let Color::Rgba(color) = color else {
+        return Err(
+            "background-color currently supports named, hexadecimal, rgb(), and rgba() colors"
+                .to_owned(),
+        );
+    };
+    Ok([
+        f32::from(color.red) / 255.0,
+        f32::from(color.green) / 255.0,
+        f32::from(color.blue) / 255.0,
+        color.alpha,
+    ])
 }
 
 fn merge_style(target: &mut Style, source: &Style, properties: &[String]) {
@@ -477,5 +543,28 @@ mod tests {
         assert!(configure(Some("#viewer { flex-direction:")).is_err());
         assert_eq!(active_rectangles(extent, &images, false).unwrap(), before);
         configure(None).unwrap();
+    }
+
+    #[test]
+    fn viewer_background_color_controls_the_clear_color() {
+        configure(Some("#viewer { background-color: #12345680; }")).unwrap();
+        let actual = clear_color();
+        let expected = [
+            f32::from(0x12_u8) / 255.0,
+            f32::from(0x34_u8) / 255.0,
+            f32::from(0x56_u8) / 255.0,
+            f32::from(0x80_u8) / 255.0,
+        ];
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.0001);
+        }
+        configure(None).unwrap();
+    }
+
+    #[test]
+    fn clearing_css_restores_the_default_clear_color() {
+        configure(Some("#viewer { background-color: rgb(0, 128, 255); }")).unwrap();
+        configure(None).unwrap();
+        assert_eq!(clear_color(), [1.0, 0.0, 1.0, 1.0]);
     }
 }

@@ -1313,7 +1313,7 @@ impl DirectCompositor {
                     destination,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &vk::ClearColorValue {
-                        float32: [1.0, 0.0, 1.0, 1.0],
+                        float32: layout::clear_color(),
                     },
                     &[color_range()],
                 );

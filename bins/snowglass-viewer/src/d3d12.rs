@@ -533,6 +533,7 @@ impl D3d12Compositor {
         }
 
         let backbuffer = self.backbuffers[frame_index].clone();
+        let clear_color = crate::layout::clear_color();
         unsafe {
             transition(
                 &self.command_list,
@@ -544,7 +545,7 @@ impl D3d12Compositor {
             self.command_list
                 .OMSetRenderTargets(1, Some(&rtv), false, None);
             self.command_list
-                .ClearRenderTargetView(rtv, &[1.0, 0.0, 1.0, 1.0], None);
+                .ClearRenderTargetView(rtv, &clear_color, None);
             self.command_list
                 .SetGraphicsRootSignature(&self.root_signature);
             self.command_list
