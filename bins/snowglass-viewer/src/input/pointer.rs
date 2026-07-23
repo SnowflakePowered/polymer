@@ -309,12 +309,18 @@ fn pointer_destination(
     })
 }
 
-fn normalized_surface_position(rect: Rect, point: Point, outside: OutsideBehavior) -> Option<Point> {
+fn normalized_surface_position(
+    rect: Rect,
+    point: Point,
+    outside: OutsideBehavior,
+) -> Option<Point> {
     if rect.is_empty() || (outside == OutsideBehavior::Reject && !rect.contains(point)) {
         return None;
     }
-    let x = (point.x - f64::from(rect.x)) / f64::from(rect.width);
-    let y = (point.y - f64::from(rect.y)) / f64::from(rect.height);
+    let x_range = f64::from(rect.width.saturating_sub(1).max(1));
+    let y_range = f64::from(rect.height.saturating_sub(1).max(1));
+    let x = (point.x - f64::from(rect.x)) / x_range;
+    let y = (point.y - f64::from(rect.y)) / y_range;
     Some(Point::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
 }
 
@@ -473,7 +479,21 @@ mod tests {
         assert_eq!(destination.target.surface_id, 99);
         assert_eq!(destination.frame.frame_number, 42);
         assert_eq!(destination.position, Point::new(320.0, 552.0));
-        assert_eq!(destination.normalized_position, Point::new(0.25, 0.75));
+        assert!((destination.normalized_position.x - 200.0 / 799.0).abs() < f64::EPSILON);
+        assert!((destination.normalized_position.y - 360.0 / 479.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn surface_edge_pixels_reach_normalized_axis_endpoints() {
+        let rect = Rect::new(10, 20, 100, 200);
+        assert_eq!(
+            normalized_surface_position(rect, Point::new(10.0, 20.0), OutsideBehavior::Reject),
+            Some(Point::new(0.0, 0.0))
+        );
+        assert_eq!(
+            normalized_surface_position(rect, Point::new(109.0, 219.0), OutsideBehavior::Reject),
+            Some(Point::new(1.0, 1.0))
+        );
     }
 
     #[test]
