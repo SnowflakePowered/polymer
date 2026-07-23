@@ -2008,6 +2008,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .map(|gamepad| SlotConfig {
                     selector: gamepad.selector.clone(),
                     layout_id: gamepad.layout.clone(),
+                    force_mouse: gamepad.force_mouse,
                 })
                 .collect(),
             stone_database: options.stone_db.clone(),
@@ -3011,6 +3012,7 @@ struct GamepadArgument {
     selector: DeviceSelector,
     slot: usize,
     layout: String,
+    force_mouse: bool,
 }
 
 #[derive(Parser)]
@@ -3021,6 +3023,7 @@ struct ViewerArguments {
     api: ViewerApi,
 
     /// Map an SDL device index, exact name, or GUID to a virtual slot and Stone layout.
+    /// Append +M to the selector to force mouse pointer axes instead of its touchpad.
     #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
     gamepads: Vec<GamepadArgument>,
 
@@ -3245,6 +3248,12 @@ impl std::str::FromStr for GamepadArgument {
         if slot > u8::MAX as usize {
             return Err(format!("virtual gamepad slot {slot} is outside 0..=255"));
         }
+        let (selector, force_mouse) = selector
+            .strip_suffix("+M")
+            .map_or((selector, false), |selector| (selector, true));
+        if selector.is_empty() {
+            return Err(format!("missing selector before +M in gamepad mapping '{value}'"));
+        }
         let compact_guid = selector.replace('-', "");
         let selector = if let Ok(index) = selector.parse() {
             DeviceSelector::Index(index)
@@ -3259,6 +3268,7 @@ impl std::str::FromStr for GamepadArgument {
             selector,
             slot,
             layout: layout.to_owned(),
+            force_mouse,
         })
     }
 }
@@ -3313,6 +3323,7 @@ mod argument_tests {
                 selector: DeviceSelector::Index(0),
                 slot: 0,
                 layout: "XBOX_CONTROLLER".to_owned(),
+                force_mouse: false,
             }]
         );
         assert_eq!(options.stone_db, None);
@@ -3340,6 +3351,7 @@ mod argument_tests {
                 selector: DeviceSelector::Name("Nintendo Switch Controller".to_owned()),
                 slot: 0,
                 layout: "SWITCH_PRO_CONTROLLER".to_owned(),
+                force_mouse: false,
             }
         );
         assert!(matches!(
@@ -3351,6 +3363,10 @@ mod argument_tests {
             options.gamecontroller_db,
             Some(PathBuf::from("controllers.txt"))
         );
+        let forced_mouse = "0+M:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
+        assert_eq!(forced_mouse.selector, DeviceSelector::Index(0));
+        assert!(forced_mouse.force_mouse);
+        assert_eq!(forced_mouse.layout, "WII_REMOTE_CONTROLLER");
         assert!(arguments(&["--gamepad", "0:1:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
         assert!(
             arguments(&[

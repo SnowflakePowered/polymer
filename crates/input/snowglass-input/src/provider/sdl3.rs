@@ -8,6 +8,7 @@ use crate::{
     },
 };
 use sdl3::gamepad::{Axis, Button, ButtonLabel, Gamepad};
+use sdl3::event::Event;
 use sdl3::sensor::SensorType;
 use std::{
     collections::HashMap,
@@ -35,6 +36,7 @@ impl Default for ProviderConfig {
             slots: vec![SlotConfig {
                 selector: DeviceSelector::Index(0),
                 layout_id: "XBOX_CONTROLLER".to_owned(),
+                force_mouse: false,
             }],
             stone_database: None,
             gamecontroller_database: None,
@@ -46,6 +48,7 @@ impl Default for ProviderConfig {
 pub struct SlotConfig {
     pub selector: DeviceSelector,
     pub layout_id: String,
+    pub force_mouse: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,6 +208,8 @@ struct Pad {
     layout_id: String,
     mapping: CompiledMapping,
     last: GamepadState,
+    has_touchpad: bool,
+    touchpad_pointer: Option<[i16; 2]>,
 }
 
 #[derive(Clone, Debug)]
@@ -258,7 +263,9 @@ fn run(
         vec![HashMap::<String, InputBinding>::new(); config.slots.len()];
 
     while !stop.load(Ordering::Acquire) {
-        for _ in event_pump.poll_iter() {}
+        for event in event_pump.poll_iter() {
+            update_touchpad_pointer(&mut pads, event);
+        }
         subsystem.update();
 
         while let Ok(command) = commands.try_recv() {
@@ -314,7 +321,17 @@ fn run(
                 snapshots[slot] = None;
                 GamepadState::default()
             };
-            state.pointer = pointer;
+            state.pointer = if config.slots[slot].force_mouse {
+                pointer
+            } else if let Some(pad) = pad {
+                if pad.has_touchpad {
+                    pad.touchpad_pointer.unwrap_or_default()
+                } else {
+                    pointer
+                }
+            } else {
+                pointer
+            };
             if last_published[slot] != Some(state) {
                 sequences[slot] = sequences[slot].wrapping_add(1);
                 last_published[slot] = Some(state);
@@ -412,6 +429,7 @@ fn refresh_devices(
         };
         match subsystem.open(id) {
             Ok(gamepad) => {
+                let has_touchpad = gamepad.touchpads_count() != 0;
                 let layout = registry
                     .layout(&slots[slot].layout_id)
                     .expect("validated slot layout");
@@ -430,12 +448,72 @@ fn refresh_devices(
                     layout_id: slots[slot].layout_id.clone(),
                     mapping,
                     last: state,
+                    has_touchpad,
+                    touchpad_pointer: None,
                 });
                 used.insert(id);
             }
             Err(error) => eprintln!("snowglass: failed to open SDL3 gamepad: {error}"),
         }
     }
+}
+
+fn update_touchpad_pointer(pads: &mut [Option<Pad>], event: Event) {
+    let (which, touchpad, finger, x, y) = match event {
+        Event::ControllerTouchpadDown {
+            which,
+            touchpad,
+            finger,
+            x,
+            y,
+            ..
+        }
+        | Event::ControllerTouchpadMotion {
+            which,
+            touchpad,
+            finger,
+            x,
+            y,
+            ..
+        }
+        | Event::ControllerTouchpadUp {
+            which,
+            touchpad,
+            finger,
+            x,
+            y,
+            ..
+        } => (which, touchpad, finger, x, y),
+        _ => return,
+    };
+    if touchpad != 0 || finger != 0 {
+        return;
+    }
+    let Some(pad) = pads.iter_mut().flatten().find(|pad| {
+        pad.gamepad
+            .id()
+            .is_ok_and(|instance_id| instance_id == which)
+    }) else {
+        return;
+    };
+    pad.touchpad_pointer = normalized_pointer_axes(f64::from(x), f64::from(y));
+}
+
+fn normalized_pointer_axes(x: f64, y: f64) -> Option<[i16; 2]> {
+    fn axis(value: f64) -> Option<i16> {
+        if !value.is_finite() {
+            return None;
+        }
+        let value = value.clamp(0.0, 1.0);
+        let scaled = if value <= 0.5 {
+            value * 65_536.0 - 32_768.0
+        } else {
+            (value - 0.5) * 65_534.0
+        }
+        .round();
+        Some(scaled.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16)
+    }
+    Some([axis(x)?, axis(y)?])
 }
 
 fn select_device(
@@ -937,6 +1015,13 @@ mod tests {
         assert_eq!(trigger(i16::MIN), 0);
         assert_eq!(trigger(0), 0);
         assert_eq!(trigger(i16::MAX), u16::MAX);
+    }
+
+    #[test]
+    fn touchpad_coordinates_fill_pointer_axes() {
+        assert_eq!(normalized_pointer_axes(0.0, 0.0), Some([i16::MIN, i16::MIN]));
+        assert_eq!(normalized_pointer_axes(0.5, 0.5), Some([0, 0]));
+        assert_eq!(normalized_pointer_axes(1.0, 1.0), Some([i16::MAX, i16::MAX]));
     }
 
     #[test]
