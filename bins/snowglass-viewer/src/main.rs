@@ -3142,11 +3142,11 @@ impl TargetChild {
         }
     }
 
-    fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+    fn raw_handle(&self) -> isize {
         use std::os::windows::io::AsRawHandle;
 
         match self {
-            Self::Standard(child) => child.as_raw_handle() as _,
+            Self::Standard(child) => child.as_raw_handle() as isize,
             Self::Isolated(child) => child.raw_handle(),
         }
     }
@@ -3332,13 +3332,8 @@ fn launch_target(
         return Err(error);
     }
     let architecture = process_architecture(process)?;
-    let architecture_dir = layer_dir.join(architecture.executable_suffix());
-    let hook_dir = if architecture_dir.is_dir() {
-        architecture_dir.as_path()
-    } else {
-        layer_dir
-    };
-    let libraries = hook_libraries(hook_dir, hooks, isolate);
+    let artifact_dir = architecture_artifact_dir(layer_dir, architecture);
+    let libraries = hook_libraries(&artifact_dir, hooks, isolate);
     for (name, hook, _) in &libraries {
         if hook.is_file() {
             continue;
@@ -3350,8 +3345,14 @@ fn launch_target(
             format!("{name} hook is missing at {}", hook.display()),
         ));
     }
-    if let Err(error) = run_injector(layer_dir, architecture, process_id, &libraries)
-        .and_then(|()| resume_initial_thread(process_id))
+    if let Err(error) = run_injector(
+        layer_dir,
+        &artifact_dir,
+        architecture,
+        process_id,
+        &libraries,
+    )
+    .and_then(|()| resume_initial_thread(process_id))
     {
         let _ = child.kill();
         let _ = child.wait();
@@ -3362,6 +3363,24 @@ fn launch_target(
         job,
         desktop,
     })
+}
+
+fn architecture_artifact_dir(layer_dir: &Path, architecture: ProcessArchitecture) -> PathBuf {
+    let packaged = layer_dir.join(architecture.executable_suffix());
+    if packaged.is_dir() {
+        return packaged;
+    }
+    let target = match architecture {
+        ProcessArchitecture::X86_64 => "x86_64-pc-windows-msvc",
+        ProcessArchitecture::Arm64 => "aarch64-pc-windows-msvc",
+    };
+    let cargo = layer_dir
+        .parent()
+        .zip(layer_dir.file_name())
+        .map(|(target_dir, profile)| target_dir.join(target).join(profile));
+    cargo
+        .filter(|directory| directory.is_dir())
+        .unwrap_or_else(|| layer_dir.to_path_buf())
 }
 
 fn hook_libraries(
@@ -3440,6 +3459,7 @@ fn hook_libraries(
 
 fn run_injector(
     layer_dir: &Path,
+    artifact_dir: &Path,
     architecture: ProcessArchitecture,
     process_id: ProcessId,
     libraries: &[(&str, PathBuf, &std::ffi::CStr)],
@@ -3451,11 +3471,14 @@ fn run_injector(
     let architecture_local = layer_dir
         .join(architecture.executable_suffix())
         .join("snowglass-injector.exe");
+    let target_local = artifact_dir.join("snowglass-injector.exe");
     let generic = layer_dir.join("snowglass-injector.exe");
     let injector = if suffixed.is_file() {
         suffixed.clone()
     } else if architecture_local.is_file() {
         architecture_local
+    } else if target_local.is_file() {
+        target_local
     } else if generic.is_file()
         && matches!(
             (std::env::consts::ARCH, architecture),
