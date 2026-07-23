@@ -1,7 +1,7 @@
 //! Snowglass control-plane IPC over a Windows AF_UNIX stream socket.
 
 use snowglass_input::{
-    DirectInputData, DirectInputDevice,
+    DirectInputData, DirectInputDevice, RawKeyInput,
     gamepad::{GamepadSlot, GamepadState, GamepadUpdate},
     mouse::{PointerInput, PointerPhase, PointerSource},
 };
@@ -43,6 +43,7 @@ const MESSAGE_GAMEPAD_UPDATE: u32 = 8;
 const MESSAGE_MAP_OFFER: u32 = 9;
 const MESSAGE_FRAME_AVAILABLE: u32 = 10;
 const MESSAGE_MAP_ACCEPTED: u32 = 11;
+const MESSAGE_RAW_KEY_INPUT: u32 = 12;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
@@ -108,6 +109,7 @@ pub enum Message {
     FrameReady(FrameReady),
     Shutdown,
     DirectInputData(DirectInputData),
+    RawKeyInput(RawKeyInput),
     PointerInput(PointerInput),
     GamepadUpdate(GamepadUpdate),
     /// The viewer has imported the stream resources and released its previous stream.
@@ -184,6 +186,19 @@ struct WireDirectInputData {
     device: U32,
     offset: U32,
     data: U32,
+    timestamp: U32,
+    sequence: U32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireRawKeyInput {
+    target_window: I64,
+    virtual_key: U32,
+    scan_code: U16,
+    extended: U16,
+    pressed: U16,
+    repeat: U16,
     timestamp: U32,
     sequence: U32,
 }
@@ -510,6 +525,22 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
+        Message::RawKeyInput(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_RAW_KEY_INPUT,
+                &WireRawKeyInput {
+                    target_window: I64::new(value.target_window),
+                    virtual_key: U32::new(value.virtual_key),
+                    scan_code: U16::new(value.scan_code),
+                    extended: U16::new(value.extended as u16),
+                    pressed: U16::new(value.pressed as u16),
+                    repeat: U16::new(value.repeat as u16),
+                    timestamp: U32::new(value.timestamp),
+                    sequence: U32::new(value.sequence),
+                },
+            );
+        }
         Message::PointerInput(value) => {
             set_payload(
                 &mut wire,
@@ -669,6 +700,24 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 device,
                 offset: value.offset.get(),
                 data: value.data.get(),
+                timestamp: value.timestamp.get(),
+                sequence: value.sequence.get(),
+            }))
+        }
+        MESSAGE_RAW_KEY_INPUT => {
+            let value = payload::<WireRawKeyInput>(wire)?;
+            let flag = |value: u16| match value {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(invalid_data("invalid raw-key boolean")),
+            };
+            Ok(Message::RawKeyInput(RawKeyInput {
+                target_window: value.target_window.get(),
+                virtual_key: value.virtual_key.get(),
+                scan_code: value.scan_code.get(),
+                extended: flag(value.extended.get())?,
+                pressed: flag(value.pressed.get())?,
+                repeat: flag(value.repeat.get())?,
                 timestamp: value.timestamp.get(),
                 sequence: value.sequence.get(),
             }))
@@ -857,6 +906,16 @@ mod tests {
                 data: 0x80,
                 timestamp: 123,
                 sequence: 456,
+            }),
+            Message::RawKeyInput(RawKeyInput {
+                target_window: 8,
+                virtual_key: 0x70,
+                scan_code: 0x3b,
+                extended: false,
+                pressed: true,
+                repeat: false,
+                timestamp: 124,
+                sequence: 457,
             }),
             Message::PointerInput(PointerInput {
                 surface_id: 0x1234,

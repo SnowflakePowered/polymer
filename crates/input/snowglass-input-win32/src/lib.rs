@@ -2,9 +2,14 @@
 
 #![allow(unsafe_code)]
 
-use snowglass_input::mouse::{PointerInput, PointerPhase};
+use snowglass_input::{
+    RawKeyInput,
+    mouse::{PointerInput, PointerPhase},
+};
 use snowglass_ipc::{Message, input::InputSubscriber};
-use snowglass_platform_windows::{NativeWindow, ProcessId, client_size, is_process_window};
+use snowglass_platform_windows::{
+    NativeWindow, ProcessId, client_size, forward_raw_key, is_process_window,
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -45,6 +50,8 @@ pub struct Runtime {
     logged_pointer_receive: AtomicBool,
     logged_pointer_delivery: AtomicBool,
     logged_pointer_rejection: AtomicBool,
+    logged_key_receive: AtomicBool,
+    logged_key_rejection: AtomicBool,
     cursor_position: Mutex<Option<(i32, i32)>>,
     window_messages: WindowMessageForwarder,
     log: Logger,
@@ -58,6 +65,8 @@ impl Runtime {
             logged_pointer_receive: AtomicBool::new(false),
             logged_pointer_delivery: AtomicBool::new(false),
             logged_pointer_rejection: AtomicBool::new(false),
+            logged_key_receive: AtomicBool::new(false),
+            logged_key_rejection: AtomicBool::new(false),
             cursor_position: Mutex::new(None),
             window_messages: WindowMessageForwarder::default(),
             log,
@@ -97,6 +106,7 @@ impl Runtime {
         while let Ok(message) = input.control.receive() {
             match message {
                 Message::PointerInput(event) => self.apply(event),
+                Message::RawKeyInput(event) => self.apply_raw_key(event),
                 Message::Shutdown => break,
                 _ => {}
             }
@@ -131,6 +141,35 @@ impl Runtime {
             (self.log)(&format!(
                 "snowglass: rejected pointer message for hwnd={:#x}; window is missing, invalid, foreign, or has an empty client area",
                 event.target_window,
+            ));
+        }
+    }
+
+    fn apply_raw_key(&self, event: RawKeyInput) {
+        let window = NativeWindow(event.target_window as isize);
+        if event.target_window == 0
+            || !is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
+        {
+            if !self.logged_key_rejection.swap(true, Ordering::AcqRel) {
+                (self.log)(&format!(
+                    "snowglass: rejected raw key for hwnd={:#x}; window is missing, invalid, or foreign",
+                    event.target_window
+                ));
+            }
+            return;
+        }
+        forward_raw_key(
+            window,
+            event.virtual_key,
+            event.scan_code,
+            event.extended,
+            event.pressed,
+            event.repeat,
+        );
+        if !self.logged_key_receive.swap(true, Ordering::AcqRel) {
+            (self.log)(&format!(
+                "snowglass: posted first raw key hwnd={:#x} vk={:#x} scan={:#x} pressed={}",
+                event.target_window, event.virtual_key, event.scan_code, event.pressed
             ));
         }
     }

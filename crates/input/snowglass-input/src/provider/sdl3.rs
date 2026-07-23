@@ -3,15 +3,16 @@
 use crate::{
     gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, LatestGamepadMailbox},
     stone::{
-        EMBEDDED_GAMECONTROLLER_DB, EMBEDDED_STONE_JSON, InputBinding, RemapDatabase, RemapProfile,
-        SdlAxis, SdlButton, StoneLayout, StoneRegistry,
+        EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, EMBEDDED_STONE_JSON,
+        InputBinding, KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
+        StoneLayout, StoneRegistry,
     },
 };
-use sdl3::gamepad::{Axis, Button, ButtonLabel, Gamepad};
 use sdl3::event::Event;
+use sdl3::gamepad::{Axis, Button, ButtonLabel, Gamepad};
 use sdl3::sensor::SensorType;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -28,6 +29,7 @@ pub struct ProviderConfig {
     pub slots: Vec<SlotConfig>,
     pub stone_database: Option<PathBuf>,
     pub gamecontroller_database: Option<PathBuf>,
+    pub keyboard_mapping_directory: Option<PathBuf>,
 }
 
 impl Default for ProviderConfig {
@@ -40,6 +42,7 @@ impl Default for ProviderConfig {
             }],
             stone_database: None,
             gamecontroller_database: None,
+            keyboard_mapping_directory: None,
         }
     }
 }
@@ -53,6 +56,8 @@ pub struct SlotConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeviceSelector {
+    /// Keyboard input tracked by the viewer. Mouse pointing is implied.
+    Keyboard,
     /// Index in SDL's current ordered gamepad enumeration.
     Index(usize),
     /// Exact SDL gamepad name.
@@ -93,6 +98,11 @@ enum ProviderCommand {
     ResetBindings {
         slot: usize,
     },
+    SetKey {
+        key: String,
+        pressed: bool,
+    },
+    ClearKeys,
 }
 
 impl Sdl3Provider {
@@ -167,6 +177,14 @@ impl Sdl3Provider {
             .send(ProviderCommand::ClearBinding { slot, target });
     }
 
+    pub fn set_key(&self, key: String, pressed: bool) {
+        let _ = self.commands.send(ProviderCommand::SetKey { key, pressed });
+    }
+
+    pub fn clear_keys(&self) {
+        let _ = self.commands.send(ProviderCommand::ClearKeys);
+    }
+
     /// Sets the absolute pointer carried by the first virtual gamepad. `None`
     /// neutralizes the axes. Dolphin mappings may bind or ignore these axes.
     pub fn set_pointer(&self, pointer: Option<[i16; 2]>) {
@@ -234,6 +252,79 @@ struct CompiledMapping {
     gyroscope: bool,
 }
 
+#[derive(Clone)]
+struct CompiledKeyboardMapping {
+    bindings: Vec<(String, KeyboardTarget)>,
+}
+
+#[derive(Clone, Copy)]
+enum KeyboardTarget {
+    Button(GamepadButton),
+    Axis { index: usize, direction: i8 },
+    Trigger { index: usize },
+}
+
+impl CompiledKeyboardMapping {
+    fn new(mapping: KeyboardMapping, layout: &StoneLayout) -> Result<Self, String> {
+        let mut bindings = Vec::new();
+        for (element, key) in mapping.bindings {
+            if !layout.has(&element) {
+                continue;
+            }
+            if key.trim().is_empty() {
+                return Err(format!("keyboard binding {element} has an empty key"));
+            }
+            let target = if let Some(button) = stone_button(&element) {
+                KeyboardTarget::Button(button)
+            } else if let Some(index) = stone_axis_index(&element) {
+                if index >= 4 {
+                    KeyboardTarget::Trigger { index }
+                } else {
+                    let positive = element.contains("Positive");
+                    let direction = match (index % 2, positive) {
+                        (1, true) => -1,
+                        (1, false) => 1,
+                        (_, true) => 1,
+                        (_, false) => -1,
+                    };
+                    KeyboardTarget::Axis { index, direction }
+                }
+            } else {
+                continue;
+            };
+            bindings.push((key, target));
+        }
+        Ok(Self { bindings })
+    }
+
+    fn state(&self, pressed: &HashSet<String>) -> GamepadState {
+        let mut state = GamepadState::default();
+        let mut axes = [0i32; 4];
+        for (key, target) in &self.bindings {
+            if !pressed.contains(key) {
+                continue;
+            }
+            match *target {
+                KeyboardTarget::Button(button) => state.buttons |= button.mask(),
+                KeyboardTarget::Axis { index, direction } => {
+                    axes[index] += i32::from(direction);
+                }
+                KeyboardTarget::Trigger { index: 4 } => state.left_trigger = u16::MAX,
+                KeyboardTarget::Trigger { index: 5 } => state.right_trigger = u16::MAX,
+                KeyboardTarget::Trigger { .. } => {}
+            }
+        }
+        let axis = |index: usize| match axes[index].signum() {
+            -1 => i16::MIN,
+            1 => i16::MAX,
+            _ => 0,
+        };
+        state.left_stick = [axis(0), axis(1)];
+        state.right_stick = [axis(2), axis(3)];
+        state
+    }
+}
+
 fn run(
     config: ProviderConfig,
     updates: Arc<LatestGamepadMailbox>,
@@ -252,7 +343,6 @@ fn run(
         }
     };
     let _sdl = sdl;
-    let _ = started.send(Ok(()));
     let mut pads = (0..config.slots.len())
         .map(|_| None)
         .collect::<Vec<Option<Pad>>>();
@@ -261,6 +351,15 @@ fn run(
     let mut next_topology_refresh = Instant::now();
     let mut interactive_remappings =
         vec![HashMap::<String, InputBinding>::new(); config.slots.len()];
+    let keyboard_mappings = match load_keyboard_mappings(&config, &registry) {
+        Ok(mappings) => mappings,
+        Err(error) => {
+            let _ = started.send(Err(error));
+            return;
+        }
+    };
+    let _ = started.send(Ok(()));
+    let mut pressed_keys = HashSet::<String>::new();
 
     while !stop.load(Ordering::Acquire) {
         for event in event_pump.poll_iter() {
@@ -292,6 +391,14 @@ fn run(
                         recompile_pad(slot, &mut pads, &registry, &remappings, bindings);
                     }
                 }
+                ProviderCommand::SetKey { key, pressed } => {
+                    if pressed {
+                        pressed_keys.insert(key);
+                    } else {
+                        pressed_keys.remove(&key);
+                    }
+                }
+                ProviderCommand::ClearKeys => pressed_keys.clear(),
             }
         }
 
@@ -313,7 +420,9 @@ fn run(
             .unwrap_or_else(|error| error.into_inner())
             .unwrap_or_default();
         for (slot, pad) in pads.iter_mut().enumerate() {
-            let mut state = if let Some(pad) = pad {
+            let mut state = if let Some(mapping) = &keyboard_mappings[slot] {
+                mapping.state(&pressed_keys)
+            } else if let Some(pad) = pad {
                 let state = pad.mapping.read(&pad.gamepad);
                 snapshots[slot] = Some(physical_state(pad, state));
                 state
@@ -321,7 +430,9 @@ fn run(
                 snapshots[slot] = None;
                 GamepadState::default()
             };
-            state.pointer = if config.slots[slot].force_mouse {
+            state.pointer = if matches!(config.slots[slot].selector, DeviceSelector::Keyboard)
+                || config.slots[slot].force_mouse
+            {
                 pointer
             } else if let Some(pad) = pad {
                 if pad.has_touchpad {
@@ -332,6 +443,12 @@ fn run(
             } else {
                 pointer
             };
+            if keyboard_mappings[slot].is_some() {
+                snapshots[slot] = Some(keyboard_diagnostic_state(
+                    &config.slots[slot].layout_id,
+                    state,
+                ));
+            }
             if last_published[slot] != Some(state) {
                 sequences[slot] = sequences[slot].wrapping_add(1);
                 last_published[slot] = Some(state);
@@ -523,6 +640,7 @@ fn select_device(
     selector: &DeviceSelector,
 ) -> Option<sdl3::joystick::JoystickId> {
     match selector {
+        DeviceSelector::Keyboard => None,
         DeviceSelector::Index(index) => ids.get(*index).copied().filter(|id| !used.contains(id)),
         DeviceSelector::Name(name) => ids.iter().copied().find(|id| {
             !used.contains(id) && subsystem.name_for_id(*id).ok().as_deref() == Some(name)
@@ -582,6 +700,28 @@ fn physical_state(pad: &Pad, mapped: GamepadState) -> PhysicalGamepadState {
         axes: ALL_AXES
             .into_iter()
             .map(|axis| (axis, pad.gamepad.axis(to_sdl_axis(axis))))
+            .collect(),
+        mapped,
+    }
+}
+
+fn keyboard_diagnostic_state(layout_id: &str, mapped: GamepadState) -> PhysicalGamepadState {
+    let axes = mapped.sdl_axes();
+    PhysicalGamepadState {
+        name: "Keyboard".to_owned(),
+        guid: "keyboard".to_owned(),
+        layout_id: layout_id.to_owned(),
+        buttons: ALL_BUTTONS
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, button)| (button, mapped.buttons & (1 << index) != 0))
+            .collect(),
+        axes: ALL_AXES
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, axis)| (axis, axes[index]))
             .collect(),
         mapped,
     }
@@ -952,6 +1092,47 @@ fn load_stone_registry(path: Option<&Path>) -> Result<StoneRegistry, String> {
     StoneRegistry::from_json(&json)
 }
 
+fn load_keyboard_mappings(
+    config: &ProviderConfig,
+    registry: &StoneRegistry,
+) -> Result<Vec<Option<CompiledKeyboardMapping>>, String> {
+    let directory = config
+        .keyboard_mapping_directory
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let disk_default = directory.join("DEFAULT.kb.toml");
+    let default_toml = if disk_default.is_file() {
+        fs::read_to_string(&disk_default)
+            .map_err(|error| format!("failed to read {}: {error}", disk_default.display()))?
+    } else {
+        EMBEDDED_DEFAULT_KEYBOARD_MAPPING.to_owned()
+    };
+
+    config
+        .slots
+        .iter()
+        .map(|slot| {
+            if !matches!(slot.selector, DeviceSelector::Keyboard) {
+                return Ok(None);
+            }
+            let layout = registry
+                .layout(&slot.layout_id)
+                .expect("slot layout was validated");
+            let controller_path = directory.join(format!("{}.kb.toml", slot.layout_id));
+            let source = if controller_path.is_file() {
+                fs::read_to_string(&controller_path).map_err(|error| {
+                    format!("failed to read {}: {error}", controller_path.display())
+                })?
+            } else {
+                default_toml.clone()
+            };
+            let mapping = KeyboardMapping::from_toml(&source)
+                .map_err(|error| format!("{}: {error}", controller_path.display()))?;
+            CompiledKeyboardMapping::new(mapping, layout).map(Some)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 fn validate_remappings(database: &RemapDatabase, layouts: &[&StoneLayout]) -> Result<(), String> {
     for target in database.bindings.keys() {
@@ -1019,9 +1200,31 @@ mod tests {
 
     #[test]
     fn touchpad_coordinates_fill_pointer_axes() {
-        assert_eq!(normalized_pointer_axes(0.0, 0.0), Some([i16::MIN, i16::MIN]));
+        assert_eq!(
+            normalized_pointer_axes(0.0, 0.0),
+            Some([i16::MIN, i16::MIN])
+        );
         assert_eq!(normalized_pointer_axes(0.5, 0.5), Some([0, 0]));
-        assert_eq!(normalized_pointer_axes(1.0, 1.0), Some([i16::MAX, i16::MAX]));
+        assert_eq!(
+            normalized_pointer_axes(1.0, 1.0),
+            Some([i16::MAX, i16::MAX])
+        );
+    }
+
+    #[test]
+    fn embedded_keyboard_mapping_drives_wii_remote_buttons() {
+        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap();
+        let layout = registry.layout("WII_REMOTE_CONTROLLER").unwrap();
+        let mapping = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
+        let mapping = CompiledKeyboardMapping::new(mapping, layout).unwrap();
+        let pressed = HashSet::from(["KeyX".to_owned(), "ArrowUp".to_owned()]);
+        let state = mapping.state(&pressed);
+        assert_ne!(state.buttons & GamepadButton::A.mask(), 0);
+        assert_ne!(state.buttons & GamepadButton::DpadUp.mask(), 0);
+        let diagnostic = keyboard_diagnostic_state("WII_REMOTE_CONTROLLER", state);
+        assert_eq!(diagnostic.name, "Keyboard");
+        assert_eq!(diagnostic.mapped, state);
+        assert!(diagnostic.buttons.contains(&(SdlButton::South, true)));
     }
 
     #[test]

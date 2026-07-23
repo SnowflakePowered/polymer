@@ -41,6 +41,7 @@ impl LauncherState {
                 .map(|pad| LauncherGamepad {
                     slot: pad.slot,
                     selector: match &pad.selector {
+                        DeviceSelector::Keyboard => "K".to_owned(),
                         DeviceSelector::Index(value) => value.to_string(),
                         DeviceSelector::Name(value) | DeviceSelector::Guid(value) => value.clone(),
                     },

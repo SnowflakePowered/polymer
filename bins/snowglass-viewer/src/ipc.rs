@@ -102,6 +102,7 @@ pub(crate) fn spawn(
                                     Some(snowglass_ipc::frame::FrameSubscriber::from_offer(offer)?);
                             }
                             Message::DirectInputData(_)
+                            | Message::RawKeyInput(_)
                             | Message::PointerInput(_)
                             | Message::GamepadUpdate(_)
                             | Message::Hello(_)

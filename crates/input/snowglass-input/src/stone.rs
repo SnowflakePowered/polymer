@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 pub const EMBEDDED_STONE_JSON: &str = include_str!("../stone/dist/stone.json");
 pub const EMBEDDED_GAMECONTROLLER_DB: &str =
     include_str!("../SDL_GameControllerDB/gamecontrollerdb.txt");
+pub const EMBEDDED_DEFAULT_KEYBOARD_MAPPING: &str = include_str!("../keyboard/DEFAULT.kb.toml");
 
 #[derive(Debug, Deserialize)]
 struct Document {
@@ -260,6 +261,18 @@ pub enum SdlAxis {
     RightTrigger,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct KeyboardMapping {
+    #[serde(default)]
+    pub bindings: HashMap<String, String>,
+}
+
+impl KeyboardMapping {
+    pub fn from_toml(toml: &str) -> Result<Self, String> {
+        toml::from_str(toml).map_err(|error| format!("invalid keyboard mapping TOML: {error}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +313,18 @@ mod tests {
         assert_ne!(switch.axis_mask & (1 << 5), 0); // right trigger
         assert!(switch.accelerometer);
         assert!(switch.gyroscope);
+    }
+
+    #[test]
+    fn parses_embedded_keyboard_mapping() {
+        let mapping = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
+        assert_eq!(
+            mapping.bindings.get("ButtonA").map(String::as_str),
+            Some("KeyX")
+        );
+        assert_eq!(
+            mapping.bindings.get("DirectionalN").map(String::as_str),
+            Some("ArrowUp")
+        );
     }
 }

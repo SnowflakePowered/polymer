@@ -2109,6 +2109,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 WindowEvent::Focused(focused) => {
                     if !focused {
                         pressed_keys.clear();
+                        if let Some(provider) = &gamepad_provider {
+                            provider.clear_keys();
+                        }
                         if let Some(connection) = pointer_routing.captured_connection() {
                             let size = window.inner_size();
                             cancel_pointer_connection(
@@ -2125,6 +2128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
+                        let pressed = event.state == ElementState::Pressed;
                         match event.state {
                             ElementState::Pressed => {
                                 pressed_keys.insert(code);
@@ -2132,6 +2136,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             ElementState::Released => {
                                 pressed_keys.remove(&code);
                             }
+                        }
+                        if let Some(provider) = &gamepad_provider {
+                            provider.set_key(format!("{code:?}"), pressed);
                         }
                     }
                     if let Some(backing) = load_window(&backing_window) {
@@ -2969,6 +2976,7 @@ fn start_target_session(
                 .collect(),
             stone_database: stone_database.map(Path::to_path_buf),
             gamecontroller_database,
+            keyboard_mapping_directory: None,
         },
         mailbox,
     )

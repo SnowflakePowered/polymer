@@ -45,3 +45,65 @@ pub struct DirectInputData {
     pub timestamp: u32,
     pub sequence: u32,
 }
+
+/// One physical keyboard transition to post from inside the target process.
+///
+/// `target_window` is a Win32 `HWND`. The target-side Win32 input runtime
+/// validates that it belongs to the current process before posting the
+/// corresponding `WM_KEYDOWN` or `WM_KEYUP` message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RawKeyInput {
+    pub target_window: i64,
+    pub virtual_key: u32,
+    pub scan_code: u16,
+    pub extended: bool,
+    pub pressed: bool,
+    pub repeat: bool,
+    pub timestamp: u32,
+    pub sequence: u32,
+}
+
+impl RawKeyInput {
+    /// Converts this transition to the equivalent DirectInput keyboard record.
+    ///
+    /// Callers choose the delivery backend by sending either the original raw
+    /// key event or this record over input IPC.
+    pub fn direct_input_data(self) -> DirectInputData {
+        DirectInputData {
+            device: DirectInputDevice::Keyboard,
+            offset: u32::from(self.scan_code) | u32::from(self.extended) * 0x80,
+            data: if self.pressed { 0x80 } else { 0 },
+            timestamp: self.timestamp,
+            sequence: self.sequence,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_key_can_be_projected_to_direct_input() {
+        let key = RawKeyInput {
+            target_window: 123,
+            virtual_key: 0x70,
+            scan_code: 0x3b,
+            extended: true,
+            pressed: true,
+            repeat: false,
+            timestamp: 45,
+            sequence: 67,
+        };
+        assert_eq!(
+            key.direct_input_data(),
+            DirectInputData {
+                device: DirectInputDevice::Keyboard,
+                offset: 0xbb,
+                data: 0x80,
+                timestamp: 45,
+                sequence: 67,
+            }
+        );
+    }
+}

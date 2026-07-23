@@ -42,7 +42,7 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Map an SDL device index, exact name, or GUID to a virtual slot and Stone layout.
+    /// Map an SDL device index, exact name, GUID, or K (keyboard) to a virtual slot and Stone layout.
     /// Append +M to the selector to force mouse pointer axes instead of its touchpad.
     #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
     pub(crate) gamepads: Vec<GamepadArgument>,
@@ -301,7 +301,9 @@ impl std::str::FromStr for GamepadArgument {
             ));
         }
         let compact_guid = selector.replace('-', "");
-        let selector = if let Ok(index) = selector.parse() {
+        let selector = if selector == "K" {
+            DeviceSelector::Keyboard
+        } else if let Ok(index) = selector.parse() {
             DeviceSelector::Index(index)
         } else if compact_guid.len() == 32
             && compact_guid.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -310,6 +312,7 @@ impl std::str::FromStr for GamepadArgument {
         } else {
             DeviceSelector::Name(selector.to_owned())
         };
+        let force_mouse = force_mouse || matches!(selector, DeviceSelector::Keyboard);
         Ok(Self {
             selector,
             slot,
@@ -482,6 +485,9 @@ mod argument_tests {
         assert_eq!(forced_mouse.selector, DeviceSelector::Index(0));
         assert!(forced_mouse.force_mouse);
         assert_eq!(forced_mouse.layout, "WII_REMOTE_CONTROLLER");
+        let keyboard = "K:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
+        assert_eq!(keyboard.selector, DeviceSelector::Keyboard);
+        assert!(keyboard.force_mouse);
         assert!(arguments(&["--gamepad", "0:1:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
         assert!(
             arguments(&[
