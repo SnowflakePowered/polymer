@@ -8,7 +8,7 @@ use snowglass_input::{
 };
 use snowglass_ipc::{Message, input::InputSubscriber};
 use snowglass_platform_windows::{
-    NativeWindow, ProcessId, client_size, forward_raw_key, is_process_window,
+    NativeWindow, ProcessId, client_size, forward_raw_key, is_process_window, resize_client,
 };
 use std::{
     collections::HashMap,
@@ -107,6 +107,7 @@ impl Runtime {
             match message {
                 Message::PointerInput(event) => self.apply(event),
                 Message::RawKeyInput(event) => self.apply_raw_key(event),
+                Message::ResizeWindow(event) => self.apply_resize(event),
                 Message::Shutdown => break,
                 _ => {}
             }
@@ -171,6 +172,20 @@ impl Runtime {
                 "snowglass: posted first raw key hwnd={:#x} vk={:#x} scan={:#x} pressed={}",
                 event.target_window, event.virtual_key, event.scan_code, event.pressed
             ));
+        }
+    }
+
+    fn apply_resize(&self, event: snowglass_protocol::ResizeWindow) {
+        let window = NativeWindow(event.target_window as isize);
+        if event.target_window != 0
+            && is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
+        {
+            if let Err(error) = resize_client(window, event.width, event.height) {
+                (self.log)(&format!(
+                    "snowglass: failed to resize hwnd={:#x} to {}x{}: {error}",
+                    event.target_window, event.width, event.height
+                ));
+            }
         }
     }
 }

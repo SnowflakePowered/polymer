@@ -12,7 +12,7 @@ thread_local! {
     static ACTIVE_LAYOUT: RefCell<Option<RenderTargetLayout>> = const { RefCell::new(None) };
 }
 
-pub(crate) const DEFAULT_CSS: &str = r#"#viewer {
+pub const DEFAULT_CSS: &str = r#"#viewer {
     display: flex;
     flex-direction: column;
     background-color: #ff00ff;
@@ -26,17 +26,13 @@ pub(crate) const DEFAULT_CSS: &str = r#"#viewer {
     min-height: 0px;
 }"#;
 
-pub(crate) fn configure(css: Option<&str>) -> Result<(), String> {
+pub fn configure(css: Option<&str>) -> Result<(), String> {
     let layout = css.map(RenderTargetLayout::parse).transpose()?;
     ACTIVE_LAYOUT.with(|active| *active.borrow_mut() = layout);
     Ok(())
 }
 
-pub(crate) fn active_rectangles(
-    extent: Extent,
-    images: &[Extent],
-    reverse: bool,
-) -> Option<Vec<Rect>> {
+pub fn active_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Option<Vec<Rect>> {
     let mut rectangles = ACTIVE_LAYOUT.with(|active| {
         active
             .borrow()
@@ -49,7 +45,7 @@ pub(crate) fn active_rectangles(
     Some(rectangles)
 }
 
-pub(crate) fn clear_color() -> [f32; 4] {
+pub fn clear_color() -> [f32; 4] {
     ACTIVE_LAYOUT.with(|active| {
         active
             .borrow()

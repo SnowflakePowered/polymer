@@ -6,20 +6,16 @@ license.workspace = true
 
 [dependencies]
 ash.workspace = true
-ash-window.workspace = true
 clap = { version = "4.6.1", features = ["derive"] }
 egui = "0.29.1"
-egui-ash-renderer = "0.6.0"
 egui-winit = "0.29.1"
 log = "0.4"
 cssparser = "0.37"
 cssparser-color = "0.5"
-openh264 = "0.9.7"
 raw-window-handle.workspace = true
 serde_json.workspace = true
 taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "parse"] }
-snowglass-consumer-vulkan = { path = "../../crates/consumer/snowglass-consumer-vulkan" }
-snowglass-consumer-d3d12 = { path = "../../crates/consumer/snowglass-consumer-d3d12" }
+snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-hook.workspace = true
@@ -32,4 +28,3 @@ windows.workspace = true
 windows-sys.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 webrtc = "0.14.0"
-webrtc-ice = "0.14.0"

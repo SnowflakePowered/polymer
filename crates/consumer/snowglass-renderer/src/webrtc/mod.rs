@@ -59,7 +59,7 @@ static NEXT_WHEP_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 mod encoders;
 
-pub(crate) struct VideoFrame {
+pub struct VideoFrame {
     pub(crate) connection: u64,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -230,16 +230,16 @@ impl RuntimeStats {
     }
 }
 
-pub(crate) struct Stats {
-    pub(crate) bitrate_bps: f64,
-    pub(crate) encode_latency_ms: f64,
-    pub(crate) connected_clients: usize,
-    pub(crate) render_targets: usize,
-    pub(crate) encoders: String,
-    pub(crate) codecs: String,
+pub struct Stats {
+    pub bitrate_bps: f64,
+    pub encode_latency_ms: f64,
+    pub connected_clients: usize,
+    pub render_targets: usize,
+    pub encoders: String,
+    pub codecs: String,
 }
 
-pub(crate) struct Publisher {
+pub struct Publisher {
     tracks: Tracks,
     frames: mpsc::SyncSender<VideoFrame>,
     stats: SharedStats,
@@ -247,7 +247,7 @@ pub(crate) struct Publisher {
 }
 
 impl Publisher {
-    pub(crate) fn start(bind: SocketAddr, targets: &[u32]) -> Result<Self, Box<dyn Error>> {
+    pub fn start(bind: SocketAddr, targets: &[u32]) -> Result<Self, Box<dyn Error>> {
         let listener = TcpListener::bind(bind)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -296,7 +296,7 @@ impl Publisher {
         })
     }
 
-    pub(crate) fn add_stream(&self, connection: u64, target_index: u32) {
+    pub fn add_stream(&self, connection: u64, target_index: u32) {
         self.tracks
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -304,7 +304,7 @@ impl Publisher {
             .insert(connection, target_index);
     }
 
-    pub(crate) fn remove_stream(&self, connection: u64) {
+    pub fn remove_stream(&self, connection: u64) {
         self.tracks
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -317,12 +317,12 @@ impl Publisher {
             .remove(&connection);
     }
 
-    pub(crate) fn publish(&self, frame: VideoFrame) {
+    pub fn publish(&self, frame: VideoFrame) {
         // Never stall the render loop behind CPU encoding or a slow peer.
         let _ = self.frames.try_send(frame);
     }
 
-    pub(crate) fn stats(&self) -> Stats {
+    pub fn stats(&self) -> Stats {
         let mut stats = self.stats.lock().unwrap_or_else(|error| error.into_inner());
         stats.refresh();
         let mut encoders = stats

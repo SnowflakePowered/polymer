@@ -9,8 +9,9 @@ use std::{
     ptr,
 };
 
+use super::RenderWindow;
 use egui::{ClippedPrimitive, TextureId, epaint::Primitive};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use raw_window_handle::RawWindowHandle;
 use snowglass_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
 use snowglass_ipc::StreamReady;
 use snowglass_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
@@ -26,7 +27,6 @@ use windows::{
     },
     core::{Interface, PCSTR},
 };
-use winit::window::Window;
 
 const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
@@ -66,7 +66,7 @@ struct ImportedSurface {
     video_completion_value: u64,
 }
 
-pub(crate) struct D3d12Compositor {
+pub struct D3d12Compositor {
     consumer: D3d12ConsumerDevice,
     swapchain: IDXGISwapChain3,
     extent: (u32, u32),
@@ -99,15 +99,15 @@ pub(crate) struct D3d12Compositor {
 }
 
 impl D3d12Compositor {
-    pub(crate) fn new_default(
-        window: &Window,
+    pub fn new_default(
+        window: &impl RenderWindow,
         publish_video: bool,
     ) -> Result<Self, Box<dyn Error>> {
         Self::with_consumer(window, D3d12ConsumerDevice::new_default()?, publish_video)
     }
 
-    pub(crate) fn new(
-        window: &Window,
+    pub fn new(
+        window: &impl RenderWindow,
         adapter: AdapterLuid,
         publish_video: bool,
     ) -> Result<Self, Box<dyn Error>> {
@@ -115,11 +115,11 @@ impl D3d12Compositor {
     }
 
     fn with_consumer(
-        window: &Window,
+        window: &impl RenderWindow,
         consumer: D3d12ConsumerDevice,
         publish_video: bool,
     ) -> Result<Self, Box<dyn Error>> {
-        let size = window.inner_size();
+        let size = window.render_extent();
         let extent = (size.width.max(1), size.height.max(1));
         let hwnd = match window.window_handle()?.as_raw() {
             RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut c_void),
@@ -233,7 +233,7 @@ impl D3d12Compositor {
         }
     }
 
-    pub(crate) fn adapter_luid(&self) -> AdapterLuid {
+    pub fn adapter_luid(&self) -> AdapterLuid {
         self.consumer.adapter_luid()
     }
 
@@ -315,7 +315,7 @@ impl D3d12Compositor {
         }
     }
 
-    pub(crate) fn displayed_surfaces(&self) -> Vec<crate::input::pointer::DisplayedSurface> {
+    pub fn displayed_surfaces(&self) -> Vec<super::DisplayedSurface> {
         self.surfaces
             .iter()
             .filter_map(|surface| {
@@ -331,11 +331,12 @@ impl D3d12Compositor {
                 } else {
                     crate::Extent::new(width, height)
                 };
-                Some(crate::input::pointer::DisplayedSurface {
+                Some(super::DisplayedSurface {
                     connection: surface.connection,
                     surface_id: surface.surface_id,
                     target_window: surface.target_window,
                     image_extent,
+                    quarter_turns: surface.quarter_turns,
                     flip_y: surface.flip_y,
                     frame,
                 })
@@ -390,8 +391,8 @@ impl D3d12Compositor {
         Ok(())
     }
 
-    pub(crate) fn resize(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
-        let size = window.inner_size();
+    pub(crate) fn resize(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>> {
+        let size = window.render_extent();
         if size.width == 0 || size.height == 0 {
             return Ok(false);
         }

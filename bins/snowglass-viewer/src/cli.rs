@@ -18,6 +18,7 @@ pub(crate) struct ViewerOptions {
     pub(crate) surfaces: u32,
     pub(crate) skip_surfaces: u32,
     pub(crate) isolate: bool,
+    pub(crate) resize: bool,
     pub(crate) api: ViewerApi,
     pub(crate) force_keyed_mutex: bool,
     pub(crate) hooks: Vec<HookBackend>,
@@ -132,6 +133,10 @@ struct ViewerArguments {
     #[arg(long, action = ArgAction::SetTrue)]
     no_isolate: bool,
 
+    /// Resize guest windows to their displayed extent. Only applies in isolated mode.
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
+    pub(crate) resize: bool,
+
     /// Force keyed-mutex synchronization for compatible capture backends.
     #[arg(long = "force-km")]
     pub(crate) force_keyed_mutex: bool,
@@ -188,6 +193,7 @@ impl ViewerArguments {
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,
             isolate: !self.no_isolate,
+            resize: self.resize,
             api: self.api,
             force_keyed_mutex: self.force_keyed_mutex,
             hooks,
@@ -602,6 +608,13 @@ mod argument_tests {
     }
 
     #[test]
+    fn resize_is_available_only_with_isolation() -> Result<(), Box<dyn Error>> {
+        assert!(arguments(&["--resize", "--", "game.exe"])?.resize);
+        assert!(arguments(&["--resize", "--no-isolate", "--", "game.exe"]).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn accepts_render_target_indices_and_defaults_to_zero() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             arguments(&["--track-render-targets", "0,1", "--", "game.exe"])?.track_render_targets,
@@ -781,33 +794,33 @@ mod argument_tests {
     #[test]
     fn bottom_up_streams_reverse_vulkan_source_y() {
         assert_eq!(
-            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+            offset_tuples(snowglass_renderer::renderer::vulkan::blit_source_offsets(
                 1280, 720, true, 0,
             )),
             [(0, 720, 0), (1280, 0, 1)]
         );
         assert_eq!(
-            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+            offset_tuples(snowglass_renderer::renderer::vulkan::blit_source_offsets(
                 1280, 720, false, 0,
             )),
             [(0, 0, 0), (1280, 720, 1)]
         );
-        assert_eq!(vertical_layout_index(0, 2, true), 1);
-        assert_eq!(vertical_layout_index(1, 2, true), 0);
-        assert_eq!(vertical_layout_index(0, 2, false), 0);
+        assert_eq!(snowglass_renderer::vertical_layout_index(0, 2, true), 1);
+        assert_eq!(snowglass_renderer::vertical_layout_index(1, 2, true), 0);
+        assert_eq!(snowglass_renderer::vertical_layout_index(0, 2, false), 0);
     }
 
     #[test]
     fn half_turns_mirror_vulkan_blit_source_offsets() {
         assert_eq!(
-            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+            offset_tuples(snowglass_renderer::renderer::vulkan::blit_source_offsets(
                 1280, 720, false, 2,
             )),
             [(1280, 720, 0), (0, 0, 1)]
         );
         // A flipped half turn cancels the vertical mirror.
         assert_eq!(
-            offset_tuples(crate::renderer::vulkan::blit_source_offsets(
+            offset_tuples(snowglass_renderer::renderer::vulkan::blit_source_offsets(
                 1280, 720, true, 2,
             )),
             [(1280, 0, 0), (0, 720, 1)]

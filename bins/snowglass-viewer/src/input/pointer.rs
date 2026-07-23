@@ -7,28 +7,9 @@ use snowglass_input::mouse::{
 };
 use snowglass_ipc::Message;
 use snowglass_protocol::{FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind};
+use snowglass_renderer::{DisplayedSurface, MappedPointer, Presentation};
 use std::{sync::mpsc, time::Instant};
 use winit::event::MouseButton;
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DisplayedSurface {
-    pub(crate) connection: u64,
-    pub(crate) surface_id: u64,
-    pub(crate) target_window: i64,
-    pub(crate) image_extent: Extent,
-    pub(crate) flip_y: bool,
-    pub(crate) frame: FrameReady,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct MappedPointer {
-    pub(crate) connection: u64,
-    pub(crate) surface_id: u64,
-    pub(crate) target_window: i64,
-    pub(crate) frame: FrameReady,
-    pub(crate) position: Point,
-    pub(crate) normalized_position: Point,
-}
 
 #[derive(Clone, Copy)]
 pub(crate) struct PointerSendEvent {
@@ -90,11 +71,11 @@ impl PointerRoutingState {
         button: u32,
         wheel_horizontal: i32,
         wheel_vertical: i32,
-        presentation: &crate::renderer::Presentation,
+        presentation: &Presentation,
         sender: &mpsc::Sender<Message>,
     ) -> bool {
         let captured = self.captured_connection;
-        let Some(destination) = presentation.map_pointer(self.cursor, captured) else {
+        let Some(destination) = map_pointer(presentation, self.cursor, captured) else {
             if phase == PointerPhase::ButtonDown && !self.logged_button_rejection {
                 self.logged_button_rejection = true;
                 let mapped = presentation
@@ -191,7 +172,7 @@ impl PointerRoutingState {
     pub(crate) fn cancel(
         &mut self,
         connection: u64,
-        presentation: &crate::renderer::Presentation,
+        presentation: &Presentation,
         sender: &mpsc::Sender<Message>,
     ) -> Option<u32> {
         if self.captured_connection != Some(connection) {
@@ -233,7 +214,7 @@ fn presentation_mapping(frame: FrameReady) -> Option<AffineMapping> {
 }
 
 pub(crate) fn map_pointer(
-    presentation: &crate::renderer::Presentation,
+    presentation: &Presentation,
     point: Point,
     captured_connection: Option<u64>,
 ) -> Option<MappedPointer> {
@@ -276,7 +257,7 @@ fn pointer_destination(
             presentation_mapping,
         })
         .collect::<Vec<_>>();
-    let placements = if let Some(rectangles) = crate::layout::active_rectangles(
+    let placements = if let Some(rectangles) = snowglass_renderer::layout::active_rectangles(
         viewer_extent,
         &layouts
             .iter()
@@ -461,6 +442,7 @@ mod tests {
             target_window: 123,
             // The compositor has already applied the configured quarter turn.
             image_extent: Extent::new(400, 240),
+            quarter_turns: 0,
             flip_y: false,
             frame: frame(PresentationTransform::axis_aligned(80, 120, 960, 576)),
         }];
@@ -501,6 +483,7 @@ mod tests {
             surface_id: 99,
             target_window: 123,
             image_extent: Extent::new(400, 240),
+            quarter_turns: 0,
             flip_y: false,
             frame: frame(PresentationTransform::UNAVAILABLE),
         }];
@@ -529,6 +512,7 @@ mod tests {
                 surface_id: 99,
                 target_window: 123,
                 image_extent: Extent::new(400, 240),
+                quarter_turns: 0,
                 flip_y: false,
                 frame: top,
             },
@@ -537,6 +521,7 @@ mod tests {
                 surface_id: 100,
                 target_window: 123,
                 image_extent: Extent::new(320, 240),
+                quarter_turns: 0,
                 flip_y: false,
                 frame: bottom,
             },
@@ -570,6 +555,7 @@ mod tests {
                 surface_id: 99,
                 target_window: 123,
                 image_extent: Extent::new(400, 240),
+                quarter_turns: 0,
                 flip_y: false,
                 frame: top,
             },
@@ -578,6 +564,7 @@ mod tests {
                 surface_id: 100,
                 target_window: 456,
                 image_extent: Extent::new(320, 240),
+                quarter_turns: 0,
                 flip_y: false,
                 frame: bottom,
             },
@@ -616,11 +603,11 @@ mod tests {
             surface_id: 99,
             target_window: 123,
             image_extent: Extent::new(400, 240),
+            quarter_turns: 0,
             flip_y: false,
             frame: frame(PresentationTransform::axis_aligned(80, 120, 960, 576)),
         }];
-        let presentation =
-            crate::renderer::Presentation::new(Extent::new(800, 600), surfaces.to_vec());
+        let presentation = Presentation::new(Extent::new(800, 600), surfaces.to_vec());
         let (sender, receiver) = mpsc::channel();
         let mut routing = PointerRoutingState::new(Instant::now());
         routing.set_cursor(200.0, 420.0);

@@ -43,15 +43,15 @@ pub(crate) fn draw_layout_css_window(
                 .changed();
             if changed {
                 if css.trim().is_empty() {
-                    crate::layout::DEFAULT_CSS.clone_into(css);
+                    snowglass_renderer::layout::DEFAULT_CSS.clone_into(css);
                 }
-                let result = crate::layout::configure(Some(css));
+                let result = snowglass_renderer::layout::configure(Some(css));
                 *error = result.err();
             }
             ui.horizontal(|ui| {
                 if ui.button("Reset to default").clicked() {
-                    crate::layout::DEFAULT_CSS.clone_into(css);
-                    *error = crate::layout::configure(Some(css)).err();
+                    snowglass_renderer::layout::DEFAULT_CSS.clone_into(css);
+                    *error = snowglass_renderer::layout::configure(Some(css)).err();
                 }
                 if error.is_none() {
                     ui.colored_label(egui::Color32::LIGHT_GREEN, "Applied");

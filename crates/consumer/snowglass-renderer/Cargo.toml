@@ -1,0 +1,32 @@
+[package]
+name = "snowglass-renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ash.workspace = true
+ash-window.workspace = true
+cssparser = "0.37"
+cssparser-color = "0.5"
+egui = "0.29.1"
+egui-ash-renderer = "0.6.0"
+log = "0.4"
+openh264 = "0.9.7"
+raw-window-handle.workspace = true
+serde_json.workspace = true
+snowglass-consumer-d3d12 = { path = "../snowglass-consumer-d3d12" }
+snowglass-consumer-vulkan = { path = "../snowglass-consumer-vulkan" }
+snowglass-input.workspace = true
+snowglass-ipc.workspace = true
+snowglass-protocol.workspace = true
+taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "parse"] }
+tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
+webrtc = "0.14.0"
+webrtc-ice = "0.14.0"
+windows.workspace = true
+windows-sys.workspace = true
+winit = "0.30.13"
+
+[lints]
+workspace = true

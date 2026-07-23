@@ -44,9 +44,6 @@ mod cli;
 mod gui;
 mod input;
 mod ipc;
-mod layout;
-mod renderer;
-mod webrtc;
 
 use cli::{
     GamepadArgument, TrackedRenderTarget, ViewerOptions, parse_target, split_command_arguments,
@@ -56,7 +53,9 @@ use gui::{
     draw_statistics_graph,
 };
 use ipc::{CaptureEvent, UiRequest};
-use renderer::{D3d12Compositor, Presentation, Renderer, VulkanCompositor};
+use snowglass_renderer::{
+    D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor, layout, webrtc,
+};
 
 use input::{
     dinput::{
@@ -341,56 +340,6 @@ fn graph_surface_index(surface_id: u64) -> Option<u32> {
         .and_then(|index| u32::try_from(index).ok())
 }
 
-fn surface_sort_key(surface_id: u64) -> (u8, u64) {
-    graph_surface_index(surface_id).map_or((1, surface_id), |index| (0, u64::from(index)))
-}
-
-fn fit_extent(
-    source_width: u32,
-    source_height: u32,
-    target_width: u32,
-    target_height: u32,
-) -> (i32, i32, i32, i32) {
-    let scale = (target_width as f64 / source_width as f64)
-        .min(target_height as f64 / source_height as f64);
-    let width = (source_width as f64 * scale).round() as i32;
-    let height = (source_height as f64 * scale).round() as i32;
-    (
-        ((target_width as i32 - width) / 2),
-        ((target_height as i32 - height) / 2),
-        width,
-        height,
-    )
-}
-
-fn fit_inside(
-    source_width: u32,
-    source_height: u32,
-    bounds_width: u32,
-    bounds_height: u32,
-) -> (u32, u32) {
-    if source_width <= bounds_width && source_height <= bounds_height {
-        return (source_width.max(1), source_height.max(1));
-    }
-    let scale = (bounds_width as f64 / source_width.max(1) as f64)
-        .min(bounds_height as f64 / source_height.max(1) as f64);
-    (
-        (source_width as f64 * scale).floor().max(1.0) as u32,
-        (source_height as f64 * scale).floor().max(1.0) as u32,
-    )
-}
-
-/// Source offsets for a compositing blit. Mirrored blits express vertical
-/// flips and half turns; quarter turns transpose through the rotation compute
-/// pass instead and pass zero turns here.
-fn vertical_layout_index(index: u32, count: u32, flip_y: bool) -> u32 {
-    if flip_y {
-        count.saturating_sub(index + 1)
-    } else {
-        index
-    }
-}
-
 impl ViewerCompositor {
     fn new(window: &Window, api: ViewerApi, publish_video: bool) -> Result<Self, Box<dyn Error>> {
         match api {
@@ -485,6 +434,14 @@ impl ViewerCompositor {
         }
     }
 
+    fn resize_windows(&self, window: &impl RenderWindow) -> Vec<snowglass_protocol::ResizeWindow> {
+        match self {
+            Self::Vulkan(value) => Renderer::resize_windows(value.as_ref(), window),
+            Self::D3d12(value) => Renderer::resize_windows(value.as_ref(), window),
+            Self::Empty => Vec::new(),
+        }
+    }
+
     fn has_pending_frame(&self) -> bool {
         match self {
             Self::Vulkan(value) => Renderer::has_pending_frame(value.as_ref()),
@@ -566,6 +523,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let mut remaining_surface_skips = options.skip_surfaces;
     let viewer_api = options.api;
+    let resize_guest = options.resize;
     let webrtc = webrtc_targets
         .as_ref()
         .map(|targets| webrtc::Publisher::start(options.bind_webrtc, targets))
@@ -680,9 +638,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut direct_input = DirectInputForwarder::new(input_tx.clone());
         let mut pressed_keys = HashSet::<KeyCode>::new();
         let mut pending_ui = VecDeque::<UiRequest>::new();
+        let mut last_resize_windows = Vec::new();
 
         Ok(Box::new(move |event, target| match event {
-        Event::AboutToWait => window.request_redraw(),
+        Event::AboutToWait => {
+            if resize_guest && launcher.isolate {
+                let resize_windows = compositor.resize_windows(&window);
+                if resize_windows != last_resize_windows {
+                    for resize in &resize_windows {
+                        let _ = input_tx.send(snowglass_ipc::Message::ResizeWindow(*resize));
+                    }
+                    last_resize_windows = resize_windows;
+                }
+            }
+            window.request_redraw();
+        }
         Event::WindowEvent { event, .. } => {
             let response = egui_state.on_window_event(&window, &event);
             if response.repaint {

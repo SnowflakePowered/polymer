@@ -150,6 +150,7 @@ pub(crate) fn spawn(
                             }
                             Message::DirectInputData(_)
                             | Message::RawKeyInput(_)
+                            | Message::ResizeWindow(_)
                             | Message::PointerInput(_)
                             | Message::GamepadUpdate(_)
                             | Message::Hello(_)

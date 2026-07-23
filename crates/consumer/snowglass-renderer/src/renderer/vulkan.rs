@@ -1,15 +1,14 @@
+use super::RenderWindow;
 use ash::{Entry, vk};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_input::mouse::layout::Extent;
 use snowglass_ipc::StreamReady;
 use snowglass_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use std::error::Error;
-use winit::window::Window;
 
 use crate::{
-    fit_extent, fit_inside, input::pointer::DisplayedSurface, layout, surface_sort_key,
+    fit_extent, fit_inside, layout, renderer::DisplayedSurface, surface_sort_key,
     vertical_layout_index, webrtc,
 };
 
@@ -58,7 +57,7 @@ struct VulkanVideoReadback {
     pending: Option<FrameReady>,
 }
 
-pub(crate) struct VulkanCompositor {
+pub struct VulkanCompositor {
     _entry: Entry,
     instance: ash::Instance,
     surface_loader: ash::khr::surface::Instance,
@@ -98,8 +97,8 @@ pub(crate) struct VulkanCompositor {
 }
 
 impl VulkanCompositor {
-    pub(crate) fn new(
-        window: &Window,
+    pub fn new(
+        window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
         enable_keyed_mutex: bool,
         publish_video: bool,
@@ -278,7 +277,7 @@ impl VulkanCompositor {
                     format: vk::Format::B8G8R8A8_UNORM,
                     color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
                 });
-            let requested = window.inner_size();
+            let requested = window.render_extent();
             let extent = if capabilities.current_extent.width != u32::MAX {
                 capabilities.current_extent
             } else {
@@ -601,11 +600,11 @@ impl VulkanCompositor {
         Ok(())
     }
 
-    pub(crate) fn matches_adapter(&self, adapter: AdapterLuid) -> bool {
+    pub fn matches_adapter(&self, adapter: AdapterLuid) -> bool {
         physical_device_matches_luid(&self.instance, self.physical_device, adapter)
     }
 
-    pub(crate) fn keyed_mutex_enabled(&self) -> bool {
+    pub fn keyed_mutex_enabled(&self) -> bool {
         self.keyed_mutex_enabled
     }
 
@@ -640,6 +639,7 @@ impl VulkanCompositor {
                     surface_id: surface.surface_id,
                     target_window: surface.target_window,
                     image_extent,
+                    quarter_turns: surface.quarter_turns,
                     flip_y: surface.flip_y,
                     frame,
                 })
@@ -722,8 +722,11 @@ impl VulkanCompositor {
         Ok(())
     }
 
-    pub(crate) fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
-        let requested = window.inner_size();
+    pub(crate) fn recreate_swapchain(
+        &mut self,
+        window: &impl RenderWindow,
+    ) -> Result<bool, Box<dyn Error>> {
+        let requested = window.render_extent();
         if requested.width == 0 || requested.height == 0 {
             return Ok(false);
         }
@@ -1993,7 +1996,7 @@ fn color_layers() -> vk::ImageSubresourceLayers {
     }
 }
 
-pub(crate) fn blit_source_offsets(
+pub fn blit_source_offsets(
     width: u32,
     height: u32,
     flip_y: bool,

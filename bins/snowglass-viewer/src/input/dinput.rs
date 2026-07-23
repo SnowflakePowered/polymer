@@ -1,7 +1,7 @@
 use super::pointer::PointerRoutingState;
-use crate::renderer::Presentation;
 use snowglass_input::gamepad::LatestGamepadMailbox;
 use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
+use snowglass_renderer::Presentation;
 use std::{
     collections::VecDeque,
     sync::{
