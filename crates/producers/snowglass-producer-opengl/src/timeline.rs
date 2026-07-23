@@ -1,8 +1,11 @@
 //! Imported D3D12 fence timelines used to coordinate the image ring.
 
 use crate::interop::{
-    GL_D3D12_FENCE_VALUE_EXT, GL_HANDLE_TYPE_D3D12_FENCE_EXT, GL_LAYOUT_GENERAL_EXT, GlFunctions,
     Gluint,
+    memory_object_win32::{
+        GL_D3D12_FENCE_VALUE_EXT, GL_HANDLE_TYPE_D3D12_FENCE_EXT, GL_LAYOUT_GENERAL_EXT,
+        GlFunctions,
+    },
 };
 use windows::Win32::{
     Foundation::{CloseHandle, GENERIC_ALL, HANDLE},

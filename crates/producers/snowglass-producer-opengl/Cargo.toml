@@ -10,4 +10,5 @@ snowglass-hook.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
+snowglass-producer-d3d11 = { path = "../snowglass-producer-d3d11" }
 windows.workspace = true

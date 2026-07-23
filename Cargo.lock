@@ -3552,6 +3552,7 @@ dependencies = [
  "snowglass-hook",
  "snowglass-ipc",
  "snowglass-platform-windows",
+ "snowglass-producer-d3d11",
  "snowglass-protocol",
  "windows 0.61.3",
 ]

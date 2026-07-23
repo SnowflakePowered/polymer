@@ -2,11 +2,12 @@
 
 use crate::{
     interop::{
-        ExternalImage, GL_COLOR_ATTACHMENT0, GL_COLOR_BUFFER_BIT, GL_DEVICE_LUID_EXT,
-        GL_DRAW_FRAMEBUFFER, GL_DRAW_FRAMEBUFFER_BINDING, GL_NEAREST, GL_READ_FRAMEBUFFER,
-        GL_READ_FRAMEBUFFER_BINDING, GL_SCISSOR_TEST, GL_TEXTURE_2D, GL_TEXTURE_2D_ARRAY,
-        GlFunctions, Hdc, create_device, create_image, current_context, destroy_image, glDisable,
+        GL_COLOR_ATTACHMENT0, GL_COLOR_BUFFER_BIT, GL_DRAW_FRAMEBUFFER,
+        GL_DRAW_FRAMEBUFFER_BINDING, GL_NEAREST, GL_READ_FRAMEBUFFER, GL_READ_FRAMEBUFFER_BINDING,
+        GL_SCISSOR_TEST, GL_TEXTURE_2D, GL_TEXTURE_2D_ARRAY, Hdc, current_context, glDisable,
         glEnable, glGetIntegerv, glIsEnabled,
+        memory_object_win32::{ExternalImage, GL_DEVICE_LUID_EXT, GlFunctions},
+        nv_dx,
     },
     log,
     timeline::Timeline,
@@ -55,7 +56,7 @@ struct ImageSlot {
 
 unsafe impl Send for ImageSlot {}
 
-struct Capture {
+struct ExtCapture {
     width: u32,
     height: u32,
     window_width: u32,
@@ -80,7 +81,142 @@ struct Capture {
     deferred_frames: u64,
 }
 
-unsafe impl Send for Capture {}
+unsafe impl Send for ExtCapture {}
+
+enum Capture {
+    Ext(ExtCapture),
+    Nv(NvCapture),
+}
+
+impl Capture {
+    #[expect(clippy::too_many_arguments)]
+    unsafe fn new(
+        surface_id: SurfaceId,
+        source_window: isize,
+        width: u32,
+        height: u32,
+        window_width: u32,
+        window_height: u32,
+        bottom_up: bool,
+    ) -> Result<Self, String> {
+        if unsafe { GlFunctions::load() }.is_some() {
+            return unsafe {
+                ExtCapture::new(
+                    surface_id,
+                    source_window,
+                    width,
+                    height,
+                    window_width,
+                    window_height,
+                    bottom_up,
+                )
+            }
+            .map(Self::Ext);
+        }
+        unsafe {
+            NvCapture::new(
+                surface_id,
+                source_window,
+                width,
+                height,
+                window_width,
+                window_height,
+                bottom_up,
+            )
+        }
+        .map(Self::Nv)
+    }
+    fn width(&self) -> u32 {
+        match self {
+            Self::Ext(v) => v.width,
+            Self::Nv(v) => v.width,
+        }
+    }
+    fn height(&self) -> u32 {
+        match self {
+            Self::Ext(v) => v.height,
+            Self::Nv(v) => v.height,
+        }
+    }
+    fn surface_id(&self) -> SurfaceId {
+        match self {
+            Self::Ext(v) => v.surface_id,
+            Self::Nv(v) => v.surface_id,
+        }
+    }
+    fn set_window_extent(&mut self, width: u32, height: u32) {
+        match self {
+            Self::Ext(v) => {
+                v.window_width = width;
+                v.window_height = height;
+            }
+            Self::Nv(v) => {
+                v.window_width = width;
+                v.window_height = height;
+            }
+        }
+    }
+    fn tick(&mut self) {
+        match self {
+            Self::Ext(v) => v.presents += 1,
+            Self::Nv(v) => v.presents += 1,
+        }
+    }
+    fn should_reconnect(&self) -> bool {
+        match self {
+            Self::Ext(v) => v.ipc.is_none() && v.presents.is_multiple_of(120),
+            Self::Nv(v) => v.ipc.is_none() && v.presents.is_multiple_of(120),
+        }
+    }
+    fn reconnect(&mut self) {
+        match self {
+            Self::Ext(v) => v.reconnect(),
+            Self::Nv(v) => v.reconnect(),
+        }
+    }
+    unsafe fn copy_frame(
+        &mut self,
+        stream: StreamId,
+        source: Option<&DrawCandidate>,
+    ) -> Result<(), String> {
+        match self {
+            Self::Ext(v) => unsafe { v.copy_frame(stream, source) },
+            Self::Nv(v) => unsafe { v.copy_frame(stream, source) },
+        }
+    }
+    fn defer(&mut self) -> u64 {
+        match self {
+            Self::Ext(v) => {
+                v.deferred_frames = v.deferred_frames.wrapping_add(1);
+                v.deferred_frames
+            }
+            Self::Nv(v) => {
+                v.deferred_frames = v.deferred_frames.wrapping_add(1);
+                v.deferred_frames
+            }
+        }
+    }
+}
+
+struct NvCapture {
+    width: u32,
+    height: u32,
+    window_width: u32,
+    window_height: u32,
+    framebuffer: u32,
+    read_framebuffer: u32,
+    transport: nv_dx::Ring,
+    ipc: Option<LocalSocket>,
+    surface_id: SurfaceId,
+    source_window: isize,
+    bottom_up: bool,
+    next_slot: usize,
+    frame_number: u64,
+    presents: u64,
+    deferred_frames: u64,
+}
+
+unsafe impl Send for NvCapture {}
 
 #[derive(Default)]
 struct WindowCaptures {
@@ -308,7 +444,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     let current = entry
         .streams
         .iter()
-        .map(|capture| (capture.width, capture.height))
+        .map(|capture| (capture.width(), capture.height()))
         .collect::<Vec<_>>();
     let tracked_layout =
         current.len() > 1 || current.first().is_some_and(|first| *first != window_extent);
@@ -325,7 +461,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     let held = entry
         .streams
         .iter()
-        .map(|capture| (capture.width, capture.height, capture.surface_id))
+        .map(|capture| (capture.width(), capture.height(), capture.surface_id()))
         .collect::<Vec<_>>();
     let desired = if !proposed.is_empty() {
         entry.untracked_frames = 0;
@@ -381,14 +517,13 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     }
     for (index, &(width, height, surface)) in desired.iter().enumerate() {
         let up_to_date = entry.streams.get(index).is_some_and(|capture| {
-            (capture.width, capture.height, capture.surface_id) == (width, height, surface)
+            (capture.width(), capture.height(), capture.surface_id()) == (width, height, surface)
         });
         if up_to_date {
             // Window geometry travels per frame; a resize must not rebuild
             // the transport, only refresh the presentation metadata.
             let capture = &mut entry.streams[index];
-            capture.window_width = window_width;
-            capture.window_height = window_height;
+            capture.set_window_extent(window_width, window_height);
             continue;
         }
         // The whole-window fallback reads the bottom-up default framebuffer;
@@ -414,7 +549,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             }
             Err(error) => {
                 log(format!(
-                    "snowglass: OpenGL EXT capture creation failed: {error}"
+                    "snowglass: OpenGL capture creation failed: {error}"
                 ));
                 return;
             }
@@ -425,10 +560,10 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     // and let unmatched streams idle a frame.
     let mut source_used = vec![false; chosen.len()];
     for (index, capture) in entry.streams.iter_mut().enumerate() {
-        capture.presents += 1;
+        capture.tick();
         // A stream can be rejected while the viewer's surfaces are
         // transiently full; retry the connection periodically.
-        if capture.ipc.is_none() && capture.presents.is_multiple_of(120) {
+        if capture.should_reconnect() {
             capture.reconnect();
         }
         let source = chosen
@@ -436,7 +571,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             .enumerate()
             .find_map(|(source_index, (_, source))| {
                 (!source_used[source_index]
-                    && (source.width, source.height) == (capture.width, capture.height))
+                    && (source.width, source.height) == (capture.width(), capture.height()))
                     .then_some(source_index)
             });
         if let Some(source_index) = source {
@@ -445,23 +580,250 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         let source = source.map(|source_index| &chosen[source_index].1);
         // During a selection gap a tracked stream has no source this frame;
         // the whole-window fallback only makes sense at window extent.
-        if source.is_none() && (capture.width, capture.height) != window_extent {
+        if source.is_none() && (capture.width(), capture.height()) != window_extent {
             continue;
         }
         let stream_id = StreamId((key.1 as u64) ^ ((index as u64) << 56));
         if let Err(error) = unsafe { capture.copy_frame(stream_id, source) } {
-            capture.deferred_frames = capture.deferred_frames.wrapping_add(1);
-            if capture.deferred_frames == 1 || capture.deferred_frames % 600 == 0 {
+            let deferred = capture.defer();
+            if deferred == 1 || deferred % 600 == 0 {
                 log(format!(
-                    "snowglass: OpenGL EXT capture deferred: {error} (count={})",
-                    capture.deferred_frames
+                    "snowglass: OpenGL capture deferred: {error} (count={})",
+                    deferred
                 ));
             }
         }
     }
 }
 
-impl Capture {
+impl NvCapture {
+    #[expect(clippy::too_many_arguments)]
+    unsafe fn new(
+        surface_id: SurfaceId,
+        source_window: isize,
+        width: u32,
+        height: u32,
+        window_width: u32,
+        window_height: u32,
+        bottom_up: bool,
+    ) -> Result<Self, String> {
+        let transport = unsafe { nv_dx::Ring::new(width, height) }?;
+        let mut framebuffer = 0;
+        let mut read_framebuffer = 0;
+        unsafe {
+            (transport.functions.gen_framebuffers)(1, &mut framebuffer);
+            (transport.functions.gen_framebuffers)(1, &mut read_framebuffer);
+        }
+        let ipc = connect_nv_viewer(
+            &transport,
+            surface_id,
+            source_window,
+            width,
+            height,
+            bottom_up,
+        )
+        .map_err(|error| {
+            log(format!(
+                "snowglass: OpenGL NV viewer connection failed: {error}"
+            ));
+            error
+        })
+        .ok();
+        log(format!(
+            "snowglass: attached WGL_NV_DX_interop ring {width}x{height} (surface {:#x})",
+            surface_id.0
+        ));
+        Ok(Self {
+            width,
+            height,
+            window_width,
+            window_height,
+            framebuffer,
+            read_framebuffer,
+            transport,
+            ipc,
+            surface_id,
+            source_window,
+            bottom_up,
+            next_slot: 0,
+            frame_number: 0,
+            presents: 0,
+            deferred_frames: 0,
+        })
+    }
+
+    fn reconnect(&mut self) {
+        if let Ok(socket) = connect_nv_viewer(
+            &self.transport,
+            self.surface_id,
+            self.source_window,
+            self.width,
+            self.height,
+            self.bottom_up,
+        ) {
+            self.ipc = Some(socket);
+        }
+    }
+
+    unsafe fn copy_frame(
+        &mut self,
+        stream_id: StreamId,
+        source: Option<&DrawCandidate>,
+    ) -> Result<(), String> {
+        let count = self.transport.slots.len();
+        let mut acquired = None;
+        for offset in 0..count {
+            let index = (self.next_slot + offset) % count;
+            if unsafe { self.transport.acquire(index) }.is_ok() {
+                acquired = Some(index);
+                break;
+            }
+        }
+        let slot_index = acquired.ok_or("all NV interop slots are awaiting the viewer")?;
+        let slot = &self.transport.slots[slot_index];
+        let f = self.transport.functions;
+        let mut old_read = 0;
+        let mut old_draw = 0;
+        let scissor_enabled = unsafe { glIsEnabled(GL_SCISSOR_TEST) } != 0;
+        unsafe {
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &mut old_read);
+            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &mut old_draw);
+            (f.bind_framebuffer)(
+                GL_READ_FRAMEBUFFER,
+                if source.is_some() {
+                    self.read_framebuffer
+                } else {
+                    0
+                },
+            );
+            (f.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, self.framebuffer);
+            (f.framebuffer_texture_2d)(
+                GL_DRAW_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                slot.texture,
+                0,
+            );
+            if scissor_enabled {
+                glDisable(GL_SCISSOR_TEST);
+            }
+            if let Some(source) = source {
+                if source.target == GL_TEXTURE_2D_ARRAY {
+                    (f.framebuffer_texture_layer)(
+                        GL_READ_FRAMEBUFFER,
+                        GL_COLOR_ATTACHMENT0,
+                        source.texture,
+                        0,
+                        source.layer,
+                    );
+                } else {
+                    (f.framebuffer_texture_2d)(
+                        GL_READ_FRAMEBUFFER,
+                        GL_COLOR_ATTACHMENT0,
+                        source.target,
+                        source.texture,
+                        0,
+                    );
+                }
+                (f.blit_framebuffer)(
+                    0,
+                    0,
+                    source.width as i32,
+                    source.height as i32,
+                    0,
+                    0,
+                    source.width as i32,
+                    self.height as i32,
+                    GL_COLOR_BUFFER_BIT,
+                    GL_NEAREST,
+                );
+            } else {
+                (f.blit_framebuffer)(
+                    0,
+                    0,
+                    self.width as i32,
+                    self.height as i32,
+                    0,
+                    0,
+                    self.width as i32,
+                    self.height as i32,
+                    GL_COLOR_BUFFER_BIT,
+                    GL_NEAREST,
+                );
+            }
+            if scissor_enabled {
+                glEnable(GL_SCISSOR_TEST);
+            }
+            (f.bind_framebuffer)(GL_READ_FRAMEBUFFER, old_read as u32);
+            (f.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, old_draw as u32);
+        }
+        unsafe { self.transport.release(slot_index) }?;
+        self.next_slot = (slot_index + 1) % count;
+        self.frame_number = self.frame_number.wrapping_add(1);
+        let bounds = frame_bounds(source, self.window_width, self.window_height);
+        let message = Message::FrameReady(FrameReady {
+            stream_id,
+            slot: slot_index as u32,
+            render_width: self.width,
+            render_height: self.height,
+            capture_x: bounds.x,
+            capture_y: bounds.y,
+            capture_width: bounds.width,
+            capture_height: bounds.height,
+            presentation_width: self.window_width,
+            presentation_height: self.window_height,
+            presentation_transform: PresentationTransform::axis_aligned(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            ),
+            frame_number: self.frame_number,
+            sync_value: self.frame_number,
+            timestamp_qpc: performance_counter().unwrap_or(0),
+        });
+        if self
+            .ipc
+            .as_mut()
+            .is_some_and(|ipc| ipc.send(message).is_err())
+        {
+            self.ipc = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for NvCapture {
+    fn drop(&mut self) {
+        unsafe {
+            (self.transport.functions.delete_framebuffers)(1, &self.framebuffer);
+            (self.transport.functions.delete_framebuffers)(1, &self.read_framebuffer);
+        }
+    }
+}
+
+fn frame_bounds(
+    source: Option<&DrawCandidate>,
+    window_width: u32,
+    window_height: u32,
+) -> QuadBounds {
+    match source {
+        Some(value) if value.window_bounds => QuadBounds {
+            x: value.bounds.x,
+            y: window_height.saturating_sub(value.bounds.y.saturating_add(value.bounds.height)),
+            width: value.bounds.width,
+            height: value.bounds.height,
+        },
+        _ => QuadBounds {
+            x: 0,
+            y: 0,
+            width: window_width,
+            height: window_height,
+        },
+    }
+}
+
+impl ExtCapture {
     unsafe fn new(
         surface_id: SurfaceId,
         source_window: isize,
@@ -479,7 +841,7 @@ impl Capture {
             low_part: u32::from_le_bytes(luid_bytes[..4].try_into().expect("four bytes")),
             high_part: i32::from_le_bytes(luid_bytes[4..].try_into().expect("four bytes")),
         };
-        let (device, adapter) = unsafe { create_device(adapter_luid) }?;
+        let (device, adapter) = unsafe { ExternalImage::create_device(adapter_luid) }?;
         let adapter_desc = unsafe { adapter.GetDesc1() }
             .map_err(|error| format!("IDXGIAdapter1::GetDesc1: {error}"))?;
         let adapter_luid = AdapterLuid {
@@ -495,7 +857,7 @@ impl Capture {
         let mut slots = Vec::with_capacity(3);
         for _ in 0..3 {
             slots.push(ImageSlot {
-                image: unsafe { create_image(&device, &functions, width, height) }?,
+                image: unsafe { ExternalImage::new(&device, &functions, width, height) }?,
                 release_value: 0,
             });
         }
@@ -888,17 +1250,66 @@ fn merge_tracked_sources(
     merged
 }
 
-impl Drop for Capture {
+impl Drop for ExtCapture {
     fn drop(&mut self) {
         unsafe {
             (self.functions.delete_framebuffers)(1, &self.framebuffer);
             (self.functions.delete_framebuffers)(1, &self.read_framebuffer);
             self.ready.destroy(&self.functions);
             self.consumer.destroy(&self.functions);
-            for slot in &self.slots {
-                destroy_image(&self.functions, &slot.image);
-            }
         }
+    }
+}
+
+fn connect_nv_viewer(
+    transport: &nv_dx::Ring,
+    surface_id: SurfaceId,
+    source_window: isize,
+    width: u32,
+    height: u32,
+    bottom_up: bool,
+) -> std::io::Result<LocalSocket> {
+    let session = config::session()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+    let mut socket = LocalSocket::connect(&session)?;
+    let viewer_pid = match socket.receive()? {
+        Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => hello.process_id,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "incompatible viewer",
+            ));
+        }
+    };
+    socket.enable_frame_channel(viewer_pid)?;
+    let mut image_handles = [0i64; MAX_IMAGE_SLOTS];
+    for (destination, slot) in image_handles.iter_mut().zip(transport.ring.slots()) {
+        *destination =
+            duplicate_handle_into_process(slot.raw_handle() as isize, ProcessId(viewer_pid))?
+                as i64;
+    }
+    socket.send(Message::StreamReady(StreamReady {
+        producer_process_id: std::process::id(),
+        surface_id,
+        adapter_luid: transport.adapter_luid,
+        source_window: source_window as i64,
+        width,
+        height,
+        format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
+        image_kind: ExternalImageKind::D3d11SharedResourceNt,
+        sync_kind: ExternalSyncKind::D3d11KeyedMutex,
+        slot_count: transport.ring.slots().len() as u32,
+        image_handles,
+        timeline_semaphore_handle: 0,
+        consumer_semaphore_handle: 0,
+        bottom_up,
+    }))?;
+    match socket.receive()? {
+        Message::StreamAccepted => Ok(socket),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "viewer rejected stream",
+        )),
     }
 }
 
