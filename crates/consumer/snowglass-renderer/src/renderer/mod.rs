@@ -146,6 +146,13 @@ pub trait Renderer {
     ) -> Result<bool, Box<dyn Error>>;
     fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame>;
 
+    fn draw_game(&mut self) -> Result<bool, Box<dyn Error>> {
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |_| {});
+        let primitives = context.tessellate(output.shapes.clone(), output.pixels_per_point);
+        self.draw(&output, &primitives)
+    }
+
     fn presentation(&self, viewer_extent: Extent) -> Presentation {
         Presentation::new(viewer_extent, self.displayed_surfaces())
     }

@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicIsize, Ordering},
         mpsc,
     },
@@ -52,9 +52,11 @@ use gui::{
     LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window,
     draw_statistics_graph,
 };
-use ipc::{CaptureEvent, UiRequest};
+use ipc::UiRequest;
 use snowglass_renderer::{
-    D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor, layout, webrtc,
+    D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor,
+    capture::{Capture, CaptureEvent, ConsumerPreference},
+    layout, webrtc,
 };
 
 use input::{
@@ -544,7 +546,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_nanos() as u64
         })
     );
-    let listener = LocalSocketListener::bind(&session)?;
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
     let ui_listener = LocalSocketListener::bind(&format!("{session}-ui"))?;
     let gamepad_mailbox = Arc::new(LatestGamepadMailbox::new(u8::MAX as usize + 1));
@@ -586,18 +587,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     let backing_window = Arc::new(AtomicIsize::new(0));
-    let (capture_tx, capture_rx) = mpsc::channel();
     let (ui_tx, ui_rx) = mpsc::channel();
     ipc::spawn_ui(ui_listener, ui_tx);
-    // Connections the event loop has evicted (preempted or replaced). The IPC
-    // threads close these sockets so the producer stops capturing.
-    let revoked_connections = Arc::new(Mutex::new(HashSet::<u64>::new()));
-    ipc::spawn(
-        listener,
-        capture_tx,
-        viewer_api,
-        revoked_connections.clone(),
-    );
+    let capture = Capture::bind(
+        &session,
+        match viewer_api {
+            ViewerApi::D3d12 => ConsumerPreference::D3d12,
+            ViewerApi::Vulkan => ConsumerPreference::Vulkan,
+        },
+    )?;
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -836,8 +834,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         active_backend = "Waiting";
                         active_consumer = "Waiting";
                     }
-                    while let Ok(capture) = capture_rx.try_recv() {
-                        match capture {
+                    while let Ok(event) = capture.try_recv() {
+                        match event {
                             CaptureEvent::Stream(connection, stream, accepted) => {
                                 let surface_identity = (
                                     stream.surface_id.0,
@@ -914,10 +912,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         if let Some(publisher) = &webrtc {
                                             publisher.remove_stream(existing);
                                         }
-                                        revoked_connections
-                                            .lock()
-                                            .unwrap_or_else(|error| error.into_inner())
-                                            .insert(existing);
+                                        capture.revoke(existing);
                                         if let Err(error) =
                                             compositor.disconnect_stream(existing)
                                         {
@@ -957,10 +952,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         if let Some(publisher) = &webrtc {
                                             publisher.remove_stream(existing);
                                         }
-                                        revoked_connections
-                                            .lock()
-                                            .unwrap_or_else(|error| error.into_inner())
-                                            .insert(existing);
+                                        capture.revoke(existing);
                                         if let Err(error) =
                                             compositor.disconnect_stream(existing)
                                         {
@@ -1013,10 +1005,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         if let Some(publisher) = &webrtc {
                                             publisher.remove_stream(existing);
                                         }
-                                        revoked_connections
-                                            .lock()
-                                            .unwrap_or_else(|error| error.into_inner())
-                                            .insert(existing);
+                                        capture.revoke(existing);
                                         if let Err(error) =
                                             compositor.disconnect_stream(existing)
                                         {
@@ -1194,10 +1183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &mut direct_input,
                                 );
                                 stream_indices.remove(&connection);
-                                revoked_connections
-                                    .lock()
-                                    .unwrap_or_else(|error| error.into_inner())
-                                    .remove(&connection);
+                                capture.forget(connection);
                                 if active_capture_connections.remove(&connection).is_none() {
                                     continue;
                                 }
