@@ -12,6 +12,7 @@ snowglass-hook.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-ui.workspace = true
+windows-strings.workspace = true
 windows-sys.workspace = true
 
 [lints]

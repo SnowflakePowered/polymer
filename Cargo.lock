@@ -3394,6 +3394,7 @@ dependencies = [
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-ui",
+ "windows-strings 0.5.1",
  "windows-sys 0.61.2",
 ]
 
