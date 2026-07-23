@@ -7,7 +7,7 @@ use crate::{
         GL_SCISSOR_TEST, GL_TEXTURE_2D, GL_TEXTURE_2D_ARRAY, Hdc, current_context, glDisable,
         glEnable, glGetIntegerv, glIsEnabled,
         memory_object_win32::{ExternalImage, GL_DEVICE_LUID_EXT, GlFunctions},
-        nv_dx,
+        nv_dx, pbo,
     },
     log,
     timeline::Timeline,
@@ -86,6 +86,7 @@ unsafe impl Send for ExtCapture {}
 enum Capture {
     Ext(ExtCapture),
     Nv(NvCapture),
+    Pbo(PboCapture),
 }
 
 impl Capture {
@@ -113,7 +114,7 @@ impl Capture {
             }
             .map(Self::Ext);
         }
-        unsafe {
+        if let Ok(capture) = unsafe {
             NvCapture::new(
                 surface_id,
                 source_window,
@@ -123,25 +124,48 @@ impl Capture {
                 window_height,
                 bottom_up,
             )
+        } {
+            return Ok(Self::Nv(capture));
         }
-        .map(Self::Nv)
+        unsafe {
+            PboCapture::new(
+                surface_id,
+                source_window,
+                width,
+                height,
+                window_width,
+                window_height,
+                bottom_up,
+            )
+        }
+        .map(Self::Pbo)
     }
     fn width(&self) -> u32 {
         match self {
             Self::Ext(v) => v.width,
             Self::Nv(v) => v.width,
+            Self::Pbo(v) => v.width,
         }
     }
     fn height(&self) -> u32 {
         match self {
             Self::Ext(v) => v.height,
             Self::Nv(v) => v.height,
+            Self::Pbo(v) => v.height,
         }
     }
     fn surface_id(&self) -> SurfaceId {
         match self {
             Self::Ext(v) => v.surface_id,
             Self::Nv(v) => v.surface_id,
+            Self::Pbo(v) => v.surface_id,
+        }
+    }
+    fn whole_window(&self) -> bool {
+        match self {
+            Self::Ext(v) => v.bottom_up,
+            Self::Nv(v) => v.bottom_up,
+            Self::Pbo(v) => v.whole_window,
         }
     }
     fn set_window_extent(&mut self, width: u32, height: u32) {
@@ -154,24 +178,31 @@ impl Capture {
                 v.window_width = width;
                 v.window_height = height;
             }
+            Self::Pbo(v) => {
+                v.window_width = width;
+                v.window_height = height;
+            }
         }
     }
     fn tick(&mut self) {
         match self {
             Self::Ext(v) => v.presents += 1,
             Self::Nv(v) => v.presents += 1,
+            Self::Pbo(v) => v.presents += 1,
         }
     }
     fn should_reconnect(&self) -> bool {
         match self {
             Self::Ext(v) => v.ipc.is_none() && v.presents.is_multiple_of(120),
             Self::Nv(v) => v.ipc.is_none() && v.presents.is_multiple_of(120),
+            Self::Pbo(v) => v.ipc.is_none() && v.presents.is_multiple_of(120),
         }
     }
     fn reconnect(&mut self) {
         match self {
             Self::Ext(v) => v.reconnect(),
             Self::Nv(v) => v.reconnect(),
+            Self::Pbo(v) => v.reconnect(),
         }
     }
     unsafe fn copy_frame(
@@ -182,6 +213,7 @@ impl Capture {
         match self {
             Self::Ext(v) => unsafe { v.copy_frame(stream, source) },
             Self::Nv(v) => unsafe { v.copy_frame(stream, source) },
+            Self::Pbo(v) => unsafe { v.copy_frame(stream, source) },
         }
     }
     fn defer(&mut self) -> u64 {
@@ -191,6 +223,10 @@ impl Capture {
                 v.deferred_frames
             }
             Self::Nv(v) => {
+                v.deferred_frames = v.deferred_frames.wrapping_add(1);
+                v.deferred_frames
+            }
+            Self::Pbo(v) => {
                 v.deferred_frames = v.deferred_frames.wrapping_add(1);
                 v.deferred_frames
             }
@@ -215,6 +251,28 @@ struct NvCapture {
     presents: u64,
     deferred_frames: u64,
 }
+
+struct PboCapture {
+    width: u32,
+    height: u32,
+    window_width: u32,
+    window_height: u32,
+    read_framebuffer: u32,
+    bind_framebuffer: crate::interop::GlBindFramebuffer,
+    framebuffer_texture_2d: crate::interop::GlFramebufferTexture2D,
+    framebuffer_texture_layer: crate::interop::GlFramebufferTextureLayer,
+    delete_framebuffers: crate::interop::GlDeleteFramebuffers,
+    transport: pbo::Transport,
+    ipc: Option<LocalSocket>,
+    surface_id: SurfaceId,
+    source_window: isize,
+    whole_window: bool,
+    frame_number: u64,
+    presents: u64,
+    deferred_frames: u64,
+}
+
+unsafe impl Send for PboCapture {}
 
 unsafe impl Send for NvCapture {}
 
@@ -446,8 +504,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         .iter()
         .map(|capture| (capture.width(), capture.height()))
         .collect::<Vec<_>>();
-    let tracked_layout =
-        current.len() > 1 || current.first().is_some_and(|first| *first != window_extent);
+    let tracked_layout = entry.streams.iter().any(|capture| !capture.whole_window());
     let proposed = chosen
         .iter()
         .map(|&(global, source)| (source.width, source.height, graph_surface_id(global)))
@@ -790,6 +847,158 @@ impl NvCapture {
             self.ipc = None;
         }
         Ok(())
+    }
+}
+
+impl PboCapture {
+    #[expect(clippy::too_many_arguments)]
+    unsafe fn new(
+        surface_id: SurfaceId,
+        source_window: isize,
+        width: u32,
+        height: u32,
+        window_width: u32,
+        window_height: u32,
+        whole_window: bool,
+    ) -> Result<Self, String> {
+        let transport = unsafe { pbo::Transport::new(width, height) }?;
+        let gen_framebuffers: crate::interop::GlGenFramebuffers =
+            unsafe { crate::interop::proc(b"glGenFramebuffers\0") }
+                .ok_or("missing glGenFramebuffers")?;
+        let bind_framebuffer = unsafe { crate::interop::proc(b"glBindFramebuffer\0") }
+            .ok_or("missing glBindFramebuffer")?;
+        let framebuffer_texture_2d = unsafe { crate::interop::proc(b"glFramebufferTexture2D\0") }
+            .ok_or("missing glFramebufferTexture2D")?;
+        let framebuffer_texture_layer =
+            unsafe { crate::interop::proc(b"glFramebufferTextureLayer\0") }
+                .ok_or("missing glFramebufferTextureLayer")?;
+        let delete_framebuffers = unsafe { crate::interop::proc(b"glDeleteFramebuffers\0") }
+            .ok_or("missing glDeleteFramebuffers")?;
+        let mut read_framebuffer = 0;
+        unsafe { gen_framebuffers(1, &mut read_framebuffer) };
+        let ipc = connect_pbo_viewer(&transport, surface_id, source_window, width, height)
+            .map_err(|error| {
+                log(format!(
+                    "snowglass: OpenGL PBO viewer connection failed: {error}"
+                ));
+                error
+            })
+            .ok();
+        log(format!(
+            "snowglass: attached asynchronous OpenGL PBO ring {width}x{height} (surface {:#x})",
+            surface_id.0
+        ));
+        Ok(Self {
+            width,
+            height,
+            window_width,
+            window_height,
+            read_framebuffer,
+            bind_framebuffer,
+            framebuffer_texture_2d,
+            framebuffer_texture_layer,
+            delete_framebuffers,
+            transport,
+            ipc,
+            surface_id,
+            source_window,
+            whole_window,
+            frame_number: 0,
+            presents: 0,
+            deferred_frames: 0,
+        })
+    }
+
+    fn reconnect(&mut self) {
+        if let Ok(socket) = connect_pbo_viewer(
+            &self.transport,
+            self.surface_id,
+            self.source_window,
+            self.width,
+            self.height,
+        ) {
+            self.ipc = Some(socket);
+        }
+    }
+
+    unsafe fn copy_frame(
+        &mut self,
+        stream_id: StreamId,
+        source: Option<&DrawCandidate>,
+    ) -> Result<(), String> {
+        let mut old_read = 0;
+        unsafe {
+            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &mut old_read);
+            (self.bind_framebuffer)(
+                GL_READ_FRAMEBUFFER,
+                if source.is_some() {
+                    self.read_framebuffer
+                } else {
+                    0
+                },
+            );
+            if let Some(source) = source {
+                if source.target == GL_TEXTURE_2D_ARRAY {
+                    (self.framebuffer_texture_layer)(
+                        GL_READ_FRAMEBUFFER,
+                        GL_COLOR_ATTACHMENT0,
+                        source.texture,
+                        0,
+                        source.layer,
+                    );
+                } else {
+                    (self.framebuffer_texture_2d)(
+                        GL_READ_FRAMEBUFFER,
+                        GL_COLOR_ATTACHMENT0,
+                        source.target,
+                        source.texture,
+                        0,
+                    );
+                }
+            }
+        }
+        let result = unsafe { self.transport.transfer() };
+        unsafe { (self.bind_framebuffer)(GL_READ_FRAMEBUFFER, old_read as u32) };
+        let Some(slot_index) = result? else {
+            return Ok(());
+        };
+        self.frame_number = self.frame_number.wrapping_add(1);
+        let bounds = frame_bounds(source, self.window_width, self.window_height);
+        let message = Message::FrameReady(FrameReady {
+            stream_id,
+            slot: slot_index as u32,
+            render_width: self.width,
+            render_height: self.height,
+            capture_x: bounds.x,
+            capture_y: bounds.y,
+            capture_width: bounds.width,
+            capture_height: bounds.height,
+            presentation_width: self.window_width,
+            presentation_height: self.window_height,
+            presentation_transform: PresentationTransform::axis_aligned(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            ),
+            frame_number: self.frame_number,
+            sync_value: self.frame_number,
+            timestamp_qpc: performance_counter().unwrap_or(0),
+        });
+        if self
+            .ipc
+            .as_mut()
+            .is_some_and(|ipc| ipc.send(message).is_err())
+        {
+            self.ipc = None;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PboCapture {
+    fn drop(&mut self) {
+        unsafe { (self.delete_framebuffers)(1, &self.read_framebuffer) }
     }
 }
 
@@ -1303,6 +1512,58 @@ fn connect_nv_viewer(
         timeline_semaphore_handle: 0,
         consumer_semaphore_handle: 0,
         bottom_up,
+    }))?;
+    match socket.receive()? {
+        Message::StreamAccepted => Ok(socket),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "viewer rejected stream",
+        )),
+    }
+}
+
+fn connect_pbo_viewer(
+    transport: &pbo::Transport,
+    surface_id: SurfaceId,
+    source_window: isize,
+    width: u32,
+    height: u32,
+) -> std::io::Result<LocalSocket> {
+    let session = config::session()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+    let mut socket = LocalSocket::connect(&session)?;
+    let viewer_pid = match socket.receive()? {
+        Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => hello.process_id,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "incompatible viewer",
+            ));
+        }
+    };
+    socket.enable_frame_channel(viewer_pid)?;
+    let mut image_handles = [0i64; MAX_IMAGE_SLOTS];
+    for (destination, slot) in image_handles.iter_mut().zip(transport.ring.slots()) {
+        *destination =
+            duplicate_handle_into_process(slot.raw_handle() as isize, ProcessId(viewer_pid))?
+                as i64;
+    }
+    socket.send(Message::StreamReady(StreamReady {
+        producer_process_id: std::process::id(),
+        surface_id,
+        adapter_luid: transport.adapter_luid,
+        source_window: source_window as i64,
+        width,
+        height,
+        format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
+        image_kind: ExternalImageKind::D3d11SharedResourceNt,
+        sync_kind: ExternalSyncKind::D3d11KeyedMutex,
+        slot_count: transport.ring.slots().len() as u32,
+        image_handles,
+        timeline_semaphore_handle: 0,
+        consumer_semaphore_handle: 0,
+        // glReadPixels starts at the framebuffer's bottom row.
+        bottom_up: true,
     }))?;
     match socket.receive()? {
         Message::StreamAccepted => Ok(socket),

@@ -2,6 +2,7 @@
 
 pub(crate) mod memory_object_win32;
 pub(crate) mod nv_dx;
+pub(crate) mod pbo;
 
 use std::{ffi::c_void, mem};
 
@@ -31,6 +32,8 @@ pub(crate) const GL_SCISSOR_TEST: Glenum = 0x0C11;
 pub(crate) const GL_SCISSOR_BOX: Glenum = 0x0C10;
 pub(crate) const GL_ACTIVE_TEXTURE: Glenum = 0x84E0;
 pub(crate) const GL_TEXTURE0: Glenum = 0x84C0;
+pub(crate) const GL_RGBA: Glenum = 0x1908;
+pub(crate) const GL_UNSIGNED_BYTE: Glenum = 0x1401;
 
 #[link(name = "opengl32")]
 unsafe extern "system" {
@@ -49,6 +52,15 @@ unsafe extern "system" {
     pub(crate) fn glIsEnabled(capability: Glenum) -> u8;
     pub(crate) fn glEnable(capability: Glenum);
     pub(crate) fn glDisable(capability: Glenum);
+    pub(crate) fn glReadPixels(
+        x: Glint,
+        y: Glint,
+        width: Glsizei,
+        height: Glsizei,
+        format: Glenum,
+        kind: Glenum,
+        pixels: *mut c_void,
+    );
 }
 
 pub(crate) type GlActiveTexture = unsafe extern "system" fn(Glenum);
