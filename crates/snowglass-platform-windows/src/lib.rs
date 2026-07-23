@@ -515,31 +515,59 @@ mod desktop_tests {
     }
 }
 
-#[cfg(windows)]
-pub fn inject_library_before_resume(
-    process: windows_sys::Win32::Foundation::HANDLE,
-    process_id: ProcessId,
-    library: &std::path::Path,
-    install_export: &std::ffi::CStr,
-) -> std::io::Result<()> {
-    inject_libraries_before_resume(process, process_id, &[(library, install_export)])
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessArchitecture {
+    X86_64,
+    Arm64,
+}
+
+impl ProcessArchitecture {
+    pub const fn executable_suffix(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Arm64 => "arm64",
+        }
+    }
 }
 
 #[cfg(windows)]
-pub fn inject_libraries_before_resume(
+pub fn process_architecture(
     process: windows_sys::Win32::Foundation::HANDLE,
-    process_id: ProcessId,
-    libraries: &[(&std::path::Path, &std::ffi::CStr)],
-) -> std::io::Result<()> {
+) -> std::io::Result<ProcessArchitecture> {
+    use windows_sys::Win32::System::Threading::IsWow64Process2;
+
+    const IMAGE_FILE_MACHINE_UNKNOWN: u16 = 0;
+    const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+    const IMAGE_FILE_MACHINE_ARM64: u16 = 0xaa64;
+
+    let mut process_machine = 0;
+    let mut native_machine = 0;
+    if unsafe { IsWow64Process2(process, &mut process_machine, &mut native_machine) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let machine = if process_machine == IMAGE_FILE_MACHINE_UNKNOWN {
+        native_machine
+    } else {
+        process_machine
+    };
+    match machine {
+        IMAGE_FILE_MACHINE_AMD64 => Ok(ProcessArchitecture::X86_64),
+        IMAGE_FILE_MACHINE_ARM64 => Ok(ProcessArchitecture::Arm64),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("unsupported target machine {machine:#06x}"),
+        )),
+    }
+}
+
+#[cfg(windows)]
+pub fn resume_initial_thread(process_id: ProcessId) -> std::io::Result<()> {
     use windows_sys::Win32::{
         Foundation::CloseHandle,
         System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
     };
 
     let initial_thread = first_process_thread(process_id)?;
-    for &(library, install_export) in libraries {
-        inject_library(process, process_id, library, install_export)?;
-    }
     let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, initial_thread) };
     if thread.is_null() {
         return Err(std::io::Error::last_os_error());
@@ -550,150 +578,6 @@ pub fn inject_libraries_before_resume(
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn inject_library(
-    process: windows_sys::Win32::Foundation::HANDLE,
-    process_id: ProcessId,
-    library: &std::path::Path,
-    install_export: &std::ffi::CStr,
-) -> std::io::Result<()> {
-    use std::{mem, os::windows::ffi::OsStrExt};
-    use windows_sys::Win32::{
-        Foundation::FreeLibrary,
-        System::{
-            LibraryLoader::{
-                DONT_RESOLVE_DLL_REFERENCES, GetModuleHandleW, GetProcAddress, LoadLibraryExW,
-            },
-            Memory::{
-                MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
-            },
-            Threading::CreateRemoteThread,
-        },
-    };
-
-    let mut wide = library
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let bytes = wide.len() * mem::size_of::<u16>();
-    let remote_path = unsafe {
-        VirtualAllocEx(
-            process,
-            std::ptr::null(),
-            bytes,
-            MEM_COMMIT | MEM_RESERVE,
-            PAGE_READWRITE,
-        )
-    };
-    if remote_path.is_null() {
-        return Err(std::io::Error::last_os_error());
-    }
-    let result = (|| {
-        let mut written = 0;
-        if unsafe {
-            windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory(
-                process,
-                remote_path,
-                wide.as_mut_ptr().cast(),
-                bytes,
-                &mut written,
-            )
-        } == 0
-            || written != bytes
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        let kernel_name = "kernel32.dll\0".encode_utf16().collect::<Vec<_>>();
-        let kernel = unsafe { GetModuleHandleW(kernel_name.as_ptr()) };
-        if kernel.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let load_library = unsafe { GetProcAddress(kernel, c"LoadLibraryW".as_ptr().cast()) }
-            .ok_or_else(std::io::Error::last_os_error)?;
-        let load_thread = unsafe {
-            CreateRemoteThread(
-                process,
-                std::ptr::null(),
-                0,
-                // System DLLs are mapped at the same address across processes
-                // of the same architecture for the current Windows boot.
-                Some(std::mem::transmute(load_library)),
-                remote_path,
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-        if load_thread.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        wait_remote_thread(load_thread)?;
-
-        let remote_module = find_remote_module(process_id, library)?;
-        let local_module = unsafe {
-            LoadLibraryExW(
-                wide.as_ptr(),
-                std::ptr::null_mut(),
-                DONT_RESOLVE_DLL_REFERENCES,
-            )
-        };
-        if local_module.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let local_export = unsafe { GetProcAddress(local_module, install_export.as_ptr().cast()) }
-            .ok_or_else(std::io::Error::last_os_error)?;
-        let export_offset = local_export as usize - local_module as usize;
-        unsafe { FreeLibrary(local_module) };
-        let remote_export = (remote_module + export_offset) as *const ();
-        let install_thread = unsafe {
-            CreateRemoteThread(
-                process,
-                std::ptr::null(),
-                0,
-                Some(std::mem::transmute(remote_export)),
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-        if install_thread.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
-        let install_result = wait_remote_thread(install_thread)?;
-        if install_result != 0 {
-            return Err(std::io::Error::other(format!(
-                "remote hook installer returned HRESULT {install_result:#x}"
-            )));
-        }
-
-        Ok(())
-    })();
-    unsafe { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE) };
-    result
-}
-
-#[cfg(windows)]
-fn wait_remote_thread(thread: windows_sys::Win32::Foundation::HANDLE) -> std::io::Result<u32> {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0},
-        System::Threading::{GetExitCodeThread, INFINITE, WaitForSingleObject},
-    };
-    let wait = unsafe { WaitForSingleObject(thread, INFINITE) };
-    if wait != WAIT_OBJECT_0 {
-        let error = std::io::Error::last_os_error();
-        unsafe { CloseHandle(thread) };
-        return Err(error);
-    }
-    let mut exit_code = 0;
-    let ok = unsafe { GetExitCodeThread(thread, &mut exit_code) };
-    unsafe { CloseHandle(thread) };
-    if ok == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(exit_code)
-    }
 }
 
 #[cfg(windows)]
@@ -728,70 +612,6 @@ fn first_process_thread(process_id: ProcessId) -> std::io::Result<u32> {
     unsafe { CloseHandle(snapshot) };
     found
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "target thread not found"))
-}
-
-#[cfg(windows)]
-fn find_remote_module(process_id: ProcessId, library: &std::path::Path) -> std::io::Result<usize> {
-    use std::mem;
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-        System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW, Module32NextW,
-            TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32,
-        },
-    };
-    let expected = library
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid DLL name"))?;
-    // Toolhelp explicitly documents ERROR_BAD_LENGTH as transient while the
-    // loader's module list is changing and requires callers to retry.
-    let mut retries = 0;
-    let snapshot = loop {
-        let snapshot = unsafe {
-            CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id.0)
-        };
-        if snapshot != INVALID_HANDLE_VALUE {
-            break snapshot;
-        }
-        let error = std::io::Error::last_os_error();
-        if !matches!(error.raw_os_error(), Some(24 | 299)) {
-            return Err(error);
-        }
-        retries += 1;
-        if retries == 250 {
-            return Err(error);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
-    let mut entry = MODULEENTRY32W {
-        dwSize: mem::size_of::<MODULEENTRY32W>() as u32,
-        ..Default::default()
-    };
-    let mut found = None;
-    if unsafe { Module32FirstW(snapshot, &mut entry) } != 0 {
-        loop {
-            let length = entry
-                .szModule
-                .iter()
-                .position(|unit| *unit == 0)
-                .unwrap_or(entry.szModule.len());
-            if String::from_utf16_lossy(&entry.szModule[..length]).eq_ignore_ascii_case(expected) {
-                found = Some(entry.modBaseAddr as usize);
-                break;
-            }
-            if unsafe { Module32NextW(snapshot, &mut entry) } == 0 {
-                break;
-            }
-        }
-    }
-    unsafe { CloseHandle(snapshot) };
-    found.ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "injected DLL was not present in target module list",
-        )
-    })
 }
 
 #[cfg(windows)]

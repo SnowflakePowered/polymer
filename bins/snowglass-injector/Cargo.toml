@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-injector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+windows-sys.workspace = true
+
+[lints]
+workspace = true

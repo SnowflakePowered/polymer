@@ -14,8 +14,9 @@ use snowglass_input::{
 };
 use snowglass_ipc::{LocalSocketListener, StreamReady};
 use snowglass_platform_windows::{
-    IsolatedProcess, KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, forward_character,
-    inject_libraries_before_resume, performance_counter, performance_frequency,
+    IsolatedProcess, KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessArchitecture, ProcessId,
+    forward_character, performance_counter, performance_frequency, process_architecture,
+    resume_initial_thread,
 };
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, RELEASE_ALL_SYNC_VALUE,
@@ -2807,10 +2808,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                             };
                             let mut selected = None;
                             if context.input(|input| input.key_pressed(egui::Key::Escape)) {
-                                selected = request.escape_result;
+                                selected = request
+                                    .escape_result
+                                    .or(request.default_result)
+                                    .or_else(|| request.buttons.first().map(|button| button.result));
                             }
                             egui::Window::new(title)
                                 .id(egui::Id::new("snowglass-forwarded-message-box"))
+                                .order(egui::Order::Foreground)
                                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                                 .collapsible(false)
                                 .resizable(true)
@@ -2819,18 +2824,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     ui.label(&request.text);
                                     ui.add_space(12.0);
                                     ui.horizontal(|ui| {
-                                        for button in &request.buttons {
-                                            let response = ui.button(&button.label);
-                                            if request.default_result == Some(button.result) {
-                                                response.request_focus();
-                                            }
-                                            if response.clicked() {
-                                                selected = Some(button.result);
-                                            }
+                                        let dismiss = ui.button("Dismiss");
+                                        dismiss.request_focus();
+                                        if dismiss.clicked() {
+                                            selected = request
+                                                .escape_result
+                                                .or(request.default_result)
+                                                .or_else(|| {
+                                                    request
+                                                        .buttons
+                                                        .first()
+                                                        .map(|button| button.result)
+                                                });
+                                        }
+                                        if ui.button("Close program").clicked() {
+                                            close_requested = true;
                                         }
                                     });
                                 });
-                            if let Some(result) = selected
+                            if close_requested {
+                                pending_ui.pop_front();
+                            } else if let Some(result) = selected
                                 && let Some(forwarded) = pending_ui.pop_front()
                             {
                                 let _ = forwarded.response.send(
@@ -3181,65 +3195,7 @@ fn launch_target(
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-    let dxgi_hook = layer_dir.join("snowglass_hook_dxgi.dll");
-    let d3d11_hook = layer_dir.join("snowglass_hook_d3d11.dll");
-    let d3d12_hook = layer_dir.join("snowglass_hook_d3d12.dll");
-    let opengl_hook = layer_dir.join("snowglass_hook_opengl32.dll");
-    let gdi_hook = layer_dir.join("snowglass_hook_gdi.dll");
-    let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
-    let win32_hook = layer_dir.join("snowglass_hook_win32.dll");
-    let ui_hook = layer_dir.join("snowglass_hook_ui.dll");
-    let sdl2_hook = layer_dir.join("snowglass_hook_sdl2.dll");
-    let sdl3_hook = layer_dir.join("snowglass_hook_sdl3.dll");
     let sdl3_runtime = layer_dir.join("SDL3.dll");
-    let mut libraries: Vec<(&str, &Path, &std::ffi::CStr)> = Vec::new();
-    // Both DXGI producers intercept swapchains through the factory-level hooks.
-    if hooks
-        .iter()
-        .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
-    {
-        libraries.push(("DXGI", dxgi_hook.as_path(), c"SnowglassInstallDxgiHook"));
-    }
-    if hooks.contains(&HookBackend::D3d11) {
-        libraries.push(("D3D11", d3d11_hook.as_path(), c"SnowglassInstallD3d11Hook"));
-    }
-    if hooks.contains(&HookBackend::D3d12) {
-        libraries.push(("D3D12", d3d12_hook.as_path(), c"SnowglassInstallD3d12Hook"));
-    }
-    if hooks.contains(&HookBackend::OpenGl) {
-        libraries.push((
-            "OpenGL",
-            opengl_hook.as_path(),
-            c"SnowglassInstallOpenGlHook",
-        ));
-    }
-    if hooks.contains(&HookBackend::Gdi) {
-        libraries.push(("GDI", gdi_hook.as_path(), c"SnowglassInstallGdiHook"));
-    }
-    libraries.push((
-        "DirectInput",
-        dinput_hook.as_path(),
-        c"SnowglassInstallDinputHook",
-    ));
-    libraries.push((
-        "Win32 input",
-        win32_hook.as_path(),
-        c"SnowglassInstallWin32Hook",
-    ));
-    if isolate {
-        libraries.push(("UI", ui_hook.as_path(), c"SnowglassInstallUiHook"));
-    }
-    libraries.push(("SDL2", sdl2_hook.as_path(), c"SnowglassInstallSdl2Hook"));
-    libraries.push(("SDL3", sdl3_hook.as_path(), c"SnowglassInstallSdl3Hook"));
-    for &(name, hook, _) in &libraries {
-        if hook.is_file() {
-            continue;
-        }
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("{name} hook is missing at {}", hook.display()),
-        ));
-    }
     let mut command = Command::new(&target[0]);
     command.args(&target[1..]);
     let mut environment = vec![
@@ -3375,11 +3331,28 @@ fn launch_target(
         let _ = child.wait();
         return Err(error);
     }
-    let libraries = libraries
-        .iter()
-        .map(|&(_, path, export)| (path, export))
-        .collect::<Vec<_>>();
-    if let Err(error) = inject_libraries_before_resume(process, process_id, &libraries) {
+    let architecture = process_architecture(process)?;
+    let architecture_dir = layer_dir.join(architecture.executable_suffix());
+    let hook_dir = if architecture_dir.is_dir() {
+        architecture_dir.as_path()
+    } else {
+        layer_dir
+    };
+    let libraries = hook_libraries(hook_dir, hooks, isolate);
+    for (name, hook, _) in &libraries {
+        if hook.is_file() {
+            continue;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{name} hook is missing at {}", hook.display()),
+        ));
+    }
+    if let Err(error) = run_injector(layer_dir, architecture, process_id, &libraries)
+        .and_then(|()| resume_initial_thread(process_id))
+    {
         let _ = child.kill();
         let _ = child.wait();
         return Err(error);
@@ -3389,6 +3362,135 @@ fn launch_target(
         job,
         desktop,
     })
+}
+
+fn hook_libraries(
+    layer_dir: &Path,
+    hooks: &[HookBackend],
+    isolate: bool,
+) -> Vec<(&'static str, PathBuf, &'static std::ffi::CStr)> {
+    let mut libraries = Vec::new();
+    if hooks
+        .iter()
+        .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
+    {
+        libraries.push((
+            "DXGI",
+            layer_dir.join("snowglass_hook_dxgi.dll"),
+            c"SnowglassInstallDxgiHook",
+        ));
+    }
+    if hooks.contains(&HookBackend::D3d11) {
+        libraries.push((
+            "D3D11",
+            layer_dir.join("snowglass_hook_d3d11.dll"),
+            c"SnowglassInstallD3d11Hook",
+        ));
+    }
+    if hooks.contains(&HookBackend::D3d12) {
+        libraries.push((
+            "D3D12",
+            layer_dir.join("snowglass_hook_d3d12.dll"),
+            c"SnowglassInstallD3d12Hook",
+        ));
+    }
+    if hooks.contains(&HookBackend::OpenGl) {
+        libraries.push((
+            "OpenGL",
+            layer_dir.join("snowglass_hook_opengl32.dll"),
+            c"SnowglassInstallOpenGlHook",
+        ));
+    }
+    if hooks.contains(&HookBackend::Gdi) {
+        libraries.push((
+            "GDI",
+            layer_dir.join("snowglass_hook_gdi.dll"),
+            c"SnowglassInstallGdiHook",
+        ));
+    }
+    libraries.push((
+        "DirectInput",
+        layer_dir.join("snowglass_hook_dinput.dll"),
+        c"SnowglassInstallDinputHook",
+    ));
+    libraries.push((
+        "Win32 input",
+        layer_dir.join("snowglass_hook_win32.dll"),
+        c"SnowglassInstallWin32Hook",
+    ));
+    if isolate {
+        libraries.push((
+            "UI",
+            layer_dir.join("snowglass_hook_ui.dll"),
+            c"SnowglassInstallUiHook",
+        ));
+    }
+    libraries.push((
+        "SDL2",
+        layer_dir.join("snowglass_hook_sdl2.dll"),
+        c"SnowglassInstallSdl2Hook",
+    ));
+    libraries.push((
+        "SDL3",
+        layer_dir.join("snowglass_hook_sdl3.dll"),
+        c"SnowglassInstallSdl3Hook",
+    ));
+    libraries
+}
+
+fn run_injector(
+    layer_dir: &Path,
+    architecture: ProcessArchitecture,
+    process_id: ProcessId,
+    libraries: &[(&str, PathBuf, &std::ffi::CStr)],
+) -> std::io::Result<()> {
+    let suffixed = layer_dir.join(format!(
+        "snowglass-injector-{}.exe",
+        architecture.executable_suffix()
+    ));
+    let architecture_local = layer_dir
+        .join(architecture.executable_suffix())
+        .join("snowglass-injector.exe");
+    let generic = layer_dir.join("snowglass-injector.exe");
+    let injector = if suffixed.is_file() {
+        suffixed.clone()
+    } else if architecture_local.is_file() {
+        architecture_local
+    } else if generic.is_file()
+        && matches!(
+            (std::env::consts::ARCH, architecture),
+            ("x86_64", ProcessArchitecture::X86_64) | ("aarch64", ProcessArchitecture::Arm64)
+        )
+    {
+        generic
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "{} injector is missing at {}",
+                architecture.executable_suffix(),
+                suffixed.display()
+            ),
+        ));
+    };
+    let mut command = Command::new(&injector);
+    command.arg("--pid").arg(process_id.0.to_string());
+    for (_, library, export) in libraries {
+        command
+            .arg("--library")
+            .arg(library)
+            .arg("--export")
+            .arg(export.to_string_lossy().as_ref());
+    }
+    let status = command.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "{} failed with {status}",
+            injector.display()
+        )))
+    }
 }
 
 fn color_range() -> vk::ImageSubresourceRange {
