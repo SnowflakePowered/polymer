@@ -176,6 +176,10 @@ impl StoneRegistry {
     pub fn layout(&self, id: &str) -> Option<&StoneLayout> {
         self.layouts.get(id)
     }
+
+    pub fn layouts(&self) -> impl Iterator<Item = &StoneLayout> {
+        self.layouts.values()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

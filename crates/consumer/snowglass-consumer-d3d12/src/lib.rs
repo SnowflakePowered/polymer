@@ -41,6 +41,14 @@ pub struct D3d12ConsumerDevice {
 }
 
 impl D3d12ConsumerDevice {
+    pub fn new_default() -> windows::core::Result<Self> {
+        unsafe {
+            let factory = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))?;
+            let adapter = factory.EnumAdapters1(0)?;
+            Self::from_adapter(factory, adapter)
+        }
+    }
+
     pub fn new(adapter_luid: AdapterLuid) -> windows::core::Result<Self> {
         if adapter_luid.low_part == 0 && adapter_luid.high_part == 0 {
             return Err(windows::core::Error::from_hresult(E_INVALIDARG));
@@ -51,24 +59,37 @@ impl D3d12ConsumerDevice {
                 LowPart: adapter_luid.low_part,
                 HighPart: adapter_luid.high_part,
             })?;
-            let mut device = None;
-            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)?;
-            let device: ID3D12Device =
-                device.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?;
-            let queue = device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+            Self::from_adapter(factory, adapter)
+        }
+    }
+
+    unsafe fn from_adapter(
+        factory: IDXGIFactory4,
+        adapter: IDXGIAdapter1,
+    ) -> windows::core::Result<Self> {
+        let desc = unsafe { adapter.GetDesc1()? };
+        let mut device = None;
+        unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)? };
+        let device: ID3D12Device =
+            device.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?;
+        let queue = unsafe {
+            device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
                 Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
                 Priority: 0,
                 Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
                 NodeMask: 0,
-            })?;
-            Ok(Self {
-                factory,
-                adapter,
-                device,
-                queue,
-                adapter_luid,
-            })
-        }
+            })?
+        };
+        Ok(Self {
+            factory,
+            adapter,
+            device,
+            queue,
+            adapter_luid: AdapterLuid {
+                low_part: desc.AdapterLuid.LowPart,
+                high_part: desc.AdapterLuid.HighPart,
+            },
+        })
     }
 
     pub fn import(&self, stream: &StreamReady) -> windows::core::Result<ImportedD3d12Stream> {

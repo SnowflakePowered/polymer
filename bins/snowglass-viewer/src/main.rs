@@ -1,7 +1,7 @@
 use ash::{Entry, vk};
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::ValueEnum;
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_hook::config;
 use snowglass_input::{
@@ -12,26 +12,25 @@ use snowglass_input::{
     },
     stone::{EMBEDDED_STONE_JSON, InputBinding, SdlAxis, SdlButton, StoneLayout, StoneRegistry},
 };
-use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
+use snowglass_ipc::{LocalSocketListener, StreamReady};
 use snowglass_platform_windows::{
-    KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, forward_character,
+    IsolatedProcess, KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, forward_character,
     inject_libraries_before_resume, performance_counter, performance_frequency,
 };
 use snowglass_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake,
-    PROTOCOL_VERSION, RELEASE_ALL_SYNC_VALUE,
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, RELEASE_ALL_SYNC_VALUE,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
     error::Error,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicIsize, Ordering},
         mpsc,
     },
     thread,
@@ -45,25 +44,30 @@ use winit::{
     window::Window,
 };
 
+mod cli;
 mod d3d12;
+mod gui;
 mod input;
+mod ipc;
 mod webrtc;
+
+use cli::{
+    GamepadArgument, TrackedRenderTarget, ViewerOptions, parse_target, split_command_arguments,
+};
+use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_statistics_graph};
+use ipc::CaptureEvent;
 
 use input::{
     dinput::{
         DirectInputForwarder, InputLatencyStats, RawKeyboardForwarder, cancel_pointer_connection,
         spawn_input_ipc,
     },
+    load_window, native_window,
     pointer::{DisplayedSurface, PointerRoutingState, PointerTarget, mouse_button},
+    pointer_axes,
 };
 
 const FRAMES_IN_FLIGHT: usize = 2;
-
-enum CaptureEvent {
-    Stream(u64, StreamReady, mpsc::SyncSender<bool>),
-    Frame(u64, FrameReady),
-    Disconnected(u64),
-}
 
 #[derive(Default)]
 struct Statistics {
@@ -232,6 +236,24 @@ const AUTO_HOOKS: [HookBackend; 4] = [
 ];
 
 impl HookBackend {
+    const ALL: [Self; 5] = [
+        Self::Vulkan,
+        Self::OpenGl,
+        Self::D3d12,
+        Self::D3d11,
+        Self::Gdi,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Vulkan => "Vulkan",
+            Self::OpenGl => "OpenGL",
+            Self::D3d12 => "D3D12",
+            Self::D3d11 => "D3D11",
+            Self::Gdi => "GDI",
+        }
+    }
+
     fn class(self) -> u8 {
         match self {
             Self::Gdi => 0,
@@ -347,9 +369,10 @@ fn surface_sort_key(surface_id: u64) -> (u8, u64) {
 impl ViewerCompositor {
     fn new(window: &Window, api: ViewerApi, publish_video: bool) -> Result<Self, Box<dyn Error>> {
         match api {
-            // D3D12 device selection requires the source adapter LUID, which arrives
-            // with StreamReady. Avoid creating and immediately replacing a Vulkan surface.
-            ViewerApi::D3d12 => Ok(Self::Empty),
+            ViewerApi::D3d12 => Ok(Self::D3d12(Box::new(d3d12::D3d12Compositor::new_default(
+                window,
+                publish_video,
+            )?))),
             ViewerApi::Vulkan => Ok(Self::Vulkan(Box::new(DirectCompositor::new(
                 window,
                 None,
@@ -368,6 +391,13 @@ impl ViewerCompositor {
         publish_video: bool,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
+        if api == ViewerApi::D3d12 && !d3d12_consumable(stream) {
+            return Err(format!(
+                "the selected D3D12 viewer cannot consume {:?} output; enable a hook that exports D3D12-compatible resources",
+                stream.image_kind
+            )
+            .into());
+        }
         if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
             let matches =
                 matches!(self, Self::D3d12(value) if value.adapter_luid() == stream.adapter_luid);
@@ -1926,26 +1956,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         log::set_max_level(log::LevelFilter::Trace);
     }
     let options = parse_target()?;
-    let target = options.target;
-    let track_render_targets = options.track_render_targets;
+    let mut launcher = LauncherState::from_options(&options);
+    let start_immediately = !options.target.is_empty();
     // Rotation is applied viewer-side while compositing. Vulkan graph surface
     // IDs encode this entry order, so reconnect and arrival order cannot move
     // a rotation to another tracked target.
-    let render_target_rotations = track_render_targets
-        .as_ref()
-        .map(|targets| {
-            targets
-                .iter()
-                .map(|target| target.quarter_turns)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let tracked_render_target_indices = track_render_targets.map(|targets| {
-        targets
-            .iter()
-            .map(|target| target.index)
-            .collect::<Vec<_>>()
-    });
+    let mut render_target_rotations = launcher.render_target_rotations();
     let webrtc_targets = options.webrtc.clone();
     let surface_limit = options.surfaces.max(
         webrtc_targets
@@ -1954,7 +1970,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_or(1, |index| index.saturating_add(1)),
     );
     let mut remaining_surface_skips = options.skip_surfaces;
-    let isolate = options.isolate;
     let viewer_api = options.api;
     let webrtc = webrtc_targets
         .as_ref()
@@ -1978,7 +1993,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let listener = LocalSocketListener::bind(&session)?;
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
-    let gamepad_mailbox = Arc::new(LatestGamepadMailbox::new(options.gamepads.len()));
+    let gamepad_mailbox = Arc::new(LatestGamepadMailbox::new(u8::MAX as usize + 1));
     let (input_tx, input_latency) = spawn_input_ipc(input_listener, gamepad_mailbox.clone());
     let stone_json = options
         .stone_db
@@ -1987,62 +2002,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         .transpose()?
         .unwrap_or_else(|| EMBEDDED_STONE_JSON.to_owned());
     let gamepad_registry = StoneRegistry::from_json(&stone_json).map_err(std::io::Error::other)?;
-    let gamepad_layouts = options
-        .gamepads
-        .iter()
-        .map(|gamepad| {
-            gamepad_registry
-                .layout(&gamepad.layout)
-                .cloned()
-                .ok_or_else(|| {
-                    std::io::Error::other(format!("unknown Stone layout {}", gamepad.layout))
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut gamepad_remap_drafts = vec![HashMap::<String, String>::new(); gamepad_layouts.len()];
-    let gamepad_provider = Sdl3Provider::start(
-        Sdl3ProviderConfig {
-            slots: options
-                .gamepads
-                .iter()
-                .map(|gamepad| SlotConfig {
-                    selector: gamepad.selector.clone(),
-                    layout_id: gamepad.layout.clone(),
-                    force_mouse: gamepad.force_mouse,
-                })
-                .collect(),
-            stone_database: options.stone_db.clone(),
-            gamecontroller_database: options.gamecontroller_db.clone(),
-        },
-        gamepad_mailbox,
-    )
-    .map_err(|error| std::io::Error::other(format!("SDL3 gamepad input failed: {error}")))?;
-    let hooks = options.hooks;
-    let target_process = launch_target(
-        &target,
-        &executable_dir,
-        &session,
-        tracked_render_target_indices,
-        options.graph_tracking,
-        options.force_keyed_mutex,
-        &hooks,
-        isolate,
-        &options
-            .gamepads
-            .iter()
-            .map(|gamepad| gamepad.layout.clone())
-            .collect::<Vec<_>>(),
-        options.stone_db.as_deref(),
-    )?;
-    let stop = Arc::new(AtomicBool::new(false));
+    let mut hooks = launcher.hooks.clone();
+    let mut gamepad_provider = None;
+    let mut gamepad_layouts = Vec::new();
+    let mut gamepad_remap_drafts = Vec::new();
+    let mut active_target = None;
+    let mut launch_error = None::<String>;
+    if start_immediately {
+        match start_target_session(
+            &launcher,
+            &gamepad_registry,
+            gamepad_mailbox.clone(),
+            &executable_dir,
+            &session,
+            launcher.tracked_render_target_indices(),
+            launcher.graph_tracking,
+            options.force_keyed_mutex,
+            options.stone_db.as_deref(),
+            options.gamecontroller_db.clone(),
+        ) {
+            Ok(started) => {
+                hooks = started.hooks;
+                gamepad_layouts = started.layouts;
+                gamepad_remap_drafts = vec![HashMap::new(); gamepad_layouts.len()];
+                gamepad_provider = Some(started.provider);
+                active_target = Some(started.target);
+            }
+            Err(error) => launch_error = Some(error.to_string()),
+        }
+    }
     let backing_window = Arc::new(AtomicIsize::new(0));
-    let (target_done_tx, target_done_rx) = mpsc::channel();
-    spawn_target_monitor(target_process, stop.clone(), target_done_tx);
     let (capture_tx, capture_rx) = mpsc::channel();
     // Connections the event loop has evicted (preempted or replaced). The IPC
     // threads close these sockets so the producer stops capturing.
     let revoked_connections = Arc::new(Mutex::new(HashSet::<u64>::new()));
-    spawn_ipc(
+    ipc::spawn(
         listener,
         capture_tx,
         viewer_api,
@@ -2089,7 +2083,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     event_loop.run(move |event, target| match event {
         Event::AboutToWait => {
-            let _ = &gamepad_provider;
             window.request_redraw()
         }
         Event::WindowEvent { event, .. } => {
@@ -2099,7 +2092,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             match event {
                 WindowEvent::CloseRequested => {
-                    stop.store(true, Ordering::Release);
+                    if let Some(active) = &active_target {
+                        active.stop.store(true, Ordering::Release);
+                    }
                     target.exit();
                 }
                 WindowEvent::Resized(size) => {
@@ -2166,10 +2161,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &input_tx,
                     ) {
                         if let Some(mapped) = pointer_routing.last_sent() {
-                            gamepad_provider.set_pointer(pointer_axes(
-                                mapped.normalized_x,
-                                mapped.normalized_y,
-                            ));
+                            if let Some(provider) = &gamepad_provider {
+                                provider.set_pointer(pointer_axes(
+                                    mapped.normalized_x,
+                                    mapped.normalized_y,
+                                ));
+                            }
                             direct_input.mouse_position(
                                 mapped.surface_id,
                                 mapped.x,
@@ -2179,7 +2176,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             );
                         }
                     } else {
-                        gamepad_provider.set_pointer(None);
+                        if let Some(provider) = &gamepad_provider {
+                            provider.set_pointer(None);
+                        }
                         direct_input.reset_mouse_position();
                     }
                 }
@@ -2233,9 +2232,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if size.width == 0 || size.height == 0 {
                         return;
                     }
-                    if target_done_rx.try_recv().is_ok() {
-                        target.exit();
-                        return;
+                    if active_target
+                        .as_ref()
+                        .is_some_and(|active| active.done.try_recv().is_ok())
+                    {
+                        active_target = None;
+                        gamepad_provider = None;
+                        backing_window.store(0, Ordering::Release);
+                        for connection in active_capture_connections.keys().copied().collect::<Vec<_>>() {
+                            let _ = compositor.disconnect_stream(connection);
+                        }
+                        active_capture_connections.clear();
+                        pointer_targets.clear();
+                        stream_indices.clear();
+                        active_backend = "Waiting";
+                        active_consumer = "Waiting";
                     }
                     while let Ok(capture) = capture_rx.try_recv() {
                         match capture {
@@ -2517,6 +2528,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                     Err(error) => {
                                         eprintln!("snowglass: direct import failed: {error}");
+                                        launch_error = Some(format!(
+                                            "The selected hooks did not publish output compatible with the fixed {viewer_api:?} viewer: {error}"
+                                        ));
                                         let _ = accepted.send(false);
                                     }
                                 }
@@ -2624,12 +2638,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let input = egui_state.take_egui_input(&window);
                     let webrtc_stats = webrtc.as_ref().map(webrtc::Publisher::stats);
                     let last_pointer_sent = pointer_routing.last_sent();
+                    let mut launch_requested = false;
+                    let mut close_requested = false;
                     let output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
                             ui.horizontal(|ui| {
                                 ui.strong(format!(
                                     "Snowglass {active_backend} via {active_consumer}"
                                 ));
+                                if active_target.is_some() && ui.button("Close program").clicked() {
+                                    close_requested = true;
+                                }
                                 ui.label(format!("Frame {}", stats.frame_number));
                                 ui.label(format!("Slot {}", stats.slot));
                                 ui.label(format!(
@@ -2686,6 +2705,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 });
                             });
                         });
+                        if active_target.is_none() {
+                            launch_requested = draw_launcher_window(
+                                context,
+                                &mut launcher,
+                                &gamepad_registry,
+                                &mut launch_error,
+                            );
+                        } else if let Some(message) = launch_error.clone() {
+                            egui::Window::new("Snowglass error")
+                                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                                .collapsible(false)
+                                .show(context, |ui| {
+                                    ui.colored_label(egui::Color32::LIGHT_RED, message);
+                                    if ui.button("Dismiss").clicked() {
+                                        launch_error = None;
+                                    }
+                                });
+                        }
                         let statistics_frame = egui::Frame::window(&context.style())
                             .fill(egui::Color32::TRANSPARENT)
                             .stroke(egui::Stroke::new(
@@ -2693,7 +2730,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 egui::Color32::from_white_alpha(48),
                             ))
                             .shadow(egui::epaint::Shadow::NONE);
+                        let mut show_frame_graph = active_target.is_some();
                         egui::Window::new("Frame Graph")
+                            .open(&mut show_frame_graph)
                             .default_pos(egui::pos2(12.0, 48.0))
                             .resizable(false)
                             .collapsible(true)
@@ -2701,13 +2740,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .show(context, |ui| {
                                 draw_statistics_graph(ui, &stats.history);
                             });
-                        draw_gamepad_window(
-                            context,
-                            &gamepad_provider,
-                            &gamepad_layouts,
-                            &mut gamepad_remap_drafts,
-                            &input_latency,
-                        );
+                        if let Some(provider) = &gamepad_provider {
+                            draw_gamepad_window(
+                                context,
+                                provider,
+                                &gamepad_layouts,
+                                &mut gamepad_remap_drafts,
+                                &input_latency,
+                            );
+                        }
                         if let Some(webrtc_stats) = &webrtc_stats
                             && webrtc_stats.connected_clients > 0
                         {
@@ -2766,6 +2807,42 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 });
                         }
                     });
+                    if close_requested
+                        && let Some(active) = &active_target
+                    {
+                        active.stop.store(true, Ordering::Release);
+                    }
+                    if launch_requested && active_target.is_none() {
+                        launch_error = None;
+                        match start_target_session(
+                            &launcher,
+                            &gamepad_registry,
+                            gamepad_mailbox.clone(),
+                            &executable_dir,
+                            &session,
+                            launcher.tracked_render_target_indices(),
+                            launcher.graph_tracking,
+                            options.force_keyed_mutex,
+                            options.stone_db.as_deref(),
+                            options.gamecontroller_db.clone(),
+                        ) {
+                            Ok(started) => {
+                                hooks = started.hooks;
+                                render_target_rotations = launcher.render_target_rotations();
+                                gamepad_layouts = started.layouts;
+                                gamepad_remap_drafts =
+                                    vec![HashMap::new(); gamepad_layouts.len()];
+                                gamepad_provider = Some(started.provider);
+                                active_target = Some(started.target);
+                                remaining_surface_skips = options.skip_surfaces;
+                                stats = Statistics {
+                                    sample_started: Some(Instant::now()),
+                                    ..Default::default()
+                                };
+                            }
+                            Err(error) => launch_error = Some(error.to_string()),
+                        }
+                    }
                     egui_state.handle_platform_output(&window, output.platform_output.clone());
                     let primitives =
                         egui_context.tessellate(output.shapes.clone(), output.pixels_per_point);
@@ -2796,42 +2873,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn pointer_axes(x: f64, y: f64) -> Option<[i16; 2]> {
-    fn axis(value: f64) -> Option<i16> {
-        if !value.is_finite() {
-            return None;
-        }
-        let value = value.clamp(0.0, 1.0);
-        let scaled = if value <= 0.5 {
-            value * 65_536.0 - 32_768.0
-        } else {
-            (value - 0.5) * 65_534.0
-        }
-        .round();
-        Some(scaled.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16)
-    }
-
-    Some([axis(x)?, axis(y)?])
-}
-
-#[cfg(test)]
-mod pointer_axis_tests {
-    use super::pointer_axes;
-
-    #[test]
-    fn absolute_pointer_fills_signed_axis_range() {
-        assert_eq!(pointer_axes(0.0, 0.0), Some([i16::MIN, i16::MIN]));
-        assert_eq!(pointer_axes(0.5, 0.5), Some([0, 0]));
-        assert_eq!(pointer_axes(1.0, 1.0), Some([i16::MAX, i16::MAX]));
-    }
-
-    #[test]
-    fn invalid_pointer_position_is_not_published() {
-        assert_eq!(pointer_axes(f64::NAN, 0.0), None);
-        assert_eq!(pointer_axes(0.0, f64::INFINITY), None);
-    }
-}
-
 fn physical_device_matches_luid(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
@@ -2842,114 +2883,6 @@ fn physical_device_matches_luid(
     unsafe { instance.get_physical_device_properties2(physical_device, &mut properties) };
     let expected = [luid.low_part.to_le_bytes(), luid.high_part.to_le_bytes()].concat();
     id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
-}
-
-fn spawn_ipc(
-    listener: LocalSocketListener,
-    events: mpsc::Sender<CaptureEvent>,
-    viewer_api: ViewerApi,
-    revoked: Arc<Mutex<HashSet<u64>>>,
-) {
-    thread::spawn(move || {
-        let next_connection = Arc::new(AtomicU64::new(0));
-        loop {
-            let mut socket = match listener.accept() {
-                Ok(socket) => socket,
-                Err(error) => {
-                    eprintln!("snowglass: IPC accept ended: {error}");
-                    return;
-                }
-            };
-            let connection = next_connection.fetch_add(1, Ordering::AcqRel) + 1;
-            if let Err(error) = socket.send(Message::Hello(Handshake {
-                protocol_version: PROTOCOL_VERSION,
-                process_id: std::process::id(),
-                preferred_consumer: match viewer_api {
-                    ViewerApi::D3d12 => ConsumerApi::D3d12,
-                    ViewerApi::Vulkan => ConsumerApi::Vulkan,
-                },
-            })) {
-                eprintln!("snowglass: IPC handshake failed: {error}");
-                continue;
-            }
-            let events = events.clone();
-            let revoked = revoked.clone();
-            thread::spawn(move || {
-                let result = (|| -> std::io::Result<()> {
-                    let mut accepted = false;
-                    let mut frames = None;
-                    loop {
-                        let message = socket.receive()?;
-                        if revoked
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner())
-                            .contains(&connection)
-                        {
-                            // The event loop evicted this stream; drop the
-                            // socket so the producer parks its capture.
-                            return Ok(());
-                        }
-                        match message {
-                            Message::StreamReady(stream) => {
-                                let (accepted_tx, accepted_rx) = mpsc::sync_channel(0);
-                                events
-                                    .send(CaptureEvent::Stream(connection, stream, accepted_tx))
-                                    .map_err(|_| {
-                                        std::io::Error::new(
-                                            std::io::ErrorKind::BrokenPipe,
-                                            "viewer closed",
-                                        )
-                                    })?;
-                                accepted = accepted_rx.recv().unwrap_or(false);
-                                if accepted {
-                                    socket.send(Message::StreamAccepted)?;
-                                } else {
-                                    return Ok(());
-                                }
-                            }
-                            Message::FrameReady(frame) => {
-                                if accepted {
-                                    let _ = events.send(CaptureEvent::Frame(connection, frame));
-                                }
-                            }
-                            Message::FrameAvailable => {
-                                if accepted
-                                    && let Some(frame) = frames.as_mut().and_then(
-                                        |frames: &mut snowglass_ipc::frame::FrameSubscriber| {
-                                            frames.latest().ok().flatten()
-                                        },
-                                    )
-                                {
-                                    let _ = events.send(CaptureEvent::Frame(connection, frame));
-                                }
-                            }
-                            Message::Shutdown => return Ok(()),
-                            Message::DirectInputData(_) => {}
-                            Message::PointerInput(_) => {}
-                            Message::GamepadUpdate(_) => {}
-                            Message::Hello(_) => {}
-                            Message::StreamAccepted => {}
-                            Message::MapOffer(offer) => {
-                                if offer.channel == snowglass_ipc::control::ChannelKind::Frame {
-                                    frames = Some(
-                                        snowglass_ipc::frame::FrameSubscriber::from_offer(offer)?,
-                                    );
-                                }
-                            }
-                            Message::MapAccepted => {}
-                        }
-                    }
-                })();
-                if let Err(error) = result
-                    && error.kind() != std::io::ErrorKind::UnexpectedEof
-                    && error.kind() != std::io::ErrorKind::ConnectionReset
-                {
-                    eprintln!("snowglass: IPC connection ended: {error}");
-                }
-                let _ = events.send(CaptureEvent::Disconnected(connection));
-            });
-        }
-    });
 }
 
 fn spawn_target_monitor(
@@ -2981,702 +2914,101 @@ fn spawn_target_monitor(
     });
 }
 
-/// One `--track-render-targets` entry: an index into the detected selection
-/// plus the number of counterclockwise quarter turns applied to that target
-/// when compositing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TrackedRenderTarget {
-    index: u32,
-    quarter_turns: u8,
+struct ActiveTarget {
+    stop: Arc<AtomicBool>,
+    done: mpsc::Receiver<()>,
 }
 
-struct ViewerOptions {
-    target: Vec<String>,
-    track_render_targets: Option<Vec<TrackedRenderTarget>>,
-    graph_tracking: bool,
-    surfaces: u32,
-    skip_surfaces: u32,
-    isolate: bool,
-    api: ViewerApi,
-    force_keyed_mutex: bool,
+struct StartedTarget {
+    target: ActiveTarget,
+    provider: Sdl3Provider,
+    layouts: Vec<StoneLayout>,
     hooks: Vec<HookBackend>,
-    webrtc: Option<Vec<u32>>,
-    bind_webrtc: SocketAddr,
-    gamepads: Vec<GamepadArgument>,
-    stone_db: Option<PathBuf>,
-    gamecontroller_db: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct GamepadArgument {
-    selector: DeviceSelector,
-    slot: usize,
-    layout: String,
-    force_mouse: bool,
-}
-
-#[derive(Parser)]
-#[command(name = "snowglass-viewer", version, about)]
-struct ViewerArguments {
-    /// Graphics API used to render the viewer window.
-    #[arg(long, value_enum, default_value_t)]
-    api: ViewerApi,
-
-    /// Map an SDL device index, exact name, or GUID to a virtual slot and Stone layout.
-    /// Append +M to the selector to force mouse pointer axes instead of its touchpad.
-    #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
-    gamepads: Vec<GamepadArgument>,
-
-    /// Updated Stone JSON database. The embedded database is used by default.
-    #[arg(long, value_name = "FILE")]
-    stone_db: Option<PathBuf>,
-
-    /// Updated SDL gamecontrollerdb.txt. The embedded database is used by default.
-    #[arg(long, value_name = "FILE")]
-    gamecontroller_db: Option<PathBuf>,
-
-    /// Track render targets by index into the detected selection, as a
-    /// comma-separated list. An entry may append `:TURNS` to rotate that
-    /// target counterclockwise by quarter turns when compositing
-    /// (`0:1,1` shows target 0 rotated 90 degrees above target 1).
-    #[arg(
-        long,
-        visible_alias = "track-render-target",
-        num_args = 0..=1,
-        default_missing_value = "0",
-        value_delimiter = ',',
-        value_name = "INDEXES",
-        value_parser = parse_render_target_index
-    )]
-    track_render_targets: Option<Vec<TrackedRenderTarget>>,
-
-    /// Resolve tracked render targets through the presentation dependency
-    /// graph (offscreen screens behind compositor blits and copies) instead
-    /// of the scissor and one-hop heuristics.
-    #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
+#[expect(clippy::too_many_arguments)]
+fn start_target_session(
+    launcher: &LauncherState,
+    registry: &StoneRegistry,
+    mailbox: Arc<LatestGamepadMailbox>,
+    executable_dir: &Path,
+    session: &str,
+    tracked_render_targets: Option<Vec<u32>>,
     graph_tracking: bool,
-
-    /// Publish selected render-target indices as tracks on one WebRTC stream.
-    #[arg(
-        long,
-        num_args = 0..,
-        default_missing_value = "0",
-        value_delimiter = ',',
-        value_name = "INDEXES",
-        value_parser = parse_webrtc_target
-    )]
-    webrtc: Option<Vec<u32>>,
-
-    /// Address for the WebRTC HTTP signaling server.
-    #[arg(
-        long,
-        default_value = "127.0.0.1:8080",
-        value_name = "IP:PORT",
-        requires = "webrtc"
-    )]
-    bind_webrtc: SocketAddr,
-
-    /// Maximum number of capture surfaces to display.
-    #[arg(
-        long,
-        default_value_t = 16,
-        num_args = 0..=1,
-        default_missing_value = "16",
-        value_parser = parse_surface_count
-    )]
-    surfaces: u32,
-
-    /// Number of matching capture surfaces to skip.
-    #[arg(
-        long,
-        visible_aliases = ["skip-surface", "skip-window", "skip-windows"],
-        default_value_t = 0,
-        num_args = 0..=1,
-        default_missing_value = "1",
-        value_parser = parse_skip_count
-    )]
-    skip_surfaces: u32,
-
-    /// Explicitly enable target process isolation (the default).
-    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
-    isolate: bool,
-
-    /// Run the target on the current desktop without process isolation.
-    #[arg(long, action = ArgAction::SetTrue)]
-    no_isolate: bool,
-
-    /// Force keyed-mutex synchronization for compatible capture backends.
-    #[arg(long = "force-km")]
     force_keyed_mutex: bool,
-
-    /// Capture hooks to install, as an ordered comma-separated list.
-    #[arg(
-        long = "hook",
-        action = ArgAction::Append,
-        value_enum,
-        value_delimiter = ',',
-        value_name = "HOOKS"
-    )]
-    hook_choices: Vec<HookChoice>,
-
-    /// Target program and its arguments. Must follow `--`.
-    #[arg(last = true, required = true, num_args = 1.., value_name = "COMMAND")]
-    target: Vec<String>,
-}
-
-impl ViewerArguments {
-    fn into_options(self) -> Result<ViewerOptions, Box<dyn Error>> {
-        let mut hooks = Vec::new();
-        expand_hook_choices(&mut hooks, self.hook_choices)?;
-        if hooks.is_empty() {
-            hooks.extend(AUTO_HOOKS);
-        }
-        if let Some(targets) = &self.webrtc {
-            let mut unique = HashSet::new();
-            if targets.iter().any(|target| !unique.insert(*target)) {
-                return Err("WebRTC render-target indices must be unique".into());
-            }
-        }
-        if let Some(targets) = &self.track_render_targets {
-            let mut unique = HashSet::new();
-            if targets.iter().any(|target| !unique.insert(target.index)) {
-                return Err("render-target indices must be unique".into());
-            }
-        }
-        let mut gamepads = self.gamepads;
-        if gamepads.is_empty() {
-            gamepads.push("0:0:XBOX_CONTROLLER".parse()?);
-        }
-        gamepads.sort_by_key(|gamepad| gamepad.slot);
-        for (expected, gamepad) in gamepads.iter().enumerate() {
-            if gamepad.slot != expected || expected > u8::MAX as usize {
-                return Err("gamepad slots must be unique and contiguous from zero".into());
-            }
-        }
-        Ok(ViewerOptions {
-            target: self.target,
-            track_render_targets: self.track_render_targets,
-            graph_tracking: self.graph_tracking,
-            surfaces: self.surfaces,
-            skip_surfaces: self.skip_surfaces,
-            isolate: !self.no_isolate,
-            api: self.api,
-            force_keyed_mutex: self.force_keyed_mutex,
-            hooks,
-            webrtc: self.webrtc,
-            bind_webrtc: self.bind_webrtc,
-            gamepads,
-            stone_db: self.stone_db,
-            gamecontroller_db: self.gamecontroller_db,
+    stone_database: Option<&Path>,
+    gamecontroller_database: Option<PathBuf>,
+) -> Result<StartedTarget, Box<dyn Error>> {
+    let target = launcher.target().map_err(std::io::Error::other)?;
+    if launcher.hooks.is_empty() {
+        return Err(std::io::Error::other("Select at least one graphics hook").into());
+    }
+    launcher
+        .validate_render_targets()
+        .map_err(std::io::Error::other)?;
+    let gamepads = launcher
+        .gamepad_arguments()
+        .map_err(std::io::Error::other)?;
+    let layouts = gamepads
+        .iter()
+        .map(|pad| {
+            registry.layout(&pad.layout).cloned().ok_or_else(|| {
+                std::io::Error::other(format!("Unknown Stone layout {}", pad.layout))
+            })
         })
-    }
-}
-
-fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
-    ViewerArguments::parse().into_options()
-}
-
-#[cfg(test)]
-fn parse_arguments(
-    arguments: impl IntoIterator<Item = String>,
-) -> Result<ViewerOptions, Box<dyn Error>> {
-    ViewerArguments::try_parse_from(
-        std::iter::once("snowglass-viewer".to_owned()).chain(arguments),
-    )?
-    .into_options()
-}
-
-fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String> {
-    let (index, turns) = match value.split_once(':') {
-        Some((index, turns)) => (index, Some(turns)),
-        None => (value, None),
-    };
-    let index = index
-        .parse::<u32>()
-        .map_err(|_| format!("invalid render-target index '{value}'; expected 0..=15"))?;
-    if index >= 16 {
-        return Err(format!(
-            "invalid render-target index '{value}'; expected 0..=15"
-        ));
-    }
-    let quarter_turns = match turns {
-        Some(turns) => {
-            (turns.parse::<u32>().map_err(|_| {
-                format!("invalid rotation '{turns}'; expected counterclockwise quarter turns")
-            })? % 4) as u8
-        }
-        None => 0,
-    };
-    Ok(TrackedRenderTarget {
-        index,
-        quarter_turns,
+        .collect::<Result<Vec<_>, _>>()?;
+    let provider = Sdl3Provider::start(
+        Sdl3ProviderConfig {
+            slots: gamepads
+                .iter()
+                .map(|pad| SlotConfig {
+                    selector: pad.selector.clone(),
+                    layout_id: pad.layout.clone(),
+                    force_mouse: pad.force_mouse,
+                })
+                .collect(),
+            stone_database: stone_database.map(Path::to_path_buf),
+            gamecontroller_database,
+        },
+        mailbox,
+    )
+    .map_err(|error| std::io::Error::other(format!("SDL3 gamepad input failed: {error}")))?;
+    let process = launch_target(
+        &target,
+        executable_dir,
+        session,
+        tracked_render_targets,
+        graph_tracking,
+        force_keyed_mutex,
+        &launcher.hooks,
+        launcher.isolate,
+        &layouts
+            .iter()
+            .map(|layout| layout.id.clone())
+            .collect::<Vec<_>>(),
+        stone_database,
+    )?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let (done_tx, done) = mpsc::channel();
+    spawn_target_monitor(process, stop.clone(), done_tx);
+    Ok(StartedTarget {
+        target: ActiveTarget { stop, done },
+        provider,
+        layouts,
+        hooks: launcher.hooks.clone(),
     })
-}
-
-fn parse_webrtc_target(value: &str) -> Result<u32, String> {
-    let index = value
-        .parse::<u32>()
-        .map_err(|_| format!("invalid WebRTC render-target index '{value}'"))?;
-    if index >= 16 {
-        return Err(format!(
-            "invalid WebRTC render-target index '{value}'; expected 0..=15"
-        ));
-    }
-    Ok(index)
-}
-
-fn parse_surface_count(value: &str) -> Result<u32, String> {
-    parse_bounded_count(value, "surface")
-}
-
-impl std::str::FromStr for GamepadArgument {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut fields = value.rsplitn(3, ':');
-        let layout = fields.next().filter(|field| !field.is_empty());
-        let slot = fields.next();
-        let selector = fields.next().filter(|field| !field.is_empty());
-        let (Some(layout), Some(slot), Some(selector)) = (layout, slot, selector) else {
-            return Err(format!(
-                "invalid gamepad mapping '{value}'; expected SELECTOR:SLOT:LAYOUT"
-            ));
-        };
-        let slot = slot
-            .parse::<usize>()
-            .map_err(|_| format!("invalid virtual slot '{slot}' in gamepad mapping '{value}'"))?;
-        if slot > u8::MAX as usize {
-            return Err(format!("virtual gamepad slot {slot} is outside 0..=255"));
-        }
-        let (selector, force_mouse) = selector
-            .strip_suffix("+M")
-            .map_or((selector, false), |selector| (selector, true));
-        if selector.is_empty() {
-            return Err(format!("missing selector before +M in gamepad mapping '{value}'"));
-        }
-        let compact_guid = selector.replace('-', "");
-        let selector = if let Ok(index) = selector.parse() {
-            DeviceSelector::Index(index)
-        } else if compact_guid.len() == 32
-            && compact_guid.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            DeviceSelector::Guid(compact_guid.to_ascii_lowercase())
-        } else {
-            DeviceSelector::Name(selector.to_owned())
-        };
-        Ok(Self {
-            selector,
-            slot,
-            layout: layout.to_owned(),
-            force_mouse,
-        })
-    }
-}
-
-fn parse_bounded_count(value: &str, name: &str) -> Result<u32, String> {
-    let count = value
-        .parse::<u32>()
-        .map_err(|_| format!("invalid {name} count '{value}'; expected 1..=16"))?;
-    if !(1..=16).contains(&count) {
-        return Err(format!("invalid {name} count '{value}'; expected 1..=16"));
-    }
-    Ok(count)
-}
-
-fn parse_skip_count(value: &str) -> Result<u32, String> {
-    value.parse::<u32>().map_err(|_| {
-        format!("invalid surface skip count '{value}'; expected a non-negative integer")
-    })
-}
-
-#[cfg(test)]
-mod argument_tests {
-    use super::*;
-
-    fn arguments(values: &[&str]) -> Result<ViewerOptions, Box<dyn Error>> {
-        parse_arguments(values.iter().map(|value| (*value).to_owned()))
-    }
-
-    fn tracked(index: u32, quarter_turns: u8) -> TrackedRenderTarget {
-        TrackedRenderTarget {
-            index,
-            quarter_turns,
-        }
-    }
-
-    #[test]
-    fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
-        let options = arguments(&["--", "game.exe"])?;
-        assert_eq!(options.api, ViewerApi::D3d12);
-        assert_eq!(options.track_render_targets, None);
-        assert_eq!(options.surfaces, 16);
-        assert_eq!(options.skip_surfaces, 0);
-        assert!(options.isolate);
-        assert!(!options.force_keyed_mutex);
-        assert_eq!(options.hooks, AUTO_HOOKS);
-        assert_eq!(options.target, ["game.exe"]);
-        assert_eq!(options.webrtc, None);
-        assert_eq!(options.bind_webrtc, "127.0.0.1:8080".parse()?);
-        assert_eq!(
-            options.gamepads,
-            [GamepadArgument {
-                selector: DeviceSelector::Index(0),
-                slot: 0,
-                layout: "XBOX_CONTROLLER".to_owned(),
-                force_mouse: false,
-            }]
-        );
-        assert_eq!(options.stone_db, None);
-        assert_eq!(options.gamecontroller_db, None);
-        Ok(())
-    }
-
-    #[test]
-    fn accepts_stone_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
-        let options = arguments(&[
-            "--gamepad",
-            "Nintendo Switch Controller:0:SWITCH_PRO_CONTROLLER",
-            "--gamepad",
-            "030000005e0400008e02000000000000:1:XBOX_CONTROLLER",
-            "--stone-db",
-            "stone.json",
-            "--gamecontroller-db",
-            "controllers.txt",
-            "--",
-            "game.exe",
-        ])?;
-        assert_eq!(
-            options.gamepads[0],
-            GamepadArgument {
-                selector: DeviceSelector::Name("Nintendo Switch Controller".to_owned()),
-                slot: 0,
-                layout: "SWITCH_PRO_CONTROLLER".to_owned(),
-                force_mouse: false,
-            }
-        );
-        assert!(matches!(
-            options.gamepads[1].selector,
-            DeviceSelector::Guid(_)
-        ));
-        assert_eq!(options.stone_db, Some(PathBuf::from("stone.json")));
-        assert_eq!(
-            options.gamecontroller_db,
-            Some(PathBuf::from("controllers.txt"))
-        );
-        let forced_mouse = "0+M:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
-        assert_eq!(forced_mouse.selector, DeviceSelector::Index(0));
-        assert!(forced_mouse.force_mouse);
-        assert_eq!(forced_mouse.layout, "WII_REMOTE_CONTROLLER");
-        assert!(arguments(&["--gamepad", "0:1:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
-        assert!(
-            arguments(&[
-                "--gamepad",
-                "0:0:XBOX_CONTROLLER",
-                "--gamepad",
-                "1:1:XBOX_CONTROLLER",
-                "--gamepad",
-                "2:2:XBOX_CONTROLLER",
-                "--gamepad",
-                "3:3:XBOX_CONTROLLER",
-                "--gamepad",
-                "4:4:XBOX_CONTROLLER",
-                "--",
-                "game.exe",
-            ])
-            .is_ok()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn hook_selection_defaults_to_auto_without_gdi() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            arguments(&["--hook", "auto", "--", "game.exe"])?.hooks,
-            AUTO_HOOKS
-        );
-        assert!(!AUTO_HOOKS.contains(&HookBackend::Gdi));
-        Ok(())
-    }
-
-    #[test]
-    fn hook_order_defines_priority() -> Result<(), Box<dyn Error>> {
-        let options = arguments(&["--hook", "gdi,d3d11", "--hook", "vulkan", "--", "game.exe"])?;
-        assert_eq!(
-            options.hooks,
-            [HookBackend::Gdi, HookBackend::D3d11, HookBackend::Vulkan]
-        );
-        let gdi = HookBackend::Gdi.class();
-        let vulkan = HookBackend::Vulkan.class();
-        assert!(class_priority(&options.hooks, gdi) < class_priority(&options.hooks, vulkan));
-        assert_eq!(
-            class_priority(&options.hooks, HookBackend::OpenGl.class()),
-            None
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn hook_auto_appends_the_remaining_backends() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            arguments(&["--hook=gdi,auto", "--", "game.exe"])?.hooks,
-            [
-                HookBackend::Gdi,
-                HookBackend::Vulkan,
-                HookBackend::OpenGl,
-                HookBackend::D3d12,
-                HookBackend::D3d11,
-            ]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_unknown_and_repeated_hooks() {
-        assert!(arguments(&["--hook", "metal", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--hook", "vulkan,vulkan", "--", "game.exe"]).is_err());
-    }
-
-    #[test]
-    fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn Error>> {
-        let options = arguments(&[
-            "--track-render-target",
-            "--no-isolate",
-            "--force-km",
-            "--api=vulkan",
-            "--",
-            "game.exe",
-            "--api",
-            "target-argument",
-        ])?;
-        assert_eq!(options.api, ViewerApi::Vulkan);
-        assert_eq!(options.track_render_targets, Some(vec![tracked(0, 0)]));
-        assert!(!options.isolate);
-        assert!(options.force_keyed_mutex);
-        assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
-        Ok(())
-    }
-
-    #[test]
-    fn accepts_render_target_indices_and_defaults_to_zero() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            arguments(&["--track-render-targets", "0,1", "--", "game.exe"])?.track_render_targets,
-            Some(vec![tracked(0, 0), tracked(1, 0)])
-        );
-        assert_eq!(
-            arguments(&["--track-render-targets", "--", "game.exe"])?.track_render_targets,
-            Some(vec![tracked(0, 0)])
-        );
-        assert_eq!(
-            arguments(&["--track-render-targets=1", "--", "game.exe"])?.track_render_targets,
-            Some(vec![tracked(1, 0)])
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn accepts_render_target_rotations_in_quarter_turns() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            arguments(&["--track-render-targets", "0:1,1", "--", "game.exe"])?.track_render_targets,
-            Some(vec![tracked(0, 1), tracked(1, 0)])
-        );
-        // Quarter turns wrap around the unit circle.
-        assert_eq!(
-            arguments(&["--track-render-targets=0:4,1:7", "--", "game.exe"])?.track_render_targets,
-            Some(vec![tracked(0, 0), tracked(1, 3)])
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_invalid_render_target_indices() {
-        assert!(arguments(&["--track-render-targets", "16", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--track-render-targets=0,0", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--track-render-targets=0:x", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--track-render-targets=0:", "--", "game.exe"]).is_err());
-        // Rotation does not distinguish otherwise duplicate indices.
-        assert!(arguments(&["--track-render-targets=0:1,0:2", "--", "game.exe"]).is_err());
-    }
-
-    #[test]
-    fn accepts_webrtc_defaults_and_target_indices() -> Result<(), Box<dyn Error>> {
-        let defaults = arguments(&["--webrtc", "--", "game.exe"])?;
-        assert_eq!(defaults.webrtc, Some(vec![0]));
-        let explicit = arguments(&[
-            "--webrtc=0,1",
-            "--bind-webrtc",
-            "0.0.0.0:9000",
-            "--",
-            "game.exe",
-        ])?;
-        assert_eq!(explicit.webrtc, Some(vec![0, 1]));
-        assert_eq!(explicit.bind_webrtc, "0.0.0.0:9000".parse()?);
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_invalid_webrtc_options() {
-        assert!(arguments(&["--webrtc=16", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--webrtc=0,0", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--bind-webrtc=0.0.0.0:9000", "--", "game.exe"]).is_err());
-    }
-
-    #[test]
-    fn accepts_a_surface_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            arguments(&["--surfaces", "2", "--", "game.exe"])?.surfaces,
-            2
-        );
-        assert_eq!(arguments(&["--surfaces", "--", "game.exe"])?.surfaces, 16);
-        assert_eq!(arguments(&["--surfaces=3", "--", "game.exe"])?.surfaces, 3);
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_an_invalid_surface_count() {
-        assert!(arguments(&["--surfaces", "0", "--", "game.exe"]).is_err());
-        assert!(arguments(&["--surfaces=17", "--", "game.exe"]).is_err());
-    }
-
-    #[test]
-    fn accepts_a_surface_skip_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            arguments(&["--skip-surfaces", "2", "--", "game.exe"])?.skip_surfaces,
-            2
-        );
-        assert_eq!(
-            arguments(&["--skip-surfaces", "--", "game.exe"])?.skip_surfaces,
-            1
-        );
-        assert_eq!(
-            arguments(&["--skip-windows=3", "--", "game.exe"])?.skip_surfaces,
-            3
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_an_invalid_surface_skip_count() {
-        assert!(arguments(&["--skip-surfaces=menu", "--", "game.exe"]).is_err());
-    }
-
-    #[test]
-    fn originating_api_stream_wins_same_window_duplicates() {
-        let d3d11 = stream_backend_class(ExternalImageKind::D3d11D3d12Resource);
-        let d3d12 = stream_backend_class(ExternalImageKind::D3d12Resource);
-        let opengl = stream_backend_class(ExternalImageKind::OpenGlD3d12Resource);
-        let vulkan = stream_backend_class(ExternalImageKind::VulkanD3d12Resource);
-        assert!(should_replace_same_window_backend(
-            &AUTO_HOOKS,
-            d3d11,
-            d3d12
-        ));
-        assert!(should_replace_same_window_backend(
-            &AUTO_HOOKS,
-            d3d12,
-            opengl
-        ));
-        assert!(should_replace_same_window_backend(
-            &AUTO_HOOKS,
-            d3d12,
-            vulkan
-        ));
-        assert!(!should_replace_same_window_backend(
-            &AUTO_HOOKS,
-            vulkan,
-            d3d12
-        ));
-        assert!(!should_replace_same_window_backend(
-            &AUTO_HOOKS,
-            opengl,
-            d3d12
-        ));
-        // A recreated surface from the same backend still replaces its predecessor.
-        assert!(should_replace_same_window_backend(
-            &AUTO_HOOKS,
-            vulkan,
-            vulkan
-        ));
-        // The submitted hook order overrides the automatic ranking.
-        let reversed = [HookBackend::D3d11, HookBackend::Vulkan];
-        assert!(!should_replace_same_window_backend(
-            &reversed, d3d11, vulkan
-        ));
-        assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
-    }
-
-    #[test]
-    fn recreated_logical_surface_replaces_its_previous_connection() {
-        let active = HashMap::from([(7, (graph_surface_for_test(1), 4))]);
-
-        assert_eq!(
-            matching_surface_connection(&active, graph_surface_for_test(1)),
-            Some((7, 4))
-        );
-        assert_eq!(
-            matching_surface_connection(&active, graph_surface_for_test(2)),
-            None
-        );
-    }
-
-    #[test]
-    fn graph_surface_identity_determines_display_and_rotation_slot() {
-        assert_eq!(graph_surface_index(graph_surface_for_test(0)), Some(0));
-        assert_eq!(graph_surface_index(graph_surface_for_test(1)), Some(1));
-        assert_eq!(graph_surface_index(0x1234), None);
-    }
-
-    fn graph_surface_for_test(index: u64) -> u64 {
-        0x5347_0000_0000_0000 | index
-    }
-
-    fn offset_tuples(offsets: [vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {
-        offsets.map(|offset| (offset.x, offset.y, offset.z))
-    }
-
-    #[test]
-    fn bottom_up_streams_reverse_vulkan_source_y() {
-        assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, true, 0)),
-            [(0, 720, 0), (1280, 0, 1)]
-        );
-        assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, false, 0)),
-            [(0, 0, 0), (1280, 720, 1)]
-        );
-        assert_eq!(vertical_layout_index(0, 2, true), 1);
-        assert_eq!(vertical_layout_index(1, 2, true), 0);
-        assert_eq!(vertical_layout_index(0, 2, false), 0);
-    }
-
-    #[test]
-    fn half_turns_mirror_vulkan_blit_source_offsets() {
-        assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, false, 2)),
-            [(1280, 720, 0), (0, 0, 1)]
-        );
-        // A flipped half turn cancels the vertical mirror.
-        assert_eq!(
-            offset_tuples(blit_source_offsets(1280, 720, true, 2)),
-            [(1280, 0, 0), (0, 720, 1)]
-        );
-    }
 }
 
 enum TargetChild {
     Standard(Child),
-    Isolated(IsolatedChild),
-}
-
-struct IsolatedChild {
-    process: std::os::windows::io::OwnedHandle,
-    process_id: u32,
+    Isolated(IsolatedProcess),
 }
 
 impl TargetChild {
     fn id(&self) -> u32 {
         match self {
             Self::Standard(child) => child.id(),
-            Self::Isolated(child) => child.process_id,
+            Self::Isolated(child) => child.id(),
         }
     }
 
@@ -3685,212 +3017,30 @@ impl TargetChild {
 
         match self {
             Self::Standard(child) => child.as_raw_handle() as _,
-            Self::Isolated(child) => child.process.as_raw_handle(),
+            Self::Isolated(child) => child.raw_handle(),
         }
     }
 
     fn kill(&mut self) -> std::io::Result<()> {
-        use std::os::windows::io::AsRawHandle;
-
         match self {
             Self::Standard(child) => child.kill(),
-            Self::Isolated(child) => {
-                if unsafe {
-                    windows_sys::Win32::System::Threading::TerminateProcess(
-                        child.process.as_raw_handle(),
-                        1,
-                    )
-                } == 0
-                {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            }
+            Self::Isolated(child) => child.kill(),
         }
     }
 
     fn try_wait(&mut self) -> std::io::Result<Option<()>> {
         match self {
             Self::Standard(child) => child.try_wait().map(|status| status.map(drop)),
-            Self::Isolated(child) => {
-                use std::os::windows::io::AsRawHandle;
-                use windows_sys::Win32::{
-                    Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
-                    System::Threading::WaitForSingleObject,
-                };
-
-                match unsafe { WaitForSingleObject(child.process.as_raw_handle(), 0) } {
-                    WAIT_OBJECT_0 => Ok(Some(())),
-                    WAIT_TIMEOUT => Ok(None),
-                    WAIT_FAILED => Err(std::io::Error::last_os_error()),
-                    result => Err(std::io::Error::other(format!(
-                        "unexpected process wait result {result}"
-                    ))),
-                }
-            }
+            Self::Isolated(child) => child.try_wait(),
         }
     }
 
     fn wait(&mut self) -> std::io::Result<()> {
         match self {
             Self::Standard(child) => child.wait().map(drop),
-            Self::Isolated(child) => {
-                use std::os::windows::io::AsRawHandle;
-                use windows_sys::Win32::{
-                    Foundation::{WAIT_FAILED, WAIT_OBJECT_0},
-                    System::Threading::{INFINITE, WaitForSingleObject},
-                };
-
-                match unsafe { WaitForSingleObject(child.process.as_raw_handle(), INFINITE) } {
-                    WAIT_OBJECT_0 => Ok(()),
-                    WAIT_FAILED => Err(std::io::Error::last_os_error()),
-                    result => Err(std::io::Error::other(format!(
-                        "unexpected process wait result {result}"
-                    ))),
-                }
-            }
+            Self::Isolated(child) => child.wait(),
         }
     }
-}
-
-fn append_windows_argument(
-    command_line: &mut Vec<u16>,
-    value: &OsStr,
-    always_quote: bool,
-) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let value = value.encode_wide().collect::<Vec<_>>();
-    if value.contains(&0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "process argument contains a null character",
-        ));
-    }
-    let quote = always_quote
-        || value.is_empty()
-        || value
-            .iter()
-            .any(|unit| *unit == b' ' as u16 || *unit == b'\t' as u16);
-    if !quote {
-        command_line.extend_from_slice(&value);
-        return Ok(());
-    }
-
-    command_line.push(b'"' as u16);
-    let mut backslashes = 0;
-    for unit in value {
-        if unit == b'\\' as u16 {
-            backslashes += 1;
-        } else if unit == b'"' as u16 {
-            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
-            command_line.push(unit);
-            backslashes = 0;
-        } else {
-            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
-            command_line.push(unit);
-            backslashes = 0;
-        }
-    }
-    command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
-    command_line.push(b'"' as u16);
-    Ok(())
-}
-
-fn windows_command_line(target: &[String]) -> std::io::Result<Vec<u16>> {
-    let mut command_line = Vec::new();
-    append_windows_argument(&mut command_line, OsStr::new(&target[0]), true)?;
-    for argument in &target[1..] {
-        command_line.push(b' ' as u16);
-        append_windows_argument(&mut command_line, OsStr::new(argument), false)?;
-    }
-    command_line.push(0);
-    Ok(command_line)
-}
-
-fn windows_environment(overrides: &[(OsString, OsString)]) -> std::io::Result<Vec<u16>> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let mut environment = env::vars_os().collect::<Vec<_>>();
-    for (name, value) in overrides {
-        if let Some(existing) = environment.iter_mut().find(|(existing, _)| {
-            existing
-                .to_string_lossy()
-                .eq_ignore_ascii_case(&name.to_string_lossy())
-        }) {
-            existing.1.clone_from(value);
-        } else {
-            environment.push((name.clone(), value.clone()));
-        }
-    }
-    environment.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_lowercase());
-
-    let mut block = Vec::new();
-    for (name, value) in environment {
-        let name = name.encode_wide().collect::<Vec<_>>();
-        let value = value.encode_wide().collect::<Vec<_>>();
-        if name.contains(&0) || value.contains(&0) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "environment contains a null character",
-            ));
-        }
-        block.extend(name);
-        block.push(b'=' as u16);
-        block.extend(value);
-        block.push(0);
-    }
-    block.push(0);
-    Ok(block)
-}
-
-fn spawn_isolated_target(
-    target: &[String],
-    environment: &[(OsString, OsString)],
-    desktop: &str,
-) -> std::io::Result<IsolatedChild> {
-    use std::{os::windows::io::FromRawHandle, ptr};
-    use windows_sys::Win32::System::Threading::{
-        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, PROCESS_INFORMATION,
-        STARTUPINFOW,
-    };
-
-    let mut command_line = windows_command_line(target)?;
-    let environment = windows_environment(environment)?;
-    let mut desktop = desktop.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-    let startup = STARTUPINFOW {
-        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-        lpDesktop: desktop.as_mut_ptr(),
-        ..Default::default()
-    };
-    let mut process_info = PROCESS_INFORMATION::default();
-    if unsafe {
-        CreateProcessW(
-            ptr::null(),
-            command_line.as_mut_ptr(),
-            ptr::null(),
-            ptr::null(),
-            0,
-            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-            environment.as_ptr().cast(),
-            ptr::null(),
-            &raw const startup,
-            &raw mut process_info,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    let process =
-        unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(process_info.hProcess) };
-    let initial_thread =
-        unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(process_info.hThread) };
-    drop(initial_thread);
-    Ok(IsolatedChild {
-        process,
-        process_id: process_info.dwProcessId,
-    })
 }
 
 struct TargetProcess {
@@ -4092,9 +3242,8 @@ fn launch_target(
     command.creation_flags(CREATE_SUSPENDED);
     let job = KillOnCloseJob::new()?;
     let (desktop, mut child) = if isolate {
-        let (desktop, mut attachment) = PrivateDesktop::create_and_attach_current_thread(session)?;
-        attachment.restore()?;
-        let child = spawn_isolated_target(target, &environment, session)?;
+        let desktop = PrivateDesktop::create(session)?;
+        let child = IsolatedProcess::spawn_suspended(target, &environment, session)?;
         (Some(desktop), TargetChild::Isolated(child))
     } else {
         (None, TargetChild::Standard(command.spawn()?))
@@ -4119,122 +3268,6 @@ fn launch_target(
         child,
         job,
         desktop,
-    })
-}
-
-fn load_window(window: &AtomicIsize) -> Option<NativeWindow> {
-    let value = window.load(Ordering::Acquire);
-    (value != 0).then_some(NativeWindow(value))
-}
-
-fn native_window(window: &Window) -> Result<NativeWindow, Box<dyn Error>> {
-    match window.window_handle()?.as_raw() {
-        RawWindowHandle::Win32(handle) => Ok(NativeWindow(handle.hwnd.get() as isize)),
-        _ => Err("Snowglass viewer requires a Win32 window".into()),
-    }
-}
-
-fn virtual_key(code: KeyCode) -> Option<u32> {
-    Some(match code {
-        KeyCode::Backspace => 0x08,
-        KeyCode::Tab => 0x09,
-        KeyCode::Enter | KeyCode::NumpadEnter => 0x0d,
-        KeyCode::ShiftLeft | KeyCode::ShiftRight => 0x10,
-        KeyCode::ControlLeft | KeyCode::ControlRight => 0x11,
-        KeyCode::AltLeft | KeyCode::AltRight => 0x12,
-        KeyCode::Pause => 0x13,
-        KeyCode::CapsLock => 0x14,
-        KeyCode::Escape => 0x1b,
-        KeyCode::Space => 0x20,
-        KeyCode::PageUp => 0x21,
-        KeyCode::PageDown => 0x22,
-        KeyCode::End => 0x23,
-        KeyCode::Home => 0x24,
-        KeyCode::ArrowLeft => 0x25,
-        KeyCode::ArrowUp => 0x26,
-        KeyCode::ArrowRight => 0x27,
-        KeyCode::ArrowDown => 0x28,
-        KeyCode::Insert => 0x2d,
-        KeyCode::Delete => 0x2e,
-        KeyCode::Digit0 => 0x30,
-        KeyCode::Digit1 => 0x31,
-        KeyCode::Digit2 => 0x32,
-        KeyCode::Digit3 => 0x33,
-        KeyCode::Digit4 => 0x34,
-        KeyCode::Digit5 => 0x35,
-        KeyCode::Digit6 => 0x36,
-        KeyCode::Digit7 => 0x37,
-        KeyCode::Digit8 => 0x38,
-        KeyCode::Digit9 => 0x39,
-        KeyCode::KeyA => 0x41,
-        KeyCode::KeyB => 0x42,
-        KeyCode::KeyC => 0x43,
-        KeyCode::KeyD => 0x44,
-        KeyCode::KeyE => 0x45,
-        KeyCode::KeyF => 0x46,
-        KeyCode::KeyG => 0x47,
-        KeyCode::KeyH => 0x48,
-        KeyCode::KeyI => 0x49,
-        KeyCode::KeyJ => 0x4a,
-        KeyCode::KeyK => 0x4b,
-        KeyCode::KeyL => 0x4c,
-        KeyCode::KeyM => 0x4d,
-        KeyCode::KeyN => 0x4e,
-        KeyCode::KeyO => 0x4f,
-        KeyCode::KeyP => 0x50,
-        KeyCode::KeyQ => 0x51,
-        KeyCode::KeyR => 0x52,
-        KeyCode::KeyS => 0x53,
-        KeyCode::KeyT => 0x54,
-        KeyCode::KeyU => 0x55,
-        KeyCode::KeyV => 0x56,
-        KeyCode::KeyW => 0x57,
-        KeyCode::KeyX => 0x58,
-        KeyCode::KeyY => 0x59,
-        KeyCode::KeyZ => 0x5a,
-        KeyCode::SuperLeft => 0x5b,
-        KeyCode::SuperRight => 0x5c,
-        KeyCode::Numpad0 => 0x60,
-        KeyCode::Numpad1 => 0x61,
-        KeyCode::Numpad2 => 0x62,
-        KeyCode::Numpad3 => 0x63,
-        KeyCode::Numpad4 => 0x64,
-        KeyCode::Numpad5 => 0x65,
-        KeyCode::Numpad6 => 0x66,
-        KeyCode::Numpad7 => 0x67,
-        KeyCode::Numpad8 => 0x68,
-        KeyCode::Numpad9 => 0x69,
-        KeyCode::NumpadMultiply => 0x6a,
-        KeyCode::NumpadAdd => 0x6b,
-        KeyCode::NumpadSubtract => 0x6d,
-        KeyCode::NumpadDecimal => 0x6e,
-        KeyCode::NumpadDivide => 0x6f,
-        KeyCode::F1 => 0x70,
-        KeyCode::F2 => 0x71,
-        KeyCode::F3 => 0x72,
-        KeyCode::F4 => 0x73,
-        KeyCode::F5 => 0x74,
-        KeyCode::F6 => 0x75,
-        KeyCode::F7 => 0x76,
-        KeyCode::F8 => 0x77,
-        KeyCode::F9 => 0x78,
-        KeyCode::F10 => 0x79,
-        KeyCode::F11 => 0x7a,
-        KeyCode::F12 => 0x7b,
-        KeyCode::NumLock => 0x90,
-        KeyCode::ScrollLock => 0x91,
-        KeyCode::Semicolon => 0xba,
-        KeyCode::Equal => 0xbb,
-        KeyCode::Comma => 0xbc,
-        KeyCode::Minus => 0xbd,
-        KeyCode::Period => 0xbe,
-        KeyCode::Slash => 0xbf,
-        KeyCode::Backquote => 0xc0,
-        KeyCode::BracketLeft => 0xdb,
-        KeyCode::Backslash => 0xdc,
-        KeyCode::BracketRight => 0xdd,
-        KeyCode::Quote => 0xde,
-        _ => return None,
     })
 }
 
@@ -4638,319 +3671,6 @@ fn color_layers() -> vk::ImageSubresourceLayers {
         mip_level: 0,
         base_array_layer: 0,
         layer_count: 1,
-    }
-}
-
-fn draw_gamepad_window(
-    context: &egui::Context,
-    provider: &Sdl3Provider,
-    layouts: &[StoneLayout],
-    drafts: &mut [HashMap<String, String>],
-    latency: &InputLatencyStats,
-) {
-    const BUTTONS: [SdlButton; 21] = [
-        SdlButton::South,
-        SdlButton::East,
-        SdlButton::West,
-        SdlButton::North,
-        SdlButton::Back,
-        SdlButton::Guide,
-        SdlButton::Start,
-        SdlButton::LeftStick,
-        SdlButton::RightStick,
-        SdlButton::LeftShoulder,
-        SdlButton::RightShoulder,
-        SdlButton::DpadUp,
-        SdlButton::DpadDown,
-        SdlButton::DpadLeft,
-        SdlButton::DpadRight,
-        SdlButton::Misc1,
-        SdlButton::RightPaddle1,
-        SdlButton::LeftPaddle1,
-        SdlButton::RightPaddle2,
-        SdlButton::LeftPaddle2,
-        SdlButton::Touchpad,
-    ];
-    const AXES: [SdlAxis; 6] = [
-        SdlAxis::LeftX,
-        SdlAxis::LeftY,
-        SdlAxis::RightX,
-        SdlAxis::RightY,
-        SdlAxis::LeftTrigger,
-        SdlAxis::RightTrigger,
-    ];
-
-    let states = provider.states();
-    egui::Window::new("Gamepads")
-        .default_pos(egui::pos2(880.0, 48.0))
-        .default_width(380.0)
-        .show(context, |ui| {
-            let latency = latency.summary();
-            if latency.samples == 0 {
-                ui.colored_label(egui::Color32::GRAY, "Input dispatch latency: waiting");
-            } else {
-                ui.label(format!(
-                    "Input dispatch latency  p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  (n={})",
-                    latency.p50_ms, latency.p95_ms, latency.p99_ms, latency.samples
-                ))
-                .on_hover_text(
-                    "Physical SDL sample to completion of the AF_UNIX send; excludes Dolphin's subsequent SDL update.",
-                );
-            }
-            ui.separator();
-            for (slot, layout) in layouts.iter().enumerate() {
-                egui::CollapsingHeader::new(format!("Slot {slot}: {}", layout.friendly_name))
-                    .default_open(slot == 0)
-                    .show(ui, |ui| {
-                        let Some(state) = states.get(slot).and_then(Option::as_ref) else {
-                            ui.colored_label(egui::Color32::GRAY, "Controller disconnected");
-                            return;
-                        };
-                        ui.strong(&state.name);
-                        ui.monospace(&state.guid);
-                        ui.label(format!(
-                            "Sticks L {:?}  R {:?}   Triggers {} / {}",
-                            state.mapped.left_stick,
-                            state.mapped.right_stick,
-                            state.mapped.left_trigger,
-                            state.mapped.right_trigger
-                        ));
-                        let pressed = state
-                            .buttons
-                            .iter()
-                            .filter_map(|(button, pressed)| pressed.then(|| format!("{button:?}")))
-                            .collect::<Vec<_>>();
-                        ui.label(if pressed.is_empty() {
-                            "Pressed: none".to_owned()
-                        } else {
-                            format!("Pressed: {}", pressed.join(", "))
-                        });
-                        ui.label(format!(
-                            "Axes: {}",
-                            state
-                                .axes
-                                .iter()
-                                .map(|(axis, value)| format!("{axis:?}={value}"))
-                                .collect::<Vec<_>>()
-                                .join("  ")
-                        ));
-                        if state.mapped.accelerometer != [0.0; 3]
-                            || state.mapped.gyroscope != [0.0; 3]
-                        {
-                            ui.label(format!(
-                                "Sensors: accel {:?} m/s²   gyro {:?} rad/s",
-                                state.mapped.accelerometer, state.mapped.gyroscope
-                            ));
-                        }
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.strong("Real SDL input → Stone control");
-                            if ui.small_button("Reset").clicked() {
-                                drafts[slot].clear();
-                                provider.reset_bindings(slot);
-                            }
-                        });
-                        egui::ScrollArea::vertical()
-                            .max_height(300.0)
-                            .show(ui, |ui| {
-                                for element in &layout.elements {
-                                    if !is_remappable_stone_element(&element.id) {
-                                        continue;
-                                    }
-                                    let selected = drafts[slot]
-                                        .entry(element.id.clone())
-                                        .or_insert_with(|| "Default".to_owned());
-                                    let previous = selected.clone();
-                                    ui.horizontal(|ui| {
-                                        ui.label(&element.label).on_hover_text(&element.id);
-                                        egui::ComboBox::from_id_salt((
-                                            "gamepad-remap",
-                                            slot,
-                                            &element.id,
-                                        ))
-                                        .selected_text(selected.as_str())
-                                        .width(145.0)
-                                        .show_ui(
-                                            ui,
-                                            |ui| {
-                                                ui.selectable_value(
-                                                    selected,
-                                                    "Default".to_owned(),
-                                                    "Default",
-                                                );
-                                                ui.selectable_value(
-                                                    selected,
-                                                    "Disabled".to_owned(),
-                                                    "Disabled",
-                                                );
-                                                for button in BUTTONS {
-                                                    let value = format!("Button:{button:?}");
-                                                    ui.selectable_value(
-                                                        selected,
-                                                        value.clone(),
-                                                        value,
-                                                    );
-                                                }
-                                                if stone_element_accepts_axis(&element.id) {
-                                                    for axis in AXES {
-                                                        let value = format!("Axis:{axis:?}");
-                                                        ui.selectable_value(
-                                                            selected,
-                                                            value.clone(),
-                                                            value,
-                                                        );
-                                                    }
-                                                }
-                                            },
-                                        );
-                                    });
-                                    if *selected != previous {
-                                        if let Some(binding) = ui_binding(selected) {
-                                            provider.set_binding(slot, element.id.clone(), binding);
-                                        } else {
-                                            provider.clear_binding(slot, element.id.clone());
-                                        }
-                                    }
-                                }
-                            });
-                    });
-            }
-        });
-}
-
-fn is_remappable_stone_element(id: &str) -> bool {
-    id.starts_with("Button") || id.starts_with("Directional") || stone_element_accepts_axis(id)
-}
-
-fn stone_element_accepts_axis(id: &str) -> bool {
-    id.starts_with("Axis") || id.starts_with("Trigger")
-}
-
-fn ui_binding(value: &str) -> Option<InputBinding> {
-    if value == "Default" {
-        return None;
-    }
-    if value == "Disabled" {
-        return Some(InputBinding::Disabled { disabled: true });
-    }
-    if let Some(name) = value.strip_prefix("Button:") {
-        let button = [
-            SdlButton::South,
-            SdlButton::East,
-            SdlButton::West,
-            SdlButton::North,
-            SdlButton::Back,
-            SdlButton::Guide,
-            SdlButton::Start,
-            SdlButton::LeftStick,
-            SdlButton::RightStick,
-            SdlButton::LeftShoulder,
-            SdlButton::RightShoulder,
-            SdlButton::DpadUp,
-            SdlButton::DpadDown,
-            SdlButton::DpadLeft,
-            SdlButton::DpadRight,
-            SdlButton::Misc1,
-            SdlButton::RightPaddle1,
-            SdlButton::LeftPaddle1,
-            SdlButton::RightPaddle2,
-            SdlButton::LeftPaddle2,
-            SdlButton::Touchpad,
-        ]
-        .into_iter()
-        .find(|button| format!("{button:?}") == name)?;
-        return Some(InputBinding::Button { button });
-    }
-    let name = value.strip_prefix("Axis:")?;
-    let axis = [
-        SdlAxis::LeftX,
-        SdlAxis::LeftY,
-        SdlAxis::RightX,
-        SdlAxis::RightY,
-        SdlAxis::LeftTrigger,
-        SdlAxis::RightTrigger,
-    ]
-    .into_iter()
-    .find(|axis| format!("{axis:?}") == name)?;
-    Some(InputBinding::Axis {
-        axis,
-        invert: false,
-    })
-}
-
-fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSample>) {
-    const GRAPH_WIDTH: f32 = 420.0;
-    const GRAPH_HEIGHT: f32 = 90.0;
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(GRAPH_WIDTH, GRAPH_HEIGHT), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(48));
-    for division in 1..4 {
-        let y = egui::lerp(rect.top()..=rect.bottom(), division as f32 / 4.0);
-        painter.line_segment(
-            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(55)),
-        );
-    }
-    if history.len() >= 2 {
-        let fps_max = history
-            .iter()
-            .map(|sample| sample.fps)
-            .fold(60.0_f32, f32::max)
-            .max(1.0);
-        let latency_max = history
-            .iter()
-            .map(|sample| sample.latency_ms)
-            .fold(16.67_f32, f32::max)
-            .max(1.0);
-        let frame_interval_max = history
-            .iter()
-            .map(|sample| sample.frame_interval_ms)
-            .fold(16.67_f32, f32::max)
-            .max(1.0);
-        let points = |value: fn(&StatisticsSample) -> f32, maximum: f32| {
-            history
-                .iter()
-                .enumerate()
-                .map(|(index, sample)| {
-                    let x = egui::lerp(
-                        rect.left()..=rect.right(),
-                        index as f32 / (history.len() - 1) as f32,
-                    );
-                    let normalized = (value(sample) / maximum).clamp(0.0, 1.0);
-                    egui::pos2(x, egui::lerp(rect.bottom()..=rect.top(), normalized))
-                })
-                .collect::<Vec<_>>()
-        };
-        painter.add(egui::Shape::line(
-            points(|sample| sample.fps, fps_max),
-            egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_GREEN),
-        ));
-        painter.add(egui::Shape::line(
-            points(|sample| sample.latency_ms, latency_max),
-            egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_RED),
-        ));
-        painter.add(egui::Shape::line(
-            points(|sample| sample.frame_interval_ms, frame_interval_max),
-            egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_BLUE),
-        ));
-        painter.text(
-            rect.left_top() + egui::vec2(5.0, 4.0),
-            egui::Align2::LEFT_TOP,
-            format!(
-                "FPS green {fps_max:.0}   latency red {latency_max:.1} ms   frame Δ blue {frame_interval_max:.1} ms"
-            ),
-            egui::FontId::monospace(10.0),
-            egui::Color32::WHITE,
-        );
-    } else {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Collecting frame statistics…",
-            egui::FontId::monospace(10.0),
-            egui::Color32::GRAY,
-        );
     }
 }
 

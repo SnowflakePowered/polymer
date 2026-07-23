@@ -184,18 +184,13 @@ unsafe impl Send for PrivateDesktop {}
 
 #[cfg(windows)]
 impl PrivateDesktop {
-    pub fn create_and_attach_current_thread(
-        name: &str,
-    ) -> std::io::Result<(Self, DesktopThreadAttachment)> {
+    /// Creates a desktop without attaching the calling thread. This is the
+    /// launch-safe variant for UI threads, which Windows does not allow to
+    /// switch desktops after they have created windows or installed hooks.
+    pub fn create(name: &str) -> std::io::Result<Self> {
         use windows_sys::Win32::{
-            Foundation::GENERIC_ALL,
-            Security::SECURITY_ATTRIBUTES,
-            System::{
-                StationsAndDesktops::{
-                    CloseDesktop, CreateDesktopW, GetThreadDesktop, SetThreadDesktop,
-                },
-                Threading::GetCurrentThreadId,
-            },
+            Foundation::GENERIC_ALL, Security::SECURITY_ATTRIBUTES,
+            System::StationsAndDesktops::CreateDesktopW,
         };
 
         if name.encode_utf16().any(|unit| unit == 0) {
@@ -205,10 +200,6 @@ impl PrivateDesktop {
             ));
         }
         let name = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
-        if original.is_null() {
-            return Err(std::io::Error::last_os_error());
-        }
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: std::ptr::null_mut(),
@@ -225,18 +216,32 @@ impl PrivateDesktop {
             )
         };
         if handle.is_null() {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Self { handle })
+        }
+    }
+
+    pub fn create_and_attach_current_thread(
+        name: &str,
+    ) -> std::io::Result<(Self, DesktopThreadAttachment)> {
+        use windows_sys::Win32::System::{
+            StationsAndDesktops::{GetThreadDesktop, SetThreadDesktop},
+            Threading::GetCurrentThreadId,
+        };
+
+        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+        if original.is_null() {
             return Err(std::io::Error::last_os_error());
         }
-        if unsafe { SetThreadDesktop(handle) } == 0 {
+        let desktop = Self::create(name)?;
+        if unsafe { SetThreadDesktop(desktop.handle) } == 0 {
             let error = std::io::Error::last_os_error();
-            unsafe {
-                SetThreadDesktop(original);
-                CloseDesktop(handle);
-            }
+            unsafe { SetThreadDesktop(original) };
             return Err(error);
         }
         Ok((
-            Self { handle },
+            desktop,
             DesktopThreadAttachment {
                 original,
                 restored: false,
@@ -278,6 +283,206 @@ impl Drop for DesktopThreadAttachment {
             };
         }
     }
+}
+
+#[cfg(windows)]
+pub struct IsolatedProcess {
+    process: std::os::windows::io::OwnedHandle,
+    process_id: u32,
+}
+
+#[cfg(windows)]
+impl IsolatedProcess {
+    pub fn spawn_suspended(
+        target: &[String],
+        environment_overrides: &[(std::ffi::OsString, std::ffi::OsString)],
+        desktop: &str,
+    ) -> std::io::Result<Self> {
+        use std::{os::windows::io::FromRawHandle, ptr};
+        use windows_sys::Win32::System::Threading::{
+            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, PROCESS_INFORMATION,
+            STARTUPINFOW,
+        };
+
+        let mut command_line = windows_command_line(target)?;
+        let environment = windows_environment(environment_overrides)?;
+        let mut desktop = desktop.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let startup = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            lpDesktop: desktop.as_mut_ptr(),
+            ..Default::default()
+        };
+        let mut process_info = PROCESS_INFORMATION::default();
+        if unsafe {
+            CreateProcessW(
+                ptr::null(),
+                command_line.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                environment.as_ptr().cast(),
+                ptr::null(),
+                &raw const startup,
+                &raw mut process_info,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let process =
+            unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(process_info.hProcess) };
+        let initial_thread =
+            unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(process_info.hThread) };
+        drop(initial_thread);
+        Ok(Self {
+            process,
+            process_id: process_info.dwProcessId,
+        })
+    }
+
+    pub const fn id(&self) -> u32 {
+        self.process_id
+    }
+
+    pub fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        use std::os::windows::io::AsRawHandle;
+        self.process.as_raw_handle()
+    }
+
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        if unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.raw_handle(), 1) }
+            == 0
+        {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn try_wait(&mut self) -> std::io::Result<Option<()>> {
+        use windows_sys::Win32::{
+            Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+            System::Threading::WaitForSingleObject,
+        };
+        match unsafe { WaitForSingleObject(self.raw_handle(), 0) } {
+            WAIT_OBJECT_0 => Ok(Some(())),
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_FAILED => Err(std::io::Error::last_os_error()),
+            result => Err(std::io::Error::other(format!(
+                "unexpected process wait result {result}"
+            ))),
+        }
+    }
+
+    pub fn wait(&mut self) -> std::io::Result<()> {
+        use windows_sys::Win32::{
+            Foundation::{WAIT_FAILED, WAIT_OBJECT_0},
+            System::Threading::{INFINITE, WaitForSingleObject},
+        };
+        match unsafe { WaitForSingleObject(self.raw_handle(), INFINITE) } {
+            WAIT_OBJECT_0 => Ok(()),
+            WAIT_FAILED => Err(std::io::Error::last_os_error()),
+            result => Err(std::io::Error::other(format!(
+                "unexpected process wait result {result}"
+            ))),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn append_windows_argument(
+    command_line: &mut Vec<u16>,
+    value: &std::ffi::OsStr,
+    always_quote: bool,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let value = value.encode_wide().collect::<Vec<_>>();
+    if value.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "process argument contains a null character",
+        ));
+    }
+    let quote = always_quote
+        || value.is_empty()
+        || value
+            .iter()
+            .any(|unit| *unit == b' ' as u16 || *unit == b'\t' as u16);
+    if !quote {
+        command_line.extend_from_slice(&value);
+        return Ok(());
+    }
+    command_line.push(b'"' as u16);
+    let mut backslashes = 0;
+    for unit in value {
+        if unit == b'\\' as u16 {
+            backslashes += 1;
+        } else if unit == b'"' as u16 {
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
+            command_line.push(unit);
+            backslashes = 0;
+        } else {
+            command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
+            command_line.push(unit);
+            backslashes = 0;
+        }
+    }
+    command_line.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
+    command_line.push(b'"' as u16);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_command_line(target: &[String]) -> std::io::Result<Vec<u16>> {
+    let executable = target.first().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "target command is empty")
+    })?;
+    let mut command_line = Vec::new();
+    append_windows_argument(&mut command_line, std::ffi::OsStr::new(executable), true)?;
+    for argument in &target[1..] {
+        command_line.push(b' ' as u16);
+        append_windows_argument(&mut command_line, std::ffi::OsStr::new(argument), false)?;
+    }
+    command_line.push(0);
+    Ok(command_line)
+}
+
+#[cfg(windows)]
+fn windows_environment(
+    overrides: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut environment = std::env::vars_os().collect::<Vec<_>>();
+    for (name, value) in overrides {
+        if let Some(existing) = environment.iter_mut().find(|(existing, _)| {
+            existing
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&name.to_string_lossy())
+        }) {
+            existing.1.clone_from(value);
+        } else {
+            environment.push((name.clone(), value.clone()));
+        }
+    }
+    environment.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_lowercase());
+    let mut block = Vec::new();
+    for (name, value) in environment {
+        let name = name.encode_wide().collect::<Vec<_>>();
+        let value = value.encode_wide().collect::<Vec<_>>();
+        if name.contains(&0) || value.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "environment contains a null character",
+            ));
+        }
+        block.extend(name);
+        block.push(b'=' as u16);
+        block.extend(value);
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
 }
 
 #[cfg(all(test, windows))]

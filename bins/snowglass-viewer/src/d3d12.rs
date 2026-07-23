@@ -98,12 +98,26 @@ pub(crate) struct D3d12Compositor {
 }
 
 impl D3d12Compositor {
+    pub(crate) fn new_default(
+        window: &Window,
+        publish_video: bool,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(window, D3d12ConsumerDevice::new_default()?, publish_video)
+    }
+
     pub(crate) fn new(
         window: &Window,
         adapter: AdapterLuid,
         publish_video: bool,
     ) -> Result<Self, Box<dyn Error>> {
-        let consumer = D3d12ConsumerDevice::new(adapter)?;
+        Self::with_consumer(window, D3d12ConsumerDevice::new(adapter)?, publish_video)
+    }
+
+    fn with_consumer(
+        window: &Window,
+        consumer: D3d12ConsumerDevice,
+        publish_video: bool,
+    ) -> Result<Self, Box<dyn Error>> {
         let size = window.inner_size();
         let extent = (size.width.max(1), size.height.max(1));
         let hwnd = match window.window_handle()?.as_raw() {
