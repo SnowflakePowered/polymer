@@ -2,6 +2,7 @@
 
 use crate::api;
 use snowglass_hook::config;
+use snowglass_input::stone::{EMBEDDED_STONE_JSON, StoneRegistry};
 use snowglass_input_sdl::Runtime;
 use std::{
     ffi::c_void,
@@ -55,6 +56,7 @@ const SDL3_DLL: &[u16] = &[
 // SDL_dynapi_procs.h and cover the SDL revision pinned by Dolphin.
 const DYNAPI_GET_GAMEPADS: usize = 349;
 const DYNAPI_GET_JOYSTICKS: usize = 395;
+const DYNAPI_UPDATE_GAMEPADS: usize = 952;
 const DYNAPI_UPDATE_JOYSTICKS: usize = 954;
 
 fn dynapi_entry_target() -> api::DynapiEntryFn {
@@ -66,8 +68,26 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     let module = Sdl3EntryInstallation::with_state(|state| state.module)
         .ok_or("SDL3 entry-hook state is not installed")?
         .as_ptr();
-    let backend =
-        unsafe { api::Api::load(module) }.ok_or("SDL3 virtual joystick exports are unavailable")?;
+    let stone_json = config::stone_database()
+        .map(|path| std::fs::read_to_string(path).map_err(|_| "Stone database is unreadable"))
+        .transpose()?
+        .unwrap_or_else(|| EMBEDDED_STONE_JSON.to_owned());
+    let registry =
+        StoneRegistry::from_json(&stone_json).map_err(|_| "Stone database is invalid")?;
+    let layouts = config::stone_layouts()
+        .into_iter()
+        .map(|layout_id| {
+            registry
+                .layout(&layout_id)
+                .ok_or("Stone layout is unavailable")
+                .map(|layout| (layout.sdl_output(), "Snowglass Virtual Gamepad".to_owned()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if layouts.len() != config::sdl_gamepad_count() {
+        return Err("Stone layout count disagrees with virtual gamepad count");
+    }
+    let backend = unsafe { api::Api::load(module, layouts) }
+        .ok_or("SDL3 virtual joystick exports are unavailable")?;
     Ok(Sdl3TableState {
         backend: Mutex::new(backend),
         runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
@@ -96,17 +116,13 @@ snowglass_hook::function_table_hook! {
         const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
 
         #[slot = DYNAPI_GET_GAMEPADS]
-        #[prefix(|next| prepare_enumeration(
-            &next.state,
-        ))]
+        #[infix(enumerate_gamepads)]
         unsafe extern "C" fn get_gamepads_dispatch(
             count: *mut i32,
         ) -> *mut api::JoystickId;
 
         #[slot = DYNAPI_GET_JOYSTICKS]
-        #[prefix(|next| prepare_enumeration(
-            &next.state,
-        ))]
+        #[infix(enumerate_joysticks)]
         unsafe extern "C" fn get_joysticks_dispatch(
             count: *mut i32,
         ) -> *mut api::JoystickId;
@@ -116,6 +132,12 @@ snowglass_hook::function_table_hook! {
             &next.state,
         ))]
         unsafe extern "C" fn update_joysticks_dispatch();
+
+        #[slot = DYNAPI_UPDATE_GAMEPADS]
+        #[prefix(|next| flush_gamepads(
+            &next.state,
+        ))]
+        unsafe extern "C" fn update_gamepads_dispatch();
     }
 }
 
@@ -189,6 +211,29 @@ fn prepare_enumeration(state: &Sdl3TableState) {
     if let Err(error) = state.runtime.prepare_enumeration(&mut *backend) {
         log(error.0);
     }
+}
+
+unsafe fn enumerate_gamepads(
+    count: *mut i32,
+    next: GetGamepadsDispatchContext<'_>,
+) -> *mut api::JoystickId {
+    enumerate_virtual(count, &next.state)
+}
+
+unsafe fn enumerate_joysticks(
+    count: *mut i32,
+    next: GetJoysticksDispatchContext<'_>,
+) -> *mut api::JoystickId {
+    enumerate_virtual(count, &next.state)
+}
+
+fn enumerate_virtual(count: *mut i32, state: &Sdl3TableState) -> *mut api::JoystickId {
+    prepare_enumeration(state);
+    let backend = state
+        .backend
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    unsafe { backend.enumerate(count) }
 }
 
 fn flush_gamepads(state: &Sdl3TableState) {

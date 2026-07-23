@@ -14,7 +14,7 @@ egui-winit = "0.29.1"
 log = "0.4"
 openh264 = "0.9.7"
 raw-window-handle.workspace = true
-serde_json = "1.0"
+serde_json.workspace = true
 snowglass-consumer-vulkan = { path = "../../crates/consumer/snowglass-consumer-vulkan" }
 snowglass-consumer-d3d12 = { path = "../../crates/consumer/snowglass-consumer-d3d12" }
 snowglass-input.workspace = true

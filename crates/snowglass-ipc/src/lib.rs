@@ -26,7 +26,7 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
-    byteorder::little_endian::{I16, I32, I64, U16, U32, U64},
+    byteorder::little_endian::{F32, I16, I32, I64, U16, U32, U64},
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -82,7 +82,7 @@ pub struct StreamReady {
     pub bottom_up: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Message {
     Hello(Handshake),
     StreamReady(StreamReady),
@@ -199,6 +199,10 @@ struct WireGamepadUpdate {
     right_y: I16,
     left_trigger: U16,
     right_trigger: U16,
+    pointer_x: I16,
+    pointer_y: I16,
+    accelerometer: [F32; 3],
+    gyroscope: [F32; 3],
 }
 
 pub struct LocalSocketListener {
@@ -493,6 +497,10 @@ fn encode(message: Message) -> WireMessage {
                     right_y: I16::new(value.state.right_stick[1]),
                     left_trigger: U16::new(value.state.left_trigger),
                     right_trigger: U16::new(value.state.right_trigger),
+                    pointer_x: I16::new(value.state.pointer[0]),
+                    pointer_y: I16::new(value.state.pointer[1]),
+                    accelerometer: value.state.accelerometer.map(F32::new),
+                    gyroscope: value.state.gyroscope.map(F32::new),
                 },
             );
         }
@@ -646,6 +654,9 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                     right_stick: [value.right_x.get(), value.right_y.get()],
                     left_trigger: value.left_trigger.get(),
                     right_trigger: value.right_trigger.get(),
+                    pointer: [value.pointer_x.get(), value.pointer_y.get()],
+                    accelerometer: value.accelerometer.map(F32::get),
+                    gyroscope: value.gyroscope.map(F32::get),
                 },
             }))
         }
@@ -753,6 +764,9 @@ mod tests {
                     right_stick: [-789, 1_234],
                     left_trigger: 12_345,
                     right_trigger: 54_321,
+                    pointer: [-20_000, 20_000],
+                    accelerometer: [1.25, -2.5, 9.81],
+                    gyroscope: [0.1, -0.2, 0.3],
                 },
             }),
             Message::StreamAccepted,

@@ -4,7 +4,14 @@ use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_hook::config;
-use snowglass_input::mouse::{PointerPhase, layout::Extent};
+use snowglass_input::{
+    gamepad::LatestGamepadMailbox,
+    mouse::{PointerPhase, layout::Extent},
+    provider::sdl3::{
+        DeviceSelector, ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig,
+    },
+    stone::{EMBEDDED_STONE_JSON, InputBinding, SdlAxis, SdlButton, StoneLayout, StoneRegistry},
+};
 use snowglass_ipc::{LocalSocketListener, Message, StreamReady};
 use snowglass_platform_windows::{
     KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessId, forward_character,
@@ -20,7 +27,7 @@ use std::{
     error::Error,
     ffi::{OsStr, OsString},
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
         Arc, Mutex,
@@ -44,7 +51,8 @@ mod webrtc;
 
 use input::{
     dinput::{
-        DirectInputForwarder, RawKeyboardForwarder, cancel_pointer_connection, spawn_input_ipc,
+        DirectInputForwarder, InputLatencyStats, RawKeyboardForwarder, cancel_pointer_connection,
+        spawn_input_ipc,
     },
     pointer::{DisplayedSurface, PointerRoutingState, PointerTarget, mouse_button},
 };
@@ -1970,7 +1978,44 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let listener = LocalSocketListener::bind(&session)?;
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
-    let input_tx = spawn_input_ipc(input_listener);
+    let gamepad_mailbox = Arc::new(LatestGamepadMailbox::new(options.gamepads.len()));
+    let (input_tx, input_latency) = spawn_input_ipc(input_listener, gamepad_mailbox.clone());
+    let stone_json = options
+        .stone_db
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .unwrap_or_else(|| EMBEDDED_STONE_JSON.to_owned());
+    let gamepad_registry = StoneRegistry::from_json(&stone_json).map_err(std::io::Error::other)?;
+    let gamepad_layouts = options
+        .gamepads
+        .iter()
+        .map(|gamepad| {
+            gamepad_registry
+                .layout(&gamepad.layout)
+                .cloned()
+                .ok_or_else(|| {
+                    std::io::Error::other(format!("unknown Stone layout {}", gamepad.layout))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut gamepad_remap_drafts = vec![HashMap::<String, String>::new(); gamepad_layouts.len()];
+    let gamepad_provider = Sdl3Provider::start(
+        Sdl3ProviderConfig {
+            slots: options
+                .gamepads
+                .iter()
+                .map(|gamepad| SlotConfig {
+                    selector: gamepad.selector.clone(),
+                    layout_id: gamepad.layout.clone(),
+                })
+                .collect(),
+            stone_database: options.stone_db.clone(),
+            gamecontroller_database: options.gamecontroller_db.clone(),
+        },
+        gamepad_mailbox,
+    )
+    .map_err(|error| std::io::Error::other(format!("SDL3 gamepad input failed: {error}")))?;
     let hooks = options.hooks;
     let target_process = launch_target(
         &target,
@@ -1981,6 +2026,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         options.force_keyed_mutex,
         &hooks,
         isolate,
+        &options
+            .gamepads
+            .iter()
+            .map(|gamepad| gamepad.layout.clone())
+            .collect::<Vec<_>>(),
+        options.stone_db.as_deref(),
     )?;
     let stop = Arc::new(AtomicBool::new(false));
     let backing_window = Arc::new(AtomicIsize::new(0));
@@ -2036,7 +2087,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut pressed_keys = HashSet::<KeyCode>::new();
 
     event_loop.run(move |event, target| match event {
-        Event::AboutToWait => window.request_redraw(),
+        Event::AboutToWait => {
+            let _ = &gamepad_provider;
+            window.request_redraw()
+        }
         Event::WindowEvent { event, .. } => {
             let response = egui_state.on_window_event(&window, &event);
             if response.repaint {
@@ -2111,6 +2165,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &input_tx,
                     ) {
                         if let Some(mapped) = pointer_routing.last_sent() {
+                            gamepad_provider.set_pointer(pointer_axes(
+                                mapped.normalized_x,
+                                mapped.normalized_y,
+                            ));
                             direct_input.mouse_position(
                                 mapped.surface_id,
                                 mapped.x,
@@ -2120,6 +2178,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             );
                         }
                     } else {
+                        gamepad_provider.set_pointer(None);
                         direct_input.reset_mouse_position();
                     }
                 }
@@ -2641,6 +2700,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .show(context, |ui| {
                                 draw_statistics_graph(ui, &stats.history);
                             });
+                        draw_gamepad_window(
+                            context,
+                            &gamepad_provider,
+                            &gamepad_layouts,
+                            &mut gamepad_remap_drafts,
+                            &input_latency,
+                        );
                         if let Some(webrtc_stats) = &webrtc_stats
                             && webrtc_stats.connected_clients > 0
                         {
@@ -2727,6 +2793,42 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => {}
     })?;
     Ok(())
+}
+
+fn pointer_axes(x: f64, y: f64) -> Option<[i16; 2]> {
+    fn axis(value: f64) -> Option<i16> {
+        if !value.is_finite() {
+            return None;
+        }
+        let value = value.clamp(0.0, 1.0);
+        let scaled = if value <= 0.5 {
+            value * 65_536.0 - 32_768.0
+        } else {
+            (value - 0.5) * 65_534.0
+        }
+        .round();
+        Some(scaled.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16)
+    }
+
+    Some([axis(x)?, axis(y)?])
+}
+
+#[cfg(test)]
+mod pointer_axis_tests {
+    use super::pointer_axes;
+
+    #[test]
+    fn absolute_pointer_fills_signed_axis_range() {
+        assert_eq!(pointer_axes(0.0, 0.0), Some([i16::MIN, i16::MIN]));
+        assert_eq!(pointer_axes(0.5, 0.5), Some([0, 0]));
+        assert_eq!(pointer_axes(1.0, 1.0), Some([i16::MAX, i16::MAX]));
+    }
+
+    #[test]
+    fn invalid_pointer_position_is_not_published() {
+        assert_eq!(pointer_axes(f64::NAN, 0.0), None);
+        assert_eq!(pointer_axes(0.0, f64::INFINITY), None);
+    }
 }
 
 fn physical_device_matches_luid(
@@ -2879,6 +2981,16 @@ struct ViewerOptions {
     hooks: Vec<HookBackend>,
     webrtc: Option<Vec<u32>>,
     bind_webrtc: SocketAddr,
+    gamepads: Vec<GamepadArgument>,
+    stone_db: Option<PathBuf>,
+    gamecontroller_db: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GamepadArgument {
+    selector: DeviceSelector,
+    slot: usize,
+    layout: String,
 }
 
 #[derive(Parser)]
@@ -2887,6 +2999,18 @@ struct ViewerArguments {
     /// Graphics API used to render the viewer window.
     #[arg(long, value_enum, default_value_t)]
     api: ViewerApi,
+
+    /// Map an SDL device index, exact name, or GUID to a virtual slot and Stone layout.
+    #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
+    gamepads: Vec<GamepadArgument>,
+
+    /// Updated Stone JSON database. The embedded database is used by default.
+    #[arg(long, value_name = "FILE")]
+    stone_db: Option<PathBuf>,
+
+    /// Updated SDL gamecontrollerdb.txt. The embedded database is used by default.
+    #[arg(long, value_name = "FILE")]
+    gamecontroller_db: Option<PathBuf>,
 
     /// Track render targets by index into the detected selection, as a
     /// comma-separated list. An entry may append `:TURNS` to rotate that
@@ -2996,6 +3120,16 @@ impl ViewerArguments {
                 return Err("render-target indices must be unique".into());
             }
         }
+        let mut gamepads = self.gamepads;
+        if gamepads.is_empty() {
+            gamepads.push("0:0:XBOX_CONTROLLER".parse()?);
+        }
+        gamepads.sort_by_key(|gamepad| gamepad.slot);
+        for (expected, gamepad) in gamepads.iter().enumerate() {
+            if gamepad.slot != expected || expected > u8::MAX as usize {
+                return Err("gamepad slots must be unique and contiguous from zero".into());
+            }
+        }
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
@@ -3008,6 +3142,9 @@ impl ViewerArguments {
             hooks,
             webrtc: self.webrtc,
             bind_webrtc: self.bind_webrtc,
+            gamepads,
+            stone_db: self.stone_db,
+            gamecontroller_db: self.gamecontroller_db,
         })
     }
 }
@@ -3069,6 +3206,43 @@ fn parse_surface_count(value: &str) -> Result<u32, String> {
     parse_bounded_count(value, "surface")
 }
 
+impl std::str::FromStr for GamepadArgument {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut fields = value.rsplitn(3, ':');
+        let layout = fields.next().filter(|field| !field.is_empty());
+        let slot = fields.next();
+        let selector = fields.next().filter(|field| !field.is_empty());
+        let (Some(layout), Some(slot), Some(selector)) = (layout, slot, selector) else {
+            return Err(format!(
+                "invalid gamepad mapping '{value}'; expected SELECTOR:SLOT:LAYOUT"
+            ));
+        };
+        let slot = slot
+            .parse::<usize>()
+            .map_err(|_| format!("invalid virtual slot '{slot}' in gamepad mapping '{value}'"))?;
+        if slot > u8::MAX as usize {
+            return Err(format!("virtual gamepad slot {slot} is outside 0..=255"));
+        }
+        let compact_guid = selector.replace('-', "");
+        let selector = if let Ok(index) = selector.parse() {
+            DeviceSelector::Index(index)
+        } else if compact_guid.len() == 32
+            && compact_guid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            DeviceSelector::Guid(compact_guid.to_ascii_lowercase())
+        } else {
+            DeviceSelector::Name(selector.to_owned())
+        };
+        Ok(Self {
+            selector,
+            slot,
+            layout: layout.to_owned(),
+        })
+    }
+}
+
 fn parse_bounded_count(value: &str, name: &str) -> Result<u32, String> {
     let count = value
         .parse::<u32>()
@@ -3113,6 +3287,68 @@ mod argument_tests {
         assert_eq!(options.target, ["game.exe"]);
         assert_eq!(options.webrtc, None);
         assert_eq!(options.bind_webrtc, "127.0.0.1:8080".parse()?);
+        assert_eq!(
+            options.gamepads,
+            [GamepadArgument {
+                selector: DeviceSelector::Index(0),
+                slot: 0,
+                layout: "XBOX_CONTROLLER".to_owned(),
+            }]
+        );
+        assert_eq!(options.stone_db, None);
+        assert_eq!(options.gamecontroller_db, None);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_stone_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
+        let options = arguments(&[
+            "--gamepad",
+            "Nintendo Switch Controller:0:SWITCH_PRO_CONTROLLER",
+            "--gamepad",
+            "030000005e0400008e02000000000000:1:XBOX_CONTROLLER",
+            "--stone-db",
+            "stone.json",
+            "--gamecontroller-db",
+            "controllers.txt",
+            "--",
+            "game.exe",
+        ])?;
+        assert_eq!(
+            options.gamepads[0],
+            GamepadArgument {
+                selector: DeviceSelector::Name("Nintendo Switch Controller".to_owned()),
+                slot: 0,
+                layout: "SWITCH_PRO_CONTROLLER".to_owned(),
+            }
+        );
+        assert!(matches!(
+            options.gamepads[1].selector,
+            DeviceSelector::Guid(_)
+        ));
+        assert_eq!(options.stone_db, Some(PathBuf::from("stone.json")));
+        assert_eq!(
+            options.gamecontroller_db,
+            Some(PathBuf::from("controllers.txt"))
+        );
+        assert!(arguments(&["--gamepad", "0:1:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
+        assert!(
+            arguments(&[
+                "--gamepad",
+                "0:0:XBOX_CONTROLLER",
+                "--gamepad",
+                "1:1:XBOX_CONTROLLER",
+                "--gamepad",
+                "2:2:XBOX_CONTROLLER",
+                "--gamepad",
+                "3:3:XBOX_CONTROLLER",
+                "--gamepad",
+                "4:4:XBOX_CONTROLLER",
+                "--",
+                "game.exe",
+            ])
+            .is_ok()
+        );
         Ok(())
     }
 
@@ -3637,6 +3873,8 @@ fn launch_target(
     force_keyed_mutex: bool,
     hooks: &[HookBackend],
     isolate: bool,
+    stone_layouts: &[String],
+    stone_database: Option<&Path>,
 ) -> std::io::Result<TargetProcess> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
@@ -3701,6 +3939,14 @@ fn launch_target(
     let mut environment = vec![
         (OsString::from(config::SESSION), OsString::from(session)),
         (
+            OsString::from(config::STONE_LAYOUTS),
+            OsString::from(stone_layouts.join(",")),
+        ),
+        (
+            OsString::from(config::SDL_GAMEPADS),
+            OsString::from(stone_layouts.len().to_string()),
+        ),
+        (
             OsString::from(config::LAYER_LOG_FILE),
             layer_dir.join("snowglass-layer.log").into_os_string(),
         ),
@@ -3736,7 +3982,28 @@ fn launch_target(
             OsString::from(config::GDI_LOG_FILE),
             layer_dir.join("snowglass-gdi.log").into_os_string(),
         ),
+        // Physical controllers belong exclusively to the viewer-side SDL3
+        // provider. Disable every Windows hardware joystick backend before
+        // the target initializes SDL; the virtual driver remains available.
+        (OsString::from("SDL_JOYSTICK_HIDAPI"), OsString::from("0")),
+        (
+            OsString::from("SDL_JOYSTICK_DIRECTINPUT"),
+            OsString::from("0"),
+        ),
+        (OsString::from("SDL_JOYSTICK_RAWINPUT"), OsString::from("0")),
+        (OsString::from("SDL_JOYSTICK_WGI"), OsString::from("0")),
+        (
+            OsString::from("SDL_JOYSTICK_GAMEINPUT"),
+            OsString::from("0"),
+        ),
+        (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
+    if let Some(path) = stone_database {
+        environment.push((
+            OsString::from(config::STONE_DATABASE),
+            path.as_os_str().to_owned(),
+        ));
+    }
     // SDL3's dynamic API redirects calls from statically linked applications
     // (including Dolphin) through this DLL, making its public entry points
     // available to the SDL3 hook. Preserve an explicit caller override.
@@ -4336,6 +4603,243 @@ fn color_layers() -> vk::ImageSubresourceLayers {
         base_array_layer: 0,
         layer_count: 1,
     }
+}
+
+fn draw_gamepad_window(
+    context: &egui::Context,
+    provider: &Sdl3Provider,
+    layouts: &[StoneLayout],
+    drafts: &mut [HashMap<String, String>],
+    latency: &InputLatencyStats,
+) {
+    const BUTTONS: [SdlButton; 21] = [
+        SdlButton::South,
+        SdlButton::East,
+        SdlButton::West,
+        SdlButton::North,
+        SdlButton::Back,
+        SdlButton::Guide,
+        SdlButton::Start,
+        SdlButton::LeftStick,
+        SdlButton::RightStick,
+        SdlButton::LeftShoulder,
+        SdlButton::RightShoulder,
+        SdlButton::DpadUp,
+        SdlButton::DpadDown,
+        SdlButton::DpadLeft,
+        SdlButton::DpadRight,
+        SdlButton::Misc1,
+        SdlButton::RightPaddle1,
+        SdlButton::LeftPaddle1,
+        SdlButton::RightPaddle2,
+        SdlButton::LeftPaddle2,
+        SdlButton::Touchpad,
+    ];
+    const AXES: [SdlAxis; 6] = [
+        SdlAxis::LeftX,
+        SdlAxis::LeftY,
+        SdlAxis::RightX,
+        SdlAxis::RightY,
+        SdlAxis::LeftTrigger,
+        SdlAxis::RightTrigger,
+    ];
+
+    let states = provider.states();
+    egui::Window::new("Gamepads")
+        .default_pos(egui::pos2(880.0, 48.0))
+        .default_width(380.0)
+        .show(context, |ui| {
+            let latency = latency.summary();
+            if latency.samples == 0 {
+                ui.colored_label(egui::Color32::GRAY, "Input dispatch latency: waiting");
+            } else {
+                ui.label(format!(
+                    "Input dispatch latency  p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  (n={})",
+                    latency.p50_ms, latency.p95_ms, latency.p99_ms, latency.samples
+                ))
+                .on_hover_text(
+                    "Physical SDL sample to completion of the AF_UNIX send; excludes Dolphin's subsequent SDL update.",
+                );
+            }
+            ui.separator();
+            for (slot, layout) in layouts.iter().enumerate() {
+                egui::CollapsingHeader::new(format!("Slot {slot}: {}", layout.friendly_name))
+                    .default_open(slot == 0)
+                    .show(ui, |ui| {
+                        let Some(state) = states.get(slot).and_then(Option::as_ref) else {
+                            ui.colored_label(egui::Color32::GRAY, "Controller disconnected");
+                            return;
+                        };
+                        ui.strong(&state.name);
+                        ui.monospace(&state.guid);
+                        ui.label(format!(
+                            "Sticks L {:?}  R {:?}   Triggers {} / {}",
+                            state.mapped.left_stick,
+                            state.mapped.right_stick,
+                            state.mapped.left_trigger,
+                            state.mapped.right_trigger
+                        ));
+                        let pressed = state
+                            .buttons
+                            .iter()
+                            .filter_map(|(button, pressed)| pressed.then(|| format!("{button:?}")))
+                            .collect::<Vec<_>>();
+                        ui.label(if pressed.is_empty() {
+                            "Pressed: none".to_owned()
+                        } else {
+                            format!("Pressed: {}", pressed.join(", "))
+                        });
+                        ui.label(format!(
+                            "Axes: {}",
+                            state
+                                .axes
+                                .iter()
+                                .map(|(axis, value)| format!("{axis:?}={value}"))
+                                .collect::<Vec<_>>()
+                                .join("  ")
+                        ));
+                        if state.mapped.accelerometer != [0.0; 3]
+                            || state.mapped.gyroscope != [0.0; 3]
+                        {
+                            ui.label(format!(
+                                "Sensors: accel {:?} m/s²   gyro {:?} rad/s",
+                                state.mapped.accelerometer, state.mapped.gyroscope
+                            ));
+                        }
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.strong("Real SDL input → Stone control");
+                            if ui.small_button("Reset").clicked() {
+                                drafts[slot].clear();
+                                provider.reset_bindings(slot);
+                            }
+                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                for element in &layout.elements {
+                                    if !is_remappable_stone_element(&element.id) {
+                                        continue;
+                                    }
+                                    let selected = drafts[slot]
+                                        .entry(element.id.clone())
+                                        .or_insert_with(|| "Default".to_owned());
+                                    let previous = selected.clone();
+                                    ui.horizontal(|ui| {
+                                        ui.label(&element.label).on_hover_text(&element.id);
+                                        egui::ComboBox::from_id_salt((
+                                            "gamepad-remap",
+                                            slot,
+                                            &element.id,
+                                        ))
+                                        .selected_text(selected.as_str())
+                                        .width(145.0)
+                                        .show_ui(
+                                            ui,
+                                            |ui| {
+                                                ui.selectable_value(
+                                                    selected,
+                                                    "Default".to_owned(),
+                                                    "Default",
+                                                );
+                                                ui.selectable_value(
+                                                    selected,
+                                                    "Disabled".to_owned(),
+                                                    "Disabled",
+                                                );
+                                                for button in BUTTONS {
+                                                    let value = format!("Button:{button:?}");
+                                                    ui.selectable_value(
+                                                        selected,
+                                                        value.clone(),
+                                                        value,
+                                                    );
+                                                }
+                                                if stone_element_accepts_axis(&element.id) {
+                                                    for axis in AXES {
+                                                        let value = format!("Axis:{axis:?}");
+                                                        ui.selectable_value(
+                                                            selected,
+                                                            value.clone(),
+                                                            value,
+                                                        );
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
+                                    if *selected != previous {
+                                        if let Some(binding) = ui_binding(selected) {
+                                            provider.set_binding(slot, element.id.clone(), binding);
+                                        } else {
+                                            provider.clear_binding(slot, element.id.clone());
+                                        }
+                                    }
+                                }
+                            });
+                    });
+            }
+        });
+}
+
+fn is_remappable_stone_element(id: &str) -> bool {
+    id.starts_with("Button") || id.starts_with("Directional") || stone_element_accepts_axis(id)
+}
+
+fn stone_element_accepts_axis(id: &str) -> bool {
+    id.starts_with("Axis") || id.starts_with("Trigger")
+}
+
+fn ui_binding(value: &str) -> Option<InputBinding> {
+    if value == "Default" {
+        return None;
+    }
+    if value == "Disabled" {
+        return Some(InputBinding::Disabled { disabled: true });
+    }
+    if let Some(name) = value.strip_prefix("Button:") {
+        let button = [
+            SdlButton::South,
+            SdlButton::East,
+            SdlButton::West,
+            SdlButton::North,
+            SdlButton::Back,
+            SdlButton::Guide,
+            SdlButton::Start,
+            SdlButton::LeftStick,
+            SdlButton::RightStick,
+            SdlButton::LeftShoulder,
+            SdlButton::RightShoulder,
+            SdlButton::DpadUp,
+            SdlButton::DpadDown,
+            SdlButton::DpadLeft,
+            SdlButton::DpadRight,
+            SdlButton::Misc1,
+            SdlButton::RightPaddle1,
+            SdlButton::LeftPaddle1,
+            SdlButton::RightPaddle2,
+            SdlButton::LeftPaddle2,
+            SdlButton::Touchpad,
+        ]
+        .into_iter()
+        .find(|button| format!("{button:?}") == name)?;
+        return Some(InputBinding::Button { button });
+    }
+    let name = value.strip_prefix("Axis:")?;
+    let axis = [
+        SdlAxis::LeftX,
+        SdlAxis::LeftY,
+        SdlAxis::RightX,
+        SdlAxis::RightY,
+        SdlAxis::LeftTrigger,
+        SdlAxis::RightTrigger,
+    ]
+    .into_iter()
+    .find(|axis| format!("{axis:?}") == name)?;
+    Some(InputBinding::Axis {
+        axis,
+        invert: false,
+    })
 }
 
 fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSample>) {

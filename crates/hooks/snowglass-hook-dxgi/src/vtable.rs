@@ -51,9 +51,9 @@ snowglass_hook::com_vtable! {
 }
 
 pub(crate) struct SwapchainContext {
-    pub(crate) owner: std::sync::Arc<std::sync::RwLock<
-        Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>,
-    >>,
+    pub(crate) owner: std::sync::Arc<
+        std::sync::RwLock<Option<std::sync::Arc<crate::runtime::SwapchainOwnerHandle>>>,
+    >,
 }
 
 snowglass_hook::impl_com_hook! {

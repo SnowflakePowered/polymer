@@ -55,11 +55,7 @@ pub(crate) unsafe fn get_cursor_pos(
     if !point.is_null()
         && let Some((x, y)) = next.state.input.cursor_position()
     {
-        if !next
-            .state
-            .logged_cursor_poll
-            .swap(true, Ordering::AcqRel)
-        {
+        if !next.state.logged_cursor_poll.swap(true, Ordering::AcqRel) {
             win32_log(format!(
                 "snowglass: target first polled forwarded cursor position=({x}, {y})"
             ));

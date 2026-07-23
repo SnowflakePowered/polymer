@@ -30,6 +30,7 @@ struct PointerDestination {
     target: PointerTarget,
     frame: FrameReady,
     position: Point,
+    normalized_position: Point,
 }
 
 #[derive(Clone, Copy)]
@@ -41,6 +42,8 @@ pub(crate) struct PointerSendEvent {
     pub(crate) y: i32,
     pub(crate) coordinate_width: u32,
     pub(crate) coordinate_height: u32,
+    pub(crate) normalized_x: f64,
+    pub(crate) normalized_y: f64,
     pub(crate) sent_at: Instant,
 }
 
@@ -183,6 +186,8 @@ impl PointerRoutingState {
                 y,
                 coordinate_width: width,
                 coordinate_height: height,
+                normalized_x: destination.normalized_position.x,
+                normalized_y: destination.normalized_position.y,
                 sent_at: Instant::now(),
             });
         }
@@ -292,13 +297,25 @@ fn pointer_destination(
             return None;
         }
         let position = placement.map_to_presentation(point, outside)?;
+        let normalized_position =
+            normalized_surface_position(placement.viewer_rect, point, outside)?;
         Some(PointerDestination {
             connection: surface.connection,
             target: *targets.get(&surface.connection)?,
             frame: surface.frame,
             position,
+            normalized_position,
         })
     })
+}
+
+fn normalized_surface_position(rect: Rect, point: Point, outside: OutsideBehavior) -> Option<Point> {
+    if rect.is_empty() || (outside == OutsideBehavior::Reject && !rect.contains(point)) {
+        return None;
+    }
+    let x = (point.x - f64::from(rect.x)) / f64::from(rect.width);
+    let y = (point.y - f64::from(rect.y)) / f64::from(rect.height);
+    Some(Point::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
 }
 
 fn presentation_mappings(
@@ -456,6 +473,7 @@ mod tests {
         assert_eq!(destination.target.surface_id, 99);
         assert_eq!(destination.frame.frame_number, 42);
         assert_eq!(destination.position, Point::new(320.0, 552.0));
+        assert_eq!(destination.normalized_position, Point::new(0.25, 0.75));
     }
 
     #[test]

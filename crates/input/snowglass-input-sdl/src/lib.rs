@@ -1,6 +1,7 @@
 //! SDL-version-neutral virtual gamepad state and forwarding runtime.
 
-use snowglass_input::gamepad::{GamepadState, GamepadUpdate, MAX_GAMEPADS};
+use seqlock::SeqLock;
+use snowglass_input::gamepad::{GamepadState, GamepadUpdate};
 use snowglass_ipc::{LocalSocket, Message};
 use std::sync::{
     Arc, Mutex,
@@ -28,25 +29,75 @@ pub fn effective_state(update: GamepadUpdate) -> GamepadState {
 
 #[derive(Clone, Copy, Default)]
 struct SlotState {
-    received: bool,
-    dirty: bool,
+    received: u32,
     sequence: u32,
-    connected: bool,
-    state: GamepadState,
+    connected: u32,
+    buttons: u32,
+    left_stick: [i16; 2],
+    right_stick: [i16; 2],
+    left_trigger: u16,
+    right_trigger: u16,
+    pointer: [i16; 2],
+    accelerometer: [f32; 3],
+    gyroscope: [f32; 3],
+}
+
+impl From<GamepadUpdate> for SlotState {
+    fn from(update: GamepadUpdate) -> Self {
+        Self {
+            received: 1,
+            sequence: update.sequence,
+            connected: u32::from(update.connected),
+            buttons: update.state.buttons,
+            left_stick: update.state.left_stick,
+            right_stick: update.state.right_stick,
+            left_trigger: update.state.left_trigger,
+            right_trigger: update.state.right_trigger,
+            pointer: update.state.pointer,
+            accelerometer: update.state.accelerometer,
+            gyroscope: update.state.gyroscope,
+        }
+    }
+}
+
+impl SlotState {
+    fn update(self, index: usize) -> GamepadUpdate {
+        GamepadUpdate {
+            slot: snowglass_input::gamepad::GamepadSlot::new(index as u8)
+                .expect("slot index is representable on the wire"),
+            sequence: self.sequence,
+            connected: self.connected != 0,
+            state: GamepadState {
+                buttons: self.buttons,
+                left_stick: self.left_stick,
+                right_stick: self.right_stick,
+                left_trigger: self.left_trigger,
+                right_trigger: self.right_trigger,
+                pointer: self.pointer,
+                accelerometer: self.accelerometer,
+                gyroscope: self.gyroscope,
+            },
+        }
+    }
 }
 
 pub struct Runtime {
     receiver_started: AtomicBool,
     pad_count: usize,
-    slots: Mutex<[SlotState; MAX_GAMEPADS]>,
+    slots: Vec<SeqLock<SlotState>>,
+    published_sequences: Mutex<Vec<Option<u32>>>,
 }
 
 impl Runtime {
     pub fn new(pad_count: usize) -> Self {
+        let slots = (0..pad_count.clamp(1, u8::MAX as usize + 1))
+            .map(|_| SeqLock::new(SlotState::default()))
+            .collect();
         Self {
             receiver_started: AtomicBool::new(false),
-            pad_count: pad_count.clamp(1, MAX_GAMEPADS),
-            slots: Mutex::new([SlotState::default(); MAX_GAMEPADS]),
+            pad_count: pad_count.clamp(1, u8::MAX as usize + 1),
+            slots,
+            published_sequences: Mutex::new(vec![None; pad_count.clamp(1, u8::MAX as usize + 1)]),
         }
     }
 
@@ -70,29 +121,18 @@ impl Runtime {
         if backend.ensure_attached(self.pad_count).is_err() {
             return;
         }
-        let pending = {
-            let slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-            slots
-                .iter()
-                .enumerate()
-                .filter(|(_, slot)| slot.dirty)
-                .filter_map(|(index, slot)| {
-                    Some(GamepadUpdate {
-                        slot: snowglass_input::gamepad::GamepadSlot::new(index as u8)?,
-                        sequence: slot.sequence,
-                        connected: slot.connected,
-                        state: slot.state,
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-        for update in pending {
+        let mut published = self
+            .published_sequences
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for (index, slot) in self.slots.iter().enumerate() {
+            let slot = slot.read();
+            if slot.received == 0 || published[index] == Some(slot.sequence) {
+                continue;
+            }
+            let update = slot.update(index);
             if backend.publish(update).is_ok() {
-                let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-                let slot = &mut slots[update.slot.index()];
-                if slot.sequence == update.sequence {
-                    slot.dirty = false;
-                }
+                published[index] = Some(slot.sequence);
             }
         }
     }
@@ -101,18 +141,11 @@ impl Runtime {
         if update.slot.index() >= self.pad_count {
             return;
         }
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-        let slot = &mut slots[update.slot.index()];
-        if slot.received && !sequence_is_newer(update.sequence, slot.sequence) {
+        let current = self.slots[update.slot.index()].read();
+        if current.received != 0 && !sequence_is_newer(update.sequence, current.sequence) {
             return;
         }
-        *slot = SlotState {
-            received: true,
-            dirty: true,
-            sequence: update.sequence,
-            connected: update.connected,
-            state: update.state,
-        };
+        *self.slots[update.slot.index()].lock_write() = SlotState::from(update);
     }
 
     fn receive(self: Arc<Self>, socket_name: String) {
@@ -194,7 +227,8 @@ mod tests {
     #[test]
     fn clamps_topology_to_supported_slots() {
         assert_eq!(Runtime::new(0).pad_count, 1);
-        assert_eq!(Runtime::new(MAX_GAMEPADS + 1).pad_count, MAX_GAMEPADS);
+        assert_eq!(Runtime::new(256).pad_count, 256);
+        assert_eq!(Runtime::new(257).pad_count, 256);
     }
 
     #[test]

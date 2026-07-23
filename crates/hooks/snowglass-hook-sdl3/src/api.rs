@@ -1,11 +1,10 @@
 //! SDL3-only ABI and virtual joystick adapter.
 
-use snowglass_input::gamepad::{
-    GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate, MAX_GAMEPADS,
-};
+use snowglass_input::gamepad::{GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate};
+use snowglass_input::stone::SdlOutputLayout;
 use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{
-    ffi::{CStr, c_char, c_void},
+    ffi::{CString, c_char, c_void},
     mem,
 };
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
@@ -16,10 +15,19 @@ type AttachVirtualFn = unsafe extern "C" fn(*const VirtualJoystickDesc) -> Joyst
 type OpenFn = unsafe extern "C" fn(JoystickId) -> *mut c_void;
 type SetAxisFn = unsafe extern "C" fn(*mut c_void, i32, i16) -> bool;
 type SetButtonFn = unsafe extern "C" fn(*mut c_void, i32, bool) -> bool;
+type SendSensorFn = unsafe extern "C" fn(*mut c_void, i32, u64, *const f32, i32) -> bool;
+type MallocFn = unsafe extern "C" fn(usize) -> *mut c_void;
 
 const SDL_JOYSTICK_TYPE_GAMEPAD: u16 = 1;
-const NAME: &CStr = c"Snowglass Virtual Gamepad";
+const SDL_SENSOR_ACCEL: i32 = 1;
+const SDL_SENSOR_GYRO: i32 = 2;
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VirtualJoystickSensorDesc {
+    sensor_type: i32,
+    rate: f32,
+}
 #[repr(C)]
 struct VirtualJoystickDesc {
     version: u32,
@@ -50,8 +58,12 @@ struct VirtualJoystickDesc {
     cleanup: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-impl Default for VirtualJoystickDesc {
-    fn default() -> Self {
+impl VirtualJoystickDesc {
+    fn new(
+        layout: SdlOutputLayout,
+        name: *const c_char,
+        sensors: &[VirtualJoystickSensorDesc],
+    ) -> Self {
         Self {
             version: std::mem::size_of::<Self>() as u32,
             joystick_type: SDL_JOYSTICK_TYPE_GAMEPAD,
@@ -63,13 +75,13 @@ impl Default for VirtualJoystickDesc {
             nballs: 0,
             nhats: 0,
             ntouchpads: 0,
-            nsensors: 0,
+            nsensors: sensors.len() as u16,
             padding2: [0; 2],
-            button_mask: (1 << GAMEPAD_BUTTON_COUNT) - 1,
-            axis_mask: (1 << GAMEPAD_AXIS_COUNT) - 1,
-            name: NAME.as_ptr().cast(),
+            button_mask: layout.button_mask,
+            axis_mask: layout.axis_mask,
+            name,
             touchpads: std::ptr::null(),
-            sensors: std::ptr::null(),
+            sensors: sensors.as_ptr().cast(),
             userdata: std::ptr::null_mut(),
             update: None,
             set_player_index: None,
@@ -88,20 +100,85 @@ pub(crate) struct Api {
     open: OpenFn,
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
-    ids: [JoystickId; MAX_GAMEPADS],
-    handles: [usize; MAX_GAMEPADS],
+    send_sensor: SendSensorFn,
+    ids: Vec<JoystickId>,
+    handles: Vec<usize>,
+    layouts: Vec<SdlOutputLayout>,
+    names: Vec<CString>,
+    sensors: Vec<Box<[VirtualJoystickSensorDesc]>>,
+    malloc: MallocFn,
 }
 
 impl Api {
-    pub(crate) unsafe fn load(module: HMODULE) -> Option<Self> {
+    pub(crate) unsafe fn load(
+        module: HMODULE,
+        layouts: Vec<(SdlOutputLayout, String)>,
+    ) -> Option<Self> {
+        let (layouts, names): (Vec<_>, Vec<_>) = layouts
+            .into_iter()
+            .map(|(layout, name)| Some((layout, CString::new(name).ok()?)))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .unzip();
+        let sensors = layouts
+            .iter()
+            .map(|layout| {
+                let mut sensors = Vec::with_capacity(2);
+                if layout.accelerometer {
+                    sensors.push(VirtualJoystickSensorDesc {
+                        sensor_type: SDL_SENSOR_ACCEL,
+                        rate: 0.0,
+                    });
+                }
+                if layout.gyroscope {
+                    sensors.push(VirtualJoystickSensorDesc {
+                        sensor_type: SDL_SENSOR_GYRO,
+                        rate: 0.0,
+                    });
+                }
+                sensors.into_boxed_slice()
+            })
+            .collect();
         Some(Self {
             attach_virtual: unsafe { symbol(module, c"SDL_AttachVirtualJoystick")? },
             open: unsafe { symbol(module, c"SDL_OpenJoystick")? },
             set_axis: unsafe { symbol(module, c"SDL_SetJoystickVirtualAxis")? },
             set_button: unsafe { symbol(module, c"SDL_SetJoystickVirtualButton")? },
-            ids: [0; MAX_GAMEPADS],
-            handles: [0; MAX_GAMEPADS],
+            send_sensor: unsafe { symbol(module, c"SDL_SendJoystickVirtualSensorData")? },
+            ids: vec![0; layouts.len()],
+            handles: vec![0; layouts.len()],
+            layouts,
+            names,
+            sensors,
+            malloc: unsafe { symbol(module, c"SDL_malloc")? },
         })
+    }
+
+    /// SDL owns and frees enumerator results, so return an SDL-allocated,
+    /// zero-terminated ID list containing only Snowglass virtual devices.
+    pub(crate) unsafe fn enumerate(&self, count: *mut i32) -> *mut JoystickId {
+        let ids = self
+            .ids
+            .iter()
+            .copied()
+            .filter(|id| *id != 0)
+            .collect::<Vec<_>>();
+        if !count.is_null() {
+            unsafe { *count = ids.len() as i32 };
+        }
+        let output = unsafe { (self.malloc)((ids.len() + 1) * std::mem::size_of::<JoystickId>()) }
+            .cast::<JoystickId>();
+        if output.is_null() {
+            if !count.is_null() {
+                unsafe { *count = 0 }
+            }
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(ids.as_ptr(), output, ids.len());
+            *output.add(ids.len()) = 0;
+        }
+        output
     }
 }
 
@@ -111,7 +188,11 @@ impl SdlBackend for Api {
             if self.handles[slot] != 0 {
                 continue;
             }
-            let description = VirtualJoystickDesc::default();
+            let description = VirtualJoystickDesc::new(
+                self.layouts[slot],
+                self.names[slot].as_ptr(),
+                &self.sensors[slot],
+            );
             let id = unsafe { (self.attach_virtual)(&raw const description) };
             if id == 0 {
                 return Err(BackendError("SDL3 failed to attach a virtual joystick"));
@@ -132,15 +213,34 @@ impl SdlBackend for Api {
             return Err(BackendError("SDL3 virtual joystick is not attached"));
         }
         let state = effective_state(update);
+        let layout = self.layouts[update.slot.index()];
         for (axis, value) in state.sdl_axes().into_iter().enumerate() {
+            if layout.axis_mask & (1 << axis) == 0 {
+                continue;
+            }
             if !unsafe { (self.set_axis)(handle, axis as i32, value) } {
                 return Err(BackendError("SDL3 rejected a virtual axis update"));
             }
         }
         for button in 0..GAMEPAD_BUTTON_COUNT {
+            if layout.button_mask & (1 << button) == 0 {
+                continue;
+            }
             let pressed = (state.buttons >> button) & 1 != 0;
             if !unsafe { (self.set_button)(handle, button as i32, pressed) } {
                 return Err(BackendError("SDL3 rejected a virtual button update"));
+            }
+        }
+        for (enabled, sensor_type, values) in [
+            (layout.accelerometer, SDL_SENSOR_ACCEL, state.accelerometer),
+            (layout.gyroscope, SDL_SENSOR_GYRO, state.gyroscope),
+        ] {
+            if enabled
+                && !unsafe {
+                    (self.send_sensor)(handle, sensor_type, 0, values.as_ptr(), values.len() as i32)
+                }
+            {
+                return Err(BackendError("SDL3 rejected a virtual sensor update"));
             }
         }
         Ok(())

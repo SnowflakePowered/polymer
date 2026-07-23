@@ -1,8 +1,6 @@
 //! SDL2-only ABI and virtual joystick adapter.
 
-use snowglass_input::gamepad::{
-    GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate, MAX_GAMEPADS,
-};
+use snowglass_input::gamepad::{GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate};
 use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{ffi::c_void, mem};
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
@@ -21,7 +19,7 @@ pub(crate) struct Api {
     open: OpenFn,
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
-    handles: [usize; MAX_GAMEPADS],
+    handles: Vec<usize>,
 }
 
 impl Api {
@@ -31,13 +29,14 @@ impl Api {
             open: unsafe { symbol(module, c"SDL_JoystickOpen")? },
             set_axis: unsafe { symbol(module, c"SDL_JoystickSetVirtualAxis")? },
             set_button: unsafe { symbol(module, c"SDL_JoystickSetVirtualButton")? },
-            handles: [0; MAX_GAMEPADS],
+            handles: Vec::new(),
         })
     }
 }
 
 impl SdlBackend for Api {
     fn ensure_attached(&mut self, count: usize) -> Result<(), BackendError> {
+        self.handles.resize(count, 0);
         for slot in 0..count {
             if self.handles[slot] != 0 {
                 continue;

@@ -4,6 +4,8 @@
 
 pub mod gamepad;
 pub mod mouse;
+pub mod provider;
+pub mod stone;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {
