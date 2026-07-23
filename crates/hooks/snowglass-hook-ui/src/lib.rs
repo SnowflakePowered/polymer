@@ -3,6 +3,7 @@
 
 mod gtk;
 mod install;
+mod messagebox;
 mod modal;
 mod qt;
 mod sys;
