@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 /// Fractional bits used by coordinates in [`PresentationPoint`].
 pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
 pub const MAX_IMAGE_SLOTS: usize = 4;
@@ -49,6 +49,15 @@ pub struct HandleId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct SurfaceId(pub u64);
+
+/// Requests a new client-area extent for a window in the producer process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct ResizeWindow {
+    pub target_window: i64,
+    pub width: u32,
+    pub height: u32,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]

@@ -7,7 +7,8 @@ use snowglass_input::{
 };
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake, MAX_IMAGE_SLOTS,
-    PresentationMappingKind, PresentationPoint, PresentationTransform, StreamId, SurfaceId,
+    PresentationMappingKind, PresentationPoint, PresentationTransform, ResizeWindow, StreamId,
+    SurfaceId,
 };
 use std::{
     fs,
@@ -44,6 +45,7 @@ const MESSAGE_MAP_OFFER: u32 = 9;
 const MESSAGE_FRAME_AVAILABLE: u32 = 10;
 const MESSAGE_MAP_ACCEPTED: u32 = 11;
 const MESSAGE_RAW_KEY_INPUT: u32 = 12;
+const MESSAGE_RESIZE_WINDOW: u32 = 13;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
@@ -110,6 +112,7 @@ pub enum Message {
     Shutdown,
     DirectInputData(DirectInputData),
     RawKeyInput(RawKeyInput),
+    ResizeWindow(ResizeWindow),
     PointerInput(PointerInput),
     GamepadUpdate(GamepadUpdate),
     /// The viewer has imported the stream resources and released its previous stream.
@@ -201,6 +204,14 @@ struct WireRawKeyInput {
     repeat: U16,
     timestamp: U32,
     sequence: U32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireResizeWindow {
+    target_window: I64,
+    width: U32,
+    height: U32,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -563,6 +574,17 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
+        Message::ResizeWindow(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_RESIZE_WINDOW,
+                &WireResizeWindow {
+                    target_window: I64::new(value.target_window),
+                    width: U32::new(value.width),
+                    height: U32::new(value.height),
+                },
+            );
+        }
         Message::PointerInput(value) => {
             set_payload(
                 &mut wire,
@@ -742,6 +764,14 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 repeat: flag(value.repeat.get())?,
                 timestamp: value.timestamp.get(),
                 sequence: value.sequence.get(),
+            }))
+        }
+        MESSAGE_RESIZE_WINDOW => {
+            let value = payload::<WireResizeWindow>(wire)?;
+            Ok(Message::ResizeWindow(ResizeWindow {
+                target_window: value.target_window.get(),
+                width: value.width.get(),
+                height: value.height.get(),
             }))
         }
         MESSAGE_STREAM_ACCEPTED => Ok(Message::StreamAccepted),
@@ -938,6 +968,11 @@ mod tests {
                 repeat: false,
                 timestamp: 124,
                 sequence: 457,
+            }),
+            Message::ResizeWindow(ResizeWindow {
+                target_window: 8,
+                width: 1280,
+                height: 720,
             }),
             Message::PointerInput(PointerInput {
                 surface_id: 0x1234,
