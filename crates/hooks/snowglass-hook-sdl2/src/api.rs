@@ -5,8 +5,7 @@ use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{ffi::c_void, mem};
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
 
-pub(crate) type EnumerateFn = unsafe extern "C" fn() -> i32;
-pub(crate) type UpdateFn = unsafe extern "C" fn();
+pub(crate) type DynapiEntryFn = unsafe extern "C" fn(u32, *mut c_void, u32) -> i32;
 type AttachVirtualFn = unsafe extern "C" fn(i32, i32, i32, i32) -> i32;
 type OpenFn = unsafe extern "C" fn(i32) -> *mut c_void;
 type SetAxisFn = unsafe extern "C" fn(*mut c_void, i32, i16) -> i32;
@@ -31,6 +30,10 @@ impl Api {
             set_button: unsafe { symbol(module, c"SDL_JoystickSetVirtualButton")? },
             handles: Vec::new(),
         })
+    }
+
+    pub(crate) fn virtual_count(&self) -> i32 {
+        self.handles.iter().filter(|handle| **handle != 0).count() as i32
     }
 }
 

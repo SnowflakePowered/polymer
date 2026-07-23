@@ -3,6 +3,7 @@ name = "snowglass-hook-sdl2"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

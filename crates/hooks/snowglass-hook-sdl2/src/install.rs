@@ -3,23 +3,37 @@
 use crate::api;
 use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
-use snowglass_platform_windows::InlineDetour;
 use std::{
+    ffi::c_void,
     fs::OpenOptions,
     io::Write,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetModuleHandleW};
 
-struct Installation {
-    enumerate: InlineDetour<api::EnumerateFn>,
-    update: InlineDetour<api::UpdateFn>,
+pub(crate) struct Sdl2TableState {
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
 }
 
-static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
-static INSTALLATION: OnceLock<Installation> = OnceLock::new();
+pub(crate) struct Sdl2EntryState {
+    module: snowglass_hook::__PointerKey,
+    target: api::DynapiEntryFn,
+}
+
+impl Default for Sdl2EntryState {
+    fn default() -> Self {
+        let module =
+            loaded_sdl2_module().expect("SDL2 module was resolved before entry-hook installation");
+        let target = unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }
+            .expect("SDL2 dynamic API entry target was resolved before installation");
+        Self {
+            module: snowglass_hook::__PointerKey::new(module.cast())
+                .expect("SDL2 module was resolved as non-null"),
+            target,
+        }
+    }
+}
 
 const SDL2_DLL: &[u16] = &[
     b'S' as u16,
@@ -48,28 +62,77 @@ const SDL2_COMPAT_DLL: &[u16] = &[
     0,
 ];
 
-fn runtime() -> Arc<Runtime> {
-    RUNTIME
-        .get_or_init(|| Arc::new(Runtime::new(config::sdl_gamepad_count())))
-        .clone()
+// SDL2's dynamic API table is append-only. These slots come from
+// SDL_dynapi_procs.h in the 2.32.10 runtime staged with this hook.
+const DYNAPI_NUM_JOYSTICKS: usize = 168;
+const DYNAPI_JOYSTICK_UPDATE: usize = 182;
+
+fn dynapi_entry_target() -> api::DynapiEntryFn {
+    Sdl2EntryInstallation::with_state(|state| state.target)
+        .expect("SDL2 entry-hook state was installed before target resolution")
+}
+
+fn create_table_state() -> Result<Sdl2TableState, &'static str> {
+    let module = Sdl2EntryInstallation::with_state(|state| state.module)
+        .ok_or("SDL2 entry-hook state is not installed")?
+        .as_ptr();
+    let backend =
+        unsafe { api::Api::load(module) }.ok_or("SDL2 virtual joystick exports are unavailable")?;
+    Ok(Sdl2TableState {
+        backend: Mutex::new(backend),
+        runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+    })
+}
+
+snowglass_hook::chain_hooks! {
+    #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer(state = Sdl2EntryState)]
+    pub(crate) struct Sdl2EntryInstallation;
+
+    #[trampoline]
+    #[terminal(installed(target = dynapi_entry_target()), fallback = -1)]
+    #[postfix(captured_dynapi_table(table, tablesize, result))]
+    unsafe extern "C" fn dynapi_entry(
+        apiver: u32,
+        table: *mut c_void,
+        tablesize: u32,
+    ) -> i32;
+}
+
+snowglass_hook::function_table_hook! {
+    #[state: Sdl2TableState = create_table_state()?]
+    pub(crate) struct Sdl2DynapiHook {
+        const MINIMUM_SLOTS: usize = DYNAPI_JOYSTICK_UPDATE + 1;
+
+        #[slot = DYNAPI_NUM_JOYSTICKS]
+        #[infix(enumerate_joysticks)]
+        unsafe extern "C" fn num_joysticks_dispatch() -> i32;
+
+        #[slot = DYNAPI_JOYSTICK_UPDATE]
+        #[prefix(|next| flush_gamepads(
+            &next.state,
+        ))]
+        unsafe extern "C" fn joystick_update_dispatch();
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallSdl2Hook() -> i32 {
-    let runtime = runtime();
-    if let Ok(session) = config::session() {
-        runtime.start_receiver(format!("{session}-input"));
-    }
     discover_loaded_module();
     0
 }
 
 fn discover_loaded_module() {
-    if INSTALLATION.get().is_none()
-        && let Some(module) = loaded_module(SDL2_DLL).or_else(|| loaded_module(SDL2_COMPAT_DLL))
+    if let Some(module) = loaded_sdl2_module()
+        && (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_some()
     {
-        unsafe { install(module) };
+        install();
     }
+}
+
+fn loaded_sdl2_module() -> Option<HMODULE> {
+    loaded_module(SDL2_DLL).or_else(|| loaded_module(SDL2_COMPAT_DLL))
 }
 
 fn loaded_module(name: &[u16]) -> Option<HMODULE> {
@@ -77,72 +140,54 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
     (!module.is_null()).then_some(module)
 }
 
-unsafe fn install(module: HMODULE) {
-    if INSTALLATION.get().is_some() {
-        return;
-    }
-    let Some(enumerate_target) = (unsafe { api::symbol(module, c"SDL_NumJoysticks") }) else {
-        return;
-    };
-    let Some(update_target) = (unsafe { api::symbol(module, c"SDL_JoystickUpdate") }) else {
-        return;
-    };
-    let Some(backend) = (unsafe { api::Api::load(module) }) else {
-        log("SDL2 found, but its virtual joystick exports are unavailable");
-        return;
-    };
-    let enumerate = InlineDetour::new(enumerate_target, enumerate_hook as api::EnumerateFn);
-    let update = InlineDetour::new(update_target, update_hook as api::UpdateFn);
-    if INSTALLATION
-        .set(Installation {
-            enumerate,
-            update,
-            backend: Mutex::new(backend),
-            runtime: runtime(),
-        })
-        .is_err()
-    {
-        return;
-    }
-    let installation = INSTALLATION.get().expect("SDL2 installation was set");
-    if installation.enumerate.enable().is_err() {
-        log("failed to enable SDL2 enumeration detour");
-        return;
-    }
-    if installation.update.enable().is_err() {
-        let _ = installation.enumerate.disable();
-        log("failed to enable SDL2 update detour");
+fn install() {
+    if Sdl2EntryInstallation::install().is_err() {
+        log("failed to enable SDL2 dynamic API detour");
         return;
     }
     log("installed SDL2 virtual gamepad hooks");
 }
 
-unsafe extern "C" fn enumerate_hook() -> i32 {
-    let Some(installation) = INSTALLATION.get() else {
-        return -1;
-    };
-    let mut backend = installation
-        .backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Err(error) = installation.runtime.prepare_enumeration(&mut *backend) {
-        log(error.0);
+unsafe fn captured_dynapi_table(
+    table: *mut c_void,
+    tablesize: u32,
+    result: i32,
+    _context: &DynapiEntryContext<'_>,
+) {
+    if result < 0 || table.is_null() {
+        return;
     }
-    drop(backend);
-    unsafe { (installation.enumerate.trampoline())() }
+    let state = match unsafe { Sdl2DynapiHook::install(table, tablesize) } {
+        Ok(state) => state,
+        Err(error) => {
+            log(error);
+            return;
+        }
+    };
+    if let Ok(session) = config::session() {
+        state.runtime.start_receiver(format!("{session}-input"));
+    }
+    log("patched SDL2 dynamic API gamepad entries");
 }
 
-unsafe extern "C" fn update_hook() {
-    let Some(installation) = INSTALLATION.get() else {
-        return;
-    };
-    let mut backend = installation
+unsafe fn enumerate_joysticks(next: NumJoysticksDispatchContext<'_>) -> i32 {
+    let mut backend = next
+        .state
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    installation.runtime.flush(&mut *backend);
-    drop(backend);
-    unsafe { (installation.update.trampoline())() };
+    if let Err(error) = next.state.runtime.prepare_enumeration(&mut *backend) {
+        log(error.0);
+    }
+    backend.virtual_count()
+}
+
+fn flush_gamepads(state: &Sdl2TableState) {
+    let mut backend = state
+        .backend
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state.runtime.flush(&mut *backend);
 }
 
 fn log(message: &str) {
