@@ -543,6 +543,10 @@ fn begin_viewer_connection() -> Option<ViewerConnection> {
     };
     match socket.receive() {
         Ok(Message::Hello(hello)) if hello.protocol_version == PROTOCOL_VERSION => {
+            if let Err(error) = socket.enable_frame_channel(hello.process_id) {
+                log(format!("snowglass: shared frame channel failed: {error}"));
+                return None;
+            }
             Some(ViewerConnection {
                 socket,
                 process_id: hello.process_id,

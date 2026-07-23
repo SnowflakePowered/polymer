@@ -926,6 +926,7 @@ fn connect_viewer(
             ));
         }
     };
+    socket.enable_frame_channel(viewer_pid)?;
     let mut image_handles = [0i64; MAX_IMAGE_SLOTS];
     for (destination, slot) in image_handles.iter_mut().zip(slots) {
         *destination =

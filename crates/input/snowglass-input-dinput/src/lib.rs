@@ -3,7 +3,7 @@
 #![allow(unsafe_code)]
 
 use snowglass_input::{DirectInputData, DirectInputDevice};
-use snowglass_ipc::{LocalSocket, Message};
+use snowglass_ipc::{Message, input::InputSubscriber};
 use snowglass_platform_windows::{NativeWindow, forward_raw_key};
 use std::{
     collections::{HashMap, VecDeque},
@@ -202,13 +202,13 @@ impl Runtime {
     }
 
     fn receive(self: Arc<Self>, socket_name: String) {
-        let Ok(mut socket) = LocalSocket::connect(&socket_name) else {
+        let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
             (self.log)("snowglass: DirectInput input socket connection failed");
             return;
         };
         self.connected.store(true, Ordering::Release);
         (self.log)("snowglass: DirectInput input socket connected");
-        while let Ok(message) = socket.receive() {
+        while let Ok(message) = input.control.receive() {
             match message {
                 Message::DirectInputData(event) => self.apply(event),
                 Message::Shutdown => break,

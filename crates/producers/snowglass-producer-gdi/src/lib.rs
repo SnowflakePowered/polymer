@@ -296,6 +296,7 @@ fn connect_viewer(
             ));
         }
     };
+    socket.enable_frame_channel(hello.process_id)?;
     if hello.preferred_consumer != ConsumerApi::D3d12 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

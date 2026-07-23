@@ -1,20 +1,19 @@
 use super::pointer::{DisplayedSurface, PointerRoutingState, PointerTarget};
-use snowglass_input::gamepad::{GamepadUpdate, LatestGamepadMailbox};
+use snowglass_input::gamepad::LatestGamepadMailbox;
 use snowglass_input::mouse::layout::Extent;
-use snowglass_ipc::{LocalSocket, LocalSocketListener, Message};
+use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
 
 pub(crate) use snowglass_input_dinput::{DirectInputForwarder, RawKeyboardForwarder};
-
-struct InputClients {
-    sockets: Vec<LocalSocket>,
-    gamepads: Vec<Option<GamepadUpdate>>,
-}
 
 #[derive(Clone, Default)]
 pub(crate) struct InputLatencyStats(Arc<Mutex<VecDeque<Duration>>>);
@@ -64,11 +63,14 @@ pub(crate) fn spawn_input_ipc(
     gamepad_mailbox: Arc<LatestGamepadMailbox>,
 ) -> (mpsc::Sender<Message>, InputLatencyStats) {
     let (sender, input) = mpsc::channel();
-    let clients = Arc::new(Mutex::new(InputClients {
-        sockets: Vec::new(),
-        gamepads: vec![None; 256],
-    }));
+    let gamepads = Arc::new(Mutex::new(
+        InputPublisher::new().expect("create shared input transport"),
+    ));
+    let clients = Arc::new(Mutex::new(Vec::<LocalSocket>::new()));
+    let client_count = Arc::new(AtomicUsize::new(0));
     let accepted_clients = clients.clone();
+    let accepted_gamepads = gamepads.clone();
+    let accepted_count = client_count.clone();
     thread::spawn(move || {
         loop {
             let socket = match listener.accept() {
@@ -82,59 +84,58 @@ pub(crate) fn spawn_input_ipc(
                 }
             };
             let mut socket = socket;
-            let mut alive = true;
-            let mut clients = accepted_clients
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
+            let accepted = accepted_gamepads
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            for update in clients.gamepads.iter().flatten().copied() {
-                if socket.send(Message::GamepadUpdate(update)).is_err() {
-                    alive = false;
-                    break;
-                }
-            }
-            if alive {
-                clients.sockets.push(socket);
+                .unwrap_or_else(|error| error.into_inner())
+                .accept(&mut socket)
+                .is_ok();
+            if accepted {
+                let _ = socket.set_read_timeout(None);
+                let mut clients = accepted_clients
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                clients.push(socket);
+                accepted_count.store(clients.len(), Ordering::Release);
             }
         }
     });
-    let gamepad_clients = clients.clone();
     let latency = InputLatencyStats::default();
     let gamepad_latency = latency.clone();
+    let gamepad_count = client_count.clone();
     thread::spawn(move || {
         loop {
             let updates = gamepad_mailbox.wait_and_drain();
             for stamped in updates {
                 let update = stamped.update;
-                let mut clients = gamepad_clients
+                let published = gamepads
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                clients.gamepads[update.slot.index()] = Some(update);
-                clients
-                    .sockets
-                    .retain_mut(|socket| socket.send(Message::GamepadUpdate(update)).is_ok());
-                if !clients.sockets.is_empty() {
-                    gamepad_latency.record(stamped.sampled_at.elapsed());
+                    .unwrap_or_else(|error| error.into_inner())
+                    .publish(update)
+                    .is_ok();
+                if gamepad_count.load(Ordering::Acquire) != 0 {
+                    if published {
+                        gamepad_latency.record(stamped.sampled_at.elapsed());
+                    }
                 }
             }
         }
     });
     thread::spawn(move || {
         while let Ok(event) = input.recv() {
-            clients
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .sockets
-                .retain_mut(|socket| match socket.send(event) {
-                    Ok(()) => true,
-                    Err(error) => {
-                        if error.kind() != std::io::ErrorKind::BrokenPipe
-                            && error.kind() != std::io::ErrorKind::ConnectionReset
-                        {
-                            eprintln!("snowglass: input IPC send failed: {error}");
-                        }
-                        false
+            let mut clients = clients.lock().unwrap_or_else(|error| error.into_inner());
+            clients.retain_mut(|socket| match socket.send(event) {
+                Ok(()) => true,
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::BrokenPipe
+                        && error.kind() != std::io::ErrorKind::ConnectionReset
+                    {
+                        eprintln!("snowglass: input IPC send failed: {error}");
                     }
-                });
+                    false
+                }
+            });
+            client_count.store(clients.len(), Ordering::Release);
         }
     });
     (sender, latency)

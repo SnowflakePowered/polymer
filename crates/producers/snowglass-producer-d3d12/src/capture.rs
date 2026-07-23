@@ -263,6 +263,7 @@ fn connect_viewer(capture: &D3d12SwapchainCapture) -> std::io::Result<LocalSocke
             ));
         }
     };
+    socket.enable_frame_channel(pid)?;
     let mut image_handles = [0i64; MAX_IMAGE_SLOTS];
     for (dst, slot) in image_handles.iter_mut().zip(capture.slots()) {
         *dst = duplicate_handle_into_process(slot.raw_handle(), ProcessId(pid))? as i64;

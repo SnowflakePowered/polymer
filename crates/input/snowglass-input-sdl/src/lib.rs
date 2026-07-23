@@ -2,7 +2,7 @@
 
 use seqlock::SeqLock;
 use snowglass_input::gamepad::{GamepadState, GamepadUpdate};
-use snowglass_ipc::{LocalSocket, Message};
+use snowglass_ipc::input::InputSubscriber;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -149,14 +149,13 @@ impl Runtime {
     }
 
     fn receive(self: Arc<Self>, socket_name: String) {
-        let Ok(mut socket) = LocalSocket::connect(&socket_name) else {
+        let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
             return;
         };
-        while let Ok(message) = socket.receive() {
-            match message {
-                Message::GamepadUpdate(update) => self.apply(update),
-                Message::Shutdown => break,
-                _ => {}
+        loop {
+            match input.drain(|update| self.apply(update)) {
+                Ok(_) => std::thread::yield_now(),
+                Err(_) => break,
             }
         }
     }

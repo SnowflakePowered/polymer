@@ -2876,6 +2876,7 @@ fn spawn_ipc(
             thread::spawn(move || {
                 let result = (|| -> std::io::Result<()> {
                     let mut accepted = false;
+                    let mut frames = None;
                     loop {
                         let message = socket.receive()?;
                         if revoked
@@ -2910,12 +2911,31 @@ fn spawn_ipc(
                                     let _ = events.send(CaptureEvent::Frame(connection, frame));
                                 }
                             }
+                            Message::FrameAvailable => {
+                                if accepted
+                                    && let Some(frame) = frames.as_mut().and_then(
+                                        |frames: &mut snowglass_ipc::frame::FrameSubscriber| {
+                                            frames.latest().ok().flatten()
+                                        },
+                                    )
+                                {
+                                    let _ = events.send(CaptureEvent::Frame(connection, frame));
+                                }
+                            }
                             Message::Shutdown => return Ok(()),
                             Message::DirectInputData(_) => {}
                             Message::PointerInput(_) => {}
                             Message::GamepadUpdate(_) => {}
                             Message::Hello(_) => {}
                             Message::StreamAccepted => {}
+                            Message::MapOffer(offer) => {
+                                if offer.channel == snowglass_ipc::control::ChannelKind::Frame {
+                                    frames = Some(
+                                        snowglass_ipc::frame::FrameSubscriber::from_offer(offer)?,
+                                    );
+                                }
+                            }
+                            Message::MapAccepted => {}
                         }
                     }
                 })();

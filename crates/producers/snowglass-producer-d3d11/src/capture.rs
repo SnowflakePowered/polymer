@@ -268,6 +268,7 @@ fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
     let mut socket = LocalSocket::connect(&session)?;
     match socket.receive()? {
         Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => {
+            socket.enable_frame_channel(hello.process_id)?;
             Ok(ViewerConnection {
                 socket,
                 viewer_pid: hello.process_id,
