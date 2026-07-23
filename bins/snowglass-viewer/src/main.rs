@@ -49,6 +49,7 @@ mod d3d12;
 mod gui;
 mod input;
 mod ipc;
+mod layout;
 mod webrtc;
 
 use cli::{
@@ -1326,6 +1327,29 @@ impl DirectCompositor {
                     .filter(|surface| surface.latest.is_some())
                     .all(|surface| surface.flip_y);
             let cell_height = self.extent.height / visible_count.max(1);
+            let layout_images = self
+                .surfaces
+                .iter()
+                .filter_map(|surface| {
+                    let frame = surface.latest?;
+                    let (width, height) = fit_inside(
+                        frame.render_width,
+                        frame.render_height,
+                        surface.imported.width,
+                        surface.imported.height,
+                    );
+                    Some(if surface.quarter_turns % 2 == 1 {
+                        Extent::new(height, width)
+                    } else {
+                        Extent::new(width, height)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let custom_rectangles = layout::active_rectangles(
+                Extent::new(self.extent.width, self.extent.height),
+                &layout_images,
+                reverse_surface_rows,
+            );
             let mut visible_index = 0;
             let mut video_copies = Vec::new();
             // A timeline semaphore must be signaled in strictly increasing
@@ -1380,15 +1404,26 @@ impl DirectCompositor {
                     } else {
                         (content_width, content_height)
                     };
-                    let (offset_x, offset_y, width, height) = fit_extent(
+                    let (offset_x, offset_y, width, height) =
+                        if let Some(rect) = custom_rectangles
+                            .as_ref()
+                            .and_then(|rectangles| rectangles.get(visible_index as usize))
+                        {
+                            (rect.x, rect.y, rect.width as i32, rect.height as i32)
+                        } else {
+                            let (x, y, width, height) = fit_extent(
                         display_width,
                         display_height,
                         self.extent.width,
                         cell_height,
                     );
-                    let row =
-                        vertical_layout_index(visible_index, visible_count, reverse_surface_rows);
-                    let offset_y = offset_y + (row * cell_height) as i32;
+                            let row = vertical_layout_index(
+                                visible_index,
+                                visible_count,
+                                reverse_surface_rows,
+                            );
+                            (x, y + (row * cell_height) as i32, width, height)
+                        };
                     let destination_offsets = [
                         vk::Offset3D {
                             x: offset_x,
@@ -1956,6 +1991,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         log::set_max_level(log::LevelFilter::Trace);
     }
     let options = parse_target()?;
+    layout::configure(options.layout_css.as_deref())?;
     let mut launcher = LauncherState::from_options(&options);
     let start_immediately = !options.target.is_empty();
     // Rotation is applied viewer-side while compositing. Vulkan graph surface

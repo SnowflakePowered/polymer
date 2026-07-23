@@ -290,7 +290,27 @@ fn pointer_destination(
             presentation_mapping,
         })
         .collect::<Vec<_>>();
-    let placements = vertical_surface_layout(viewer_extent, &layouts, order);
+    let placements = if let Some(rectangles) = crate::layout::active_rectangles(
+        viewer_extent,
+        &layouts.iter().map(|layout| layout.image_extent).collect::<Vec<_>>(),
+        order == VerticalOrder::BottomToTop,
+    ) {
+        layouts
+            .iter()
+            .zip(rectangles)
+            .enumerate()
+            .map(|(surface_index, (surface, viewer_rect))| {
+                snowglass_input::mouse::layout::CompositePlacement {
+                    surface_index,
+                    viewer_rect,
+                    presentation_extent: surface.presentation_extent,
+                    presentation_mapping: surface.presentation_mapping,
+                }
+            })
+            .collect()
+    } else {
+        vertical_surface_layout(viewer_extent, &layouts, order)
+    };
     placements.into_iter().find_map(|placement| {
         let surface = surfaces.get(placement.surface_index)?;
         if captured_connection.is_some_and(|connection| connection != surface.connection) {

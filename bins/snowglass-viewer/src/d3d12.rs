@@ -646,6 +646,29 @@ impl D3d12Compositor {
                 .filter(|surface| surface.display_frame.is_some())
                 .all(|surface| surface.flip_y);
         let cell_height = self.extent.1 / visible.max(1);
+        let layout_images = self
+            .surfaces
+            .iter()
+            .filter_map(|surface| {
+                let frame = surface.display_frame?;
+                let (width, height) = super::fit_inside(
+                    frame.render_width.max(1),
+                    frame.render_height.max(1),
+                    surface.imported.width,
+                    surface.imported.height,
+                );
+                Some(if surface.quarter_turns % 2 == 1 {
+                    super::Extent::new(height, width)
+                } else {
+                    super::Extent::new(width, height)
+                })
+            })
+            .collect::<Vec<_>>();
+        let custom_rectangles = crate::layout::active_rectangles(
+            super::Extent::new(self.extent.0, self.extent.1),
+            &layout_images,
+            reverse_surface_rows,
+        );
         let draws = self
             .surfaces
             .iter()
@@ -664,11 +687,21 @@ impl D3d12Compositor {
                 } else {
                     (crop_w, crop_h)
                 };
-                let (x, local_y, w, h) =
-                    super::fit_extent(display_w, display_h, self.extent.0, cell_height);
-                let row =
-                    super::vertical_layout_index(position as u32, visible, reverse_surface_rows);
-                let y = row as i32 * cell_height as i32 + local_y;
+                let (x, y, w, h) = if let Some(rect) = custom_rectangles
+                    .as_ref()
+                    .and_then(|rectangles| rectangles.get(position))
+                {
+                    (rect.x, rect.y, rect.width as i32, rect.height as i32)
+                } else {
+                    let (x, local_y, w, h) =
+                        super::fit_extent(display_w, display_h, self.extent.0, cell_height);
+                    let row = super::vertical_layout_index(
+                        position as u32,
+                        visible,
+                        reverse_surface_rows,
+                    );
+                    (x, row as i32 * cell_height as i32 + local_y, w, h)
+                };
                 let l = x as f32 / self.extent.0 as f32 * 2.0 - 1.0;
                 let r = (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0;
                 let t = 1.0 - y as f32 / self.extent.1 as f32 * 2.0;

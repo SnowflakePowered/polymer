@@ -14,6 +14,7 @@ pub(crate) struct ViewerOptions {
     pub(crate) target: Vec<String>,
     pub(crate) track_render_targets: Option<Vec<TrackedRenderTarget>>,
     pub(crate) graph_tracking: bool,
+    pub(crate) layout_css: Option<String>,
     pub(crate) surfaces: u32,
     pub(crate) skip_surfaces: u32,
     pub(crate) isolate: bool,
@@ -75,6 +76,12 @@ struct ViewerArguments {
     /// of the scissor and one-hop heuristics.
     #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
     pub(crate) graph_tracking: bool,
+
+    /// CSS declarations applied to the Taffy container that holds render
+    /// targets. Without this option the viewer uses its original vertical
+    /// layout. Example: `display: flex; flex-direction: row; gap: 12px`.
+    #[arg(long, value_name = "CSS")]
+    pub(crate) layout_css: Option<String>,
 
     /// Publish selected render-target indices as tracks on one WebRTC stream.
     #[arg(
@@ -177,6 +184,7 @@ impl ViewerArguments {
             target: self.target,
             track_render_targets: self.track_render_targets,
             graph_tracking: self.graph_tracking,
+            layout_css: self.layout_css,
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,
             isolate: !self.no_isolate,
@@ -358,6 +366,7 @@ mod argument_tests {
         let options = arguments(&["--", "game.exe"])?;
         assert_eq!(options.api, ViewerApi::D3d12);
         assert_eq!(options.track_render_targets, None);
+        assert_eq!(options.layout_css, None);
         assert_eq!(options.surfaces, 16);
         assert_eq!(options.skip_surfaces, 0);
         assert!(options.isolate);
@@ -377,6 +386,21 @@ mod argument_tests {
         );
         assert_eq!(options.stone_db, None);
         assert_eq!(options.gamecontroller_db, None);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_render_target_layout_css() -> Result<(), Box<dyn Error>> {
+        let options = arguments(&[
+            "--layout-css",
+            "display: grid; grid-template-columns: 1fr 2fr",
+            "--",
+            "game.exe",
+        ])?;
+        assert_eq!(
+            options.layout_css.as_deref(),
+            Some("display: grid; grid-template-columns: 1fr 2fr")
+        );
         Ok(())
     }
 
