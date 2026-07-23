@@ -13,7 +13,9 @@ pub use desktop::{DesktopThreadAttachment, PrivateDesktop};
 pub use detour::{InlineDetour, call_original};
 pub use handles::duplicate_handle_into_process;
 pub use isolation::{IsolatedProcess, KillOnCloseJob};
-pub use process::{ProcessArchitecture, process_architecture, resume_initial_thread};
+pub use process::{
+    ProcessArchitecture, executable_architecture, process_architecture, resume_initial_thread,
+};
 pub use timing::{performance_counter, performance_frequency};
 pub use types::{NativeWindow, ProcessId};
 pub use window::{

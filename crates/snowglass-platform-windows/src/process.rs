@@ -14,6 +14,44 @@ impl ProcessArchitecture {
     }
 }
 
+pub fn executable_architecture(path: &std::path::Path) -> std::io::Result<ProcessArchitecture> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
+    const IMAGE_FILE_MACHINE_ARM64: u16 = 0xaa64;
+
+    let mut executable = std::fs::File::open(path)?;
+    let mut dos_header = [0u8; 64];
+    executable.read_exact(&mut dos_header)?;
+    if &dos_header[..2] != b"MZ" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "target has no DOS executable header",
+        ));
+    }
+
+    let pe_offset = u32::from_le_bytes(dos_header[0x3c..0x40].try_into().unwrap()) as u64;
+    executable.seek(SeekFrom::Start(pe_offset))?;
+    let mut pe_header = [0u8; 6];
+    executable.read_exact(&mut pe_header)?;
+    if &pe_header[..4] != b"PE\0\0" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "target has no PE executable header",
+        ));
+    }
+
+    let machine = u16::from_le_bytes(pe_header[4..6].try_into().unwrap());
+    match machine {
+        IMAGE_FILE_MACHINE_AMD64 => Ok(ProcessArchitecture::X86_64),
+        IMAGE_FILE_MACHINE_ARM64 => Ok(ProcessArchitecture::Arm64),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("unsupported target machine {machine:#06x}"),
+        )),
+    }
+}
+
 #[cfg(windows)]
 pub fn process_architecture(process: isize) -> std::io::Result<ProcessArchitecture> {
     use windows::Win32::System::Threading::{
@@ -108,5 +146,9 @@ mod tests {
             ProcessArchitecture::X86_64
         };
         assert_eq!(process_architecture(handle.0 as isize).unwrap(), expected);
+        assert_eq!(
+            executable_architecture(&std::env::current_exe().unwrap()).unwrap(),
+            expected
+        );
     }
 }
