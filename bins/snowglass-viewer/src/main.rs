@@ -55,8 +55,11 @@ mod webrtc;
 use cli::{
     GamepadArgument, TrackedRenderTarget, ViewerOptions, parse_target, split_command_arguments,
 };
-use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_statistics_graph};
-use ipc::CaptureEvent;
+use gui::{
+    LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window,
+    draw_statistics_graph,
+};
+use ipc::{CaptureEvent, UiRequest};
 
 use input::{
     dinput::{
@@ -1404,26 +1407,25 @@ impl DirectCompositor {
                     } else {
                         (content_width, content_height)
                     };
-                    let (offset_x, offset_y, width, height) =
-                        if let Some(rect) = custom_rectangles
-                            .as_ref()
-                            .and_then(|rectangles| rectangles.get(visible_index as usize))
-                        {
-                            (rect.x, rect.y, rect.width as i32, rect.height as i32)
-                        } else {
-                            let (x, y, width, height) = fit_extent(
-                        display_width,
-                        display_height,
-                        self.extent.width,
-                        cell_height,
-                    );
-                            let row = vertical_layout_index(
-                                visible_index,
-                                visible_count,
-                                reverse_surface_rows,
-                            );
-                            (x, y + (row * cell_height) as i32, width, height)
-                        };
+                    let (offset_x, offset_y, width, height) = if let Some(rect) = custom_rectangles
+                        .as_ref()
+                        .and_then(|rectangles| rectangles.get(visible_index as usize))
+                    {
+                        (rect.x, rect.y, rect.width as i32, rect.height as i32)
+                    } else {
+                        let (x, y, width, height) = fit_extent(
+                            display_width,
+                            display_height,
+                            self.extent.width,
+                            cell_height,
+                        );
+                        let row = vertical_layout_index(
+                            visible_index,
+                            visible_count,
+                            reverse_surface_rows,
+                        );
+                        (x, y + (row * cell_height) as i32, width, height)
+                    };
                     let destination_offsets = [
                         vk::Offset3D {
                             x: offset_x,
@@ -1992,6 +1994,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let options = parse_target()?;
     layout::configure(options.layout_css.as_deref())?;
+    let mut layout_css = options
+        .layout_css
+        .clone()
+        .unwrap_or_else(|| layout::DEFAULT_CSS.to_owned());
+    let mut layout_css_error = None::<String>;
+    let mut show_layout_css = true;
     let mut launcher = LauncherState::from_options(&options);
     let start_immediately = !options.target.is_empty();
     // Rotation is applied viewer-side while compositing. Vulkan graph surface
@@ -2029,6 +2037,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let listener = LocalSocketListener::bind(&session)?;
     let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
+    let ui_listener = LocalSocketListener::bind(&format!("{session}-ui"))?;
     let gamepad_mailbox = Arc::new(LatestGamepadMailbox::new(u8::MAX as usize + 1));
     let (input_tx, input_latency) = spawn_input_ipc(input_listener, gamepad_mailbox.clone());
     let stone_json = options
@@ -2069,6 +2078,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let backing_window = Arc::new(AtomicIsize::new(0));
     let (capture_tx, capture_rx) = mpsc::channel();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    ipc::spawn_ui(ui_listener, ui_tx);
     // Connections the event loop has evicted (preempted or replaced). The IPC
     // threads close these sockets so the producer stops capturing.
     let revoked_connections = Arc::new(Mutex::new(HashSet::<u64>::new()));
@@ -2116,6 +2127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut active_consumer = "Waiting";
     let mut direct_input = DirectInputForwarder::new(input_tx.clone());
     let mut pressed_keys = HashSet::<KeyCode>::new();
+    let mut pending_ui = VecDeque::<UiRequest>::new();
 
     event_loop.run(move |event, target| match event {
         Event::AboutToWait => {
@@ -2163,6 +2175,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
+                    if !pending_ui.is_empty() {
+                        return;
+                    }
                     if let PhysicalKey::Code(code) = event.physical_key {
                         let pressed = event.state == ElementState::Pressed;
                         match event.state {
@@ -2190,6 +2205,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
+                    if !pending_ui.is_empty() {
+                        return;
+                    }
                     pointer_routing.set_cursor(position.x, position.y);
                     let size = window.inner_size();
                     let surfaces = compositor.displayed_surfaces();
@@ -2226,6 +2244,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
+                    if !pending_ui.is_empty() {
+                        return;
+                    }
                     if let Some(button) = mouse_button(button) {
                         let phase = if state == ElementState::Pressed {
                             PointerPhase::ButtonDown
@@ -2249,6 +2270,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
+                    if !pending_ui.is_empty() {
+                        return;
+                    }
                     let (horizontal, vertical) = match delta {
                         MouseScrollDelta::LineDelta(horizontal, vertical) => {
                             ((horizontal * 120.0) as i32, (vertical * 120.0) as i32)
@@ -2271,6 +2295,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::RedrawRequested => {
+                    pending_ui.extend(ui_rx.try_iter());
                     let size = window.inner_size();
                     if size.width == 0 || size.height == 0 {
                         return;
@@ -2689,6 +2714,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 ui.strong(format!(
                                     "Snowglass {active_backend} via {active_consumer}"
                                 ));
+                                ui.toggle_value(&mut show_layout_css, "Layout CSS");
                                 if active_target.is_some() && ui.button("Close program").clicked() {
                                     close_requested = true;
                                 }
@@ -2748,6 +2774,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 });
                             });
                         });
+                        draw_layout_css_window(
+                            context,
+                            &mut show_layout_css,
+                            &mut layout_css,
+                            &mut layout_css_error,
+                        );
                         if active_target.is_none() {
                             launch_requested = draw_launcher_window(
                                 context,
@@ -2765,6 +2797,46 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         launch_error = None;
                                     }
                                 });
+                        }
+                        if let Some(forwarded) = pending_ui.front() {
+                            let request = &forwarded.request;
+                            let title = if request.caption.is_empty() {
+                                "Guest message"
+                            } else {
+                                &request.caption
+                            };
+                            let mut selected = None;
+                            if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+                                selected = request.escape_result;
+                            }
+                            egui::Window::new(title)
+                                .id(egui::Id::new("snowglass-forwarded-message-box"))
+                                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                                .collapsible(false)
+                                .resizable(true)
+                                .show(context, |ui| {
+                                    ui.set_max_width(720.0);
+                                    ui.label(&request.text);
+                                    ui.add_space(12.0);
+                                    ui.horizontal(|ui| {
+                                        for button in &request.buttons {
+                                            let response = ui.button(&button.label);
+                                            if request.default_result == Some(button.result) {
+                                                response.request_focus();
+                                            }
+                                            if response.clicked() {
+                                                selected = Some(button.result);
+                                            }
+                                        }
+                                    });
+                                });
+                            if let Some(result) = selected
+                                && let Some(forwarded) = pending_ui.pop_front()
+                            {
+                                let _ = forwarded.response.send(
+                                    snowglass_ipc::ui::MessageBoxResponse { result },
+                                );
+                            }
                         }
                         let statistics_frame = egui::Frame::window(&context.style())
                             .fill(egui::Color32::TRANSPARENT)
@@ -3116,6 +3188,7 @@ fn launch_target(
     let gdi_hook = layer_dir.join("snowglass_hook_gdi.dll");
     let dinput_hook = layer_dir.join("snowglass_hook_dinput.dll");
     let win32_hook = layer_dir.join("snowglass_hook_win32.dll");
+    let ui_hook = layer_dir.join("snowglass_hook_ui.dll");
     let sdl2_hook = layer_dir.join("snowglass_hook_sdl2.dll");
     let sdl3_hook = layer_dir.join("snowglass_hook_sdl3.dll");
     let sdl3_runtime = layer_dir.join("SDL3.dll");
@@ -3153,6 +3226,9 @@ fn launch_target(
         win32_hook.as_path(),
         c"SnowglassInstallWin32Hook",
     ));
+    if isolate {
+        libraries.push(("UI", ui_hook.as_path(), c"SnowglassInstallUiHook"));
+    }
     libraries.push(("SDL2", sdl2_hook.as_path(), c"SnowglassInstallSdl2Hook"));
     libraries.push(("SDL3", sdl3_hook.as_path(), c"SnowglassInstallSdl3Hook"));
     for &(name, hook, _) in &libraries {

@@ -11,6 +11,19 @@ thread_local! {
     static ACTIVE_LAYOUT: RefCell<Option<RenderTargetLayout>> = const { RefCell::new(None) };
 }
 
+pub(crate) const DEFAULT_CSS: &str = r#"#viewer {
+    display: flex;
+    flex-direction: column;
+}
+
+.render-target {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0px;
+    min-width: 0px;
+    min-height: 0px;
+}"#;
+
 pub(crate) fn configure(css: Option<&str>) -> Result<(), String> {
     let layout = css.map(RenderTargetLayout::parse).transpose()?;
     ACTIVE_LAYOUT.with(|active| *active.borrow_mut() = layout);
@@ -406,6 +419,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn displayed_default_css_matches_the_builtin_layout() {
+        let css = RenderTargetLayout::parse(DEFAULT_CSS).unwrap();
+        assert_eq!(
+            css.rectangles(
+                Extent::new(100, 200),
+                &[Extent::new(100, 100), Extent::new(100, 100)],
+            )
+            .unwrap(),
+            [Rect::new(0, 0, 100, 100), Rect::new(0, 100, 100, 100)]
+        );
+    }
+
+    #[test]
     fn ids_style_individual_render_targets() {
         let css = RenderTargetLayout::parse(
             "#viewer { display:flex; flex-direction:row } #render-target-0 { flex-grow:2 } .render-target { flex-grow:1 }",
@@ -436,5 +462,20 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn invalid_live_edit_keeps_the_last_valid_layout() {
+        configure(Some(
+            "#viewer { flex-direction:row } .render-target { flex-grow:1 }",
+        ))
+        .unwrap();
+        let extent = Extent::new(200, 100);
+        let images = [Extent::new(100, 100), Extent::new(100, 100)];
+        let before = active_rectangles(extent, &images, false).unwrap();
+
+        assert!(configure(Some("#viewer { flex-direction:")).is_err());
+        assert_eq!(active_rectangles(extent, &images, false).unwrap(), before);
+        configure(None).unwrap();
     }
 }

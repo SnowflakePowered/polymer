@@ -383,6 +383,28 @@ impl LocalSocket {
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.stream.set_read_timeout(timeout)
     }
+
+    pub(crate) fn write_packet(&mut self, payload: &[u8]) -> io::Result<()> {
+        let length = u32::try_from(payload.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "packet is too large"))?;
+        self.stream.write_all(&length.to_le_bytes())?;
+        self.stream.write_all(payload)
+    }
+
+    pub(crate) fn read_packet(&mut self, maximum: usize) -> io::Result<Vec<u8>> {
+        let mut length = [0; 4];
+        self.stream.read_exact(&mut length)?;
+        let length = u32::from_le_bytes(length) as usize;
+        if length > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "packet exceeds the configured maximum",
+            ));
+        }
+        let mut payload = vec![0; length];
+        self.stream.read_exact(&mut payload)?;
+        Ok(payload)
+    }
 }
 
 fn initialize_winsock() -> io::Result<()> {

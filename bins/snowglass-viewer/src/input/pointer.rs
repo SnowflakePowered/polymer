@@ -292,7 +292,10 @@ fn pointer_destination(
         .collect::<Vec<_>>();
     let placements = if let Some(rectangles) = crate::layout::active_rectangles(
         viewer_extent,
-        &layouts.iter().map(|layout| layout.image_extent).collect::<Vec<_>>(),
+        &layouts
+            .iter()
+            .map(|layout| layout.image_extent)
+            .collect::<Vec<_>>(),
         order == VerticalOrder::BottomToTop,
     ) {
         layouts

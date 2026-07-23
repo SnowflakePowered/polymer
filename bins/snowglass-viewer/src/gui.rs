@@ -19,6 +19,51 @@ pub(crate) struct LauncherState {
     pub(crate) gamepads: Vec<LauncherGamepad>,
 }
 
+pub(crate) fn draw_layout_css_window(
+    context: &egui::Context,
+    open: &mut bool,
+    css: &mut String,
+    error: &mut Option<String>,
+) {
+    egui::Window::new("Render target CSS")
+        .open(open)
+        .default_pos(egui::pos2(24.0, 72.0))
+        .default_size(egui::vec2(480.0, 360.0))
+        .resizable(true)
+        .show(context, |ui| {
+            ui.label("Selectors: #viewer, .render-target, #render-target-N");
+            ui.add_space(4.0);
+            let changed = ui
+                .add(
+                    egui::TextEdit::multiline(css)
+                        .code_editor()
+                        .desired_rows(14)
+                        .desired_width(f32::INFINITY),
+                )
+                .changed();
+            if changed {
+                if css.trim().is_empty() {
+                    crate::layout::DEFAULT_CSS.clone_into(css);
+                }
+                let result = crate::layout::configure(Some(css));
+                *error = result.err();
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Reset to default").clicked() {
+                    crate::layout::DEFAULT_CSS.clone_into(css);
+                    *error = crate::layout::configure(Some(css)).err();
+                }
+                if error.is_none() {
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, "Applied");
+                }
+            });
+            if let Some(message) = error {
+                ui.colored_label(egui::Color32::LIGHT_RED, message);
+                ui.label("The last valid layout remains active.");
+            }
+        });
+}
+
 impl LauncherState {
     pub(crate) fn from_options(options: &ViewerOptions) -> Self {
         Self {

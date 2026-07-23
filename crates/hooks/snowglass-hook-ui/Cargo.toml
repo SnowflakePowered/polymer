@@ -1,0 +1,18 @@
+[package]
+name = "snowglass-hook-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+snowglass-hook.workspace = true
+snowglass-ipc.workspace = true
+snowglass-platform-windows.workspace = true
+snowglass-ui.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true
