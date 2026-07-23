@@ -1,8 +1,9 @@
 mod capture;
 mod egui;
 
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Parser, ValueEnum};
 use snowglass_renderer::capture::ConsumerPreference;
+use std::{net::SocketAddr, path::PathBuf};
 use tauri::Manager;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -22,13 +23,98 @@ impl From<RendererArgument> for ConsumerPreference {
 }
 
 #[derive(Debug, Parser)]
+#[command(name = "snowglass-frontend", version, about)]
 struct Options {
     /// Capture IPC session name used by injected producers.
     #[arg(long, env = "SNOWGLASS_SESSION")]
     session: Option<String>,
 
+    /// Graphics API used to render the frontend window.
     #[arg(long, value_enum, default_value_t)]
-    renderer: RendererArgument,
+    api: RendererArgument,
+
+    #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
+    gamepads: Vec<String>,
+
+    #[arg(long, value_name = "FILE")]
+    stone_db: Option<PathBuf>,
+
+    #[arg(long, value_name = "FILE")]
+    gamecontroller_db: Option<PathBuf>,
+
+    #[arg(
+        long,
+        visible_alias = "track-render-target",
+        num_args = 0..=1,
+        default_missing_value = "0",
+        value_delimiter = ',',
+        value_name = "INDEXES"
+    )]
+    track_render_targets: Option<Vec<String>>,
+
+    #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
+    graph_tracking: bool,
+
+    #[arg(long, value_name = "CSS")]
+    layout_css: Option<String>,
+
+    #[arg(
+        long,
+        num_args = 0..,
+        default_missing_value = "0",
+        value_delimiter = ',',
+        value_name = "INDEXES"
+    )]
+    webrtc: Option<Vec<u32>>,
+
+    #[arg(
+        long,
+        default_value = "127.0.0.1:8080",
+        value_name = "IP:PORT",
+        requires = "webrtc"
+    )]
+    bind_webrtc: SocketAddr,
+
+    #[arg(
+        long,
+        default_value_t = 16,
+        num_args = 0..=1,
+        default_missing_value = "16"
+    )]
+    surfaces: u32,
+
+    #[arg(
+        long,
+        visible_aliases = ["skip-surface", "skip-window", "skip-windows"],
+        default_value_t = 0,
+        num_args = 0..=1,
+        default_missing_value = "1"
+    )]
+    skip_surfaces: u32,
+
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
+    isolate: bool,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_isolate: bool,
+
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
+    resize: bool,
+
+    #[arg(long = "force-km")]
+    force_keyed_mutex: bool,
+
+    #[arg(
+        long = "hook",
+        action = ArgAction::Append,
+        value_delimiter = ',',
+        value_name = "HOOKS"
+    )]
+    hooks: Vec<String>,
+
+    /// Target program and its arguments. Must follow `--`.
+    #[arg(last = true, num_args = 0.., value_name = "COMMAND")]
+    target: Vec<String>,
 }
 
 fn main() {
@@ -37,7 +123,7 @@ fn main() {
         .session
         .unwrap_or_else(|| format!("snowglass-frontend-{}", std::process::id()));
     eprintln!("snowglass: frontend capture session is {session}");
-    let preference = options.renderer.into();
+    let preference = options.api.into();
     let mut lifecycle = None;
 
     tauri::Builder::default()
