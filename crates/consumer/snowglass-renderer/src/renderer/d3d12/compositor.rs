@@ -19,7 +19,7 @@ use snowglass_ipc::StreamReady;
 use snowglass_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HANDLE, HWND, RECT},
+        Foundation::{CloseHandle, HANDLE, HWND, RECT, WAIT_OBJECT_0},
         Graphics::{
             Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Fxc::D3DCompile, ID3DBlob},
             Direct3D12::*,
@@ -73,6 +73,10 @@ pub struct D3d12Compositor {
     receiver: D3d12Receiver,
     mode: SwapchainMode,
     swapchain: IDXGISwapChain3,
+    swapchain_flags: DXGI_SWAP_CHAIN_FLAG,
+    present_interval: u32,
+    frame_latency_waitable: Option<HANDLE>,
+    frame_permit: bool,
     extent: (u32, u32),
     backbuffers: Vec<ID3D12Resource>,
     rtv_heap: ID3D12DescriptorHeap,
@@ -101,7 +105,7 @@ pub struct D3d12Compositor {
 #[derive(Clone, Copy)]
 enum SwapchainTarget {
     Hwnd(HWND),
-    Composition,
+    Composition { transparent: bool },
 }
 
 fn swapchain_target(window: &impl RenderWindow) -> Result<SwapchainTarget, Box<dyn Error>> {
@@ -137,7 +141,21 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new_default()?,
-            SwapchainTarget::Composition,
+            SwapchainTarget::Composition { transparent: false },
+            SwapchainMode::Shared,
+        )
+    }
+
+    /// Creates a transparent composition swapchain suitable for an overlay
+    /// visual. Its backbuffer alpha is interpreted as premultiplied alpha by
+    /// DirectComposition.
+    pub fn new_default_for_transparent_composition(
+        window: &impl RenderWindow,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new_default()?,
+            SwapchainTarget::Composition { transparent: true },
             SwapchainMode::Shared,
         )
     }
@@ -189,7 +207,7 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new_default()?,
-            SwapchainTarget::Composition,
+            SwapchainTarget::Composition { transparent: false },
             SwapchainMode::Dedicated(connection),
         )
     }
@@ -218,7 +236,7 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new(adapter)?,
-            SwapchainTarget::Composition,
+            SwapchainTarget::Composition { transparent: false },
             SwapchainMode::Dedicated(connection),
         )
     }
@@ -235,6 +253,12 @@ impl D3d12Compositor {
         // SAFETY: all COM objects and the event are owned by this compositor and GPU work is
         // drained before resources referenced by a submitted command list are replaced.
         unsafe {
+            let is_composition = matches!(target, SwapchainTarget::Composition { .. });
+            let swapchain_flags = if is_composition {
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+            } else {
+                DXGI_SWAP_CHAIN_FLAG(0)
+            };
             let description = DXGI_SWAP_CHAIN_DESC1 {
                 Width: extent.0,
                 Height: extent.1,
@@ -251,31 +275,46 @@ impl D3d12Compositor {
                     SwapchainTarget::Hwnd(_) => DXGI_SWAP_EFFECT_FLIP_DISCARD,
                     // DXGI requires the sequential flip model for swapchains
                     // supplied as DirectComposition visual content.
-                    SwapchainTarget::Composition => DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                    SwapchainTarget::Composition { .. } => DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 },
-                AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-                Flags: 0,
-            };
-            let swapchain1 =
-                match target {
-                    SwapchainTarget::Hwnd(hwnd) => {
-                        let swapchain = consumer.factory().CreateSwapChainForHwnd(
-                            consumer.queue(),
-                            hwnd,
-                            &description,
-                            None,
-                            None,
-                        )?;
-                        consumer
-                            .factory()
-                            .MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
-                        swapchain
+                AlphaMode: match target {
+                    SwapchainTarget::Composition { transparent: true } => {
+                        DXGI_ALPHA_MODE_PREMULTIPLIED
                     }
-                    SwapchainTarget::Composition => consumer
+                    _ => DXGI_ALPHA_MODE_IGNORE,
+                },
+                Flags: swapchain_flags.0 as u32,
+            };
+            let swapchain1 = match target {
+                SwapchainTarget::Hwnd(hwnd) => {
+                    let swapchain = consumer.factory().CreateSwapChainForHwnd(
+                        consumer.queue(),
+                        hwnd,
+                        &description,
+                        None,
+                        None,
+                    )?;
+                    consumer
                         .factory()
-                        .CreateSwapChainForComposition(consumer.queue(), &description, None)?,
-                };
+                        .MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
+                    swapchain
+                }
+                SwapchainTarget::Composition { .. } => consumer
+                    .factory()
+                    .CreateSwapChainForComposition(consumer.queue(), &description, None)?,
+            };
             let swapchain: IDXGISwapChain3 = swapchain1.cast()?;
+            let frame_latency_waitable = if is_composition {
+                let swapchain2: IDXGISwapChain2 = swapchain.cast()?;
+                swapchain2.SetMaximumFrameLatency(1)?;
+                let handle = swapchain2.GetFrameLatencyWaitableObject();
+                if handle.is_invalid() {
+                    return Err("DXGI did not create a frame-latency waitable object".into());
+                }
+                Some(handle)
+            } else {
+                None
+            };
 
             let rtv_heap = consumer
                 .device()
@@ -325,6 +364,10 @@ impl D3d12Compositor {
                 receiver: D3d12Receiver::from_consumer(consumer),
                 mode,
                 swapchain,
+                swapchain_flags,
+                present_interval: u32::from(!is_composition),
+                frame_latency_waitable,
+                frame_permit: false,
                 extent,
                 backbuffers,
                 rtv_heap,
@@ -366,6 +409,22 @@ impl D3d12Compositor {
     /// `IDCompositionVisual`.
     pub fn composition_content(&self) -> Result<windows::core::IUnknown, windows::core::Error> {
         self.swapchain.cast()
+    }
+
+    /// Returns whether this compositor can begin another frame without
+    /// waiting for DXGI presentation capacity. HWND swapchains are always
+    /// ready; composition swapchains use their frame-latency waitable object.
+    pub fn try_begin_frame(&mut self) -> bool {
+        if self.frame_permit || self.frame_latency_waitable.is_none() {
+            return true;
+        }
+        self.frame_latency_waitable.is_some_and(|handle| {
+            // SAFETY: the handle belongs to this live swapchain and is only
+            // closed when the compositor is dropped.
+            let ready = unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 };
+            self.frame_permit = ready;
+            ready
+        })
     }
 
     pub(crate) fn import_stream(
@@ -539,7 +598,7 @@ impl D3d12Compositor {
                 size.width,
                 size.height,
                 SWAPCHAIN_FORMAT,
-                DXGI_SWAP_CHAIN_FLAG(0),
+                self.swapchain_flags,
             )?;
             self.backbuffers = create_backbuffers(
                 self.receiver.device(),
@@ -548,6 +607,7 @@ impl D3d12Compositor {
                 self.rtv_stride,
             )?;
         }
+        self.frame_permit = false;
         self.extent = (size.width, size.height);
         Ok(true)
     }
@@ -760,7 +820,10 @@ impl D3d12Compositor {
                     );
                 }
             }
-            self.swapchain.Present(1, DXGI_PRESENT(0)).ok()?;
+            self.swapchain
+                .Present(self.present_interval, DXGI_PRESENT(0))
+                .ok()?;
+            self.frame_permit = false;
         }
         for texture_id in &output.textures_delta.free {
             if let Some(texture) = self.textures.remove(texture_id) {
@@ -1088,6 +1151,9 @@ impl Drop for D3d12Compositor {
         let _ = self.release_imported_streams();
         unsafe {
             let _ = CloseHandle(self.fence_event);
+            if let Some(handle) = self.frame_latency_waitable {
+                let _ = CloseHandle(handle);
+            }
         }
     }
 }

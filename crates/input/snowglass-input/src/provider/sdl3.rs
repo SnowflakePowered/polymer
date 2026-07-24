@@ -73,6 +73,7 @@ pub struct Sdl3Provider {
     states: Arc<Mutex<Vec<Option<PhysicalGamepadState>>>>,
     commands: mpsc::Sender<ProviderCommand>,
     pointer: Arc<Mutex<Option<[i16; 2]>>>,
+    mapped_keys: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,10 +83,14 @@ pub struct PhysicalGamepadState {
     pub layout_id: String,
     pub buttons: Vec<(SdlButton, bool)>,
     pub axes: Vec<(SdlAxis, i16)>,
+    /// Physical controls consumed by the active Stone mapping.
+    pub mapped_buttons: Vec<SdlButton>,
+    pub mapped_axes: Vec<SdlAxis>,
     pub mapped: GamepadState,
 }
 
 enum ProviderCommand {
+    SetEnabled(bool),
     SetBinding {
         slot: usize,
         target: String,
@@ -106,6 +111,13 @@ enum ProviderCommand {
 }
 
 impl Sdl3Provider {
+    /// Enables or neutralizes mapped output without closing SDL devices.
+    ///
+    /// Physical diagnostic snapshots remain available while disabled.
+    pub fn set_enabled(&self, enabled: bool) {
+        let _ = self.commands.send(ProviderCommand::SetEnabled(enabled));
+    }
+
     pub fn start(
         config: ProviderConfig,
         updates: Arc<LatestGamepadMailbox>,
@@ -118,6 +130,8 @@ impl Sdl3Provider {
         let (commands, command_rx) = mpsc::channel();
         let pointer = Arc::new(Mutex::new(None));
         let thread_pointer = pointer.clone();
+        let mapped_keys = Arc::new(Mutex::new(HashSet::new()));
+        let thread_mapped_keys = mapped_keys.clone();
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("snowglass-sdl3-input".to_owned())
@@ -130,6 +144,7 @@ impl Sdl3Provider {
                     thread_states,
                     command_rx,
                     thread_pointer,
+                    thread_mapped_keys,
                 )
             })
             .map_err(|error| format!("failed to start SDL3 input thread: {error}"))?;
@@ -140,6 +155,7 @@ impl Sdl3Provider {
                 states,
                 commands,
                 pointer,
+                mapped_keys,
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
@@ -183,6 +199,13 @@ impl Sdl3Provider {
 
     pub fn clear_keys(&self) {
         let _ = self.commands.send(ProviderCommand::ClearKeys);
+    }
+
+    pub fn is_key_mapped(&self, key: &str) -> bool {
+        self.mapped_keys
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(key)
     }
 
     /// Sets the absolute pointer carried by the first virtual gamepad. `None`
@@ -333,6 +356,7 @@ fn run(
     states: Arc<Mutex<Vec<Option<PhysicalGamepadState>>>>,
     commands: mpsc::Receiver<ProviderCommand>,
     pointer: Arc<Mutex<Option<[i16; 2]>>>,
+    mapped_keys: Arc<Mutex<HashSet<String>>>,
 ) {
     let result = initialize(&config);
     let (sdl, subsystem, mut event_pump, registry, remappings) = match result {
@@ -358,8 +382,16 @@ fn run(
             return;
         }
     };
+    *mapped_keys
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = keyboard_mappings
+        .iter()
+        .flatten()
+        .flat_map(|mapping| mapping.bindings.iter().map(|(key, _)| key.clone()))
+        .collect();
     let _ = started.send(Ok(()));
     let mut pressed_keys = HashSet::<String>::new();
+    let mut enabled = true;
 
     while !stop.load(Ordering::Acquire) {
         for event in event_pump.poll_iter() {
@@ -369,6 +401,12 @@ fn run(
 
         while let Ok(command) = commands.try_recv() {
             match command {
+                ProviderCommand::SetEnabled(value) => {
+                    enabled = value;
+                    if !enabled {
+                        pressed_keys.clear();
+                    }
+                }
                 ProviderCommand::SetBinding {
                     slot,
                     target,
@@ -448,6 +486,9 @@ fn run(
                     &config.slots[slot].layout_id,
                     state,
                 ));
+            }
+            if !enabled {
+                state = GamepadState::default();
             }
             if last_published[slot] != Some(state) {
                 sequences[slot] = sequences[slot].wrapping_add(1);
@@ -701,6 +742,8 @@ fn physical_state(pad: &Pad, mapped: GamepadState) -> PhysicalGamepadState {
             .into_iter()
             .map(|axis| (axis, pad.gamepad.axis(to_sdl_axis(axis))))
             .collect(),
+        mapped_buttons: pad.mapping.mapped_buttons(),
+        mapped_axes: pad.mapping.mapped_axes(),
         mapped,
     }
 }
@@ -723,11 +766,37 @@ fn keyboard_diagnostic_state(layout_id: &str, mapped: GamepadState) -> PhysicalG
             .enumerate()
             .map(|(index, axis)| (axis, axes[index]))
             .collect(),
+        mapped_buttons: Vec::new(),
+        mapped_axes: Vec::new(),
         mapped,
     }
 }
 
 impl CompiledMapping {
+    fn mapped_buttons(&self) -> Vec<SdlButton> {
+        let mut buttons = self
+            .buttons
+            .iter()
+            .map(|(source, _)| *source)
+            .chain(self.digital_triggers.iter().map(|(source, _)| *source))
+            .collect::<Vec<_>>();
+        buttons.sort_by_key(|button| *button as u8);
+        buttons.dedup();
+        buttons
+    }
+
+    fn mapped_axes(&self) -> Vec<SdlAxis> {
+        let mut axes = self
+            .axes
+            .iter()
+            .flatten()
+            .map(|mapping| mapping.source)
+            .collect::<Vec<_>>();
+        axes.sort_by_key(|axis| *axis as u8);
+        axes.dedup();
+        axes
+    }
+
     fn new(
         gamepad: &Gamepad,
         identity: &DeviceIdentity,

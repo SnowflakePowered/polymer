@@ -3,6 +3,7 @@
 pub mod capture;
 pub mod cli;
 pub mod debug;
+pub mod input;
 pub mod renderer;
 pub mod webrtc;
 

@@ -56,6 +56,7 @@ use snowglass_renderer::{
         split_command_arguments,
     },
     debug::{StatisticsSample, draw_statistics_graph},
+    input::PointerRoutingState,
     webrtc,
 };
 
@@ -65,7 +66,7 @@ use input::{
         spawn_input_ipc,
     },
     load_window, native_window,
-    pointer::{PointerRoutingState, mouse_button},
+    pointer::mouse_button,
     pointer_axes,
 };
 
@@ -608,10 +609,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                             let size = window.inner_size();
                             let presentation =
                                 compositor.presentation(Extent::new(size.width, size.height));
+                            let plan = layout::composition_plan(&presentation);
                             cancel_pointer_connection(
                                 connection,
                                 &mut pointer_routing,
                                 &presentation,
+                                &plan,
                                 &input_tx,
                                 &mut direct_input,
                             );
@@ -656,12 +659,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let size = window.inner_size();
                     let presentation =
                         compositor.presentation(Extent::new(size.width, size.height));
+                    let plan = layout::composition_plan(&presentation);
                     if pointer_routing.send(
                         PointerPhase::Move,
                         0,
                         0,
                         0,
                         &presentation,
+                        &plan,
                         &input_tx,
                     ) {
                         if let Some(mapped) = pointer_routing.last_sent() {
@@ -699,12 +704,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let size = window.inner_size();
                         let presentation =
                             compositor.presentation(Extent::new(size.width, size.height));
+                        let plan = layout::composition_plan(&presentation);
                         if pointer_routing.send(
                             phase,
                             u32::from(button),
                             0,
                             0,
                             &presentation,
+                            &plan,
                             &input_tx,
                         ) {
                             direct_input.mouse_button(button, state == ElementState::Pressed);
@@ -724,12 +731,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let size = window.inner_size();
                     let presentation =
                         compositor.presentation(Extent::new(size.width, size.height));
+                    let plan = layout::composition_plan(&presentation);
                     if pointer_routing.send(
                         PointerPhase::Wheel,
                         0,
                         horizontal,
                         vertical,
                         &presentation,
+                        &plan,
                         &input_tx,
                     ) {
                         direct_input.mouse_wheel(vertical);
@@ -827,10 +836,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             size.width,
                                             size.height,
                                         ));
+                                        let plan = layout::composition_plan(&presentation);
                                         cancel_pointer_connection(
                                             existing,
                                             &mut pointer_routing,
                                             &presentation,
+                                            &plan,
                                             &input_tx,
                                             &mut direct_input,
                                         );
@@ -870,10 +881,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             size.width,
                                             size.height,
                                         ));
+                                        let plan = layout::composition_plan(&presentation);
                                         cancel_pointer_connection(
                                             existing,
                                             &mut pointer_routing,
                                             &presentation,
+                                            &plan,
                                             &input_tx,
                                             &mut direct_input,
                                         );
@@ -926,10 +939,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             size.width,
                                             size.height,
                                         ));
+                                        let plan = layout::composition_plan(&presentation);
                                         cancel_pointer_connection(
                                             existing,
                                             &mut pointer_routing,
                                             &presentation,
+                                            &plan,
                                             &input_tx,
                                             &mut direct_input,
                                         );
@@ -1114,10 +1129,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 let size = window.inner_size();
                                 let presentation =
                                     compositor.presentation(Extent::new(size.width, size.height));
+                                let plan = layout::composition_plan(&presentation);
                                 cancel_pointer_connection(
                                     connection,
                                     &mut pointer_routing,
                                     &presentation,
+                                    &plan,
                                     &input_tx,
                                     &mut direct_input,
                                 );

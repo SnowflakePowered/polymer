@@ -1,7 +1,6 @@
-use super::pointer::PointerRoutingState;
 use snowglass_input::gamepad::LatestGamepadMailbox;
 use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
-use snowglass_renderer::Presentation;
+use snowglass_renderer::{CompositingPlan, Presentation, input::PointerRoutingState};
 use std::{
     collections::VecDeque,
     sync::{
@@ -146,10 +145,11 @@ pub(crate) fn cancel_pointer_connection(
     connection: u64,
     routing: &mut PointerRoutingState,
     presentation: &Presentation,
+    plan: &CompositingPlan,
     sender: &mpsc::Sender<Message>,
     direct_input: &mut DirectInputForwarder,
 ) {
-    let Some(buttons) = routing.cancel(connection, presentation, sender) else {
+    let Some(buttons) = routing.cancel(connection, presentation, plan, sender) else {
         return;
     };
     direct_input.release_mouse_buttons(buttons);

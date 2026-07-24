@@ -1,0 +1,296 @@
+use snowglass_hook::config;
+use snowglass_platform_windows::{
+    InjectionLibrary, TargetProcess, architecture_artifact_dir, executable_architecture,
+};
+use snowglass_renderer::cli::{HookBackend, ViewerOptions};
+use std::{ffi::OsString, path::Path};
+
+pub fn launch(options: &ViewerOptions, session: &str) -> std::io::Result<TargetProcess> {
+    let command = options.target.first().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a target command must follow `--`",
+        )
+    })?;
+    let artifact_root = std::env::current_exe()?
+        .parent()
+        .ok_or_else(|| std::io::Error::other("shell executable has no parent directory"))?
+        .to_path_buf();
+    let target_architecture = executable_architecture(Path::new(command)).ok();
+    let artifact_dir = target_architecture
+        .map(|architecture| architecture_artifact_dir(&artifact_root, architecture))
+        .unwrap_or_else(|| artifact_root.clone());
+    let vulkan_manifest = options
+        .hooks
+        .contains(&HookBackend::Vulkan)
+        .then(|| {
+            create_vulkan_layer_manifest(&artifact_dir.join("snowglass_hook_vulkan_layer.dll"))
+        })
+        .transpose()?;
+
+    let mut environment = hook_environment(options, session, &artifact_root);
+    let sdl2_runtime = artifact_dir.join("SDL2.dll");
+    let sdl3_runtime = artifact_dir.join("SDL3.dll");
+    if std::env::var_os("SDL_DYNAMIC_API").is_none() && sdl2_runtime.is_file() {
+        environment.push((
+            OsString::from("SDL_DYNAMIC_API"),
+            sdl2_runtime.into_os_string(),
+        ));
+    }
+    if std::env::var_os("SDL3_DYNAMIC_API").is_none() && sdl3_runtime.is_file() {
+        environment.push((
+            OsString::from("SDL3_DYNAMIC_API"),
+            sdl3_runtime.into_os_string(),
+        ));
+    }
+    if let Some(manifest) = &vulkan_manifest {
+        environment.push((
+            OsString::from("VK_LAYER_PATH"),
+            manifest.path().as_os_str().to_owned(),
+        ));
+        environment.push((
+            OsString::from("VK_INSTANCE_LAYERS"),
+            OsString::from("VK_LAYER_SNOWGLASS_capture"),
+        ));
+    }
+
+    let libraries = hook_libraries(&options.hooks, options.isolate);
+    let mut process = TargetProcess::launch(
+        &options.target,
+        &artifact_root,
+        &environment,
+        options.isolate.then_some(session),
+        &libraries,
+    )?;
+    if let Some(manifest) = vulkan_manifest {
+        process.retain(manifest);
+    }
+    eprintln!(
+        "snowglass: launched target process {} with {} graphics hook(s)",
+        process.id(),
+        options.hooks.len()
+    );
+    Ok(process)
+}
+
+fn hook_environment(
+    options: &ViewerOptions,
+    session: &str,
+    artifact_root: &Path,
+) -> Vec<(OsString, OsString)> {
+    let layouts = options
+        .gamepads
+        .iter()
+        .map(|gamepad| gamepad.layout.as_str())
+        .collect::<Vec<_>>();
+    let mut environment = vec![
+        (OsString::from(config::SESSION), OsString::from(session)),
+        (
+            OsString::from(config::STONE_LAYOUTS),
+            OsString::from(layouts.join(",")),
+        ),
+        (
+            OsString::from(config::SDL_GAMEPADS),
+            OsString::from(layouts.len().to_string()),
+        ),
+        (
+            OsString::from(config::LAYER_LOG_FILE),
+            artifact_root.join("snowglass-layer.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::DINPUT_LOG_FILE),
+            artifact_root.join("snowglass-dinput.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::WIN32_LOG_FILE),
+            artifact_root.join("snowglass-win32.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::SDL_LOG_FILE),
+            artifact_root.join("snowglass-sdl.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::DXGI_LOG_FILE),
+            artifact_root.join("snowglass-dxgi.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::D3D11_LOG_FILE),
+            artifact_root.join("snowglass-d3d11.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::D3D12_LOG_FILE),
+            artifact_root.join("snowglass-d3d12.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::OPENGL_LOG_FILE),
+            artifact_root.join("snowglass-opengl.log").into_os_string(),
+        ),
+        (
+            OsString::from(config::GDI_LOG_FILE),
+            artifact_root.join("snowglass-gdi.log").into_os_string(),
+        ),
+        (OsString::from("SDL_JOYSTICK_HIDAPI"), OsString::from("0")),
+        (
+            OsString::from("SDL_JOYSTICK_DIRECTINPUT"),
+            OsString::from("0"),
+        ),
+        (OsString::from("SDL_JOYSTICK_RAWINPUT"), OsString::from("0")),
+        (OsString::from("SDL_JOYSTICK_WGI"), OsString::from("0")),
+        (
+            OsString::from("SDL_JOYSTICK_GAMEINPUT"),
+            OsString::from("0"),
+        ),
+        (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
+    ];
+    if let Some(path) = options.stone_db.as_deref() {
+        environment.push((
+            OsString::from(config::STONE_DATABASE),
+            path.as_os_str().to_owned(),
+        ));
+    }
+    if let Some(targets) = &options.track_render_targets {
+        environment.push((
+            OsString::from(config::TRACK_RENDER_TARGET),
+            OsString::from("1"),
+        ));
+        environment.push((
+            OsString::from(config::TRACK_RENDER_TARGETS),
+            OsString::from(
+                targets
+                    .iter()
+                    .map(|target| target.index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ));
+        let patterns = targets
+            .iter()
+            .map(|target| target.surface_pattern.as_deref())
+            .collect::<Vec<_>>();
+        if patterns.iter().any(Option::is_some) {
+            environment.push((
+                OsString::from(config::TRACK_RENDER_TARGET_SURFACE_PATTERNS),
+                OsString::from(
+                    serde_json::to_string(&patterns)
+                        .expect("render-target pattern serialization cannot fail"),
+                ),
+            ));
+        }
+        if options.graph_tracking {
+            environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
+        }
+    }
+    if options.force_keyed_mutex {
+        environment.push((
+            OsString::from(config::FORCE_KEYED_MUTEX),
+            OsString::from("1"),
+        ));
+    }
+    environment
+}
+
+fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::TempDir> {
+    if !layer_dll.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Vulkan hook is missing at {}", layer_dll.display()),
+        ));
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("snowglass-vulkan-layer-")
+        .tempdir()?;
+    let manifest = serde_json::json!({
+        "file_format_version": "1.2.0",
+        "layer": {
+            "name": "VK_LAYER_SNOWGLASS_capture",
+            "type": "GLOBAL",
+            "library_path": layer_dll,
+            "api_version": "1.4.0",
+            "implementation_version": "1",
+            "description": "Snowglass Vulkan capture layer",
+            "functions": {
+                "vkNegotiateLoaderLayerInterfaceVersion":
+                    "vkNegotiateLoaderLayerInterfaceVersion"
+            },
+            "enable_environment": {
+                "SNOWGLASS_VULKAN_LAYER": "1"
+            },
+            "disable_environment": {
+                "DISABLE_SNOWGLASS_VULKAN_LAYER": "1"
+            }
+        }
+    });
+    let file = std::fs::File::create(directory.path().join("snowglass-layer.json"))?;
+    serde_json::to_writer_pretty(file, &manifest).map_err(std::io::Error::other)?;
+    Ok(directory)
+}
+
+fn hook_libraries(hooks: &[HookBackend], isolate: bool) -> Vec<InjectionLibrary> {
+    let mut libraries = Vec::new();
+    if hooks
+        .iter()
+        .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
+    {
+        libraries.push(InjectionLibrary::new(
+            "DXGI",
+            "snowglass_hook_dxgi.dll",
+            c"SnowglassInstallDxgiHook",
+        ));
+    }
+    if hooks.contains(&HookBackend::D3d11) {
+        libraries.push(InjectionLibrary::new(
+            "D3D11",
+            "snowglass_hook_d3d11.dll",
+            c"SnowglassInstallD3d11Hook",
+        ));
+    }
+    if hooks.contains(&HookBackend::D3d12) {
+        libraries.push(InjectionLibrary::new(
+            "D3D12",
+            "snowglass_hook_d3d12.dll",
+            c"SnowglassInstallD3d12Hook",
+        ));
+    }
+    if hooks.contains(&HookBackend::OpenGl) {
+        libraries.push(InjectionLibrary::new(
+            "OpenGL",
+            "snowglass_hook_opengl32.dll",
+            c"SnowglassInstallOpenGlHook",
+        ));
+    }
+    if hooks.contains(&HookBackend::Gdi) {
+        libraries.push(InjectionLibrary::new(
+            "GDI",
+            "snowglass_hook_gdi.dll",
+            c"SnowglassInstallGdiHook",
+        ));
+    }
+    libraries.push(InjectionLibrary::new(
+        "DirectInput",
+        "snowglass_hook_dinput.dll",
+        c"SnowglassInstallDinputHook",
+    ));
+    libraries.push(InjectionLibrary::new(
+        "Win32 input",
+        "snowglass_hook_win32.dll",
+        c"SnowglassInstallWin32Hook",
+    ));
+    if isolate {
+        libraries.push(InjectionLibrary::new(
+            "UI",
+            "snowglass_hook_ui.dll",
+            c"SnowglassInstallUiHook",
+        ));
+    }
+    libraries.push(InjectionLibrary::new(
+        "SDL2",
+        "snowglass_hook_sdl2.dll",
+        c"SnowglassInstallSdl2Hook",
+    ));
+    libraries.push(InjectionLibrary::new(
+        "SDL3",
+        "snowglass_hook_sdl3.dll",
+        c"SnowglassInstallSdl3Hook",
+    ));
+    libraries
+}
