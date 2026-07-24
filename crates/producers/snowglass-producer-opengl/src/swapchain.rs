@@ -15,7 +15,9 @@ use crate::{
 };
 use snowglass_hook::config;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
-use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
+use snowglass_platform_windows::{
+    NativeWindow, ProcessId, duplicate_handle_into_process, performance_counter, window_title,
+};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
@@ -330,12 +332,37 @@ fn window_order(hwnd: isize) -> usize {
     }
 }
 
+fn tracked_window_slot(hwnd: isize) -> Option<usize> {
+    if !config::tracking_enabled() {
+        return None;
+    }
+    let windows = WINDOW_ORDER
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    config::tracked_render_target_surface_slots(&windows, |window| {
+        window_title(NativeWindow(window))
+    })
+    .iter()
+    .position(|window| *window == Some(hwnd))
+}
+
 /// Graph selections are indexed independently of the window that presents
 /// them, exactly like the Vulkan producer. Keeping this identity stable
 /// preserves viewer ordering and CLI rotation across windows and swaps.
 fn graph_surface_id(index: usize) -> SurfaceId {
     const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
     SurfaceId(GRAPH_SURFACE_TAG | index as u64)
+}
+
+fn surface_is_selected(
+    allowed: &HashMap<isize, Vec<SurfaceId>>,
+    window: isize,
+    surface: SurfaceId,
+) -> bool {
+    allowed
+        .get(&window)
+        .is_some_and(|surfaces| surfaces.contains(&surface))
 }
 
 /// One tracked source's deterministic identity in the cross-window selection:
@@ -346,6 +373,51 @@ type SelectionIdentity = (Reverse<u32>, Reverse<u32>, usize, usize);
 
 fn selection_identity(source: &DrawCandidate, order: usize, index: usize) -> SelectionIdentity {
     (Reverse(source.height), Reverse(source.width), order, index)
+}
+
+fn resolve_surface_selection(
+    requested: &[usize],
+    selection: &[(SelectionIdentity, isize)],
+    mut surface_matches: impl FnMut(usize, isize) -> Option<bool>,
+) -> Vec<(usize, SelectionIdentity)> {
+    let mut resolved = vec![None; requested.len()];
+    let mut used = Vec::new();
+    for (slot, &requested_index) in requested.iter().enumerate() {
+        if surface_matches(slot, 0).is_none() {
+            continue;
+        }
+        let Some(selected) = selection
+            .iter()
+            .filter(|(_, hwnd)| surface_matches(slot, *hwnd) == Some(true))
+            .nth(requested_index)
+        else {
+            continue;
+        };
+        resolved[slot] = Some(selected.0);
+        used.push(selected.0);
+    }
+    for (slot, &requested_index) in requested.iter().enumerate() {
+        if resolved[slot].is_some() || surface_matches(slot, 0).is_some() {
+            continue;
+        }
+        let selected = selection
+            .get(requested_index)
+            .filter(|(identity, _)| !used.contains(identity))
+            .or_else(|| {
+                selection
+                    .iter()
+                    .find(|(identity, _)| !used.contains(identity))
+            });
+        if let Some(&(identity, _)) = selected {
+            resolved[slot] = Some(identity);
+            used.push(identity);
+        }
+    }
+    resolved
+        .into_iter()
+        .enumerate()
+        .filter_map(|(slot, identity)| identity.map(|identity| (slot, identity)))
+        .collect()
 }
 
 /// Pairs the present-draw quads observed this frame with the selected
@@ -447,25 +519,87 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
                 .tracked_sources
                 .iter()
                 .enumerate()
-                .map(|(index, source)| selection_identity(source, captures.window_order, index))
+                .map(|(index, source)| {
+                    (
+                        selection_identity(source, captures.window_order, index),
+                        captures.hwnd,
+                    )
+                })
         })
         .collect::<Vec<_>>();
-    selection.sort_unstable();
+    selection.sort_unstable_by_key(|&(identity, _)| identity);
+    let titles = selection
+        .iter()
+        .filter_map(|&(_, hwnd)| window_title(NativeWindow(hwnd)).map(|title| (hwnd, title)))
+        .collect::<HashMap<_, _>>();
+    let requested = config::tracked_render_target_indices().unwrap_or_default();
+    let resolved = resolve_surface_selection(&requested, &selection, |slot, hwnd| {
+        if !config::tracked_render_target_has_surface_pattern(slot) {
+            return None;
+        }
+        if hwnd == 0 {
+            return Some(false);
+        }
+        let title = titles.get(&hwnd)?;
+        config::tracked_render_target_surface_matches(slot, title)
+    });
+    let tracked_slot = tracked_window_slot(hwnd as isize);
+    if config::tracking_enabled() {
+        let mut allowed = HashMap::<isize, Vec<SurfaceId>>::new();
+        if resolved.is_empty() {
+            let windows = WINDOW_ORDER
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            for (slot, window) in config::tracked_render_target_surface_slots(&windows, |window| {
+                window_title(NativeWindow(window))
+            })
+            .into_iter()
+            .enumerate()
+            {
+                if let Some(window) = window {
+                    allowed
+                        .entry(window)
+                        .or_default()
+                        .push(graph_surface_id(slot));
+                }
+            }
+        } else {
+            for &(slot, identity) in &resolved {
+                if let Some(&(_, window)) = selection
+                    .iter()
+                    .find(|&&(candidate, _)| candidate == identity)
+                {
+                    allowed
+                        .entry(window)
+                        .or_default()
+                        .push(graph_surface_id(slot));
+                }
+            }
+        }
+        for captures in map.values_mut() {
+            let window = captures.hwnd;
+            captures
+                .streams
+                .retain(|capture| surface_is_selected(&allowed, window, capture.surface_id()));
+        }
+    }
     let entry = map
         .get_mut(&key)
         .expect("window captures entry inserted above");
-    let requested = config::tracked_render_target_indices().unwrap_or_default();
     let mut chosen = entry
         .tracked_sources
         .iter()
         .enumerate()
         .filter_map(|(index, source)| {
             let identity = selection_identity(source, order, index);
-            let global = selection.iter().position(|item| *item == identity)?;
-            requested.contains(&global).then_some((global, *source))
+            let slot = resolved
+                .iter()
+                .find_map(|&(slot, selected)| (selected == identity).then_some(slot))?;
+            Some((slot, *source))
         })
         .collect::<Vec<_>>();
-    chosen.sort_unstable_by_key(|&(global, _)| global);
+    chosen.sort_unstable_by_key(|&(slot, _)| slot);
     // Present-draw quads carry the real window placement (screen gaps,
     // asymmetric layouts). Successful pairings are remembered per selection
     // index so a transiently unpairable frame (an overlay joins the present)
@@ -474,21 +608,21 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         entry.placements.clear();
         entry.placement_extent = (window_width, window_height);
     }
-    for (pairing, &(global, _)) in pair_present_quads(&chosen, &present_quads)
+    for (pairing, &(slot, _)) in pair_present_quads(&chosen, &present_quads)
         .into_iter()
         .zip(&chosen)
     {
         if let Some(quad) = pairing
-            && entry.placements.insert(global, quad) != Some(quad)
+            && entry.placements.insert(slot, quad) != Some(quad)
         {
             log(format!(
-                "snowglass: present placement {global} -> {},{} {}x{} (bottom-up, window {window_width}x{window_height})",
+                "snowglass: present placement {slot} -> {},{} {}x{} (bottom-up, window {window_width}x{window_height})",
                 quad.x, quad.y, quad.width, quad.height
             ));
         }
     }
-    for (global, source) in &mut chosen {
-        if let Some(&quad) = entry.placements.get(global) {
+    for (slot, source) in &mut chosen {
+        if let Some(&quad) = entry.placements.get(slot) {
             source.bounds = quad;
             source.window_bounds = true;
         }
@@ -498,7 +632,9 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     // and hold off layout changes until they persist, rather than churning
     // through transport rebuilds on scene transitions.
     let window_extent = (window_width, window_height);
-    let window_surface = SurfaceId(hwnd as u64);
+    let window_surface = tracked_slot
+        .map(graph_surface_id)
+        .unwrap_or(SurfaceId(hwnd as u64));
     let current = entry
         .streams
         .iter()
@@ -507,7 +643,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     let tracked_layout = entry.streams.iter().any(|capture| !capture.whole_window());
     let proposed = chosen
         .iter()
-        .map(|&(global, source)| (source.width, source.height, graph_surface_id(global)))
+        .map(|&(slot, source)| (source.width, source.height, graph_surface_id(slot)))
         .collect::<Vec<_>>();
     let proposed_extents = proposed
         .iter()
@@ -542,6 +678,9 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     } else if tracked_layout && entry.untracked_frames < 120 {
         entry.untracked_frames += 1;
         held
+    } else if config::tracking_enabled() && (!resolved.is_empty() || tracked_slot.is_none()) {
+        entry.untracked_frames = 0;
+        Vec::new()
     } else {
         entry.untracked_frames = 0;
         vec![(window_width, window_height, window_surface)]
@@ -561,8 +700,8 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             "snowglass: selected OpenGL render targets {}",
             chosen
                 .iter()
-                .map(|(global, source)| format!(
-                    "{global}: texture {} layer {} ({:#x}, {}x{})",
+                .map(|(slot, source)| format!(
+                    "{slot}: texture {} layer {} ({:#x}, {}x{})",
                     source.texture, source.layer, source.target, source.width, source.height
                 ))
                 .collect::<Vec<_>>()
@@ -1370,6 +1509,40 @@ mod tests {
         selection.sort_unstable();
         assert_eq!(selection[0], selection_identity(&source(1, 256, 192), 0, 0));
         assert_eq!(selection[1], selection_identity(&source(2, 256, 192), 1, 0));
+    }
+
+    #[test]
+    fn surface_match_pins_a_slot_and_unqualified_slots_take_remaining_sources() {
+        let main = selection_identity(&source(1, 1280, 720), 0, 0);
+        let gamepad = selection_identity(&source(2, 854, 480), 1, 0);
+        let mut selection = vec![(main, 10), (gamepad, 20)];
+        selection.sort_unstable_by_key(|&(identity, _)| identity);
+        let resolved = resolve_surface_selection(&[0, 1], &selection, |slot, hwnd| {
+            (slot == 0).then_some(hwnd == 20)
+        });
+        assert_eq!(resolved[0], (0, gamepad));
+        assert_eq!(resolved[1], (1, main));
+    }
+
+    #[test]
+    fn one_request_resolves_only_one_cross_window_source() {
+        let main = selection_identity(&source(1, 1280, 720), 0, 0);
+        let gamepad = selection_identity(&source(2, 854, 480), 1, 0);
+        let mut selection = vec![(main, 10), (gamepad, 20)];
+        selection.sort_unstable_by_key(|&(identity, _)| identity);
+
+        let resolved = resolve_surface_selection(&[0], &selection, |_, _| None);
+
+        assert_eq!(resolved, [(0, main)]);
+    }
+
+    #[test]
+    fn one_allowed_opengl_surface_excludes_sibling_rings() {
+        let allowed = HashMap::from([(10, vec![graph_surface_id(0)])]);
+
+        assert!(surface_is_selected(&allowed, 10, graph_surface_id(0)));
+        assert!(!surface_is_selected(&allowed, 20, graph_surface_id(0)));
+        assert!(!surface_is_selected(&allowed, 10, graph_surface_id(1)));
     }
 
     fn quad(y: u32) -> QuadBounds {

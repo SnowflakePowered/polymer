@@ -13,7 +13,9 @@ use ash::{vk, vk::Handle};
 use dashmap::DashMap;
 use snowglass_hook::config;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
-use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
+use snowglass_platform_windows::{
+    NativeWindow, ProcessId, duplicate_handle_into_process, performance_counter, window_title,
+};
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
@@ -183,6 +185,10 @@ pub struct CaptureState {
     /// swapchain creation: applications can recreate sibling swapchains in a
     /// different order during resize or startup transitions.
     window_order: Mutex<Vec<isize>>,
+    /// HWNDs that actually acquired swapchains. Some toolkits create Vulkan
+    /// surfaces for non-presenting controls; those must not consume a regex
+    /// tracking slot ahead of the real render windows.
+    swapchain_windows: Mutex<Vec<isize>>,
 }
 const CLAIM_HORIZON: u64 = 240;
 
@@ -190,6 +196,22 @@ const CLAIM_HORIZON: u64 = 240;
 const IDLE_STREAM_HORIZON: u64 = 600;
 
 impl CaptureState {
+    fn tracked_surface_slot(&self, source_window: isize) -> Option<usize> {
+        if !config::tracking_enabled() {
+            return None;
+        }
+        let windows = self
+            .swapchain_windows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        config::tracked_render_target_surface_slots(&windows, |window| {
+            window_title(NativeWindow(window))
+        })
+        .iter()
+        .position(|window| *window == Some(source_window))
+    }
+
     fn observe_graph_presentation(
         &self,
         swapchain: vk::SwapchainKHR,
@@ -248,9 +270,9 @@ impl CaptureState {
         owner_window: isize,
         owner_extent: vk::Extent2D,
         sources: &[tracking::PresentSource],
-        selected_indices: &[usize],
+        requested_indices: &[usize],
         now: u64,
-    ) -> Vec<PresentationTarget> {
+    ) -> (Vec<(usize, usize)>, Vec<PresentationTarget>) {
         let fallback = |index: usize| PresentationTarget {
             source_window: owner_window,
             presentation_extent: owner_extent,
@@ -259,12 +281,18 @@ impl CaptureState {
                 .and_then(|source| source.presentation_rect),
         };
         let same_layout = |candidate: &GraphPresentation| {
-            candidate.sources.len() == sources.len()
-                && candidate
-                    .sources
-                    .iter()
-                    .zip(sources)
-                    .all(|(candidate, source)| candidate.extent == source.extent)
+            let mut candidate_extents = candidate
+                .sources
+                .iter()
+                .map(|source| (source.extent.width, source.extent.height))
+                .collect::<Vec<_>>();
+            let mut source_extents = sources
+                .iter()
+                .map(|source| (source.extent.width, source.extent.height))
+                .collect::<Vec<_>>();
+            candidate_extents.sort_unstable();
+            source_extents.sort_unstable();
+            candidate_extents == source_extents
         };
         let presentations = self
             .graph_presentations
@@ -290,19 +318,22 @@ impl CaptureState {
         }
         let mut candidates = by_window.values().cloned().collect::<Vec<_>>();
         candidates.sort_unstable_by_key(|candidate| candidate.window_order);
-        let discovered = (sources.len() >= 2 && candidates.len() >= sources.len()).then(|| {
-            assign_presentation_candidates(sources, &candidates)
-                .into_iter()
+        let assignment = (!sources.is_empty() && candidates.len() >= sources.len())
+            .then(|| assign_presentation_candidates(sources, &candidates));
+        let discovered = assignment.as_ref().map(|assignment| {
+            assignment
+                .iter()
+                .copied()
                 .enumerate()
                 .map(|(index, candidate_index)| {
                     let candidate = &candidates[candidate_index];
                     PresentationTarget {
                         source_window: candidate.source_window,
                         presentation_extent: candidate.presentation_extent,
-                        presentation_rect: candidate
-                            .sources
-                            .get(index)
-                            .and_then(|source| source.presentation_rect),
+                        presentation_rect: candidate_presentation_rect(
+                            candidate,
+                            sources[index].extent,
+                        ),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -330,9 +361,64 @@ impl CaptureState {
             }
         }
 
-        selected_indices
+        let mut resolved = vec![None; requested_indices.len()];
+        let mut used = Vec::new();
+        if let Some(assignment) = &assignment {
+            for slot in 0..requested_indices.len() {
+                if !config::tracked_render_target_has_surface_pattern(slot) {
+                    continue;
+                }
+                let Some(candidate_index) = candidates.iter().position(|candidate| {
+                    window_title(NativeWindow(candidate.source_window)).is_some_and(|title| {
+                        config::tracked_render_target_surface_matches(slot, &title) == Some(true)
+                    })
+                }) else {
+                    continue;
+                };
+                let Some(source_index) = assignment
+                    .iter()
+                    .position(|&assigned| assigned == candidate_index)
+                else {
+                    continue;
+                };
+                resolved[slot] = Some((source_index, Some(candidate_index)));
+                used.push(source_index);
+            }
+        }
+        for (slot, &requested_index) in requested_indices.iter().enumerate() {
+            if resolved[slot].is_some() || config::tracked_render_target_has_surface_pattern(slot) {
+                continue;
+            }
+            let source_index = (requested_index < sources.len()
+                && !used.contains(&requested_index))
+            .then_some(requested_index)
+            .or_else(|| (0..sources.len()).find(|index| !used.contains(index)));
+            if let Some(source_index) = source_index {
+                resolved[slot] = Some((source_index, None));
+                used.push(source_index);
+            }
+        }
+        let resolved = resolved
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, resolved)| {
+                resolved.map(|(index, candidate)| (slot, index, candidate))
+            })
+            .collect::<Vec<_>>();
+        let targets = resolved
             .iter()
-            .map(|&index| {
+            .map(|&(_, index, matched_candidate)| {
+                if let Some(candidate_index) = matched_candidate {
+                    let candidate = &candidates[candidate_index];
+                    return PresentationTarget {
+                        source_window: candidate.source_window,
+                        presentation_extent: candidate.presentation_extent,
+                        presentation_rect: candidate_presentation_rect(
+                            candidate,
+                            sources[index].extent,
+                        ),
+                    };
+                }
                 let Some(source) = sources.get(index) else {
                     return fallback(index);
                 };
@@ -359,7 +445,14 @@ impl CaptureState {
                 layouts.insert(key, refreshed);
                 refreshed
             })
-            .collect()
+            .collect();
+        (
+            resolved
+                .into_iter()
+                .map(|(slot, index, _)| (slot, index))
+                .collect(),
+            targets,
+        )
     }
 
     fn claim_tracked_streaming(&self, swapchain: vk::SwapchainKHR, now: u64) -> bool {
@@ -440,7 +533,6 @@ fn assign_presentation_candidates(
                 continue;
             }
             let next_cost = cost.saturating_add(presentation_candidate_cost(
-                source_index,
                 sources[source_index].extent,
                 candidate,
             ));
@@ -480,21 +572,14 @@ fn assign_presentation_candidates(
     )
 }
 
-fn presentation_candidate_cost(
-    source_index: usize,
-    source: vk::Extent2D,
-    candidate: &GraphPresentation,
-) -> u128 {
+fn presentation_candidate_cost(source: vk::Extent2D, candidate: &GraphPresentation) -> u128 {
     let target = candidate.presentation_extent;
     let direct = (u128::from(source.width) * u128::from(target.height))
         .abs_diff(u128::from(source.height) * u128::from(target.width));
     let transposed = (u128::from(source.height) * u128::from(target.height))
         .abs_diff(u128::from(source.width) * u128::from(target.width));
     let aspect_error = direct.min(transposed);
-    let presentation_rect = candidate
-        .sources
-        .get(source_index)
-        .and_then(|source| source.presentation_rect);
+    let presentation_rect = candidate_presentation_rect(candidate, source);
     let missing_placement = u128::from(presentation_rect.is_none());
     let target_area = u128::from(target.width) * u128::from(target.height);
     let covered_area = presentation_rect.map_or(0, |rect| {
@@ -502,6 +587,17 @@ fn presentation_candidate_cost(
     });
     let uncovered_area = target_area.saturating_sub(covered_area.min(target_area));
     (missing_placement << 120) | (aspect_error << 48) | uncovered_area.min((1u128 << 48) - 1)
+}
+
+fn candidate_presentation_rect(
+    candidate: &GraphPresentation,
+    source_extent: vk::Extent2D,
+) -> Option<vk::Rect2D> {
+    candidate
+        .sources
+        .iter()
+        .find(|source| source.extent == source_extent)
+        .and_then(|source| source.presentation_rect)
 }
 
 /// Stable logical identity for one of a window's capture streams. It is kept
@@ -522,6 +618,19 @@ fn is_graph_surface_id(surface_id: SurfaceId) -> bool {
     const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
     const GRAPH_SURFACE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
     surface_id.0 & GRAPH_SURFACE_TAG_MASK == GRAPH_SURFACE_TAG
+}
+
+fn requires_selected_source(
+    surface_id: SurfaceId,
+    stream_extent: vk::Extent2D,
+    swapchain_extent: vk::Extent2D,
+    graph_tracking: bool,
+) -> bool {
+    stream_extent != swapchain_extent || (graph_tracking && is_graph_surface_id(surface_id))
+}
+
+fn direct_surface_selected(tracking_enabled: bool, tracked_slot: Option<usize>) -> bool {
+    !tracking_enabled || tracked_slot.is_some()
 }
 
 struct ViewerConnection {
@@ -856,8 +965,10 @@ impl CaptureState {
         if source_window != 0 && !windows.contains(&source_window) {
             windows.push(source_window);
         }
+        drop(windows);
+        let title = window_title(NativeWindow(source_window)).unwrap_or_default();
         log(format!(
-            "snowglass: associated Vulkan surface with HWND {source_window:#x}"
+            "snowglass: associated Vulkan surface with HWND {source_window:#x} title {title:?}"
         ));
     }
 
@@ -897,16 +1008,36 @@ impl CaptureState {
             .iter()
             .position(|window| *window == source_window)
             .unwrap_or(usize::MAX);
-        let surface_id = stream_surface_id(source_window, 0);
-        let transport = capture.as_deref().map_or(
-            Transport {
-                ring: None,
-                producer_timeline: None,
-                consumer_timeline: None,
-                ipc: None,
-            },
-            |capture| create_transport(Some(capture), extent, format, surface_id, source_window),
-        );
+        {
+            let mut windows = self
+                .swapchain_windows
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if source_window != 0 && !windows.contains(&source_window) {
+                windows.push(source_window);
+            }
+        }
+        let tracked_slot = self.tracked_surface_slot(source_window);
+        let surface_id =
+            tracked_slot.map_or_else(|| stream_surface_id(source_window, 0), graph_surface_id);
+        let selected = direct_surface_selected(config::tracking_enabled(), tracked_slot);
+        let streams = selected
+            .then(|| {
+                let transport = capture.as_deref().map_or(
+                    Transport {
+                        ring: None,
+                        producer_timeline: None,
+                        consumer_timeline: None,
+                        ipc: None,
+                    },
+                    |capture| {
+                        create_transport(Some(capture), extent, format, surface_id, source_window)
+                    },
+                );
+                CaptureStream::from_transport(extent, surface_id, source_window, extent, transport)
+            })
+            .into_iter()
+            .collect();
         self.swapchains.insert(
             swapchain,
             SwapchainState {
@@ -919,13 +1050,7 @@ impl CaptureState {
                 creation_order: count,
                 window_order,
                 images: Vec::new(),
-                streams: vec![CaptureStream::from_transport(
-                    extent,
-                    surface_id,
-                    source_window,
-                    extent,
-                    transport,
-                )],
+                streams,
                 untracked_presents: 0,
                 pending_layout: Vec::new(),
                 pending_presents: 0,
@@ -934,11 +1059,15 @@ impl CaptureState {
             },
         );
         log(format!(
-            "snowglass: intercepted vkCreateSwapchainKHR (count={count})"
+            "snowglass: intercepted vkCreateSwapchainKHR (count={count}, window {source_window:#x}, tracking slot {tracked_slot:?}, selected={selected})"
         ));
     }
 
     pub fn swapchain_destroyed(&self, swapchain: vk::SwapchainKHR) {
+        let source_window = self
+            .swapchains
+            .get(&swapchain)
+            .map(|state| state.source_window);
         if let Some(state) = self.swapchains.get(&swapchain) {
             for image in &state.images {
                 self.swapchain_images.remove(image);
@@ -946,6 +1075,17 @@ impl CaptureState {
             }
         }
         self.swapchains.remove(&swapchain);
+        if let Some(source_window) = source_window
+            && !self
+                .swapchains
+                .iter()
+                .any(|state| state.source_window == source_window)
+        {
+            self.swapchain_windows
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retain(|window| *window != source_window);
+        }
         self.graph_presentations
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1067,16 +1207,11 @@ impl CaptureState {
         let now = self.presents_seen.load(Ordering::Relaxed);
         self.observe_graph_presentation(swapchain, state, &resolved, now);
         let requested_indices = config::tracked_render_target_indices().unwrap_or_else(|| vec![0]);
-        let selected_indices = requested_indices
-            .iter()
-            .copied()
-            .filter(|&index| index < resolved.len())
-            .collect::<Vec<_>>();
-        let graph_targets = self.presentation_targets(
+        let (selected_requests, graph_targets) = self.presentation_targets(
             state.source_window,
             state.extent,
             &resolved,
-            &selected_indices,
+            &requested_indices,
             now,
         );
         state.tracked_sources = resolved.clone();
@@ -1092,9 +1227,13 @@ impl CaptureState {
         }
         // The caller tracks selection entries by index; each requested index
         // becomes its own stream, in request order.
-        let graph_sources = selected_indices
+        let graph_request_slots = selected_requests
             .iter()
-            .filter_map(|&index| resolved.get(index).copied())
+            .filter_map(|&(slot, index)| resolved.get(index).map(|_| slot))
+            .collect::<Vec<_>>();
+        let graph_sources = selected_requests
+            .iter()
+            .filter_map(|&(_, index)| resolved.get(index).copied())
             .collect::<Vec<_>>();
         // One stream per tracked source, or the classic whole-frame stream when
         // nothing resolves. Streams whose extent changed rebuild their transport
@@ -1109,6 +1248,10 @@ impl CaptureState {
             .collect::<Vec<_>>();
         let tracked_layout =
             current.len() > 1 || current.first().is_some_and(|first| *first != state.extent);
+        let selected_surface = direct_surface_selected(
+            config::tracking_enabled(),
+            self.tracked_surface_slot(state.source_window),
+        );
         let desired = if claimed_elsewhere {
             state.untracked_presents = 0;
             state.pending_presents = 0;
@@ -1139,6 +1282,9 @@ impl CaptureState {
         } else if tracked_layout && state.untracked_presents < 120 {
             state.untracked_presents += 1;
             current.clone()
+        } else if !selected_surface {
+            state.untracked_presents = 0;
+            Vec::new()
         } else {
             state.untracked_presents = 0;
             vec![state.extent]
@@ -1202,7 +1348,7 @@ impl CaptureState {
                     presentation_extent: stream.presentation_extent,
                     presentation_rect: proposed_target.presentation_rect,
                 });
-            let proposed_surface_id = selected_indices.get(index).map_or_else(
+            let proposed_surface_id = graph_request_slots.get(index).copied().map_or_else(
                 || {
                     if keep_tracked_metadata {
                         state.streams.get(index).map_or_else(
@@ -1210,10 +1356,13 @@ impl CaptureState {
                             |stream| stream.surface_id,
                         )
                     } else {
-                        stream_surface_id(state.source_window, index)
+                        self.tracked_surface_slot(state.source_window).map_or_else(
+                            || stream_surface_id(state.source_window, index),
+                            graph_surface_id,
+                        )
                     }
                 },
-                |_| graph_surface_id(index),
+                graph_surface_id,
             );
             let surface_id = existing
                 .filter(|stream| is_graph_surface_id(stream.surface_id))
@@ -1371,7 +1520,12 @@ impl CaptureState {
             // During a selection gap a tracked stream has no source this frame;
             // the whole-frame fallbacks only make sense at swapchain extent.
             if source.is_none()
-                && (is_graph_surface_id(stream.surface_id) || stream.extent != swapchain_extent)
+                && requires_selected_source(
+                    stream.surface_id,
+                    stream.extent,
+                    swapchain_extent,
+                    config::graph_tracking_enabled(),
+                )
             {
                 continue;
             }
@@ -1654,6 +1808,44 @@ mod tests {
     }
 
     #[test]
+    fn title_pinned_swapchain_does_not_require_a_graph_source() {
+        let swapchain_extent = vk::Extent2D {
+            width: 854,
+            height: 480,
+        };
+        let surface_id = graph_surface_id(0);
+
+        assert!(!requires_selected_source(
+            surface_id,
+            swapchain_extent,
+            swapchain_extent,
+            false,
+        ));
+        assert!(requires_selected_source(
+            surface_id,
+            swapchain_extent,
+            swapchain_extent,
+            true,
+        ));
+        assert!(requires_selected_source(
+            surface_id,
+            vk::Extent2D {
+                width: 640,
+                height: 360,
+            },
+            swapchain_extent,
+            false,
+        ));
+    }
+
+    #[test]
+    fn direct_tracking_excludes_surfaces_beyond_the_requested_slots() {
+        assert!(direct_surface_selected(true, Some(0)));
+        assert!(!direct_surface_selected(true, None));
+        assert!(direct_surface_selected(false, None));
+    }
+
+    #[test]
     fn capture_states_are_isolated() {
         let first = CaptureState::default();
         let second = CaptureState::default();
@@ -1697,7 +1889,7 @@ mod tests {
             );
         }
 
-        let targets = capture.presentation_targets(
+        let (_, targets) = capture.presentation_targets(
             10,
             vk::Extent2D {
                 width: 400,
@@ -1737,7 +1929,7 @@ mod tests {
             presentations.insert(vk::SwapchainKHR::from_raw(2), top);
         }
 
-        let targets = capture.presentation_targets(
+        let (_, targets) = capture.presentation_targets(
             10,
             vk::Extent2D {
                 width: 400,
@@ -1774,7 +1966,7 @@ mod tests {
             width: 400,
             height: 480,
         };
-        let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
+        let (_, initial) = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
         assert_eq!(initial[0].source_window, 10);
         assert_eq!(initial[1].source_window, 20);
 
@@ -1793,7 +1985,7 @@ mod tests {
                 graph_presentation(10, 4, 1, &sources),
             );
         }
-        let stable = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
+        let (_, stable) = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
         assert_eq!(stable[0].source_window, 10);
         assert_eq!(stable[1].source_window, 20);
     }
@@ -1820,7 +2012,7 @@ mod tests {
             width: 400,
             height: 480,
         };
-        let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
+        let (_, initial) = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
         assert_eq!(initial[1].source_window, 20);
 
         // Destruction removes swapchain observations, but not the stable
@@ -1830,7 +2022,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
-        let during_gap = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
+        let (_, during_gap) = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
         assert_eq!(during_gap[0].source_window, 10);
         assert_eq!(during_gap[1].source_window, 20);
 
@@ -1847,7 +2039,7 @@ mod tests {
             graph_presentation(10, 4, 0, &sources),
         );
         drop(presentations);
-        let recreated = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
+        let (_, recreated) = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
         assert_eq!(recreated[0].source_window, 10);
         assert_eq!(recreated[1].source_window, 20);
     }
@@ -1875,7 +2067,7 @@ mod tests {
             height: 480,
         };
         let dimensions = |extent: vk::Extent2D| (extent.width, extent.height);
-        let initial = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
+        let (_, initial) = capture.presentation_targets(10, extent, &sources, &[0, 1], 100);
         assert_eq!(initial[1].source_window, 20);
         assert_eq!(dimensions(initial[1].presentation_extent), (400, 480));
 
@@ -1909,7 +2101,7 @@ mod tests {
             presentations.insert(vk::SwapchainKHR::from_raw(4), resized);
         }
 
-        let refreshed = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
+        let (_, refreshed) = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
         assert_eq!(refreshed[0].source_window, 10);
         assert_eq!(dimensions(refreshed[0].presentation_extent), (400, 480));
         assert_eq!(refreshed[1].source_window, 20);
@@ -1928,7 +2120,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
-        let idle = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
+        let (_, idle) = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
         assert_eq!(idle[1].source_window, 20);
         assert_eq!(dimensions(idle[1].presentation_extent), (800, 600));
     }

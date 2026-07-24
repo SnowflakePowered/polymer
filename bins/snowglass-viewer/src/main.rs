@@ -10,9 +10,8 @@ use snowglass_input::{
 };
 use snowglass_ipc::{LocalSocketListener, StreamReady};
 use snowglass_platform_windows::{
-    IsolatedProcess, KillOnCloseJob, NativeWindow, PrivateDesktop, ProcessArchitecture, ProcessId,
+    InjectionLibrary, NativeWindow, TargetProcess, architecture_artifact_dir,
     executable_architecture, forward_character, performance_counter, performance_frequency,
-    process_architecture, resume_initial_thread,
 };
 use snowglass_protocol::{ExternalImageKind, ExternalSyncKind, FrameReady};
 use std::{
@@ -22,7 +21,6 @@ use std::{
     ffi::OsString,
     net::SocketAddr,
     path::{Path, PathBuf},
-    process::{Child, Command},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicIsize, Ordering},
@@ -571,6 +569,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &executable_dir,
             &session,
             launcher.tracked_render_target_indices(),
+            launcher.render_target_surface_patterns(),
             launcher.graph_tracking,
             options.force_keyed_mutex,
             options.stone_db.as_deref(),
@@ -1100,9 +1099,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             "Vulkan"
                                         };
                                         eprintln!(
-                                            "snowglass: imported {active_backend} stream {}x{} for window {:#x} with {} slots using {}",
+                                            "snowglass: imported {active_backend} stream {}x{} (surface {:#x}) for window {:#x} with {} slots using {}",
                                             stream.width,
                                             stream.height,
+                                            stream.surface_id.0,
                                             stream.source_window,
                                             stream.slot_count,
                                             active_consumer,
@@ -1467,6 +1467,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &executable_dir,
                             &session,
                             launcher.tracked_render_target_indices(),
+                            launcher.render_target_surface_patterns(),
                             launcher.graph_tracking,
                             options.force_keyed_mutex,
                             options.stone_db.as_deref(),
@@ -1523,30 +1524,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn spawn_target_monitor(
-    target_process: TargetProcess,
+    mut target_process: TargetProcess,
     stop: Arc<AtomicBool>,
     done: mpsc::Sender<()>,
 ) {
     thread::spawn(move || {
-        let TargetProcess {
-            mut child,
-            job,
-            desktop,
-        } = target_process;
         loop {
             if stop.load(Ordering::Acquire) {
                 break;
             }
-            match child.try_wait() {
+            match target_process.try_wait() {
                 Ok(Some(_)) | Err(_) => break,
                 Ok(None) => thread::sleep(Duration::from_millis(8)),
             }
         }
-        // Closing the job terminates the root and every descendant before the
-        // viewer is notified that the target has finished.
-        drop(job);
-        let _ = child.wait();
-        drop(desktop);
+        let _ = target_process.terminate_tree_and_wait();
         let _ = done.send(());
     });
 }
@@ -1571,6 +1563,7 @@ fn start_target_session(
     executable_dir: &Path,
     session: &str,
     tracked_render_targets: Option<Vec<u32>>,
+    tracked_surface_patterns: Vec<Option<String>>,
     graph_tracking: bool,
     force_keyed_mutex: bool,
     stone_database: Option<&Path>,
@@ -1616,6 +1609,7 @@ fn start_target_session(
         executable_dir,
         session,
         tracked_render_targets,
+        tracked_surface_patterns,
         graph_tracking,
         force_keyed_mutex,
         &launcher.hooks,
@@ -1637,54 +1631,40 @@ fn start_target_session(
     })
 }
 
-enum TargetChild {
-    Standard(Child),
-    Isolated(IsolatedProcess),
-}
-
-impl TargetChild {
-    fn id(&self) -> u32 {
-        match self {
-            Self::Standard(child) => child.id(),
-            Self::Isolated(child) => child.id(),
-        }
+fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::TempDir> {
+    if !layer_dll.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Vulkan hook is missing at {}", layer_dll.display()),
+        ));
     }
-
-    fn raw_handle(&self) -> isize {
-        use std::os::windows::io::AsRawHandle;
-
-        match self {
-            Self::Standard(child) => child.as_raw_handle() as isize,
-            Self::Isolated(child) => child.raw_handle(),
+    let directory = tempfile::Builder::new()
+        .prefix("snowglass-vulkan-layer-")
+        .tempdir()?;
+    let manifest = serde_json::json!({
+        "file_format_version": "1.2.0",
+        "layer": {
+            "name": "VK_LAYER_SNOWGLASS_capture",
+            "type": "GLOBAL",
+            "library_path": layer_dll,
+            "api_version": "1.4.0",
+            "implementation_version": "1",
+            "description": "Snowglass Vulkan capture layer",
+            "functions": {
+                "vkNegotiateLoaderLayerInterfaceVersion":
+                    "vkNegotiateLoaderLayerInterfaceVersion"
+            },
+            "enable_environment": {
+                "SNOWGLASS_VULKAN_LAYER": "1"
+            },
+            "disable_environment": {
+                "DISABLE_SNOWGLASS_VULKAN_LAYER": "1"
+            }
         }
-    }
-
-    fn kill(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Standard(child) => child.kill(),
-            Self::Isolated(child) => child.kill(),
-        }
-    }
-
-    fn try_wait(&mut self) -> std::io::Result<Option<()>> {
-        match self {
-            Self::Standard(child) => child.try_wait().map(|status| status.map(drop)),
-            Self::Isolated(child) => child.try_wait(),
-        }
-    }
-
-    fn wait(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Standard(child) => child.wait().map(drop),
-            Self::Isolated(child) => child.wait(),
-        }
-    }
-}
-
-struct TargetProcess {
-    child: TargetChild,
-    job: KillOnCloseJob,
-    desktop: Option<PrivateDesktop>,
+    });
+    let file = std::fs::File::create(directory.path().join("snowglass-layer.json"))?;
+    serde_json::to_writer_pretty(file, &manifest).map_err(std::io::Error::other)?;
+    Ok(directory)
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1693,6 +1673,7 @@ fn launch_target(
     layer_dir: &Path,
     session: &str,
     track_render_targets: Option<Vec<u32>>,
+    tracked_surface_patterns: Vec<Option<String>>,
     graph_tracking: bool,
     force_keyed_mutex: bool,
     hooks: &[HookBackend],
@@ -1700,16 +1681,18 @@ fn launch_target(
     stone_layouts: &[String],
     stone_database: Option<&Path>,
 ) -> std::io::Result<TargetProcess> {
-    use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
-
     let target_architecture = executable_architecture(Path::new(&target[0])).ok();
-    let sdl3_runtime = target_architecture
+    let artifact_dir = target_architecture
         .map(|architecture| architecture_artifact_dir(layer_dir, architecture))
-        .unwrap_or_else(|| layer_dir.to_path_buf())
-        .join("SDL3.dll");
-    let mut command = Command::new(&target[0]);
-    command.args(&target[1..]);
+        .unwrap_or_else(|| layer_dir.to_path_buf());
+    let sdl2_runtime = artifact_dir.join("SDL2.dll");
+    let sdl3_runtime = artifact_dir.join("SDL3.dll");
+    let vulkan_manifest = hooks
+        .contains(&HookBackend::Vulkan)
+        .then(|| {
+            create_vulkan_layer_manifest(&artifact_dir.join("snowglass_hook_vulkan_layer.dll"))
+        })
+        .transpose()?;
     let mut environment = vec![
         (OsString::from(config::SESSION), OsString::from(session)),
         (
@@ -1778,9 +1761,15 @@ fn launch_target(
             path.as_os_str().to_owned(),
         ));
     }
-    // SDL3's dynamic API redirects calls from statically linked applications
-    // (including Dolphin) through this DLL, making its public entry points
-    // available to the SDL3 hook. Preserve an explicit caller override.
+    // SDL's dynamic API redirects calls from statically linked applications
+    // (including Cemu and Dolphin) through these DLLs, making their public
+    // entry points available to the hooks. Preserve explicit caller overrides.
+    if std::env::var_os("SDL_DYNAMIC_API").is_none() && sdl2_runtime.is_file() {
+        environment.push((
+            OsString::from("SDL_DYNAMIC_API"),
+            sdl2_runtime.into_os_string(),
+        ));
+    }
     if std::env::var_os("SDL3_DYNAMIC_API").is_none() && sdl3_runtime.is_file() {
         environment.push((
             OsString::from("SDL3_DYNAMIC_API"),
@@ -1789,10 +1778,10 @@ fn launch_target(
     }
     // The Vulkan producer installs as an instance layer rather than an
     // injected DLL, so its selection travels through the loader environment.
-    if hooks.contains(&HookBackend::Vulkan) {
+    if let Some(manifest) = &vulkan_manifest {
         environment.push((
             OsString::from("VK_LAYER_PATH"),
-            layer_dir.as_os_str().to_owned(),
+            manifest.path().as_os_str().to_owned(),
         ));
         environment.push((
             OsString::from("VK_INSTANCE_LAYERS"),
@@ -1814,6 +1803,15 @@ fn launch_target(
                     .join(","),
             ),
         ));
+        if tracked_surface_patterns.iter().any(Option::is_some) {
+            environment.push((
+                OsString::from(config::TRACK_RENDER_TARGET_SURFACE_PATTERNS),
+                OsString::from(
+                    serde_json::to_string(&tracked_surface_patterns)
+                        .map_err(std::io::Error::other)?,
+                ),
+            ));
+        }
         if graph_tracking {
             environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
         }
@@ -1824,206 +1822,88 @@ fn launch_target(
             OsString::from("1"),
         ));
     }
-    for (name, value) in &environment {
-        command.env(name, value);
-    }
-    command.creation_flags(CREATE_SUSPENDED);
-    let job = KillOnCloseJob::new()?;
-    let (desktop, mut child) = if isolate {
-        let desktop = PrivateDesktop::create(session)?;
-        let child = IsolatedProcess::spawn_suspended(target, &environment, session)?;
-        (Some(desktop), TargetChild::Isolated(child))
-    } else {
-        (None, TargetChild::Standard(command.spawn()?))
-    };
-    let process_id = ProcessId(child.id());
-    let process = child.raw_handle();
-    if let Err(error) = job.assign_process(process) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
-    let architecture = process_architecture(process)?;
-    let artifact_dir = architecture_artifact_dir(layer_dir, architecture);
-    let libraries = hook_libraries(&artifact_dir, hooks, isolate);
-    for (name, hook, _) in &libraries {
-        if hook.is_file() {
-            continue;
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("{name} hook is missing at {}", hook.display()),
-        ));
-    }
-    if let Err(error) = run_injector(
+    let libraries = hook_libraries(hooks, isolate);
+    let mut process = TargetProcess::launch(
+        target,
         layer_dir,
-        &artifact_dir,
-        architecture,
-        process_id,
+        &environment,
+        isolate.then_some(session),
         &libraries,
-    )
-    .and_then(|()| resume_initial_thread(process_id))
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
+    )?;
+    if let Some(manifest) = vulkan_manifest {
+        // The Vulkan loader may consult the manifest more than once during the
+        // process lifetime, so retain it with the shared target lifecycle.
+        process.retain(manifest);
     }
-    Ok(TargetProcess {
-        child,
-        job,
-        desktop,
-    })
+    Ok(process)
 }
 
-fn architecture_artifact_dir(layer_dir: &Path, architecture: ProcessArchitecture) -> PathBuf {
-    let packaged = layer_dir.join(architecture.executable_suffix());
-    if packaged.is_dir() {
-        return packaged;
-    }
-    let target = match architecture {
-        ProcessArchitecture::X86_64 => "x86_64-pc-windows-msvc",
-        ProcessArchitecture::Arm64 => "aarch64-pc-windows-msvc",
-    };
-    let cargo = layer_dir
-        .parent()
-        .zip(layer_dir.file_name())
-        .map(|(target_dir, profile)| target_dir.join(target).join(profile));
-    cargo
-        .filter(|directory| directory.is_dir())
-        .unwrap_or_else(|| layer_dir.to_path_buf())
-}
-
-fn hook_libraries(
-    layer_dir: &Path,
-    hooks: &[HookBackend],
-    isolate: bool,
-) -> Vec<(&'static str, PathBuf, &'static std::ffi::CStr)> {
+fn hook_libraries(hooks: &[HookBackend], isolate: bool) -> Vec<InjectionLibrary> {
     let mut libraries = Vec::new();
     if hooks
         .iter()
         .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
     {
-        libraries.push((
+        libraries.push(InjectionLibrary::new(
             "DXGI",
-            layer_dir.join("snowglass_hook_dxgi.dll"),
+            "snowglass_hook_dxgi.dll",
             c"SnowglassInstallDxgiHook",
         ));
     }
     if hooks.contains(&HookBackend::D3d11) {
-        libraries.push((
+        libraries.push(InjectionLibrary::new(
             "D3D11",
-            layer_dir.join("snowglass_hook_d3d11.dll"),
+            "snowglass_hook_d3d11.dll",
             c"SnowglassInstallD3d11Hook",
         ));
     }
     if hooks.contains(&HookBackend::D3d12) {
-        libraries.push((
+        libraries.push(InjectionLibrary::new(
             "D3D12",
-            layer_dir.join("snowglass_hook_d3d12.dll"),
+            "snowglass_hook_d3d12.dll",
             c"SnowglassInstallD3d12Hook",
         ));
     }
     if hooks.contains(&HookBackend::OpenGl) {
-        libraries.push((
+        libraries.push(InjectionLibrary::new(
             "OpenGL",
-            layer_dir.join("snowglass_hook_opengl32.dll"),
+            "snowglass_hook_opengl32.dll",
             c"SnowglassInstallOpenGlHook",
         ));
     }
     if hooks.contains(&HookBackend::Gdi) {
-        libraries.push((
+        libraries.push(InjectionLibrary::new(
             "GDI",
-            layer_dir.join("snowglass_hook_gdi.dll"),
+            "snowglass_hook_gdi.dll",
             c"SnowglassInstallGdiHook",
         ));
     }
-    libraries.push((
+    libraries.push(InjectionLibrary::new(
         "DirectInput",
-        layer_dir.join("snowglass_hook_dinput.dll"),
+        "snowglass_hook_dinput.dll",
         c"SnowglassInstallDinputHook",
     ));
-    libraries.push((
+    libraries.push(InjectionLibrary::new(
         "Win32 input",
-        layer_dir.join("snowglass_hook_win32.dll"),
+        "snowglass_hook_win32.dll",
         c"SnowglassInstallWin32Hook",
     ));
     if isolate {
-        libraries.push((
+        libraries.push(InjectionLibrary::new(
             "UI",
-            layer_dir.join("snowglass_hook_ui.dll"),
+            "snowglass_hook_ui.dll",
             c"SnowglassInstallUiHook",
         ));
     }
-    libraries.push((
+    libraries.push(InjectionLibrary::new(
         "SDL2",
-        layer_dir.join("snowglass_hook_sdl2.dll"),
+        "snowglass_hook_sdl2.dll",
         c"SnowglassInstallSdl2Hook",
     ));
-    libraries.push((
+    libraries.push(InjectionLibrary::new(
         "SDL3",
-        layer_dir.join("snowglass_hook_sdl3.dll"),
+        "snowglass_hook_sdl3.dll",
         c"SnowglassInstallSdl3Hook",
     ));
     libraries
-}
-
-fn run_injector(
-    layer_dir: &Path,
-    artifact_dir: &Path,
-    architecture: ProcessArchitecture,
-    process_id: ProcessId,
-    libraries: &[(&str, PathBuf, &std::ffi::CStr)],
-) -> std::io::Result<()> {
-    let suffixed = layer_dir.join(format!(
-        "snowglass-injector-{}.exe",
-        architecture.executable_suffix()
-    ));
-    let architecture_local = layer_dir
-        .join(architecture.executable_suffix())
-        .join("snowglass-injector.exe");
-    let target_local = artifact_dir.join("snowglass-injector.exe");
-    let generic = layer_dir.join("snowglass-injector.exe");
-    let injector = if suffixed.is_file() {
-        suffixed.clone()
-    } else if architecture_local.is_file() {
-        architecture_local
-    } else if target_local.is_file() {
-        target_local
-    } else if generic.is_file()
-        && matches!(
-            (std::env::consts::ARCH, architecture),
-            ("x86_64", ProcessArchitecture::X86_64) | ("aarch64", ProcessArchitecture::Arm64)
-        )
-    {
-        generic
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "{} injector is missing at {}",
-                architecture.executable_suffix(),
-                suffixed.display()
-            ),
-        ));
-    };
-    let mut command = Command::new(&injector);
-    command.arg("--pid").arg(process_id.0.to_string());
-    for (_, library, export) in libraries {
-        command
-            .arg("--library")
-            .arg(library)
-            .arg("--export")
-            .arg(export.to_string_lossy().as_ref());
-    }
-    let status = command.status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "{} failed with {status}",
-            injector.display()
-        )))
-    }
 }

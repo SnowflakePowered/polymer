@@ -1,13 +1,13 @@
 use super::*;
 use clap::{ArgAction, Parser};
 
-/// One `--track-render-targets` entry: an index into the detected selection
-/// plus the number of counterclockwise quarter turns applied to that target
-/// when compositing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One `--track-render-targets` entry: an index into the detected selection,
+/// viewer rotation, and an optional presenting-window title regex.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrackedRenderTarget {
     pub(crate) index: u32,
     pub(crate) quarter_turns: u8,
+    pub(crate) surface_pattern: Option<String>,
 }
 
 pub(crate) struct ViewerOptions {
@@ -59,8 +59,9 @@ struct ViewerArguments {
 
     /// Track render targets by index into the detected selection, as a
     /// comma-separated list. An entry may append `:TURNS` to rotate that
-    /// target counterclockwise by quarter turns when compositing
-    /// (`0:1,1` shows target 0 rotated 90 degrees above target 1).
+    /// target counterclockwise by quarter turns, then `:WINDOW_REGEX` to
+    /// resolve the target within a presenting window whose title matches
+    /// (`0:0:GamePad View,1` pins target 0 to the GamePad window).
     #[arg(
         long,
         visible_alias = "track-render-target",
@@ -174,6 +175,13 @@ impl ViewerArguments {
             if targets.iter().any(|target| !unique.insert(target.index)) {
                 return Err("render-target indices must be unique".into());
             }
+            for target in targets {
+                if let Some(pattern) = &target.surface_pattern {
+                    regex::Regex::new(pattern).map_err(|error| {
+                        format!("invalid render-target surface regex '{pattern}': {error}")
+                    })?;
+                }
+            }
         }
         let mut gamepads = self.gamepads;
         if gamepads.is_empty() {
@@ -245,10 +253,10 @@ fn parse_arguments(
 }
 
 fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String> {
-    let (index, turns) = match value.split_once(':') {
-        Some((index, turns)) => (index, Some(turns)),
-        None => (value, None),
-    };
+    let mut fields = value.splitn(3, ':');
+    let index = fields.next().unwrap_or_default();
+    let turns = fields.next();
+    let surface_pattern = fields.next();
     let index = index
         .parse::<u32>()
         .map_err(|_| format!("invalid render-target index '{value}'; expected 0..=15"))?;
@@ -258,6 +266,11 @@ fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String>
         ));
     }
     let quarter_turns = match turns {
+        Some("") => {
+            return Err(format!(
+                "invalid rotation in '{value}'; expected counterclockwise quarter turns"
+            ));
+        }
         Some(turns) => {
             (turns.parse::<u32>().map_err(|_| {
                 format!("invalid rotation '{turns}'; expected counterclockwise quarter turns")
@@ -268,6 +281,9 @@ fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String>
     Ok(TrackedRenderTarget {
         index,
         quarter_turns,
+        surface_pattern: surface_pattern
+            .filter(|pattern| !pattern.is_empty())
+            .map(str::to_owned),
     })
 }
 
@@ -364,6 +380,7 @@ mod argument_tests {
         TrackedRenderTarget {
             index,
             quarter_turns,
+            surface_pattern: None,
         }
     }
 
@@ -642,6 +659,28 @@ mod argument_tests {
             arguments(&["--track-render-targets=0:4,1:7", "--", "game.exe"])?.track_render_targets,
             Some(vec![tracked(0, 0), tracked(1, 3)])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_render_target_surface_regexes() -> Result<(), Box<dyn Error>> {
+        let options = arguments(&[
+            "--track-render-targets",
+            "0:0:(?i)gamepad view,1:3:Main: [0-9]+",
+            "--",
+            "game.exe",
+        ])?;
+        let targets = options.track_render_targets.unwrap();
+        assert_eq!(targets[0].index, 0);
+        assert_eq!(targets[0].quarter_turns, 0);
+        assert_eq!(
+            targets[0].surface_pattern.as_deref(),
+            Some("(?i)gamepad view")
+        );
+        assert_eq!(targets[1].index, 1);
+        assert_eq!(targets[1].quarter_turns, 3);
+        assert_eq!(targets[1].surface_pattern.as_deref(), Some("Main: [0-9]+"));
+        assert!(arguments(&["--track-render-targets", "0:0:(", "--", "game.exe"]).is_err());
         Ok(())
     }
 

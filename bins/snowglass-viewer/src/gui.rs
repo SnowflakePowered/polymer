@@ -163,6 +163,13 @@ impl LauncherState {
             .collect()
     }
 
+    pub(crate) fn render_target_surface_patterns(&self) -> Vec<Option<String>> {
+        self.render_targets
+            .iter()
+            .map(|target| target.surface_pattern.clone())
+            .collect()
+    }
+
     pub(crate) fn validate_render_targets(&self) -> Result<(), String> {
         let mut indices = HashSet::new();
         if self
@@ -173,6 +180,12 @@ impl LauncherState {
             return Err(
                 "Tracked render-target indices must be unique values from 0 through 15".to_owned(),
             );
+        }
+        for target in &self.render_targets {
+            if let Some(pattern) = &target.surface_pattern {
+                regex::Regex::new(pattern)
+                    .map_err(|error| format!("Invalid surface regex '{pattern}': {error}"))?;
+            }
         }
         Ok(())
     }
@@ -405,6 +418,7 @@ pub(crate) fn draw_launcher_window(
                     launcher.render_targets.push(TrackedRenderTarget {
                         index,
                         quarter_turns: 0,
+                        surface_pattern: None,
                     });
                 }
             });
@@ -426,6 +440,11 @@ pub(crate) fn draw_launcher_window(
                                 );
                             }
                         });
+                    ui.label("Window title regex");
+                    ui.text_edit_singleline(target.surface_pattern.get_or_insert_with(String::new));
+                    if target.surface_pattern.as_deref() == Some("") {
+                        target.surface_pattern = None;
+                    }
                     if ui.small_button("Remove").clicked() {
                         remove_target = Some(row);
                     }

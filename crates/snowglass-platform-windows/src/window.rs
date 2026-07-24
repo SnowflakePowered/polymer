@@ -208,6 +208,35 @@ pub fn client_size(window: NativeWindow) -> Option<(u32, u32)> {
 }
 
 #[cfg(windows)]
+pub fn window_title(window: NativeWindow) -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetWindowTextLengthW, GetWindowTextW,
+    };
+
+    fn read(hwnd: HWND) -> Option<String> {
+        let length = unsafe { GetWindowTextLengthW(hwnd) };
+        if length < 0 {
+            return None;
+        }
+        let mut title = vec![0u16; length as usize + 1];
+        let copied = unsafe { GetWindowTextW(hwnd, &mut title) };
+        if copied == 0 && length != 0 {
+            return None;
+        }
+        title.truncate(copied as usize);
+        Some(String::from_utf16_lossy(&title))
+    }
+
+    let child = hwnd(window);
+    let root = unsafe { GetAncestor(child, GA_ROOT) };
+    (!root.0.is_null())
+        .then(|| read(root))
+        .flatten()
+        .filter(|title| !title.is_empty())
+        .or_else(|| read(child))
+}
+
+#[cfg(windows)]
 pub fn is_process_window(window: NativeWindow, process_id: ProcessId) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
     let hwnd = hwnd(window);
