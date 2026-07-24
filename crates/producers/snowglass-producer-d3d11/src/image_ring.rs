@@ -1,3 +1,4 @@
+use snowglass_protocol::transport_unorm_dxgi_format;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use windows::{
     Win32::{
@@ -94,13 +95,16 @@ impl D3d11ImageRing {
         if slot_count == 0 {
             return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
         }
+        let transport_format = transport_unorm_dxgi_format(source.Format.0 as u32);
         let desc = D3d11ImageRingDesc {
             width: source.Width,
             height: source.Height,
-            format: source.Format.0 as u32,
+            format: transport_format,
             slots: slot_count,
         };
         let mut shared_desc = *source;
+        shared_desc.Format =
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT(transport_format as i32);
         shared_desc.MipLevels = 1;
         shared_desc.ArraySize = 1;
         shared_desc.SampleDesc.Count = 1;

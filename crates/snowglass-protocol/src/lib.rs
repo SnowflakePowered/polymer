@@ -9,6 +9,24 @@ pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
 
+/// Returns the linear UNORM member of an sRGB DXGI format family.
+///
+/// Shared transport images carry presentation bytes without applying a color
+/// transfer function. Advertising their resource as sRGB would make consumers
+/// decode those bytes a second time.
+pub const fn transport_unorm_dxgi_format(format: u32) -> u32 {
+    match format {
+        29 => 28, // R8G8B8A8_UNORM_SRGB -> R8G8B8A8_UNORM
+        72 => 71, // BC1_UNORM_SRGB -> BC1_UNORM
+        75 => 74, // BC2_UNORM_SRGB -> BC2_UNORM
+        78 => 77, // BC3_UNORM_SRGB -> BC3_UNORM
+        91 => 87, // B8G8R8A8_UNORM_SRGB -> B8G8R8A8_UNORM
+        93 => 88, // B8G8R8X8_UNORM_SRGB -> B8G8R8X8_UNORM
+        99 => 98, // BC7_UNORM_SRGB -> BC7_UNORM
+        _ => format,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub struct Handshake {
@@ -297,5 +315,13 @@ mod tests {
             PresentationPoint::from_pixels(240, 400)
         );
         assert_eq!(transform.lower_left, PresentationPoint::from_pixels(0, 0));
+    }
+
+    #[test]
+    fn transport_formats_use_linear_unorm_members() {
+        assert_eq!(transport_unorm_dxgi_format(29), 28);
+        assert_eq!(transport_unorm_dxgi_format(91), 87);
+        assert_eq!(transport_unorm_dxgi_format(99), 98);
+        assert_eq!(transport_unorm_dxgi_format(10), 10);
     }
 }

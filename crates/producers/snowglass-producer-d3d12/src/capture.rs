@@ -6,7 +6,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId, transport_unorm_dxgi_format,
 };
 use std::{
     ffi::c_void,
@@ -99,7 +99,11 @@ impl SwapchainOwner for SwapchainCapture {
             && matches!(&*capture, Capture::Active(state) if {
                 let desc = state.capture.desc();
                 (desc.width, desc.height, desc.format)
-                    != (source.width, source.height, source.format)
+                    != (
+                        source.width,
+                        source.height,
+                        transport_unorm_dxgi_format(source.format),
+                    )
             })
         {
             *capture = Capture::Idle;

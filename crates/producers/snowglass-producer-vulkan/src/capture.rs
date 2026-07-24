@@ -813,6 +813,18 @@ fn dxgi_format(format: vk::Format) -> Option<u32> {
     })
 }
 
+/// Swapchain pixels are already encoded for presentation. Exporting an sRGB
+/// image makes consumers decode those bytes while sampling or blitting, then
+/// write the resulting linear values to an UNORM presentation target. Use the
+/// format-compatible UNORM twin so copies preserve the encoded pixel values.
+fn presentation_export_format(format: vk::Format) -> vk::Format {
+    match format {
+        vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_UNORM,
+        vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_UNORM,
+        _ => format,
+    }
+}
+
 /// Everything needed to move capture frames to the viewer: the exported
 /// image ring, its synchronization timelines, and the stream connection.
 struct Transport {
@@ -832,6 +844,7 @@ fn create_transport(
     surface_id: SurfaceId,
     source_window: isize,
 ) -> Transport {
+    let format = presentation_export_format(format);
     let connection = begin_viewer_connection();
     let handle_mode = if connection
         .as_ref()
@@ -873,10 +886,11 @@ fn create_transport(
                     .map(|slot| slot.raw_handle())
                     .collect::<Vec<_>>();
                 log(format!(
-                    "snowglass: attached {}-slot export ring {}x{} {:?}",
+                    "snowglass: attached {}-slot export ring {}x{} (format={}) {:?}",
                     ring.slots().len(),
                     extent.width,
                     extent.height,
+                    format.as_raw(),
                     handles
                 ));
                 Some(ring)
@@ -973,7 +987,25 @@ impl CaptureState {
     }
 
     pub fn surface_destroyed(&self, surface: vk::SurfaceKHR) {
-        self.surface_windows.remove(&surface);
+        let source_window = self
+            .surface_windows
+            .remove(&surface)
+            .map(|(_, source_window)| source_window);
+        if let Some(source_window) = source_window
+            && !self
+                .surface_windows
+                .iter()
+                .any(|entry| *entry.value() == source_window)
+            && !self
+                .swapchains
+                .iter()
+                .any(|state| state.source_window == source_window)
+        {
+            self.swapchain_windows
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .retain(|window| *window != source_window);
+        }
     }
 
     pub fn device_destroyed(&self, device: vk::Device) {
@@ -1064,10 +1096,6 @@ impl CaptureState {
     }
 
     pub fn swapchain_destroyed(&self, swapchain: vk::SwapchainKHR) {
-        let source_window = self
-            .swapchains
-            .get(&swapchain)
-            .map(|state| state.source_window);
         if let Some(state) = self.swapchains.get(&swapchain) {
             for image in &state.images {
                 self.swapchain_images.remove(image);
@@ -1075,17 +1103,6 @@ impl CaptureState {
             }
         }
         self.swapchains.remove(&swapchain);
-        if let Some(source_window) = source_window
-            && !self
-                .swapchains
-                .iter()
-                .any(|state| state.source_window == source_window)
-        {
-            self.swapchain_windows
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .retain(|window| *window != source_window);
-        }
         self.graph_presentations
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1507,7 +1524,7 @@ impl CaptureState {
                     consumer_timeline,
                     capture.adapter_luid,
                     stream.extent,
-                    format,
+                    ring.desc().format,
                     stream.surface_id,
                     stream.target_window,
                 );
@@ -1839,6 +1856,20 @@ mod tests {
     }
 
     #[test]
+    fn presentation_export_preserves_srgb_bytes_as_unorm() {
+        assert!(
+            presentation_export_format(vk::Format::R8G8B8A8_SRGB) == vk::Format::R8G8B8A8_UNORM
+        );
+        assert!(
+            presentation_export_format(vk::Format::B8G8R8A8_SRGB) == vk::Format::B8G8R8A8_UNORM
+        );
+        assert!(
+            presentation_export_format(vk::Format::R16G16B16A16_SFLOAT)
+                == vk::Format::R16G16B16A16_SFLOAT
+        );
+    }
+
+    #[test]
     fn direct_tracking_excludes_surfaces_beyond_the_requested_slots() {
         assert!(direct_surface_selected(true, Some(0)));
         assert!(!direct_surface_selected(true, None));
@@ -1858,6 +1889,38 @@ mod tests {
             Some(42)
         );
         assert!(!second.surface_windows.contains_key(&surface));
+    }
+
+    #[test]
+    fn presentation_window_slot_survives_until_its_last_surface_is_destroyed() {
+        let capture = CaptureState::default();
+        let first = vk::SurfaceKHR::from_raw(1);
+        let second = vk::SurfaceKHR::from_raw(2);
+        capture.surface_created(first, 42);
+        capture.surface_created(second, 42);
+        capture
+            .swapchain_windows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(42);
+
+        capture.surface_destroyed(first);
+        assert!(
+            capture
+                .swapchain_windows
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(&42)
+        );
+
+        capture.surface_destroyed(second);
+        assert!(
+            !capture
+                .swapchain_windows
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(&42)
+        );
     }
 
     #[test]

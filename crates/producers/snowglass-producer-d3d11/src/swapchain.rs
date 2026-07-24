@@ -7,7 +7,7 @@ use windows::{
             D3D11_BOX, D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext,
             ID3D11DeviceContext4, ID3D11Texture2D,
         },
-        Dxgi::{IDXGIDevice, IDXGISwapChain},
+        Dxgi::{Common::DXGI_FORMAT, IDXGIDevice, IDXGISwapChain},
     },
     core::{Error, HRESULT, Interface},
 };
@@ -173,9 +173,10 @@ impl D3d11SwapchainCapture {
         }
         let destination = &ring_slot.texture;
         if self.source_desc.SampleDesc.Count > 1 {
+            let transport_format = DXGI_FORMAT(self.ring.desc().format as i32);
             unsafe {
                 self.context
-                    .ResolveSubresource(destination, 0, &source, 0, self.source_desc.Format)
+                    .ResolveSubresource(destination, 0, &source, 0, transport_format)
             };
         } else {
             let source_box = D3D11_BOX {
@@ -224,7 +225,7 @@ impl D3d11SwapchainCapture {
             sync_value: self.sync_value,
             width: region.width,
             height: region.height,
-            format: self.source_desc.Format.0 as u32,
+            format: self.ring.desc().format,
             capture_x: region.x,
             capture_y: region.y,
         })

@@ -8,13 +8,14 @@ pub use capture::{SwapchainCapture, claim};
 
 pub use tracking::{Presentation, TrackedResource, Tracking};
 
+use snowglass_protocol::transport_unorm_dxgi_format;
 use std::{ffi::c_void, mem::ManuallyDrop};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE},
         Graphics::{
             Direct3D12::*,
-            Dxgi::{IDXGISwapChain, IDXGISwapChain3},
+            Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain3},
         },
     },
     core::Interface,
@@ -156,6 +157,8 @@ impl D3d12SwapchainCapture {
             VisibleNodeMask: 1,
         };
         let mut shared_desc = resource_desc;
+        let transport_format = transport_unorm_dxgi_format(resource_desc.Format.0 as u32);
+        shared_desc.Format = DXGI_FORMAT(transport_format as i32);
         shared_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
         let mut slots = Vec::with_capacity(slot_count as usize);
         unsafe {
@@ -220,7 +223,7 @@ impl D3d12SwapchainCapture {
             desc: D3d12RingDesc {
                 width: resource_desc.Width as u32,
                 height: resource_desc.Height,
-                format: resource_desc.Format.0 as u32,
+                format: transport_format,
                 slots: slot_count,
             },
             next_slot: 0,
@@ -271,7 +274,7 @@ impl D3d12SwapchainCapture {
             let source_desc = source.GetDesc();
             if source_desc.Width != u64::from(self.desc.width)
                 || source_desc.Height != self.desc.height
-                || source_desc.Format.0 as u32 != self.desc.format
+                || transport_unorm_dxgi_format(source_desc.Format.0 as u32) != self.desc.format
             {
                 return Err(windows::core::Error::from_hresult(E_INVALIDARG));
             }
