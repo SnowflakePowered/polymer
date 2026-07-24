@@ -1,7 +1,7 @@
 //! Shared command-line contract for Snowglass renderer hosts.
 
 use clap::ValueEnum;
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, CommandFactory, FromArgMatches, Parser};
 use snowglass_input::provider::sdl3::DeviceSelector;
 use std::{collections::HashSet, error::Error, net::SocketAddr, path::PathBuf};
 
@@ -323,7 +323,14 @@ impl ViewerArguments {
 }
 
 pub fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
-    ViewerArguments::parse().into_options()
+    parse_target_named("snowglass-viewer")
+}
+
+/// Parses the current process arguments while allowing a renderer host to
+/// supply its own executable name in help and error output.
+pub fn parse_target_named(name: &'static str) -> Result<ViewerOptions, Box<dyn Error>> {
+    let matches = ViewerArguments::command().name(name).get_matches();
+    ViewerArguments::from_arg_matches(&matches)?.into_options()
 }
 
 pub fn split_command_arguments(value: &str) -> Result<Vec<String>, String> {

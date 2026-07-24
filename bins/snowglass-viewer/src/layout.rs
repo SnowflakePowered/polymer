@@ -6,19 +6,18 @@ use cssparser::{
 };
 use cssparser_color::Color;
 use snowglass_input::mouse::layout::{Extent, Rect, aspect_fit};
+use snowglass_renderer::{CompositingPlan, Presentation, SurfacePlacement};
 use taffy::prelude::*;
 
 #[derive(Default)]
 struct LayoutSource {
     revision: u64,
     css: Option<String>,
-    viewports: Option<Vec<(i32, i32, u32, u32)>>,
 }
 
 static LAYOUT_SOURCE: RwLock<LayoutSource> = RwLock::new(LayoutSource {
     revision: 0,
     css: None,
-    viewports: None,
 });
 
 thread_local! {
@@ -50,39 +49,7 @@ pub fn configure(css: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// Overrides CSS/Taffy placement with rectangles measured by an external UI
-/// layer, in render-target order. Passing `None` restores CSS placement.
-pub fn configure_viewports(viewports: Option<Vec<(i32, i32, u32, u32)>>) {
-    let mut source = LAYOUT_SOURCE
-        .write()
-        .unwrap_or_else(|error| error.into_inner());
-    source.viewports = viewports;
-}
-
 pub fn active_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Option<Vec<Rect>> {
-    let source = LAYOUT_SOURCE
-        .read()
-        .unwrap_or_else(|error| error.into_inner());
-    if let Some(viewports) = &source.viewports {
-        let mut rectangles = images
-            .iter()
-            .enumerate()
-            .map(|(index, image)| {
-                let (x, y, width, height) = viewports.get(index).copied().unwrap_or_default();
-                let bounds = Rect::new(x, y, width, height);
-                if bounds.is_empty() {
-                    bounds
-                } else {
-                    aspect_fit(*image, bounds).unwrap_or(bounds)
-                }
-            })
-            .collect::<Vec<_>>();
-        if reverse {
-            rectangles.reverse();
-        }
-        return Some(rectangles);
-    }
-    drop(source);
     let mut rectangles =
         with_active_layout(|layout| layout.and_then(|layout| layout.rectangles(extent, images)))?;
     if reverse {
@@ -95,6 +62,50 @@ pub fn clear_color() -> [f32; 4] {
     with_active_layout(|layout| {
         layout.map_or([1.0, 0.0, 1.0, 1.0], RenderTargetLayout::viewer_background)
     })
+}
+
+pub fn composition_plan(presentation: &Presentation) -> CompositingPlan {
+    let surfaces = presentation.surfaces();
+    let images = surfaces
+        .iter()
+        .map(|surface| surface.image_extent)
+        .collect::<Vec<_>>();
+    let reverse = surfaces.len() > 1 && surfaces.iter().all(|surface| surface.flip_y);
+    let rectangles = active_rectangles(presentation.viewer_extent(), &images, reverse)
+        .unwrap_or_else(|| default_rectangles(presentation.viewer_extent(), &images, reverse));
+    let placements = surfaces
+        .iter()
+        .zip(rectangles)
+        .map(|(surface, rectangle)| SurfacePlacement {
+            connection: surface.connection,
+            surface_id: surface.surface_id,
+            rectangle,
+        })
+        .collect();
+    CompositingPlan::new(clear_color(), placements)
+}
+
+fn default_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Vec<Rect> {
+    let count = u32::try_from(images.len()).unwrap_or(u32::MAX).max(1);
+    let cell_height = extent.height / count;
+    let mut rectangles = images
+        .iter()
+        .enumerate()
+        .map(|(index, image)| {
+            let row = u32::try_from(index).unwrap_or(u32::MAX);
+            let bounds = Rect::new(
+                0,
+                i32::try_from(row.saturating_mul(cell_height)).unwrap_or(i32::MAX),
+                extent.width,
+                cell_height,
+            );
+            aspect_fit(*image, bounds).unwrap_or(bounds)
+        })
+        .collect::<Vec<_>>();
+    if reverse {
+        rectangles.reverse();
+    }
+    rectangles
 }
 
 fn with_active_layout<T>(read: impl FnOnce(Option<&RenderTargetLayout>) -> T) -> T {

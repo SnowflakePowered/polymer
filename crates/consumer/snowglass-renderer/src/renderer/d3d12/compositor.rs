@@ -9,7 +9,9 @@ use std::{
     ptr,
 };
 
-use crate::renderer::{DisplayedSurface, RenderWindow, SwapchainMode, webrtc::WebRtcCompositor};
+use crate::renderer::{
+    CompositingPlan, ReceivedSurface, RenderWindow, SwapchainMode, webrtc::WebRtcCompositor,
+};
 use egui::{ClippedPrimitive, TextureId, epaint::Primitive};
 use raw_window_handle::RawWindowHandle;
 use snowglass_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
@@ -131,9 +133,7 @@ impl D3d12Compositor {
 
     /// Creates a compositor whose swapchain can be attached to an
     /// `IDCompositionVisual` with [`Self::composition_content`].
-    pub fn new_default_for_composition(
-        window: &impl RenderWindow,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub fn new_default_for_composition(window: &impl RenderWindow) -> Result<Self, Box<dyn Error>> {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new_default()?,
@@ -208,6 +208,21 @@ impl D3d12Compositor {
         )
     }
 
+    /// Creates an adapter-specific composition swapchain dedicated to one
+    /// received connection.
+    pub fn new_for_composition_stream(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+        connection: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new(adapter)?,
+            SwapchainTarget::Composition,
+            SwapchainMode::Dedicated(connection),
+        )
+    }
+
     fn with_consumer(
         window: &impl RenderWindow,
         consumer: D3d12ConsumerDevice,
@@ -232,7 +247,12 @@ impl D3d12Compositor {
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: FRAME_COUNT as u32,
                 Scaling: DXGI_SCALING_STRETCH,
-                SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                SwapEffect: match target {
+                    SwapchainTarget::Hwnd(_) => DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    // DXGI requires the sequential flip model for swapchains
+                    // supplied as DirectComposition visual content.
+                    SwapchainTarget::Composition => DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                },
                 AlphaMode: DXGI_ALPHA_MODE_IGNORE,
                 Flags: 0,
             };
@@ -430,11 +450,11 @@ impl D3d12Compositor {
         }
     }
 
-    pub fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
+    pub fn received_surfaces(&self) -> Vec<ReceivedSurface> {
         self.surfaces
             .iter()
             .filter_map(|surface| {
-                let frame = surface.display_frame?;
+                let frame = surface.latest.or(surface.display_frame)?;
                 let (width, height) = crate::fit_inside(
                     frame.render_width.max(1),
                     frame.render_height.max(1),
@@ -446,7 +466,7 @@ impl D3d12Compositor {
                 } else {
                     crate::Extent::new(width, height)
                 };
-                Some(DisplayedSurface {
+                Some(ReceivedSurface {
                     connection: surface.connection,
                     surface_id: surface.surface_id,
                     target_window: surface.target_window,
@@ -536,14 +556,16 @@ impl D3d12Compositor {
         &mut self,
         output: &egui::FullOutput,
         primitives: &[ClippedPrimitive],
+        plan: &CompositingPlan,
     ) -> Result<bool, Box<dyn Error>> {
-        self.draw_with_webrtc(output, primitives, None)
+        self.draw_with_webrtc(output, primitives, plan, None)
     }
 
     pub fn draw_with_webrtc(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[ClippedPrimitive],
+        plan: &CompositingPlan,
         mut webrtc: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         if webrtc
@@ -574,13 +596,9 @@ impl D3d12Compositor {
         // rewind the fence (dropped frames host-signal immediately while an
         // in-flight frame signals its older value later), and a rewound
         // fence leaves the compositor queue waiting forever.
-        let video_publish_ready = webrtc
-            .as_deref()
-            .is_some_and(WebRtcCompositor::d3d12_ready);
+        let video_publish_ready = webrtc.as_deref().is_some_and(WebRtcCompositor::d3d12_ready);
         let mut video_publish_budget = if video_publish_ready {
-            webrtc
-                .as_deref()
-                .map_or(0, WebRtcCompositor::available)
+            webrtc.as_deref().map_or(0, WebRtcCompositor::available)
         } else {
             0
         };
@@ -652,7 +670,12 @@ impl D3d12Compositor {
                     release_values.push((surface.connection, frame.sync_value));
                 }
             }
-            if video_publish_budget > 0 && captured.is_some() {
+            if video_publish_budget > 0
+                && captured.is_some()
+                && webrtc
+                    .as_deref()
+                    .is_some_and(|webrtc| webrtc.accepts_d3d12_stream(surface.connection))
+            {
                 video_publish_budget -= 1;
                 video_captures.push((
                     surface.connection,
@@ -666,7 +689,7 @@ impl D3d12Compositor {
         }
 
         let backbuffer = self.backbuffers[frame_index].clone();
-        let clear_color = crate::layout::clear_color();
+        let clear_color = plan.clear_color();
         unsafe {
             transition(
                 &self.command_list,
@@ -692,7 +715,7 @@ impl D3d12Compositor {
             .iter()
             .any(|surface| surface.display_frame.is_some())
         {
-            self.draw_content(frame_index)?;
+            self.draw_content(frame_index, plan)?;
         }
         self.draw_egui(frame_index, output.pixels_per_point, primitives)?;
 
@@ -748,51 +771,20 @@ impl D3d12Compositor {
         Ok(true)
     }
 
-    fn draw_content(&mut self, frame_index: usize) -> Result<(), Box<dyn Error>> {
+    fn draw_content(
+        &mut self,
+        frame_index: usize,
+        plan: &CompositingPlan,
+    ) -> Result<(), Box<dyn Error>> {
         unsafe {
             self.command_list.SetPipelineState(&self.content_pipeline);
         }
-        let visible = self
-            .surfaces
-            .iter()
-            .filter(|surface| surface.display_frame.is_some())
-            .count() as u32;
-        let reverse_surface_rows = visible > 1
-            && self
-                .surfaces
-                .iter()
-                .filter(|surface| surface.display_frame.is_some())
-                .all(|surface| surface.flip_y);
-        let cell_height = self.extent.1 / visible.max(1);
-        let layout_images = self
-            .surfaces
-            .iter()
-            .filter_map(|surface| {
-                let frame = surface.display_frame?;
-                let (width, height) = crate::fit_inside(
-                    frame.render_width.max(1),
-                    frame.render_height.max(1),
-                    surface.imported.width,
-                    surface.imported.height,
-                );
-                Some(if surface.quarter_turns % 2 == 1 {
-                    crate::Extent::new(height, width)
-                } else {
-                    crate::Extent::new(width, height)
-                })
-            })
-            .collect::<Vec<_>>();
-        let custom_rectangles = crate::layout::active_rectangles(
-            crate::Extent::new(self.extent.0, self.extent.1),
-            &layout_images,
-            reverse_surface_rows,
-        );
         let draws = self
             .surfaces
             .iter()
             .filter(|surface| surface.display_frame.is_some())
-            .enumerate()
-            .map(|(position, surface)| {
+            .filter_map(|surface| {
+                let rect = plan.rectangle(surface.connection, surface.surface_id)?;
                 let frame = surface.display_frame.expect("filtered display frame");
                 let (crop_w, crop_h) = crate::fit_inside(
                     frame.render_width.max(1),
@@ -800,33 +792,14 @@ impl D3d12Compositor {
                     surface.imported.width,
                     surface.imported.height,
                 );
-                let (display_w, display_h) = if surface.quarter_turns % 2 == 1 {
-                    (crop_h, crop_w)
-                } else {
-                    (crop_w, crop_h)
-                };
-                let (x, y, w, h) = if let Some(rect) = custom_rectangles
-                    .as_ref()
-                    .and_then(|rectangles| rectangles.get(position))
-                {
-                    (rect.x, rect.y, rect.width as i32, rect.height as i32)
-                } else {
-                    let (x, local_y, w, h) =
-                        crate::fit_extent(display_w, display_h, self.extent.0, cell_height);
-                    let row = crate::vertical_layout_index(
-                        position as u32,
-                        visible,
-                        reverse_surface_rows,
-                    );
-                    (x, row as i32 * cell_height as i32 + local_y, w, h)
-                };
+                let (x, y, w, h) = (rect.x, rect.y, rect.width as i32, rect.height as i32);
                 let l = x as f32 / self.extent.0 as f32 * 2.0 - 1.0;
                 let r = (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0;
                 let t = 1.0 - y as f32 / self.extent.1 as f32 * 2.0;
                 let b = 1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0;
                 let u = crop_w as f32 / surface.imported.width as f32;
                 let v = crop_h as f32 / surface.imported.height as f32;
-                (
+                Some((
                     surface.descriptor,
                     quad(
                         l,
@@ -839,7 +812,7 @@ impl D3d12Compositor {
                         surface.quarter_turns,
                         [255; 4],
                     ),
-                )
+                ))
             })
             .collect::<Vec<_>>();
         for (descriptor, vertices) in draws {

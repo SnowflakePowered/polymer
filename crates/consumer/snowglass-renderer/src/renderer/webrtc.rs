@@ -128,9 +128,10 @@ impl Drop for VulkanWebRtcState {
 impl WebRtcCompositor {
     pub fn new_d3d12(compositor: &D3d12Compositor) -> windows::core::Result<Self> {
         let completion_fence = unsafe {
-            compositor
-                .d3d12_device()
-                .CreateFence(0, windows::Win32::Graphics::Direct3D12::D3D12_FENCE_FLAG_NONE)?
+            compositor.d3d12_device().CreateFence(
+                0,
+                windows::Win32::Graphics::Direct3D12::D3D12_FENCE_FLAG_NONE,
+            )?
         };
         Ok(Self {
             swapchain: VideoSwapchain::new(FRAME_CHANNEL_CAPACITY),
@@ -192,6 +193,20 @@ impl WebRtcCompositor {
             .is_some_and(|state| state.adapter == adapter)
     }
 
+    pub fn import_d3d12_stream(&mut self, connection: u64) -> Result<(), &'static str> {
+        let Some(d3d12) = &mut self.d3d12 else {
+            return Err("WebRTC compositor is not attached to D3D12");
+        };
+        d3d12.stream_completion.entry(connection).or_insert(0);
+        Ok(())
+    }
+
+    pub(crate) fn accepts_d3d12_stream(&self, connection: u64) -> bool {
+        self.d3d12
+            .as_ref()
+            .is_some_and(|d3d12| d3d12.stream_completion.contains_key(&connection))
+    }
+
     pub(crate) fn d3d12_ready(&self) -> bool {
         self.d3d12.as_ref().is_some_and(|state| unsafe {
             state.completion_fence.GetCompletedValue() >= state.completion_value
@@ -234,11 +249,12 @@ impl WebRtcCompositor {
         let Some(d3d12) = &mut self.d3d12 else {
             return;
         };
+        if !d3d12.stream_completion.contains_key(&connection) {
+            return;
+        }
         d3d12.completion_value += 1;
         let completion_value = d3d12.completion_value;
-        d3d12
-            .stream_completion
-            .insert(connection, completion_value);
+        d3d12.stream_completion.insert(connection, completion_value);
         let _ = self.swapchain.present(VideoFrame {
             connection,
             width,

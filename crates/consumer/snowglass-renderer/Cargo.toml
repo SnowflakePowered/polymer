@@ -8,8 +8,6 @@ license.workspace = true
 ash.workspace = true
 ash-window.workspace = true
 clap = { version = "4.6.1", features = ["derive"] }
-cssparser = "0.37"
-cssparser-color = "0.5"
 egui = "0.29.1"
 egui-ash-renderer = "0.6.0"
 log = "0.4"
@@ -22,7 +20,6 @@ snowglass-consumer-vulkan = { path = "../snowglass-consumer-vulkan" }
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-protocol.workspace = true
-taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "parse"] }
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 webrtc = "0.14.0"
 webrtc-ice = "0.14.0"

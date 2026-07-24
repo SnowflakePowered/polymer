@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use snowglass_input::mouse::layout::{Extent, Point};
+use snowglass_input::mouse::layout::{Extent, Point, Rect};
 use snowglass_ipc::StreamReady;
 use snowglass_protocol::{FrameReady, ResizeWindow};
 
@@ -12,6 +12,51 @@ pub mod webrtc;
 pub use d3d12::D3d12Compositor;
 pub use vulkan::VulkanCompositor;
 pub use webrtc::{VideoSwapchain, WebRtcCompositor};
+
+/// Final shell-supplied placement for one received surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurfacePlacement {
+    pub connection: u64,
+    pub surface_id: u64,
+    pub rectangle: Rect,
+}
+
+/// Immutable instructions for one swapchain composition pass.
+///
+/// Receivers describe available surfaces through [`Presentation`]. The shell
+/// resolves those surfaces into this plan; GPU compositors do not perform
+/// layout or infer fallback rectangles.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompositingPlan {
+    clear_color: [f32; 4],
+    placements: Vec<SurfacePlacement>,
+}
+
+impl CompositingPlan {
+    pub fn new(clear_color: [f32; 4], placements: Vec<SurfacePlacement>) -> Self {
+        Self {
+            clear_color,
+            placements,
+        }
+    }
+
+    pub const fn clear_color(&self) -> [f32; 4] {
+        self.clear_color
+    }
+
+    pub fn placements(&self) -> &[SurfacePlacement] {
+        &self.placements
+    }
+
+    pub fn rectangle(&self, connection: u64, surface_id: u64) -> Option<Rect> {
+        self.placements
+            .iter()
+            .find(|placement| {
+                placement.connection == connection && placement.surface_id == surface_id
+            })
+            .map(|placement| placement.rectangle)
+    }
+}
 
 /// Selects which received streams a window swapchain composites.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -38,8 +83,12 @@ pub trait RenderWindow: HasDisplayHandle + HasWindowHandle {
 
     /// Computes guest-window resize requests against this host window's
     /// current drawable extent.
-    fn resize_windows(&self, surfaces: &[DisplayedSurface]) -> Vec<ResizeWindow> {
-        Presentation::new(self.render_extent(), surfaces.to_vec()).resize_windows()
+    fn resize_windows(
+        &self,
+        surfaces: &[ReceivedSurface],
+        plan: &CompositingPlan,
+    ) -> Vec<ResizeWindow> {
+        Presentation::new(self.render_extent(), surfaces.to_vec()).resize_windows(plan)
     }
 }
 
@@ -50,8 +99,9 @@ impl RenderWindow for winit::window::Window {
     }
 }
 
+/// Metadata for a surface made available by a backend receiver.
 #[derive(Clone, Copy, Debug)]
-pub struct DisplayedSurface {
+pub struct ReceivedSurface {
     pub connection: u64,
     pub surface_id: u64,
     pub target_window: i64,
@@ -71,14 +121,15 @@ pub struct MappedPointer {
     pub normalized_position: Point,
 }
 
+/// Snapshot of surfaces received for a particular output extent.
 #[derive(Clone, Debug)]
 pub struct Presentation {
     viewer_extent: Extent,
-    surfaces: Vec<DisplayedSurface>,
+    surfaces: Vec<ReceivedSurface>,
 }
 
 impl Presentation {
-    pub fn new(viewer_extent: Extent, surfaces: Vec<DisplayedSurface>) -> Self {
+    pub fn new(viewer_extent: Extent, surfaces: Vec<ReceivedSurface>) -> Self {
         Self {
             viewer_extent,
             surfaces,
@@ -89,47 +140,22 @@ impl Presentation {
         self.viewer_extent
     }
 
-    pub fn surfaces(&self) -> &[DisplayedSurface] {
+    pub fn surfaces(&self) -> &[ReceivedSurface] {
         &self.surfaces
     }
 
     /// Returns the producer client extents which fill the current presentation.
-    pub fn resize_windows(&self) -> Vec<ResizeWindow> {
+    pub fn resize_windows(&self, plan: &CompositingPlan) -> Vec<ResizeWindow> {
         if self.viewer_extent.is_empty() || self.surfaces.is_empty() {
             return Vec::new();
         }
-        let images = self
-            .surfaces
-            .iter()
-            .map(|surface| surface.image_extent)
-            .collect::<Vec<_>>();
-        let rectangles = crate::layout::active_rectangles(self.viewer_extent, &images, false)
-            .unwrap_or_else(|| {
-                let cell_height =
-                    self.viewer_extent.height / u32::try_from(images.len()).unwrap_or(u32::MAX);
-                images
-                    .iter()
-                    .enumerate()
-                    .map(|(index, image)| {
-                        let (x, y, width, height) = crate::fit_extent(
-                            image.width,
-                            image.height,
-                            self.viewer_extent.width,
-                            cell_height,
-                        );
-                        snowglass_input::mouse::layout::Rect::new(
-                            x,
-                            y + i32::try_from(index as u32 * cell_height).unwrap_or(i32::MAX),
-                            width.max(0) as u32,
-                            height.max(0) as u32,
-                        )
-                    })
-                    .collect()
-            });
         self.surfaces
             .iter()
-            .zip(rectangles)
-            .filter(|(surface, rectangle)| surface.target_window != 0 && !rectangle.is_empty())
+            .filter_map(|surface| {
+                let rectangle = plan.rectangle(surface.connection, surface.surface_id)?;
+                (surface.target_window != 0 && !rectangle.is_empty())
+                    .then_some((surface, rectangle))
+            })
             .map(|(surface, rectangle)| {
                 let (width, height) = if surface.quarter_turns % 2 == 1 {
                     (rectangle.height, rectangle.width)
@@ -156,27 +182,32 @@ pub trait Renderer {
 
     fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>>;
     fn set_latest(&mut self, connection: u64, frame: FrameReady);
-    fn displayed_surfaces(&self) -> Vec<DisplayedSurface>;
+    fn received_surfaces(&self) -> Vec<ReceivedSurface>;
     fn has_pending_frame(&self) -> bool;
     fn recreate_swapchain(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>>;
     fn draw(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        plan: &CompositingPlan,
     ) -> Result<bool, Box<dyn Error>>;
-    fn draw_game(&mut self) -> Result<bool, Box<dyn Error>> {
+    fn draw_game(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
         let context = egui::Context::default();
         let output = context.run(egui::RawInput::default(), |_| {});
         let primitives = context.tessellate(output.shapes.clone(), output.pixels_per_point);
-        self.draw(&output, &primitives)
+        self.draw(&output, &primitives, plan)
     }
 
-    fn presentation(&self, viewer_extent: Extent) -> Presentation {
-        Presentation::new(viewer_extent, self.displayed_surfaces())
+    fn received_presentation(&self, viewer_extent: Extent) -> Presentation {
+        Presentation::new(viewer_extent, self.received_surfaces())
     }
 
-    fn resize_windows(&self, window: &impl RenderWindow) -> Vec<ResizeWindow> {
-        window.resize_windows(&self.displayed_surfaces())
+    fn resize_windows(
+        &self,
+        window: &impl RenderWindow,
+        plan: &CompositingPlan,
+    ) -> Vec<ResizeWindow> {
+        window.resize_windows(&self.received_surfaces(), plan)
     }
 }
 
@@ -198,8 +229,8 @@ impl Renderer for D3d12Compositor {
         D3d12Compositor::set_latest(self, connection, frame);
     }
 
-    fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
-        D3d12Compositor::displayed_surfaces(self)
+    fn received_surfaces(&self) -> Vec<ReceivedSurface> {
+        D3d12Compositor::received_surfaces(self)
     }
 
     fn has_pending_frame(&self) -> bool {
@@ -214,10 +245,10 @@ impl Renderer for D3d12Compositor {
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        plan: &CompositingPlan,
     ) -> Result<bool, Box<dyn Error>> {
-        D3d12Compositor::draw(self, output, primitives)
+        D3d12Compositor::draw(self, output, primitives, plan)
     }
-
 }
 
 impl Renderer for VulkanCompositor {
@@ -238,8 +269,8 @@ impl Renderer for VulkanCompositor {
         VulkanCompositor::set_latest(self, connection, frame);
     }
 
-    fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
-        VulkanCompositor::displayed_surfaces(self)
+    fn received_surfaces(&self) -> Vec<ReceivedSurface> {
+        VulkanCompositor::received_surfaces(self)
     }
 
     fn has_pending_frame(&self) -> bool {
@@ -254,10 +285,10 @@ impl Renderer for VulkanCompositor {
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        plan: &CompositingPlan,
     ) -> Result<bool, Box<dyn Error>> {
-        VulkanCompositor::draw(self, output, primitives)
+        VulkanCompositor::draw(self, output, primitives, plan)
     }
-
 }
 
 #[cfg(test)]
@@ -265,8 +296,8 @@ mod tests {
     use super::*;
     use snowglass_protocol::{PresentationTransform, StreamId};
 
-    fn surface(quarter_turns: u8) -> DisplayedSurface {
-        DisplayedSurface {
+    fn surface(quarter_turns: u8) -> ReceivedSurface {
+        ReceivedSurface {
             connection: 1,
             surface_id: 2,
             target_window: 3,
@@ -298,8 +329,16 @@ mod tests {
 
     #[test]
     fn resize_windows_fits_the_active_presentation() {
-        crate::layout::configure(None).unwrap();
-        let messages = Presentation::new(Extent::new(1280, 720), vec![surface(0)]).resize_windows();
+        let plan = CompositingPlan::new(
+            [0.0; 4],
+            vec![SurfacePlacement {
+                connection: 1,
+                surface_id: 2,
+                rectangle: Rect::new(0, 0, 1280, 720),
+            }],
+        );
+        let messages =
+            Presentation::new(Extent::new(1280, 720), vec![surface(0)]).resize_windows(&plan);
         assert_eq!(
             messages,
             [ResizeWindow {
@@ -312,8 +351,16 @@ mod tests {
 
     #[test]
     fn resize_windows_unrotates_guest_dimensions() {
-        crate::layout::configure(None).unwrap();
-        let messages = Presentation::new(Extent::new(360, 640), vec![surface(1)]).resize_windows();
+        let plan = CompositingPlan::new(
+            [0.0; 4],
+            vec![SurfacePlacement {
+                connection: 1,
+                surface_id: 2,
+                rectangle: Rect::new(0, 0, 360, 640),
+            }],
+        );
+        let messages =
+            Presentation::new(Extent::new(360, 640), vec![surface(1)]).resize_windows(&plan);
         assert_eq!((messages[0].width, messages[0].height), (640, 360));
     }
 
@@ -323,5 +370,20 @@ mod tests {
         assert!(mode.accepts(7));
         assert!(!mode.accepts(8));
         assert!(SwapchainMode::Shared.accepts(8));
+    }
+
+    #[test]
+    fn composition_plans_match_surfaces_by_identity() {
+        let plan = CompositingPlan::new(
+            [0.25, 0.5, 0.75, 1.0],
+            vec![SurfacePlacement {
+                connection: 7,
+                surface_id: 9,
+                rectangle: Rect::new(10, 20, 30, 40),
+            }],
+        );
+        assert_eq!(plan.rectangle(7, 9), Some(Rect::new(10, 20, 30, 40)));
+        assert_eq!(plan.rectangle(9, 7), None);
+        assert_eq!(plan.clear_color(), [0.25, 0.5, 0.75, 1.0]);
     }
 }

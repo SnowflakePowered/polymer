@@ -1,4 +1,4 @@
-use crate::renderer::RenderWindow;
+use crate::renderer::{CompositingPlan, RenderWindow};
 use ash::{Entry, vk};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 use snowglass_consumer_vulkan::ImportedImageRing;
@@ -9,14 +9,9 @@ use std::error::Error;
 
 use crate::renderer::{
     SwapchainMode,
-    webrtc::{
-        VulkanVideoCache, VulkanVideoReadback, VulkanWebRtcStream, WebRtcCompositor,
-    },
+    webrtc::{VulkanVideoCache, VulkanVideoReadback, VulkanWebRtcStream, WebRtcCompositor},
 };
-use crate::{
-    fit_extent, fit_inside, layout, renderer::DisplayedSurface, surface_sort_key,
-    vertical_layout_index, webrtc,
-};
+use crate::{fit_inside, renderer::ReceivedSurface, surface_sort_key, webrtc};
 
 use super::VulkanReceiver;
 
@@ -472,37 +467,40 @@ impl VulkanCompositor {
                     video_completion,
                 )
             });
-            Ok((Self {
-                _entry: entry,
-                instance,
-                surface_loader,
-                surface,
-                physical_device,
-                device,
-                queue,
-                queue_family,
-                swapchain_loader,
-                swapchain,
-                swapchain_images,
-                swapchain_views,
-                swapchain_initialized: vec![false; initialized_count],
-                surface_format,
-                extent,
-                render_pass,
-                framebuffers,
-                command_pool,
-                command_buffers,
-                image_available,
-                render_finished,
-                fences,
-                frame_index: 0,
-                receiver,
-                mode,
-                surfaces: Vec::new(),
-                rotation_pipeline: None,
-                keyed_mutex_enabled: enable_keyed_mutex,
-                egui_renderer: Some(egui_renderer),
-            }, webrtc))
+            Ok((
+                Self {
+                    _entry: entry,
+                    instance,
+                    surface_loader,
+                    surface,
+                    physical_device,
+                    device,
+                    queue,
+                    queue_family,
+                    swapchain_loader,
+                    swapchain,
+                    swapchain_images,
+                    swapchain_views,
+                    swapchain_initialized: vec![false; initialized_count],
+                    surface_format,
+                    extent,
+                    render_pass,
+                    framebuffers,
+                    command_pool,
+                    command_buffers,
+                    image_available,
+                    render_finished,
+                    fences,
+                    frame_index: 0,
+                    receiver,
+                    mode,
+                    surfaces: Vec::new(),
+                    rotation_pipeline: None,
+                    keyed_mutex_enabled: enable_keyed_mutex,
+                    egui_renderer: Some(egui_renderer),
+                },
+                webrtc,
+            ))
         }
     }
 
@@ -651,7 +649,7 @@ impl VulkanCompositor {
         }
     }
 
-    pub(crate) fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
+    pub(crate) fn received_surfaces(&self) -> Vec<ReceivedSurface> {
         self.surfaces
             .iter()
             .filter_map(|surface| {
@@ -667,7 +665,7 @@ impl VulkanCompositor {
                 } else {
                     Extent::new(width, height)
                 };
-                Some(DisplayedSurface {
+                Some(ReceivedSurface {
                     connection: surface.connection,
                     surface_id: surface.surface_id,
                     target_window: surface.target_window,
@@ -838,14 +836,16 @@ impl VulkanCompositor {
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        plan: &CompositingPlan,
     ) -> Result<bool, Box<dyn Error>> {
-        self.draw_with_webrtc(output, primitives, None)
+        self.draw_with_webrtc(output, primitives, plan, None)
     }
 
     pub fn draw_with_webrtc(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        plan: &CompositingPlan,
         webrtc: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         let mut video_parts = webrtc.and_then(WebRtcCompositor::vulkan_parts_mut);
@@ -962,47 +962,11 @@ impl VulkanCompositor {
                     destination,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &vk::ClearColorValue {
-                        float32: layout::clear_color(),
+                        float32: plan.clear_color(),
                     },
                     &[color_range()],
                 );
             }
-            let visible_count = self
-                .surfaces
-                .iter()
-                .filter(|surface| surface.latest.is_some())
-                .count() as u32;
-            let reverse_surface_rows = visible_count > 1
-                && self
-                    .surfaces
-                    .iter()
-                    .filter(|surface| surface.latest.is_some())
-                    .all(|surface| surface.flip_y);
-            let cell_height = self.extent.height / visible_count.max(1);
-            let layout_images = self
-                .surfaces
-                .iter()
-                .filter_map(|surface| {
-                    let frame = surface.latest?;
-                    let (width, height) = fit_inside(
-                        frame.render_width,
-                        frame.render_height,
-                        surface.imported.width,
-                        surface.imported.height,
-                    );
-                    Some(if surface.quarter_turns % 2 == 1 {
-                        Extent::new(height, width)
-                    } else {
-                        Extent::new(width, height)
-                    })
-                })
-                .collect::<Vec<_>>();
-            let custom_rectangles = layout::active_rectangles(
-                Extent::new(self.extent.width, self.extent.height),
-                &layout_images,
-                reverse_surface_rows,
-            );
-            let mut visible_index = 0;
             let mut video_copies = Vec::new();
             // A timeline semaphore must be signaled in strictly increasing
             // order, but published frames resolve out of order: dropped frames
@@ -1055,202 +1019,182 @@ impl VulkanCompositor {
                         imported.width,
                         imported.height,
                     );
-                    let turned = surface.quarter_turns % 2 == 1;
-                    let (display_width, display_height) = if turned {
-                        (content_height, content_width)
-                    } else {
-                        (content_width, content_height)
-                    };
-                    let (offset_x, offset_y, width, height) = if let Some(rect) = custom_rectangles
-                        .as_ref()
-                        .and_then(|rectangles| rectangles.get(visible_index as usize))
+                    if let Some(rect) = plan
+                        .rectangle(surface.connection, surface.surface_id)
+                        .filter(|rectangle| !rectangle.is_empty())
                     {
-                        (rect.x, rect.y, rect.width as i32, rect.height as i32)
-                    } else {
-                        let (x, y, width, height) = fit_extent(
-                            display_width,
-                            display_height,
-                            self.extent.width,
-                            cell_height,
-                        );
-                        let row = vertical_layout_index(
-                            visible_index,
-                            visible_count,
-                            reverse_surface_rows,
-                        );
-                        (x, y + (row * cell_height) as i32, width, height)
-                    };
-                    let destination_offsets = [
-                        vk::Offset3D {
-                            x: offset_x,
-                            y: offset_y,
-                            z: 0,
-                        },
-                        vk::Offset3D {
-                            x: offset_x + width,
-                            y: offset_y + height,
-                            z: 1,
-                        },
-                    ];
-                    if let Some(rotation) = &surface.rotation {
-                        // Do rotation via compute shader
-                        let pipeline = self
-                            .rotation_pipeline
-                            .as_ref()
-                            .expect("rotation images require the rotation pipeline");
-                        let stage_to_transfer = vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::MEMORY_READ)
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                            .image(rotation.stage_image)
-                            .subresource_range(color_range());
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::ALL_COMMANDS,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[stage_to_transfer],
-                        );
-                        self.device.cmd_blit_image(
-                            command,
-                            source,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            rotation.stage_image,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            &[vk::ImageBlit::default()
-                                .src_subresource(color_layers())
-                                .src_offsets(blit_source_offsets(
-                                    content_width,
-                                    content_height,
-                                    surface.flip_y,
-                                    0,
-                                ))
-                                .dst_subresource(color_layers())
-                                .dst_offsets([
-                                    vk::Offset3D::default(),
-                                    vk::Offset3D {
-                                        x: content_width as i32,
-                                        y: content_height as i32,
-                                        z: 1,
-                                    },
-                                ])],
-                            vk::Filter::NEAREST,
-                        );
-                        let stage_to_compute = vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                            .new_layout(vk::ImageLayout::GENERAL)
-                            .image(rotation.stage_image)
-                            .subresource_range(color_range());
-                        let rotated_to_compute = vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::MEMORY_READ)
-                            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::GENERAL)
-                            .image(rotation.rotated_image)
-                            .subresource_range(color_range());
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[stage_to_compute, rotated_to_compute],
-                        );
-                        self.device.cmd_bind_pipeline(
-                            command,
-                            vk::PipelineBindPoint::COMPUTE,
-                            pipeline.pipeline,
-                        );
-                        self.device.cmd_bind_descriptor_sets(
-                            command,
-                            vk::PipelineBindPoint::COMPUTE,
-                            pipeline.pipeline_layout,
-                            0,
-                            &[rotation.descriptor_set],
-                            &[],
-                        );
-                        let push = [
-                            content_width,
-                            content_height,
-                            u32::from(surface.quarter_turns),
+                        let destination_offsets = [
+                            vk::Offset3D {
+                                x: rect.x,
+                                y: rect.y,
+                                z: 0,
+                            },
+                            vk::Offset3D {
+                                x: rect.x + rect.width as i32,
+                                y: rect.y + rect.height as i32,
+                                z: 1,
+                            },
                         ];
-                        self.device.cmd_push_constants(
-                            command,
-                            pipeline.pipeline_layout,
-                            vk::ShaderStageFlags::COMPUTE,
-                            0,
-                            std::slice::from_raw_parts(
-                                push.as_ptr().cast::<u8>(),
-                                size_of_val(&push),
-                            ),
-                        );
-                        self.device.cmd_dispatch(
-                            command,
-                            content_height.div_ceil(16),
-                            content_width.div_ceil(16),
-                            1,
-                        );
-                        let rotated_to_transfer = vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                            .old_layout(vk::ImageLayout::GENERAL)
-                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                            .image(rotation.rotated_image)
-                            .subresource_range(color_range());
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[rotated_to_transfer],
-                        );
-                        self.device.cmd_blit_image(
-                            command,
-                            rotation.rotated_image,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            destination,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            &[vk::ImageBlit::default()
-                                .src_subresource(color_layers())
-                                .src_offsets([
-                                    vk::Offset3D::default(),
-                                    vk::Offset3D {
-                                        x: content_height as i32,
-                                        y: content_width as i32,
-                                        z: 1,
-                                    },
-                                ])
-                                .dst_subresource(color_layers())
-                                .dst_offsets(destination_offsets)],
-                            vk::Filter::LINEAR,
-                        );
-                    } else {
-                        self.device.cmd_blit_image(
-                            command,
-                            source,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            destination,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            &[vk::ImageBlit::default()
-                                .src_subresource(color_layers())
-                                .src_offsets(blit_source_offsets(
-                                    content_width,
-                                    content_height,
-                                    surface.flip_y,
-                                    surface.quarter_turns,
-                                ))
-                                .dst_subresource(color_layers())
-                                .dst_offsets(destination_offsets)],
-                            vk::Filter::LINEAR,
-                        );
+                        if let Some(rotation) = &surface.rotation {
+                            // Do rotation via compute shader
+                            let pipeline = self
+                                .rotation_pipeline
+                                .as_ref()
+                                .expect("rotation images require the rotation pipeline");
+                            let stage_to_transfer = vk::ImageMemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::MEMORY_READ)
+                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                .image(rotation.stage_image)
+                                .subresource_range(color_range());
+                            self.device.cmd_pipeline_barrier(
+                                command,
+                                vk::PipelineStageFlags::ALL_COMMANDS,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[stage_to_transfer],
+                            );
+                            self.device.cmd_blit_image(
+                                command,
+                                source,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                rotation.stage_image,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                &[vk::ImageBlit::default()
+                                    .src_subresource(color_layers())
+                                    .src_offsets(blit_source_offsets(
+                                        content_width,
+                                        content_height,
+                                        surface.flip_y,
+                                        0,
+                                    ))
+                                    .dst_subresource(color_layers())
+                                    .dst_offsets([
+                                        vk::Offset3D::default(),
+                                        vk::Offset3D {
+                                            x: content_width as i32,
+                                            y: content_height as i32,
+                                            z: 1,
+                                        },
+                                    ])],
+                                vk::Filter::NEAREST,
+                            );
+                            let stage_to_compute = vk::ImageMemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                                .new_layout(vk::ImageLayout::GENERAL)
+                                .image(rotation.stage_image)
+                                .subresource_range(color_range());
+                            let rotated_to_compute = vk::ImageMemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::MEMORY_READ)
+                                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                                .old_layout(vk::ImageLayout::UNDEFINED)
+                                .new_layout(vk::ImageLayout::GENERAL)
+                                .image(rotation.rotated_image)
+                                .subresource_range(color_range());
+                            self.device.cmd_pipeline_barrier(
+                                command,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[stage_to_compute, rotated_to_compute],
+                            );
+                            self.device.cmd_bind_pipeline(
+                                command,
+                                vk::PipelineBindPoint::COMPUTE,
+                                pipeline.pipeline,
+                            );
+                            self.device.cmd_bind_descriptor_sets(
+                                command,
+                                vk::PipelineBindPoint::COMPUTE,
+                                pipeline.pipeline_layout,
+                                0,
+                                &[rotation.descriptor_set],
+                                &[],
+                            );
+                            let push = [
+                                content_width,
+                                content_height,
+                                u32::from(surface.quarter_turns),
+                            ];
+                            self.device.cmd_push_constants(
+                                command,
+                                pipeline.pipeline_layout,
+                                vk::ShaderStageFlags::COMPUTE,
+                                0,
+                                std::slice::from_raw_parts(
+                                    push.as_ptr().cast::<u8>(),
+                                    size_of_val(&push),
+                                ),
+                            );
+                            self.device.cmd_dispatch(
+                                command,
+                                content_height.div_ceil(16),
+                                content_width.div_ceil(16),
+                                1,
+                            );
+                            let rotated_to_transfer = vk::ImageMemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                                .old_layout(vk::ImageLayout::GENERAL)
+                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                                .image(rotation.rotated_image)
+                                .subresource_range(color_range());
+                            self.device.cmd_pipeline_barrier(
+                                command,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                &[rotated_to_transfer],
+                            );
+                            self.device.cmd_blit_image(
+                                command,
+                                rotation.rotated_image,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                destination,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                &[vk::ImageBlit::default()
+                                    .src_subresource(color_layers())
+                                    .src_offsets([
+                                        vk::Offset3D::default(),
+                                        vk::Offset3D {
+                                            x: content_height as i32,
+                                            y: content_width as i32,
+                                            z: 1,
+                                        },
+                                    ])
+                                    .dst_subresource(color_layers())
+                                    .dst_offsets(destination_offsets)],
+                                vk::Filter::LINEAR,
+                            );
+                        } else {
+                            self.device.cmd_blit_image(
+                                command,
+                                source,
+                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                                destination,
+                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                                &[vk::ImageBlit::default()
+                                    .src_subresource(color_layers())
+                                    .src_offsets(blit_source_offsets(
+                                        content_width,
+                                        content_height,
+                                        surface.flip_y,
+                                        surface.quarter_turns,
+                                    ))
+                                    .dst_subresource(color_layers())
+                                    .dst_offsets(destination_offsets)],
+                                vk::Filter::LINEAR,
+                            );
+                        }
                     }
                     if video_publish_ready
                         && video_publish_budget > 0
@@ -1375,7 +1319,6 @@ impl VulkanCompositor {
                         &[source_to_general],
                     );
                 }
-                visible_index += 1;
             }
             let to_color = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -1605,7 +1548,6 @@ impl VulkanCompositor {
             Ok(!(acquire_suboptimal || present_suboptimal))
         }
     }
-
 }
 
 impl WebRtcCompositor {

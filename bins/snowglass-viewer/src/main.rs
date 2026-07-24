@@ -41,20 +41,22 @@ mod argument_tests;
 mod gui;
 mod input;
 mod ipc;
+mod layout;
 
 use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
 use ipc::UiRequest;
 #[cfg(test)]
 use snowglass_renderer::cli::{AUTO_HOOKS, parse_arguments};
 use snowglass_renderer::{
-    D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor, WebRtcCompositor,
+    CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor,
+    WebRtcCompositor,
     capture::{Capture, CaptureEvent, ConsumerPreference},
     cli::{
         GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
     debug::{StatisticsSample, draw_statistics_graph},
-    layout, webrtc,
+    webrtc,
 };
 
 use input::{
@@ -243,8 +245,7 @@ impl ViewerCompositor {
                 None,
             )),
             ViewerApi::Vulkan if publish_video => {
-                let (compositor, webrtc) =
-                    VulkanCompositor::new_with_webrtc(window, None, true)?;
+                let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, None, true)?;
                 Ok((Self::Vulkan(Box::new(compositor)), Some(webrtc)))
             }
             ViewerApi::Vulkan => Ok((
@@ -261,6 +262,7 @@ impl ViewerCompositor {
         stream: &StreamReady,
         api: ViewerApi,
         publish_video: bool,
+        publish_stream: bool,
         quarter_turns: u8,
         video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
@@ -275,6 +277,7 @@ impl ViewerCompositor {
             let matches =
                 matches!(self, Self::D3d12(value) if value.adapter_luid() == stream.adapter_luid);
             if !matches {
+                *video = None;
                 drop(std::mem::replace(self, Self::Empty));
                 if publish_video {
                     let (compositor, webrtc) =
@@ -282,17 +285,19 @@ impl ViewerCompositor {
                     *self = Self::D3d12(Box::new(compositor));
                     *video = Some(webrtc);
                 } else {
-                    *self = Self::D3d12(Box::new(D3d12Compositor::new(
-                        window,
-                        stream.adapter_luid,
-                    )?));
+                    *self =
+                        Self::D3d12(Box::new(D3d12Compositor::new(window, stream.adapter_luid)?));
                     *video = None;
                 }
             }
             let Self::D3d12(value) = self else {
                 unreachable!()
             };
-            return Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns);
+            Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns)?;
+            if publish_stream && let Some(video) = video {
+                video.import_d3d12_stream(connection)?;
+            }
+            return Ok(());
         }
 
         let needs_keyed_mutex = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
@@ -301,6 +306,7 @@ impl ViewerCompositor {
             if (!needs_keyed_mutex || value.keyed_mutex_enabled())
                 && ((adapter.low_part == 0 && adapter.high_part == 0) || value.matches_adapter(adapter)));
         if !matches {
+            *video = None;
             drop(std::mem::replace(self, Self::Empty));
             let preferred = (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
             if publish_video {
@@ -321,7 +327,7 @@ impl ViewerCompositor {
             unreachable!()
         };
         Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns)?;
-        if let Some(video) = video {
+        if publish_stream && let Some(video) = video {
             video.import_vulkan_stream(value, connection)?;
         }
         Ok(())
@@ -345,16 +351,18 @@ impl ViewerCompositor {
 
     fn presentation(&self, viewer_extent: Extent) -> Presentation {
         match self {
-            Self::Vulkan(value) => Renderer::presentation(value.as_ref(), viewer_extent),
-            Self::D3d12(value) => Renderer::presentation(value.as_ref(), viewer_extent),
+            Self::Vulkan(value) => Renderer::received_presentation(value.as_ref(), viewer_extent),
+            Self::D3d12(value) => Renderer::received_presentation(value.as_ref(), viewer_extent),
             Self::Empty => Presentation::new(viewer_extent, Vec::new()),
         }
     }
 
     fn resize_windows(&self, window: &impl RenderWindow) -> Vec<snowglass_protocol::ResizeWindow> {
+        let presentation = self.presentation(window.render_extent());
+        let plan = layout::composition_plan(&presentation);
         match self {
-            Self::Vulkan(value) => Renderer::resize_windows(value.as_ref(), window),
-            Self::D3d12(value) => Renderer::resize_windows(value.as_ref(), window),
+            Self::Vulkan(value) => Renderer::resize_windows(value.as_ref(), window, &plan),
+            Self::D3d12(value) => Renderer::resize_windows(value.as_ref(), window, &plan),
             Self::Empty => Vec::new(),
         }
     }
@@ -372,26 +380,26 @@ impl ViewerCompositor {
         connection: u64,
         video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
-        let result = match self {
-            Self::Vulkan(value) => Renderer::disconnect_stream(value.as_mut(), connection),
-            Self::D3d12(value) => Renderer::disconnect_stream(value.as_mut(), connection),
-            Self::Empty => Ok(()),
-        };
         if let Some(video) = video {
             video.disconnect_stream(connection);
         }
-        result
+        match self {
+            Self::Vulkan(value) => Renderer::disconnect_stream(value.as_mut(), connection),
+            Self::D3d12(value) => Renderer::disconnect_stream(value.as_mut(), connection),
+            Self::Empty => Ok(()),
+        }
     }
 
     fn draw(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        plan: &CompositingPlan,
         video: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         match self {
-            Self::Vulkan(value) => value.draw_with_webrtc(output, primitives, video),
-            Self::D3d12(value) => value.draw_with_webrtc(output, primitives, video),
+            Self::Vulkan(value) => value.draw_with_webrtc(output, primitives, plan, video),
+            Self::D3d12(value) => value.draw_with_webrtc(output, primitives, plan, video),
             Self::Empty => Ok(false),
         }
     }
@@ -998,6 +1006,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &stream,
                                     viewer_api,
                                     publish_video,
+                                    publish_stream,
                                     quarter_turns,
                                     &mut video_compositor,
                                 ) {
@@ -1425,9 +1434,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     egui_state.handle_platform_output(&window, output.platform_output.clone());
                     let primitives =
                         egui_context.tessellate(output.shapes.clone(), output.pixels_per_point);
+                    let size = window.inner_size();
+                    let presentation =
+                        compositor.presentation(Extent::new(size.width, size.height));
+                    let composition_plan = layout::composition_plan(&presentation);
                     match compositor.draw(
                         &output,
                         &primitives,
+                        &composition_plan,
                         video_compositor.as_mut(),
                     ) {
                         Ok(true) => {}

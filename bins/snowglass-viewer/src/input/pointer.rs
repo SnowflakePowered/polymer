@@ -7,7 +7,7 @@ use snowglass_input::mouse::{
 };
 use snowglass_ipc::Message;
 use snowglass_protocol::{FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind};
-use snowglass_renderer::{DisplayedSurface, MappedPointer, Presentation};
+use snowglass_renderer::{MappedPointer, Presentation, ReceivedSurface};
 use std::{sync::mpsc, time::Instant};
 use winit::event::MouseButton;
 
@@ -237,7 +237,7 @@ fn pointer_destination(
     captured_connection: Option<u64>,
     outside: OutsideBehavior,
     viewer_extent: Extent,
-    surfaces: &[DisplayedSurface],
+    surfaces: &[ReceivedSurface],
 ) -> Option<MappedPointer> {
     let order = if surfaces.len() > 1 && surfaces.iter().all(|surface| surface.flip_y) {
         VerticalOrder::BottomToTop
@@ -257,7 +257,7 @@ fn pointer_destination(
             presentation_mapping,
         })
         .collect::<Vec<_>>();
-    let placements = if let Some(rectangles) = snowglass_renderer::layout::active_rectangles(
+    let placements = if let Some(rectangles) = crate::layout::active_rectangles(
         viewer_extent,
         &layouts
             .iter()
@@ -316,7 +316,7 @@ fn normalized_surface_position(
 }
 
 fn presentation_mappings(
-    surfaces: &[DisplayedSurface],
+    surfaces: &[ReceivedSurface],
     order: VerticalOrder,
 ) -> Vec<Option<AffineMapping>> {
     let explicit = surfaces
@@ -387,7 +387,7 @@ fn presentation_mappings(
 /// same fit the application itself uses — so pointer coordinates land on the
 /// content rather than being stretched across the black bars.
 fn letterboxed_mapping(
-    surface: &DisplayedSurface,
+    surface: &ReceivedSurface,
     mapping: Option<AffineMapping>,
 ) -> Option<AffineMapping> {
     let mapping = mapping?;
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn normalized_surface_maps_into_an_offset_presentation_rectangle() {
-        let surfaces = [DisplayedSurface {
+        let surfaces = [ReceivedSurface {
             connection: 7,
             surface_id: 99,
             target_window: 123,
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn unavailable_presentation_mapping_does_not_route_input() {
-        let surfaces = [DisplayedSurface {
+        let surfaces = [ReceivedSurface {
             connection: 7,
             surface_id: 99,
             target_window: 123,
@@ -507,7 +507,7 @@ mod tests {
         let mut bottom = top;
         bottom.stream_id = snowglass_protocol::StreamId(2);
         let surfaces = [
-            DisplayedSurface {
+            ReceivedSurface {
                 connection: 7,
                 surface_id: 99,
                 target_window: 123,
@@ -516,7 +516,7 @@ mod tests {
                 flip_y: false,
                 frame: top,
             },
-            DisplayedSurface {
+            ReceivedSurface {
                 connection: 8,
                 surface_id: 100,
                 target_window: 123,
@@ -550,7 +550,7 @@ mod tests {
         let mut bottom = top;
         bottom.stream_id = snowglass_protocol::StreamId(2);
         let surfaces = [
-            DisplayedSurface {
+            ReceivedSurface {
                 connection: 7,
                 surface_id: 99,
                 target_window: 123,
@@ -559,7 +559,7 @@ mod tests {
                 flip_y: false,
                 frame: top,
             },
-            DisplayedSurface {
+            ReceivedSurface {
                 connection: 8,
                 surface_id: 100,
                 target_window: 456,
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn button_capture_clamps_moves_until_release() {
-        let surfaces = [DisplayedSurface {
+        let surfaces = [ReceivedSurface {
             connection: 7,
             surface_id: 99,
             target_window: 123,

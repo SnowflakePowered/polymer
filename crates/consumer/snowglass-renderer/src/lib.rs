@@ -3,13 +3,12 @@
 pub mod capture;
 pub mod cli;
 pub mod debug;
-pub mod layout;
 pub mod renderer;
 pub mod webrtc;
 
 pub use renderer::{
-    D3d12Compositor, DisplayedSurface, MappedPointer, Presentation, RenderWindow, Renderer,
-    SwapchainMode, VideoSwapchain, VulkanCompositor, WebRtcCompositor,
+    CompositingPlan, D3d12Compositor, MappedPointer, Presentation, ReceivedSurface, RenderWindow,
+    Renderer, SurfacePlacement, SwapchainMode, VideoSwapchain, VulkanCompositor, WebRtcCompositor,
 };
 pub use snowglass_input::mouse::layout::Extent;
 
