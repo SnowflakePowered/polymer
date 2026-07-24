@@ -7,13 +7,23 @@ use std::{
     ffi::c_void,
     fs::OpenOptions,
     io::Write,
-    sync::{Arc, Mutex},
+    os::windows::ffi::OsStrExt,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
-use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetModuleHandleW};
+use windows_sys::Win32::{
+    Foundation::HMODULE,
+    System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
+};
 
 pub(crate) struct Sdl2TableState {
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
+    logged_enumeration: AtomicBool,
+    logged_gamepad_poll: AtomicBool,
+    logged_gamepad_update: AtomicBool,
 }
 
 pub(crate) struct Sdl2EntryState {
@@ -62,10 +72,13 @@ const SDL2_COMPAT_DLL: &[u16] = &[
     0,
 ];
 
-// SDL2's dynamic API table is append-only. These slots come from
-// SDL_dynapi_procs.h in the 2.32.10 runtime staged with this hook.
-const DYNAPI_NUM_JOYSTICKS: usize = 168;
-const DYNAPI_JOYSTICK_UPDATE: usize = 182;
+// SDL2's dynamic API table is append-only, but its prefix is platform
+// dependent. These are the Windows-preprocessed slots from
+// SDL_dynapi_procs.h in the runtime staged with this hook.
+const DYNAPI_NUM_JOYSTICKS: usize = 158;
+const DYNAPI_GAME_CONTROLLER_GET_AXIS: usize = 112;
+const DYNAPI_GAME_CONTROLLER_GET_BUTTON: usize = 116;
+const DYNAPI_JOYSTICK_UPDATE: usize = 172;
 
 fn dynapi_entry_target() -> api::DynapiEntryFn {
     Sdl2EntryInstallation::with_state(|state| state.target)
@@ -81,6 +94,9 @@ fn create_table_state() -> Result<Sdl2TableState, &'static str> {
     Ok(Sdl2TableState {
         backend: Mutex::new(backend),
         runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+        logged_enumeration: AtomicBool::new(false),
+        logged_gamepad_poll: AtomicBool::new(false),
+        logged_gamepad_update: AtomicBool::new(false),
     })
 }
 
@@ -109,6 +125,24 @@ snowglass_hook::function_table_hook! {
         #[infix(enumerate_joysticks)]
         unsafe extern "C" fn num_joysticks_dispatch() -> i32;
 
+        #[slot = DYNAPI_GAME_CONTROLLER_GET_AXIS]
+        #[prefix(|next| flush_gamepads(
+            &next.state,
+        ))]
+        unsafe extern "C" fn game_controller_get_axis_dispatch(
+            controller: *mut c_void,
+            axis: i32,
+        ) -> i16;
+
+        #[slot = DYNAPI_GAME_CONTROLLER_GET_BUTTON]
+        #[prefix(|next| flush_gamepads(
+            &next.state,
+        ))]
+        unsafe extern "C" fn game_controller_get_button_dispatch(
+            controller: *mut c_void,
+            button: i32,
+        ) -> u8;
+
         #[slot = DYNAPI_JOYSTICK_UPDATE]
         #[prefix(|next| flush_gamepads(
             &next.state,
@@ -119,8 +153,20 @@ snowglass_hook::function_table_hook! {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallSdl2Hook() -> i32 {
+    preload_dynamic_api();
     discover_loaded_module();
     0
+}
+
+fn preload_dynamic_api() {
+    let Some(path) = std::env::var_os("SDL_DYNAMIC_API") else {
+        return;
+    };
+    let mut wide = path.encode_wide().collect::<Vec<_>>();
+    wide.push(0);
+    if unsafe { LoadLibraryW(wide.as_ptr()) }.is_null() {
+        log("failed to preload SDL_DYNAMIC_API runtime");
+    }
 }
 
 fn discover_loaded_module() {
@@ -170,7 +216,7 @@ unsafe fn captured_dynapi_table(
     log("patched SDL2 dynamic API gamepad entries");
 }
 
-unsafe fn enumerate_joysticks(next: NumJoysticksDispatchContext<'_>) -> i32 {
+unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 {
     let mut backend = next
         .state
         .backend
@@ -179,18 +225,34 @@ unsafe fn enumerate_joysticks(next: NumJoysticksDispatchContext<'_>) -> i32 {
     if let Err(error) = next.state.runtime.prepare_enumeration(&mut *backend) {
         log(error.0);
     }
-    backend.virtual_count()
+    drop(backend);
+    // Virtual joysticks are appended to SDL's existing device list. Returning
+    // only the virtual-device count makes callers inspect the wrong indices
+    // whenever the process already has a physical joystick.
+    let log_enumeration = !next.state.logged_enumeration.swap(true, Ordering::AcqRel);
+    let count = snowglass_hook::next!(next);
+    if log_enumeration {
+        log(format!("enumerated {count} SDL2 joystick(s)"));
+    }
+    count
 }
 
 fn flush_gamepads(state: &Sdl2TableState) {
+    if !state.logged_gamepad_poll.swap(true, Ordering::AcqRel) {
+        log("target first polled the virtual gamepad");
+    }
     let mut backend = state
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    state.runtime.flush(&mut *backend);
+    if state.runtime.flush(&mut *backend)
+        && !state.logged_gamepad_update.swap(true, Ordering::AcqRel)
+    {
+        log("forwarded the first virtual gamepad update");
+    }
 }
 
-fn log(message: &str) {
+fn log(message: impl std::fmt::Display) {
     let Some(path) = config::sdl_log_file() else {
         return;
     };

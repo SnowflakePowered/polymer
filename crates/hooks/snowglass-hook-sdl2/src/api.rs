@@ -31,10 +31,6 @@ impl Api {
             handles: Vec::new(),
         })
     }
-
-    pub(crate) fn virtual_count(&self) -> i32 {
-        self.handles.iter().filter(|handle| **handle != 0).count() as i32
-    }
 }
 
 impl SdlBackend for Api {

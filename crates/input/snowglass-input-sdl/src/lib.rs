@@ -117,10 +117,13 @@ impl Runtime {
         backend.ensure_attached(self.pad_count)
     }
 
-    pub fn flush(&self, backend: &mut impl SdlBackend) {
+    /// Publishes every newly received snapshot and reports whether at least one
+    /// snapshot reached the backend.
+    pub fn flush(&self, backend: &mut impl SdlBackend) -> bool {
         if backend.ensure_attached(self.pad_count).is_err() {
-            return;
+            return false;
         }
+        let mut forwarded = false;
         let mut published = self
             .published_sequences
             .lock()
@@ -133,8 +136,10 @@ impl Runtime {
             let update = slot.update(index);
             if backend.publish(update).is_ok() {
                 published[index] = Some(slot.sequence);
+                forwarded = true;
             }
         }
+        forwarded
     }
 
     fn apply(&self, update: GamepadUpdate) {
@@ -208,8 +213,8 @@ mod tests {
         runtime.apply(update(9));
         runtime.apply(update(11));
         let mut backend = FakeBackend::default();
-        runtime.flush(&mut backend);
-        runtime.flush(&mut backend);
+        assert!(runtime.flush(&mut backend));
+        assert!(!runtime.flush(&mut backend));
         assert_eq!(backend.attached, 1);
         assert_eq!(backend.published, vec![update(11)]);
     }
