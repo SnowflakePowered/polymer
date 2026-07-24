@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 ash.workspace = true
-clap = { version = "4.6.1", features = ["derive"] }
 egui = "0.29.1"
 egui-winit = "0.29.1"
 log = "0.4"

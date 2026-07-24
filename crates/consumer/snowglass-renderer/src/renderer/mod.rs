@@ -5,13 +5,33 @@ use snowglass_input::mouse::layout::{Extent, Point};
 use snowglass_ipc::StreamReady;
 use snowglass_protocol::{FrameReady, ResizeWindow};
 
-use crate::webrtc;
-
 pub mod d3d12;
 pub mod vulkan;
+pub mod webrtc;
 
 pub use d3d12::D3d12Compositor;
 pub use vulkan::VulkanCompositor;
+pub use webrtc::{VideoSwapchain, WebRtcCompositor};
+
+/// Selects which received streams a window swapchain composites.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SwapchainMode {
+    /// Composite every imported stream into one swapchain.
+    #[default]
+    Shared,
+    /// Composite only this connection. Create one compositor/window per
+    /// connection to give every stream its own swapchain.
+    Dedicated(u64),
+}
+
+impl SwapchainMode {
+    pub const fn accepts(self, connection: u64) -> bool {
+        match self {
+            Self::Shared => true,
+            Self::Dedicated(selected) => selected == connection,
+        }
+    }
+}
 
 pub trait RenderWindow: HasDisplayHandle + HasWindowHandle {
     fn render_extent(&self) -> Extent;
@@ -144,8 +164,6 @@ pub trait Renderer {
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
     ) -> Result<bool, Box<dyn Error>>;
-    fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame>;
-
     fn draw_game(&mut self) -> Result<bool, Box<dyn Error>> {
         let context = egui::Context::default();
         let output = context.run(egui::RawInput::default(), |_| {});
@@ -200,9 +218,6 @@ impl Renderer for D3d12Compositor {
         D3d12Compositor::draw(self, output, primitives)
     }
 
-    fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame> {
-        D3d12Compositor::take_video_frames(self)
-    }
 }
 
 impl Renderer for VulkanCompositor {
@@ -243,9 +258,6 @@ impl Renderer for VulkanCompositor {
         VulkanCompositor::draw(self, output, primitives)
     }
 
-    fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame> {
-        VulkanCompositor::take_video_frames(self)
-    }
 }
 
 #[cfg(test)]
@@ -303,5 +315,13 @@ mod tests {
         crate::layout::configure(None).unwrap();
         let messages = Presentation::new(Extent::new(360, 640), vec![surface(1)]).resize_windows();
         assert_eq!((messages[0].width, messages[0].height), (640, 360));
+    }
+
+    #[test]
+    fn dedicated_swapchains_accept_only_their_stream() {
+        let mode = SwapchainMode::Dedicated(7);
+        assert!(mode.accepts(7));
+        assert!(!mode.accepts(8));
+        assert!(SwapchainMode::Shared.accepts(8));
     }
 }

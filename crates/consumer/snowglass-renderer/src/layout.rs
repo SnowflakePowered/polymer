@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::RwLock};
 
 use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserInput, ParserState,
@@ -8,8 +8,22 @@ use cssparser_color::Color;
 use snowglass_input::mouse::layout::{Extent, Rect, aspect_fit};
 use taffy::prelude::*;
 
+#[derive(Default)]
+struct LayoutSource {
+    revision: u64,
+    css: Option<String>,
+    viewports: Option<Vec<(i32, i32, u32, u32)>>,
+}
+
+static LAYOUT_SOURCE: RwLock<LayoutSource> = RwLock::new(LayoutSource {
+    revision: 0,
+    css: None,
+    viewports: None,
+});
+
 thread_local! {
-    static ACTIVE_LAYOUT: RefCell<Option<RenderTargetLayout>> = const { RefCell::new(None) };
+    static ACTIVE_LAYOUT: RefCell<(u64, Option<RenderTargetLayout>)> =
+        const { RefCell::new((0, None)) };
 }
 
 pub const DEFAULT_CSS: &str = r#"#viewer {
@@ -27,18 +41,50 @@ pub const DEFAULT_CSS: &str = r#"#viewer {
 }"#;
 
 pub fn configure(css: Option<&str>) -> Result<(), String> {
-    let layout = css.map(RenderTargetLayout::parse).transpose()?;
-    ACTIVE_LAYOUT.with(|active| *active.borrow_mut() = layout);
+    css.map(RenderTargetLayout::parse).transpose()?;
+    let mut source = LAYOUT_SOURCE
+        .write()
+        .map_err(|_| "render-target layout state is unavailable".to_owned())?;
+    source.revision = source.revision.wrapping_add(1);
+    source.css = css.map(str::to_owned);
     Ok(())
 }
 
+/// Overrides CSS/Taffy placement with rectangles measured by an external UI
+/// layer, in render-target order. Passing `None` restores CSS placement.
+pub fn configure_viewports(viewports: Option<Vec<(i32, i32, u32, u32)>>) {
+    let mut source = LAYOUT_SOURCE
+        .write()
+        .unwrap_or_else(|error| error.into_inner());
+    source.viewports = viewports;
+}
+
 pub fn active_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Option<Vec<Rect>> {
-    let mut rectangles = ACTIVE_LAYOUT.with(|active| {
-        active
-            .borrow()
-            .as_ref()
-            .and_then(|layout| layout.rectangles(extent, images))
-    })?;
+    let source = LAYOUT_SOURCE
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(viewports) = &source.viewports {
+        let mut rectangles = images
+            .iter()
+            .enumerate()
+            .map(|(index, image)| {
+                let (x, y, width, height) = viewports.get(index).copied().unwrap_or_default();
+                let bounds = Rect::new(x, y, width, height);
+                if bounds.is_empty() {
+                    bounds
+                } else {
+                    aspect_fit(*image, bounds).unwrap_or(bounds)
+                }
+            })
+            .collect::<Vec<_>>();
+        if reverse {
+            rectangles.reverse();
+        }
+        return Some(rectangles);
+    }
+    drop(source);
+    let mut rectangles =
+        with_active_layout(|layout| layout.and_then(|layout| layout.rectangles(extent, images)))?;
     if reverse {
         rectangles.reverse();
     }
@@ -46,11 +92,27 @@ pub fn active_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Op
 }
 
 pub fn clear_color() -> [f32; 4] {
+    with_active_layout(|layout| {
+        layout.map_or([1.0, 0.0, 1.0, 1.0], RenderTargetLayout::viewer_background)
+    })
+}
+
+fn with_active_layout<T>(read: impl FnOnce(Option<&RenderTargetLayout>) -> T) -> T {
+    let source = LAYOUT_SOURCE
+        .read()
+        .unwrap_or_else(|error| error.into_inner());
     ACTIVE_LAYOUT.with(|active| {
-        active
-            .borrow()
-            .as_ref()
-            .map_or([1.0, 0.0, 1.0, 1.0], RenderTargetLayout::viewer_background)
+        let mut active = active.borrow_mut();
+        if active.0 != source.revision {
+            active.1 = source
+                .css
+                .as_deref()
+                .map(RenderTargetLayout::parse)
+                .transpose()
+                .expect("render-target CSS was validated before publication");
+            active.0 = source.revision;
+        }
+        read(active.1.as_ref())
     })
 }
 
@@ -479,6 +541,9 @@ fn parse_grid_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static LAYOUT_TEST: Mutex<()> = Mutex::new(());
 
     #[test]
     fn displayed_default_css_matches_the_builtin_layout() {
@@ -528,6 +593,9 @@ mod tests {
 
     #[test]
     fn invalid_live_edit_keeps_the_last_valid_layout() {
+        let _test = LAYOUT_TEST
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         configure(Some(
             "#viewer { flex-direction:row } .render-target { flex-grow:1 }",
         ))
@@ -543,6 +611,9 @@ mod tests {
 
     #[test]
     fn viewer_background_color_controls_the_clear_color() {
+        let _test = LAYOUT_TEST
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         configure(Some("#viewer { background-color: #12345680; }")).unwrap();
         let actual = clear_color();
         let expected = [
@@ -559,8 +630,37 @@ mod tests {
 
     #[test]
     fn clearing_css_restores_the_default_clear_color() {
+        let _test = LAYOUT_TEST
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         configure(Some("#viewer { background-color: rgb(0, 128, 255); }")).unwrap();
         configure(None).unwrap();
         assert_eq!(clear_color(), [1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn configured_css_is_visible_on_the_render_thread() {
+        let _test = LAYOUT_TEST
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        configure(Some(
+            "#viewer { flex-direction:row } .render-target { flex-grow:1 }",
+        ))
+        .unwrap();
+        let rectangles = std::thread::spawn(|| {
+            active_rectangles(
+                Extent::new(200, 100),
+                &[Extent::new(100, 100), Extent::new(100, 100)],
+                false,
+            )
+        })
+        .join()
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            rectangles,
+            [Rect::new(0, 0, 100, 100), Rect::new(100, 0, 100, 100)]
+        );
+        configure(None).unwrap();
     }
 }

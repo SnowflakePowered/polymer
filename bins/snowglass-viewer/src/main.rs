@@ -1,4 +1,3 @@
-use clap::ValueEnum;
 use snowglass_hook::config;
 use snowglass_input::{
     gamepad::LatestGamepadMailbox,
@@ -19,7 +18,6 @@ use std::{
     env,
     error::Error,
     ffi::OsString,
-    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -38,22 +36,24 @@ use winit::{
     window::{Window, WindowId},
 };
 
-mod cli;
+#[cfg(test)]
+mod argument_tests;
 mod gui;
 mod input;
 mod ipc;
 
-use cli::{
-    GamepadArgument, TrackedRenderTarget, ViewerOptions, parse_target, split_command_arguments,
-};
-use gui::{
-    LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window,
-    draw_statistics_graph,
-};
+use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
 use ipc::UiRequest;
+#[cfg(test)]
+use snowglass_renderer::cli::{AUTO_HOOKS, parse_arguments};
 use snowglass_renderer::{
-    D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor,
+    D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor, WebRtcCompositor,
     capture::{Capture, CaptureEvent, ConsumerPreference},
+    cli::{
+        GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
+        split_command_arguments,
+    },
+    debug::{StatisticsSample, draw_statistics_graph},
     layout, webrtc,
 };
 
@@ -150,123 +150,10 @@ struct Statistics {
     history: VecDeque<StatisticsSample>,
 }
 
-#[derive(Clone, Copy)]
-struct StatisticsSample {
-    fps: f32,
-    latency_ms: f32,
-    frame_interval_ms: f32,
-}
-
 enum ViewerCompositor {
     Vulkan(Box<VulkanCompositor>),
     D3d12(Box<D3d12Compositor>),
     Empty,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-enum ViewerApi {
-    #[default]
-    D3d12,
-    Vulkan,
-}
-
-/// A capture backend the viewer can install into the target process.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HookBackend {
-    Vulkan,
-    OpenGl,
-    D3d12,
-    D3d11,
-    Gdi,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum HookChoice {
-    Auto,
-    Vulkan,
-    #[value(name = "opengl")]
-    OpenGl,
-    D3d12,
-    D3d11,
-    Gdi,
-}
-
-impl HookChoice {
-    fn backend(self) -> Option<HookBackend> {
-        match self {
-            Self::Auto => None,
-            Self::Vulkan => Some(HookBackend::Vulkan),
-            Self::OpenGl => Some(HookBackend::OpenGl),
-            Self::D3d12 => Some(HookBackend::D3d12),
-            Self::D3d11 => Some(HookBackend::D3d11),
-            Self::Gdi => Some(HookBackend::Gdi),
-        }
-    }
-}
-
-/// The `--hook auto` selection: every backend except GDI, ranked by how
-/// likely each is to be the real renderer rather than a probe or GUI shell.
-const AUTO_HOOKS: [HookBackend; 4] = [
-    HookBackend::Vulkan,
-    HookBackend::OpenGl,
-    HookBackend::D3d12,
-    HookBackend::D3d11,
-];
-
-impl HookBackend {
-    const ALL: [Self; 5] = [
-        Self::Vulkan,
-        Self::OpenGl,
-        Self::D3d12,
-        Self::D3d11,
-        Self::Gdi,
-    ];
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Vulkan => "Vulkan",
-            Self::OpenGl => "OpenGL",
-            Self::D3d12 => "D3D12",
-            Self::D3d11 => "D3D11",
-            Self::Gdi => "GDI",
-        }
-    }
-
-    fn class(self) -> u8 {
-        match self {
-            Self::Gdi => 0,
-            Self::D3d11 => 1,
-            Self::D3d12 => 2,
-            Self::OpenGl => 3,
-            Self::Vulkan => 4,
-        }
-    }
-}
-
-/// Expands submitted hook choices in order. `auto` appends [`AUTO_HOOKS`],
-/// skipping backends that are already listed.
-fn expand_hook_choices(
-    hooks: &mut Vec<HookBackend>,
-    choices: impl IntoIterator<Item = HookChoice>,
-) -> Result<(), Box<dyn Error>> {
-    for choice in choices {
-        if matches!(choice, HookChoice::Auto) {
-            for &hook in &AUTO_HOOKS {
-                if !hooks.contains(&hook) {
-                    hooks.push(hook);
-                }
-            }
-            continue;
-        }
-        let hook = choice
-            .backend()
-            .expect("non-auto hook choice has a backend");
-        if hooks.contains(&hook) {
-            return Err(format!("hook '{choice:?}' is listed more than once").into());
-        }
-        hooks.push(hook);
-    }
-    Ok(())
 }
 
 /// Returns the preemption rank of a backend class under the configured hook
@@ -341,18 +228,29 @@ fn graph_surface_index(surface_id: u64) -> Option<u32> {
 }
 
 impl ViewerCompositor {
-    fn new(window: &Window, api: ViewerApi, publish_video: bool) -> Result<Self, Box<dyn Error>> {
+    fn new(
+        window: &Window,
+        api: ViewerApi,
+        publish_video: bool,
+    ) -> Result<(Self, Option<WebRtcCompositor>), Box<dyn Error>> {
         match api {
-            ViewerApi::D3d12 => Ok(Self::D3d12(Box::new(D3d12Compositor::new_default(
-                window,
-                publish_video,
-            )?))),
-            ViewerApi::Vulkan => Ok(Self::Vulkan(Box::new(VulkanCompositor::new(
-                window,
+            ViewerApi::D3d12 if publish_video => {
+                let (compositor, webrtc) = D3d12Compositor::new_default_with_webrtc(window)?;
+                Ok((Self::D3d12(Box::new(compositor)), Some(webrtc)))
+            }
+            ViewerApi::D3d12 => Ok((
+                Self::D3d12(Box::new(D3d12Compositor::new_default(window)?)),
                 None,
-                true,
-                publish_video,
-            )?))),
+            )),
+            ViewerApi::Vulkan if publish_video => {
+                let (compositor, webrtc) =
+                    VulkanCompositor::new_with_webrtc(window, None, true)?;
+                Ok((Self::Vulkan(Box::new(compositor)), Some(webrtc)))
+            }
+            ViewerApi::Vulkan => Ok((
+                Self::Vulkan(Box::new(VulkanCompositor::new(window, None, true)?)),
+                None,
+            )),
         }
     }
 
@@ -364,6 +262,7 @@ impl ViewerCompositor {
         api: ViewerApi,
         publish_video: bool,
         quarter_turns: u8,
+        video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
         if api == ViewerApi::D3d12 && !d3d12_consumable(stream) {
             return Err(format!(
@@ -377,11 +276,18 @@ impl ViewerCompositor {
                 matches!(self, Self::D3d12(value) if value.adapter_luid() == stream.adapter_luid);
             if !matches {
                 drop(std::mem::replace(self, Self::Empty));
-                *self = Self::D3d12(Box::new(D3d12Compositor::new(
-                    window,
-                    stream.adapter_luid,
-                    publish_video,
-                )?));
+                if publish_video {
+                    let (compositor, webrtc) =
+                        D3d12Compositor::new_with_webrtc(window, stream.adapter_luid)?;
+                    *self = Self::D3d12(Box::new(compositor));
+                    *video = Some(webrtc);
+                } else {
+                    *self = Self::D3d12(Box::new(D3d12Compositor::new(
+                        window,
+                        stream.adapter_luid,
+                    )?));
+                    *video = None;
+                }
             }
             let Self::D3d12(value) = self else {
                 unreachable!()
@@ -397,17 +303,28 @@ impl ViewerCompositor {
         if !matches {
             drop(std::mem::replace(self, Self::Empty));
             let preferred = (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
-            *self = Self::Vulkan(Box::new(VulkanCompositor::new(
-                window,
-                preferred,
-                needs_keyed_mutex,
-                publish_video,
-            )?));
+            if publish_video {
+                let (compositor, webrtc) =
+                    VulkanCompositor::new_with_webrtc(window, preferred, needs_keyed_mutex)?;
+                *self = Self::Vulkan(Box::new(compositor));
+                *video = Some(webrtc);
+            } else {
+                *self = Self::Vulkan(Box::new(VulkanCompositor::new(
+                    window,
+                    preferred,
+                    needs_keyed_mutex,
+                )?));
+                *video = None;
+            }
         }
         let Self::Vulkan(value) = self else {
             unreachable!()
         };
-        Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns)
+        Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns)?;
+        if let Some(video) = video {
+            video.import_vulkan_stream(value, connection)?;
+        }
+        Ok(())
     }
 
     fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
@@ -450,31 +367,32 @@ impl ViewerCompositor {
         }
     }
 
-    fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
-        match self {
+    fn disconnect_stream(
+        &mut self,
+        connection: u64,
+        video: &mut Option<WebRtcCompositor>,
+    ) -> Result<(), Box<dyn Error>> {
+        let result = match self {
             Self::Vulkan(value) => Renderer::disconnect_stream(value.as_mut(), connection),
             Self::D3d12(value) => Renderer::disconnect_stream(value.as_mut(), connection),
             Self::Empty => Ok(()),
+        };
+        if let Some(video) = video {
+            video.disconnect_stream(connection);
         }
+        result
     }
 
     fn draw(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
+        video: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         match self {
-            Self::Vulkan(value) => Renderer::draw(value.as_mut(), output, primitives),
-            Self::D3d12(value) => Renderer::draw(value.as_mut(), output, primitives),
+            Self::Vulkan(value) => value.draw_with_webrtc(output, primitives, video),
+            Self::D3d12(value) => value.draw_with_webrtc(output, primitives, video),
             Self::Empty => Ok(false),
-        }
-    }
-
-    fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame> {
-        match self {
-            Self::Vulkan(value) => Renderer::take_video_frames(value.as_mut()),
-            Self::D3d12(value) => Renderer::take_video_frames(value.as_mut()),
-            Self::Empty => Vec::new(),
         }
     }
 }
@@ -619,7 +537,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             None,
         );
         let publish_video = webrtc.is_some();
-        let mut compositor = ViewerCompositor::new(&window, viewer_api, publish_video)?;
+        let (mut compositor, mut video_compositor) =
+            ViewerCompositor::new(&window, viewer_api, publish_video)?;
         let frequency = performance_frequency().unwrap_or(1) as f64;
         let mut stats = Statistics {
             sample_started: Some(Instant::now()),
@@ -826,7 +745,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .copied()
                             .collect::<Vec<_>>()
                         {
-                            let _ = compositor.disconnect_stream(connection);
+                            let _ = compositor
+                                .disconnect_stream(connection, &mut video_compositor);
                         }
                         active_capture_connections.clear();
                         stream_indices.clear();
@@ -913,7 +833,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                         capture.revoke(existing);
                                         if let Err(error) =
-                                            compositor.disconnect_stream(existing)
+                                            compositor.disconnect_stream(
+                                                existing,
+                                                &mut video_compositor,
+                                            )
                                         {
                                             eprintln!(
                                                 "snowglass: failed to replace prior stream for window: {error}"
@@ -953,7 +876,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                         capture.revoke(existing);
                                         if let Err(error) =
-                                            compositor.disconnect_stream(existing)
+                                            compositor.disconnect_stream(
+                                                existing,
+                                                &mut video_compositor,
+                                            )
                                         {
                                             eprintln!(
                                                 "snowglass: failed to replace provisional skipped-backend stream: {error}"
@@ -1006,7 +932,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         }
                                         capture.revoke(existing);
                                         if let Err(error) =
-                                            compositor.disconnect_stream(existing)
+                                            compositor.disconnect_stream(
+                                                existing,
+                                                &mut video_compositor,
+                                            )
                                         {
                                             eprintln!(
                                                 "snowglass: failed to preempt lower-priority stream: {error}"
@@ -1070,6 +999,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     viewer_api,
                                     publish_video,
                                     quarter_turns,
+                                    &mut video_compositor,
                                 ) {
                                     Ok(()) => {
                                         stream_indices.insert(connection, stream_index);
@@ -1187,7 +1117,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if active_capture_connections.remove(&connection).is_none() {
                                     continue;
                                 }
-                                if let Err(error) = compositor.disconnect_stream(connection) {
+                                if let Err(error) = compositor
+                                    .disconnect_stream(connection, &mut video_compositor)
+                                {
                                     eprintln!("snowglass: stream disconnect failed: {error}");
                                 }
                             }
@@ -1493,7 +1425,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     egui_state.handle_platform_output(&window, output.platform_output.clone());
                     let primitives =
                         egui_context.tessellate(output.shapes.clone(), output.pixels_per_point);
-                    match compositor.draw(&output, &primitives) {
+                    match compositor.draw(
+                        &output,
+                        &primitives,
+                        video_compositor.as_mut(),
+                    ) {
                         Ok(true) => {}
                         Ok(false) => {
                             if let Err(error) = compositor.recreate_swapchain(&window) {
@@ -1506,8 +1442,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                             target.exit();
                         }
                     }
-                    if let Some(publisher) = &webrtc {
-                        for frame in compositor.take_video_frames() {
+                    if let (Some(publisher), Some(video_compositor)) =
+                        (&webrtc, &mut video_compositor)
+                    {
+                        for frame in video_compositor.take_frames() {
                             publisher.publish(frame);
                         }
                     }

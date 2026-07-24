@@ -9,7 +9,7 @@ use std::{
     ptr,
 };
 
-use super::RenderWindow;
+use crate::renderer::{DisplayedSurface, RenderWindow, SwapchainMode, webrtc::WebRtcCompositor};
 use egui::{ClippedPrimitive, TextureId, epaint::Primitive};
 use raw_window_handle::RawWindowHandle;
 use snowglass_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
@@ -27,6 +27,8 @@ use windows::{
     },
     core::{Interface, PCSTR},
 };
+
+use super::D3d12Receiver;
 
 const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
@@ -63,11 +65,11 @@ struct ImportedSurface {
     cache_state: D3D12_RESOURCE_STATES,
     latest: Option<FrameReady>,
     display_frame: Option<FrameReady>,
-    video_completion_value: u64,
 }
 
 pub struct D3d12Compositor {
-    consumer: D3d12ConsumerDevice,
+    receiver: D3d12Receiver,
+    mode: SwapchainMode,
     swapchain: IDXGISwapChain3,
     extent: (u32, u32),
     backbuffers: Vec<ID3D12Resource>,
@@ -92,68 +94,167 @@ pub struct D3d12Compositor {
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     textures: HashMap<TextureId, EguiTexture>,
     free_descriptors: Vec<u32>,
-    publish_video: bool,
-    video_completion_fence: ID3D12Fence,
-    video_completion_value: u64,
-    completed_video: Vec<crate::webrtc::VideoFrame>,
+}
+
+#[derive(Clone, Copy)]
+enum SwapchainTarget {
+    Hwnd(HWND),
+    Composition,
+}
+
+fn swapchain_target(window: &impl RenderWindow) -> Result<SwapchainTarget, Box<dyn Error>> {
+    match window.window_handle()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Ok(SwapchainTarget::Hwnd(HWND(
+            handle.hwnd.get() as *mut c_void
+        ))),
+        _ => Err("D3D12 composition requires a Win32 window".into()),
+    }
 }
 
 impl D3d12Compositor {
-    pub fn new_default(
-        window: &impl RenderWindow,
-        publish_video: bool,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::with_consumer(window, D3d12ConsumerDevice::new_default()?, publish_video)
+    pub fn new_default(window: &impl RenderWindow) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new_default()?,
+            swapchain_target(window)?,
+            SwapchainMode::Shared,
+        )
     }
 
-    pub fn new(
+    pub fn new_default_with_webrtc(
+        window: &impl RenderWindow,
+    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
+        let compositor = Self::new_default(window)?;
+        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
+        Ok((compositor, webrtc))
+    }
+
+    /// Creates a compositor whose swapchain can be attached to an
+    /// `IDCompositionVisual` with [`Self::composition_content`].
+    pub fn new_default_for_composition(
+        window: &impl RenderWindow,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new_default()?,
+            SwapchainTarget::Composition,
+            SwapchainMode::Shared,
+        )
+    }
+
+    pub fn new_default_for_composition_with_webrtc(
+        window: &impl RenderWindow,
+    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
+        let compositor = Self::new_default_for_composition(window)?;
+        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
+        Ok((compositor, webrtc))
+    }
+
+    pub fn new(window: &impl RenderWindow, adapter: AdapterLuid) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new(adapter)?,
+            swapchain_target(window)?,
+            SwapchainMode::Shared,
+        )
+    }
+
+    pub fn new_with_webrtc(
         window: &impl RenderWindow,
         adapter: AdapterLuid,
-        publish_video: bool,
+    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
+        let compositor = Self::new(window, adapter)?;
+        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
+        Ok((compositor, webrtc))
+    }
+
+    /// Creates a swapchain compositor dedicated to one received connection.
+    pub fn new_default_for_stream(
+        window: &impl RenderWindow,
+        connection: u64,
     ) -> Result<Self, Box<dyn Error>> {
-        Self::with_consumer(window, D3d12ConsumerDevice::new(adapter)?, publish_video)
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new_default()?,
+            swapchain_target(window)?,
+            SwapchainMode::Dedicated(connection),
+        )
+    }
+
+    /// Creates a composition swapchain dedicated to one received connection.
+    pub fn new_default_for_composition_stream(
+        window: &impl RenderWindow,
+        connection: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new_default()?,
+            SwapchainTarget::Composition,
+            SwapchainMode::Dedicated(connection),
+        )
+    }
+
+    /// Creates an adapter-specific swapchain dedicated to one connection.
+    pub fn new_for_stream(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+        connection: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new(adapter)?,
+            swapchain_target(window)?,
+            SwapchainMode::Dedicated(connection),
+        )
     }
 
     fn with_consumer(
         window: &impl RenderWindow,
         consumer: D3d12ConsumerDevice,
-        publish_video: bool,
+        target: SwapchainTarget,
+        mode: SwapchainMode,
     ) -> Result<Self, Box<dyn Error>> {
         let size = window.render_extent();
         let extent = (size.width.max(1), size.height.max(1));
-        let hwnd = match window.window_handle()?.as_raw() {
-            RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut c_void),
-            _ => return Err("D3D12 composition requires a Win32 window".into()),
-        };
 
         // SAFETY: all COM objects and the event are owned by this compositor and GPU work is
         // drained before resources referenced by a submitted command list are replaced.
         unsafe {
-            let swapchain1 = consumer.factory().CreateSwapChainForHwnd(
-                consumer.queue(),
-                hwnd,
-                &DXGI_SWAP_CHAIN_DESC1 {
-                    Width: extent.0,
-                    Height: extent.1,
-                    Format: SWAPCHAIN_FORMAT,
-                    Stereo: false.into(),
-                    SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
-                    },
-                    BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                    BufferCount: FRAME_COUNT as u32,
-                    Scaling: DXGI_SCALING_STRETCH,
-                    SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                    AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-                    Flags: 0,
+            let description = DXGI_SWAP_CHAIN_DESC1 {
+                Width: extent.0,
+                Height: extent.1,
+                Format: SWAPCHAIN_FORMAT,
+                Stereo: false.into(),
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
                 },
-                None,
-                None,
-            )?;
-            consumer
-                .factory()
-                .MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
+                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                BufferCount: FRAME_COUNT as u32,
+                Scaling: DXGI_SCALING_STRETCH,
+                SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+                Flags: 0,
+            };
+            let swapchain1 =
+                match target {
+                    SwapchainTarget::Hwnd(hwnd) => {
+                        let swapchain = consumer.factory().CreateSwapChainForHwnd(
+                            consumer.queue(),
+                            hwnd,
+                            &description,
+                            None,
+                            None,
+                        )?;
+                        consumer
+                            .factory()
+                            .MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
+                        swapchain
+                    }
+                    SwapchainTarget::Composition => consumer
+                        .factory()
+                        .CreateSwapChainForComposition(consumer.queue(), &description, None)?,
+                };
             let swapchain: IDXGISwapChain3 = swapchain1.cast()?;
 
             let rtv_heap = consumer
@@ -198,11 +299,11 @@ impl D3d12Compositor {
             )?;
             command_list.Close()?;
             let fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
-            let video_completion_fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
             let fence_event = CreateEventW(None, false, false, None)?;
 
             Ok(Self {
-                consumer,
+                receiver: D3d12Receiver::from_consumer(consumer),
+                mode,
                 swapchain,
                 extent,
                 backbuffers,
@@ -225,16 +326,26 @@ impl D3d12Compositor {
                 mutex_copy: None,
                 textures: HashMap::new(),
                 free_descriptors: (FIRST_EGUI_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
-                publish_video,
-                video_completion_fence,
-                video_completion_value: 0,
-                completed_video: Vec::new(),
             })
         }
     }
 
     pub fn adapter_luid(&self) -> AdapterLuid {
-        self.consumer.adapter_luid()
+        self.receiver.adapter_luid()
+    }
+
+    pub(crate) fn d3d12_device(&self) -> &ID3D12Device {
+        self.receiver.device()
+    }
+
+    pub const fn swapchain_mode(&self) -> SwapchainMode {
+        self.mode
+    }
+
+    /// Returns the composition swapchain as content for an
+    /// `IDCompositionVisual`.
+    pub fn composition_content(&self) -> Result<windows::core::IUnknown, windows::core::Error> {
+        self.swapchain.cast()
     }
 
     pub(crate) fn import_stream(
@@ -243,15 +354,20 @@ impl D3d12Compositor {
         stream: &StreamReady,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
+        if !self.mode.accepts(connection) {
+            return Err(
+                format!("connection {connection} does not belong to {:?}", self.mode).into(),
+            );
+        }
         self.disconnect_stream(connection)?;
-        let imported = self.consumer.import(stream)?;
+        let imported = self.receiver.import_stream(stream)?;
         if imported.uses_keyed_mutex() && self.mutex_copy.is_none() {
             unsafe {
                 let allocator: ID3D12CommandAllocator = self
-                    .consumer
+                    .receiver
                     .device()
                     .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
-                let list: ID3D12GraphicsCommandList = self.consumer.device().CreateCommandList(
+                let list: ID3D12GraphicsCommandList = self.receiver.device().CreateCommandList(
                     0,
                     D3D12_COMMAND_LIST_TYPE_DIRECT,
                     &allocator,
@@ -264,7 +380,7 @@ impl D3d12Compositor {
         // The private texture decouples viewer redraws from producer slot reuse.
         let cache = unsafe {
             create_texture(
-                self.consumer.device(),
+                self.receiver.device(),
                 imported.width,
                 imported.height,
                 DXGI_FORMAT(imported.format as i32),
@@ -273,7 +389,7 @@ impl D3d12Compositor {
         };
         unsafe {
             create_srv(
-                self.consumer.device(),
+                self.receiver.device(),
                 &self.srv_heap,
                 self.srv_stride,
                 FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
@@ -292,7 +408,6 @@ impl D3d12Compositor {
             cache_state: D3D12_RESOURCE_STATE_COMMON,
             latest: None,
             display_frame: None,
-            video_completion_value: 0,
         });
         self.surfaces
             .sort_by_key(|surface| crate::surface_sort_key(surface.surface_id));
@@ -315,7 +430,7 @@ impl D3d12Compositor {
         }
     }
 
-    pub fn displayed_surfaces(&self) -> Vec<super::DisplayedSurface> {
+    pub fn displayed_surfaces(&self) -> Vec<DisplayedSurface> {
         self.surfaces
             .iter()
             .filter_map(|surface| {
@@ -331,7 +446,7 @@ impl D3d12Compositor {
                 } else {
                     crate::Extent::new(width, height)
                 };
-                Some(super::DisplayedSurface {
+                Some(DisplayedSurface {
                     connection: surface.connection,
                     surface_id: surface.surface_id,
                     target_window: surface.target_window,
@@ -357,7 +472,7 @@ impl D3d12Compositor {
             let surface = self.surfaces.remove(index);
             surface
                 .imported
-                .signal_release(self.consumer.queue(), RELEASE_ALL_SYNC_VALUE)?;
+                .signal_release(self.receiver.queue(), RELEASE_ALL_SYNC_VALUE)?;
             self.wait_idle()?;
             self.refresh_surface_descriptors()?;
         }
@@ -368,7 +483,7 @@ impl D3d12Compositor {
         for surface in &self.surfaces {
             surface
                 .imported
-                .signal_release(self.consumer.queue(), RELEASE_ALL_SYNC_VALUE)?;
+                .signal_release(self.receiver.queue(), RELEASE_ALL_SYNC_VALUE)?;
         }
         self.wait_idle()?;
         self.surfaces.clear();
@@ -380,7 +495,7 @@ impl D3d12Compositor {
             surface.descriptor = FIRST_CONTENT_DESCRIPTOR + index as u32;
             unsafe {
                 create_srv(
-                    self.consumer.device(),
+                    self.receiver.device(),
                     &self.srv_heap,
                     self.srv_stride,
                     surface.descriptor,
@@ -407,7 +522,7 @@ impl D3d12Compositor {
                 DXGI_SWAP_CHAIN_FLAG(0),
             )?;
             self.backbuffers = create_backbuffers(
-                self.consumer.device(),
+                self.receiver.device(),
                 &self.swapchain,
                 &self.rtv_heap,
                 self.rtv_stride,
@@ -422,6 +537,21 @@ impl D3d12Compositor {
         output: &egui::FullOutput,
         primitives: &[ClippedPrimitive],
     ) -> Result<bool, Box<dyn Error>> {
+        self.draw_with_webrtc(output, primitives, None)
+    }
+
+    pub fn draw_with_webrtc(
+        &mut self,
+        output: &egui::FullOutput,
+        primitives: &[ClippedPrimitive],
+        mut webrtc: Option<&mut WebRtcCompositor>,
+    ) -> Result<bool, Box<dyn Error>> {
+        if webrtc
+            .as_deref()
+            .is_some_and(|webrtc| !webrtc.d3d12_matches(self.adapter_luid()))
+        {
+            return Err("WebRTC compositor belongs to a different D3D12 adapter".into());
+        }
         let frame_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() } as usize;
         self.wait_frame(frame_index)?;
         self.frame_garbage[frame_index].clear();
@@ -444,11 +574,13 @@ impl D3d12Compositor {
         // rewind the fence (dropped frames host-signal immediately while an
         // in-flight frame signals its older value later), and a rewound
         // fence leaves the compositor queue waiting forever.
-        let video_publish_ready = self.publish_video
-            && unsafe { self.video_completion_fence.GetCompletedValue() }
-                >= self.video_completion_value;
+        let video_publish_ready = webrtc
+            .as_deref()
+            .is_some_and(WebRtcCompositor::d3d12_ready);
         let mut video_publish_budget = if video_publish_ready {
-            crate::webrtc::FRAME_CHANNEL_CAPACITY
+            webrtc
+                .as_deref()
+                .map_or(0, WebRtcCompositor::available)
         } else {
             0
         };
@@ -462,12 +594,8 @@ impl D3d12Compositor {
                     .map(|source| (frame, source.clone(), surface.imported.uses_keyed_mutex()))
             });
             if let Some((frame, source, keyed_mutex)) = pending {
-                if self.publish_video && surface.video_completion_value != 0 {
-                    unsafe {
-                        self.consumer
-                            .queue()
-                            .Wait(&self.video_completion_fence, surface.video_completion_value)?;
-                    }
+                if let Some(webrtc) = webrtc.as_deref() {
+                    webrtc.wait_d3d12_stream(self.receiver.queue(), surface.connection)?;
                 }
                 if keyed_mutex {
                     let acquired = surface
@@ -489,7 +617,7 @@ impl D3d12Compositor {
                 } else {
                     surface
                         .imported
-                        .wait_on_queue(self.consumer.queue(), frame.sync_value)?;
+                        .wait_on_queue(self.receiver.queue(), frame.sync_value)?;
                     unsafe {
                         transition(
                             &self.command_list,
@@ -577,7 +705,7 @@ impl D3d12Compositor {
             );
             self.command_list.Close()?;
             let list: ID3D12CommandList = self.command_list.cast()?;
-            self.consumer.queue().ExecuteCommandLists(&[Some(list)]);
+            self.receiver.queue().ExecuteCommandLists(&[Some(list)]);
             for (connection, value) in release_values {
                 if let Some(surface) = self
                     .surfaces
@@ -586,40 +714,28 @@ impl D3d12Compositor {
                 {
                     surface
                         .imported
-                        .signal_release(self.consumer.queue(), value)?;
+                        .signal_release(self.receiver.queue(), value)?;
                 }
             }
             self.fence_value += 1;
-            self.consumer
+            self.receiver
                 .queue()
                 .Signal(&self.fence, self.fence_value)?;
             self.frame_values[frame_index] = self.fence_value;
             for (connection, resource, width, height, format) in video_captures {
-                self.video_completion_value += 1;
-                let completion_value = self.video_completion_value;
-                if let Some(surface) = self
-                    .surfaces
-                    .iter_mut()
-                    .find(|surface| surface.connection == connection)
-                {
-                    surface.video_completion_value = completion_value;
-                }
-                self.completed_video.push(crate::webrtc::VideoFrame {
-                    connection,
-                    width,
-                    height,
-                    data: crate::webrtc::VideoFrameData::D3d12(crate::webrtc::D3d12Frame {
-                        device: self.consumer.device().clone(),
+                if let Some(webrtc) = webrtc.as_deref_mut() {
+                    webrtc.present_d3d12(
+                        connection,
+                        self.receiver.device().clone(),
                         resource,
-                        state: D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                         format,
-                        ready_fence: self.fence.clone(),
-                        ready_value: self.fence_value,
-                        completion_fence: self.video_completion_fence.clone(),
-                        completion_value,
-                        completion_submitted: false,
-                    }),
-                });
+                        width,
+                        height,
+                        self.fence.clone(),
+                        self.fence_value,
+                    );
+                }
             }
             self.swapchain.Present(1, DXGI_PRESENT(0)).ok()?;
         }
@@ -630,10 +746,6 @@ impl D3d12Compositor {
             }
         }
         Ok(true)
-    }
-
-    pub(crate) fn take_video_frames(&mut self) -> Vec<crate::webrtc::VideoFrame> {
-        std::mem::take(&mut self.completed_video)
     }
 
     fn draw_content(&mut self, frame_index: usize) -> Result<(), Box<dyn Error>> {
@@ -812,8 +924,8 @@ impl D3d12Compositor {
         indices: &[u32],
         scissor: RECT,
     ) -> Result<(), Box<dyn Error>> {
-        let vb = unsafe { upload_buffer(self.consumer.device(), as_bytes(vertices))? };
-        let ib = unsafe { upload_buffer(self.consumer.device(), as_bytes(indices))? };
+        let vb = unsafe { upload_buffer(self.receiver.device(), as_bytes(vertices))? };
+        let ib = unsafe { upload_buffer(self.receiver.device(), as_bytes(indices))? };
         let vbv = D3D12_VERTEX_BUFFER_VIEW {
             BufferLocation: unsafe { vb.GetGPUVirtualAddress() },
             SizeInBytes: size_of_val(vertices) as u32,
@@ -901,11 +1013,11 @@ impl D3d12Compositor {
                 .pop()
                 .ok_or("egui descriptor heap exhausted")?;
             let (resource, upload) = unsafe {
-                upload_texture(self.consumer.device(), &self.command_list, size, &pixels)?
+                upload_texture(self.receiver.device(), &self.command_list, size, &pixels)?
             };
             unsafe {
                 create_srv(
-                    self.consumer.device(),
+                    self.receiver.device(),
                     &self.srv_heap,
                     self.srv_stride,
                     descriptor,
@@ -968,7 +1080,7 @@ impl D3d12Compositor {
             );
             list.Close()?;
             let command: ID3D12CommandList = list.cast()?;
-            self.consumer.queue().ExecuteCommandLists(&[Some(command)]);
+            self.receiver.queue().ExecuteCommandLists(&[Some(command)]);
         }
         *cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         self.wait_idle()?;
@@ -981,7 +1093,7 @@ impl D3d12Compositor {
     fn wait_idle(&mut self) -> windows::core::Result<()> {
         unsafe {
             self.fence_value += 1;
-            self.consumer
+            self.receiver
                 .queue()
                 .Signal(&self.fence, self.fence_value)?;
         }

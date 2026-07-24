@@ -1,4 +1,4 @@
-use super::RenderWindow;
+use crate::renderer::RenderWindow;
 use ash::{Entry, vk};
 use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 use snowglass_consumer_vulkan::ImportedImageRing;
@@ -7,10 +7,18 @@ use snowglass_ipc::StreamReady;
 use snowglass_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use std::error::Error;
 
+use crate::renderer::{
+    SwapchainMode,
+    webrtc::{
+        VulkanVideoCache, VulkanVideoReadback, VulkanWebRtcStream, WebRtcCompositor,
+    },
+};
 use crate::{
     fit_extent, fit_inside, layout, renderer::DisplayedSurface, surface_sort_key,
     vertical_layout_index, webrtc,
 };
+
+use super::VulkanReceiver;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 struct ImportedVulkanSurface {
@@ -23,9 +31,6 @@ struct ImportedVulkanSurface {
     rotation: Option<VulkanRotation>,
     latest: Option<FrameReady>,
     last_released_frame: u64,
-    video_readbacks: Vec<VulkanVideoReadback>,
-    video_cache: Option<VulkanVideoCache>,
-    video_completion_value: u64,
 }
 
 struct VulkanRotation {
@@ -45,18 +50,6 @@ struct RotationPipeline {
     descriptor_pool: vk::DescriptorPool,
 }
 
-struct VulkanVideoCache {
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    initialized: bool,
-}
-
-struct VulkanVideoReadback {
-    buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
-    pending: Option<FrameReady>,
-}
-
 pub struct VulkanCompositor {
     _entry: Entry,
     instance: ash::Instance,
@@ -66,13 +59,6 @@ pub struct VulkanCompositor {
     device: ash::Device,
     queue: vk::Queue,
     queue_family: u32,
-    video_queue: Option<vk::Queue>,
-    video_queue_family: Option<u32>,
-    video_conversion_queue: Option<vk::Queue>,
-    video_ready: Option<vk::Semaphore>,
-    video_completion: Option<vk::Semaphore>,
-    video_ready_value: u64,
-    video_completion_value: u64,
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
@@ -88,12 +74,12 @@ pub struct VulkanCompositor {
     render_finished: Vec<vk::Semaphore>,
     fences: Vec<vk::Fence>,
     frame_index: u64,
+    receiver: VulkanReceiver,
+    mode: SwapchainMode,
     surfaces: Vec<ImportedVulkanSurface>,
     rotation_pipeline: Option<RotationPipeline>,
     keyed_mutex_enabled: bool,
     egui_renderer: Option<EguiRenderer>,
-    publish_video: bool,
-    completed_video: Vec<webrtc::VideoFrame>,
 }
 
 impl VulkanCompositor {
@@ -101,8 +87,78 @@ impl VulkanCompositor {
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
         enable_keyed_mutex: bool,
-        publish_video: bool,
     ) -> Result<Self, Box<dyn Error>> {
+        Self::with_mode(
+            window,
+            preferred_adapter,
+            enable_keyed_mutex,
+            false,
+            SwapchainMode::Shared,
+        )
+        .map(|(compositor, _)| compositor)
+    }
+
+    pub fn new_with_webrtc(
+        window: &impl RenderWindow,
+        preferred_adapter: Option<AdapterLuid>,
+        enable_keyed_mutex: bool,
+    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
+        let (compositor, webrtc) = Self::with_mode(
+            window,
+            preferred_adapter,
+            enable_keyed_mutex,
+            true,
+            SwapchainMode::Shared,
+        )?;
+        Ok((
+            compositor,
+            webrtc.expect("WebRTC was requested during Vulkan device creation"),
+        ))
+    }
+
+    /// Creates a swapchain compositor dedicated to one received connection.
+    pub fn new_for_stream(
+        window: &impl RenderWindow,
+        preferred_adapter: Option<AdapterLuid>,
+        enable_keyed_mutex: bool,
+        connection: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_mode(
+            window,
+            preferred_adapter,
+            enable_keyed_mutex,
+            false,
+            SwapchainMode::Dedicated(connection),
+        )
+        .map(|(compositor, _)| compositor)
+    }
+
+    pub fn new_for_stream_with_webrtc(
+        window: &impl RenderWindow,
+        preferred_adapter: Option<AdapterLuid>,
+        enable_keyed_mutex: bool,
+        connection: u64,
+    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
+        let (compositor, webrtc) = Self::with_mode(
+            window,
+            preferred_adapter,
+            enable_keyed_mutex,
+            true,
+            SwapchainMode::Dedicated(connection),
+        )?;
+        Ok((
+            compositor,
+            webrtc.expect("WebRTC was requested during Vulkan device creation"),
+        ))
+    }
+
+    fn with_mode(
+        window: &impl RenderWindow,
+        preferred_adapter: Option<AdapterLuid>,
+        enable_keyed_mutex: bool,
+        publish_video: bool,
+        mode: SwapchainMode,
+    ) -> Result<(Self, Option<WebRtcCompositor>), Box<dyn Error>> {
         // SAFETY: all Vulkan children are owned by Self and destroyed in reverse
         // dependency order after the device becomes idle.
         unsafe {
@@ -403,7 +459,20 @@ impl VulkanCompositor {
                 },
             )?;
             let initialized_count = swapchain_images.len();
-            Ok(Self {
+            let receiver = VulkanReceiver::new(instance.clone(), device.clone(), physical_device);
+            let webrtc = publish_video.then(|| {
+                WebRtcCompositor::new_vulkan(
+                    physical_device,
+                    device.clone(),
+                    video_queue,
+                    video_queue_family,
+                    video_conversion_queue,
+                    queue_family,
+                    video_ready,
+                    video_completion,
+                )
+            });
+            Ok((Self {
                 _entry: entry,
                 instance,
                 surface_loader,
@@ -412,13 +481,6 @@ impl VulkanCompositor {
                 device,
                 queue,
                 queue_family,
-                video_queue,
-                video_queue_family,
-                video_conversion_queue,
-                video_ready,
-                video_completion,
-                video_ready_value: 0,
-                video_completion_value: 0,
                 swapchain_loader,
                 swapchain,
                 swapchain_images,
@@ -434,13 +496,13 @@ impl VulkanCompositor {
                 render_finished,
                 fences,
                 frame_index: 0,
+                receiver,
+                mode,
                 surfaces: Vec::new(),
                 rotation_pipeline: None,
                 keyed_mutex_enabled: enable_keyed_mutex,
                 egui_renderer: Some(egui_renderer),
-                publish_video,
-                completed_video: Vec::new(),
-            })
+            }, webrtc))
         }
     }
 
@@ -450,13 +512,13 @@ impl VulkanCompositor {
         stream: &StreamReady,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
+        if !self.mode.accepts(connection) {
+            return Err(
+                format!("connection {connection} does not belong to {:?}", self.mode).into(),
+            );
+        }
         self.disconnect_stream(connection)?;
-        let imported = ImportedImageRing::import_into(
-            &self.instance,
-            self.device.clone(),
-            self.physical_device,
-            stream,
-        )?;
+        let imported = self.receiver.import_stream(stream)?;
         let quarter_turns = quarter_turns % 4;
         let rotation = if quarter_turns % 2 == 1 {
             self.ensure_rotation_pipeline()?;
@@ -477,36 +539,6 @@ impl VulkanCompositor {
         } else {
             None
         };
-        let video_readbacks = if self.publish_video && self.video_queue.is_none() {
-            unsafe {
-                create_vulkan_video_readbacks(
-                    &self.instance,
-                    &self.device,
-                    self.physical_device,
-                    imported.width,
-                    imported.height,
-                    imported.format,
-                )?
-            }
-        } else {
-            Vec::new()
-        };
-        let video_cache = if self.publish_video && self.video_queue.is_some() {
-            Some(unsafe {
-                create_vulkan_video_cache(
-                    &self.instance,
-                    &self.device,
-                    self.physical_device,
-                    imported.width,
-                    imported.height,
-                    imported.format,
-                    self.queue_family,
-                    self.video_queue_family.expect("video queue is present"),
-                )?
-            })
-        } else {
-            None
-        };
         self.surfaces.push(ImportedVulkanSurface {
             connection,
             surface_id: stream.surface_id.0,
@@ -517,9 +549,6 @@ impl VulkanCompositor {
             rotation,
             latest: None,
             last_released_frame: 0,
-            video_readbacks,
-            video_cache,
-            video_completion_value: 0,
         });
         self.surfaces
             .sort_by_key(|surface| surface_sort_key(surface.surface_id));
@@ -560,7 +589,7 @@ impl VulkanCompositor {
                 None,
             )?;
             let words = ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
-                "../rotate_quarter.comp.spv"
+                "../../rotate_quarter.comp.spv"
             )))?;
             let module = self
                 .device
@@ -602,6 +631,10 @@ impl VulkanCompositor {
 
     pub fn matches_adapter(&self, adapter: AdapterLuid) -> bool {
         physical_device_matches_luid(&self.instance, self.physical_device, adapter)
+    }
+
+    pub const fn swapchain_mode(&self) -> SwapchainMode {
+        self.mode
     }
 
     pub fn keyed_mutex_enabled(&self) -> bool {
@@ -671,10 +704,6 @@ impl VulkanCompositor {
         }
         let surface = self.surfaces.remove(index);
         unsafe {
-            destroy_vulkan_video_readbacks(&self.device, surface.video_readbacks);
-            if let Some(cache) = surface.video_cache {
-                destroy_vulkan_video_cache(&self.device, cache);
-            }
             if let Some(rotation) = surface.rotation {
                 let pool = self
                     .rotation_pipeline
@@ -702,13 +731,6 @@ impl VulkanCompositor {
         }
         for mut surface in self.surfaces.drain(..) {
             unsafe {
-                destroy_vulkan_video_readbacks(
-                    &self.device,
-                    std::mem::take(&mut surface.video_readbacks),
-                );
-                if let Some(cache) = surface.video_cache.take() {
-                    destroy_vulkan_video_cache(&self.device, cache);
-                }
                 if let Some(rotation) = surface.rotation.take() {
                     let pool = self
                         .rotation_pipeline
@@ -817,39 +839,60 @@ impl VulkanCompositor {
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
     ) -> Result<bool, Box<dyn Error>> {
+        self.draw_with_webrtc(output, primitives, None)
+    }
+
+    pub fn draw_with_webrtc(
+        &mut self,
+        output: &egui::FullOutput,
+        primitives: &[egui::ClippedPrimitive],
+        webrtc: Option<&mut WebRtcCompositor>,
+    ) -> Result<bool, Box<dyn Error>> {
+        let mut video_parts = webrtc.and_then(WebRtcCompositor::vulkan_parts_mut);
+        if video_parts
+            .as_ref()
+            .is_some_and(|(_, video)| video.physical_device != self.physical_device)
+        {
+            return Err("WebRTC compositor belongs to a different Vulkan device".into());
+        }
         // SAFETY: frame fences protect command and semaphore reuse; acquisition
         // owns the destination image; the external timeline gates source reads.
         unsafe {
             let flight = self.frame_index as usize % FRAMES_IN_FLIGHT;
             self.device
                 .wait_for_fences(&[self.fences[flight]], true, u64::MAX)?;
-            for surface in &mut self.surfaces {
-                let Some(readback) = surface.video_readbacks.get_mut(flight) else {
-                    continue;
-                };
-                let Some(frame) = readback.pending.take() else {
-                    continue;
-                };
-                let byte_len =
-                    surface.imported.width as usize * surface.imported.height as usize * 4;
-                let mapped = self.device.map_memory(
-                    readback.memory,
-                    0,
-                    byte_len as u64,
-                    vk::MemoryMapFlags::empty(),
-                )?;
-                let packed = std::slice::from_raw_parts(mapped.cast::<u8>(), byte_len);
-                self.completed_video.push(webrtc::VideoFrame {
-                    connection: surface.connection,
-                    width: surface.imported.width,
-                    height: surface.imported.height,
-                    data: webrtc::VideoFrameData::Rgba(vulkan_pixels_to_rgba(
-                        surface.imported.format,
-                        packed,
-                    )),
-                });
-                self.device.unmap_memory(readback.memory);
-                let _ = frame;
+            if let Some((video_swapchain, video)) = video_parts.as_mut() {
+                for surface in &mut self.surfaces {
+                    let Some(stream) = video.streams.get_mut(&surface.connection) else {
+                        continue;
+                    };
+                    let Some(readback) = stream.readbacks.get_mut(flight) else {
+                        continue;
+                    };
+                    let Some(_completed) = readback.pending.take() else {
+                        continue;
+                    };
+                    let byte_len =
+                        surface.imported.width as usize * surface.imported.height as usize * 4;
+                    let mapped = self.device.map_memory(
+                        readback.memory,
+                        0,
+                        byte_len as u64,
+                        vk::MemoryMapFlags::empty(),
+                    )?;
+                    let packed = std::slice::from_raw_parts(mapped.cast::<u8>(), byte_len);
+                    let frame = webrtc::VideoFrame {
+                        connection: surface.connection,
+                        width: surface.imported.width,
+                        height: surface.imported.height,
+                        data: webrtc::VideoFrameData::Rgba(vulkan_pixels_to_rgba(
+                            surface.imported.format,
+                            packed,
+                        )),
+                    };
+                    let _ = video_swapchain.present(frame);
+                    self.device.unmap_memory(readback.memory);
+                }
             }
             for surface in self
                 .surfaces
@@ -966,14 +1009,19 @@ impl VulkanCompositor {
             // host-signal immediately while accepted frames signal from the
             // encoder later. Publishing only while no completion value is
             // outstanding keeps the timeline monotonic.
-            let video_publish_ready = match self.video_completion {
-                Some(semaphore) => {
-                    self.device.get_semaphore_counter_value(semaphore)?
-                        >= self.video_completion_value
-                }
+            let video_publish_ready = match video_parts.as_ref() {
+                Some((_, video)) => match video.completion {
+                    Some(semaphore) => {
+                        self.device.get_semaphore_counter_value(semaphore)?
+                            >= video.completion_value
+                    }
+                    None => true,
+                },
                 None => false,
             };
-            let mut video_publish_budget = webrtc::FRAME_CHANNEL_CAPACITY;
+            let mut video_publish_budget = video_parts
+                .as_ref()
+                .map_or(0, |(swapchain, _)| swapchain.available());
             for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
                 let imported = &surface.imported;
                 let Some(frame) = surface.latest else {
@@ -1206,7 +1254,10 @@ impl VulkanCompositor {
                     }
                     if video_publish_ready
                         && video_publish_budget > 0
-                        && let Some(cache) = surface.video_cache.as_mut()
+                        && let Some(cache) = video_parts
+                            .as_mut()
+                            .and_then(|(_, video)| video.streams.get_mut(&surface.connection))
+                            .and_then(|stream| stream.cache.as_mut())
                     {
                         video_publish_budget -= 1;
                         let cache_to_destination = vk::ImageMemoryBarrier::default()
@@ -1267,7 +1318,11 @@ impl VulkanCompositor {
                         cache.initialized = true;
                         video_copies.push((surface_index, frame));
                     }
-                    if let Some(readback) = surface.video_readbacks.get(flight) {
+                    if let Some(readback) = video_parts
+                        .as_mut()
+                        .and_then(|(_, video)| video.streams.get_mut(&surface.connection))
+                        .and_then(|stream| stream.readbacks.get(flight))
+                    {
                         self.device.cmd_copy_image_to_buffer(
                             command,
                             source,
@@ -1384,15 +1439,23 @@ impl VulkanCompositor {
                     wait_stages.push(vk::PipelineStageFlags::TRANSFER);
                 }
             }
-            let video_wait_value = self
-                .surfaces
-                .iter()
-                .filter(|surface| surface.video_cache.is_some() && surface.latest.is_some())
-                .map(|surface| surface.video_completion_value)
-                .max()
-                .unwrap_or(0);
+            let video_wait_value = video_parts.as_ref().map_or(0, |(_, video)| {
+                self.surfaces
+                    .iter()
+                    .filter(|surface| surface.latest.is_some())
+                    .filter_map(|surface| video.streams.get(&surface.connection))
+                    .filter(|stream| stream.cache.is_some())
+                    .map(|stream| stream.completion_value)
+                    .max()
+                    .unwrap_or(0)
+            });
             if video_wait_value != 0 {
-                waits.push(self.video_completion.expect("video completion semaphore"));
+                waits.push(
+                    video_parts
+                        .as_ref()
+                        .and_then(|(_, video)| video.completion)
+                        .expect("video completion semaphore"),
+                );
                 wait_values.push(video_wait_value);
                 wait_stages.push(vk::PipelineStageFlags::TRANSFER);
             }
@@ -1403,13 +1466,22 @@ impl VulkanCompositor {
             let render_complete = self.render_finished[image_index as usize];
             let mut signals = vec![render_complete];
             let mut signal_values = vec![0];
-            let hardware_video = video_copies
-                .iter()
-                .any(|(index, _)| self.surfaces[*index].video_cache.is_some());
+            let hardware_video = video_parts.as_ref().is_some_and(|(_, video)| {
+                video_copies.iter().any(|(index, _)| {
+                    video
+                        .streams
+                        .get(&self.surfaces[*index].connection)
+                        .is_some_and(|stream| stream.cache.is_some())
+                })
+            });
             if hardware_video {
-                self.video_ready_value += 1;
-                signals.push(self.video_ready.expect("video ready semaphore"));
-                signal_values.push(self.video_ready_value);
+                let video = &mut video_parts
+                    .as_mut()
+                    .expect("hardware video requires a WebRTC compositor")
+                    .1;
+                video.ready_value += 1;
+                signals.push(video.ready.expect("video ready semaphore"));
+                signal_values.push(video.ready_value);
             }
             let mut releases = Vec::new();
             for (index, surface) in self.surfaces.iter().enumerate() {
@@ -1459,40 +1531,52 @@ impl VulkanCompositor {
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
             for (index, frame) in video_copies {
-                if let Some(image) = self.surfaces[index]
-                    .video_cache
-                    .as_ref()
-                    .map(|cache| cache.image)
-                {
-                    self.video_completion_value += 1;
-                    let completion_value = self.video_completion_value;
-                    self.surfaces[index].video_completion_value = completion_value;
-                    self.completed_video.push(webrtc::VideoFrame {
-                        connection: self.surfaces[index].connection,
+                let Some((video_swapchain, video)) = video_parts.as_mut() else {
+                    continue;
+                };
+                let connection = self.surfaces[index].connection;
+                let cached_image = video
+                    .streams
+                    .get(&connection)
+                    .and_then(|stream| stream.cache.as_ref())
+                    .map(|cache| cache.image);
+                if let Some(image) = cached_image {
+                    video.completion_value += 1;
+                    let completion_value = video.completion_value;
+                    if let Some(stream) = video.streams.get_mut(&connection) {
+                        stream.completion_value = completion_value;
+                    }
+                    let frame = webrtc::VideoFrame {
+                        connection,
                         width: self.surfaces[index].imported.width,
                         height: self.surfaces[index].imported.height,
                         data: webrtc::VideoFrameData::Vulkan(webrtc::VulkanFrame {
                             instance: self.instance.clone(),
                             physical_device: self.physical_device,
                             device: self.device.clone(),
-                            queue: self.video_queue.expect("video queue"),
-                            queue_family: self.video_queue_family.expect("video queue family"),
-                            conversion_queue: self
-                                .video_conversion_queue
+                            queue: video.queue.expect("video queue"),
+                            queue_family: video.queue_family.expect("video queue family"),
+                            conversion_queue: video
+                                .conversion_queue
                                 .expect("video conversion queue"),
-                            conversion_queue_family: self.queue_family,
+                            conversion_queue_family: video.conversion_queue_family,
                             image,
                             format: self.surfaces[index].imported.format,
                             layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            ready: self.video_ready.expect("video ready semaphore"),
-                            ready_value: self.video_ready_value,
-                            completion: self.video_completion.expect("video completion semaphore"),
+                            ready: video.ready.expect("video ready semaphore"),
+                            ready_value: video.ready_value,
+                            completion: video.completion.expect("video completion semaphore"),
                             completion_value,
                             completion_submitted: false,
                         }),
-                    });
-                } else {
-                    self.surfaces[index].video_readbacks[flight].pending = Some(frame);
+                    };
+                    let _ = video_swapchain.present(frame);
+                } else if let Some(readback) = video
+                    .streams
+                    .get_mut(&connection)
+                    .and_then(|stream| stream.readbacks.get_mut(flight))
+                {
+                    readback.pending = Some(frame);
                 }
             }
             for (index, frame_number) in releases {
@@ -1522,8 +1606,70 @@ impl VulkanCompositor {
         }
     }
 
-    pub(crate) fn take_video_frames(&mut self) -> Vec<webrtc::VideoFrame> {
-        std::mem::take(&mut self.completed_video)
+}
+
+impl WebRtcCompositor {
+    /// Adds one of a Vulkan receiver's imported streams to the video
+    /// swapchain. The window and WebRTC compositors remain sibling consumers
+    /// of the same imported surface.
+    pub fn import_vulkan_stream(
+        &mut self,
+        compositor: &VulkanCompositor,
+        connection: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let surface = compositor
+            .surfaces
+            .iter()
+            .find(|surface| surface.connection == connection)
+            .ok_or_else(|| format!("Vulkan stream {connection} is not imported"))?;
+        let Some((_, video)) = self.vulkan_parts_mut() else {
+            return Err("WebRTC compositor is not attached to Vulkan".into());
+        };
+        if video.physical_device != compositor.physical_device {
+            return Err("WebRTC compositor belongs to a different Vulkan device".into());
+        }
+        if video.streams.contains_key(&connection) {
+            return Ok(());
+        }
+        let readbacks = if video.queue.is_none() {
+            unsafe {
+                create_vulkan_video_readbacks(
+                    &compositor.instance,
+                    &compositor.device,
+                    compositor.physical_device,
+                    surface.imported.width,
+                    surface.imported.height,
+                    surface.imported.format,
+                )?
+            }
+        } else {
+            Vec::new()
+        };
+        let cache = if video.queue.is_some() {
+            Some(unsafe {
+                create_vulkan_video_cache(
+                    &compositor.instance,
+                    &compositor.device,
+                    compositor.physical_device,
+                    surface.imported.width,
+                    surface.imported.height,
+                    surface.imported.format,
+                    compositor.queue_family,
+                    video.queue_family.expect("video queue is present"),
+                )?
+            })
+        } else {
+            None
+        };
+        video.streams.insert(
+            connection,
+            VulkanWebRtcStream {
+                readbacks,
+                cache,
+                completion_value: 0,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -1534,12 +1680,6 @@ impl Drop for VulkanCompositor {
             let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
             let _ = self.device.device_wait_idle();
             self.egui_renderer = None;
-            for surface in &mut self.surfaces {
-                destroy_vulkan_video_readbacks(
-                    &self.device,
-                    std::mem::take(&mut surface.video_readbacks),
-                );
-            }
             for fence in self.fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }
@@ -1547,12 +1687,6 @@ impl Drop for VulkanCompositor {
                 self.device.destroy_semaphore(semaphore, None);
             }
             for semaphore in self.image_available.drain(..) {
-                self.device.destroy_semaphore(semaphore, None);
-            }
-            if let Some(semaphore) = self.video_ready.take() {
-                self.device.destroy_semaphore(semaphore, None);
-            }
-            if let Some(semaphore) = self.video_completion.take() {
                 self.device.destroy_semaphore(semaphore, None);
             }
             if let Some(pipeline) = self.rotation_pipeline.take() {
@@ -1685,13 +1819,6 @@ unsafe fn create_vulkan_video_cache(
         memory,
         initialized: false,
     })
-}
-
-unsafe fn destroy_vulkan_video_cache(device: &ash::Device, cache: VulkanVideoCache) {
-    unsafe {
-        device.destroy_image(cache.image, None);
-        device.free_memory(cache.memory, None);
-    }
 }
 
 /// Rotation intermediates always use RGBA8: blits convert the imported format
@@ -1905,18 +2032,6 @@ unsafe fn create_vulkan_video_readbacks(
         });
     }
     Ok(readbacks)
-}
-
-unsafe fn destroy_vulkan_video_readbacks(
-    device: &ash::Device,
-    readbacks: Vec<VulkanVideoReadback>,
-) {
-    for readback in readbacks {
-        unsafe {
-            device.destroy_buffer(readback.buffer, None);
-            device.free_memory(readback.memory, None);
-        }
-    }
 }
 
 fn vulkan_pixels_to_rgba(format: vk::Format, packed: &[u8]) -> Vec<u8> {
