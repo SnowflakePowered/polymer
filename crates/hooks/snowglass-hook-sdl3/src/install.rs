@@ -9,7 +9,10 @@ use std::{
     fs::OpenOptions,
     io::Write,
     os::windows::ffi::OsStrExt,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use windows_sys::Win32::{
     Foundation::HMODULE,
@@ -19,6 +22,9 @@ use windows_sys::Win32::{
 pub(crate) struct Sdl3TableState {
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
+    logged_enumeration: AtomicBool,
+    logged_gamepad_consumer: AtomicBool,
+    logged_gamepad_update: AtomicBool,
 }
 
 pub(crate) struct Sdl3EntryState {
@@ -53,11 +59,17 @@ const SDL3_DLL: &[u16] = &[
 ];
 
 // SDL3's ABI-stable dynamic API table is append-only. These slots come from
-// SDL_dynapi_procs.h and cover the SDL revision pinned by Dolphin.
+// SDL_dynapi_procs.h in the runtime staged with this hook.
 const DYNAPI_GET_GAMEPADS: usize = 349;
+const DYNAPI_GET_GAMEPAD_AXIS: usize = 306;
+const DYNAPI_GET_GAMEPAD_BUTTON: usize = 309;
 const DYNAPI_GET_JOYSTICKS: usize = 395;
+const DYNAPI_POLL_EVENT: usize = 677;
+const DYNAPI_PUMP_EVENTS: usize = 681;
 const DYNAPI_UPDATE_GAMEPADS: usize = 952;
 const DYNAPI_UPDATE_JOYSTICKS: usize = 954;
+const DYNAPI_WAIT_EVENT: usize = 972;
+const DYNAPI_WAIT_EVENT_TIMEOUT: usize = 973;
 
 fn dynapi_entry_target() -> api::DynapiEntryFn {
     Sdl3EntryInstallation::with_state(|state| state.target)
@@ -91,6 +103,9 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     Ok(Sdl3TableState {
         backend: Mutex::new(backend),
         runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+        logged_enumeration: AtomicBool::new(false),
+        logged_gamepad_consumer: AtomicBool::new(false),
+        logged_gamepad_update: AtomicBool::new(false),
     })
 }
 
@@ -113,7 +128,25 @@ snowglass_hook::chain_hooks! {
 snowglass_hook::function_table_hook! {
     #[state: Sdl3TableState = create_table_state()?]
     pub(crate) struct Sdl3DynapiHook {
-        const MINIMUM_SLOTS: usize = DYNAPI_UPDATE_JOYSTICKS + 1;
+        const MINIMUM_SLOTS: usize = DYNAPI_WAIT_EVENT_TIMEOUT + 1;
+
+        #[slot = DYNAPI_GET_GAMEPAD_AXIS]
+        #[prefix(|next| flush_gamepads(
+            next.state,
+        ))]
+        unsafe extern "C" fn get_gamepad_axis_dispatch(
+            gamepad: *mut c_void,
+            axis: i32,
+        ) -> i16;
+
+        #[slot = DYNAPI_GET_GAMEPAD_BUTTON]
+        #[prefix(|next| flush_gamepads(
+            next.state,
+        ))]
+        unsafe extern "C" fn get_gamepad_button_dispatch(
+            gamepad: *mut c_void,
+            button: i32,
+        ) -> bool;
 
         #[slot = DYNAPI_GET_GAMEPADS]
         #[infix(enumerate_gamepads)]
@@ -127,21 +160,58 @@ snowglass_hook::function_table_hook! {
             count: *mut i32,
         ) -> *mut api::JoystickId;
 
+        #[slot = DYNAPI_POLL_EVENT]
+        #[prefix(|next| flush_gamepads(
+            next.state,
+        ))]
+        unsafe extern "C" fn poll_event_dispatch(
+            event: *mut c_void,
+        ) -> bool;
+
+        #[slot = DYNAPI_PUMP_EVENTS]
+        #[prefix(|next| flush_gamepads(
+            next.state,
+        ))]
+        unsafe extern "C" fn pump_events_dispatch();
+
         #[slot = DYNAPI_UPDATE_JOYSTICKS]
         #[prefix(|next| flush_gamepads(
-            &next.state,
+            next.state,
         ))]
         unsafe extern "C" fn update_joysticks_dispatch();
 
         #[slot = DYNAPI_UPDATE_GAMEPADS]
         #[prefix(|next| flush_gamepads(
-            &next.state,
+            next.state,
         ))]
         unsafe extern "C" fn update_gamepads_dispatch();
+
+        #[slot = DYNAPI_WAIT_EVENT]
+        #[prefix(|next| flush_gamepads(
+            next.state,
+        ))]
+        unsafe extern "C" fn wait_event_dispatch(
+            event: *mut c_void,
+        ) -> bool;
+
+        #[slot = DYNAPI_WAIT_EVENT_TIMEOUT]
+        #[prefix(|next| flush_gamepads(
+            next.state,
+        ))]
+        unsafe extern "C" fn wait_event_timeout_dispatch(
+            event: *mut c_void,
+            timeout_ms: i32,
+        ) -> bool;
     }
 }
 
 #[unsafe(no_mangle)]
+/// Installs the SDL3 virtual-gamepad hooks into the current process.
+///
+/// # Safety
+///
+/// The caller must invoke this only after the DLL has been loaded into a
+/// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
     preload_dynamic_api();
     discover_loaded_module();
@@ -217,14 +287,14 @@ unsafe fn enumerate_gamepads(
     count: *mut i32,
     next: GetGamepadsDispatchContext<'_>,
 ) -> *mut api::JoystickId {
-    enumerate_virtual(count, &next.state)
+    enumerate_virtual(count, next.state)
 }
 
 unsafe fn enumerate_joysticks(
     count: *mut i32,
     next: GetJoysticksDispatchContext<'_>,
 ) -> *mut api::JoystickId {
-    enumerate_virtual(count, &next.state)
+    enumerate_virtual(count, next.state)
 }
 
 fn enumerate_virtual(count: *mut i32, state: &Sdl3TableState) -> *mut api::JoystickId {
@@ -233,18 +303,34 @@ fn enumerate_virtual(count: *mut i32, state: &Sdl3TableState) -> *mut api::Joyst
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    unsafe { backend.enumerate(count) }
+    let result = unsafe { backend.enumerate(count) };
+    if !state.logged_enumeration.swap(true, Ordering::AcqRel) {
+        let count = if count.is_null() {
+            0
+        } else {
+            unsafe { *count }
+        };
+        log(format!("enumerated {count} SDL3 gamepad(s)"));
+    }
+    result
 }
 
 fn flush_gamepads(state: &Sdl3TableState) {
+    if !state.logged_gamepad_consumer.swap(true, Ordering::AcqRel) {
+        log("target first consumed SDL3 gamepad state");
+    }
     let mut backend = state
         .backend
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    state.runtime.flush(&mut *backend);
+    if state.runtime.flush(&mut *backend)
+        && !state.logged_gamepad_update.swap(true, Ordering::AcqRel)
+    {
+        log("forwarded the first virtual gamepad update");
+    }
 }
 
-fn log(message: &str) {
+fn log(message: impl std::fmt::Display) {
     let Some(path) = config::sdl_log_file() else {
         return;
     };
