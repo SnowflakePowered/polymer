@@ -55,7 +55,7 @@ use snowglass_renderer::{
         GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
-    debug::{StatisticsSample, draw_statistics_graph},
+    debug::{FrameSequenceTracker, StatisticsSample, draw_statistics_graph},
     input::PointerRoutingState,
     webrtc,
 };
@@ -145,8 +145,7 @@ struct Statistics {
     fps: f64,
     latency_ms: f64,
     frame_interval_ms: f64,
-    previous_timestamp_qpc: Option<u64>,
-    received: u64,
+    sequences: FrameSequenceTracker,
     dropped: u64,
     frames_since_sample: u64,
     sample_started: Option<Instant>,
@@ -1081,25 +1080,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         "snowglass: received first {active_backend} frame on connection {connection}"
                                     );
                                 }
-                                if let Some(previous) = stats.previous_timestamp_qpc {
-                                    let frame_count = frame
-                                        .frame_number
-                                        .saturating_sub(stats.frame_number)
-                                        .max(1);
+                                let observation = stats.sequences.observe(
+                                    connection,
+                                    frame.frame_number,
+                                    frame.timestamp_qpc,
+                                );
+                                if let Some(interval_qpc) = observation.interval_qpc {
                                     stats.frame_interval_ms =
-                                        frame.timestamp_qpc.saturating_sub(previous) as f64
-                                            * 1000.0
-                                            / frequency
-                                            / frame_count as f64;
+                                        interval_qpc * 1000.0 / frequency;
                                 }
-                                stats.previous_timestamp_qpc = Some(frame.timestamp_qpc);
-                                if stats.received != 0
-                                    && frame.frame_number > stats.frame_number + 1
-                                {
-                                    stats.dropped +=
-                                        frame.frame_number - stats.frame_number - 1;
-                                }
-                                stats.received += 1;
+                                stats.dropped = stats.sequences.dropped();
                                 stats.frames_since_sample += 1;
                                 stats.frame_number = frame.frame_number;
                                 stats.slot = frame.slot;
@@ -1123,6 +1113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             CaptureEvent::Disconnected(connection) => {
+                                stats.sequences.remove(connection);
                                 if let Some(publisher) = &webrtc {
                                     publisher.remove_stream(connection);
                                 }
@@ -1159,7 +1150,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     if let Some(started) = stats.sample_started {
                         if started.elapsed() >= Duration::from_millis(500) {
+                            let stream_count = stats.sequences.stream_count().max(1) as f64;
                             stats.fps = stats.frames_since_sample as f64
+                                / stream_count
                                 / started.elapsed().as_secs_f64();
                             stats.frames_since_sample = 0;
                             stats.sample_started = Some(Instant::now());

@@ -1,6 +1,87 @@
 //! Reusable egui diagnostics shared by native Snowglass hosts.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+
+#[derive(Clone, Copy, Debug)]
+struct StreamSequence {
+    frame_number: u64,
+    timestamp_qpc: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameSequenceObservation {
+    pub interval_qpc: Option<f64>,
+    pub dropped: u64,
+}
+
+/// Tracks producer frame sequences independently for each capture connection.
+///
+/// Frame numbers and capture timestamps are local to a producer stream. Mixing
+/// them across connections makes two interleaved render targets look like frame
+/// gaps and produces meaningless frame intervals.
+#[derive(Clone, Debug, Default)]
+pub struct FrameSequenceTracker {
+    streams: HashMap<u64, StreamSequence>,
+    dropped: u64,
+}
+
+impl FrameSequenceTracker {
+    pub fn observe(
+        &mut self,
+        connection: u64,
+        frame_number: u64,
+        timestamp_qpc: u64,
+    ) -> FrameSequenceObservation {
+        let Some(previous) = self.streams.get_mut(&connection) else {
+            self.streams.insert(
+                connection,
+                StreamSequence {
+                    frame_number,
+                    timestamp_qpc,
+                },
+            );
+            return FrameSequenceObservation::default();
+        };
+
+        if frame_number == previous.frame_number {
+            return FrameSequenceObservation::default();
+        }
+        if frame_number < previous.frame_number {
+            *previous = StreamSequence {
+                frame_number,
+                timestamp_qpc,
+            };
+            return FrameSequenceObservation::default();
+        }
+
+        let frame_delta = frame_number - previous.frame_number;
+        let interval_qpc = timestamp_qpc
+            .checked_sub(previous.timestamp_qpc)
+            .map(|ticks| ticks as f64 / frame_delta as f64);
+        let dropped = frame_delta - 1;
+        self.dropped += dropped;
+        *previous = StreamSequence {
+            frame_number,
+            timestamp_qpc,
+        };
+        FrameSequenceObservation {
+            interval_qpc,
+            dropped,
+        }
+    }
+
+    pub fn remove(&mut self, connection: u64) {
+        self.streams.remove(&connection);
+    }
+
+    pub fn stream_count(&self) -> usize {
+        self.streams.len()
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StatisticsSample {
@@ -247,5 +328,43 @@ pub fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSam
             egui::FontId::monospace(10.0),
             egui::Color32::GRAY,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameSequenceTracker;
+
+    #[test]
+    fn interleaved_streams_do_not_create_false_drops_or_intervals() {
+        let mut tracker = FrameSequenceTracker::default();
+
+        assert_eq!(tracker.observe(1, 1, 100).interval_qpc, None);
+        assert_eq!(tracker.observe(2, 100, 105).interval_qpc, None);
+        assert_eq!(tracker.observe(1, 2, 116).interval_qpc, Some(16.0));
+        assert_eq!(tracker.observe(2, 101, 121).interval_qpc, Some(16.0));
+        assert_eq!(tracker.dropped(), 0);
+        assert_eq!(tracker.stream_count(), 2);
+    }
+
+    #[test]
+    fn gaps_are_counted_only_within_the_same_stream() {
+        let mut tracker = FrameSequenceTracker::default();
+
+        tracker.observe(1, 10, 100);
+        let observation = tracker.observe(1, 13, 148);
+        assert_eq!(observation.interval_qpc, Some(16.0));
+        assert_eq!(observation.dropped, 2);
+        assert_eq!(tracker.dropped(), 2);
+    }
+
+    #[test]
+    fn a_restarted_sequence_establishes_a_new_baseline() {
+        let mut tracker = FrameSequenceTracker::default();
+
+        tracker.observe(1, 100, 1000);
+        assert_eq!(tracker.observe(1, 1, 1010).interval_qpc, None);
+        assert_eq!(tracker.observe(1, 2, 1026).interval_qpc, Some(16.0));
+        assert_eq!(tracker.dropped(), 0);
     }
 }

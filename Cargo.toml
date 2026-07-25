@@ -14,7 +14,6 @@ members = [
 ]
 exclude = [
     "crates/hooks/snowglass-hook-input",
-    "bins/snowglass-frontend-web",
 ]
 
 [workspace.package]

@@ -34,6 +34,7 @@
       display: block;
       flex: none;
       background: transparent;
+      --game-view-scaling: integer;
     }
     #status {
       position: fixed;
@@ -131,12 +132,44 @@
       class GameViewTarget extends HTMLElement {
         #preferredSize = Object.freeze({ width: 0, height: 0 });
 
+        static get observedAttributes() {
+          return ["class", "scaling"];
+        }
+
+        attributeChangedCallback() {
+          scheduleLayout();
+        }
+
         get index() {
           return Number(this.dataset.index);
         }
 
         get preferredSize() {
           return this.#preferredSize;
+        }
+
+        get scaling() {
+          const attribute = this.getAttribute("scaling");
+          if (attribute === "fit" || attribute === "integer") {
+            return attribute;
+          }
+          const configured = getComputedStyle(this)
+            .getPropertyValue("--game-view-scaling")
+            .trim()
+            .toLowerCase();
+          return configured === "fit" ? "fit" : "integer";
+        }
+
+        set scaling(value) {
+          this.setAttribute("scaling", value === "fit" ? "fit" : "integer");
+        }
+
+        get integerScaling() {
+          return this.scaling === "integer";
+        }
+
+        set integerScaling(enabled) {
+          this.scaling = enabled ? "integer" : "fit";
         }
 
         setPreferredSize(value) {
@@ -152,6 +185,7 @@
       customElements.define("game-view-target", GameViewTarget);
 
       let scheduled = false;
+      let lastLayout = "";
       const scheduleLayout = () => {
         if (scheduled) return;
         scheduled = true;
@@ -169,14 +203,22 @@
                 width / preferred.width,
                 height / preferred.height,
               );
-              width = preferred.width * fitScale;
-              height = preferred.height * fitScale;
+              // Integer upscaling is the default for emulator output. If a
+              // slot is smaller than the native target, retain a fractional
+              // downscale rather than clipping multi-target layouts.
+              const targetScale = element.scaling === "integer" && fitScale >= 1
+                ? Math.max(1, Math.floor(fitScale))
+                : fitScale;
+              width = preferred.width * targetScale;
+              height = preferred.height * targetScale;
             }
             element.style.width = `${width}px`;
             element.style.height = `${height}px`;
             const rect = element.getBoundingClientRect();
             return {
-              connection: Number(element.dataset.connection),
+              // Capture connection IDs are u64 and routinely exceed
+              // Number.MAX_SAFE_INTEGER. Preserve them as strings over JSON.
+              connection: element.dataset.connection,
               x: Math.round(rect.left * scale),
               y: Math.round(rect.top * scale),
               width: Math.max(0, Math.round(rect.width * scale)),
@@ -184,10 +226,13 @@
             };
           });
           if (layer === "foreground") {
-            try {
-              chrome.webview.hostObjects.sync.snowglass.setViewports(JSON.stringify(layouts));
-            } catch (error) {
-              console.error("Snowglass layout bridge failed", error);
+            const serialized = JSON.stringify(layouts);
+            if (serialized !== lastLayout) {
+              lastLayout = serialized;
+              window.ipc.postMessage(JSON.stringify({
+                type: "layout",
+                layouts,
+              }));
             }
           }
         });
@@ -195,6 +240,15 @@
 
       const resizeObserver = new ResizeObserver(scheduleLayout);
       resizeObserver.observe(container);
+      // Editing a stylesheet can change --game-view-scaling without changing
+      // an observed box first. Recompute layouts when head styles change.
+      const styleObserver = new MutationObserver(scheduleLayout);
+      styleObserver.observe(document.head, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
       addEventListener("resize", scheduleLayout);
       addEventListener("scroll", scheduleLayout, true);
 

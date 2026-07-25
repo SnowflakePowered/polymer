@@ -8,8 +8,10 @@ use windows::{
         Foundation::HWND,
         Graphics::{
             DirectComposition::{
-                DCompositionCreateDevice, IDCompositionDevice, IDCompositionScaleTransform,
-                IDCompositionTarget, IDCompositionVisual,
+                DCOMPOSITION_BITMAP_INTERPOLATION_MODE_INHERIT,
+                DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCompositionCreateDevice,
+                IDCompositionDevice, IDCompositionScaleTransform, IDCompositionTarget,
+                IDCompositionTransform, IDCompositionVisual,
             },
             Dxgi::IDXGIDevice,
         },
@@ -34,11 +36,29 @@ pub enum WebViewLayer {
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceLayout {
+    #[serde(deserialize_with = "deserialize_connection")]
     pub connection: u64,
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+fn deserialize_connection<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Connection {
+        Number(u64),
+        String(String),
+    }
+
+    match <Connection as serde::Deserialize>::deserialize(deserializer)? {
+        Connection::Number(connection) => Ok(connection),
+        Connection::String(connection) => connection.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 pub struct CompositionTree {
@@ -115,7 +135,6 @@ impl CompositionTree {
         unsafe {
             let visual = self.device.CreateVisual()?;
             let scale = self.device.CreateScaleTransform()?;
-            visual.SetTransform(&scale)?;
             visual.SetContent(content)?;
             let background = &self.surfaces[&SurfaceId::BackgroundWebView];
             self.root.AddVisual(&visual, true, background)?;
@@ -158,12 +177,30 @@ impl CompositionTree {
             };
             target.visual.SetOffsetX2(x)?;
             target.visual.SetOffsetY2(y)?;
-            target
-                .scale
-                .SetScaleX2(layout.width as f32 / content_width.max(1) as f32)?;
-            target
-                .scale
-                .SetScaleY2(layout.height as f32 / content_height.max(1) as f32)?;
+            let needs_scale = layout.width != 0
+                && layout.height != 0
+                && (layout.width != content_width || layout.height != content_height);
+            if needs_scale {
+                target
+                    .scale
+                    .SetScaleX2(layout.width as f32 / content_width.max(1) as f32)?;
+                target
+                    .scale
+                    .SetScaleY2(layout.height as f32 / content_height.max(1) as f32)?;
+                target.visual.SetBitmapInterpolationMode(
+                    DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                )?;
+                target.visual.SetTransform(&target.scale)?;
+            } else {
+                // A null transform leaves the settled visual in the simplest
+                // form for DWM's independent-flip/MPO eligibility checks.
+                target
+                    .visual
+                    .SetTransform(None::<&IDCompositionTransform>)?;
+                target
+                    .visual
+                    .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_INHERIT)?;
+            }
             Ok(())
         }
     }
@@ -207,5 +244,35 @@ impl raw_window_handle::HasDisplayHandle for SurfaceWindow<'_> {
 impl snowglass_renderer::RenderWindow for SurfaceWindow<'_> {
     fn render_extent(&self) -> Extent {
         self.extent
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SurfaceLayout;
+
+    #[test]
+    fn layout_preserves_connection_ids_larger_than_javascript_safe_integers() {
+        let layout: SurfaceLayout = serde_json::from_str(
+            r#"{
+                "connection": "6000765028494475265",
+                "x": 10,
+                "y": 20,
+                "width": 854,
+                "height": 480
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(layout.connection, 6_000_765_028_494_475_265);
+    }
+
+    #[test]
+    fn layout_still_accepts_numeric_connection_ids() {
+        let layout: SurfaceLayout =
+            serde_json::from_str(r#"{"connection": 42, "x": 0, "y": 0, "width": 1, "height": 1}"#)
+                .unwrap();
+
+        assert_eq!(layout.connection, 42);
     }
 }

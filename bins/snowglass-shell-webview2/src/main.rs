@@ -21,8 +21,8 @@ use snowglass_renderer::{
     capture::{Capture, CaptureEvent, ConsumerPreference},
     cli::{ViewerApi, ViewerOptions, parse_target_named},
     debug::{
-        DebugOverlay, InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics,
-        StatisticsSample, draw_debug_overlay,
+        DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
+        InputSlotDiagnostics, StatisticsSample, draw_debug_overlay,
     },
     input::PointerRoutingState,
 };
@@ -125,8 +125,7 @@ struct EguiOverlay {
     context: egui::Context,
     state: egui_winit::State,
     diagnostics: DebugOverlay,
-    previous_timestamp_qpc: Option<u64>,
-    received: u64,
+    sequences: FrameSequenceTracker,
     frames_since_sample: u64,
     sample_started: Option<Instant>,
     frequency: f64,
@@ -155,8 +154,7 @@ impl EguiOverlay {
             context,
             state,
             diagnostics,
-            previous_timestamp_qpc: None,
-            received: 0,
+            sequences: FrameSequenceTracker::default(),
             frames_since_sample: 0,
             sample_started: None,
             frequency: performance_frequency().unwrap_or(1) as f64,
@@ -172,23 +170,15 @@ impl EguiOverlay {
         self.diagnostics.frame.backend = backend;
     }
 
-    fn observe_frame(&mut self, frame: snowglass_protocol::FrameReady) {
+    fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
         let diagnostics = &mut self.diagnostics.frame;
-        if let Some(previous) = self.previous_timestamp_qpc {
-            let frame_count = frame
-                .frame_number
-                .saturating_sub(diagnostics.frame_number)
-                .max(1);
-            diagnostics.frame_interval_ms = frame.timestamp_qpc.saturating_sub(previous) as f64
-                * 1000.0
-                / self.frequency
-                / frame_count as f64;
+        let observation =
+            self.sequences
+                .observe(connection, frame.frame_number, frame.timestamp_qpc);
+        if let Some(interval_qpc) = observation.interval_qpc {
+            diagnostics.frame_interval_ms = interval_qpc * 1000.0 / self.frequency;
         }
-        self.previous_timestamp_qpc = Some(frame.timestamp_qpc);
-        if self.received != 0 && frame.frame_number > diagnostics.frame_number + 1 {
-            diagnostics.dropped += frame.frame_number - diagnostics.frame_number - 1;
-        }
-        self.received += 1;
+        diagnostics.dropped = self.sequences.dropped();
         self.frames_since_sample += 1;
         self.sample_started.get_or_insert_with(Instant::now);
         diagnostics.frame_number = frame.frame_number;
@@ -214,7 +204,9 @@ impl EguiOverlay {
             return;
         }
         let frame = &mut self.diagnostics.frame;
-        frame.frames_per_second = self.frames_since_sample as f64 / started.elapsed().as_secs_f64();
+        let stream_count = self.sequences.stream_count().max(1) as f64;
+        frame.frames_per_second =
+            self.frames_since_sample as f64 / stream_count / started.elapsed().as_secs_f64();
         self.frames_since_sample = 0;
         self.sample_started = Some(Instant::now());
         frame.history.push_back(StatisticsSample {
@@ -383,6 +375,19 @@ impl ShellState {
                                 .send_event(UserEvent::BackgroundMessage(payload.to_string()));
                         }
                     }
+                    Some("layout") => {
+                        let Some(layouts) = message.get("layouts") else {
+                            return;
+                        };
+                        match serde_json::from_value::<Vec<SurfaceLayout>>(layouts.clone()) {
+                            Ok(layouts) => {
+                                let _ = foreground_proxy.send_event(UserEvent::Layout(layouts));
+                            }
+                            Err(error) => {
+                                eprintln!("snowglass: invalid WebView2 surface layout: {error}");
+                            }
+                        }
+                    }
                     _ => {}
                 }
             })
@@ -516,7 +521,7 @@ impl ShellState {
                     let Some(surface) = self.surfaces.get_mut(&connection) else {
                         continue;
                     };
-                    self.overlay.observe_frame(frame);
+                    self.overlay.observe_frame(connection, frame);
                     let (width, height) = rotated_extent(
                         frame.render_width.max(1),
                         frame.render_height.max(1),
@@ -530,6 +535,7 @@ impl ShellState {
                     Renderer::set_latest(&mut surface.compositor, connection, frame);
                 }
                 CaptureEvent::Disconnected(connection) => {
+                    self.overlay.sequences.remove(connection);
                     self.cancel_pointer_connection(connection);
                     if let Some(mut surface) = self.surfaces.remove(&connection) {
                         let _ = Renderer::disconnect_stream(&mut surface.compositor, connection);
