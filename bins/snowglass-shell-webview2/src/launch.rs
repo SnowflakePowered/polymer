@@ -1,17 +1,14 @@
+use crate::api::LaunchOptions;
 use snowglass_hook::config;
 use snowglass_platform_windows::{
     InjectionLibrary, TargetProcess, architecture_artifact_dir, executable_architecture,
 };
-use snowglass_renderer::cli::{HookBackend, ViewerOptions};
+use snowglass_renderer::cli::HookBackend;
 use std::{ffi::OsString, path::Path};
 
-pub fn launch(options: &ViewerOptions, session: &str) -> std::io::Result<TargetProcess> {
-    let command = options.target.first().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "a target command must follow `--`",
-        )
-    })?;
+pub fn launch(options: &LaunchOptions, session: &str) -> std::io::Result<TargetProcess> {
+    let target = options.target();
+    let command = &options.command;
     let artifact_root = std::env::current_exe()?
         .parent()
         .ok_or_else(|| std::io::Error::other("shell executable has no parent directory"))?
@@ -21,8 +18,8 @@ pub fn launch(options: &ViewerOptions, session: &str) -> std::io::Result<TargetP
         .map(|architecture| architecture_artifact_dir(&artifact_root, architecture))
         .unwrap_or_else(|| artifact_root.clone());
     let vulkan_manifest = options
-        .hooks
-        .contains(&HookBackend::Vulkan)
+        .hook
+        .contains(&crate::api::GraphicsHook::Vulkan)
         .then(|| {
             create_vulkan_layer_manifest(&artifact_dir.join("snowglass_hook_vulkan_layer.dll"))
         })
@@ -54,12 +51,18 @@ pub fn launch(options: &ViewerOptions, session: &str) -> std::io::Result<TargetP
         ));
     }
 
-    let libraries = hook_libraries(&options.hooks, options.isolate);
+    let hooks = options
+        .hook
+        .iter()
+        .copied()
+        .map(HookBackend::from)
+        .collect::<Vec<_>>();
+    let libraries = hook_libraries(&hooks, options.isolated);
     let mut process = TargetProcess::launch(
-        &options.target,
+        &target,
         &artifact_root,
         &environment,
-        options.isolate.then_some(session),
+        options.isolated.then_some(session),
         &libraries,
     )?;
     if let Some(manifest) = vulkan_manifest {
@@ -68,18 +71,18 @@ pub fn launch(options: &ViewerOptions, session: &str) -> std::io::Result<TargetP
     eprintln!(
         "snowglass: launched target process {} with {} graphics hook(s)",
         process.id(),
-        options.hooks.len()
+        hooks.len()
     );
     Ok(process)
 }
 
 fn hook_environment(
-    options: &ViewerOptions,
+    options: &LaunchOptions,
     session: &str,
     artifact_root: &Path,
 ) -> Vec<(OsString, OsString)> {
     let layouts = options
-        .gamepads
+        .gamepad_mapping
         .iter()
         .map(|gamepad| gamepad.layout.as_str())
         .collect::<Vec<_>>();
@@ -142,13 +145,7 @@ fn hook_environment(
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if let Some(path) = options.stone_db.as_deref() {
-        environment.push((
-            OsString::from(config::STONE_DATABASE),
-            path.as_os_str().to_owned(),
-        ));
-    }
-    if let Some(targets) = &options.track_render_targets {
+    if !options.surfaces.is_empty() {
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGET),
             OsString::from("1"),
@@ -156,16 +153,18 @@ fn hook_environment(
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGETS),
             OsString::from(
-                targets
+                options
+                    .surfaces
                     .iter()
                     .map(|target| target.index.to_string())
                     .collect::<Vec<_>>()
                     .join(","),
             ),
         ));
-        let patterns = targets
+        let patterns = options
+            .surfaces
             .iter()
-            .map(|target| target.surface_pattern.as_deref())
+            .map(|target| target.selector.as_deref())
             .collect::<Vec<_>>();
         if patterns.iter().any(Option::is_some) {
             environment.push((
@@ -176,15 +175,6 @@ fn hook_environment(
                 ),
             ));
         }
-        if options.graph_tracking {
-            environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
-        }
-    }
-    if options.force_keyed_mutex {
-        environment.push((
-            OsString::from(config::FORCE_KEYED_MUTEX),
-            OsString::from("1"),
-        ));
     }
     environment
 }

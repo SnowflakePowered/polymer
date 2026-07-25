@@ -1,4 +1,7 @@
 /target/
+/bins/snowglass-shell-webview2/frontend/node_modules/
+/bins/snowglass-shell-webview2/frontend/dist/
+/bins/snowglass-shell-webview2/frontend/*.tsbuildinfo
 *.pdb
 *.dll
 *.lib

@@ -241,6 +241,16 @@ impl D3d12Compositor {
         )
     }
 
+    pub fn new_for_composition_stream_with_webrtc(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+        connection: u64,
+    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
+        let compositor = Self::new_for_composition_stream(window, adapter, connection)?;
+        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
+        Ok((compositor, webrtc))
+    }
+
     fn with_consumer(
         window: &impl RenderWindow,
         consumer: D3d12ConsumerDevice,
@@ -827,6 +837,17 @@ impl D3d12Compositor {
             }
         }
         Ok(true)
+    }
+
+    pub fn draw_game_with_webrtc(
+        &mut self,
+        plan: &CompositingPlan,
+        webrtc: Option<&mut WebRtcCompositor>,
+    ) -> Result<bool, Box<dyn Error>> {
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |_| {});
+        let primitives = context.tessellate(output.shapes.clone(), output.pixels_per_point);
+        self.draw_with_webrtc(&output, &primitives, plan, webrtc)
     }
 
     fn draw_content(

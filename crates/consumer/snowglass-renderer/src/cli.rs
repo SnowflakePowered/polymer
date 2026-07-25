@@ -1,7 +1,7 @@
 //! Shared command-line contract for Snowglass renderer hosts.
 
 use clap::ValueEnum;
-use clap::{ArgAction, CommandFactory, FromArgMatches, Parser};
+use clap::{ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, Parser};
 use snowglass_input::provider::sdl3::DeviceSelector;
 use std::{collections::HashSet, error::Error, net::SocketAddr, path::PathBuf};
 
@@ -329,8 +329,20 @@ pub fn parse_target() -> Result<ViewerOptions, Box<dyn Error>> {
 /// Parses the current process arguments while allowing a renderer host to
 /// supply its own executable name in help and error output.
 pub fn parse_target_named(name: &'static str) -> Result<ViewerOptions, Box<dyn Error>> {
-    let matches = ViewerArguments::command().name(name).get_matches();
-    ViewerArguments::from_arg_matches(&matches)?.into_options()
+    let matches = viewer_command_named(name).get_matches();
+    viewer_options_from_matches(&matches)
+}
+
+/// Builds the shared viewer command so a renderer host can append
+/// host-specific arguments without duplicating the renderer CLI.
+pub fn viewer_command_named(name: &'static str) -> Command {
+    ViewerArguments::command().name(name)
+}
+
+/// Decodes shared viewer options from matches produced by
+/// [`viewer_command_named`], ignoring arguments added by a renderer host.
+pub fn viewer_options_from_matches(matches: &ArgMatches) -> Result<ViewerOptions, Box<dyn Error>> {
+    ViewerArguments::from_arg_matches(matches)?.into_options()
 }
 
 pub fn split_command_arguments(value: &str) -> Result<Vec<String>, String> {

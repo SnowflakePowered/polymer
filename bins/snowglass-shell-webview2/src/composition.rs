@@ -42,6 +42,25 @@ pub struct SurfaceLayout {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
+    pub z_index: i32,
+    #[serde(default = "default_pointer_events")]
+    pub pointer_events: bool,
+    #[serde(default)]
+    pub foreground_hit_region: Option<ForegroundHitRegion>,
+}
+
+const fn default_pointer_events() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForegroundHitRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 fn deserialize_connection<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -70,6 +89,8 @@ pub struct CompositionTree {
 }
 
 struct RenderTargetVisual {
+    index: u32,
+    z_index: i32,
     visual: IDCompositionVisual,
     scale: IDCompositionScaleTransform,
 }
@@ -127,6 +148,7 @@ impl CompositionTree {
     pub fn add_render_target(
         &mut self,
         connection: u64,
+        index: u32,
         content: &IUnknown,
     ) -> Result<(), windows::core::Error> {
         self.remove_render_target(connection)?;
@@ -137,11 +159,57 @@ impl CompositionTree {
             let scale = self.device.CreateScaleTransform()?;
             visual.SetContent(content)?;
             let background = &self.surfaces[&SurfaceId::BackgroundWebView];
-            self.root.AddVisual(&visual, true, background)?;
-            self.render_targets
-                .insert(connection, RenderTargetVisual { visual, scale });
+            let below = self
+                .render_targets
+                .values()
+                .filter(|target| target.index < index)
+                .max_by_key(|target| target.index)
+                .map(|target| &target.visual)
+                .unwrap_or(background);
+            self.root.AddVisual(&visual, true, below)?;
+            self.render_targets.insert(
+                connection,
+                RenderTargetVisual {
+                    index,
+                    z_index: index as i32,
+                    visual,
+                    scale,
+                },
+            );
             Ok(())
         }
+    }
+
+    pub fn set_render_target_z_index(
+        &mut self,
+        connection: u64,
+        z_index: i32,
+    ) -> windows::core::Result<()> {
+        let Some(target) = self.render_targets.get_mut(&connection) else {
+            return Ok(());
+        };
+        if target.z_index == z_index {
+            return Ok(());
+        }
+        target.z_index = z_index;
+        self.reorder_render_targets()
+    }
+
+    fn reorder_render_targets(&self) -> windows::core::Result<()> {
+        let mut targets = self.render_targets.values().collect::<Vec<_>>();
+        targets.sort_by_key(|target| (target.z_index, target.index));
+        unsafe {
+            for target in &targets {
+                self.root.RemoveVisual(&target.visual)?;
+            }
+            let background = &self.surfaces[&SurfaceId::BackgroundWebView];
+            let mut below = background;
+            for target in targets {
+                self.root.AddVisual(&target.visual, true, below)?;
+                below = &target.visual;
+            }
+        }
+        Ok(())
     }
 
     pub fn remove_render_target(&mut self, connection: u64) -> windows::core::Result<()> {
@@ -259,12 +327,21 @@ mod tests {
                 "x": 10,
                 "y": 20,
                 "width": 854,
-                "height": 480
+                "height": 480,
+                "foregroundHitRegion": {
+                    "x": 400,
+                    "y": 300,
+                    "width": 716,
+                    "height": 380
+                }
             }"#,
         )
         .unwrap();
 
         assert_eq!(layout.connection, 6_000_765_028_494_475_265);
+        let hit_region = layout.foreground_hit_region.unwrap();
+        assert_eq!((hit_region.x, hit_region.y), (400, 300));
+        assert_eq!((hit_region.width, hit_region.height), (716, 380));
     }
 
     #[test]

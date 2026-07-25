@@ -1,11 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod api;
+mod cli;
 mod composition;
 mod host;
 mod input;
 mod launch;
 
-use composition::{CompositionTree, SurfaceLayout, SurfaceWindow, WebViewLayer};
+use api::{LaunchOptions, parse_input_binding};
+use cli::ShellOptions;
+use composition::{
+    CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, WebViewLayer,
+};
 use host::IGameViewHost;
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -17,14 +23,15 @@ use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{TargetProcess, performance_counter, performance_frequency};
 use snowglass_protocol::{PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
-    CompositingPlan, D3d12Compositor, Extent, Renderer, SurfacePlacement,
+    CompositingPlan, D3d12Compositor, Extent, Renderer, SurfacePlacement, WebRtcCompositor,
     capture::{Capture, CaptureEvent, ConsumerPreference},
-    cli::{ViewerApi, ViewerOptions, parse_target_named},
+    cli::ViewerApi,
     debug::{
         DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
         InputSlotDiagnostics, StatisticsSample, draw_debug_overlay,
     },
     input::PointerRoutingState,
+    webrtc,
 };
 use std::{
     collections::HashMap,
@@ -67,6 +74,17 @@ use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 #[derive(Debug)]
 enum UserEvent {
     WakeCapture,
+    FrontendReady,
+    Launch {
+        instance_id: String,
+        options: LaunchOptions,
+    },
+    CloseInstance(String),
+    GameMessage {
+        instance_id: String,
+        name: String,
+        args: serde_json::Value,
+    },
     Layout(Vec<SurfaceLayout>),
     InputPriority(InputPriority),
     BackgroundMessage(String),
@@ -98,7 +116,7 @@ const DOM_MOUSE_BUTTONS: u32 =
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WebRenderTarget {
-    connection: u64,
+    connection: String,
     index: u32,
     width: u32,
     height: u32,
@@ -115,9 +133,18 @@ struct CapturedSurface {
     viewport_x: i32,
     viewport_y: i32,
     quarter_turns: u8,
+    pointer_events: bool,
+    z_index: i32,
     needs_redraw: bool,
     resize_due: Option<Instant>,
     compositor: D3d12Compositor,
+    webrtc: Option<WebRtcCompositor>,
+}
+
+struct ActiveGame {
+    instance_id: String,
+    options: LaunchOptions,
+    webrtc: Option<webrtc::Publisher>,
 }
 
 struct EguiOverlay {
@@ -301,8 +328,11 @@ struct ShellState {
     capture_wake_pending: Arc<AtomicBool>,
     capture_dirty: Arc<AtomicBool>,
     capture_work_pending: bool,
+    session: String,
     surfaces: HashMap<u64, CapturedSurface>,
     target: Option<TargetProcess>,
+    active_game: Option<ActiveGame>,
+    pending_cli_launch: Option<LaunchOptions>,
     _input: InputTransport,
     input_provider: Option<Sdl3Provider>,
     pointer_routing: PointerRoutingState,
@@ -310,27 +340,31 @@ struct ShellState {
     input_priority: InputPriority,
     cursor: POINT,
     dom_mouse_keys: u32,
+    foreground_hit_regions: Vec<ForegroundHitRegion>,
+    foreground_mouse_capture: bool,
     last_input_state: String,
     ui_controls: HashMap<String, i32>,
     next_input_publish: Instant,
-    options: ViewerOptions,
-    skipped_surfaces: u32,
 }
 
 impl ShellState {
     fn new(
         event_loop: &ActiveEventLoop,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-        options: ViewerOptions,
+        options: ShellOptions,
     ) -> Result<Self, Box<dyn Error>> {
+        let ShellOptions {
+            viewer: options,
+            foreground_url,
+            background_url,
+        } = options;
         if options.api != ViewerApi::D3d12 {
             return Err(
                 "snowglass-shell-webview2 requires `--api d3d12` for DirectComposition".into(),
             );
         }
-        if options.webrtc.is_some() {
-            return Err("WebRTC publishing is not implemented by the WebView2 shell yet".into());
-        }
+        let pending_cli_launch =
+            LaunchOptions::from_cli(&options).map_err(std::io::Error::other)?;
 
         let window = event_loop.create_window(
             Window::default_attributes()
@@ -339,17 +373,21 @@ impl ShellState {
         )?;
         let composition = CompositionTree::new(&window)?;
         let background_visual = composition.webview_visual(WebViewLayer::Background)?;
+        let background_script = include_str!(concat!(env!("OUT_DIR"), "/background.js"));
         let background_webview = WebViewBuilder::new()
             .with_transparent(true)
             .with_focused(false)
+            .with_initialization_script(background_script)
             .with_composition_visual_target(background_visual)
             .with_composition_input_enabled(false)
             .build(&window)?;
         let foreground_visual = composition.webview_visual(WebViewLayer::Foreground)?;
         let foreground_proxy = proxy.clone();
+        let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
         let foreground_webview = WebViewBuilder::new()
             .with_focused(false)
             .with_transparent(true)
+            .with_initialization_script(gameview_script)
             .with_environment(background_webview.environment())
             .with_composition_visual_target(foreground_visual)
             .with_composition_input_enabled(false)
@@ -358,6 +396,9 @@ impl ShellState {
                     return;
                 };
                 match message.get("type").and_then(serde_json::Value::as_str) {
+                    Some("frontendReady") => {
+                        let _ = foreground_proxy.send_event(UserEvent::FrontendReady);
+                    }
                     Some("setInputPriority") => {
                         let priority =
                             if message.get("priority").and_then(serde_json::Value::as_str)
@@ -401,17 +442,8 @@ impl ShellState {
         // the call; WebView2 retains its own reference to the host object.
         unsafe { core.AddHostObjectToScript(w!("snowglass"), &mut host_variant)? };
 
-        let layout_css = serde_json::to_string(options.layout_css.as_deref().unwrap_or(""))?;
-        let shell_html = |layer: &str| {
-            include_str!("shell.html")
-                .replace("__LAYOUT_CSS_JSON__", &layout_css)
-                .replace(
-                    "__WEBVIEW_LAYER_JSON__",
-                    &serde_json::to_string(layer).expect("a static layer name serializes"),
-                )
-        };
-        background_webview.load_html(include_str!("back.html"))?;
-        foreground_webview.load_html(&shell_html("foreground"))?;
+        background_webview.load_url(&background_url)?;
+        foreground_webview.load_url(&foreground_url)?;
 
         let mut overlay = EguiOverlay::new(&window)?;
         composition.set_egui_overlay_content(&overlay.content()?)?;
@@ -419,25 +451,7 @@ impl ShellState {
 
         let session = unique_session();
         let input = InputTransport::bind(&session)?;
-        let input_provider = (!options.gamepads.is_empty())
-            .then(|| {
-                input.start_provider(Sdl3ProviderConfig {
-                    slots: options
-                        .gamepads
-                        .iter()
-                        .map(|gamepad| SlotConfig {
-                            selector: gamepad.selector.clone(),
-                            layout_id: gamepad.layout.clone(),
-                            force_mouse: gamepad.force_mouse,
-                        })
-                        .collect(),
-                    stone_database: options.stone_db.clone(),
-                    gamecontroller_database: options.gamecontroller_db.clone(),
-                    keyboard_mapping_directory: None,
-                })
-            })
-            .transpose()
-            .map_err(std::io::Error::other)?;
+        let input_provider = None;
         let control_sender = input.control_sender();
         let wake_proxy = proxy.clone();
         let capture_wake_pending = Arc::new(AtomicBool::new(false));
@@ -452,7 +466,7 @@ impl ShellState {
                 capture_wake_pending_for_thread.store(false, Ordering::Release);
             }
         })?;
-        let target = Some(launch::launch(&options, &session)?);
+        let target = None;
 
         composition.commit()?;
         Ok(Self {
@@ -466,21 +480,233 @@ impl ShellState {
             capture_wake_pending,
             capture_dirty,
             capture_work_pending: false,
+            session,
             surfaces: HashMap::new(),
             target,
+            active_game: None,
+            pending_cli_launch,
             _input: input,
             input_provider,
             pointer_routing: PointerRoutingState::new(Instant::now()),
             direct_input: DirectInputForwarder::new(control_sender),
-            input_priority: InputPriority::Game,
+            input_priority: InputPriority::Foreground,
             cursor: POINT::default(),
             dom_mouse_keys: 0,
+            foreground_hit_regions: Vec::new(),
+            foreground_mouse_capture: false,
             last_input_state: String::new(),
             ui_controls: HashMap::new(),
             next_input_publish: Instant::now(),
-            options,
-            skipped_surfaces: 0,
         })
+    }
+
+    fn deliver_cli_launch(&mut self) {
+        let Some(options) = self.pending_cli_launch.take() else {
+            return;
+        };
+        let Ok(options) = serde_json::to_string(&options) else {
+            return;
+        };
+        let script = format!(
+            "window.postMessage({{ type: 'snowglass-cli-launch', options: {options} }}, '*');"
+        );
+        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+            eprintln!("snowglass: delivering CLI launch to frontend failed: {error}");
+            self.pending_cli_launch = serde_json::from_str(&options).ok();
+        }
+    }
+
+    fn launch_game(&mut self, instance_id: String, options: LaunchOptions) {
+        if self.active_game.is_some() {
+            self.emit_instance_event(
+                &instance_id,
+                "error",
+                &serde_json::json!({ "message": "another GameView instance is active" }),
+            );
+            self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+            return;
+        }
+        self.emit_instance_event(&instance_id, "start", &serde_json::Value::Null);
+        let provider = if options.gamepad_mapping.is_empty() {
+            Ok(None)
+        } else {
+            let mut mappings = options.gamepad_mapping.iter().collect::<Vec<_>>();
+            mappings.sort_by_key(|mapping| mapping.slot);
+            self._input
+                .start_provider(Sdl3ProviderConfig {
+                    slots: mappings
+                        .into_iter()
+                        .map(|mapping| SlotConfig {
+                            selector: mapping.selector(),
+                            layout_id: mapping.layout.clone(),
+                            force_mouse: mapping.mouse,
+                        })
+                        .collect(),
+                    stone_database: None,
+                    gamecontroller_database: None,
+                    keyboard_mapping_directory: None,
+                })
+                .map(Some)
+        };
+        let provider = match provider {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.emit_instance_event(
+                    &instance_id,
+                    "error",
+                    &serde_json::json!({ "message": error }),
+                );
+                self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                return;
+            }
+        };
+        if let Some(provider) = &provider {
+            for mapping in &options.gamepad_mapping {
+                for (target, source) in &mapping.mapping {
+                    match parse_input_binding(source) {
+                        Ok(binding) => provider.set_binding(mapping.slot, target.clone(), binding),
+                        Err(error) => {
+                            self.emit_instance_event(
+                                &instance_id,
+                                "error",
+                                &serde_json::json!({ "message": error }),
+                            );
+                            self.emit_instance_event(
+                                &instance_id,
+                                "closed",
+                                &serde_json::Value::Null,
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        let webrtc_targets = options
+            .surfaces
+            .iter()
+            .filter(|surface| surface.webrtc)
+            .map(|surface| surface.index)
+            .collect::<Vec<_>>();
+        let publisher = if webrtc_targets.is_empty() {
+            None
+        } else {
+            let bind = match options.webrtc_bind() {
+                Ok(bind) => bind,
+                Err(error) => {
+                    self.emit_instance_event(
+                        &instance_id,
+                        "error",
+                        &serde_json::json!({ "message": error }),
+                    );
+                    self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                    return;
+                }
+            };
+            match webrtc::Publisher::start(bind, &webrtc_targets) {
+                Ok(publisher) => Some(publisher),
+                Err(error) => {
+                    self.emit_instance_event(
+                        &instance_id,
+                        "error",
+                        &serde_json::json!({ "message": error.to_string() }),
+                    );
+                    self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                    return;
+                }
+            }
+        };
+        match launch::launch(&options, &self.session) {
+            Ok(target) => {
+                self.target = Some(target);
+                self.input_provider = provider;
+                self.active_game = Some(ActiveGame {
+                    instance_id: instance_id.clone(),
+                    options,
+                    webrtc: publisher,
+                });
+                self.set_input_priority(InputPriority::Game);
+                self.emit_instance_event(&instance_id, "ready", &serde_json::Value::Null);
+            }
+            Err(error) => {
+                self.emit_instance_event(
+                    &instance_id,
+                    "error",
+                    &serde_json::json!({ "message": error.to_string() }),
+                );
+                self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+            }
+        }
+    }
+
+    fn close_game(&mut self, instance_id: &str) {
+        if self
+            .active_game
+            .as_ref()
+            .is_none_or(|active| active.instance_id != instance_id)
+        {
+            return;
+        }
+        if let Some(target) = self.target.take() {
+            let _ = target.terminate_tree_and_wait();
+        }
+        self.finish_active_game();
+    }
+
+    fn finish_active_game(&mut self) {
+        let Some(active) = self.active_game.take() else {
+            return;
+        };
+        let connections = self.surfaces.keys().copied().collect::<Vec<_>>();
+        for connection in connections {
+            self.cancel_pointer_connection(connection);
+            if let Some(publisher) = &active.webrtc {
+                publisher.remove_stream(connection);
+            }
+            if let Some(mut surface) = self.surfaces.remove(&connection) {
+                self.capture.revoke(connection);
+                let _ = Renderer::disconnect_stream(&mut surface.compositor, connection);
+                let _ = self.composition.remove_render_target(connection);
+                self.capture.forget(connection);
+            }
+        }
+        let _ = self.composition.commit();
+        self.input_provider = None;
+        self.set_input_priority(InputPriority::Foreground);
+        self.foreground_hit_regions.clear();
+        self.publish_targets_for(&active.instance_id);
+        self.emit_instance_event(&active.instance_id, "closed", &serde_json::Value::Null);
+    }
+
+    fn game_message(&self, instance_id: &str, name: &str, args: serde_json::Value) {
+        if self
+            .active_game
+            .as_ref()
+            .is_some_and(|active| active.instance_id == instance_id)
+        {
+            self.emit_instance_event(
+                instance_id,
+                "message",
+                &serde_json::json!({ "name": name, "args": args }),
+            );
+        }
+    }
+
+    fn emit_instance_event(
+        &self,
+        instance_id: &str,
+        event_name: &str,
+        payload: &serde_json::Value,
+    ) {
+        let event = serde_json::json!({
+            "instanceId": instance_id,
+            "eventName": event_name,
+            "payload": payload,
+        });
+        let script = format!("window.__snowglassGameViewNativeEvent?.({event});");
+        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+            eprintln!("snowglass: publishing GameView event failed: {error}");
+        }
     }
 
     fn process_capture(&mut self) {
@@ -497,12 +723,11 @@ impl ShellState {
             processed += 1;
             match event {
                 CaptureEvent::Stream(connection, stream, accepted) => {
-                    if self.skipped_surfaces < self.options.skip_surfaces {
-                        self.skipped_surfaces += 1;
+                    let Some(active) = &self.active_game else {
                         let _ = accepted.send(false);
                         continue;
-                    }
-                    if self.surfaces.len() >= self.options.surfaces as usize {
+                    };
+                    if self.surfaces.len() >= active.options.surfaces.len() {
                         let _ = accepted.send(false);
                         continue;
                     }
@@ -537,6 +762,13 @@ impl ShellState {
                 CaptureEvent::Disconnected(connection) => {
                     self.overlay.sequences.remove(connection);
                     self.cancel_pointer_connection(connection);
+                    if let Some(publisher) = self
+                        .active_game
+                        .as_ref()
+                        .and_then(|active| active.webrtc.as_ref())
+                    {
+                        publisher.remove_stream(connection);
+                    }
                     if let Some(mut surface) = self.surfaces.remove(&connection) {
                         let _ = Renderer::disconnect_stream(&mut surface.compositor, connection);
                         if let Err(error) = self.composition.remove_render_target(connection) {
@@ -550,8 +782,13 @@ impl ShellState {
                 }
             }
         }
-        if changed {
-            self.publish_targets();
+        if changed
+            && let Some(instance_id) = self
+                .active_game
+                .as_ref()
+                .map(|active| active.instance_id.clone())
+        {
+            self.publish_targets_for(&instance_id);
         }
         self.draw_pending_surfaces();
         self.capture_wake_pending.store(false, Ordering::Release);
@@ -566,6 +803,10 @@ impl ShellState {
     }
 
     fn draw_pending_surfaces(&mut self) {
+        let publisher = self
+            .active_game
+            .as_ref()
+            .and_then(|active| active.webrtc.as_ref());
         for (&connection, surface) in &mut self.surfaces {
             if (!Renderer::has_pending_frame(&surface.compositor) && !surface.needs_redraw)
                 || !surface.compositor.try_begin_frame()
@@ -573,10 +814,18 @@ impl ShellState {
                 continue;
             }
             let plan = surface.composition_plan();
-            match Renderer::draw_game(&mut surface.compositor, &plan) {
+            match surface
+                .compositor
+                .draw_game_with_webrtc(&plan, surface.webrtc.as_mut())
+            {
                 Ok(_) => surface.needs_redraw = false,
                 Err(error) => {
                     eprintln!("snowglass: rendering stream {connection} failed: {error}");
+                }
+            }
+            if let (Some(publisher), Some(video)) = (publisher, surface.webrtc.as_mut()) {
+                for frame in video.take_frames() {
+                    publisher.publish(frame);
                 }
             }
         }
@@ -593,20 +842,44 @@ impl ShellState {
         connection: u64,
         stream: &snowglass_ipc::StreamReady,
     ) -> Result<(), Box<dyn Error>> {
-        let (index, quarter_turns) = self
+        let (index, quarter_turns, publish_webrtc) = self
             .next_target_configuration()
             .ok_or("the shell already has a surface for every tracked render target")?;
         let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
         let render_window = SurfaceWindow::new(&self.window, width.max(1), height.max(1));
-        let mut compositor = D3d12Compositor::new_for_composition_stream(
-            &render_window,
-            stream.adapter_luid,
-            connection,
-        )?;
+        let (mut compositor, mut video) = if publish_webrtc {
+            let (compositor, video) = D3d12Compositor::new_for_composition_stream_with_webrtc(
+                &render_window,
+                stream.adapter_luid,
+                connection,
+            )?;
+            (compositor, Some(video))
+        } else {
+            (
+                D3d12Compositor::new_for_composition_stream(
+                    &render_window,
+                    stream.adapter_luid,
+                    connection,
+                )?,
+                None,
+            )
+        };
         Renderer::import_stream(&mut compositor, connection, stream, quarter_turns)?;
+        if let Some(video) = &mut video {
+            video.import_d3d12_stream(connection)?;
+        }
         let content = compositor.composition_content()?;
-        self.composition.add_render_target(connection, &content)?;
+        self.composition
+            .add_render_target(connection, index, &content)?;
         self.composition.commit()?;
+        if publish_webrtc
+            && let Some(publisher) = self
+                .active_game
+                .as_ref()
+                .and_then(|active| active.webrtc.as_ref())
+        {
+            publisher.add_stream(connection, index);
+        }
         self.overlay.set_backend(format!("{:?}", stream.image_kind));
         self.surfaces.insert(
             connection,
@@ -621,31 +894,45 @@ impl ShellState {
                 viewport_x: 0,
                 viewport_y: 0,
                 quarter_turns,
+                pointer_events: true,
+                z_index: index as i32,
                 needs_redraw: false,
                 resize_due: None,
                 compositor,
+                webrtc: video,
             },
         );
         Ok(())
     }
 
-    fn next_target_configuration(&self) -> Option<(u32, u8)> {
+    fn next_target_configuration(&self) -> Option<(u32, u8, bool)> {
         let in_use = |index| self.surfaces.values().any(|surface| surface.index == index);
-        if let Some(targets) = &self.options.track_render_targets {
-            targets
-                .iter()
-                .find(|target| !in_use(target.index))
-                .map(|target| (target.index, target.quarter_turns))
-        } else {
-            (0..self.options.surfaces)
-                .find(|&index| !in_use(index))
-                .map(|index| (index, 0))
-        }
+        self.active_game
+            .as_ref()?
+            .options
+            .surfaces
+            .iter()
+            .find(|target| !in_use(target.index))
+            .map(|target| (target.index, target.quarter_turns(), target.webrtc))
     }
 
     fn apply_layout(&mut self, layouts: Vec<SurfaceLayout>) {
+        self.foreground_hit_regions = layouts
+            .iter()
+            .filter_map(|layout| layout.foreground_hit_region)
+            .filter(|region| region.width != 0 && region.height != 0)
+            .collect();
         let resize_due = Instant::now() + SURFACE_RESIZE_SETTLE;
         for item in layouts {
+            if let Err(error) = self
+                .composition
+                .set_render_target_z_index(item.connection, item.z_index)
+            {
+                eprintln!(
+                    "snowglass: reordering composition surface {} failed: {error}",
+                    item.connection
+                );
+            }
             let Some(surface) = self.surfaces.get_mut(&item.connection) else {
                 continue;
             };
@@ -653,6 +940,8 @@ impl ShellState {
             surface.viewport_y = item.y;
             surface.viewport_width = item.width;
             surface.viewport_height = item.height;
+            surface.pointer_events = item.pointer_events;
+            surface.z_index = item.z_index;
             if let Err(error) = self.composition.apply_layout(
                 item,
                 surface.swapchain_width,
@@ -672,6 +961,19 @@ impl ShellState {
         if let Err(error) = self.composition.commit() {
             eprintln!("snowglass: committing WebView2 layout failed: {error}");
         }
+    }
+
+    fn foreground_hit_test(&self) -> bool {
+        let x = i64::from(self.cursor.x);
+        let y = i64::from(self.cursor.y);
+        self.foreground_hit_regions.iter().any(|region| {
+            let left = i64::from(region.x);
+            let top = i64::from(region.y);
+            x >= left
+                && x < left + i64::from(region.width)
+                && y >= top
+                && y < top + i64::from(region.height)
+        })
     }
 
     fn resize_pending_surfaces(&mut self, now: Instant) -> Option<Instant> {
@@ -703,6 +1005,9 @@ impl ShellState {
                             y: surface.viewport_y,
                             width: surface.viewport_width,
                             height: surface.viewport_height,
+                            z_index: surface.z_index,
+                            pointer_events: surface.pointer_events,
+                            foreground_hit_region: None,
                         },
                         (surface.swapchain_width, surface.swapchain_height),
                     ));
@@ -734,7 +1039,13 @@ impl ShellState {
     fn pointer_presentation(&self) -> (snowglass_renderer::Presentation, CompositingPlan) {
         let mut received = Vec::new();
         let mut placements = Vec::new();
-        for (&connection, surface) in &self.surfaces {
+        let mut surfaces = self
+            .surfaces
+            .iter()
+            .filter(|(_, surface)| surface.pointer_events)
+            .collect::<Vec<_>>();
+        surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.z_index));
+        for (&connection, surface) in surfaces {
             for mut received_surface in Renderer::received_surfaces(&surface.compositor) {
                 received_surface.frame.presentation_transform = shell_pointer_transform(
                     received_surface.frame.presentation_transform,
@@ -805,6 +1116,11 @@ impl ShellState {
     }
 
     fn set_input_priority(&mut self, priority: InputPriority) {
+        let priority = if priority == InputPriority::Game && self.active_game.is_none() {
+            InputPriority::Foreground
+        } else {
+            priority
+        };
         if self.input_priority == priority {
             return;
         }
@@ -922,12 +1238,13 @@ impl ShellState {
             dispatch_p95_ms: dispatch.p95_ms,
             dispatch_p99_ms: dispatch.p99_ms,
             slots: self
-                .options
-                .gamepads
+                .active_game
+                .as_ref()
+                .map(|active| active.options.gamepad_mapping.as_slice())
+                .unwrap_or_default()
                 .iter()
-                .enumerate()
-                .map(|(provider_slot, config)| {
-                    let Some(state) = states.get(provider_slot).and_then(Option::as_ref) else {
+                .map(|config| {
+                    let Some(state) = states.get(config.slot).and_then(Option::as_ref) else {
                         return InputSlotDiagnostics {
                             slot: config.slot,
                             layout: config.layout.clone(),
@@ -1072,34 +1389,29 @@ impl ShellState {
         let _ = self.foreground_webview.evaluate_script(&script);
     }
 
-    fn publish_targets(&self) {
+    fn publish_targets_for(&self, instance_id: &str) {
         let mut targets = self
             .surfaces
             .iter()
             .map(|(&connection, surface)| WebRenderTarget {
-                connection,
+                connection: connection.to_string(),
                 index: surface.index,
                 width: surface.preferred_width,
                 height: surface.preferred_height,
             })
             .collect::<Vec<_>>();
         targets.sort_by_key(|target| target.index);
-        let Ok(json) = serde_json::to_string(&targets) else {
+        let Ok(payload) = serde_json::to_value(&targets) else {
             return;
         };
-        let script = format!("window.__snowglassSetTargets?.({json});");
-        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
-            eprintln!(
-                "snowglass: publishing render targets to foreground WebView2 failed: {error}"
-            );
-        }
+        self.emit_instance_event(instance_id, "surfacesChanged", &payload);
     }
 
-    fn target_finished(&mut self) -> bool {
+    fn poll_target(&mut self) {
         let Some(target) = self.target.as_mut() else {
-            return true;
+            return;
         };
-        match target.try_wait() {
+        let finished = match target.try_wait() {
             Ok(Some(())) => {
                 self.target = None;
                 true
@@ -1107,8 +1419,12 @@ impl ShellState {
             Ok(None) => false,
             Err(error) => {
                 eprintln!("snowglass: target process wait failed: {error}");
+                self.target = None;
                 true
             }
+        };
+        if finished {
+            self.finish_active_game();
         }
     }
 }
@@ -1127,7 +1443,7 @@ impl Drop for ShellState {
 
 struct ShellApplication {
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    options: Option<ViewerOptions>,
+    options: Option<ShellOptions>,
     state: Option<ShellState>,
     error: Option<Box<dyn Error>>,
 }
@@ -1158,6 +1474,17 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             // Capture is drained from `about_to_wait`, after this cycle's
             // native window messages have been delivered.
             UserEvent::WakeCapture => state.capture_work_pending = true,
+            UserEvent::FrontendReady => state.deliver_cli_launch(),
+            UserEvent::Launch {
+                instance_id,
+                options,
+            } => state.launch_game(instance_id, options),
+            UserEvent::CloseInstance(instance_id) => state.close_game(&instance_id),
+            UserEvent::GameMessage {
+                instance_id,
+                name,
+                args,
+            } => state.game_message(&instance_id, &name, args),
             UserEvent::Layout(layouts) => state.apply_layout(layouts),
             UserEvent::InputPriority(priority) => state.set_input_priority(priority),
             UserEvent::BackgroundMessage(message) => state.forward_background_message(&message),
@@ -1208,6 +1535,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     provider.set_pointer(None);
                 }
                 state.dom_mouse_keys &= DOM_MK_SHIFT | DOM_MK_CONTROL;
+                state.foreground_mouse_capture = false;
                 state.direct_input.reset_mouse_position();
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -1240,13 +1568,19 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             WindowEvent::CursorMoved { position, .. }
                 if !consumed
                     || state.pointer_routing.captured_connection().is_some()
-                    || state.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0 =>
+                    || state.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
+                    || state.foreground_mouse_capture =>
             {
                 state.cursor = POINT {
                     x: position.x.round() as i32,
                     y: position.y.round() as i32,
                 };
-                if state.input_priority == InputPriority::Foreground {
+                if state.input_priority == InputPriority::Foreground
+                    || state.foreground_mouse_capture
+                    || (!consumed
+                        && state.pointer_routing.captured_connection().is_none()
+                        && state.foreground_hit_test())
+                {
                     state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
                     return;
                 }
@@ -1259,10 +1593,20 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 ..
             } if !consumed
                 || state.pointer_routing.captured_connection().is_some()
-                || state.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0 =>
+                || state.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
+                || state.foreground_mouse_capture =>
             {
                 if let Some(button) = mouse_button(button) {
-                    if state.input_priority == InputPriority::Foreground {
+                    let foreground_hit = !consumed
+                        && state.pointer_routing.captured_connection().is_none()
+                        && state.foreground_hit_test();
+                    if state.input_priority == InputPriority::Foreground
+                        || state.foreground_mouse_capture
+                        || foreground_hit
+                    {
+                        if button_state == ElementState::Pressed && foreground_hit {
+                            state.foreground_mouse_capture = true;
+                        }
                         let kind = match (button, button_state) {
                             (1, ElementState::Pressed) => WM_LBUTTONDOWN,
                             (1, ElementState::Released) => WM_LBUTTONUP,
@@ -1282,6 +1626,11 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                                 0
                             },
                         );
+                        if button_state == ElementState::Released
+                            && state.dom_mouse_keys & DOM_MOUSE_BUTTONS == 0
+                        {
+                            state.foreground_mouse_capture = false;
+                        }
                         return;
                     }
                     state.route_pointer(
@@ -1303,7 +1652,11 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     }
                     MouseScrollDelta::PixelDelta(delta) => (delta.x as i32, delta.y as i32),
                 };
-                if state.input_priority == InputPriority::Foreground {
+                if state.input_priority == InputPriority::Foreground
+                    || state.foreground_mouse_capture
+                    || (state.pointer_routing.captured_connection().is_none()
+                        && state.foreground_hit_test())
+                {
                     if horizontal != 0 {
                         state.route_foreground_mouse(WM_MOUSEHWHEEL, None, horizontal as u32);
                     }
@@ -1334,10 +1687,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 deadline = deadline.min(resize_due);
             }
             state.publish_input_state();
-            if state.target_finished() {
-                event_loop.exit();
-                return;
-            }
+            state.poll_target();
             if state.overlay.repaint_due(now) {
                 state.window.request_redraw();
             }
@@ -1415,6 +1765,28 @@ fn control_event(key: &str, value: i32) -> serde_json::Value {
     })
 }
 
+const fn rotated_extent(width: u32, height: u32, quarter_turns: u8) -> (u32, u32) {
+    if quarter_turns % 2 == 1 {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let options = cli::parse()?;
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    let proxy = event_loop.create_proxy();
+    let mut application = ShellApplication {
+        proxy,
+        options: Some(options),
+        state: None,
+        error: None,
+    };
+    event_loop.run_app(&mut application)?;
+    application.error.map_or(Ok(()), Err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1432,26 +1804,4 @@ mod tests {
         let transform = PresentationTransform::axis_aligned(10, 20, 300, 200);
         assert_eq!(shell_pointer_transform(transform, 854, 480), transform);
     }
-}
-
-const fn rotated_extent(width: u32, height: u32, quarter_turns: u8) -> (u32, u32) {
-    if quarter_turns % 2 == 1 {
-        (height, width)
-    } else {
-        (width, height)
-    }
-}
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let options = parse_target_named("snowglass-shell-webview2")?;
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
-    let proxy = event_loop.create_proxy();
-    let mut application = ShellApplication {
-        proxy,
-        options: Some(options),
-        state: None,
-        error: None,
-    };
-    event_loop.run_app(&mut application)?;
-    application.error.map_or(Ok(()), Err)
 }
