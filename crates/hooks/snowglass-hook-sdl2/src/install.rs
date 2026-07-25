@@ -127,7 +127,7 @@ snowglass_hook::function_table_hook! {
 
         #[slot = DYNAPI_GAME_CONTROLLER_GET_AXIS]
         #[prefix(|next| flush_gamepads(
-            &next.state,
+            next.state,
         ))]
         unsafe extern "C" fn game_controller_get_axis_dispatch(
             controller: *mut c_void,
@@ -136,7 +136,7 @@ snowglass_hook::function_table_hook! {
 
         #[slot = DYNAPI_GAME_CONTROLLER_GET_BUTTON]
         #[prefix(|next| flush_gamepads(
-            &next.state,
+            next.state,
         ))]
         unsafe extern "C" fn game_controller_get_button_dispatch(
             controller: *mut c_void,
@@ -145,13 +145,19 @@ snowglass_hook::function_table_hook! {
 
         #[slot = DYNAPI_JOYSTICK_UPDATE]
         #[prefix(|next| flush_gamepads(
-            &next.state,
+            next.state,
         ))]
         unsafe extern "C" fn joystick_update_dispatch();
     }
 }
 
 #[unsafe(no_mangle)]
+/// Installs the SDL2 virtual-gamepad hooks into the current process.
+///
+/// # Safety
+///
+/// The caller must invoke this only after the DLL has been loaded into a
+/// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn SnowglassInstallSdl2Hook() -> i32 {
     preload_dynamic_api();
     discover_loaded_module();

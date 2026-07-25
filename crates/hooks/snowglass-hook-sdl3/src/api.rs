@@ -16,11 +16,18 @@ type OpenFn = unsafe extern "C" fn(JoystickId) -> *mut c_void;
 type SetAxisFn = unsafe extern "C" fn(*mut c_void, i32, i16) -> bool;
 type SetButtonFn = unsafe extern "C" fn(*mut c_void, i32, bool) -> bool;
 type SendSensorFn = unsafe extern "C" fn(*mut c_void, i32, u64, *const f32, i32) -> bool;
+type UpdateJoysticksFn = unsafe extern "C" fn();
 type MallocFn = unsafe extern "C" fn(usize) -> *mut c_void;
 
 const SDL_JOYSTICK_TYPE_GAMEPAD: u16 = 1;
 const SDL_SENSOR_ACCEL: i32 = 1;
 const SDL_SENSOR_GYRO: i32 = 2;
+const SDL_GAMEPAD_AXIS_COUNT: usize = 6;
+
+fn dense_mask_index(mask: u32, semantic_index: usize) -> Option<i32> {
+    let bit = 1u32.checked_shl(semantic_index as u32)?;
+    (mask & bit != 0).then(|| (mask & (bit - 1)).count_ones() as i32)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -101,6 +108,7 @@ pub(crate) struct Api {
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
     send_sensor: SendSensorFn,
+    update_joysticks: UpdateJoysticksFn,
     ids: Vec<JoystickId>,
     handles: Vec<usize>,
     layouts: Vec<SdlOutputLayout>,
@@ -145,6 +153,7 @@ impl Api {
             set_axis: unsafe { symbol(module, c"SDL_SetJoystickVirtualAxis")? },
             set_button: unsafe { symbol(module, c"SDL_SetJoystickVirtualButton")? },
             send_sensor: unsafe { symbol(module, c"SDL_SendJoystickVirtualSensorData")? },
+            update_joysticks: unsafe { symbol(module, c"SDL_UpdateJoysticks")? },
             ids: vec![0; layouts.len()],
             handles: vec![0; layouts.len()],
             layouts,
@@ -214,20 +223,30 @@ impl SdlBackend for Api {
         }
         let state = effective_state(update);
         let layout = self.layouts[update.slot.index()];
-        for (axis, value) in state.sdl_axes().into_iter().enumerate() {
-            if layout.axis_mask & (1 << axis) == 0 {
+        let axes = state.sdl_axes();
+        for (semantic_axis, value) in axes[..SDL_GAMEPAD_AXIS_COUNT].iter().copied().enumerate() {
+            let Some(raw_axis) = dense_mask_index(layout.axis_mask, semantic_axis) else {
                 continue;
-            }
-            if !unsafe { (self.set_axis)(handle, axis as i32, value) } {
+            };
+            if !unsafe { (self.set_axis)(handle, raw_axis, value) } {
                 return Err(BackendError("SDL3 rejected a virtual axis update"));
             }
         }
-        for button in 0..GAMEPAD_BUTTON_COUNT {
-            if layout.button_mask & (1 << button) == 0 {
-                continue;
+        // The two Snowglass pointer axes are deliberately raw joystick axes,
+        // outside SDL's six standard gamepad axes, so they retain indices 6/7.
+        for (raw_axis, value) in axes[SDL_GAMEPAD_AXIS_COUNT..].iter().copied().enumerate() {
+            if !unsafe {
+                (self.set_axis)(handle, (SDL_GAMEPAD_AXIS_COUNT + raw_axis) as i32, value)
+            } {
+                return Err(BackendError("SDL3 rejected a virtual axis update"));
             }
-            let pressed = (state.buttons >> button) & 1 != 0;
-            if !unsafe { (self.set_button)(handle, button as i32, pressed) } {
+        }
+        for semantic_button in 0..GAMEPAD_BUTTON_COUNT {
+            let Some(raw_button) = dense_mask_index(layout.button_mask, semantic_button) else {
+                continue;
+            };
+            let pressed = (state.buttons >> semantic_button) & 1 != 0;
+            if !unsafe { (self.set_button)(handle, raw_button, pressed) } {
                 return Err(BackendError("SDL3 rejected a virtual button update"));
             }
         }
@@ -243,6 +262,9 @@ impl SdlBackend for Api {
                 return Err(BackendError("SDL3 rejected a virtual sensor update"));
             }
         }
+        // SDL virtual setters stage their values. Commit them before the
+        // consumer's current getter call continues.
+        unsafe { (self.update_joysticks)() };
         Ok(())
     }
 }
@@ -251,4 +273,30 @@ pub(crate) unsafe fn symbol<T: Copy>(module: HMODULE, name: &std::ffi::CStr) -> 
     let address = unsafe { GetProcAddress(module, name.as_ptr().cast()) }?;
     debug_assert_eq!(mem::size_of::<T>(), mem::size_of_val(&address));
     Some(unsafe { mem::transmute_copy(&address) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dense_mask_index;
+
+    #[test]
+    fn sparse_gamepad_masks_use_dense_virtual_button_indices() {
+        let wii_u_drc_mask =
+            (0..=6).fold(0u32, |mask, button| mask | (1 << button)) | (0b11_1111 << 9);
+
+        assert_eq!(dense_mask_index(wii_u_drc_mask, 0), Some(0));
+        assert_eq!(dense_mask_index(wii_u_drc_mask, 6), Some(6));
+        assert_eq!(dense_mask_index(wii_u_drc_mask, 7), None);
+        assert_eq!(dense_mask_index(wii_u_drc_mask, 12), Some(10));
+        assert_eq!(dense_mask_index(wii_u_drc_mask, 14), Some(12));
+    }
+
+    #[test]
+    fn sparse_standard_axis_masks_are_dense_but_pointer_axes_are_not() {
+        let axis_mask = (1 << 0) | (1 << 2) | (1 << 5);
+
+        assert_eq!(dense_mask_index(axis_mask, 0), Some(0));
+        assert_eq!(dense_mask_index(axis_mask, 2), Some(1));
+        assert_eq!(dense_mask_index(axis_mask, 5), Some(2));
+    }
 }

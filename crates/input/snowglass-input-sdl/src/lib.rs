@@ -157,11 +157,8 @@ impl Runtime {
         let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
             return;
         };
-        loop {
-            match input.drain(|update| self.apply(update)) {
-                Ok(_) => std::thread::yield_now(),
-                Err(_) => break,
-            }
+        while input.drain(|update| self.apply(update)).is_ok() {
+            std::thread::yield_now();
         }
     }
 }

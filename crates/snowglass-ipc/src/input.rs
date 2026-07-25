@@ -136,4 +136,53 @@ mod tests {
         server.join().unwrap();
         assert_eq!(received, Some(expected));
     }
+
+    #[test]
+    fn broadcasts_followup_state_to_multiple_subscribers() {
+        const SUBSCRIBERS: usize = 3;
+        let name = format!("snowglass-input-broadcast-test-{}", std::process::id());
+        let listener = LocalSocketListener::bind(&name).unwrap();
+        let active = GamepadUpdate {
+            slot: GamepadSlot::new(0).unwrap(),
+            sequence: 2,
+            connected: true,
+            state: GamepadState {
+                buttons: 1,
+                ..GamepadState::default()
+            },
+        };
+        let server = std::thread::spawn(move || {
+            let mut publisher = InputPublisher::new().unwrap();
+            for _ in 0..SUBSCRIBERS {
+                let mut control = listener.accept().unwrap();
+                publisher.accept(&mut control).unwrap();
+            }
+            publisher.publish(active).unwrap();
+        });
+        let subscribers = (0..SUBSCRIBERS)
+            .map(|_| {
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    let mut subscriber = InputSubscriber::connect(&name).unwrap();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+                    let mut received = None;
+                    while received != Some(active) && std::time::Instant::now() < deadline {
+                        subscriber
+                            .drain(|update| {
+                                if update == active {
+                                    received = Some(update);
+                                }
+                            })
+                            .unwrap();
+                        std::thread::yield_now();
+                    }
+                    received
+                })
+            })
+            .collect::<Vec<_>>();
+        server.join().unwrap();
+        for subscriber in subscribers {
+            assert_eq!(subscriber.join().unwrap(), Some(active));
+        }
+    }
 }
