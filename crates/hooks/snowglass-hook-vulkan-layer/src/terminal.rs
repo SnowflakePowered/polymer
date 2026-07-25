@@ -337,6 +337,8 @@ pub(crate) unsafe fn create_device(
         created,
         crate::layer::DeviceDispatchTable {
             next_gdpa: bootstrap.next_gdpa,
+            physical_device,
+            physical_state,
             capture,
             capture_state,
             tracking: Arc::default(),
@@ -381,18 +383,141 @@ pub(crate) unsafe fn create_swapchain(
     }) else {
         return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
     };
-    let mut modified = (!create_info.is_null()).then(|| unsafe { *create_info });
+    let mut capture_info = (!create_info.is_null()).then(|| unsafe { *create_info });
     if crate::layer::capture_enabled(device)
-        && let Some(info) = modified.as_mut()
+        && let Some(info) = capture_info.as_mut()
     {
         info.image_usage |= vk::ImageUsageFlags::TRANSFER_SRC;
     }
-    unsafe {
+    let pacing_override = capture_info
+        .as_ref()
+        .and_then(|info| unsafe { unthrottled_swapchain_info(device, info) });
+    let forwarded = pacing_override.as_ref().or(capture_info.as_ref());
+    let result = unsafe {
         next(
             device,
-            modified.as_ref().map_or(create_info, |info| info),
+            forwarded.map_or(create_info, |info| info),
             allocator,
             swapchain,
         )
+    };
+    if result != vk::Result::SUCCESS && pacing_override.is_some() {
+        crate::layer::layer_log(format!(
+            "snowglass: unthrottled vkCreateSwapchainKHR failed with {result}"
+        ));
+    }
+    result
+}
+
+unsafe fn unthrottled_swapchain_info<'a>(
+    device: vk::Device,
+    original: &vk::SwapchainCreateInfoKHR<'a>,
+) -> Option<vk::SwapchainCreateInfoKHR<'a>> {
+    if !snowglass_hook::config::present_unthrottled() {
+        return None;
+    }
+    let (physical_device, state) = crate::layer::device_physical_state(device)?;
+    let get_present_modes: vk::PFN_vkGetPhysicalDeviceSurfacePresentModesKHR = unsafe {
+        instance_proc(
+            state.next_gipa,
+            state.instance,
+            c"vkGetPhysicalDeviceSurfacePresentModesKHR",
+        )
+    }?;
+    let mut count = 0;
+    let result = unsafe {
+        get_present_modes(
+            physical_device,
+            original.surface,
+            &mut count,
+            ptr::null_mut(),
+        )
+    };
+    if result != vk::Result::SUCCESS || count == 0 {
+        crate::layer::layer_log(format!(
+            "snowglass: present-mode query failed with {result}; preserving {}",
+            original.present_mode.as_raw()
+        ));
+        return None;
+    }
+    let mut modes = vec![vk::PresentModeKHR::FIFO; count as usize];
+    let result = unsafe {
+        get_present_modes(
+            physical_device,
+            original.surface,
+            &mut count,
+            modes.as_mut_ptr(),
+        )
+    };
+    if !matches!(result, vk::Result::SUCCESS | vk::Result::INCOMPLETE) {
+        crate::layer::layer_log(format!(
+            "snowglass: present-mode enumeration failed with {result}; preserving {}",
+            original.present_mode.as_raw()
+        ));
+        return None;
+    }
+    modes.truncate(count as usize);
+    let present_mode = preferred_unthrottled_present_mode(&modes);
+    let Some(present_mode) = present_mode else {
+        crate::layer::layer_log(format!(
+            "snowglass: neither IMMEDIATE nor MAILBOX is supported; preserving {}",
+            original.present_mode.as_raw()
+        ));
+        return None;
+    };
+
+    let mut modified = *original;
+    modified.present_mode = present_mode;
+    let get_capabilities: Option<vk::PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR> = unsafe {
+        instance_proc(
+            state.next_gipa,
+            state.instance,
+            c"vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
+        )
+    };
+    if let Some(get_capabilities) = get_capabilities {
+        let mut capabilities = vk::SurfaceCapabilitiesKHR::default();
+        if unsafe { get_capabilities(physical_device, original.surface, &mut capabilities) }
+            == vk::Result::SUCCESS
+        {
+            modified.min_image_count = capabilities.min_image_count;
+        }
+    }
+    crate::layer::layer_log(format!(
+        "snowglass: overriding Vulkan present mode {}->{}, image count {}->{}",
+        original.present_mode.as_raw(),
+        present_mode.as_raw(),
+        original.min_image_count,
+        modified.min_image_count
+    ));
+    Some(modified)
+}
+
+fn preferred_unthrottled_present_mode(modes: &[vk::PresentModeKHR]) -> Option<vk::PresentModeKHR> {
+    [vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::MAILBOX]
+        .into_iter()
+        .find(|candidate| modes.contains(candidate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn immediate_is_preferred_then_mailbox() {
+        assert!(
+            preferred_unthrottled_present_mode(&[
+                vk::PresentModeKHR::FIFO,
+                vk::PresentModeKHR::MAILBOX,
+                vk::PresentModeKHR::IMMEDIATE,
+            ]) == Some(vk::PresentModeKHR::IMMEDIATE)
+        );
+        assert!(
+            preferred_unthrottled_present_mode(&[
+                vk::PresentModeKHR::FIFO,
+                vk::PresentModeKHR::MAILBOX,
+            ]) == Some(vk::PresentModeKHR::MAILBOX)
+        );
+        assert!(preferred_unthrottled_present_mode(&[vk::PresentModeKHR::FIFO]).is_none());
     }
 }

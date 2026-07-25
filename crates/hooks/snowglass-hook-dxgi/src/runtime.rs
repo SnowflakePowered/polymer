@@ -1,9 +1,18 @@
 use crate::vtable::{IDXGIFactoryHook, IDXGISwapchainHook, SwapchainContext, SwapchainHook};
 use std::{
     ffi::c_void,
-    sync::{Arc, LazyLock, RwLock},
+    sync::{
+        Arc, LazyLock, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
-use windows::{Win32::Graphics::Dxgi::IDXGIFactory, core::GUID};
+use windows::{
+    Win32::Graphics::Dxgi::{
+        DXGI_PRESENT_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, IDXGIDevice1, IDXGIFactory,
+        IDXGISwapChain,
+    },
+    core::{BOOL, GUID, IUnknown, Interface},
+};
 
 /// Per-swapchain capture state owned by a backend.
 ///
@@ -192,7 +201,8 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     if swapchain.is_null() {
         return false;
     }
-    let context = SwapchainContext::default();
+    let allow_tearing = unsafe { swapchain_allows_tearing(swapchain) };
+    let context = SwapchainContext::new(allow_tearing);
     let installed =
         unsafe { IDXGISwapchainHook::install_all_interfaces(swapchain, context.clone()) };
     let owner = CLAIMS
@@ -207,7 +217,49 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     if let Some(owner) = owner {
         context.set_owner(Some(Arc::new(owner)));
     }
+    if snowglass_hook::config::present_unthrottled() {
+        unsafe { set_maximum_frame_latency(swapchain, creation_device) };
+    }
     installed
+}
+
+unsafe fn swapchain_allows_tearing(swapchain: *mut c_void) -> bool {
+    let Some(swapchain) = (unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }) else {
+        return false;
+    };
+    unsafe { swapchain.GetDesc() }
+        .is_ok_and(|desc| desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32 != 0)
+}
+
+unsafe fn swapchain_is_windowed(swapchain: *mut c_void) -> bool {
+    let Some(swapchain) = (unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }) else {
+        return false;
+    };
+    let mut fullscreen = BOOL(0);
+    unsafe { swapchain.GetFullscreenState(Some(&mut fullscreen), None) }.is_ok()
+        && !fullscreen.as_bool()
+}
+
+unsafe fn set_maximum_frame_latency(swapchain: *mut c_void, creation_device: *mut c_void) {
+    let from_creation = (!creation_device.is_null())
+        .then(|| unsafe { IUnknown::from_raw_borrowed(&creation_device) })
+        .flatten()
+        .and_then(|device| device.cast::<IDXGIDevice1>().ok());
+    let device = from_creation.or_else(|| {
+        let swapchain = unsafe { IDXGISwapChain::from_raw_borrowed(&swapchain) }?;
+        let device: windows::core::Result<IDXGIDevice1> = unsafe { swapchain.GetDevice() };
+        device.ok()
+    });
+    let Some(device) = device else {
+        crate::dxgi_log("snowglass: IDXGIDevice1 unavailable; frame-latency cap not applied");
+        return;
+    };
+    match unsafe { device.SetMaximumFrameLatency(1) } {
+        Ok(()) => crate::dxgi_log("snowglass: capped DXGI maximum frame latency at 1"),
+        Err(error) => crate::dxgi_log(format!(
+            "snowglass: IDXGIDevice1::SetMaximumFrameLatency(1) failed: {error}"
+        )),
+    }
 }
 
 fn set_swapchain_owner(swapchain: *mut c_void, owner: Option<Arc<SwapchainOwnerHandle>>) {
@@ -341,6 +393,98 @@ pub(crate) unsafe fn before_present(this: *mut c_void, owner: &Option<Arc<Swapch
     }
 }
 
+fn forwarded_present_arguments(
+    sync_interval: u32,
+    flags: u32,
+    unthrottled: bool,
+    allow_tearing: bool,
+) -> (u32, u32) {
+    if !unthrottled {
+        return (sync_interval, flags);
+    }
+    (
+        0,
+        if allow_tearing {
+            flags | DXGI_PRESENT_ALLOW_TEARING.0 as u32
+        } else {
+            flags
+        },
+    )
+}
+
+fn log_present_result(
+    entry_point: &str,
+    result: i32,
+    original_sync_interval: u32,
+    forwarded_sync_interval: u32,
+    forwarded_flags: u32,
+) {
+    if result == 0 {
+        return;
+    }
+    static NONZERO_RESULTS: AtomicU64 = AtomicU64::new(0);
+    let count = NONZERO_RESULTS.fetch_add(1, Ordering::Relaxed) + 1;
+    if count != 1 && !count.is_multiple_of(120) {
+        return;
+    }
+    let status = if result as u32 == 0x087a_0001 {
+        " (DXGI_STATUS_OCCLUDED)"
+    } else {
+        ""
+    };
+    crate::dxgi_log(format!(
+        "snowglass: {entry_point} returned {:#010x}{status} (count={count}, sync {}->{}, flags={:#x})",
+        result as u32, original_sync_interval, forwarded_sync_interval, forwarded_flags
+    ));
+}
+
+pub(crate) unsafe fn present(
+    this: *mut c_void,
+    sync_interval: u32,
+    flags: u32,
+    mut next: crate::vtable::PresentContext<'_>,
+) -> i32 {
+    unsafe { before_present(this, next.owner) };
+    let unthrottled = snowglass_hook::config::present_unthrottled();
+    let allow_tearing =
+        unthrottled && *next.allow_tearing && unsafe { swapchain_is_windowed(this) };
+    let (forwarded_sync, forwarded_flags) =
+        forwarded_present_arguments(sync_interval, flags, unthrottled, allow_tearing);
+    let result = snowglass_hook::next!(next, this, forwarded_sync, forwarded_flags);
+    log_present_result(
+        "Present",
+        result,
+        sync_interval,
+        forwarded_sync,
+        forwarded_flags,
+    );
+    result
+}
+
+pub(crate) unsafe fn present1(
+    this: *mut c_void,
+    sync_interval: u32,
+    flags: u32,
+    parameters: *const c_void,
+    mut next: crate::vtable::Present1Context<'_>,
+) -> i32 {
+    unsafe { before_present(this, next.owner) };
+    let unthrottled = snowglass_hook::config::present_unthrottled();
+    let allow_tearing =
+        unthrottled && *next.allow_tearing && unsafe { swapchain_is_windowed(this) };
+    let (forwarded_sync, forwarded_flags) =
+        forwarded_present_arguments(sync_interval, flags, unthrottled, allow_tearing);
+    let result = snowglass_hook::next!(next, this, forwarded_sync, forwarded_flags, parameters);
+    log_present_result(
+        "Present1",
+        result,
+        sync_interval,
+        forwarded_sync,
+        forwarded_flags,
+    );
+    result
+}
+
 pub(crate) unsafe fn resize_buffers(
     this: *mut c_void,
     buffer_count: u32,
@@ -351,12 +495,19 @@ pub(crate) unsafe fn resize_buffers(
     mut next: crate::vtable::ResizeBuffersContext<'_>,
 ) -> i32 {
     let owner = next.owner.clone();
+    let allow_tearing = next.allow_tearing.clone();
     if let Some(owner) = &owner {
         guarded(this, "before_resize", || unsafe {
             owner.before_resize(this)
         });
     }
     let result = snowglass_hook::next!(next, this, buffer_count, width, height, format, flags);
+    if result >= 0 {
+        allow_tearing.store(
+            flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32 != 0,
+            Ordering::Relaxed,
+        );
+    }
     if let Some(owner) = &owner {
         guarded(this, "after_resize", || unsafe {
             owner.after_resize(this, result)
@@ -376,5 +527,20 @@ pub(crate) unsafe fn swapchain_destroyed(this: *mut c_void, state: &dyn Swapchai
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             owner.destroyed(this)
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn present_arguments_only_change_for_the_opt_in() {
+        assert_eq!(forwarded_present_arguments(1, 4, false, true), (1, 4));
+        assert_eq!(forwarded_present_arguments(1, 4, true, false), (0, 4));
+        assert_eq!(
+            forwarded_present_arguments(1, 4, true, true),
+            (0, 4 | DXGI_PRESENT_ALLOW_TEARING.0 as u32)
+        );
     }
 }

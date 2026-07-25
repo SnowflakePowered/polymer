@@ -92,6 +92,8 @@ pub(crate) struct InstanceDispatchTable {
 #[derive(Clone)]
 pub(crate) struct DeviceDispatchTable {
     pub next_gdpa: vk::PFN_vkGetDeviceProcAddr,
+    pub physical_device: vk::PhysicalDevice,
+    pub physical_state: Option<PhysicalDeviceState>,
     pub capture: Option<Arc<CaptureDevice>>,
     pub capture_state: Arc<CaptureState>,
     pub tracking: Arc<Tracking>,
@@ -376,6 +378,16 @@ pub(crate) fn instance_physical_gpa(
 pub(crate) fn device_gdpa(device: vk::Device) -> Option<vk::PFN_vkGetDeviceProcAddr> {
     unsafe { dispatch_key(device) }
         .and_then(|key| hook_state().device.get(&key).map(|entry| entry.next_gdpa))
+}
+
+pub(crate) fn device_physical_state(
+    device: vk::Device,
+) -> Option<(vk::PhysicalDevice, PhysicalDeviceState)> {
+    unsafe { dispatch_key(device) }.and_then(|key| {
+        let state = hook_state();
+        let dispatch = state.device.get(&key)?;
+        Some((dispatch.physical_device, dispatch.physical_state.clone()?))
+    })
 }
 
 pub(crate) fn queue_dispatch_data(

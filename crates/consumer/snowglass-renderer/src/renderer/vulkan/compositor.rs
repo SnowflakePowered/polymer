@@ -343,12 +343,7 @@ impl VulkanCompositor {
                     ),
                 }
             };
-            let image_count =
-                (capabilities.min_image_count + 1).min(if capabilities.max_image_count == 0 {
-                    u32::MAX
-                } else {
-                    capabilities.max_image_count
-                });
+            let image_count = capabilities.min_image_count;
             let swapchain = swapchain_loader.create_swapchain(
                 &vk::SwapchainCreateInfoKHR::default()
                     .surface(surface)
@@ -774,12 +769,7 @@ impl VulkanCompositor {
             if extent.width == 0 || extent.height == 0 {
                 return Ok(false);
             }
-            let image_count =
-                (capabilities.min_image_count + 1).min(if capabilities.max_image_count == 0 {
-                    u32::MAX
-                } else {
-                    capabilities.max_image_count
-                });
+            let image_count = capabilities.min_image_count;
             let replacement = self.swapchain_loader.create_swapchain(
                 &vk::SwapchainCreateInfoKHR::default()
                     .surface(self.surface)

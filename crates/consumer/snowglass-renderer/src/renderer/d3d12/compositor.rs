@@ -254,11 +254,7 @@ impl D3d12Compositor {
         // drained before resources referenced by a submitted command list are replaced.
         unsafe {
             let is_composition = matches!(target, SwapchainTarget::Composition { .. });
-            let swapchain_flags = if is_composition {
-                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
-            } else {
-                DXGI_SWAP_CHAIN_FLAG(0)
-            };
+            let swapchain_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             let description = DXGI_SWAP_CHAIN_DESC1 {
                 Width: extent.0,
                 Height: extent.1,
@@ -304,17 +300,13 @@ impl D3d12Compositor {
                     .CreateSwapChainForComposition(consumer.queue(), &description, None)?,
             };
             let swapchain: IDXGISwapChain3 = swapchain1.cast()?;
-            let frame_latency_waitable = if is_composition {
-                let swapchain2: IDXGISwapChain2 = swapchain.cast()?;
-                swapchain2.SetMaximumFrameLatency(1)?;
-                let handle = swapchain2.GetFrameLatencyWaitableObject();
-                if handle.is_invalid() {
-                    return Err("DXGI did not create a frame-latency waitable object".into());
-                }
-                Some(handle)
-            } else {
-                None
-            };
+            let swapchain2: IDXGISwapChain2 = swapchain.cast()?;
+            swapchain2.SetMaximumFrameLatency(1)?;
+            let handle = swapchain2.GetFrameLatencyWaitableObject();
+            if handle.is_invalid() {
+                return Err("DXGI did not create a frame-latency waitable object".into());
+            }
+            let frame_latency_waitable = Some(handle);
 
             let rtv_heap = consumer
                 .device()
@@ -365,6 +357,9 @@ impl D3d12Compositor {
                 mode,
                 swapchain,
                 swapchain_flags,
+                // DirectComposition is synchronized by DWM. Blocking each
+                // composition swapchain independently would miss vblanks when
+                // a shell presents multiple visuals in one event-loop turn.
                 present_interval: u32::from(!is_composition),
                 frame_latency_waitable,
                 frame_permit: false,
@@ -412,8 +407,8 @@ impl D3d12Compositor {
     }
 
     /// Returns whether this compositor can begin another frame without
-    /// waiting for DXGI presentation capacity. HWND swapchains are always
-    /// ready; composition swapchains use their frame-latency waitable object.
+    /// waiting for DXGI presentation capacity. All receiver swapchains use a
+    /// one-frame latency waitable object so the display clock owns pacing.
     pub fn try_begin_frame(&mut self) -> bool {
         if self.frame_permit || self.frame_latency_waitable.is_none() {
             return true;

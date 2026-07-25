@@ -7,6 +7,12 @@
 use crate::layer::*;
 use ash::vk;
 use snowglass_hook::HookChain;
+use std::cell::RefCell;
+
+thread_local! {
+    static SUBMITTED_COMMAND_BUFFERS: RefCell<Vec<vk::CommandBuffer>> =
+        const { RefCell::new(Vec::new()) };
+}
 pub(crate) fn create_win32_surface(
     instance: vk::Instance,
     create_info: *const vk::Win32SurfaceCreateInfoKHR<'_>,
@@ -99,30 +105,35 @@ pub(crate) fn queue_submit(
     result: vk::Result,
     context: &crate::hooks::QueueSubmitContext,
 ) {
+    if !snowglass_hook::config::tracking_enabled() {
+        return;
+    }
     let Some(queue_state) = ({ hook_state().queue.get(&queue).map(|entry| entry.clone()) }) else {
         return;
     };
     if result != vk::Result::SUCCESS || submit_count == 0 || submits.is_null() {
         return;
     }
-    let mut command_buffers = Vec::new();
-    for submit in unsafe { std::slice::from_raw_parts(submits, submit_count as usize) } {
-        if submit.command_buffer_count == 0 || submit.p_command_buffers.is_null() {
-            continue;
+    SUBMITTED_COMMAND_BUFFERS.with_borrow_mut(|command_buffers| {
+        command_buffers.clear();
+        for submit in unsafe { std::slice::from_raw_parts(submits, submit_count as usize) } {
+            if submit.command_buffer_count == 0 || submit.p_command_buffers.is_null() {
+                continue;
+            }
+            command_buffers.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(
+                    submit.p_command_buffers,
+                    submit.command_buffer_count as usize,
+                )
+            });
         }
-        command_buffers.extend_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                submit.p_command_buffers,
-                submit.command_buffer_count as usize,
-            )
-        });
-    }
-    context.common.queue_capture(queue).tracked_submission(
-        &context.common.queue_tracking(queue),
-        queue,
-        queue_state.queue_family_index,
-        &command_buffers,
-    );
+        context.common.queue_capture(queue).tracked_submission(
+            &context.common.queue_tracking(queue),
+            queue,
+            queue_state.queue_family_index,
+            command_buffers,
+        );
+    });
 }
 
 pub(crate) unsafe fn handle_queue_present(

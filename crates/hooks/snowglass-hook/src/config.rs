@@ -1,7 +1,11 @@
 //! Environment-backed configuration shared by hook and producer crates.
 
 use regex::Regex;
-use std::{ffi::OsString, path::PathBuf, sync::LazyLock};
+use std::{
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+    sync::LazyLock,
+};
 
 pub const SESSION: &str = "SNOWGLASS_SESSION";
 pub const LAYER_LOG_FILE: &str = "SNOWGLASS_LOG_FILE";
@@ -23,6 +27,10 @@ pub const TRACK_RENDER_TARGET_SURFACE_PATTERNS: &str =
     "SNOWGLASS_TRACK_RENDER_TARGET_SURFACE_PATTERNS";
 pub const GRAPH_TRACKING: &str = "SNOWGLASS_GRAPH_TRACKING";
 pub const FORCE_KEYED_MUTEX: &str = "SNOWGLASS_FORCE_KEYED_MUTEX";
+/// Removal of application-requested display pacing. This is enabled by default;
+/// set the variable to `0`, `false`, `off`, or `no` for targets that require
+/// their native DXGI/Vulkan present behavior.
+pub const PRESENT_UNTHROTTLED: &str = "SNOWGLASS_PRESENT_UNTHROTTLED";
 
 pub fn session() -> Result<String, std::env::VarError> {
     std::env::var(SESSION)
@@ -161,12 +169,30 @@ pub fn force_keyed_mutex() -> bool {
     is_set(FORCE_KEYED_MUTEX)
 }
 
+pub fn present_unthrottled() -> bool {
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| enabled_by_default(PRESENT_UNTHROTTLED));
+    *ENABLED
+}
+
 fn path(variable: &str) -> Option<PathBuf> {
     std::env::var_os(variable).map(PathBuf::from)
 }
 
 fn is_set(variable: &str) -> bool {
     std::env::var_os(variable).is_some()
+}
+
+fn enabled_by_default(variable: &str) -> bool {
+    enabled_by_default_value(std::env::var_os(variable).as_deref())
+}
+
+fn enabled_by_default_value(value: Option<&OsStr>) -> bool {
+    value.is_none_or(|value| {
+        !matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
+    })
 }
 
 fn parse_render_target_indices(value: OsString) -> Option<Vec<usize>> {
@@ -237,6 +263,16 @@ mod tests {
         );
         assert_eq!(parse_render_target_indices(OsString::from("")), None);
         assert_eq!(parse_render_target_indices(OsString::from("0,nope")), None);
+    }
+
+    #[test]
+    fn default_enabled_values_support_an_explicit_opt_out() {
+        assert!(enabled_by_default_value(None));
+        assert!(enabled_by_default_value(Some(OsStr::new("1"))));
+        assert!(enabled_by_default_value(Some(OsStr::new("yes"))));
+        for value in ["0", "false", "OFF", " no "] {
+            assert!(!enabled_by_default_value(Some(OsStr::new(value))));
+        }
     }
 
     #[test]
