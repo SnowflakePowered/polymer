@@ -101,6 +101,15 @@ impl ExportImageRing {
         if desc.slots == 0 || desc.extent.width == 0 || desc.extent.height == 0 {
             return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
         }
+   
+        let desc = ExportImageRingDesc {
+            format: match desc.format {
+                vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_UNORM,
+                vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_UNORM,
+                format => format,
+            },
+            ..desc
+        };
 
         let d3d12_device = (desc.handle_mode == ExternalHandleMode::D3d12)
             .then(|| crate::d3d12_interop::create_device(adapter_luid))

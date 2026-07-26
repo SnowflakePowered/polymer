@@ -15,8 +15,7 @@ use windows::Win32::{
         },
         Dxgi::{
             Common::{
-                DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
-                DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+                DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
                 DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
             },
             CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4,
@@ -119,11 +118,28 @@ pub(crate) fn create_fence(device: &ID3D12Device) -> Result<SharedFence, vk::Res
 pub(crate) fn dxgi_format(format: vk::Format) -> Option<DXGI_FORMAT> {
     Some(match format {
         vk::Format::R8G8B8A8_UNORM => DXGI_FORMAT_R8G8B8A8_UNORM,
-        vk::Format::R8G8B8A8_SRGB => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        vk::Format::R8G8B8A8_SRGB => DXGI_FORMAT_R8G8B8A8_UNORM,
         vk::Format::B8G8R8A8_UNORM => DXGI_FORMAT_B8G8R8A8_UNORM,
-        vk::Format::B8G8R8A8_SRGB => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+        vk::Format::B8G8R8A8_SRGB => DXGI_FORMAT_B8G8R8A8_UNORM,
         vk::Format::A2B10G10R10_UNORM_PACK32 => DXGI_FORMAT_R10G10B10A2_UNORM,
         vk::Format::R16G16B16A16_SFLOAT => DXGI_FORMAT_R16G16B16A16_FLOAT,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srgb_vulkan_formats_create_unorm_d3d12_resources() {
+        assert_eq!(
+            dxgi_format(vk::Format::R8G8B8A8_SRGB),
+            Some(DXGI_FORMAT_R8G8B8A8_UNORM)
+        );
+        assert_eq!(
+            dxgi_format(vk::Format::B8G8R8A8_SRGB),
+            Some(DXGI_FORMAT_B8G8R8A8_UNORM)
+        );
+    }
 }
