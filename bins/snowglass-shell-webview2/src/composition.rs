@@ -33,7 +33,7 @@ pub enum WebViewLayer {
     Foreground,
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceLayout {
     #[serde(deserialize_with = "deserialize_connection")]
@@ -48,6 +48,8 @@ pub struct SurfaceLayout {
     pub pointer_events: bool,
     #[serde(default)]
     pub foreground_hit_region: Option<ForegroundHitRegion>,
+    #[serde(default)]
+    pub foreground_hit_regions: Vec<ForegroundHitRegion>,
 }
 
 const fn default_pointer_events() -> bool {
@@ -226,7 +228,7 @@ impl CompositionTree {
 
     pub fn apply_layout(
         &self,
-        layout: SurfaceLayout,
+        layout: &SurfaceLayout,
         content_width: u32,
         content_height: u32,
     ) -> windows::core::Result<()> {
@@ -333,7 +335,18 @@ mod tests {
                     "y": 300,
                     "width": 716,
                     "height": 380
-                }
+                },
+                "foregroundHitRegions": [{
+                    "x": 10,
+                    "y": 20,
+                    "width": 100,
+                    "height": 40
+                }, {
+                    "x": 10,
+                    "y": 200,
+                    "width": 100,
+                    "height": 40
+                }]
             }"#,
         )
         .unwrap();
@@ -342,6 +355,14 @@ mod tests {
         let hit_region = layout.foreground_hit_region.unwrap();
         assert_eq!((hit_region.x, hit_region.y), (400, 300));
         assert_eq!((hit_region.width, hit_region.height), (716, 380));
+        assert_eq!(layout.foreground_hit_regions.len(), 2);
+        assert_eq!(
+            (
+                layout.foreground_hit_regions[1].x,
+                layout.foreground_hit_regions[1].y
+            ),
+            (10, 200)
+        );
     }
 
     #[test]

@@ -4596,6 +4596,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-hook-webview2"
+version = "0.1.0"
+dependencies = [
+ "snowglass-hook",
+ "snowglass-platform-windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "snowglass-hook-win32"
 version = "0.1.0"
 dependencies = [
@@ -4799,6 +4808,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snowglass-hook",
+ "snowglass-hook-webview2",
  "snowglass-input",
  "snowglass-input-dinput",
  "snowglass-ipc",

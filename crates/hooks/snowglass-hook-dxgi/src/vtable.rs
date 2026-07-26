@@ -4,21 +4,11 @@ use std::ffi::c_void;
 use windows::{
     Win32::Graphics::Dxgi::{
         IDXGIFactory, IDXGIFactory1, IDXGIFactory2, IDXGIFactory3, IDXGIFactory4, IDXGIFactory5,
-        IDXGIFactory6, IDXGIFactory7, IDXGISwapChain, IDXGISwapChain1, IDXGISwapChain2,
-        IDXGISwapChain3, IDXGISwapChain4,
+        IDXGIFactory6, IDXGIFactory7, IDXGIFactoryMedia, IDXGISwapChain, IDXGISwapChain1,
+        IDXGISwapChain2, IDXGISwapChain3, IDXGISwapChain4,
     },
     core::IUnknown,
 };
-
-#[cfg(test)]
-pub(crate) type PresentFn = unsafe extern "system" fn(*mut c_void, u32, u32) -> i32;
-#[cfg(test)]
-pub(crate) type ResizeBuffersFn =
-    unsafe extern "system" fn(*mut c_void, u32, u32, u32, u32, u32) -> i32;
-#[cfg(test)]
-pub(crate) type ReleaseFn = unsafe extern "system" fn(*mut c_void) -> u32;
-#[cfg(test)]
-pub(crate) type Present1Fn = unsafe extern "system" fn(*mut c_void, u32, u32, *const c_void) -> i32;
 
 snowglass_hook::vtable! {
     [
@@ -38,6 +28,9 @@ snowglass_hook::vtable! {
         IDXGIFactory6,
         IDXGIFactory7,
     ],
+    // Not part of the `IDXGIFactory` chain: it is queried off a factory and
+    // carries its own vtable, so it needs a hierarchy of its own.
+    [IDXGIFactoryMedia],
 }
 
 snowglass_hook::com_vtable! {
@@ -48,6 +41,12 @@ snowglass_hook::com_vtable! {
     /// Overlays every factory interface generation on one allocation, mirroring
     /// [`IDXGISwapchainVtable`].
     pub(crate) union IDXGIFactoryVtable for IDXGIFactory7;
+}
+
+snowglass_hook::com_vtable! {
+    /// `IDXGIFactoryMedia` is reached by querying a factory rather than by
+    /// deriving from one, so its swapchain creation needs a separate vtable.
+    pub(crate) union IDXGIFactoryMediaVtable for IDXGIFactoryMedia;
 }
 
 pub(crate) struct SwapchainContext {
@@ -187,5 +186,26 @@ snowglass_hook::impl_com_hook! {
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
         #[postfix(crate::runtime::factory_created_swapchain(device, swapchain, result))]
         unsafe extern "system" fn factory_create_swapchain_for_composition(this: *mut c_void, device: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32;
+    }
+}
+
+// Chromium, and anything else presenting through DirectComposition surface
+// handles, creates its swapchain through `IDXGIFactoryMedia` rather than any of
+// the `IDXGIFactory2` entry points. Without this hook the swapchain is never
+// seen and such a process appears to present nothing at all.
+snowglass_hook::impl_com_hook! {
+    pub(crate) trait FactoryMediaHook;
+    impl FactoryMediaHook for IDXGIFactoryMediaHook {
+        #![vtable = IDXGIFactoryMediaVtable]
+        #[interfaces] {
+            IDXGIFactoryMedia,
+        }
+        #[release]
+        unsafe extern "system" fn factory_media_release(this: *mut c_void) -> u32;
+
+        #[base = IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle]
+        #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
+        #[postfix(crate::runtime::factory_created_swapchain(device, swapchain, result))]
+        unsafe extern "system" fn factory_media_create_swapchain_for_composition_surface_handle(this: *mut c_void, device: *mut c_void, surface: *mut c_void, desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32;
     }
 }

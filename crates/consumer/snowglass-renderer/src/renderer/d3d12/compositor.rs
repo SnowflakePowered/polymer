@@ -241,6 +241,21 @@ impl D3d12Compositor {
         )
     }
 
+    /// Creates one adapter-specific composition swapchain that composites every
+    /// imported stream. A single visual gives the display one plane to promote
+    /// instead of asking it to promote one per stream.
+    pub fn new_for_shared_composition(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new(adapter)?,
+            SwapchainTarget::Composition { transparent: false },
+            SwapchainMode::Shared,
+        )
+    }
+
     pub fn new_for_composition_stream_with_webrtc(
         window: &impl RenderWindow,
         adapter: AdapterLuid,
@@ -858,10 +873,19 @@ impl D3d12Compositor {
         unsafe {
             self.command_list.SetPipelineState(&self.content_pipeline);
         }
-        let draws = self
-            .surfaces
+        // Painter order follows the plan, not the order streams happened to be
+        // imported in, so a shell that stacks surfaces gets the z-order it
+        // asked for.
+        let draws = plan
+            .placements()
             .iter()
-            .filter(|surface| surface.display_frame.is_some())
+            .filter_map(|placement| {
+                let surface = self.surfaces.iter().find(|surface| {
+                    surface.connection == placement.connection
+                        && surface.surface_id == placement.surface_id
+                })?;
+                surface.display_frame.is_some().then_some(surface)
+            })
             .filter_map(|surface| {
                 let rect = plan.rectangle(surface.connection, surface.surface_id)?;
                 let frame = surface.display_frame.expect("filtered display frame");

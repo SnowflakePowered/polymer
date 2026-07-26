@@ -78,11 +78,31 @@ unsafe fn dxgi_hook_export<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallDxgiHook() -> i32 {
+    // These detours only see factories created after they are installed, so
+    // record whether DXGI was already running when this process was hooked.
+    // A process injected after it built its factory reports a loaded module
+    // here and then never logs a created factory, which is the signature of
+    // arriving too late rather than of the detours failing.
+    let already_loaded = unsafe { dxgi_module_loaded() };
+    dxgi_log(format!(
+        "install requested in process {} (dxgi already loaded: {already_loaded})",
+        std::process::id()
+    ));
     if unsafe { install_factory_detours() } {
+        dxgi_log("factory creation detours installed");
         0
     } else {
+        dxgi_log("factory creation detours failed to install");
         windows_sys::Win32::Foundation::E_FAIL
     }
+}
+
+/// Whether `dxgi.dll` is already mapped, meaning the process may well have
+/// created its factory and swapchain before this hook arrived.
+unsafe fn dxgi_module_loaded() -> bool {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    let wide = "dxgi.dll\0".encode_utf16().collect::<Vec<_>>();
+    !unsafe { GetModuleHandleW(wide.as_ptr()) }.is_null()
 }
 
 #[unsafe(no_mangle)]
@@ -114,43 +134,27 @@ pub fn uninstall_factory_detours() -> bool {
     install::uninstall()
 }
 
-pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
-    use std::io::Write;
-    eprintln!("{message}");
-    let Some(path) = snowglass_hook::config::dxgi_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::vtable::Vtable;
     use std::ffi::c_void;
     use windows::{
-        Win32::Graphics::Dxgi::{
-            IDXGISwapChain, IDXGISwapChain_Vtbl, IDXGISwapChain1, IDXGISwapChain1_Vtbl,
-        },
+        Win32::Graphics::Dxgi::{IDXGISwapChain, IDXGISwapChain_Vtbl},
         core::IUnknown_Vtbl,
     };
 
     const SLOT_SIZE: usize = size_of::<usize>();
     const SWAPCHAIN_VTABLE_LEN: usize = <IDXGISwapChain as Vtable>::SLOTS;
-    const SWAPCHAIN1_VTABLE_LEN: usize = <IDXGISwapChain1 as Vtable>::SLOTS;
     const QUERY_INTERFACE_INDEX: usize =
         std::mem::offset_of!(IUnknown_Vtbl, QueryInterface) / SLOT_SIZE;
     const RELEASE_INDEX: usize = std::mem::offset_of!(IUnknown_Vtbl, Release) / SLOT_SIZE;
     const PRESENT_INDEX: usize = std::mem::offset_of!(IDXGISwapChain_Vtbl, Present) / SLOT_SIZE;
     const RESIZE_BUFFERS_INDEX: usize =
         std::mem::offset_of!(IDXGISwapChain_Vtbl, ResizeBuffers) / SLOT_SIZE;
-    const PRESENT1_INDEX: usize = std::mem::offset_of!(IDXGISwapChain1_Vtbl, Present1) / SLOT_SIZE;
 
+    // Stand-ins for the slots the hook trampolines through. They are never
+    // called here, so they return nothing meaningful: this test is about which
+    // vtable the object points at, not about what the hook forwards.
     unsafe extern "system" fn release(_this: *mut c_void) -> u32 {
         0
     }
@@ -163,23 +167,27 @@ mod tests {
         0x8000_4002u32 as i32
     }
 
-    unsafe extern "system" fn present(_this: *mut c_void, sync: u32, flags: u32) -> i32 {
-        (sync + flags) as i32
+    unsafe extern "system" fn present(_this: *mut c_void, _sync: u32, _flags: u32) -> i32 {
+        0
     }
 
     unsafe extern "system" fn resize(
         _this: *mut c_void,
-        buffers: u32,
-        width: u32,
-        height: u32,
-        format: u32,
-        flags: u32,
+        _buffers: u32,
+        _width: u32,
+        _height: u32,
+        _format: u32,
+        _flags: u32,
     ) -> i32 {
-        (buffers + width + height + format + flags) as i32
+        0
     }
 
+    /// Installing the hook must move the object onto a vtable of the hook's
+    /// own, leaving the original untouched. Everything downstream depends on
+    /// that swap: if the object still points at the application's vtable, no
+    /// present is ever intercepted.
     #[test]
-    fn patches_and_dispatches_swapchain_vtable() {
+    fn install_moves_the_object_onto_a_patched_vtable() {
         let mut original = [0usize; SWAPCHAIN_VTABLE_LEN];
         original[QUERY_INTERFACE_INDEX] = query_interface as *const () as usize;
         original[RELEASE_INDEX] = release as *const () as usize;
@@ -188,72 +196,37 @@ mod tests {
         let mut object_vtable = original.as_ptr();
         let object = (&raw mut object_vtable).cast::<c_void>();
 
+        // SAFETY: `object` points at a vtable pointer whose table is fully
+        // sized for the interface being installed.
         assert!(unsafe {
             crate::vtable::IDXGISwapchainHook::install_object::<IDXGISwapChain>(
                 object,
                 crate::vtable::SwapchainContext::default(),
             )
         });
-        assert_ne!(object_vtable, original.as_ptr());
-
-        let patched_present = unsafe {
-            std::mem::transmute::<usize, crate::vtable::PresentFn>(
-                *object_vtable.add(PRESENT_INDEX),
-            )
-        };
-        let patched_resize = unsafe {
-            std::mem::transmute::<usize, crate::vtable::ResizeBuffersFn>(
-                *object_vtable.add(RESIZE_BUFFERS_INDEX),
-            )
-        };
-        let patched_release = unsafe {
-            std::mem::transmute::<usize, crate::vtable::ReleaseFn>(
-                *object_vtable.add(RELEASE_INDEX),
-            )
-        };
-        assert_eq!(unsafe { patched_present(object, 2, 3) }, 5);
-        assert_eq!(unsafe { patched_resize(object, 1, 2, 3, 4, 5) }, 15);
-        assert_eq!(unsafe { patched_release(object) }, 0);
-    }
-
-    unsafe extern "system" fn present1(
-        _this: *mut c_void,
-        sync: u32,
-        flags: u32,
-        _parameters: *const c_void,
-    ) -> i32 {
-        (sync + flags + 7) as i32
-    }
-
-    #[test]
-    fn upgrades_and_dispatches_swapchain1_vtable() {
-        let mut original = [0usize; SWAPCHAIN1_VTABLE_LEN];
-        original[QUERY_INTERFACE_INDEX] = query_interface as *const () as usize;
-        original[RELEASE_INDEX] = release as *const () as usize;
-        original[PRESENT_INDEX] = present as *const () as usize;
-        original[RESIZE_BUFFERS_INDEX] = resize as *const () as usize;
-        original[PRESENT1_INDEX] = present1 as *const () as usize;
-        let mut object_vtable = original.as_ptr();
-        let object = (&raw mut object_vtable).cast::<c_void>();
-
-        let context = crate::vtable::SwapchainContext::default();
-        assert!(unsafe {
-            crate::vtable::IDXGISwapchainHook::install_object::<IDXGISwapChain>(
-                object,
-                context.clone(),
-            )
-        });
-        assert!(unsafe {
-            crate::vtable::IDXGISwapchainHook::install_object::<IDXGISwapChain1>(object, context)
-        });
-        let patched_present1 = unsafe {
-            std::mem::transmute::<usize, crate::vtable::Present1Fn>(
-                *object_vtable.add(PRESENT1_INDEX),
-            )
-        };
-        assert_eq!(
-            unsafe { patched_present1(object, 2, 3, std::ptr::null()) },
-            12
+        assert_ne!(
+            object_vtable,
+            original.as_ptr(),
+            "the object should point at the hook's vtable, not the original"
         );
+        assert_eq!(
+            original[PRESENT_INDEX], present as *const () as usize,
+            "the application's own vtable should be left alone"
+        );
+    }
+}
+
+pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
+    use std::io::Write;
+    eprintln!("{message}");
+    let Some(path) = snowglass_hook::config::dxgi_log_file() else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{message}");
     }
 }

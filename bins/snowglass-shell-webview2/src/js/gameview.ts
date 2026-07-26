@@ -404,8 +404,28 @@ function publishLayout(): void {
       zIndex: effectiveZIndex(surface.attach),
       pointerEvents: acceptsPointerEvents(surface.attach),
     };
-    const foregroundHit = surface.attach.closest<HTMLElement>("[data-gameview-foreground-hit]");
-    if (foregroundHit) layout.foregroundHitRegion = physicalRect(foregroundHit, scale);
+    const foregroundHits = surface.attach.closest<HTMLElement>(
+      "[data-gameview-foreground-hits]",
+    );
+    if (foregroundHits) {
+      layout.foregroundHitRegions = [
+        ...foregroundHits.querySelectorAll<HTMLElement>("[data-gameview-foreground-hit]"),
+      ]
+        .filter((element) => {
+          const style = getComputedStyle(element);
+          return (
+            style.pointerEvents !== "none" &&
+            style.visibility !== "hidden" &&
+            style.display !== "none"
+          );
+        })
+        .map((element) => physicalRect(element, scale));
+    } else {
+      const foregroundHit = surface.attach.closest<HTMLElement>(
+        "[data-gameview-foreground-hit]",
+      );
+      if (foregroundHit) layout.foregroundHitRegion = physicalRect(foregroundHit, scale);
+    }
     return [layout];
   });
   const serialized = JSON.stringify(layouts);

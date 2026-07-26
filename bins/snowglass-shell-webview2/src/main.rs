@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod background_host;
 mod cli;
 mod composition;
 mod host;
@@ -28,7 +29,7 @@ use snowglass_renderer::{
     cli::ViewerApi,
     debug::{
         DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
-        InputSlotDiagnostics, StatisticsSample, draw_debug_overlay,
+        InputSlotDiagnostics, TargetStatisticsTracker, draw_debug_overlay,
     },
     input::PointerRoutingState,
     webrtc,
@@ -49,8 +50,10 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use windows::{
     Win32::{
-        Foundation::POINT,
-        System::{Com::IDispatch, Variant::VARIANT},
+        Foundation::{POINT, WAIT_FAILED, WAIT_OBJECT_0},
+        Graphics::DirectComposition::DCompositionWaitForCompositorClock,
+        Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod},
+        System::{Com::IDispatch, Threading::INFINITE, Variant::VARIANT},
         UI::{
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
@@ -74,6 +77,7 @@ use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 #[derive(Debug)]
 enum UserEvent {
     WakeCapture,
+    CompositorTick,
     FrontendReady,
     Launch {
         instance_id: String,
@@ -100,6 +104,11 @@ enum InputPriority {
 // several streams are active. Keep each dispatch small so Win32/winit input
 // and egui repaint messages get a turn between capture batches.
 const MAX_CAPTURE_EVENTS_PER_TURN: usize = 32;
+/// Composition-tree key for the single visual every stream shares when the
+/// shell composites them together. Not a real connection.
+const MERGED_VISUAL_KEY: u64 = u64::MAX;
+/// Target index for the background page, which occupies no tracked slot.
+const BACKGROUND_TARGET_INDEX: u32 = u32::MAX;
 const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 const SURFACE_RESIZE_SETTLE: Duration = Duration::from_millis(75);
 const EGUI_STATISTICS_REFRESH: Duration = Duration::from_millis(100);
@@ -137,7 +146,9 @@ struct CapturedSurface {
     z_index: i32,
     needs_redraw: bool,
     resize_due: Option<Instant>,
-    compositor: D3d12Compositor,
+    /// `None` when the shell composites every stream into one shared swapchain,
+    /// in which case the compositor lives on the shell instead.
+    compositor: Option<D3d12Compositor>,
     webrtc: Option<WebRtcCompositor>,
 }
 
@@ -153,8 +164,7 @@ struct EguiOverlay {
     state: egui_winit::State,
     diagnostics: DebugOverlay,
     sequences: FrameSequenceTracker,
-    frames_since_sample: u64,
-    sample_started: Option<Instant>,
+    target_statistics: TargetStatisticsTracker,
     frequency: f64,
     next_repaint: Instant,
 }
@@ -182,8 +192,7 @@ impl EguiOverlay {
             state,
             diagnostics,
             sequences: FrameSequenceTracker::default(),
-            frames_since_sample: 0,
-            sample_started: None,
+            target_statistics: TargetStatisticsTracker::default(),
             frequency: performance_frequency().unwrap_or(1) as f64,
             next_repaint: Instant::now(),
         })
@@ -197,17 +206,27 @@ impl EguiOverlay {
         self.diagnostics.frame.backend = backend;
     }
 
-    fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
+    fn observe_frame(
+        &mut self,
+        connection: u64,
+        target: u32,
+        frame: snowglass_protocol::FrameReady,
+    ) {
         let diagnostics = &mut self.diagnostics.frame;
         let observation =
             self.sequences
                 .observe(connection, frame.frame_number, frame.timestamp_qpc);
-        if let Some(interval_qpc) = observation.interval_qpc {
-            diagnostics.frame_interval_ms = interval_qpc * 1000.0 / self.frequency;
-        }
+        let frame_interval_ms = observation
+            .interval_qpc
+            .map(|interval_qpc| interval_qpc * 1000.0 / self.frequency);
         diagnostics.dropped = self.sequences.dropped();
-        self.frames_since_sample += 1;
-        self.sample_started.get_or_insert_with(Instant::now);
+        let latency_ms = performance_counter()
+            .unwrap_or(frame.timestamp_qpc)
+            .saturating_sub(frame.timestamp_qpc) as f64
+            * 1000.0
+            / self.frequency;
+        self.target_statistics
+            .observe(connection, target, latency_ms, frame_interval_ms);
         diagnostics.frame_number = frame.frame_number;
         diagnostics.slot = frame.slot;
         diagnostics.render_width = frame.render_width;
@@ -216,34 +235,19 @@ impl EguiOverlay {
         diagnostics.capture_y = frame.capture_y;
         diagnostics.capture_width = frame.capture_width;
         diagnostics.capture_height = frame.capture_height;
-        diagnostics.latency_ms = performance_counter()
-            .unwrap_or(frame.timestamp_qpc)
-            .saturating_sub(frame.timestamp_qpc) as f64
-            * 1000.0
-            / self.frequency;
     }
 
     fn sample(&mut self) {
-        let Some(started) = self.sample_started else {
-            return;
-        };
-        if started.elapsed() < Duration::from_millis(500) {
+        if !self.target_statistics.sample() {
             return;
         }
-        let frame = &mut self.diagnostics.frame;
-        let stream_count = self.sequences.stream_count().max(1) as f64;
-        frame.frames_per_second =
-            self.frames_since_sample as f64 / stream_count / started.elapsed().as_secs_f64();
-        self.frames_since_sample = 0;
-        self.sample_started = Some(Instant::now());
-        frame.history.push_back(StatisticsSample {
-            fps: frame.frames_per_second as f32,
-            latency_ms: frame.latency_ms as f32,
-            frame_interval_ms: frame.frame_interval_ms as f32,
-        });
-        if frame.history.len() > 240 {
-            frame.history.pop_front();
-        }
+        self.diagnostics.frame.target_statistics = self.target_statistics.statistics();
+    }
+
+    fn remove_target(&mut self, connection: u64) {
+        self.sequences.remove(connection);
+        self.target_statistics.remove(connection);
+        self.diagnostics.frame.target_statistics = self.target_statistics.statistics();
     }
 
     fn resize(&mut self, window: &Window) -> Result<(), Box<dyn Error>> {
@@ -295,7 +299,10 @@ impl EguiOverlay {
 impl CapturedSurface {
     fn composition_plan(&self) -> CompositingPlan {
         let extent = Extent::new(self.swapchain_width, self.swapchain_height);
-        let presentation = Renderer::received_presentation(&self.compositor, extent);
+        let Some(compositor) = self.compositor.as_ref() else {
+            return CompositingPlan::new([0.0, 0.0, 0.0, 1.0], Vec::new());
+        };
+        let presentation = Renderer::received_presentation(compositor, extent);
         CompositingPlan::new(
             [0.0, 0.0, 0.0, 1.0],
             presentation
@@ -316,10 +323,94 @@ impl CapturedSurface {
     }
 }
 
+/// Wakes the event loop once per DirectComposition frame.
+///
+/// DWM samples composition swapchains once per composition pass. A present that
+/// lands just after that sampling waits out a whole refresh interval, so pacing
+/// deferred presents on a fixed timer leaves them landing on either side of the
+/// deadline at random. Waking on the compositor clock instead puts the retry in
+/// phase with DWM, giving each frame a full interval of headroom.
+struct CompositorClock {
+    waiter: std::thread::Thread,
+    active: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+    tick_pending: Arc<AtomicBool>,
+}
+
+impl CompositorClock {
+    fn spawn(proxy: winit::event_loop::EventLoopProxy<UserEvent>) -> std::io::Result<Self> {
+        let active = Arc::new(AtomicBool::new(false));
+        let healthy = Arc::new(AtomicBool::new(true));
+        let tick_pending = Arc::new(AtomicBool::new(false));
+        let thread_active = Arc::clone(&active);
+        let thread_healthy = Arc::clone(&healthy);
+        let thread_tick_pending = Arc::clone(&tick_pending);
+        let handle = std::thread::Builder::new()
+            .name("snowglass-compositor-clock".to_owned())
+            .spawn(move || {
+                loop {
+                    // A shell with no streams on screen has nothing to pace.
+                    // Park instead of waking once per refresh for no reason;
+                    // `park` may return spuriously, so re-check the flag.
+                    while !thread_active.load(Ordering::Acquire) {
+                        std::thread::park();
+                    }
+                    // SAFETY: the call reads the process-wide compositor clock
+                    // and is passed no handles to borrow.
+                    let status = unsafe { DCompositionWaitForCompositorClock(None, INFINITE) };
+                    if status == WAIT_FAILED.0 {
+                        // Fall back to timer pacing rather than spinning on a
+                        // clock this session cannot wait on.
+                        thread_healthy.store(false, Ordering::Release);
+                        return;
+                    }
+                    // With no handles supplied, a clock tick is the first (and
+                    // only) wait object.
+                    if status != WAIT_OBJECT_0.0 {
+                        continue;
+                    }
+                    // Coalesce ticks so a busy loop cannot accumulate a backlog
+                    // of wake-ups it will never drain.
+                    if !thread_tick_pending.swap(true, Ordering::AcqRel)
+                        && proxy.send_event(UserEvent::CompositorTick).is_err()
+                    {
+                        return;
+                    }
+                }
+            })?;
+        Ok(Self {
+            waiter: handle.thread().clone(),
+            active,
+            healthy,
+            tick_pending,
+        })
+    }
+
+    /// Paces the event loop only while streams are on screen.
+    fn set_active(&self, active: bool) {
+        if self.active.swap(active, Ordering::AcqRel) != active && active {
+            self.waiter.unpark();
+        }
+    }
+
+    /// Reports whether the clock is driving redraws, so the event loop can keep
+    /// its timer fallback for sessions where the wait is unavailable.
+    fn is_pacing(&self) -> bool {
+        self.healthy.load(Ordering::Acquire) && self.active.load(Ordering::Acquire)
+    }
+
+    fn clear_tick(&self) {
+        self.tick_pending.store(false, Ordering::Release);
+    }
+}
+
 struct ShellState {
     // Drop WebView2 and its COM host before tearing down their visual tree.
     foreground_webview: WebView,
-    background_webview: WebView,
+    /// `None` when the page is hosted on its own desktop instead, in which case
+    /// it is reached through `background_host`.
+    background_webview: Option<WebView>,
+    background_host: Option<background_host::BackgroundHost>,
     _gameview_host: IGameViewHost,
     window: Window,
     composition: CompositionTree,
@@ -328,6 +419,17 @@ struct ShellState {
     capture_wake_pending: Arc<AtomicBool>,
     capture_dirty: Arc<AtomicBool>,
     capture_work_pending: bool,
+    compositor_clock: CompositorClock,
+    // Retained so the hosted background page keeps rendering and being captured.
+    /// One window-spanning opaque swapchain shared by every stream. Opaque is
+    /// what earns the overlay plane, and it is only safe to be opaque because
+    /// the captured background fills the pixels no stream covers.
+    merged: Option<D3d12Compositor>,
+    merged_attached: bool,
+    merged_without_background: bool,
+    merged_presents_every_tick: bool,
+    /// Stream carrying the captured background page, if it has connected.
+    background_connection: Option<u64>,
     session: String,
     surfaces: HashMap<u64, CapturedSurface>,
     target: Option<TargetProcess>,
@@ -372,23 +474,105 @@ impl ShellState {
                 .with_inner_size(LogicalSize::new(1280.0, 720.0)),
         )?;
         let composition = CompositionTree::new(&window)?;
-        let background_visual = composition.webview_visual(WebViewLayer::Background)?;
+        // The session has to exist before the background page does. WebView2
+        // spawns its processes from this one and they inherit this environment,
+        // which is the only way a hook injected into them afterwards can find
+        // the shell to publish frames to.
+        let session = unique_session();
+        let capture_background = std::env::var_os("SNOWGLASS_BACKGROUND_CAPTURE").is_some();
+        if capture_background || std::env::var_os("SNOWGLASS_BACKGROUND_HOOK").is_some() {
+            // Must happen before the first WebView2 process is created.
+            if !arm_webview_process_hook() {
+                return Err(
+                    "the WebView2 process hook requires its DLL and injector beside the shell"
+                        .into(),
+                );
+            }
+            let log = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+            // SAFETY: set before any thread that reads the environment is
+            // started, while the shell is still single-threaded here.
+            unsafe {
+                std::env::set_var(snowglass_hook::config::SESSION, &session);
+                if let Some(root) = log {
+                    std::env::set_var(
+                        snowglass_hook::config::DXGI_LOG_FILE,
+                        root.join("snowglass-dxgi.log"),
+                    );
+                    std::env::set_var(
+                        snowglass_hook::config::D3D11_LOG_FILE,
+                        root.join("snowglass-d3d11.log"),
+                    );
+                }
+            }
+        }
         let background_script = include_str!(concat!(env!("OUT_DIR"), "/background.js"));
-        let background_webview = WebViewBuilder::new()
-            .with_transparent(true)
-            .with_focused(false)
-            .with_initialization_script(background_script)
-            .with_composition_visual_target(background_visual)
-            .with_composition_input_enabled(false)
-            .build(&window)?;
+        // WebView2 cannot render offscreen, so capturing the background page
+        // means hosting it in a real window and reading that window back.
+        // Visual hosting has no HWND to capture.
+        let (background_webview, background_host) = if capture_background {
+            let size = window.inner_size();
+            let animate = std::env::var_os("SNOWGLASS_BACKGROUND_ANIMATE").is_some();
+            let url = background_url.clone();
+            let background_data_directory = std::env::temp_dir()
+                .join(format!("snowglass-background-{}", std::process::id()));
+            let host = background_host::BackgroundHost::start(
+                size.width as i32,
+                size.height as i32,
+                move |target| {
+                    // Its own user data folder, because it now has its own
+                    // environment with its own browser arguments. Two
+                    // environments sharing a folder with different arguments is
+                    // rejected outright.
+                    let mut context = wry::WebContext::new(Some(background_data_directory));
+                    let webview = WebViewBuilder::new_with_web_context(&mut context)
+                        .with_focused(false)
+                        .with_initialization_script(background_script)
+                        // Chromium stops painting windows it decides are not
+                        // being seen, and nobody is looking at this desktop.
+                        // `--no-sandbox` is what lets the graphics hook reach
+                        // the GPU process that presents this page.
+                        .with_additional_browser_args(
+                            "--disable-features=CalculateNativeWinOcclusion \
+                             --disable-backgrounding-occluded-windows \
+                             --no-sandbox",
+                        )
+                        .build(target)?;
+                    if animate {
+                        webview.load_html(ANIMATED_BACKGROUND)?;
+                    } else {
+                        webview.load_url(&url)?;
+                    }
+                    Ok(webview)
+                },
+            )?;
+            (None, Some(host))
+        } else {
+            let background_visual = composition.webview_visual(WebViewLayer::Background)?;
+            let webview = WebViewBuilder::new()
+                .with_transparent(true)
+                .with_focused(false)
+                .with_initialization_script(background_script)
+                .with_composition_visual_target(background_visual)
+                .with_composition_input_enabled(false)
+                .build(&window)?;
+            (Some(webview), None)
+        };
         let foreground_visual = composition.webview_visual(WebViewLayer::Foreground)?;
         let foreground_proxy = proxy.clone();
         let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
-        let foreground_webview = WebViewBuilder::new()
+        let mut foreground_builder = WebViewBuilder::new()
             .with_focused(false)
             .with_transparent(true)
-            .with_initialization_script(gameview_script)
-            .with_environment(background_webview.environment())
+            .with_initialization_script(gameview_script);
+        // Sharing the background's environment would put both pages in one
+        // browser process. A desktop-hosted background keeps its own, which is
+        // what confines its process tree to that desktop.
+        if let Some(background) = background_webview.as_ref() {
+            foreground_builder = foreground_builder.with_environment(background.environment());
+        }
+        let foreground_webview = foreground_builder
             .with_composition_visual_target(foreground_visual)
             .with_composition_input_enabled(false)
             .with_ipc_handler(move |request| {
@@ -442,14 +626,33 @@ impl ShellState {
         // the call; WebView2 retains its own reference to the host object.
         unsafe { core.AddHostObjectToScript(w!("snowglass"), &mut host_variant)? };
 
-        background_webview.load_url(&background_url)?;
+        // A page driven by `requestAnimationFrame`, which is what Chromium
+        // throttles when it decides a window is not being seen. Used to check
+        // that a hidden, captured background keeps producing frames.
+        const ANIMATED_BACKGROUND: &str = r#"<!doctype html><html><body style="margin:0">
+<script>
+let n = 0;
+function tick() {
+  n = (n + 1) % 256;
+  document.body.style.background = `rgb(${n},${n},${n})`;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script></body></html>"#;
+        // A desktop-hosted page loads on its own thread, at build time.
+        if let Some(background) = background_webview.as_ref() {
+            if std::env::var_os("SNOWGLASS_BACKGROUND_ANIMATE").is_some() {
+                background.load_html(ANIMATED_BACKGROUND)?;
+            } else {
+                background.load_url(&background_url)?;
+            }
+        }
         foreground_webview.load_url(&foreground_url)?;
 
         let mut overlay = EguiOverlay::new(&window)?;
         composition.set_egui_overlay_content(&overlay.content()?)?;
         overlay.draw(&window)?;
 
-        let session = unique_session();
         let input = InputTransport::bind(&session)?;
         let input_provider = None;
         let control_sender = input.control_sender();
@@ -466,12 +669,14 @@ impl ShellState {
                 capture_wake_pending_for_thread.store(false, Ordering::Release);
             }
         })?;
+        let compositor_clock = CompositorClock::spawn(proxy.clone())?;
         let target = None;
 
         composition.commit()?;
         Ok(Self {
             foreground_webview,
             background_webview,
+            background_host,
             _gameview_host: gameview_host,
             window,
             composition,
@@ -480,6 +685,12 @@ impl ShellState {
             capture_wake_pending,
             capture_dirty,
             capture_work_pending: false,
+            compositor_clock,
+            merged: None,
+            merged_attached: false,
+            merged_without_background: std::env::var_os("SNOWGLASS_MERGED_ONLY").is_some(),
+            merged_presents_every_tick: std::env::var_os("SNOWGLASS_MERGED_TICK").is_some(),
+            background_connection: None,
             session,
             surfaces: HashMap::new(),
             target,
@@ -665,7 +876,7 @@ impl ShellState {
             }
             if let Some(mut surface) = self.surfaces.remove(&connection) {
                 self.capture.revoke(connection);
-                let _ = Renderer::disconnect_stream(&mut surface.compositor, connection);
+                let _ = disconnect_from(&mut surface.compositor, &mut self.merged, connection);
                 let _ = self.composition.remove_render_target(connection);
                 self.capture.forget(connection);
             }
@@ -723,13 +934,23 @@ impl ShellState {
             processed += 1;
             match event {
                 CaptureEvent::Stream(connection, stream, accepted) => {
-                    let Some(active) = &self.active_game else {
-                        let _ = accepted.send(false);
-                        continue;
-                    };
-                    if self.surfaces.len() >= active.options.surfaces.len() {
-                        let _ = accepted.send(false);
-                        continue;
+                    // The background page is not a guest surface: it connects
+                    // before any game is launched and occupies no tracked
+                    // target, so neither gate below applies to it.
+                    if !is_webview_producer(stream.producer_process_id) {
+                        let Some(active) = &self.active_game else {
+                            let _ = accepted.send(false);
+                            continue;
+                        };
+                        let tracked = self
+                            .surfaces
+                            .values()
+                            .filter(|surface| surface.index != BACKGROUND_TARGET_INDEX)
+                            .count();
+                        if tracked >= active.options.surfaces.len() {
+                            let _ = accepted.send(false);
+                            continue;
+                        }
                     }
                     match self.connect_stream(connection, &stream) {
                         Ok(()) => {
@@ -746,7 +967,7 @@ impl ShellState {
                     let Some(surface) = self.surfaces.get_mut(&connection) else {
                         continue;
                     };
-                    self.overlay.observe_frame(connection, frame);
+                    self.overlay.observe_frame(connection, surface.index, frame);
                     let (width, height) = rotated_extent(
                         frame.render_width.max(1),
                         frame.render_height.max(1),
@@ -757,10 +978,16 @@ impl ShellState {
                         surface.preferred_height = height;
                         changed = true;
                     }
-                    Renderer::set_latest(&mut surface.compositor, connection, frame);
+                    match (surface.compositor.as_mut(), self.merged.as_mut()) {
+                        (Some(compositor), _) => {
+                            Renderer::set_latest(compositor, connection, frame);
+                        }
+                        (None, Some(merged)) => Renderer::set_latest(merged, connection, frame),
+                        (None, None) => {}
+                    }
                 }
                 CaptureEvent::Disconnected(connection) => {
-                    self.overlay.sequences.remove(connection);
+                    self.overlay.remove_target(connection);
                     self.cancel_pointer_connection(connection);
                     if let Some(publisher) = self
                         .active_game
@@ -770,7 +997,8 @@ impl ShellState {
                         publisher.remove_stream(connection);
                     }
                     if let Some(mut surface) = self.surfaces.remove(&connection) {
-                        let _ = Renderer::disconnect_stream(&mut surface.compositor, connection);
+                        let _ =
+                            disconnect_from(&mut surface.compositor, &mut self.merged, connection);
                         if let Err(error) = self.composition.remove_render_target(connection) {
                             eprintln!(
                                 "snowglass: removing composition surface {connection} failed: {error}"
@@ -803,21 +1031,28 @@ impl ShellState {
     }
 
     fn draw_pending_surfaces(&mut self) {
+        if self.merged.is_some() {
+            self.draw_merged();
+            return;
+        }
         let publisher = self
             .active_game
             .as_ref()
             .and_then(|active| active.webrtc.as_ref());
         for (&connection, surface) in &mut self.surfaces {
-            if (!Renderer::has_pending_frame(&surface.compositor) && !surface.needs_redraw)
-                || !surface.compositor.try_begin_frame()
-            {
+            let ready = surface.compositor.as_mut().is_some_and(|compositor| {
+                (Renderer::has_pending_frame(compositor) || surface.needs_redraw)
+                    && compositor.try_begin_frame()
+            });
+            if !ready {
                 continue;
             }
             let plan = surface.composition_plan();
-            match surface
+            let compositor = surface
                 .compositor
-                .draw_game_with_webrtc(&plan, surface.webrtc.as_mut())
-            {
+                .as_mut()
+                .expect("a dedicated compositor was just checked");
+            match compositor.draw_game_with_webrtc(&plan, surface.webrtc.as_mut()) {
                 Ok(_) => surface.needs_redraw = false,
                 Err(error) => {
                     eprintln!("snowglass: rendering stream {connection} failed: {error}");
@@ -832,9 +1067,18 @@ impl ShellState {
     }
 
     fn has_pending_surfaces(&self) -> bool {
-        self.surfaces
-            .values()
-            .any(|surface| surface.needs_redraw || Renderer::has_pending_frame(&surface.compositor))
+        if let Some(merged) = self.merged.as_ref() {
+            return self.merged_presents_every_tick
+                || Renderer::has_pending_frame(merged)
+                || self.surfaces.values().any(|surface| surface.needs_redraw);
+        }
+        self.surfaces.values().any(|surface| {
+            surface.needs_redraw
+                || surface
+                    .compositor
+                    .as_ref()
+                    .is_some_and(Renderer::has_pending_frame)
+        })
     }
 
     fn connect_stream(
@@ -842,10 +1086,22 @@ impl ShellState {
         connection: u64,
         stream: &snowglass_ipc::StreamReady,
     ) -> Result<(), Box<dyn Error>> {
+        // The background page publishes through the same producer path as a
+        // guest, so it arrives here like any other stream and has to be told
+        // apart before it consumes a tracked render target.
+        if is_webview_producer(stream.producer_process_id) {
+            return self.connect_background_stream(connection, stream);
+        }
         let (index, quarter_turns, publish_webrtc) = self
             .next_target_configuration()
             .ok_or("the shell already has a surface for every tracked render target")?;
         let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
+        // Merged compositing normally depends on the captured background to
+        // fill the pixels no stream covers. It can be enabled without one to
+        // separate the cost of merging from the cost of hosting the capture.
+        if self.background_host.is_some() || self.merged_without_background {
+            return self.connect_merged_stream(connection, stream, index, quarter_turns, width, height);
+        }
         let render_window = SurfaceWindow::new(&self.window, width.max(1), height.max(1));
         let (mut compositor, mut video) = if publish_webrtc {
             let (compositor, video) = D3d12Compositor::new_for_composition_stream_with_webrtc(
@@ -898,11 +1154,196 @@ impl ShellState {
                 z_index: index as i32,
                 needs_redraw: false,
                 resize_due: None,
-                compositor,
+                compositor: Some(compositor),
                 webrtc: video,
             },
         );
         Ok(())
+    }
+
+    /// Adds a stream to the single window-spanning swapchain that every stream
+    /// shares, creating it on the first connection.
+    fn connect_merged_stream(
+        &mut self,
+        connection: u64,
+        stream: &snowglass_ipc::StreamReady,
+        index: u32,
+        quarter_turns: u8,
+        width: u32,
+        height: u32,
+    ) -> Result<(), Box<dyn Error>> {
+        let size = self.window.inner_size();
+        let (swapchain_width, swapchain_height) = (size.width.max(1), size.height.max(1));
+        if self.merged.is_none() {
+            let render_window =
+                SurfaceWindow::new(&self.window, swapchain_width, swapchain_height);
+            self.merged = Some(D3d12Compositor::new_for_shared_composition(
+                &render_window,
+                stream.adapter_luid,
+            )?);
+        }
+        let merged = self
+            .merged
+            .as_mut()
+            .expect("the shared compositor exists by now");
+        Renderer::import_stream(merged, connection, stream, quarter_turns)?;
+        if !self.merged_attached {
+            let content = merged.composition_content()?;
+            self.composition
+                .add_render_target(MERGED_VISUAL_KEY, 0, &content)?;
+            self.composition.commit()?;
+            self.merged_attached = true;
+        }
+        self.overlay.set_backend(format!("{:?}", stream.image_kind));
+        self.surfaces.insert(
+            connection,
+            CapturedSurface {
+                index,
+                preferred_width: width,
+                preferred_height: height,
+                swapchain_width,
+                swapchain_height,
+                viewport_width: width.max(1),
+                viewport_height: height.max(1),
+                viewport_x: 0,
+                viewport_y: 0,
+                quarter_turns,
+                pointer_events: true,
+                z_index: index as i32,
+                needs_redraw: false,
+                resize_due: None,
+                compositor: None,
+                webrtc: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Adopts the captured background page as the lowest surface in the shared
+    /// swapchain. It is an ordinary placement rather than a special case: given
+    /// the lowest `z_index` and the whole window as its rectangle, the existing
+    /// ordering paints it under every stream and it fills the pixels no stream
+    /// covers, which is what lets the swapchain stay opaque.
+    fn connect_background_stream(
+        &mut self,
+        connection: u64,
+        stream: &snowglass_ipc::StreamReady,
+    ) -> Result<(), Box<dyn Error>> {
+        let size = self.window.inner_size();
+        let (swapchain_width, swapchain_height) = (size.width.max(1), size.height.max(1));
+        if self.merged.is_none() {
+            let render_window =
+                SurfaceWindow::new(&self.window, swapchain_width, swapchain_height);
+            self.merged = Some(D3d12Compositor::new_for_shared_composition(
+                &render_window,
+                stream.adapter_luid,
+            )?);
+        }
+        let merged = self
+            .merged
+            .as_mut()
+            .expect("the shared compositor exists by now");
+        Renderer::import_stream(merged, connection, stream, 0)?;
+        if !self.merged_attached {
+            let content = merged.composition_content()?;
+            self.composition
+                .add_render_target(MERGED_VISUAL_KEY, 0, &content)?;
+            self.composition.commit()?;
+            self.merged_attached = true;
+        }
+        self.background_connection = Some(connection);
+        self.surfaces.insert(
+            connection,
+            CapturedSurface {
+                index: BACKGROUND_TARGET_INDEX,
+                preferred_width: stream.width,
+                preferred_height: stream.height,
+                swapchain_width,
+                swapchain_height,
+                viewport_width: swapchain_width,
+                viewport_height: swapchain_height,
+                viewport_x: 0,
+                viewport_y: 0,
+                quarter_turns: 0,
+                // The page behind the streams is decoration; pointer routing
+                // belongs to the foreground WebView2 and the streams.
+                pointer_events: false,
+                z_index: i32::MIN,
+                needs_redraw: true,
+                resize_due: None,
+                compositor: None,
+                webrtc: None,
+            },
+        );
+        eprintln!("snowglass: background page connected as stream {connection}");
+        Ok(())
+    }
+
+    /// Placements for the shared swapchain, ordered so a higher `z_index` is
+    /// painted later and therefore on top.
+    fn merged_plan(&self) -> CompositingPlan {
+        let Some(merged) = self.merged.as_ref() else {
+            return CompositingPlan::new([0.0, 0.0, 0.0, 1.0], Vec::new());
+        };
+        let mut ordered = Renderer::received_surfaces(merged)
+            .into_iter()
+            .filter_map(|received| {
+                let surface = self.surfaces.get(&received.connection)?;
+                Some((
+                    surface.z_index,
+                    SurfacePlacement {
+                        connection: received.connection,
+                        surface_id: received.surface_id,
+                        rectangle: snowglass_input::mouse::layout::Rect::new(
+                            surface.viewport_x,
+                            surface.viewport_y,
+                            surface.viewport_width,
+                            surface.viewport_height,
+                        ),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|(z_index, _)| *z_index);
+        CompositingPlan::new(
+            [0.0, 0.0, 0.0, 1.0],
+            ordered.into_iter().map(|(_, placement)| placement).collect(),
+        )
+    }
+
+    /// Draws every stream and the captured background into the shared
+    /// swapchain. The background slot is read with a plain atomic load, so a
+    /// stalled capture cannot hold a received frame back.
+    fn draw_merged(&mut self) {
+        // Presenting only when a stream delivers ties both streams to one
+        // timeline: a frame that lands just after a present has to wait for the
+        // next credit, which is the other stream's problem leaking into this
+        // one. Presenting on the compositor tick instead gives each stream the
+        // next tick regardless of what the other is doing, at the cost of
+        // redrawing content that has not changed.
+        let pending = self
+            .merged
+            .as_ref()
+            .is_some_and(Renderer::has_pending_frame)
+            || self.surfaces.values().any(|surface| surface.needs_redraw);
+        if !pending && !self.merged_presents_every_tick {
+            return;
+        }
+        let plan = self.merged_plan();
+        let Some(merged) = self.merged.as_mut() else {
+            return;
+        };
+        if !merged.try_begin_frame() {
+            return;
+        }
+        match merged.draw_game_with_webrtc(&plan, None) {
+            Ok(_) => {
+                for surface in self.surfaces.values_mut() {
+                    surface.needs_redraw = false;
+                }
+            }
+            Err(error) => eprintln!("snowglass: rendering merged surfaces failed: {error}"),
+        }
     }
 
     fn next_target_configuration(&self) -> Option<(u32, u8, bool)> {
@@ -919,7 +1360,13 @@ impl ShellState {
     fn apply_layout(&mut self, layouts: Vec<SurfaceLayout>) {
         self.foreground_hit_regions = layouts
             .iter()
-            .filter_map(|layout| layout.foreground_hit_region)
+            .flat_map(|layout| {
+                layout
+                    .foreground_hit_region
+                    .iter()
+                    .chain(&layout.foreground_hit_regions)
+                    .copied()
+            })
             .filter(|region| region.width != 0 && region.height != 0)
             .collect();
         let resize_due = Instant::now() + SURFACE_RESIZE_SETTLE;
@@ -943,7 +1390,7 @@ impl ShellState {
             surface.pointer_events = item.pointer_events;
             surface.z_index = item.z_index;
             if let Err(error) = self.composition.apply_layout(
-                item,
+                &item,
                 surface.swapchain_width,
                 surface.swapchain_height,
             ) {
@@ -993,7 +1440,13 @@ impl ShellState {
                 surface.viewport_width,
                 surface.viewport_height,
             );
-            match Renderer::recreate_swapchain(&mut surface.compositor, &render_window) {
+            let Some(compositor) = surface.compositor.as_mut() else {
+                // A shared swapchain tracks the window, not the DOM box, so a
+                // layout change only needs a redraw.
+                surface.needs_redraw = true;
+                continue;
+            };
+            match Renderer::recreate_swapchain(compositor, &render_window) {
                 Ok(true) => {
                     surface.swapchain_width = surface.viewport_width;
                     surface.swapchain_height = surface.viewport_height;
@@ -1008,6 +1461,7 @@ impl ShellState {
                             z_index: surface.z_index,
                             pointer_events: surface.pointer_events,
                             foreground_hit_region: None,
+                            foreground_hit_regions: Vec::new(),
                         },
                         (surface.swapchain_width, surface.swapchain_height),
                     ));
@@ -1020,7 +1474,7 @@ impl ShellState {
         }
         let composition_changed = !resized.is_empty();
         for (layout, extent) in resized {
-            if let Err(error) = self.composition.apply_layout(layout, extent.0, extent.1) {
+            if let Err(error) = self.composition.apply_layout(&layout, extent.0, extent.1) {
                 eprintln!(
                     "snowglass: updating composition surface {} after resize failed: {error}",
                     layout.connection
@@ -1046,7 +1500,15 @@ impl ShellState {
             .collect::<Vec<_>>();
         surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.z_index));
         for (&connection, surface) in surfaces {
-            for mut received_surface in Renderer::received_surfaces(&surface.compositor) {
+            let received_surfaces = match (surface.compositor.as_ref(), self.merged.as_ref()) {
+                (Some(compositor), _) => Renderer::received_surfaces(compositor),
+                (None, Some(merged)) => Renderer::received_surfaces(merged)
+                    .into_iter()
+                    .filter(|received| received.connection == connection)
+                    .collect(),
+                (None, None) => Vec::new(),
+            };
+            for mut received_surface in received_surfaces {
                 received_surface.frame.presentation_transform = shell_pointer_transform(
                     received_surface.frame.presentation_transform,
                     received_surface.frame.presentation_width,
@@ -1371,7 +1833,16 @@ impl ShellState {
 
     fn forward_background_message(&self, json: &str) {
         let script = format!("window.__snowglassBackgroundMessage?.({json});");
-        if let Err(error) = self.background_webview.evaluate_script(&script) {
+        // A desktop-hosted page lives on another thread, and WebView2 is
+        // apartment-threaded, so the script is queued for that thread rather
+        // than called across it.
+        if let Some(host) = self.background_host.as_ref() {
+            host.evaluate(script);
+            return;
+        }
+        if let Some(background) = self.background_webview.as_ref()
+            && let Err(error) = background.evaluate_script(&script)
+        {
             eprintln!("snowglass: forwarding background message failed: {error}");
         }
     }
@@ -1433,7 +1904,7 @@ impl Drop for ShellState {
     fn drop(&mut self) {
         for (&connection, surface) in &mut self.surfaces {
             self.capture.revoke(connection);
-            let _ = Renderer::disconnect_stream(&mut surface.compositor, connection);
+            let _ = disconnect_from(&mut surface.compositor, &mut self.merged, connection);
         }
         if let Some(target) = self.target.take() {
             let _ = target.terminate_tree_and_wait();
@@ -1474,6 +1945,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             // Capture is drained from `about_to_wait`, after this cycle's
             // native window messages have been delivered.
             UserEvent::WakeCapture => state.capture_work_pending = true,
+            // Waking the loop is the whole job: `about_to_wait` draws whatever
+            // is pending once this cycle's messages have been delivered.
+            UserEvent::CompositorTick => state.compositor_clock.clear_tick(),
             UserEvent::FrontendReady => state.deliver_cli_launch(),
             UserEvent::Launch {
                 instance_id,
@@ -1515,7 +1989,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     position: wry::dpi::PhysicalPosition::new(0, 0).into(),
                     size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
                 };
-                if let Err(error) = state.background_webview.set_bounds(bounds) {
+                if let Some(background) = state.background_webview.as_ref()
+                    && let Err(error) = background.set_bounds(bounds)
+                {
                     eprintln!("snowglass: resizing background WebView2 failed: {error}");
                 }
                 if let Err(error) = state.foreground_webview.set_bounds(bounds) {
@@ -1523,6 +1999,31 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 }
                 if let Err(error) = state.overlay.resize(&state.window) {
                     eprintln!("snowglass: resizing egui composition overlay failed: {error}");
+                }
+                // The shared swapchain and the background both cover the whole
+                // window, so the window is what resizes them, not a DOM box.
+                if let Some(merged) = state.merged.as_mut() {
+                    let render_window = SurfaceWindow::new(&state.window, size.width, size.height);
+                    match Renderer::recreate_swapchain(merged, &render_window) {
+                        Ok(true) => {
+                            for surface in state.surfaces.values_mut() {
+                                surface.swapchain_width = size.width;
+                                surface.swapchain_height = size.height;
+                                surface.needs_redraw = true;
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("snowglass: resizing the shared swapchain failed: {error}");
+                        }
+                    }
+                }
+                if let Some(connection) = state.background_connection
+                    && let Some(background) = state.surfaces.get_mut(&connection)
+                {
+                    background.viewport_width = size.width.max(1);
+                    background.viewport_height = size.height.max(1);
+                    background.needs_redraw = true;
                 }
                 state.window.request_redraw();
             }
@@ -1683,6 +2184,13 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             if state.capture_work_pending {
                 state.process_capture();
             }
+            // A frame the compositor deferred keeps its `latest` slot, so it
+            // has to be retried from here. `process_capture` only runs when a
+            // producer posts new work, which would hold an already-finished
+            // frame back until the guest renders its next one.
+            if state.has_pending_surfaces() {
+                state.draw_pending_surfaces();
+            }
             if let Some(resize_due) = state.resize_pending_surfaces(now) {
                 deadline = deadline.min(resize_due);
             }
@@ -1692,7 +2200,15 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 state.window.request_redraw();
             }
             deadline = deadline.min(state.overlay.next_repaint());
-            if state.has_pending_surfaces() {
+            // Cheap enough to reconcile every turn, which keeps pacing correct
+            // no matter which path added or dropped a stream.
+            state
+                .compositor_clock
+                .set_active(!state.surfaces.is_empty());
+            // The compositor clock already wakes the loop once per composition
+            // frame, which is the earliest a deferred present can be picked up.
+            // Only sessions without a usable clock need the timer fallback.
+            if state.has_pending_surfaces() && !state.compositor_clock.is_pacing() {
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
             if state.capture_work_pending {
@@ -1700,6 +2216,118 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             }
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+    }
+}
+
+/// Arms process-creation hooking so WebView2's children are hooked as they are
+/// created rather than after they are already running.
+///
+/// The DXGI detours only see factories created after they are installed, and
+/// WebView2 builds its swapchain during startup, so injecting into a process
+/// that already exists is always too late. Loading this before any WebView2
+/// process exists is what puts the graphics hooks in ahead of the swapchain.
+fn arm_webview_process_hook() -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    let Ok(root) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(artifact_root) = root.parent() else {
+        return false;
+    };
+    let library = artifact_root.join("snowglass_hook_webview2.dll");
+    if !library.is_file() || !artifact_root.join("snowglass-injector.exe").is_file() {
+        eprintln!(
+            "snowglass: the WebView2 process hook needs snowglass_hook_webview2.dll and the injector beside the shell"
+        );
+        return false;
+    }
+    // The hook shells out to the injector for each child it catches, so it has
+    // to be told where those artifacts live.
+    // SAFETY: set while the shell is still single-threaded, before the hook or
+    // any WebView2 process can read it.
+    unsafe {
+        std::env::set_var(snowglass_hook_webview2::ARTIFACT_DIR, artifact_root);
+    }
+    let wide = library
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: the module stays loaded for the life of the shell, and the export
+    // takes no arguments.
+    unsafe {
+        let Ok(module) = LoadLibraryW(windows::core::PCWSTR(wide.as_ptr())) else {
+            eprintln!("snowglass: loading the WebView2 process hook failed");
+            return false;
+        };
+        let Some(install) =
+            GetProcAddress(module, windows::core::s!("SnowglassInstallWebView2Hook"))
+        else {
+            eprintln!("snowglass: the WebView2 process hook has no install export");
+            return false;
+        };
+        let install: unsafe extern "system" fn() -> i32 = std::mem::transmute(install);
+        let result = install();
+        if result < 0 {
+            eprintln!("snowglass: installing the WebView2 process hook failed: {result:#x}");
+            return false;
+        }
+    }
+    eprintln!("snowglass: WebView2 child processes will be hooked as they start");
+    true
+}
+
+/// Whether a producer is one of the WebView2 processes hosting the background
+/// page, which is how its stream is told apart from a guest's.
+fn is_webview_producer(process_id: u32) -> bool {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    if process_id == 0 {
+        return false;
+    }
+    // SAFETY: the snapshot is closed before returning and the entry is a fully
+    // sized live local for the duration of the walk.
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return false;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = false;
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID == process_id {
+                    found = String::from_utf16_lossy(&entry.szExeFile)
+                        .trim_end_matches('\0')
+                        .eq_ignore_ascii_case("msedgewebview2.exe");
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+        found
+    }
+}
+
+/// Drops a stream from whichever compositor owns it: its own, or the shared one.
+fn disconnect_from(
+    dedicated: &mut Option<D3d12Compositor>,
+    merged: &mut Option<D3d12Compositor>,
+    connection: u64,
+) -> Result<(), Box<dyn Error>> {
+    match (dedicated.as_mut(), merged.as_mut()) {
+        (Some(compositor), _) => Renderer::disconnect_stream(compositor, connection),
+        (None, Some(compositor)) => Renderer::disconnect_stream(compositor, connection),
+        (None, None) => Ok(()),
     }
 }
 
@@ -1773,8 +2401,34 @@ const fn rotated_extent(width: u32, height: u32, quarter_turns: u8) -> (u32, u32
     }
 }
 
+/// Holds the process timer resolution at 1ms for the lifetime of the shell.
+///
+/// `ControlFlow::WaitUntil` bottoms out in `MsgWaitForMultipleObjectsEx`, whose
+/// timeout is rounded up to the process timer resolution. At the ~15.6ms
+/// default a one-millisecond present retry sleeps through most of a refresh
+/// interval, so a deferred frame misses the composition pass it was ready for.
+struct TimerResolution(bool);
+
+impl TimerResolution {
+    fn raise() -> Self {
+        // SAFETY: `timeBeginPeriod` takes a scalar, and a successful call is
+        // balanced by `timeEndPeriod` in `Drop`.
+        Self(unsafe { timeBeginPeriod(1) } == TIMERR_NOERROR)
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        if self.0 {
+            // SAFETY: balances the successful `timeBeginPeriod(1)` above.
+            unsafe { timeEndPeriod(1) };
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let options = cli::parse()?;
+    let _timer_resolution = TimerResolution::raise();
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
     let mut application = ShellApplication {

@@ -1,4 +1,6 @@
-use crate::vtable::{IDXGIFactoryHook, IDXGISwapchainHook, SwapchainContext, SwapchainHook};
+use crate::vtable::{
+    IDXGIFactoryHook, IDXGIFactoryMediaHook, IDXGISwapchainHook, SwapchainContext, SwapchainHook,
+};
 use std::{
     ffi::c_void,
     sync::{
@@ -293,7 +295,12 @@ pub unsafe fn install_factory_interface(factory: *mut c_void, interface_id: *con
         return false;
     }
     let interface_id = unsafe { &*interface_id.cast::<GUID>() };
-    unsafe { IDXGIFactoryHook::install_interface(factory, interface_id) }
+    if unsafe { IDXGIFactoryHook::install_interface(factory, interface_id) } {
+        return true;
+    }
+    // `IDXGIFactoryMedia` is only ever reached by querying a factory, so this
+    // is the one place it can be caught.
+    unsafe { IDXGIFactoryMediaHook::install_interface(factory, interface_id) }
 }
 
 pub(crate) unsafe fn created_factory(

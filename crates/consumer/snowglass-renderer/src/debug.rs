@@ -1,6 +1,7 @@
 //! Reusable egui diagnostics shared by native Snowglass hosts.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
 struct StreamSequence {
@@ -83,8 +84,134 @@ impl FrameSequenceTracker {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+pub const STATISTICS_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+pub const STATISTICS_ROLLING_WINDOW: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Debug, Default)]
+pub struct TargetStatisticsDiagnostics {
+    pub target: u32,
+    pub fps: f64,
+    pub latency_ms: f64,
+    pub frame_interval_ms: f64,
+    pub history: VecDeque<StatisticsSample>,
+}
+
+#[derive(Clone, Debug)]
+struct TargetStatisticsState {
+    target: u32,
+    frames: u64,
+    sample_started: Instant,
+    fps: f64,
+    latency_ms: f64,
+    frame_interval_ms: f64,
+    history: VecDeque<StatisticsSample>,
+}
+
+/// Samples FPS, latency, and frame time independently for every render target.
+#[derive(Clone, Debug, Default)]
+pub struct TargetStatisticsTracker {
+    targets: HashMap<u64, TargetStatisticsState>,
+}
+
+impl TargetStatisticsTracker {
+    pub fn observe(
+        &mut self,
+        connection: u64,
+        target: u32,
+        latency_ms: f64,
+        frame_interval_ms: Option<f64>,
+    ) {
+        self.observe_at(
+            connection,
+            target,
+            latency_ms,
+            frame_interval_ms,
+            Instant::now(),
+        );
+    }
+
+    fn observe_at(
+        &mut self,
+        connection: u64,
+        target: u32,
+        latency_ms: f64,
+        frame_interval_ms: Option<f64>,
+        now: Instant,
+    ) {
+        let state = self
+            .targets
+            .entry(connection)
+            .or_insert(TargetStatisticsState {
+                target,
+                frames: 0,
+                sample_started: now,
+                fps: 0.0,
+                latency_ms,
+                frame_interval_ms: frame_interval_ms.unwrap_or(0.0),
+                history: VecDeque::new(),
+            });
+        state.target = target;
+        state.frames += 1;
+        state.latency_ms = latency_ms;
+        if let Some(frame_interval_ms) = frame_interval_ms {
+            state.frame_interval_ms = frame_interval_ms;
+        }
+    }
+
+    pub fn sample(&mut self) -> bool {
+        self.sample_at(Instant::now())
+    }
+
+    fn sample_at(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        for state in self.targets.values_mut() {
+            let elapsed = now.saturating_duration_since(state.sample_started);
+            if elapsed < STATISTICS_SAMPLE_INTERVAL {
+                continue;
+            }
+            state.fps = state.frames as f64 / elapsed.as_secs_f64();
+            state.frames = 0;
+            state.sample_started = now;
+            state.history.push_back(StatisticsSample {
+                sampled_at: now,
+                fps: state.fps as f32,
+                latency_ms: state.latency_ms as f32,
+                frame_interval_ms: state.frame_interval_ms as f32,
+            });
+            while state.history.front().is_some_and(|sample| {
+                now.saturating_duration_since(sample.sampled_at) > STATISTICS_ROLLING_WINDOW
+            }) {
+                state.history.pop_front();
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn remove(&mut self, connection: u64) {
+        self.targets.remove(&connection);
+    }
+
+    pub fn statistics(&self) -> Vec<TargetStatisticsDiagnostics> {
+        let mut statistics = self
+            .targets
+            .values()
+            .map(|state| TargetStatisticsDiagnostics {
+                target: state.target,
+                fps: state.fps,
+                latency_ms: state.latency_ms,
+                frame_interval_ms: state.frame_interval_ms,
+                history: state.history.clone(),
+            })
+            .collect::<Vec<_>>();
+        statistics.sort_by_key(|statistics| statistics.target);
+        statistics
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct StatisticsSample {
+    pub sampled_at: Instant,
     pub fps: f32,
     pub latency_ms: f32,
     pub frame_interval_ms: f32,
@@ -102,11 +229,8 @@ pub struct FrameDiagnostics {
     pub capture_y: u32,
     pub capture_width: u32,
     pub capture_height: u32,
-    pub frames_per_second: f64,
-    pub latency_ms: f64,
-    pub frame_interval_ms: f64,
     pub dropped: u64,
-    pub history: VecDeque<StatisticsSample>,
+    pub target_statistics: Vec<TargetStatisticsDiagnostics>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -168,9 +292,16 @@ pub fn draw_debug_overlay(context: &egui::Context, diagnostics: &DebugOverlay) {
                 "Scissor ({}, {}) {}x{}",
                 frame.capture_x, frame.capture_y, frame.capture_width, frame.capture_height
             ));
-            ui.label(format!("{:.1} FPS", frame.frames_per_second));
-            ui.label(format!("Latency {:.2} ms", frame.latency_ms));
-            ui.label(format!("Frame-to-frame {:.2} ms", frame.frame_interval_ms));
+            if frame.target_statistics.is_empty() {
+                ui.label("Target statistics waiting");
+            } else {
+                for target in &frame.target_statistics {
+                    ui.label(format!(
+                        "Target {}: {:.1} FPS · latency {:.2} ms · frame Δ {:.2} ms",
+                        target.target, target.fps, target.latency_ms, target.frame_interval_ms,
+                    ));
+                }
+            }
             ui.label(format!("Dropped {}", frame.dropped));
         });
     });
@@ -179,13 +310,19 @@ pub fn draw_debug_overlay(context: &egui::Context, diagnostics: &DebugOverlay) {
         .fill(egui::Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(48)))
         .shadow(egui::epaint::Shadow::NONE);
-    egui::Window::new("Frame Graph")
+    egui::Window::new("Frame Graphs · rolling 120 seconds")
         .default_pos(egui::pos2(12.0, 48.0))
         .resizable(false)
         .collapsible(true)
         .frame(transparent_frame)
         .show(context, |ui| {
-            draw_statistics_graph(ui, &diagnostics.frame.history);
+            if diagnostics.frame.target_statistics.is_empty() {
+                ui.label("Collecting per-target frame statistics…");
+            }
+            for target in &diagnostics.frame.target_statistics {
+                ui.strong(format!("Target {}", target.target));
+                draw_statistics_graph(ui, &target.history);
+            }
         });
     draw_input_debug_window(context, &diagnostics.input);
 }
@@ -285,15 +422,15 @@ pub fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSam
             .map(|sample| sample.frame_interval_ms)
             .fold(16.67_f32, f32::max)
             .max(1.0);
+        let now = Instant::now();
         let points = |value: fn(&StatisticsSample) -> f32, maximum: f32| {
             history
                 .iter()
-                .enumerate()
-                .map(|(index, sample)| {
-                    let x = egui::lerp(
-                        rect.left()..=rect.right(),
-                        index as f32 / (history.len() - 1) as f32,
-                    );
+                .map(|sample| {
+                    let age = now.saturating_duration_since(sample.sampled_at);
+                    let position =
+                        1.0 - age.as_secs_f32() / STATISTICS_ROLLING_WINDOW.as_secs_f32();
+                    let x = egui::lerp(rect.left()..=rect.right(), position.clamp(0.0, 1.0));
                     let normalized = (value(sample) / maximum).clamp(0.0, 1.0);
                     egui::pos2(x, egui::lerp(rect.bottom()..=rect.top(), normalized))
                 })
@@ -333,7 +470,8 @@ pub fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSam
 
 #[cfg(test)]
 mod tests {
-    use super::FrameSequenceTracker;
+    use super::{FrameSequenceTracker, TargetStatisticsTracker};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn interleaved_streams_do_not_create_false_drops_or_intervals() {
@@ -366,5 +504,46 @@ mod tests {
         assert_eq!(tracker.observe(1, 1, 1010).interval_qpc, None);
         assert_eq!(tracker.observe(1, 2, 1026).interval_qpc, Some(16.0));
         assert_eq!(tracker.dropped(), 0);
+    }
+
+    #[test]
+    fn statistics_are_sampled_independently_per_target() {
+        let mut tracker = TargetStatisticsTracker::default();
+        let started = Instant::now();
+        for frame in 0..60 {
+            let now = started + Duration::from_millis(frame * 10);
+            tracker.observe_at(10, 0, 2.0, Some(10.0), now);
+            if frame % 2 == 0 {
+                tracker.observe_at(20, 1, 4.0, Some(20.0), now);
+            }
+        }
+
+        assert!(tracker.sample_at(started + Duration::from_secs(1)));
+        let statistics = tracker.statistics();
+        assert_eq!(statistics.len(), 2);
+        assert_eq!(statistics[0].target, 0);
+        assert_eq!(statistics[0].fps, 60.0);
+        assert_eq!(statistics[0].latency_ms, 2.0);
+        assert_eq!(statistics[0].frame_interval_ms, 10.0);
+        assert_eq!(statistics[1].target, 1);
+        assert_eq!(statistics[1].fps, 30.0);
+        assert_eq!(statistics[1].latency_ms, 4.0);
+        assert_eq!(statistics[1].frame_interval_ms, 20.0);
+    }
+
+    #[test]
+    fn histories_evict_samples_older_than_120_seconds() {
+        let mut tracker = TargetStatisticsTracker::default();
+        let started = Instant::now();
+        tracker.observe_at(10, 0, 2.0, Some(16.0), started);
+        tracker.sample_at(started + Duration::from_secs(1));
+        tracker.sample_at(started + Duration::from_secs(122));
+
+        let statistics = tracker.statistics();
+        assert_eq!(statistics[0].history.len(), 1);
+        assert_eq!(
+            statistics[0].history[0].sampled_at,
+            started + Duration::from_secs(122)
+        );
     }
 }

@@ -55,7 +55,10 @@ use snowglass_renderer::{
         GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
-    debug::{FrameSequenceTracker, StatisticsSample, draw_statistics_graph},
+    debug::{
+        FrameSequenceTracker, TargetStatisticsDiagnostics, TargetStatisticsTracker,
+        draw_statistics_graph,
+    },
     input::PointerRoutingState,
     webrtc,
 };
@@ -142,14 +145,10 @@ struct Statistics {
     capture_y: u32,
     capture_width: u32,
     capture_height: u32,
-    fps: f64,
-    latency_ms: f64,
-    frame_interval_ms: f64,
     sequences: FrameSequenceTracker,
+    target_statistics_tracker: TargetStatisticsTracker,
+    target_statistics: Vec<TargetStatisticsDiagnostics>,
     dropped: u64,
-    frames_since_sample: u64,
-    sample_started: Option<Instant>,
-    history: VecDeque<StatisticsSample>,
 }
 
 enum ViewerCompositor {
@@ -548,10 +547,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (mut compositor, mut video_compositor) =
             ViewerCompositor::new(&window, viewer_api, publish_video)?;
         let frequency = performance_frequency().unwrap_or(1) as f64;
-        let mut stats = Statistics {
-            sample_started: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut stats = Statistics::default();
         let mut pointer_routing = PointerRoutingState::new(Instant::now());
         let mut active_capture_connections = HashMap::<u64, (u64, u8)>::new();
         let mut stream_indices = HashMap::<u64, u32>::new();
@@ -1085,12 +1081,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     frame.frame_number,
                                     frame.timestamp_qpc,
                                 );
-                                if let Some(interval_qpc) = observation.interval_qpc {
-                                    stats.frame_interval_ms =
-                                        interval_qpc * 1000.0 / frequency;
-                                }
+                                let frame_interval_ms = observation
+                                    .interval_qpc
+                                    .map(|interval_qpc| interval_qpc * 1000.0 / frequency);
                                 stats.dropped = stats.sequences.dropped();
-                                stats.frames_since_sample += 1;
+                                let target_index =
+                                    stream_indices.get(&connection).copied().unwrap_or(0);
+                                let latency_ms = performance_counter()
+                                    .unwrap_or(frame.timestamp_qpc)
+                                    .saturating_sub(frame.timestamp_qpc)
+                                    as f64
+                                    * 1000.0
+                                    / frequency;
+                                stats.target_statistics_tracker.observe(
+                                    connection,
+                                    target_index,
+                                    latency_ms,
+                                    frame_interval_ms,
+                                );
                                 stats.frame_number = frame.frame_number;
                                 stats.slot = frame.slot;
                                 stats.render_width = frame.render_width;
@@ -1099,12 +1107,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 stats.capture_y = frame.capture_y;
                                 stats.capture_width = frame.capture_width;
                                 stats.capture_height = frame.capture_height;
-                                stats.latency_ms = performance_counter()
-                                    .unwrap_or(frame.timestamp_qpc)
-                                    .saturating_sub(frame.timestamp_qpc)
-                                    as f64
-                                    * 1000.0
-                                    / frequency;
                                 compositor.set_latest(connection, frame);
                                 if active_backend == "D3D11" {
                                     // Keyed-mutex frames must be consumed and released in order;
@@ -1114,6 +1116,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             }
                             CaptureEvent::Disconnected(connection) => {
                                 stats.sequences.remove(connection);
+                                stats.target_statistics_tracker.remove(connection);
+                                stats.target_statistics =
+                                    stats.target_statistics_tracker.statistics();
                                 if let Some(publisher) = &webrtc {
                                     publisher.remove_stream(connection);
                                 }
@@ -1148,23 +1153,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         // an older capture back onto the screen and look like temporal ghosting.
                         return;
                     }
-                    if let Some(started) = stats.sample_started {
-                        if started.elapsed() >= Duration::from_millis(500) {
-                            let stream_count = stats.sequences.stream_count().max(1) as f64;
-                            stats.fps = stats.frames_since_sample as f64
-                                / stream_count
-                                / started.elapsed().as_secs_f64();
-                            stats.frames_since_sample = 0;
-                            stats.sample_started = Some(Instant::now());
-                            stats.history.push_back(StatisticsSample {
-                                fps: stats.fps as f32,
-                                latency_ms: stats.latency_ms as f32,
-                                frame_interval_ms: stats.frame_interval_ms as f32,
-                            });
-                            if stats.history.len() > 240 {
-                                stats.history.pop_front();
-                            }
-                        }
+                    if stats.target_statistics_tracker.sample() {
+                        stats.target_statistics =
+                            stats.target_statistics_tracker.statistics();
                     }
                     let input = egui_state.take_egui_input(&window);
                     let webrtc_stats = webrtc.as_ref().map(webrtc::Publisher::stats);
@@ -1173,7 +1164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let mut close_requested = false;
                     let output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.strong(format!(
                                     "Snowglass {active_backend} via {active_consumer}"
                                 ));
@@ -1196,12 +1187,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     stats.capture_width,
                                     stats.capture_height
                                 ));
-                                ui.label(format!("{:.1} FPS", stats.fps));
-                                ui.label(format!("Latency {:.2} ms", stats.latency_ms));
-                                ui.label(format!(
-                                    "Frame-to-frame {:.2} ms",
-                                    stats.frame_interval_ms
-                                ));
+                                if stats.target_statistics.is_empty() {
+                                    ui.label("Target statistics waiting");
+                                } else {
+                                    for target in &stats.target_statistics {
+                                        ui.label(format!(
+                                            "Target {}: {:.1} FPS · latency {:.2} ms · frame Δ {:.2} ms",
+                                            target.target,
+                                            target.fps,
+                                            target.latency_ms,
+                                            target.frame_interval_ms,
+                                        ));
+                                    }
+                                }
                                 ui.label(format!("Dropped {}", stats.dropped));
                                 if let Some(sent) = last_pointer_sent {
                                     let color = if sent.sent_at.elapsed()
@@ -1328,14 +1326,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                             ))
                             .shadow(egui::epaint::Shadow::NONE);
                         let mut show_frame_graph = active_target.is_some();
-                        egui::Window::new("Frame Graph")
+                        egui::Window::new("Frame Graphs · rolling 120 seconds")
                             .open(&mut show_frame_graph)
                             .default_pos(egui::pos2(12.0, 48.0))
                             .resizable(false)
                             .collapsible(true)
                             .frame(statistics_frame)
                             .show(context, |ui| {
-                                draw_statistics_graph(ui, &stats.history);
+                                if stats.target_statistics.is_empty() {
+                                    ui.label("Collecting per-target frame statistics…");
+                                }
+                                for target in &stats.target_statistics {
+                                    ui.strong(format!("Target {}", target.target));
+                                    draw_statistics_graph(ui, &target.history);
+                                }
                             });
                         if let Some(provider) = &gamepad_provider {
                             draw_gamepad_window(
@@ -1433,10 +1437,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 gamepad_provider = Some(started.provider);
                                 active_target = Some(started.target);
                                 remaining_surface_skips = options.skip_surfaces;
-                                stats = Statistics {
-                                    sample_started: Some(Instant::now()),
-                                    ..Default::default()
-                                };
+                                stats = Statistics::default();
                             }
                             Err(error) => launch_error = Some(error.to_string()),
                         }

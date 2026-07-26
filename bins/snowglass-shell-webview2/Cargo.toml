@@ -13,6 +13,7 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 snowglass-hook.workspace = true
+snowglass-hook-webview2 = { path = "../../crates/hooks/snowglass-hook-webview2" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true
@@ -22,8 +23,15 @@ snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
 tempfile.workspace = true
 webview2-com = "0.38"
 windows = { workspace = true, features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
     "Win32_Graphics_DirectComposition",
+    "Win32_Media",
     "Win32_System_Com",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Ole",
     "Win32_System_Variant",
