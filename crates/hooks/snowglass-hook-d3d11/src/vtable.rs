@@ -111,17 +111,12 @@ impl Clone for ContextHookContext {
 ///
 /// # Safety
 ///
-/// `output` must be null or point to a COM interface pointer for a live
-/// `ID3D11DeviceContext`.
+/// `context` must be null or point to a live `ID3D11DeviceContext`.
 pub(crate) unsafe fn install_immediate_context(
-    output: *mut *mut c_void,
+    context: *mut c_void,
     tracking: Arc<snowglass_producer_d3d11::Tracking>,
 ) {
-    if !snowglass_hook::config::tracking_enabled() || output.is_null() {
-        return;
-    }
-    let context = unsafe { *output };
-    if context.is_null() {
+    if !snowglass_hook::config::tracking_enabled() || context.is_null() {
         return;
     }
     let current = unsafe { *context.cast::<*const usize>() };

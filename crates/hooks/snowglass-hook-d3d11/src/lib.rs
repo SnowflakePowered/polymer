@@ -105,6 +105,58 @@ mod tests {
     }
 
     #[test]
+    fn auxiliary_context_waits_for_a_d3d11_swapchain_claim() {
+        let _test_lock = test_lock();
+        let mut device = std::ptr::null_mut();
+        let mut context = std::ptr::null_mut();
+        let mut level = 0;
+        let result = unsafe {
+            install::system_create_device(
+                std::ptr::null_mut(),
+                5,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+                0,
+                7,
+                &mut device,
+                &mut level,
+                &mut context,
+            )
+        };
+        assert!(result >= 0, "D3D11CreateDevice failed: {result:#x}");
+        assert!(!device.is_null());
+        assert!(!context.is_null());
+
+        let original_vtable = unsafe { *context.cast::<*const usize>() };
+        let hook_context = hooks::D3D11HookContext {
+            tracking: Default::default(),
+        };
+        unsafe {
+            std::env::set_var(snowglass_hook::config::TRACK_RENDER_TARGET, "1");
+            device::create_device(
+                std::ptr::null_mut(),
+                &mut device,
+                &mut level,
+                &mut context,
+                result,
+                &hooks::CreateDeviceContext::from_fields(&hook_context),
+            );
+            std::env::remove_var(snowglass_hook::config::TRACK_RENDER_TARGET);
+        }
+        assert_eq!(
+            unsafe { *context.cast::<*const usize>() },
+            original_vtable,
+            "an auxiliary D3D11 context must remain untouched until its device owns a swapchain"
+        );
+
+        unsafe {
+            release(context);
+            release(device);
+        }
+    }
+
+    #[test]
     fn successful_call_with_null_optional_outputs_is_ignored() {
         let _test_lock = test_lock();
         let context = hooks::D3D11HookContext {
