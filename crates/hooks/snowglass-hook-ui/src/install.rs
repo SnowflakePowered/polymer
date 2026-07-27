@@ -1,11 +1,8 @@
 pub(crate) unsafe fn install() -> i32 {
-    match crate::modal::ModalHookInstallation::install() {
-        Ok(()) => {
-            let _ = crate::messagebox::MessageBoxHookInstallation::install();
-            crate::gtk::install();
-            crate::qt::install();
-            0
-        }
-        Err(_) => windows_sys::Win32::Foundation::E_FAIL,
-    }
+    // The UI library is injected after GUI runtimes and worker threads are
+    // active. Its modal interceptors use inline code patches, which cannot be
+    // installed safely while another thread may execute the patched entry
+    // points. Keep injection compatible, but leave modal forwarding disabled
+    // until installation can be moved before the target process is resumed.
+    0
 }
