@@ -4,10 +4,8 @@ mod api;
 mod cli;
 mod composition;
 mod game_layer;
-mod host;
 mod input;
 mod launch;
-mod texture_stream;
 
 use api::{LaunchOptions, parse_input_binding};
 use cli::ShellOptions;
@@ -15,8 +13,7 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
-use game_layer::GameLayer;
-use host::IGameViewHost;
+use game_layer::{DomMouseEvent, GameLayer, GameLayerFactory};
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_input::{
@@ -48,7 +45,6 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_MOUSE_EVENT_KIND, COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS,
     COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, ICoreWebView2CompositionController,
@@ -58,7 +54,7 @@ use windows::{
         Foundation::{POINT, WAIT_FAILED, WAIT_OBJECT_0},
         Graphics::DirectComposition::DCompositionWaitForCompositorClock,
         Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod},
-        System::{Com::IDispatch, Threading::INFINITE, Variant::VARIANT},
+        System::Threading::INFINITE,
         UI::{
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
@@ -68,7 +64,7 @@ use windows::{
             },
         },
     },
-    core::{Interface, w},
+    core::Interface,
 };
 use winit::{
     application::ApplicationHandler,
@@ -83,19 +79,20 @@ use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 enum UserEvent {
     WakeCapture,
     CompositorTick,
-    FrontendReady,
-    Launch {
-        instance_id: String,
-        options: LaunchOptions,
-    },
-    CloseInstance(String),
-    GameMessage {
-        instance_id: String,
-        name: String,
-        args: serde_json::Value,
+    FrontendReady {
+        background: Option<DiscoveredGameLayer>,
+        background_error: Option<String>,
     },
     Layout(Vec<SurfaceLayout>),
+    GameLayerMessage(serde_json::Value),
+    GameLayerProxy(serde_json::Value),
     InputPriority(InputPriority),
+}
+
+#[derive(Debug)]
+struct DiscoveredGameLayer {
+    html: String,
+    base_url: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,8 +108,6 @@ const MAX_CAPTURE_EVENTS_PER_TURN: usize = 32;
 /// Composition-tree key for the single visual every stream shares when the
 /// shell composites them together. Not a real connection.
 const MERGED_VISUAL_KEY: u64 = u64::MAX;
-/// Name the page passes to `chrome.webview.getTextureStream`.
-const TEXTURE_STREAM_ID: &str = "snowglass-gameview";
 /// How many game views the layer document may show at once.
 ///
 /// This fixes how many chrome bands are kept, which is one more than the view
@@ -144,17 +139,15 @@ enum TurnPhase {
     Capture,
     Present,
     GameLayer,
-    TextureStream,
     Input,
     Overlay,
 }
 
 impl TurnPhase {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 5] = [
         Self::Capture,
         Self::Present,
         Self::GameLayer,
-        Self::TextureStream,
         Self::Input,
         Self::Overlay,
     ];
@@ -164,7 +157,6 @@ impl TurnPhase {
             Self::Capture => "capture",
             Self::Present => "present",
             Self::GameLayer => "layer",
-            Self::TextureStream => "stream",
             Self::Input => "input",
             Self::Overlay => "overlay",
         }
@@ -627,12 +619,14 @@ impl CompositorClock {
 struct ShellState {
     // Drop WebView2 and its COM host before tearing down their visual tree.
     foreground_webview: WebView,
-    _gameview_host: IGameViewHost,
     window: Window,
     composition: CompositionTree,
-    /// Lays out and paints everything behind the foreground WebView. The
-    /// built-in document is always used unless the CLI supplies an override.
+    /// Lays out and paints the document selected by the foreground page's
+    /// `<link rel="background">`, when it supplies one.
     game_layer: Option<GameLayer>,
+    /// Vello's D3D12 state is prepared before WebView2 initializes Chromium's
+    /// renderer, then consumed if the page links a game-layer document.
+    game_layer_factory: Option<GameLayerFactory>,
     /// Bands the layer last painted, lowest first. Only these are placed in a
     /// merged plan, so a band that stopped being drawn stops being composited.
     chrome_bands_drawn: Vec<usize>,
@@ -650,15 +644,11 @@ struct ShellState {
     capture_work_pending: bool,
     compositor_clock: CompositorClock,
     profile: TurnProfile,
-    // Retained so the hosted background page keeps rendering and being captured.
     /// One window-spanning opaque swapchain shared by every stream. Opaque is
     /// what earns the overlay plane, and it is only safe to be opaque because
     /// the captured background fills the pixels no stream covers.
     merged: Option<D3d12Compositor>,
     merged_attached: bool,
-    texture_stream: Option<texture_stream::Publisher>,
-    texture_stream_requested_at: Option<Instant>,
-    /// Stream carrying the captured background page, if it has connected.
     session: String,
     surfaces: HashMap<u64, CapturedSurface>,
     target: Option<TargetProcess>,
@@ -671,6 +661,7 @@ struct ShellState {
     input_priority: InputPriority,
     cursor: POINT,
     dom_mouse_keys: u32,
+    game_layer_mouse_buttons: u8,
     foreground_hit_regions: Vec<ForegroundHitRegion>,
     foreground_mouse_capture: bool,
     last_input_state: String,
@@ -687,7 +678,6 @@ impl ShellState {
         let ShellOptions {
             viewer: options,
             foreground_url,
-            game_layer,
         } = options;
         if options.api != ViewerApi::D3d12 {
             return Err(
@@ -704,31 +694,15 @@ impl ShellState {
         )?;
         let composition = CompositionTree::new(&window)?;
         let session = unique_session();
-        let (html, base_url) = match game_layer {
-            Some(path) => {
-                let html = std::fs::read_to_string(&path).map_err(|error| {
-                    format!("reading the game layer at {}: {error}", path.display())
-                })?;
-                // Assets are resolved against the document, so the base has to
-                // be the real location rather than the working directory.
-                let base = std::fs::canonicalize(&path)?;
-                let base_url = url::Url::from_file_path(&base)
-                    .map_err(|()| format!("{} is not an absolute path", base.display()))?;
-                (html, base_url.to_string())
-            }
-            None => (
-                include_str!("../frontend/src/game-layer.html").to_owned(),
-                "snowglass:///game-layer.html".to_owned(),
-            ),
-        };
-        let size = window.inner_size();
-        let game_layer = Some(GameLayer::new(
-            &html,
-            base_url,
-            GAME_LAYER_VIEWS,
-            size.width,
-            size.height,
-        )?);
+        // The foreground page opts into a composed game layer with
+        // `<link rel="background">`. Its initialization bridge discovers and
+        // fetches that document before announcing that the frontend is ready.
+        //
+        // Prepare Vello before building WebView2. Initializing its D3D12 state
+        // after Chromium has started WARP faults inside d3d10warp.dll on this
+        // system; document discovery itself remains deferred to the page.
+        let game_layer_factory = Some(GameLayerFactory::new()?);
+        let game_layer = None;
         let foreground_visual = composition.foreground_visual()?;
         let foreground_proxy = proxy.clone();
         let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
@@ -745,35 +719,20 @@ impl ShellState {
                 };
                 match message.get("type").and_then(serde_json::Value::as_str) {
                     Some("frontendReady") => {
-                        let _ = foreground_proxy.send_event(UserEvent::FrontendReady);
-                    }
-                    Some("textureStreamReady") => {
-                        eprintln!("snowglass: the page is displaying the texture stream");
-                    }
-                    Some("textureStreamError") => {
-                        eprintln!(
-                            "snowglass: the page could not open the texture stream: {}",
-                            message
-                                .get("message")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("unknown")
-                        );
-                    }
-                    Some("textureStreamFrame") => {
-                        // `mediaTime` is the stamp the host wrote on the
-                        // texture, so the gap to now is how long that frame
-                        // took to reach the page.
-                        let stamp = message
-                            .get("mediaTime")
-                            .and_then(serde_json::Value::as_f64)
-                            .unwrap_or_default();
-                        let presented = message
-                            .get("presentedFrames")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or_default();
-                        eprintln!(
-                            "snowglass: texture stream displayed frame {presented} mediaTime={stamp:.6}"
-                        );
+                        let background = message.get("background").and_then(|background| {
+                            Some(DiscoveredGameLayer {
+                                html: background.get("html")?.as_str()?.to_owned(),
+                                base_url: background.get("url")?.as_str()?.to_owned(),
+                            })
+                        });
+                        let background_error = message
+                            .get("backgroundError")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
+                        let _ = foreground_proxy.send_event(UserEvent::FrontendReady {
+                            background,
+                            background_error,
+                        });
                     }
                     Some("setInputPriority") => {
                         let priority =
@@ -799,22 +758,23 @@ impl ShellState {
                             }
                         }
                     }
+                    Some("gameLayerMessage") => {
+                        let message = message
+                            .get("message")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        let _ = foreground_proxy.send_event(UserEvent::GameLayerMessage(message));
+                    }
+                    Some("gameLayerProxy") => {
+                        let Some(request) = message.get("request").cloned() else {
+                            return;
+                        };
+                        let _ = foreground_proxy.send_event(UserEvent::GameLayerProxy(request));
+                    }
                     _ => {}
                 }
             })
             .build(&window)?;
-
-        let gameview_host = host::create(proxy.clone());
-        let dispatch: IDispatch = gameview_host.cast()?;
-        let mut host_variant = VARIANT::from(dispatch);
-        let core: ICoreWebView2 = foreground_webview.webview();
-        // SAFETY: the variant owns an IDispatch reference for the duration of
-        // the call; WebView2 retains its own reference to the host object.
-        unsafe { core.AddHostObjectToScript(w!("snowglass"), &mut host_variant)? };
-
-        if std::env::var_os("SNOWGLASS_TEXTURE_STREAM_PROBE").is_some() {
-            probe_texture_stream(&foreground_webview);
-        }
 
         // A page driven by `requestAnimationFrame`, which is what Chromium
         // throttles when it decides a window is not being seen. Used to check
@@ -824,33 +784,6 @@ impl ShellState {
         let mut overlay = EguiOverlay::new(&window)?;
         composition.set_egui_overlay_content(&overlay.content()?)?;
         overlay.draw(&window)?;
-
-        // Publishing guest frames into the page, so they can be laid out and
-        // styled as DOM nodes instead of composited beneath it.
-        let texture_stream = std::env::var_os("SNOWGLASS_TEXTURE_STREAM")
-            .map(|_| -> Result<_, Box<dyn Error>> {
-                let adapter = adapter_for_luid(overlay.compositor.adapter_luid())?;
-                let origin = url::Url::parse(&foreground_url)
-                    .ok()
-                    .and_then(|url| url.origin().ascii_serialization().into())
-                    .ok_or("the frontend URL has no origin to allow")?;
-                let size = window.inner_size();
-                let publisher = texture_stream::Publisher::start(
-                    &foreground_webview.environment(),
-                    &adapter,
-                    TEXTURE_STREAM_ID,
-                    &origin,
-                    size.width.max(1),
-                    size.height.max(1),
-                )?;
-                eprintln!(
-                    "snowglass: texture stream '{TEXTURE_STREAM_ID}' created for {origin} at {}x{}",
-                    publisher.extent().0,
-                    publisher.extent().1
-                );
-                Ok(publisher)
-            })
-            .transpose()?;
 
         let input = InputTransport::bind(&session)?;
         let input_provider = None;
@@ -879,10 +812,10 @@ impl ShellState {
         composition.commit()?;
         Ok(Self {
             foreground_webview,
-            _gameview_host: gameview_host,
             window,
             composition,
             game_layer,
+            game_layer_factory,
             chrome_bands_drawn: Vec::new(),
             chrome_dirty: false,
             game_layer_refresh_pending: false,
@@ -895,8 +828,6 @@ impl ShellState {
             profile: TurnProfile::default(),
             merged: None,
             merged_attached: false,
-            texture_stream,
-            texture_stream_requested_at: None,
             session,
             surfaces: HashMap::new(),
             target,
@@ -909,6 +840,7 @@ impl ShellState {
             input_priority: InputPriority::Foreground,
             cursor: POINT::default(),
             dom_mouse_keys: 0,
+            game_layer_mouse_buttons: 0,
             foreground_hit_regions: Vec::new(),
             foreground_mouse_capture: false,
             last_input_state: String::new(),
@@ -921,16 +853,116 @@ impl ShellState {
         let Some(options) = self.pending_cli_launch.take() else {
             return;
         };
-        let Ok(options) = serde_json::to_string(&options) else {
+        let Ok(options) = serde_json::to_value(&options) else {
             return;
         };
-        let script = format!(
-            "window.postMessage({{ type: 'snowglass-cli-launch', options: {options} }}, '*');"
-        );
-        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
-            eprintln!("snowglass: delivering CLI launch to frontend failed: {error}");
-            self.pending_cli_launch = serde_json::from_str(&options).ok();
+        let Some(layer) = self.game_layer.as_mut() else {
+            eprintln!("snowglass: CLI launch requires a linked game layer");
+            return;
+        };
+        layer.post_message(&serde_json::json!({
+            "type": "snowglass-cli-launch",
+            "options": options,
+        }));
+        self.process_game_layer_commands();
+        self.flush_game_layer_messages();
+        self.flush_game_layer_proxy_messages();
+    }
+
+    fn process_game_layer_commands(&mut self) {
+        let commands = self
+            .game_layer
+            .as_mut()
+            .map(GameLayer::take_commands)
+            .unwrap_or_default();
+        for command in commands {
+            match command {
+                game_layer::GameLayerCommand::Launch {
+                    instance_id,
+                    options,
+                } => match serde_json::from_value::<LaunchOptions>(options) {
+                    Ok(options) => match options.validate() {
+                        Ok(()) => self.launch_game(instance_id, options),
+                        Err(error) => {
+                            self.emit_instance_event(
+                                &instance_id,
+                                "error",
+                                &serde_json::json!({ "message": error }),
+                            );
+                            self.emit_instance_event(
+                                &instance_id,
+                                "closed",
+                                &serde_json::Value::Null,
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        self.emit_instance_event(
+                            &instance_id,
+                            "error",
+                            &serde_json::json!({
+                                "message": format!("invalid LaunchOptions: {error}")
+                            }),
+                        );
+                        self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                    }
+                },
+                game_layer::GameLayerCommand::Close(instance_id) => self.close_game(&instance_id),
+                game_layer::GameLayerCommand::Message {
+                    instance_id,
+                    name,
+                    args,
+                } => self.game_message(&instance_id, &name, args),
+                game_layer::GameLayerCommand::Input(active) => {
+                    self.set_input_priority(if active {
+                        InputPriority::Game
+                    } else {
+                        InputPriority::Foreground
+                    });
+                }
+            }
         }
+    }
+
+    fn frontend_ready(
+        &mut self,
+        background: Option<DiscoveredGameLayer>,
+        background_error: Option<String>,
+    ) {
+        if let Some(error) = background_error {
+            eprintln!("snowglass: loading the linked game layer failed: {error}");
+        }
+        if let Some(background) = background {
+            let size = self.window.inner_size();
+            let Some(factory) = self.game_layer_factory.take() else {
+                eprintln!(
+                    "snowglass: ignoring a second game layer discovered at {}",
+                    background.base_url
+                );
+                self.deliver_cli_launch();
+                return;
+            };
+            let layer = factory.create(
+                &background.html,
+                background.base_url.clone(),
+                GAME_LAYER_VIEWS,
+                size.width,
+                size.height,
+            );
+            self.game_layer = Some(layer);
+            self.refresh_game_layer();
+            self.flush_game_layer_messages();
+            self.flush_game_layer_proxy_messages();
+            eprintln!(
+                "snowglass: using game layer discovered at {}",
+                background.base_url
+            );
+        } else {
+            // A page without the link does not use composed chrome and should
+            // not retain the renderer that was prepared solely for it.
+            self.game_layer_factory = None;
+        }
+        self.deliver_cli_launch();
     }
 
     fn launch_game(&mut self, instance_id: String, options: LaunchOptions) {
@@ -939,6 +971,26 @@ impl ShellState {
                 &instance_id,
                 "error",
                 &serde_json::json!({ "message": "another GameView instance is active" }),
+            );
+            self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+            return;
+        }
+        let invalid_background_attachment = self.game_layer.as_ref().and_then(|layer| {
+            options
+                .surfaces
+                .iter()
+                .find(|surface| !layer.validates_attachment(surface.attach, surface.index))
+                .map(|surface| surface.index)
+        });
+        if let Some(index) = invalid_background_attachment {
+            self.emit_instance_event(
+                &instance_id,
+                "error",
+                &serde_json::json!({
+                    "message": format!(
+                        "surface {index} does not attach to its background tracked-surface"
+                    )
+                }),
             );
             self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
             return;
@@ -1095,7 +1147,7 @@ impl ShellState {
         self.emit_instance_event(&active.instance_id, "closed", &serde_json::Value::Null);
     }
 
-    fn game_message(&self, instance_id: &str, name: &str, args: serde_json::Value) {
+    fn game_message(&mut self, instance_id: &str, name: &str, args: serde_json::Value) {
         if self
             .active_game
             .as_ref()
@@ -1110,7 +1162,7 @@ impl ShellState {
     }
 
     fn emit_instance_event(
-        &self,
+        &mut self,
         instance_id: &str,
         event_name: &str,
         payload: &serde_json::Value,
@@ -1120,10 +1172,20 @@ impl ShellState {
             "eventName": event_name,
             "payload": payload,
         });
+        let mut background_changed = false;
+        if let Some(layer) = self.game_layer.as_mut() {
+            layer.dispatch_game_view_event(&event);
+            background_changed = layer.needs_paint();
+        }
+        if background_changed {
+            self.refresh_game_layer();
+        }
         let script = format!("window.__snowglassGameViewNativeEvent?.({event});");
         if let Err(error) = self.foreground_webview.evaluate_script(&script) {
             eprintln!("snowglass: publishing GameView event failed: {error}");
         }
+        self.flush_game_layer_messages();
+        self.flush_game_layer_proxy_messages();
     }
 
     fn process_capture(&mut self) {
@@ -1751,30 +1813,60 @@ impl ShellState {
         }
     }
 
-    /// Takes hold of whatever the game layer will let the pointer move.
-    fn grab_game_layer(&mut self, x: f32, y: f32) -> bool {
-        self.game_layer
-            .as_mut()
-            .is_some_and(|layer| layer.grab(x, y))
-    }
-
-    /// Moves a grabbed box. Reports whether the pointer was spoken for, so a
-    /// drag does not also reach the guest underneath.
-    fn drag_game_layer(&mut self, x: f32, y: f32) -> bool {
+    /// Dispatches a regular DOM mouse event to the Deno-backed game layer.
+    /// Script claims the pointer from the guest by cancelling the event.
+    fn game_layer_mouse(
+        &mut self,
+        kind: &str,
+        x: f32,
+        y: f32,
+        button: u16,
+        pressed: Option<bool>,
+    ) -> bool {
+        let previous_buttons = self.game_layer_mouse_buttons;
+        if let Some(pressed) = pressed {
+            let flag = match button {
+                0 => 1,
+                1 => 4,
+                2 => 2,
+                3 => 8,
+                4 => 16,
+                _ => 0,
+            };
+            if pressed {
+                self.game_layer_mouse_buttons |= flag;
+            } else {
+                self.game_layer_mouse_buttons &= !flag;
+            }
+        }
         let Some(layer) = self.game_layer.as_mut() else {
+            self.game_layer_mouse_buttons = previous_buttons;
             return false;
         };
-        if !layer.is_dragging() {
-            return false;
+        let prevented = layer.mouse_event(DomMouseEvent {
+            kind,
+            x,
+            y,
+            button: button.min(u16::from(u8::MAX)) as u8,
+            buttons: self.game_layer_mouse_buttons,
+            ctrl_key: self.dom_mouse_keys & DOM_MK_CONTROL != 0,
+            shift_key: self.dom_mouse_keys & DOM_MK_SHIFT != 0,
+        });
+        let needs_paint = layer.needs_paint();
+        if !prevented {
+            self.game_layer_mouse_buttons = previous_buttons;
         }
-        if layer.drag_to(x, y) {
+        if needs_paint {
             if self.compositor_clock.is_pacing() {
                 self.game_layer_refresh_pending = true;
             } else {
                 self.refresh_game_layer();
             }
         }
-        true
+        self.flush_game_layer_messages();
+        self.flush_game_layer_proxy_messages();
+        self.process_game_layer_commands();
+        prevented
     }
 
     fn refresh_pending_game_layer(&mut self) {
@@ -1783,13 +1875,97 @@ impl ShellState {
         }
     }
 
-    fn release_game_layer(&mut self) -> bool {
+    fn game_layer_message(&mut self, message: serde_json::Value) {
+        let Some(layer) = self.game_layer.as_mut() else {
+            return;
+        };
+        layer.post_message(&message);
+        if layer.needs_paint() {
+            self.refresh_game_layer();
+        }
+        self.flush_game_layer_messages();
+        self.flush_game_layer_proxy_messages();
+        self.process_game_layer_commands();
+    }
+
+    fn game_layer_proxy(&mut self, request: serde_json::Value) {
+        let result = self
+            .game_layer
+            .as_mut()
+            .ok_or_else(|| "the foreground has no linked background document".to_owned())
+            .and_then(|layer| layer.proxy_request(&request));
+        if let Err(error) = result {
+            let id = request
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            self.send_game_layer_proxy_message(&serde_json::json!({
+                "type": "response",
+                "id": id,
+                "ok": false,
+                "error": {
+                    "name": "Error",
+                    "message": error,
+                },
+            }));
+            return;
+        }
+        if self.game_layer.as_ref().is_some_and(GameLayer::needs_paint) {
+            self.refresh_game_layer();
+        }
+        self.flush_game_layer_messages();
+        self.flush_game_layer_proxy_messages();
+        self.process_game_layer_commands();
+    }
+
+    fn poll_game_layer_runtime(&mut self) -> bool {
         let Some(layer) = self.game_layer.as_mut() else {
             return false;
         };
-        let dragging = layer.is_dragging();
-        layer.release();
-        dragging
+        if !layer.poll_runtime() {
+            return false;
+        }
+        if layer.needs_paint() {
+            self.refresh_game_layer();
+        }
+        self.flush_game_layer_messages();
+        self.flush_game_layer_proxy_messages();
+        self.process_game_layer_commands();
+        true
+    }
+
+    fn flush_game_layer_messages(&mut self) {
+        let messages = self
+            .game_layer
+            .as_mut()
+            .map(GameLayer::take_messages)
+            .unwrap_or_default();
+        for message in messages {
+            let value = serde_json::to_string(&message).unwrap_or_else(|_| "null".to_owned());
+            let script = format!("window.__snowglassGameLayerMessage({value});");
+            if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+                eprintln!("snowglass: delivering a game-layer message failed: {error}");
+            }
+        }
+    }
+
+    fn send_game_layer_proxy_message(&self, message: &serde_json::Value) {
+        let value = serde_json::to_string(message).unwrap_or_else(|_| "null".to_owned());
+        let script = format!("window.__snowglassGameLayerProxyMessage?.({value});");
+        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+            eprintln!("snowglass: delivering a game-layer proxy message failed: {error}");
+        }
+    }
+
+    fn flush_game_layer_proxy_messages(&mut self) {
+        let messages = self
+            .game_layer
+            .as_mut()
+            .map(GameLayer::take_proxy_messages)
+            .unwrap_or_default();
+        for message in messages {
+            self.send_game_layer_proxy_message(&message);
+        }
     }
 
     fn foreground_hit_test(&self) -> bool {
@@ -2234,7 +2410,7 @@ impl ShellState {
         let _ = self.foreground_webview.evaluate_script(&script);
     }
 
-    fn publish_targets_for(&self, instance_id: &str) {
+    fn publish_targets_for(&mut self, instance_id: &str) {
         let mut targets = self
             .surfaces
             .iter()
@@ -2303,12 +2479,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             .take()
             .expect("shell options are consumed exactly once");
         match ShellState::new(event_loop, self.proxy.clone(), options) {
-            Ok(mut state) => {
-                // The backdrop has to be on screen before any guest connects,
-                // otherwise the window shows through to nothing.
-                state.refresh_game_layer();
-                self.state = Some(state);
-            }
+            Ok(state) => self.state = Some(state),
             Err(error) => {
                 self.error = Some(error);
                 event_loop.exit();
@@ -2340,18 +2511,13 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 // rides the same present.
                 state.present_pending_surfaces(PRESENT_PERMIT_WAIT);
             }
-            UserEvent::FrontendReady => state.deliver_cli_launch(),
-            UserEvent::Launch {
-                instance_id,
-                options,
-            } => state.launch_game(instance_id, options),
-            UserEvent::CloseInstance(instance_id) => state.close_game(&instance_id),
-            UserEvent::GameMessage {
-                instance_id,
-                name,
-                args,
-            } => state.game_message(&instance_id, &name, args),
+            UserEvent::FrontendReady {
+                background,
+                background_error,
+            } => state.frontend_ready(background, background_error),
             UserEvent::Layout(layouts) => state.apply_layout(layouts),
+            UserEvent::GameLayerMessage(message) => state.game_layer_message(message),
+            UserEvent::GameLayerProxy(request) => state.game_layer_proxy(request),
             UserEvent::InputPriority(priority) => state.set_input_priority(priority),
         }
     }
@@ -2419,6 +2585,18 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 if let Some(connection) = state.pointer_routing.captured_connection() {
                     state.cancel_pointer_connection(connection);
                 }
+                for (button, flag) in [(0, 1), (1, 4), (2, 2), (3, 8), (4, 16)] {
+                    if state.game_layer_mouse_buttons & flag != 0 {
+                        state.game_layer_mouse(
+                            "mouseup",
+                            state.cursor.x as f32,
+                            state.cursor.y as f32,
+                            button,
+                            Some(false),
+                        );
+                    }
+                }
+                state.game_layer_mouse_buttons = 0;
                 if let Some(provider) = &state.input_provider {
                     provider.clear_keys();
                     provider.set_pointer(None);
@@ -2464,9 +2642,15 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     x: position.x.round() as i32,
                     y: position.y.round() as i32,
                 };
-                // A grabbed box holds the pointer until it is let go, ahead of
-                // everything else that might want it.
-                if state.drag_game_layer(position.x as f32, position.y as f32) {
+                // A background DOM handler that owns a pointer sequence stays
+                // ahead of everything underneath it.
+                if state.game_layer_mouse(
+                    "mousemove",
+                    position.x as f32,
+                    position.y as f32,
+                    0,
+                    None,
+                ) {
                     return;
                 }
                 if state.input_priority == InputPriority::Foreground
@@ -2491,27 +2675,39 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 || state.foreground_mouse_capture =>
             {
                 if let Some(button) = mouse_button(button) {
-                    // Letting go ends the drag wherever the pointer has got to,
-                    // which is why it is answered before anything else claims
-                    // the button.
-                    if button == 1
-                        && button_state == ElementState::Released
-                        && state.release_game_layer()
+                    let dom_button = match button {
+                        1 => 0,
+                        2 => 2,
+                        3 => 1,
+                        value => value.saturating_sub(1),
+                    };
+                    // Script-owned pointer sequences get their release before
+                    // anything underneath can claim it.
+                    if button_state == ElementState::Released
+                        && state.game_layer_mouse(
+                            "mouseup",
+                            state.cursor.x as f32,
+                            state.cursor.y as f32,
+                            dom_button,
+                            Some(false),
+                        )
                     {
                         return;
                     }
                     let foreground_hit = !consumed
                         && state.pointer_routing.captured_connection().is_none()
                         && state.foreground_hit_test();
-                    // A press on the layer's own chrome takes hold of it. This
-                    // comes before the foreground's blanket claim on the pointer
-                    // but after the regions it asked for by name: the chrome is
-                    // below the foreground, so anything the foreground put there
-                    // is on top of it.
-                    if button == 1
-                        && button_state == ElementState::Pressed
+                    // Background DOM gets the press after foreground hit
+                    // regions, but before the guest surface underneath.
+                    if button_state == ElementState::Pressed
                         && !foreground_hit
-                        && state.grab_game_layer(state.cursor.x as f32, state.cursor.y as f32)
+                        && state.game_layer_mouse(
+                            "mousedown",
+                            state.cursor.x as f32,
+                            state.cursor.y as f32,
+                            dom_button,
+                            Some(true),
+                        )
                     {
                         return;
                     }
@@ -2619,71 +2815,13 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             let entered = state.profile.enter();
             state.publish_input_state();
             state.profile.record(TurnPhase::Input, entered);
-            // Only meaningful once the page has asked for the stream; the host
-            // has ten seconds from that request to present, so this rides the
-            // same tick the compositor already wakes on.
-            if let Some(publisher) = state.texture_stream.as_mut()
-                && !publisher.started()
-                && state.texture_stream_requested_at.is_none()
-            {
-                // The page has to ask for the stream before the host may
-                // present into it.
-                let script = format!(
-                    r#"(async () => {{
-  if (window.__snowglassTextureStream) return;
-  window.__snowglassTextureStream = true;
-  try {{
-    const stream = await chrome.webview.getTextureStream("{TEXTURE_STREAM_ID}");
-    const video = document.createElement("video");
-    video.autoplay = true; video.muted = true; video.playsInline = true;
-    video.style.cssText = "position:fixed;left:0;top:0;width:320px;height:180px;z-index:99999";
-    video.srcObject = stream;
-    document.body.appendChild(video);
-    await video.play();
-    let reported = 0;
-    const onFrame = (now, meta) => {{
-      // `mediaTime` carries the host's stamp, so the page can report which
-      // frame it displayed and when it expects it on screen.
-      if (reported++ % 30 === 0) {{
-        chrome.webview.postMessage(JSON.stringify({{
-          type: "textureStreamFrame",
-          mediaTime: meta.mediaTime,
-          presentedFrames: meta.presentedFrames,
-          expectedDisplayTime: meta.expectedDisplayTime,
-          now,
-        }}));
-      }}
-      video.requestVideoFrameCallback(onFrame);
-    }};
-    video.requestVideoFrameCallback(onFrame);
-    chrome.webview.postMessage(JSON.stringify({{ type: "textureStreamReady" }}));
-  }} catch (error) {{
-    chrome.webview.postMessage(JSON.stringify({{
-      type: "textureStreamError", message: String(error),
-    }}));
-  }}
-}})();"#
-                );
-                if let Err(error) = state.foreground_webview.evaluate_script(&script) {
-                    eprintln!("snowglass: requesting the texture stream failed: {error}");
-                }
-                state.texture_stream_requested_at = Some(now);
-            }
-            let entered = state.profile.enter();
-            if let Some(publisher) = state.texture_stream.as_mut()
-                && publisher.started()
-            {
-                let stamp = performance_counter().unwrap_or_default() as u64;
-                match publisher.publish_test_pattern(stamp) {
-                    Ok(true) if publisher.frames() % 120 == 1 => {
-                        eprintln!("snowglass: texture stream frames={}", publisher.frames());
-                    }
-                    Ok(_) => {}
-                    Err(error) => eprintln!("snowglass: texture stream publish failed: {error}"),
-                }
-            }
-            state.profile.record(TurnPhase::TextureStream, entered);
             state.poll_target();
+            if state.poll_game_layer_runtime() {
+                // Deno owns browser timers, fetch, WebSockets, promises, and
+                // inspector traffic. Keep that event loop moving even when
+                // the native window has no other reason to wake.
+                deadline = deadline.min(now + Duration::from_millis(16));
+            }
             if state.overlay.repaint_due(now) {
                 state.window.request_redraw();
             }
@@ -2715,59 +2853,6 @@ fn disconnect_from(
         (Some(compositor), _) => Renderer::disconnect_stream(compositor, connection),
         (None, Some(compositor)) => Renderer::disconnect_stream(compositor, connection),
         (None, None) => Ok(()),
-    }
-}
-
-/// Reports whether this WebView2 runtime exposes the experimental texture
-/// stream, which is what would let a guest frame become a DOM node in the
-/// page rather than a surface composited underneath it.
-///
-/// The interface only ships in prerelease SDKs, so `webview2-com` does not
-/// declare it and the identifier is taken from `WebView2Experimental.h`. A
-/// runtime without it fails the query and nothing else here can work.
-fn probe_texture_stream(webview: &WebView) {
-    // ICoreWebView2ExperimentalEnvironment12
-    const ENVIRONMENT12: windows::core::GUID =
-        windows::core::GUID::from_u128(0x96c27a45_f142_4873_80ad_9d0cd899b2b9);
-
-    let environment = webview.environment();
-    let mut queried: *mut std::ffi::c_void = std::ptr::null_mut();
-    // SAFETY: `environment` is a live COM interface and `queried` is a live
-    // out-parameter; the result is released immediately.
-    let result = unsafe {
-        use windows::core::Interface;
-        environment.query(&ENVIRONMENT12, &mut queried)
-    };
-    if result.is_ok() && !queried.is_null() {
-        // SAFETY: a successful query returned an owned reference.
-        unsafe {
-            let unknown = windows::core::IUnknown::from_raw(queried);
-            drop(unknown);
-        }
-        eprintln!("snowglass: WebView2 texture streams are available on this runtime");
-    } else {
-        eprintln!(
-            "snowglass: WebView2 texture streams are unavailable on this runtime ({result:?})"
-        );
-    }
-}
-
-/// Finds the adapter the compositor is using, so textures shared with WebView2
-/// are allocated on the same device.
-fn adapter_for_luid(
-    luid: snowglass_protocol::AdapterLuid,
-) -> Result<windows::Win32::Graphics::Dxgi::IDXGIAdapter, Box<dyn Error>> {
-    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory4};
-    // SAFETY: the factory and adapter are returned to the caller, which retains
-    // them for as long as they are used.
-    unsafe {
-        let factory: IDXGIFactory4 = CreateDXGIFactory1()?;
-        Ok(
-            factory.EnumAdapterByLuid::<IDXGIAdapter>(windows::Win32::Foundation::LUID {
-                LowPart: luid.low_part,
-                HighPart: luid.high_part,
-            })?,
-        )
     }
 }
 

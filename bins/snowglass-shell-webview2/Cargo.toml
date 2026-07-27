@@ -48,7 +48,6 @@ windows-core.workspace = true
 winit = "0.30.13"
 wry = { path = "../../../wry", default-features = false, features = ["os-webview", "transparent"] }
 pollster = "0.4"
-url = "2.5.8"
 vello = "0.6"
 # Vello rasterises through wgpu, but the compositor samples plain D3D12. The
 # HAL is how the texture Vello draws into is also a resource we can share.
@@ -60,6 +59,14 @@ windows-wgpu = { package = "windows", version = "0.58", features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi_Common",
 ] }
+deno_core = "0.409.0"
+deno_runtime = { version = "0.264.0", features = ["transpile"] }
+deno_semver = "=0.10.1"
+node_resolver = { version = "0.94.0", features = ["sync"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+rustls = { version = "0.23.40", default-features = false, features = ["aws_lc_rs"] }
+sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
+tokio = { version = "1.53.0", features = ["full"] }
 
 [build-dependencies]
 serde_json.workspace = true

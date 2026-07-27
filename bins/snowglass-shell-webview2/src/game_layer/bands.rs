@@ -5,7 +5,8 @@
 //! directly. So the paint pass forwards everything to real scenes except the
 //! nodes standing in for game views, which are recorded as rectangles instead.
 //!
-//! A game view is written as `<canvas src="N">`, which Blitz paints as a
+//! A game view is written as `<tracked-surface src="N">`, which Snowglass
+//! exposes to Blitz as a
 //! [`CustomPaint`] carrying the source id and the laid-out box. That is the
 //! same escape hatch a GPU backend uses to place externally-rendered content in
 //! a document, and it is fail-safe here: a backend that does not recognise a
@@ -30,8 +31,8 @@ const CLIP_TOLERANCE: f64 = 0.05;
 /// Where one game view landed, and which chrome band it is drawn over.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GamePlacement {
-    /// The `src` of the `<canvas>`, naming which tracked render target belongs
-    /// in this box.
+    /// The `src` of the `<tracked-surface>`, naming which tracked render target
+    /// belongs in this box.
     pub source_id: u64,
     pub rect: Rect,
     /// Index of the band painted immediately below this view. The view is

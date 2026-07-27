@@ -6,24 +6,29 @@
 //! this layer needs CSS layout and nothing else, so it can be driven by a
 //! renderer we control and composited without a browser in the path.
 //!
-//! A game view is written as `<canvas src="N">`, where N is the tracked render
-//! target. Painting diverts those into rectangles ([`bands::GamePlacement`])
+//! A game view is written as `<tracked-surface src="N">`, where N is the
+//! tracked render target. Painting diverts those into rectangles
+//! ([`bands::GamePlacement`])
 //! and splits the remaining chrome into bands, which the compositor stacks
 //! around them.
 
 mod bands;
-mod drag;
+mod deno;
 mod shared;
 
 use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
 pub use bands::GamePlacement;
 use blitz_dom::net::Resource;
+use blitz_dom::node::{CanvasData, SpecialElementData};
+use blitz_dom::{Document as _, LocalName, QualName, local_name, ns};
+use blitz_traits::events::{BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent};
 use blitz_traits::net::{BoxedHandler, NetProvider, Request, SharedCallback};
-use drag::Drag;
+pub use deno::Command as GameLayerCommand;
 pub use shared::SharedChrome;
 use shared::SharedTexture;
 use std::{
+    collections::HashMap,
     error::Error,
     sync::{
         Arc,
@@ -42,8 +47,9 @@ const PAINT_TIMING: &str = "SNOWGLASS_GAME_LAYER_TIMING";
 
 /// Loads the layer's own assets, and only those.
 ///
-/// The built-in document uses the private `snowglass:` scheme for assets
-/// embedded in the executable. An override may reference files beside itself.
+/// A linked document can use the private `snowglass:` scheme for assets
+/// embedded in the executable, while a `file:` document may reference files
+/// beside itself.
 /// There is nothing to fetch over a network, so `blitz-net` would bring an
 /// async runtime along to do less than this.
 struct LocalAssets {
@@ -104,42 +110,40 @@ pub struct GameLayer {
     /// Set whenever layout or content changed, so a paint is only spent when
     /// something can differ. Guest frames arriving do not dirty this layer.
     dirty: bool,
-    /// The box the pointer is currently moving, if any.
-    dragging: Option<Drag>,
-    /// Where the current drag last put it, so an unchanged position is not
-    /// re-applied and does not cost a repaint.
-    dragged_to: Option<(f32, f32)>,
+    /// The Deno isolate which runs scripts belonging to this document.
+    runtime: Option<deno::Runtime>,
+    /// React-created nodes use monotonically increasing JavaScript IDs while
+    /// Blitz allocates its own arena IDs. Initial parsed nodes are identity
+    /// mapped; these maps keep later mutations and hit testing in agreement.
+    script_to_dom: HashMap<usize, usize>,
+    dom_to_script: HashMap<usize, usize>,
+    mouse_down: Option<usize>,
 }
 
-impl GameLayer {
-    /// `views` is how many game views the document can show; it fixes the
-    /// number of chrome bands, which is one more than that. The document names
-    /// each one by its `<canvas src>`, so this is a capacity, not a mapping.
-    pub fn new(
-        html: &str,
-        base_url: String,
-        views: usize,
-        width: u32,
-        height: u32,
-    ) -> Result<Self, Box<dyn Error>> {
-        let (sender, arrivals) = channel();
-        let net = Arc::new(LocalAssets {
-            callback: Arc::new(
-                move |_doc: usize, result: Result<Resource, Option<String>>| {
-                    if let Ok(resource) = result {
-                        let _ = Sender::send(&sender, resource);
-                    }
-                },
-            ),
-        });
-        let document = blitz_html::HtmlDocument::from_html(
-            html,
-            blitz_dom::DocumentConfig {
-                base_url: Some(base_url),
-                net_provider: Some(net),
-                ..Default::default()
-            },
-        );
+pub struct DomMouseEvent<'a> {
+    pub kind: &'a str,
+    pub x: f32,
+    pub y: f32,
+    pub button: u8,
+    pub buttons: u8,
+    pub ctrl_key: bool,
+    pub shift_key: bool,
+}
+
+/// GPU state prepared before WebView2 starts its renderer.
+///
+/// Creating Vello's D3D12 device and pipelines after Chromium has initialized
+/// its WARP path can crash inside `d3d10warp.dll`. The foreground URL still
+/// decides whether a layer document exists; this only reserves the renderer
+/// that will paint it if one is discovered.
+pub struct GameLayerFactory {
+    renderer: Renderer,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl GameLayerFactory {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
         // A device of its own rather than the compositor's: this rasterises
         // rarely and off the present path, so it has nothing to gain from
         // sharing a queue with the frames going to screen.
@@ -178,25 +182,106 @@ impl GameLayer {
         )
         .map_err(|error| format!("the game layer could not start Vello: {error}"))?;
 
-        let mut layer = Self {
-            document,
-            arrivals,
-            bands: (0..=views).map(|_| Scene::new()).collect(),
+        Ok(Self {
             renderer,
             device,
             queue,
+        })
+    }
+
+    /// `views` is how many game views the document can show; it fixes the
+    /// number of chrome bands, which is one more than that. The document names
+    /// each one by its `<tracked-surface src>`, so this is a capacity, not a
+    /// mapping.
+    pub fn create(
+        self,
+        html: &str,
+        base_url: String,
+        views: usize,
+        width: u32,
+        height: u32,
+    ) -> GameLayer {
+        let (sender, arrivals) = channel();
+        let net = Arc::new(LocalAssets {
+            callback: Arc::new(
+                move |_doc: usize, result: Result<Resource, Option<String>>| {
+                    if let Ok(resource) = result {
+                        let _ = Sender::send(&sender, resource);
+                    }
+                },
+            ),
+        });
+        let mut document = blitz_html::HtmlDocument::from_html(
+            html,
+            blitz_dom::DocumentConfig {
+                base_url: Some(base_url.clone()),
+                net_provider: Some(net),
+                ..Default::default()
+            },
+        );
+        initialise_tracked_surfaces(&mut document);
+        self.build(document, arrivals, html, &base_url, views, (width, height))
+    }
+}
+
+impl GameLayerFactory {
+    fn build(
+        self,
+        document: blitz_html::HtmlDocument,
+        arrivals: Receiver<Resource>,
+        html: &str,
+        source_name: &str,
+        views: usize,
+        viewport: (u32, u32),
+    ) -> GameLayer {
+        let (width, height) = viewport;
+        let script_to_dom = document
+            .as_ref()
+            .tree()
+            .iter()
+            .map(|(id, _)| (id, id))
+            .collect::<HashMap<_, _>>();
+        let dom_to_script = script_to_dom.clone();
+        let mut layer = GameLayer {
+            document,
+            arrivals,
+            bands: (0..=views).map(|_| Scene::new()).collect(),
+            renderer: self.renderer,
+            device: self.device,
+            queue: self.queue,
             targets: (0..=views).map(|_| None).collect(),
             placements: Vec::new(),
             width: 0,
             height: 0,
             dirty: true,
-            dragging: None,
-            dragged_to: None,
+            runtime: None,
+            script_to_dom,
+            dom_to_script,
+            mouse_down: None,
         };
         layer.resize(width, height);
-        Ok(layer)
+        // Scripts run after parsing, with a complete DOM just like deferred
+        // document scripts. Resolve once first so geometry APIs have useful
+        // values during initialisation.
+        layer.document.as_mut().resolve(1.0);
+        match deno::Runtime::new(
+            layer.document.as_ref(),
+            html,
+            source_name,
+            layer.width,
+            layer.height,
+        ) {
+            Ok(runtime) => layer.runtime = Some(runtime),
+            Err(error) => {
+                eprintln!("snowglass: starting game-layer JavaScript failed: {error}");
+            }
+        }
+        layer.apply_script_mutations();
+        layer
     }
+}
 
+impl GameLayer {
     pub fn resize(&mut self, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
         if (self.width, self.height) == (width, height) {
@@ -235,44 +320,200 @@ impl GameLayer {
         self.dirty = true;
     }
 
-    /// Whether a point lands on something the pointer may move, and if so,
-    /// takes hold of it.
-    ///
-    /// A point inside a game view is never a handle: the pointer belongs to the
-    /// guest there, so only the chrome around it grabs.
-    pub fn grab(&mut self, x: f32, y: f32) -> bool {
-        let document = self.document.as_ref();
-        let Some(node) = drag::find(document, x, y) else {
-            return false;
-        };
-        self.dragging = Some(Drag::start(document, node, x, y, (self.width, self.height)));
-        true
+    pub fn needs_paint(&self) -> bool {
+        self.dirty
     }
 
-    /// Moves whatever was grabbed. Returns whether anything actually shifted,
-    /// so a pointer that has not moved far enough to change the layout does not
-    /// cost a repaint.
-    pub fn drag_to(&mut self, x: f32, y: f32) -> bool {
-        let Some(drag) = self.dragging else {
+    /// Dispatches a mouse event through the JavaScript DOM. The return value is
+    /// true when script called `preventDefault`, which claims the pointer from
+    /// the guest surface below this layer.
+    pub fn mouse_event(&mut self, event: DomMouseEvent<'_>) -> bool {
+        let DomMouseEvent {
+            kind,
+            x,
+            y,
+            button,
+            buttons,
+            ctrl_key,
+            shift_key,
+        } = event;
+        let Some(target) = self.document.as_ref().hit(x, y).map(|hit| hit.node_id) else {
             return false;
         };
-        let offset = drag.offset_for(x, y);
-        if self.dragged_to == Some(offset) {
+        let targets_game_view = std::iter::successors(Some(target), |node| {
+            self.document
+                .as_ref()
+                .get_node(*node)
+                .and_then(|node| node.parent)
+        })
+        .any(|node| {
+            self.document
+                .as_ref()
+                .get_node(node)
+                .and_then(blitz_dom::Node::element_data)
+                .is_some_and(is_tracked_surface_element)
+        });
+        let Some(runtime) = self.runtime.as_mut() else {
             return false;
+        };
+        let native_event = deno::MouseEvent {
+            client_x: x,
+            client_y: y,
+            button,
+            buttons,
+            ctrl_key,
+            shift_key,
+            alt_key: false,
+            meta_key: false,
+        };
+        let script_target = self.dom_to_script.get(&target).copied().unwrap_or(target);
+        let result = runtime.dispatch_mouse(kind, script_target, native_event);
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("snowglass: dispatching game-layer {kind} failed: {error}");
+                Default::default()
+            }
+        };
+        let mut claimed = result.default_prevented || (result.handled && !targets_game_view);
+        if kind == "mousedown" {
+            self.mouse_down = Some(target);
+        } else if kind == "mouseup" {
+            let clicked = button == 0 && self.mouse_down.take() == Some(target);
+            if clicked {
+                match runtime.dispatch_mouse(
+                    "click",
+                    script_target,
+                    deno::MouseEvent {
+                        client_x: x,
+                        client_y: y,
+                        button,
+                        buttons,
+                        ctrl_key,
+                        shift_key,
+                        alt_key: false,
+                        meta_key: false,
+                    },
+                ) {
+                    Ok(click) => {
+                        claimed |= click.default_prevented || (click.handled && !targets_game_view);
+                    }
+                    Err(error) => {
+                        eprintln!("snowglass: dispatching game-layer click failed: {error}");
+                    }
+                }
+            }
         }
-        self.dragged_to = Some(offset);
-        drag::apply(self.document.as_mut(), drag.node(), offset);
-        self.dirty = true;
+        self.apply_script_mutations();
+        if !result.default_prevented {
+            let data = BlitzMouseButtonEvent {
+                x,
+                y,
+                button: match button {
+                    1 => MouseEventButton::Auxiliary,
+                    2 => MouseEventButton::Secondary,
+                    3 => MouseEventButton::Fourth,
+                    4 => MouseEventButton::Fifth,
+                    _ => MouseEventButton::Main,
+                },
+                buttons: MouseEventButtons::from_bits_truncate(buttons),
+                mods: Default::default(),
+            };
+            let event = match kind {
+                "mousedown" => Some(UiEvent::MouseDown(data)),
+                "mouseup" => Some(UiEvent::MouseUp(data)),
+                "mousemove" => Some(UiEvent::MouseMove(data)),
+                _ => None,
+            };
+            if let Some(event) = event {
+                self.document.handle_ui_event(event);
+            }
+        }
+        claimed
+    }
+
+    /// Delivers a structured message from the foreground WebView.
+    pub fn post_message(&mut self, message: &serde_json::Value) {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        if let Err(error) = runtime.post_message(message) {
+            eprintln!("snowglass: delivering a game-layer message failed: {error}");
+        }
+        self.apply_script_mutations();
+    }
+
+    /// Messages posted by the game-layer document for the foreground.
+    pub fn take_messages(&mut self) -> Vec<serde_json::Value> {
+        self.runtime
+            .as_mut()
+            .map(deno::Runtime::take_messages)
+            .unwrap_or_default()
+    }
+
+    pub fn proxy_request(&mut self, request: &serde_json::Value) -> Result<(), String> {
+        let runtime = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| "the background JavaScript runtime is unavailable".to_owned())?;
+        runtime
+            .proxy_request(request)
+            .map_err(|error| error.to_string())?;
+        self.apply_script_mutations();
+        Ok(())
+    }
+
+    pub fn take_proxy_messages(&mut self) -> Vec<serde_json::Value> {
+        self.runtime
+            .as_mut()
+            .map(deno::Runtime::take_proxy_messages)
+            .unwrap_or_default()
+    }
+
+    /// Verifies that the attachment is the background tracked-surface element
+    /// whose `src` names this tracked render-target index.
+    pub fn validates_attachment(&self, attachment: Option<usize>, index: u32) -> bool {
+        attachment
+            .and_then(|node| self.script_to_dom.get(&node).copied())
+            .and_then(|node| self.document.as_ref().get_node(node))
+            .and_then(blitz_dom::Node::element_data)
+            .is_some_and(|element| {
+                is_tracked_surface_element(element)
+                    && element
+                        .attr(local_name!("src"))
+                        .and_then(|source| source.parse::<u32>().ok())
+                        == Some(index)
+            })
+    }
+
+    pub fn take_commands(&mut self) -> Vec<deno::Command> {
+        self.runtime
+            .as_mut()
+            .map(deno::Runtime::take_commands)
+            .unwrap_or_default()
+    }
+
+    pub fn dispatch_game_view_event(&mut self, event: &serde_json::Value) {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        if let Err(error) = runtime.dispatch_game_view_event(event) {
+            eprintln!("snowglass: dispatching a background GameView event failed: {error}");
+        }
+        self.apply_script_mutations();
+    }
+
+    /// Advances timers, fetches, WebSockets, promises, and inspector traffic
+    /// without waiting for the JavaScript realm to become idle.
+    pub fn poll_runtime(&mut self) -> bool {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return false;
+        };
+        if let Err(error) = runtime.poll_event_loop() {
+            eprintln!("snowglass: polling game-layer JavaScript failed: {error}");
+        }
+        self.apply_script_mutations();
         true
-    }
-
-    pub fn release(&mut self) {
-        self.dragging = None;
-        self.dragged_to = None;
-    }
-
-    pub fn is_dragging(&self) -> bool {
-        self.dragging.is_some()
     }
 
     /// Re-lays out and repaints when something changed, handing each band to
@@ -296,6 +537,16 @@ impl GameLayer {
                 break;
             }
             self.document.as_mut().resolve(1.0);
+        }
+        if let Some(runtime) = self.runtime.as_mut()
+            && let Err(error) = runtime.sync(
+                self.document.as_ref(),
+                self.width,
+                self.height,
+                &self.dom_to_script,
+            )
+        {
+            eprintln!("snowglass: synchronising the game-layer DOM failed: {error}");
         }
 
         let started = std::time::Instant::now();
@@ -391,5 +642,307 @@ impl GameLayer {
             arrived = true;
         }
         arrived
+    }
+
+    fn apply_script_mutations(&mut self) {
+        let mutations = self
+            .runtime
+            .as_mut()
+            .map(deno::Runtime::take_mutations)
+            .unwrap_or_default();
+        if apply_dom_mutations(
+            &mut self.document,
+            &mut self.script_to_dom,
+            &mut self.dom_to_script,
+            mutations,
+        ) {
+            self.dirty = true;
+        }
+    }
+}
+
+fn apply_dom_mutations(
+    document: &mut blitz_html::HtmlDocument,
+    script_to_dom: &mut HashMap<usize, usize>,
+    dom_to_script: &mut HashMap<usize, usize>,
+    mutations: Vec<deno::Mutation>,
+) -> bool {
+    if mutations.is_empty() {
+        return false;
+    }
+    let mut mutator = document.as_mut().mutate();
+    for mutation in mutations {
+        match mutation {
+            deno::Mutation::CreateElement { node, tag } => {
+                let actual = mutator.create_element(
+                    QualName::new(None, ns!(html), LocalName::from(tag)),
+                    Vec::new(),
+                );
+                script_to_dom.insert(node, actual);
+                dom_to_script.insert(actual, node);
+            }
+            deno::Mutation::CreateText { node, text } => {
+                let actual = mutator.create_text_node(&text);
+                script_to_dom.insert(node, actual);
+                dom_to_script.insert(actual, node);
+            }
+            deno::Mutation::CreateComment { node } => {
+                let actual = mutator.create_comment_node();
+                script_to_dom.insert(node, actual);
+                dom_to_script.insert(actual, node);
+            }
+            deno::Mutation::AppendChild { parent, child } => {
+                let Some((parent, child)) = script_to_dom
+                    .get(&parent)
+                    .copied()
+                    .zip(script_to_dom.get(&child).copied())
+                else {
+                    continue;
+                };
+                mutator.append_children(parent, &[child]);
+            }
+            deno::Mutation::InsertBefore {
+                parent,
+                child,
+                before,
+            } => {
+                let Some((parent, child, before)) = script_to_dom
+                    .get(&parent)
+                    .copied()
+                    .zip(script_to_dom.get(&child).copied())
+                    .zip(script_to_dom.get(&before).copied())
+                    .map(|((parent, child), before)| (parent, child, before))
+                else {
+                    continue;
+                };
+                if mutator.parent_id(before) == Some(parent) {
+                    mutator.insert_nodes_before(before, &[child]);
+                }
+            }
+            deno::Mutation::RemoveChild { parent, child } => {
+                let Some((parent, child)) = script_to_dom
+                    .get(&parent)
+                    .copied()
+                    .zip(script_to_dom.get(&child).copied())
+                else {
+                    continue;
+                };
+                if mutator.parent_id(child) == Some(parent) {
+                    mutator.remove_node(child);
+                }
+            }
+            deno::Mutation::SetText { node, text } => {
+                if let Some(node) = script_to_dom.get(&node).copied() {
+                    mutator.set_node_text(node, &text);
+                }
+            }
+            deno::Mutation::SetAttribute { node, name, value } => {
+                let Some(node) = script_to_dom.get(&node).copied() else {
+                    continue;
+                };
+                let is_source = name == "src";
+                mutator.set_attribute(
+                    node,
+                    QualName::new(None, ns!(html), LocalName::from(name)),
+                    &value,
+                );
+                if is_source {
+                    set_tracked_surface_element(
+                        mutator.doc.get_node_mut(node),
+                        value.parse::<u64>().ok(),
+                    );
+                }
+            }
+            deno::Mutation::RemoveAttribute { node, name } => {
+                let Some(node) = script_to_dom.get(&node).copied() else {
+                    continue;
+                };
+                let is_source = name == "src";
+                mutator
+                    .clear_attribute(node, QualName::new(None, ns!(html), LocalName::from(name)));
+                if is_source {
+                    set_tracked_surface_element(mutator.doc.get_node_mut(node), None);
+                }
+            }
+        }
+    }
+    true
+}
+
+fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocument) {
+    let surfaces = document
+        .as_mut()
+        .tree()
+        .iter()
+        .filter_map(|(node, current)| {
+            let element = current.element_data()?;
+            if element.name.local.as_ref() != "tracked-surface" {
+                return None;
+            }
+            let source = element.attr(local_name!("src"))?.parse::<u64>().ok()?;
+            Some((node, source))
+        })
+        .collect::<Vec<_>>();
+    for (node, source) in surfaces {
+        set_tracked_surface_source(document, node, Some(source));
+    }
+}
+
+fn set_tracked_surface_source(
+    document: &mut blitz_html::HtmlDocument,
+    node: usize,
+    source: Option<u64>,
+) {
+    set_tracked_surface_element(document.as_mut().get_node_mut(node), source);
+}
+
+fn set_tracked_surface_element(node: Option<&mut blitz_dom::Node>, source: Option<u64>) {
+    let Some(element) = node
+        .and_then(blitz_dom::Node::element_data_mut)
+        .filter(|element| is_tracked_surface_element(element))
+    else {
+        return;
+    };
+    element.special_data = match source {
+        Some(source) => SpecialElementData::Canvas(CanvasData {
+            custom_paint_source_id: source,
+        }),
+        None => SpecialElementData::None,
+    };
+}
+
+fn is_tracked_surface_element(element: &blitz_dom::node::ElementData) -> bool {
+    element.name.local.as_ref() == "tracked-surface"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracked_surface_becomes_a_custom_paint_placeholder() {
+        let mut document = blitz_html::HtmlDocument::from_html(
+            r#"<style>.surface { display: block; width: 320px; height: 180px; }</style><tracked-surface class="surface" src="7"></tracked-surface>"#,
+            blitz_dom::DocumentConfig::default(),
+        );
+        initialise_tracked_surfaces(&mut document);
+        document
+            .as_mut()
+            .set_viewport(blitz_traits::shell::Viewport::new(
+                800,
+                600,
+                1.0,
+                blitz_traits::shell::ColorScheme::Dark,
+            ));
+        document.as_mut().resolve(1.0);
+        let surface = document
+            .as_ref()
+            .tree()
+            .iter()
+            .find_map(|(_, node)| {
+                node.element_data()
+                    .filter(|element| is_tracked_surface_element(element))
+            })
+            .unwrap();
+        assert_eq!(
+            surface
+                .canvas_data()
+                .map(|canvas| canvas.custom_paint_source_id),
+            Some(7)
+        );
+        let mut scenes = (0..2).map(|_| Scene::new()).collect::<Vec<_>>();
+        let mut painters = scenes
+            .iter_mut()
+            .map(VelloScenePainter::new)
+            .collect::<Vec<_>>();
+        let mut placements = Vec::new();
+        let mut scene = BandedScene::new(&mut painters, &mut placements);
+        blitz_paint::paint_scene(&mut scene, document.as_ref(), 1.0, 800, 600);
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].source_id, 7);
+        assert_eq!(placements[0].rect.width(), 320.0);
+        assert_eq!(placements[0].rect.height(), 180.0);
+    }
+
+    #[test]
+    fn dynamically_inserted_tracked_surfaces_are_placed() {
+        let html = r##"
+            <style>
+              :root, body, #root { width: 100%; height: 100%; margin: 0; }
+              .stage { position: absolute; inset: 0; }
+              .primary { position: absolute; inset: 16px; }
+              .secondary {
+                position: absolute;
+                right: 24px;
+                bottom: 24px;
+                width: 200px;
+                height: 100px;
+              }
+              .surface { position: absolute; inset: 0; width: 100%; height: 100%; }
+            </style>
+            <div id="root"></div>
+            <script>
+              const stage = document.createElement("section");
+              stage.className = "stage";
+              for (const [index, className] of [[0, "primary"], [1, "secondary"]]) {
+                const frame = document.createElement("div");
+                frame.className = className;
+                const surface = document.createElement("tracked-surface");
+                surface.className = "surface";
+                surface.setAttribute("src", String(index));
+                frame.appendChild(surface);
+                stage.appendChild(frame);
+              }
+              document.querySelector("#root").appendChild(stage);
+            </script>
+        "##;
+        let mut document =
+            blitz_html::HtmlDocument::from_html(html, blitz_dom::DocumentConfig::default());
+        document
+            .as_mut()
+            .set_viewport(blitz_traits::shell::Viewport::new(
+                800,
+                600,
+                1.0,
+                blitz_traits::shell::ColorScheme::Dark,
+            ));
+        document.as_mut().resolve(1.0);
+        let mut script_to_dom = document
+            .as_ref()
+            .tree()
+            .iter()
+            .map(|(id, _)| (id, id))
+            .collect::<HashMap<_, _>>();
+        let mut dom_to_script = script_to_dom.clone();
+        let mut runtime =
+            deno::Runtime::new(document.as_ref(), html, "snowglass:///test.html", 800, 600)
+                .unwrap();
+        apply_dom_mutations(
+            &mut document,
+            &mut script_to_dom,
+            &mut dom_to_script,
+            runtime.take_mutations(),
+        );
+        document.as_mut().resolve(1.0);
+
+        let mut scenes = (0..3).map(|_| Scene::new()).collect::<Vec<_>>();
+        let mut painters = scenes
+            .iter_mut()
+            .map(VelloScenePainter::new)
+            .collect::<Vec<_>>();
+        let mut placements = Vec::new();
+        let mut scene = BandedScene::new(&mut painters, &mut placements);
+        blitz_paint::paint_scene(&mut scene, document.as_ref(), 1.0, 800, 600);
+        assert_eq!(
+            placements
+                .iter()
+                .map(|placement| placement.source_id)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(placements[0].rect.width(), 768.0);
+        assert_eq!(placements[0].rect.height(), 568.0);
+        assert_eq!(placements[1].rect.width(), 200.0);
+        assert_eq!(placements[1].rect.height(), 100.0);
     }
 }

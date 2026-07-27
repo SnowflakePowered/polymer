@@ -50,8 +50,9 @@ pub struct TrackedSurface {
     #[serde(default)]
     pub rotation: i32,
     pub selector: Option<String>,
-    /// Stable DOM attachment identifier assigned by the JavaScript wrapper.
-    pub attach: String,
+    /// Blitz node ID of the background `HTMLTrackedSurfaceElement`.
+    #[serde(default)]
+    pub attach: Option<usize>,
     #[serde(default)]
     pub webrtc: bool,
 }
@@ -100,6 +101,10 @@ impl GamepadMapping {
 
 impl LaunchOptions {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_inner(true)
+    }
+
+    fn validate_inner(&self, require_attachments: bool) -> Result<(), String> {
         if self.command.trim().is_empty() {
             return Err("command must not be empty".to_owned());
         }
@@ -120,8 +125,8 @@ impl LaunchOptions {
                     surface.index
                 ));
             }
-            if surface.attach.is_empty() {
-                return Err("surface attachment IDs must be non-empty".to_owned());
+            if require_attachments && surface.attach.is_none() {
+                return Err("every surface must attach to an HTMLTrackedSurfaceElement".to_owned());
             }
             if let Some(selector) = &surface.selector {
                 regex::Regex::new(selector)
@@ -199,7 +204,7 @@ impl LaunchOptions {
                 index: surface.index,
                 rotation: i32::from(surface.quarter_turns),
                 selector: surface.surface_pattern,
-                attach: format!("cli-game-view-target-{}", surface.index),
+                attach: None,
                 webrtc: webrtc.contains(&surface.index),
             })
             .collect();
@@ -215,7 +220,7 @@ impl LaunchOptions {
                 .as_ref()
                 .map(|_| options.bind_webrtc.to_string()),
         };
-        launch.validate()?;
+        launch.validate_inner(false)?;
         Ok(Some(launch))
     }
 }
@@ -269,7 +274,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_frontend_launch_options() {
+    fn validates_background_launch_options() {
         let launch: LaunchOptions = serde_json::from_str(
             r#"{
                 "command": "game.exe",
@@ -280,7 +285,7 @@ mod tests {
                     "index": 0,
                     "rotation": 0,
                     "selector": "Game",
-                    "attach": "target-0",
+                    "attach": 4,
                     "webrtc": false
                 }],
                 "gamepadMapping": []

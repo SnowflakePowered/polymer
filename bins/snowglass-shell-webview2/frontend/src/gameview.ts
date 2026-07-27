@@ -1,4 +1,6 @@
-import type { DetailedHTMLProps, HTMLAttributes } from "react";
+export interface HTMLTrackedSurfaceElement extends HTMLElement {
+  readonly preferredSize: Readonly<{ width: number; height: number }>;
+}
 
 export type GraphicsHook = "opengl" | "vulkan" | "d3d11" | "d3d12";
 
@@ -6,12 +8,8 @@ export type TrackedSurface = {
   index: number;
   rotation: number;
   selector?: string;
-  attach: HTMLElement;
+  attach: HTMLTrackedSurfaceElement;
   webrtc: boolean;
-};
-
-export type SerializedTrackedSurface = Omit<TrackedSurface, "attach"> & {
-  attach: string;
 };
 
 export type GamePadMapping = {
@@ -32,10 +30,6 @@ export type LaunchOptions = {
   webrtcBind?: string;
 };
 
-export type SerializedLaunchOptions = Omit<LaunchOptions, "surfaces"> & {
-  surfaces: SerializedTrackedSurface[];
-};
-
 export interface GameViewInstance {
   on(eventName: string, callback: (event: unknown) => void): void;
   readonly surfaces?: TrackedSurface[];
@@ -50,51 +44,36 @@ export interface GameViewManager {
   deactivateInput(): void;
 }
 
-export interface GameViewTargetElement extends HTMLElement {
-  readonly preferredSize: Readonly<{ width: number; height: number }>;
-  scaling: "integer" | "fit";
-  integerScaling: boolean;
-}
+/**
+ * An asynchronous reference into the background Deno realm.
+ *
+ * Chained property reads and method calls are sent to the background. Await
+ * the final read or call to obtain its value.
+ */
+export type BackgroundRemoteValue = {
+  (...args: unknown[]): Promise<unknown>;
+  readonly [property: string]: BackgroundRemoteValue;
+};
+
+export type BackgroundWindowProxy = BackgroundRemoteValue & {
+  postMessage(message: unknown): void;
+};
 
 declare global {
   interface Window {
-    gameView: GameViewManager;
-    snowglassGameView: GameViewManager;
-    readonly snowglassCliLaunchOptions?: SerializedLaunchOptions;
+    readonly gameView: GameViewManager;
+    readonly snowglassGameView: GameViewManager;
+    readonly gameLayer: EventTarget & {
+      readonly contentWindow: BackgroundWindowProxy;
+      postMessage(message: unknown): void;
+    };
   }
 
-  interface WindowEventMap {
-    snowglassclilaunch: CustomEvent<SerializedLaunchOptions>;
+  interface HTMLLinkElement {
+    readonly contentWindow: BackgroundWindowProxy | null;
   }
 
   interface HTMLElementTagNameMap {
-    "game-view-target": GameViewTargetElement;
+    "tracked-surface": HTMLTrackedSurfaceElement;
   }
-}
-
-declare module "react" {
-  namespace JSX {
-    interface IntrinsicElements {
-      "game-view-target": DetailedHTMLProps<HTMLAttributes<HTMLElement>, HTMLElement> & {
-        scaling?: "integer" | "fit";
-      };
-    }
-  }
-}
-
-export function subscribeToCliLaunch(
-  callback: (options: SerializedLaunchOptions) => void,
-): () => void {
-  let delivered: SerializedLaunchOptions | undefined;
-  const deliver = (options: SerializedLaunchOptions) => {
-    if (options === delivered) return;
-    delivered = options;
-    callback(options);
-  };
-  const listener = (event: WindowEventMap["snowglassclilaunch"]) => deliver(event.detail);
-  addEventListener("snowglassclilaunch", listener);
-  if (window.snowglassCliLaunchOptions) {
-    queueMicrotask(() => deliver(window.snowglassCliLaunchOptions!));
-  }
-  return () => removeEventListener("snowglassclilaunch", listener);
 }
