@@ -47,103 +47,15 @@ game-view-target {
   --game-view-scaling: integer;
 }
 
-.drc-controller {
-  --drc-screen-left: 23.3%;
-  --drc-screen-top: 21.9%;
-  --drc-screen-right: 21.4%;
-  --drc-screen-bottom: 19.6%;
 
+/* Holds an attach point for a surface the game layer draws. Nothing here is
+   seen: the layer owns where it goes and what frames it. */
+.layer-owned-surface {
   position: absolute;
-  right: 1.5rem;
-  bottom: 1.5rem;
-  width: clamp(18rem, 42vw, 44rem);
-  max-width: calc(100vw - 2rem);
-  aspect-ratio: 709 / 378;
-  filter: drop-shadow(0 0.75rem 1rem rgb(0 0 0 / 45%));
-  pointer-events: none;
-  user-select: none;
-  z-index: 20;
-  will-change: transform;
-}
-
-.drc-screen {
-  position: absolute;
-  inset:
-    var(--drc-screen-top)
-    var(--drc-screen-right)
-    var(--drc-screen-bottom)
-    var(--drc-screen-left);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 0;
+  height: 0;
   overflow: hidden;
   pointer-events: none;
-  z-index: 1;
-}
-
-.drc-screen game-view-target {
-  pointer-events: auto;
-}
-
-.drc-frame-image {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
-  clip-path: polygon(
-    evenodd,
-    0 0,
-    100% 0,
-    100% 100%,
-    0 100%,
-    0 0,
-    var(--drc-screen-left) var(--drc-screen-top),
-    var(--drc-screen-left) calc(100% - var(--drc-screen-bottom)),
-    calc(100% - var(--drc-screen-right)) calc(100% - var(--drc-screen-bottom)),
-    calc(100% - var(--drc-screen-right)) var(--drc-screen-top),
-    var(--drc-screen-left) var(--drc-screen-top),
-    0 0
-  );
-  pointer-events: none;
-  z-index: 2;
-}
-
-.drc-drag-region {
-  position: absolute;
-  display: block;
-  cursor: grab;
-  pointer-events: auto;
-  touch-action: none;
-  z-index: 3;
-}
-
-.drc-controller.is-dragging .drc-drag-region {
-  cursor: grabbing;
-}
-
-.drc-drag-region-top {
-  inset: 0 0 auto;
-  height: var(--drc-screen-top);
-}
-
-.drc-drag-region-bottom {
-  inset: auto 0 0;
-  height: var(--drc-screen-bottom);
-}
-
-.drc-drag-region-left {
-  top: var(--drc-screen-top);
-  bottom: var(--drc-screen-bottom);
-  left: 0;
-  width: var(--drc-screen-left);
-}
-
-.drc-drag-region-right {
-  top: var(--drc-screen-top);
-  right: 0;
-  bottom: var(--drc-screen-bottom);
-  width: var(--drc-screen-right);
 }
 
 .extra-surfaces {
@@ -184,7 +96,6 @@ game-view-target {
 }
 
 .primary-surface:hover .surface-label,
-.drc-controller:hover .surface-label,
 .extra-surface:hover .surface-label {
   opacity: 1;
 }
@@ -199,12 +110,6 @@ game-view-target {
 }
 
 @media (max-width: 42rem) {
-  .drc-controller {
-    right: 1rem;
-    bottom: 2.25rem;
-    width: min(72vw, 32rem);
-  }
-
   .primary-surface {
     inset: 0.5rem;
   }

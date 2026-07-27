@@ -2,15 +2,17 @@
 #![allow(unsafe_code)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     error::Error,
     ffi::c_void,
     mem::{ManuallyDrop, size_of},
     ptr,
+    time::{Duration, Instant},
 };
 
 use crate::renderer::{
-    CompositingPlan, ReceivedSurface, RenderWindow, SwapchainMode, webrtc::WebRtcCompositor,
+    CompositingPlan, PlanLayer, ReceivedSurface, RenderWindow, SwapchainMode, empty_interface,
+    webrtc::WebRtcCompositor,
 };
 use egui::{ClippedPrimitive, TextureId, epaint::Primitive};
 use raw_window_handle::RawWindowHandle;
@@ -36,6 +38,10 @@ const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
 
 const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
+/// Liveness bound on waiting for DXGI presentation capacity. Long enough that
+/// it never truncates a legitimate wait for the next refresh, short enough that
+/// a swapchain which stops signalling cannot stall an event loop.
+const FRAME_PERMIT_TIMEOUT_MS: u32 = 250;
 const FIRST_CONTENT_DESCRIPTOR: u32 = 0;
 const FIRST_EGUI_DESCRIPTOR: u32 = 64;
 const SWAPCHAIN_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -55,6 +61,136 @@ struct EguiTexture {
     descriptor: u32,
 }
 
+/// A persistently mapped upload heap that one frame's vertex and index data is
+/// suballocated from.
+///
+/// Every draw call used to create its own committed resource. That put a pair
+/// of kernel allocations between every quad, which the driver serialises
+/// against the same device the guest is rendering on, and it landed as
+/// present-time jitter rather than as an obvious cost anywhere.
+struct UploadArena {
+    buffer: Option<ID3D12Resource>,
+    address: u64,
+    /// The persistent mapping, held as an integer so the arena keeps the
+    /// auto traits the rest of the compositor has.
+    mapped: usize,
+    capacity: u64,
+    used: u64,
+}
+
+impl UploadArena {
+    const ALIGNMENT: u64 = 16;
+    const INITIAL_CAPACITY: u64 = 256 * 1024;
+
+    const fn new() -> Self {
+        Self {
+            buffer: None,
+            address: 0,
+            mapped: 0,
+            capacity: 0,
+            used: 0,
+        }
+    }
+
+    /// Hands the whole arena back at the start of a frame. Safe only once that
+    /// frame's fence has been waited on, since the GPU reads these bytes.
+    const fn reset(&mut self) {
+        self.used = 0;
+    }
+
+    /// Where `length` bytes starting from `used` land, or `None` when they do
+    /// not fit and the arena has to grow first.
+    const fn placement(used: u64, capacity: u64, length: u64) -> Option<u64> {
+        // Rounding up is itself fallible: `used` is bounded by `capacity` in
+        // practice, but an unchecked round would panic rather than report the
+        // miss it is supposed to report.
+        let Some(offset) = used.checked_next_multiple_of(Self::ALIGNMENT) else {
+            return None;
+        };
+        match offset.checked_add(length) {
+            Some(end) if end <= capacity => Some(offset),
+            _ => None,
+        }
+    }
+
+    /// The capacity a grown arena needs to hold `length` bytes.
+    const fn grown_capacity(capacity: u64, length: u64) -> u64 {
+        // Geometric, so a steady-state frame stops reallocating after the
+        // first few passes rather than growing once per draw call.
+        let doubled = capacity.saturating_mul(2);
+        let floor = if doubled > Self::INITIAL_CAPACITY {
+            doubled
+        } else {
+            Self::INITIAL_CAPACITY
+        };
+        let needed = length.next_multiple_of(Self::ALIGNMENT);
+        if floor > needed { floor } else { needed }
+    }
+
+    /// Copies `bytes` into the arena and returns the GPU address they live at.
+    fn write(
+        &mut self,
+        device: &ID3D12Device,
+        bytes: &[u8],
+        garbage: &mut Vec<ID3D12Resource>,
+    ) -> windows::core::Result<u64> {
+        let length = (bytes.len() as u64).max(1);
+        let mut offset = Self::placement(self.used, self.capacity, length);
+        if self.buffer.is_none() || offset.is_none() {
+            // The retired buffer stays alive in this frame's garbage, so views
+            // already recorded against it remain valid until the frame's fence
+            // passes.
+            self.replace(device, Self::grown_capacity(self.capacity, length), garbage)?;
+            offset = Self::placement(0, self.capacity, length);
+        }
+        let offset = offset.ok_or_else(|| {
+            windows::core::Error::from_hresult(windows::Win32::Foundation::E_OUTOFMEMORY)
+        })?;
+        // SAFETY: the buffer is mapped for its whole lifetime and the range
+        // [offset, offset + bytes.len()) was just checked to fit in it.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (self.mapped as *mut u8).add(offset as usize),
+                bytes.len(),
+            );
+        }
+        self.used = offset + length;
+        Ok(self.address + offset)
+    }
+
+    fn replace(
+        &mut self,
+        device: &ID3D12Device,
+        capacity: u64,
+        garbage: &mut Vec<ID3D12Resource>,
+    ) -> windows::core::Result<()> {
+        // SAFETY: the resource is created and mapped here and stays owned by
+        // this arena until it is retired into the frame's garbage.
+        let (buffer, address, mapped) = unsafe {
+            let buffer = create_upload_buffer(device, capacity)?;
+            let mut mapped = ptr::null_mut();
+            // An upload heap may stay mapped for its whole life; the empty read
+            // range says the CPU never reads back what it wrote.
+            buffer.Map(
+                0,
+                Some(&D3D12_RANGE { Begin: 0, End: 0 }),
+                Some(&mut mapped),
+            )?;
+            let address = buffer.GetGPUVirtualAddress();
+            (buffer, address, mapped)
+        };
+        self.address = address;
+        self.mapped = mapped as usize;
+        self.capacity = capacity;
+        self.used = 0;
+        if let Some(previous) = self.buffer.replace(buffer) {
+            garbage.push(previous);
+        }
+        Ok(())
+    }
+}
+
 struct ImportedSurface {
     connection: u64,
     surface_id: u64,
@@ -67,6 +203,123 @@ struct ImportedSurface {
     cache_state: D3D12_RESOURCE_STATES,
     latest: Option<FrameReady>,
     display_frame: Option<FrameReady>,
+}
+
+/// One present, linked back to the guest frame it carried.
+#[derive(Clone, Copy, Debug)]
+struct PresentedFrame {
+    /// DXGI's running present count at the moment this was presented, which is
+    /// what frame statistics later report back as displayed.
+    present_count: u32,
+    /// When the producer captured the frame this present carried, on the same
+    /// QPC clock the display's vblank is reported on.
+    captured_qpc: u64,
+}
+
+/// Measures how long a guest frame takes to reach the glass.
+///
+/// Every other latency figure in this codebase stops at some internal boundary
+/// — the producer stamps a frame, the consumer notes when it arrived — and none
+/// of them say anything about the part the user actually sees, which is
+/// dominated by waiting for a composition pass and a scanout. DXGI reports
+/// which vblank a given present went out on, so pairing that against the
+/// capture stamp measures the whole path on one clock.
+#[derive(Debug, Default)]
+struct DisplayLatency {
+    /// Presents issued but not yet known to have reached the display.
+    pending: VecDeque<PresentedFrame>,
+    samples: u32,
+    total_ms: f64,
+    worst_ms: f64,
+    report: Option<DisplayLatencyReport>,
+    started: Option<Instant>,
+}
+
+/// Guest-capture-to-scanout latency over one sampling window.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DisplayLatencyReport {
+    pub average_ms: f64,
+    pub worst_ms: f64,
+    /// Presents the display confirmed in this window. Far below the present
+    /// rate means most presents could not be attributed and the average is
+    /// drawn from a thin sample.
+    pub confirmed: u32,
+}
+
+impl DisplayLatency {
+    /// Bounds how many unconfirmed presents are tracked. Frame statistics can
+    /// go unavailable for stretches, and this is diagnostics: dropping the
+    /// oldest is right, growing without limit is not.
+    const PENDING_LIMIT: usize = 64;
+
+    fn record(&mut self, present_count: u32, captured_qpc: u64) {
+        if self.pending.len() >= Self::PENDING_LIMIT {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(PresentedFrame {
+            present_count,
+            captured_qpc,
+        });
+    }
+
+    /// Attributes a vblank to the present it displayed.
+    ///
+    /// `displayed_qpc` is only meaningful for the present DXGI names, so
+    /// everything older is discarded rather than guessed at: an earlier present
+    /// went out on an earlier vblank whose time was never sampled.
+    fn observe(&mut self, present_count: u32, displayed_qpc: u64, frequency: f64) {
+        while self
+            .pending
+            .front()
+            .is_some_and(|frame| frame.present_count < present_count)
+        {
+            self.pending.pop_front();
+        }
+        let Some(frame) = self
+            .pending
+            .front()
+            .filter(|frame| frame.present_count == present_count)
+            .copied()
+        else {
+            return;
+        };
+        self.pending.pop_front();
+        let Some(ticks) = displayed_qpc.checked_sub(frame.captured_qpc) else {
+            return;
+        };
+        let milliseconds = ticks as f64 * 1000.0 / frequency;
+        self.samples += 1;
+        self.total_ms += milliseconds;
+        self.worst_ms = self.worst_ms.max(milliseconds);
+    }
+
+    fn sample(&mut self, now: Instant) -> Option<DisplayLatencyReport> {
+        let started = *self.started.get_or_insert(now);
+        if now.saturating_duration_since(started) < crate::debug::STATISTICS_SAMPLE_INTERVAL {
+            return self.report;
+        }
+        if self.samples > 0 {
+            self.report = Some(DisplayLatencyReport {
+                average_ms: self.total_ms / f64::from(self.samples),
+                worst_ms: self.worst_ms,
+                confirmed: self.samples,
+            });
+        }
+        self.samples = 0;
+        self.total_ms = 0.0;
+        self.worst_ms = 0.0;
+        self.started = Some(now);
+        self.report
+    }
+}
+
+/// Shell-rasterised pixels the compositor holds so a plan can draw them
+/// between the streams.
+struct ChromeLayer {
+    resource: ID3D12Resource,
+    descriptor: u32,
+    /// The handle this was opened from, so an unchanged band is not reopened.
+    handle: isize,
 }
 
 pub struct D3d12Compositor {
@@ -94,18 +347,35 @@ pub struct D3d12Compositor {
     frame_values: [u64; FRAME_COUNT],
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
     frame_descriptors: [Vec<u32>; FRAME_COUNT],
+    frame_uploads: [UploadArena; FRAME_COUNT],
     surfaces: Vec<ImportedSurface>,
     // Standalone copy submission used to bound keyed-mutex holds; the main
     // command list executes too late to release the mutex promptly.
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     textures: HashMap<TextureId, EguiTexture>,
+    chrome: HashMap<u64, ChromeLayer>,
+    /// Chrome handed over since the last frame. Opening a shared texture takes
+    /// a descriptor slot, and a slot cannot be reused while an in-flight frame
+    /// still refers to it, so the work waits for the start of a frame.
+    chrome_opens: Vec<(u64, isize)>,
+    chrome_removals: Vec<u64>,
     free_descriptors: Vec<u32>,
+    display_latency: DisplayLatency,
+    /// QPC ticks per second, for turning vblank stamps into milliseconds.
+    counter_frequency: f64,
 }
 
 #[derive(Clone, Copy)]
 enum SwapchainTarget {
     Hwnd(HWND),
-    Composition { transparent: bool },
+    Composition {
+        transparent: bool,
+        /// DirectComposition still accepts a DXGI sync interval. The shared
+        /// opaque game surface uses one so its queue advances on vblank like
+        /// the lightweight HWND viewer, while auxiliary transparent visuals
+        /// remain nonblocking.
+        sync_interval: u32,
+    },
 }
 
 fn swapchain_target(window: &impl RenderWindow) -> Result<SwapchainTarget, Box<dyn Error>> {
@@ -141,7 +411,10 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new_default()?,
-            SwapchainTarget::Composition { transparent: false },
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 0,
+            },
             SwapchainMode::Shared,
         )
     }
@@ -155,7 +428,10 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new_default()?,
-            SwapchainTarget::Composition { transparent: true },
+            SwapchainTarget::Composition {
+                transparent: true,
+                sync_interval: 0,
+            },
             SwapchainMode::Shared,
         )
     }
@@ -207,7 +483,10 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new_default()?,
-            SwapchainTarget::Composition { transparent: false },
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 0,
+            },
             SwapchainMode::Dedicated(connection),
         )
     }
@@ -236,7 +515,10 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new(adapter)?,
-            SwapchainTarget::Composition { transparent: false },
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 0,
+            },
             SwapchainMode::Dedicated(connection),
         )
     }
@@ -251,7 +533,10 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new(adapter)?,
-            SwapchainTarget::Composition { transparent: false },
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 1,
+            },
             SwapchainMode::Shared,
         )
     }
@@ -278,7 +563,10 @@ impl D3d12Compositor {
         // SAFETY: all COM objects and the event are owned by this compositor and GPU work is
         // drained before resources referenced by a submitted command list are replaced.
         unsafe {
-            let is_composition = matches!(target, SwapchainTarget::Composition { .. });
+            let present_interval = match target {
+                SwapchainTarget::Hwnd(_) => 1,
+                SwapchainTarget::Composition { sync_interval, .. } => sync_interval,
+            };
             let swapchain_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             let description = DXGI_SWAP_CHAIN_DESC1 {
                 Width: extent.0,
@@ -299,9 +587,9 @@ impl D3d12Compositor {
                     SwapchainTarget::Composition { .. } => DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 },
                 AlphaMode: match target {
-                    SwapchainTarget::Composition { transparent: true } => {
-                        DXGI_ALPHA_MODE_PREMULTIPLIED
-                    }
+                    SwapchainTarget::Composition {
+                        transparent: true, ..
+                    } => DXGI_ALPHA_MODE_PREMULTIPLIED,
                     _ => DXGI_ALPHA_MODE_IGNORE,
                 },
                 Flags: swapchain_flags.0 as u32,
@@ -382,10 +670,7 @@ impl D3d12Compositor {
                 mode,
                 swapchain,
                 swapchain_flags,
-                // DirectComposition is synchronized by DWM. Blocking each
-                // composition swapchain independently would miss vblanks when
-                // a shell presents multiple visuals in one event-loop turn.
-                present_interval: u32::from(!is_composition),
+                present_interval,
                 frame_latency_waitable,
                 frame_permit: false,
                 extent,
@@ -405,10 +690,16 @@ impl D3d12Compositor {
                 frame_values: [0; FRAME_COUNT],
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
                 frame_descriptors: std::array::from_fn(|_| Vec::new()),
+                frame_uploads: std::array::from_fn(|_| UploadArena::new()),
                 surfaces: Vec::new(),
                 mutex_copy: None,
                 textures: HashMap::new(),
+                chrome: HashMap::new(),
+                chrome_opens: Vec::new(),
+                chrome_removals: Vec::new(),
                 free_descriptors: (FIRST_EGUI_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
+                display_latency: DisplayLatency::default(),
+                counter_frequency: counter_frequency(),
             })
         }
     }
@@ -435,16 +726,90 @@ impl D3d12Compositor {
     /// waiting for DXGI presentation capacity. All receiver swapchains use a
     /// one-frame latency waitable object so the display clock owns pacing.
     pub fn try_begin_frame(&mut self) -> bool {
-        if self.frame_permit || self.frame_latency_waitable.is_none() {
+        self.begin_frame_within(Duration::ZERO)
+    }
+
+    /// Blocks until DXGI has presentation capacity, so the caller can gather
+    /// the frame it is about to composite *after* the wait instead of before
+    /// it.
+    ///
+    /// Blocking inside `Present` at the end of a frame costs a whole refresh
+    /// interval of staleness: everything the frame was built from was sampled
+    /// before the wait rather than after it. Waiting here first is what makes
+    /// the composited image one vblank old instead of two.
+    pub fn begin_frame(&mut self) {
+        // The timeout is a liveness guard, not pacing: an occluded or otherwise
+        // stalled swapchain must not wedge the caller's event loop. Falling
+        // through on a timeout only means `Present` blocks instead.
+        self.begin_frame_within(Duration::from_millis(u64::from(FRAME_PERMIT_TIMEOUT_MS)));
+    }
+
+    /// Waits up to `budget` for presentation capacity, reporting whether it
+    /// arrived.
+    ///
+    /// A caller already paced by something else — a host waking on the
+    /// DirectComposition clock, say — wants a budget rather than either
+    /// extreme. DXGI releases the slot for the frame the compositor is retiring
+    /// slightly *after* that clock ticks, so polling misses it by a hair and
+    /// defers the present a whole interval, while waiting without a bound would
+    /// hand the display's pacing control over an event loop that has other work
+    /// to do.
+    ///
+    /// A permit already held is kept rather than waited for again. The waitable
+    /// object is a semaphore released once per completed present, so taking a
+    /// permit without presenting would leave the next wait with nothing to
+    /// consume.
+    pub fn begin_frame_within(&mut self, budget: Duration) -> bool {
+        if self.frame_permit {
             return true;
         }
-        self.frame_latency_waitable.is_some_and(|handle| {
-            // SAFETY: the handle belongs to this live swapchain and is only
-            // closed when the compositor is dropped.
-            let ready = unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 };
-            self.frame_permit = ready;
-            ready
-        })
+        let Some(handle) = self.frame_latency_waitable else {
+            return true;
+        };
+        // Round up, so a sub-millisecond budget still waits instead of quietly
+        // degrading into a poll. `WaitForSingleObject` reserves `INFINITE`.
+        let milliseconds = u32::try_from(budget.as_nanos().div_ceil(1_000_000))
+            .unwrap_or(INFINITE - 1)
+            .min(INFINITE - 1);
+        // SAFETY: the handle belongs to this live swapchain and is only closed
+        // when the compositor is dropped.
+        self.frame_permit = unsafe { WaitForSingleObject(handle, milliseconds) } == WAIT_OBJECT_0;
+        self.frame_permit
+    }
+
+    /// Reports how long guest frames are taking to reach the display.
+    ///
+    /// Call once per frame. DXGI names the vblank a present went out on, which
+    /// is paired here against the moment the producer captured that frame, so
+    /// the result spans the whole path — capture, transport, the wait for a
+    /// composition pass, and the scanout — on one clock. Panel response is not
+    /// included; nothing on this side can see it.
+    ///
+    /// `None` until enough presents have been confirmed, and on backends or
+    /// swapchains where DXGI declines to report statistics at all.
+    pub fn display_latency(&mut self) -> Option<DisplayLatencyReport> {
+        // SAFETY: the swapchain is live for the compositor's lifetime.
+        //
+        // Statistics are unavailable on some configurations and go disjoint
+        // across mode changes, both reported as an error. Neither is worth
+        // surfacing: this is diagnostics, and the next frame usually recovers.
+        let mut statistics = DXGI_FRAME_STATISTICS::default();
+        if unsafe { self.swapchain.GetFrameStatistics(&mut statistics) }.is_ok() {
+            // `SyncQPCTime` timestamps the vblank named by `SyncRefreshCount`.
+            // It only dates the present when that present went out on the very
+            // same vblank; otherwise the present's own vblank was never
+            // timestamped, and inferring one would require a refresh period
+            // this does not have. Skipping those keeps every sample measured
+            // rather than modelled.
+            if statistics.PresentRefreshCount == statistics.SyncRefreshCount {
+                self.display_latency.observe(
+                    statistics.PresentCount,
+                    statistics.SyncQPCTime as u64,
+                    self.counter_frequency,
+                );
+            }
+        }
+        self.display_latency.sample(Instant::now())
     }
 
     pub(crate) fn import_stream(
@@ -657,6 +1022,9 @@ impl D3d12Compositor {
         let frame_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() } as usize;
         self.wait_frame(frame_index)?;
         self.frame_garbage[frame_index].clear();
+        // The fence above is what makes reusing these bytes safe: the GPU has
+        // finished every draw that read from this frame's arena.
+        self.frame_uploads[frame_index].reset();
         self.free_descriptors
             .append(&mut self.frame_descriptors[frame_index]);
         let allocator = &self.allocators[frame_index];
@@ -667,6 +1035,7 @@ impl D3d12Compositor {
         }
 
         self.upload_texture_deltas(frame_index, &output.textures_delta.set)?;
+        self.upload_chrome(frame_index)?;
 
         let mut release_values = Vec::new();
         let mut video_captures = Vec::new();
@@ -682,6 +1051,10 @@ impl D3d12Compositor {
         } else {
             0
         };
+        // The oldest guest frame this present carries. A pass composing several
+        // streams is only as fresh as the stalest one on it, so latency is
+        // measured against that rather than the most recent.
+        let mut oldest_capture_qpc = None::<u64>;
         for index in 0..self.surfaces.len() {
             let mut surface = self.surfaces.remove(index);
             let mut captured = None;
@@ -765,6 +1138,13 @@ impl D3d12Compositor {
                     DXGI_FORMAT(surface.imported.format as i32),
                 ));
             }
+            if let Some(frame) = captured {
+                oldest_capture_qpc = Some(
+                    oldest_capture_qpc.map_or(frame.timestamp_qpc, |oldest: u64| {
+                        oldest.min(frame.timestamp_qpc)
+                    }),
+                );
+            }
             self.surfaces.insert(index, surface);
         }
 
@@ -844,6 +1224,13 @@ impl D3d12Compositor {
                 .Present(self.present_interval, DXGI_PRESENT(0))
                 .ok()?;
             self.frame_permit = false;
+            // Only presents that actually carried a new guest frame are worth
+            // attributing; a pass that redrew unchanged content would report
+            // the age of a frame the display had already shown.
+            if let Some(captured_qpc) = oldest_capture_qpc {
+                self.display_latency
+                    .record(self.swapchain.GetLastPresentCount()?, captured_qpc);
+            }
         }
         for texture_id in &output.textures_delta.free {
             if let Some(texture) = self.textures.remove(texture_id) {
@@ -854,15 +1241,20 @@ impl D3d12Compositor {
         Ok(true)
     }
 
+    /// Composites a plan with no interface drawn over it.
+    ///
+    /// Hosts that paint their own chrome contribute no egui pass, so this
+    /// hands the compositor an empty one rather than manufacturing a real
+    /// context to satisfy the signature. Building a fresh `egui::Context` per
+    /// frame rasterised the entire default font atlas and then re-uploaded it
+    /// as a texture delta on every present, for a UI whose contents were
+    /// always empty.
     pub fn draw_game_with_webrtc(
         &mut self,
         plan: &CompositingPlan,
         webrtc: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
-        let context = egui::Context::default();
-        let output = context.run(egui::RawInput::default(), |_| {});
-        let primitives = context.tessellate(output.shapes.clone(), output.pixels_per_point);
-        self.draw_with_webrtc(&output, &primitives, plan, webrtc)
+        self.draw_with_webrtc(&empty_interface(), &[], plan, webrtc)
     }
 
     fn draw_content(
@@ -870,55 +1262,81 @@ impl D3d12Compositor {
         frame_index: usize,
         plan: &CompositingPlan,
     ) -> Result<(), Box<dyn Error>> {
-        unsafe {
-            self.command_list.SetPipelineState(&self.content_pipeline);
-        }
         // Painter order follows the plan, not the order streams happened to be
         // imported in, so a shell that stacks surfaces gets the z-order it
-        // asked for.
+        // asked for. Chrome is interleaved rather than drawn first, because a
+        // stream can have chrome both below and above it.
+        let corners = |rect: snowglass_input::mouse::layout::Rect| {
+            let (x, y, w, h) = (rect.x, rect.y, rect.width as i32, rect.height as i32);
+            (
+                x as f32 / self.extent.0 as f32 * 2.0 - 1.0,
+                1.0 - y as f32 / self.extent.1 as f32 * 2.0,
+                (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0,
+                1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0,
+            )
+        };
         let draws = plan
-            .placements()
+            .layers()
             .iter()
-            .filter_map(|placement| {
-                let surface = self.surfaces.iter().find(|surface| {
-                    surface.connection == placement.connection
-                        && surface.surface_id == placement.surface_id
-                })?;
-                surface.display_frame.is_some().then_some(surface)
-            })
-            .filter_map(|surface| {
-                let rect = plan.rectangle(surface.connection, surface.surface_id)?;
-                let frame = surface.display_frame.expect("filtered display frame");
-                let (crop_w, crop_h) = crate::fit_inside(
-                    frame.render_width.max(1),
-                    frame.render_height.max(1),
-                    surface.imported.width,
-                    surface.imported.height,
-                );
-                let (x, y, w, h) = (rect.x, rect.y, rect.width as i32, rect.height as i32);
-                let l = x as f32 / self.extent.0 as f32 * 2.0 - 1.0;
-                let r = (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0;
-                let t = 1.0 - y as f32 / self.extent.1 as f32 * 2.0;
-                let b = 1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0;
-                let u = crop_w as f32 / surface.imported.width as f32;
-                let v = crop_h as f32 / surface.imported.height as f32;
-                Some((
-                    surface.descriptor,
-                    quad(
-                        l,
-                        t,
-                        r,
-                        b,
-                        u,
-                        v,
-                        surface.flip_y,
-                        surface.quarter_turns,
-                        [255; 4],
-                    ),
-                ))
+            .filter_map(|layer| match layer {
+                PlanLayer::Surface(placement) => {
+                    let surface = self.surfaces.iter().find(|surface| {
+                        surface.connection == placement.connection
+                            && surface.surface_id == placement.surface_id
+                    })?;
+                    let frame = surface.display_frame?;
+                    let (crop_w, crop_h) = crate::fit_inside(
+                        frame.render_width.max(1),
+                        frame.render_height.max(1),
+                        surface.imported.width,
+                        surface.imported.height,
+                    );
+                    let (l, t, r, b) = corners(placement.rectangle);
+                    let u = crop_w as f32 / surface.imported.width as f32;
+                    let v = crop_h as f32 / surface.imported.height as f32;
+                    Some((
+                        false,
+                        surface.descriptor,
+                        quad(
+                            l,
+                            t,
+                            r,
+                            b,
+                            u,
+                            v,
+                            surface.flip_y,
+                            surface.quarter_turns,
+                            [255; 4],
+                        ),
+                    ))
+                }
+                PlanLayer::Chrome { id, rectangle } => {
+                    let layer = self.chrome.get(id)?;
+                    let (l, t, r, b) = corners(*rectangle);
+                    // Chrome is mostly transparent by design — a band covering
+                    // only a bezel is empty everywhere else — so it composites
+                    // rather than overwriting what is already there.
+                    Some((
+                        true,
+                        layer.descriptor,
+                        quad(l, t, r, b, 1.0, 1.0, false, 0, [255; 4]),
+                    ))
+                }
             })
             .collect::<Vec<_>>();
-        for (descriptor, vertices) in draws {
+        let mut blending = None;
+        for (blend, descriptor, vertices) in draws {
+            if blending != Some(blend) {
+                blending = Some(blend);
+                // SAFETY: the command list is open for this frame.
+                unsafe {
+                    self.command_list.SetPipelineState(if blend {
+                        &self.egui_pipeline
+                    } else {
+                        &self.content_pipeline
+                    });
+                }
+            }
             self.draw_vertices(frame_index, descriptor, &vertices, None)?;
         }
         Ok(())
@@ -1000,15 +1418,16 @@ impl D3d12Compositor {
         indices: &[u32],
         scissor: RECT,
     ) -> Result<(), Box<dyn Error>> {
-        let vb = unsafe { upload_buffer(self.receiver.device(), as_bytes(vertices))? };
-        let ib = unsafe { upload_buffer(self.receiver.device(), as_bytes(indices))? };
+        let arena = &mut self.frame_uploads[frame_index];
+        let garbage = &mut self.frame_garbage[frame_index];
+        let device = self.receiver.device();
         let vbv = D3D12_VERTEX_BUFFER_VIEW {
-            BufferLocation: unsafe { vb.GetGPUVirtualAddress() },
+            BufferLocation: arena.write(device, as_bytes(vertices), garbage)?,
             SizeInBytes: size_of_val(vertices) as u32,
             StrideInBytes: size_of::<GpuVertex>() as u32,
         };
         let ibv = D3D12_INDEX_BUFFER_VIEW {
-            BufferLocation: unsafe { ib.GetGPUVirtualAddress() },
+            BufferLocation: arena.write(device, as_bytes(indices), garbage)?,
             SizeInBytes: size_of_val(indices) as u32,
             Format: DXGI_FORMAT_R32_UINT,
         };
@@ -1029,7 +1448,96 @@ impl D3d12Compositor {
             self.command_list
                 .DrawIndexedInstanced(indices.len() as u32, 1, 0, 0, 0);
         }
-        self.frame_garbage[frame_index].extend([vb, ib]);
+        Ok(())
+    }
+
+    /// Hands the compositor a texture to draw wherever a plan places
+    /// [`PlanLayer::Chrome`] with this `id`.
+    ///
+    /// `handle` is a Win32 shared handle to a premultiplied RGBA texture on
+    /// this adapter, which the compositor opens on its own device. The pixels
+    /// never leave the GPU: the shell rasterises them there and this samples
+    /// them there.
+    ///
+    /// The caller must have finished writing the texture before calling, since
+    /// nothing here waits on the device that produced it.
+    pub fn set_chrome_layer(&mut self, id: u64, handle: isize, width: u32, height: u32) {
+        if width == 0 || height == 0 || handle == 0 {
+            return;
+        }
+        // Reopening the same handle would allocate a second view of the same
+        // pixels for nothing; the shell repaints in place.
+        if self
+            .chrome
+            .get(&id)
+            .is_some_and(|held| held.handle == handle)
+        {
+            return;
+        }
+        self.chrome_opens.retain(|(existing, _)| *existing != id);
+        self.chrome_removals.retain(|existing| *existing != id);
+        self.chrome_opens.push((id, handle));
+    }
+
+    /// Releases a chrome layer the shell has stopped drawing.
+    pub fn drop_chrome_layer(&mut self, id: u64) {
+        self.chrome_opens.retain(|(existing, _)| *existing != id);
+        if self.chrome.contains_key(&id) && !self.chrome_removals.contains(&id) {
+            self.chrome_removals.push(id);
+        }
+    }
+
+    /// Whether anything is holding chrome, so a shell can tell an empty layer
+    /// from one it has not supplied yet.
+    pub fn has_chrome(&self) -> bool {
+        !self.chrome.is_empty() || !self.chrome_opens.is_empty()
+    }
+
+    fn upload_chrome(&mut self, frame_index: usize) -> Result<(), Box<dyn Error>> {
+        for id in std::mem::take(&mut self.chrome_removals) {
+            if let Some(layer) = self.chrome.remove(&id) {
+                self.frame_descriptors[frame_index].push(layer.descriptor);
+                self.frame_garbage[frame_index].push(layer.resource);
+            }
+        }
+        for (id, handle) in std::mem::take(&mut self.chrome_opens) {
+            // Never overwrite a shader-visible descriptor still referenced by
+            // another in-flight frame. Its old slot is recycled with that frame.
+            let descriptor = self
+                .free_descriptors
+                .pop()
+                .ok_or("descriptor heap exhausted opening chrome")?;
+            // SAFETY: the handle names a texture the shell created on this
+            // adapter and keeps alive; opening it yields our own reference.
+            let mut opened: Option<ID3D12Resource> = None;
+            unsafe {
+                self.receiver
+                    .device()
+                    .OpenSharedHandle(HANDLE(handle as *mut c_void), &mut opened)?;
+            }
+            let resource = opened.ok_or("opening a shared chrome texture returned nothing")?;
+            // SAFETY: the descriptor slot is free and the resource outlives it.
+            unsafe {
+                create_srv(
+                    self.receiver.device(),
+                    &self.srv_heap,
+                    self.srv_stride,
+                    descriptor,
+                    &resource,
+                )
+            };
+            if let Some(old) = self.chrome.insert(
+                id,
+                ChromeLayer {
+                    resource,
+                    descriptor,
+                    handle,
+                },
+            ) {
+                self.frame_descriptors[frame_index].push(old.descriptor);
+                self.frame_garbage[frame_index].push(old.resource);
+            }
+        }
         Ok(())
     }
 
@@ -1311,9 +1819,9 @@ unsafe fn create_srv(
     };
 }
 
-unsafe fn upload_buffer(
+unsafe fn create_upload_buffer(
     device: &ID3D12Device,
-    bytes: &[u8],
+    size: u64,
 ) -> windows::core::Result<ID3D12Resource> {
     let mut resource: Option<ID3D12Resource> = None;
     unsafe {
@@ -1325,7 +1833,7 @@ unsafe fn upload_buffer(
             D3D12_HEAP_FLAG_NONE,
             &D3D12_RESOURCE_DESC {
                 Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-                Width: bytes.len().max(1) as u64,
+                Width: size.max(1),
                 Height: 1,
                 DepthOrArraySize: 1,
                 MipLevels: 1,
@@ -1341,15 +1849,8 @@ unsafe fn upload_buffer(
             &mut resource,
         )?;
     }
-    let resource = resource
-        .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER))?;
-    let mut mapped = ptr::null_mut();
-    unsafe {
-        resource.Map(0, None, Some(&mut mapped))?;
-        ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
-        resource.Unmap(0, None);
-    }
-    Ok(resource)
+    resource
+        .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER))
 }
 
 unsafe fn upload_texture(
@@ -1369,7 +1870,7 @@ unsafe fn upload_texture(
     };
     let pitch = (size[0] * 4).div_ceil(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT as usize)
         * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT as usize;
-    let upload = unsafe { upload_buffer(device, &vec![0; pitch * size[1]])? };
+    let upload = unsafe { create_upload_buffer(device, (pitch * size[1]) as u64)? };
     let mut mapped = ptr::null_mut();
     unsafe {
         upload.Map(0, None, Some(&mut mapped))?;
@@ -1626,13 +2127,181 @@ fn gpu_handle(heap: &ID3D12DescriptorHeap, stride: u32, index: u32) -> D3D12_GPU
     h.ptr += u64::from(stride * index);
     h
 }
+/// QPC ticks per second, the clock producers stamp captures on and DXGI
+/// reports vblanks on.
+fn counter_frequency() -> f64 {
+    let mut frequency = 0i64;
+    // SAFETY: the out-parameter is a live local. A failure or a zero would
+    // divide, so the result is floored either way.
+    let queried = unsafe {
+        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+    };
+    if queried == 0 {
+        return 1.0;
+    }
+    (frequency as f64).max(1.0)
+}
+
 fn as_bytes<T>(items: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(items.as_ptr().cast(), size_of_val(items)) }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::quad;
+    use super::{DisplayLatency, UploadArena, quad};
+    use std::time::{Duration, Instant};
+
+    /// One tick of the QPC clock per millisecond, so latencies read directly.
+    const TEST_FREQUENCY: f64 = 1000.0;
+
+    /// A vblank timestamp only dates the present DXGI names alongside it.
+    /// Attributing it to the wrong present would silently report a latency the
+    /// display never had.
+    /// Arms the sampling window and returns the instant one window later, so a
+    /// test's first real `sample` is the one that reports.
+    fn armed(latency: &mut DisplayLatency) -> Instant {
+        let start = Instant::now();
+        assert_eq!(
+            latency.sample(start),
+            None,
+            "an empty window reports nothing"
+        );
+        start + crate::debug::STATISTICS_SAMPLE_INTERVAL
+    }
+
+    #[test]
+    fn a_vblank_dates_only_the_present_it_named() {
+        let mut latency = DisplayLatency::default();
+        let due = armed(&mut latency);
+        latency.record(10, 1_000);
+        latency.record(11, 1_016);
+        latency.record(12, 1_032);
+
+        // Present 11 displayed at 1032: 16 ticks after it was captured.
+        latency.observe(11, 1_032, TEST_FREQUENCY);
+        let report = latency.sample(due).expect("a confirmed present reports");
+        assert_eq!(report.confirmed, 1);
+        assert!((report.average_ms - 16.0).abs() < f64::EPSILON);
+
+        // Present 10 went out on an earlier, never-timestamped vblank. It must
+        // be discarded rather than dated with 11's, and 12 must survive to be
+        // matched on its own vblank.
+        latency.observe(12, 1_048, TEST_FREQUENCY);
+        let report = latency
+            .sample(due + crate::debug::STATISTICS_SAMPLE_INTERVAL)
+            .expect("a confirmed present reports");
+        assert_eq!(report.confirmed, 1);
+        assert!((report.average_ms - 16.0).abs() < f64::EPSILON);
+    }
+
+    /// Statistics stall and resume; an unrecorded present must not be
+    /// attributed to whatever happens to be queued.
+    #[test]
+    fn an_unknown_present_reports_nothing() {
+        let mut latency = DisplayLatency::default();
+        let due = armed(&mut latency);
+        latency.record(5, 1_000);
+        // Never recorded, and newer than everything queued.
+        latency.observe(9, 2_000, TEST_FREQUENCY);
+        assert_eq!(
+            latency.sample(due),
+            None,
+            "an unmatched vblank must not produce a sample"
+        );
+    }
+
+    /// A vblank stamped before the capture it supposedly displayed means the
+    /// clocks disagree; reporting a wrapped duration would be worse than
+    /// reporting nothing.
+    #[test]
+    fn a_vblank_older_than_its_capture_is_discarded() {
+        let mut latency = DisplayLatency::default();
+        let due = armed(&mut latency);
+        latency.record(1, 5_000);
+        latency.observe(1, 4_000, TEST_FREQUENCY);
+        assert_eq!(latency.sample(due), None);
+    }
+
+    /// Frame statistics can go unavailable for long stretches, and this is
+    /// diagnostics: it must not accumulate presents without bound.
+    #[test]
+    fn unconfirmed_presents_stay_bounded() {
+        let mut latency = DisplayLatency::default();
+        for present in 0..(DisplayLatency::PENDING_LIMIT as u32 * 4) {
+            latency.record(present, u64::from(present) * 16);
+        }
+        assert_eq!(latency.pending.len(), DisplayLatency::PENDING_LIMIT);
+        // The newest survive, so statistics resuming still finds a match.
+        assert_eq!(
+            latency.pending.back().map(|frame| frame.present_count),
+            Some(DisplayLatency::PENDING_LIMIT as u32 * 4 - 1)
+        );
+    }
+
+    /// The window reports the previous result until a new one is complete, so
+    /// the panel does not blank between samples.
+    #[test]
+    fn a_partial_window_keeps_the_last_report() {
+        let mut latency = DisplayLatency::default();
+        let start = Instant::now();
+        assert_eq!(latency.sample(start), None);
+        latency.record(1, 0);
+        latency.observe(1, 20, TEST_FREQUENCY);
+        let report = latency
+            .sample(start + crate::debug::STATISTICS_SAMPLE_INTERVAL)
+            .expect("the window elapsed");
+        assert!((report.average_ms - 20.0).abs() < f64::EPSILON);
+        assert_eq!(
+            latency.sample(
+                start + crate::debug::STATISTICS_SAMPLE_INTERVAL + Duration::from_millis(1)
+            ),
+            Some(report),
+            "a window still filling must not blank the report"
+        );
+    }
+
+    /// Suballocations must never overlap: two draw calls sharing a byte would
+    /// silently corrupt one of their meshes rather than fail.
+    #[test]
+    fn suballocations_are_aligned_and_disjoint() {
+        let capacity = UploadArena::INITIAL_CAPACITY;
+        let first = UploadArena::placement(0, capacity, 20).expect("an empty arena fits 20 bytes");
+        assert_eq!(first, 0);
+
+        // 20 bytes is one `GpuVertex`, so the next placement has to round up
+        // rather than start inside the bytes just written.
+        let second = UploadArena::placement(first + 20, capacity, 24).expect("still fits");
+        assert!(second >= first + 20, "second allocation overlaps the first");
+        assert_eq!(second % UploadArena::ALIGNMENT, 0);
+        assert_eq!(second, 32);
+    }
+
+    #[test]
+    fn a_request_past_the_end_reports_no_placement() {
+        assert_eq!(UploadArena::placement(0, 64, 65), None);
+        assert_eq!(UploadArena::placement(60, 64, 8), None);
+        // Exactly filling the arena is a fit, not an overflow.
+        assert_eq!(UploadArena::placement(0, 64, 64), Some(0));
+        // Rounding the offset up must not be allowed to wrap past the end.
+        assert_eq!(UploadArena::placement(u64::MAX - 1, u64::MAX, 8), None);
+    }
+
+    /// Growth is what keeps a steady-state frame from reallocating, so it has
+    /// to both double and always cover the request that forced it.
+    #[test]
+    fn growth_doubles_but_always_covers_the_request() {
+        assert_eq!(
+            UploadArena::grown_capacity(0, 16),
+            UploadArena::INITIAL_CAPACITY
+        );
+        assert_eq!(
+            UploadArena::grown_capacity(UploadArena::INITIAL_CAPACITY, 16),
+            UploadArena::INITIAL_CAPACITY * 2
+        );
+        let huge = UploadArena::INITIAL_CAPACITY * 100;
+        assert!(UploadArena::grown_capacity(UploadArena::INITIAL_CAPACITY, huge) >= huge);
+        assert_eq!(UploadArena::grown_capacity(u64::MAX, 16), u64::MAX);
+    }
 
     #[test]
     fn opengl_quad_reverses_texture_v() {

@@ -8,8 +8,9 @@ pub mod renderer;
 pub mod webrtc;
 
 pub use renderer::{
-    CompositingPlan, D3d12Compositor, MappedPointer, Presentation, ReceivedSurface, RenderWindow,
-    Renderer, SurfacePlacement, SwapchainMode, VideoSwapchain, VulkanCompositor, WebRtcCompositor,
+    CompositingPlan, D3d12Compositor, DisplayLatencyReport, MappedPointer, PlanLayer, Presentation,
+    ReceivedSurface, RenderWindow, Renderer, SurfacePlacement, SwapchainMode, VideoSwapchain,
+    VulkanCompositor, WebRtcCompositor,
 };
 pub use snowglass_input::mouse::layout::Extent;
 

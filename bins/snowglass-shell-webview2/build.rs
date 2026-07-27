@@ -8,16 +8,10 @@ use swc_common::{GLOBALS, Globals, SourceMap};
 
 fn main() {
     println!("cargo:rerun-if-changed=src/js/gameview.ts");
-    println!("cargo:rerun-if-changed=src/js/background.ts");
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     compile(&manifest, "src/js/gameview.ts", output.join("gameview.js"));
-    compile(
-        &manifest,
-        "src/js/background.ts",
-        output.join("background.js"),
-    );
 }
 
 fn compile(manifest: &Path, source: &str, output: PathBuf) {

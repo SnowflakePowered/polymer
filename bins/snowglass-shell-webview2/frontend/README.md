@@ -1,11 +1,12 @@
 # Snowglass WebView2 frontend
 
-This React application is independent from the native shell. Vite serves two
-entry points:
+This React application is independent from the native shell. Vite serves the
+transparent foreground UI from `shell.html`; it owns the
+`<game-view-target>` elements used to attach captured surfaces.
 
-- `shell.html` is the transparent foreground UI and owns all
-  `<game-view-target>` elements.
-- `back.html` is the background UI rendered below native game surfaces.
+The native shell renders `src/game-layer.html` with Blitz and composites its
+background, chrome, and captured game surfaces into one swapchain. That layer
+is selected by default; pass `--game-layer <HTML>` to use another document.
 
 Start the development server:
 
@@ -14,8 +15,7 @@ npm install
 npm run dev
 ```
 
-Then pass the foreground entry URL to the shell. The native shell derives the
-background URL by replacing the final path segment with `back.html`.
+Then pass the foreground entry URL to the shell.
 
 ```powershell
 cargo run --bin snowglass-shell-webview2 -- `

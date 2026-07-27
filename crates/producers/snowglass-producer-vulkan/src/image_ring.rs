@@ -101,7 +101,7 @@ impl ExportImageRing {
         if desc.slots == 0 || desc.extent.width == 0 || desc.extent.height == 0 {
             return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
         }
-   
+
         let desc = ExportImageRingDesc {
             format: match desc.format {
                 vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_UNORM,

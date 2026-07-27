@@ -242,6 +242,21 @@ unsafe fn swapchain_is_windowed(swapchain: *mut c_void) -> bool {
         && !fullscreen.as_bool()
 }
 
+/// The deepest present queue DXGI accepts.
+///
+/// Capture runs in `before_present`, so a frame is already in the ring before
+/// the guest's `Present` is forwarded at all: how many presents DXGI has queued
+/// behind it cannot make the captured frame any older. All the queue depth
+/// governs is how often `Present` blocks the guest's render thread.
+///
+/// A shallow queue therefore buys nothing and costs pacing. Holding the guest
+/// at one queued frame puts its frame timing back under the display's control —
+/// each `Present` waits out a full refresh interval, inherited jitter and all —
+/// which is exactly what forwarding a zero sync interval set out to remove. A
+/// deep queue lets `Present` return immediately and leaves the guest's own
+/// frame limiter as the only thing pacing capture.
+const GUEST_FRAME_LATENCY: u32 = 16;
+
 unsafe fn set_maximum_frame_latency(swapchain: *mut c_void, creation_device: *mut c_void) {
     let from_creation = (!creation_device.is_null())
         .then(|| unsafe { IUnknown::from_raw_borrowed(&creation_device) })
@@ -253,13 +268,15 @@ unsafe fn set_maximum_frame_latency(swapchain: *mut c_void, creation_device: *mu
         device.ok()
     });
     let Some(device) = device else {
-        crate::dxgi_log("snowglass: IDXGIDevice1 unavailable; frame-latency cap not applied");
+        crate::dxgi_log("snowglass: IDXGIDevice1 unavailable; frame latency left at its default");
         return;
     };
-    match unsafe { device.SetMaximumFrameLatency(1) } {
-        Ok(()) => crate::dxgi_log("snowglass: capped DXGI maximum frame latency at 1"),
+    match unsafe { device.SetMaximumFrameLatency(GUEST_FRAME_LATENCY) } {
+        Ok(()) => crate::dxgi_log(format!(
+            "snowglass: set DXGI maximum frame latency to {GUEST_FRAME_LATENCY} so presents do not pace the guest"
+        )),
         Err(error) => crate::dxgi_log(format!(
-            "snowglass: IDXGIDevice1::SetMaximumFrameLatency(1) failed: {error}"
+            "snowglass: IDXGIDevice1::SetMaximumFrameLatency({GUEST_FRAME_LATENCY}) failed: {error}"
         )),
     }
 }

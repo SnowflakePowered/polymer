@@ -149,6 +149,38 @@ struct Statistics {
     target_statistics_tracker: TargetStatisticsTracker,
     target_statistics: Vec<TargetStatisticsDiagnostics>,
     dropped: u64,
+    composited: u64,
+    repeated: u64,
+    composite_sampled: Option<Instant>,
+    composite_fps: f64,
+    repeat_fps: f64,
+    display_latency: Option<snowglass_renderer::DisplayLatencyReport>,
+}
+
+impl Statistics {
+    /// Records one composition pass and whether it had a guest frame to show.
+    ///
+    /// Every other number here is measured on the producer's clock, which says
+    /// nothing about what the display actually did with those frames. A guest
+    /// and a display running at nominally the same rate but with unlocked
+    /// phases keep perfect producer statistics while steadily showing one frame
+    /// twice and dropping the next; that only becomes visible as a repeat rate.
+    fn observe_composited(&mut self, has_new_frame: bool) {
+        self.composited += 1;
+        if !has_new_frame {
+            self.repeated += 1;
+        }
+        let started = *self.composite_sampled.get_or_insert_with(Instant::now);
+        let elapsed = started.elapsed();
+        if elapsed < snowglass_renderer::debug::STATISTICS_SAMPLE_INTERVAL {
+            return;
+        }
+        self.composite_fps = self.composited as f64 / elapsed.as_secs_f64();
+        self.repeat_fps = self.repeated as f64 / elapsed.as_secs_f64();
+        self.composited = 0;
+        self.repeated = 0;
+        self.composite_sampled = Some(Instant::now());
+    }
 }
 
 enum ViewerCompositor {
@@ -374,6 +406,23 @@ impl ViewerCompositor {
         }
     }
 
+    fn begin_frame(&mut self) {
+        match self {
+            Self::Vulkan(value) => Renderer::begin_frame(value.as_mut()),
+            Self::D3d12(value) => Renderer::begin_frame(value.as_mut()),
+            Self::Empty => {}
+        }
+    }
+
+    /// Only D3D12 can attribute a present to the vblank that displayed it, so
+    /// the other backends report nothing rather than an estimate.
+    fn display_latency(&mut self) -> Option<snowglass_renderer::DisplayLatencyReport> {
+        match self {
+            Self::D3d12(value) => value.display_latency(),
+            Self::Vulkan(_) | Self::Empty => None,
+        }
+    }
+
     fn disconnect_stream(
         &mut self,
         connection: u64,
@@ -570,6 +619,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     last_resize_windows = resize_windows;
                 }
+            }
+            // Spend the wait for the next present slot here rather than inside
+            // `Present` at the end of the redraw. Blocking afterwards
+            // composites guest frames and input that were already a full
+            // refresh interval old by the time they reached the screen;
+            // blocking first means the redraw below starts the moment the slot
+            // opens and draws from whatever is newest at that instant.
+            //
+            // This sits ahead of `request_redraw` deliberately. The redraw
+            // arrives as WM_PAINT, which Windows delivers only once nothing
+            // else is queued, so every input message that landed during the
+            // wait is dispatched before the frame that should reflect it.
+            let size = window.inner_size();
+            if size.width != 0 && size.height != 0 {
+                compositor.begin_frame();
             }
             window.request_redraw();
         }
@@ -1153,6 +1217,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         // an older capture back onto the screen and look like temporal ghosting.
                         return;
                     }
+                    stats.observe_composited(compositor.has_pending_frame());
+                    if let Some(latency) = compositor.display_latency() {
+                        stats.display_latency = Some(latency);
+                    }
                     if stats.target_statistics_tracker.sample() {
                         stats.target_statistics =
                             stats.target_statistics_tracker.statistics();
@@ -1162,7 +1230,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let last_pointer_sent = pointer_routing.last_sent();
                     let mut launch_requested = false;
                     let mut close_requested = false;
-                    let output = egui_context.run(input, |context| {
+                    let mut output = egui_context.run(input, |context| {
                         egui::TopBottomPanel::top("statistics").show(context, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.strong(format!(
@@ -1201,6 +1269,34 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                 }
                                 ui.label(format!("Dropped {}", stats.dropped));
+                                ui.label(format!(
+                                    "Composited {:.1}/s · repeated {:.1}/s",
+                                    stats.composite_fps, stats.repeat_fps
+                                ))
+                                .on_hover_text(
+                                    "Composition passes per second, and how many of them \
+                                     re-presented a frame the display had already shown. \
+                                     A steady repeat rate means the guest and the display \
+                                     are running at nominally the same rate with drifting \
+                                     phase.",
+                                );
+                                if let Some(latency) = stats.display_latency {
+                                    ui.colored_label(
+                                        egui::Color32::LIGHT_BLUE,
+                                        format!(
+                                            "To display {:.1} ms · worst {:.1} ms",
+                                            latency.average_ms, latency.worst_ms
+                                        ),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Guest capture to the vblank that scanned the frame \
+                                         out, measured on one clock: transport, the wait for \
+                                         a present slot, and the scanout. Panel response is \
+                                         not included. {} present(s) confirmed in the last \
+                                         window.",
+                                        latency.confirmed
+                                    ));
+                                }
                                 if let Some(sent) = last_pointer_sent {
                                     let color = if sent.sent_at.elapsed()
                                         <= Duration::from_millis(350)
@@ -1442,9 +1538,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                             Err(error) => launch_error = Some(error.to_string()),
                         }
                     }
-                    egui_state.handle_platform_output(&window, output.platform_output.clone());
-                    let primitives =
-                        egui_context.tessellate(output.shapes.clone(), output.pixels_per_point);
+                    // Both are consumed here and never read again, so they move
+                    // out rather than being copied out of the frame's output.
+                    egui_state
+                        .handle_platform_output(&window, std::mem::take(&mut output.platform_output));
+                    let primitives = egui_context
+                        .tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
                     let size = window.inner_size();
                     let presentation =
                         compositor.presentation(Extent::new(size.width, size.height));

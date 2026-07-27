@@ -64,8 +64,53 @@ pub fn clear_color() -> [f32; 4] {
     })
 }
 
+/// Everything a plan is derived from. Nothing else about a surface reaches the
+/// layout, so two presentations with equal keys always produce equal plans.
+#[derive(Clone, Eq, PartialEq)]
+struct PlanKey {
+    revision: u64,
+    extent: Extent,
+    surfaces: Vec<(u64, u64, Extent, bool)>,
+}
+
+thread_local! {
+    static PLAN_CACHE: RefCell<Option<(PlanKey, CompositingPlan)>> = const { RefCell::new(None) };
+}
+
+/// Resolves a presentation into the plan the compositor draws.
+///
+/// Callers ask for the plan several times per frame — once to draw, and again
+/// whenever a pointer moves or a guest window is measured — and each miss
+/// builds a Taffy tree, matches selectors, and formats per-target selector
+/// strings. Between two such calls the inputs are almost always identical, so
+/// the last answer is kept and returned until one of them actually changes.
 pub fn composition_plan(presentation: &Presentation) -> CompositingPlan {
     let surfaces = presentation.surfaces();
+    let key = PlanKey {
+        revision: layout_revision(),
+        extent: presentation.viewer_extent(),
+        surfaces: surfaces
+            .iter()
+            .map(|surface| {
+                (
+                    surface.connection,
+                    surface.surface_id,
+                    surface.image_extent,
+                    surface.flip_y,
+                )
+            })
+            .collect(),
+    };
+    if let Some(plan) = PLAN_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .filter(|(cached, _)| *cached == key)
+            .map(|(_, plan)| plan.clone())
+    }) {
+        return plan;
+    }
+
     let images = surfaces
         .iter()
         .map(|surface| surface.image_extent)
@@ -82,7 +127,16 @@ pub fn composition_plan(presentation: &Presentation) -> CompositingPlan {
             rectangle,
         })
         .collect();
-    CompositingPlan::new(clear_color(), placements)
+    let plan = CompositingPlan::new(clear_color(), placements);
+    PLAN_CACHE.with(|cache| *cache.borrow_mut() = Some((key, plan.clone())));
+    plan
+}
+
+fn layout_revision() -> u64 {
+    LAYOUT_SOURCE
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .revision
 }
 
 fn default_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Vec<Rect> {
@@ -555,6 +609,92 @@ mod tests {
     use std::sync::Mutex;
 
     static LAYOUT_TEST: Mutex<()> = Mutex::new(());
+
+    fn presentation(extent: Extent, images: &[Extent]) -> Presentation {
+        use snowglass_protocol::{FrameReady, PresentationTransform, StreamId};
+        Presentation::new(
+            extent,
+            images
+                .iter()
+                .enumerate()
+                .map(|(index, image)| snowglass_renderer::ReceivedSurface {
+                    connection: index as u64 + 1,
+                    surface_id: index as u64 + 1,
+                    target_window: 0,
+                    image_extent: *image,
+                    quarter_turns: 0,
+                    flip_y: false,
+                    frame: FrameReady {
+                        stream_id: StreamId(1),
+                        slot: 0,
+                        render_width: image.width,
+                        render_height: image.height,
+                        capture_x: 0,
+                        capture_y: 0,
+                        capture_width: image.width,
+                        capture_height: image.height,
+                        presentation_width: image.width,
+                        presentation_height: image.height,
+                        presentation_transform: PresentationTransform::axis_aligned(
+                            0,
+                            0,
+                            image.width,
+                            image.height,
+                        ),
+                        frame_number: 1,
+                        sync_value: 1,
+                        timestamp_qpc: 1,
+                    },
+                })
+                .collect(),
+        )
+    }
+
+    /// The plan is memoised across the several calls a frame makes, so a repeat
+    /// has to be indistinguishable from a rebuild — and every input that
+    /// changes the answer has to miss the cache.
+    #[test]
+    fn plans_are_reused_only_while_their_inputs_hold() {
+        let _guard = LAYOUT_TEST
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        configure(None).unwrap();
+
+        let one = presentation(Extent::new(320, 200), &[Extent::new(320, 200)]);
+        let first = composition_plan(&one);
+        assert_eq!(composition_plan(&one), first, "a repeat must not differ");
+
+        let resized = presentation(Extent::new(640, 400), &[Extent::new(320, 200)]);
+        assert_ne!(
+            composition_plan(&resized),
+            first,
+            "a new viewer extent must not be served the previous plan"
+        );
+        // Back to the original inputs: the cache now holds the resized plan, so
+        // this also proves a miss rebuilds rather than returning what it holds.
+        assert_eq!(composition_plan(&one), first);
+
+        let two = presentation(
+            Extent::new(320, 200),
+            &[Extent::new(320, 100), Extent::new(320, 100)],
+        );
+        assert_ne!(
+            composition_plan(&two),
+            first,
+            "a second surface must not be served a single-surface plan"
+        );
+
+        // Restyling changes the answer without changing anything about the
+        // presentation, which is what the revision in the key is there for.
+        let restyled = composition_plan(&one);
+        configure(Some("#viewer { background-color: #123456 }")).unwrap();
+        assert_ne!(
+            composition_plan(&one),
+            restyled,
+            "new CSS must not be served a plan built from the old sheet"
+        );
+        configure(None).unwrap();
+    }
 
     #[test]
     fn displayed_default_css_matches_the_builtin_layout() {

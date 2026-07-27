@@ -9,9 +9,26 @@ pub mod d3d12;
 pub mod vulkan;
 pub mod webrtc;
 
-pub use d3d12::D3d12Compositor;
+pub use d3d12::{D3d12Compositor, DisplayLatencyReport};
 pub use vulkan::VulkanCompositor;
 pub use webrtc::{VideoSwapchain, WebRtcCompositor};
+
+/// An egui frame that draws nothing, for compositing a plan on its own.
+///
+/// A host with no interface to contribute still has to satisfy the compositor's
+/// draw signature. Doing that by running a throwaway `egui::Context` is far
+/// from free: a fresh context rasterises the whole default font atlas, and the
+/// frame it produces carries that atlas in its texture deltas, so the
+/// compositor re-converts and re-uploads it on *every* present. An empty output
+/// skips the texture upload and the interface pass alike.
+///
+/// The scale is nominal rather than zero so nothing downstream divides by it.
+fn empty_interface() -> egui::FullOutput {
+    egui::FullOutput {
+        pixels_per_point: 1.0,
+        ..Default::default()
+    }
+}
 
 /// Final shell-supplied placement for one received surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +36,21 @@ pub struct SurfacePlacement {
     pub connection: u64,
     pub surface_id: u64,
     pub rectangle: Rect,
+}
+
+/// One thing a composition pass draws, in back-to-front order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlanLayer {
+    /// A received stream, drawn from the texture it was imported into.
+    Surface(SurfacePlacement),
+    /// Pixels the shell rasterised and handed to the compositor to hold, such
+    /// as the chrome painted around the game views.
+    ///
+    /// Chrome exists as a layer rather than as something drawn underneath
+    /// everything because a stream can have chrome both below and above it: a
+    /// handheld bezel sits over a fullscreen view while the backdrop sits under
+    /// it. Interleaving is the only way to say that.
+    Chrome { id: u64, rectangle: Rect },
 }
 
 /// Immutable instructions for one swapchain composition pass.
@@ -29,14 +61,23 @@ pub struct SurfacePlacement {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompositingPlan {
     clear_color: [f32; 4],
-    placements: Vec<SurfacePlacement>,
+    layers: Vec<PlanLayer>,
 }
 
 impl CompositingPlan {
+    /// A plan of nothing but received streams.
     pub fn new(clear_color: [f32; 4], placements: Vec<SurfacePlacement>) -> Self {
+        Self::layered(
+            clear_color,
+            placements.into_iter().map(PlanLayer::Surface).collect(),
+        )
+    }
+
+    /// A plan whose streams and shell-drawn chrome interleave.
+    pub fn layered(clear_color: [f32; 4], layers: Vec<PlanLayer>) -> Self {
         Self {
             clear_color,
-            placements,
+            layers,
         }
     }
 
@@ -44,13 +85,21 @@ impl CompositingPlan {
         self.clear_color
     }
 
-    pub fn placements(&self) -> &[SurfacePlacement] {
-        &self.placements
+    pub fn layers(&self) -> &[PlanLayer] {
+        &self.layers
+    }
+
+    /// The received streams alone, in the order they are drawn. Input mapping
+    /// and guest-window resizing care about streams and not about chrome.
+    pub fn placements(&self) -> impl Iterator<Item = &SurfacePlacement> {
+        self.layers.iter().filter_map(|layer| match layer {
+            PlanLayer::Surface(placement) => Some(placement),
+            PlanLayer::Chrome { .. } => None,
+        })
     }
 
     pub fn rectangle(&self, connection: u64, surface_id: u64) -> Option<Rect> {
-        self.placements
-            .iter()
+        self.placements()
             .find(|placement| {
                 placement.connection == connection && placement.surface_id == surface_id
             })
@@ -185,17 +234,26 @@ pub trait Renderer {
     fn received_surfaces(&self) -> Vec<ReceivedSurface>;
     fn has_pending_frame(&self) -> bool;
     fn recreate_swapchain(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>>;
+
+    /// Blocks until the backend has presentation capacity for another frame.
+    ///
+    /// Hosts call this *before* collecting the frames and input a composition
+    /// pass is built from, so what reaches the screen is what was available at
+    /// the start of the present slot rather than at the start of the previous
+    /// one. Backends that already block inside their present path leave this as
+    /// the default.
+    fn begin_frame(&mut self) {}
     fn draw(
         &mut self,
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
         plan: &CompositingPlan,
     ) -> Result<bool, Box<dyn Error>>;
+    /// Composites a plan with no interface drawn over it.
+    ///
+    /// See [`empty_interface`] for why this does not build a real context.
     fn draw_game(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
-        let context = egui::Context::default();
-        let output = context.run(egui::RawInput::default(), |_| {});
-        let primitives = context.tessellate(output.shapes.clone(), output.pixels_per_point);
-        self.draw(&output, &primitives, plan)
+        self.draw(&empty_interface(), &[], plan)
     }
 
     fn received_presentation(&self, viewer_extent: Extent) -> Presentation {
@@ -239,6 +297,10 @@ impl Renderer for D3d12Compositor {
 
     fn recreate_swapchain(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>> {
         self.resize(window)
+    }
+
+    fn begin_frame(&mut self) {
+        D3d12Compositor::begin_frame(self);
     }
 
     fn draw(
@@ -385,5 +447,65 @@ mod tests {
         assert_eq!(plan.rectangle(7, 9), Some(Rect::new(10, 20, 30, 40)));
         assert_eq!(plan.rectangle(9, 7), None);
         assert_eq!(plan.clear_color(), [0.25, 0.5, 0.75, 1.0]);
+    }
+
+    /// Chrome sits between the streams in draw order, but the callers that map
+    /// pointers and resize guest windows only know about streams. Both views of
+    /// the same plan have to stay consistent.
+    #[test]
+    fn chrome_layers_draw_between_streams_without_appearing_as_surfaces() {
+        let below = SurfacePlacement {
+            connection: 1,
+            surface_id: 1,
+            rectangle: Rect::new(0, 0, 800, 600),
+        };
+        let above = SurfacePlacement {
+            connection: 2,
+            surface_id: 1,
+            rectangle: Rect::new(600, 400, 200, 150),
+        };
+        let plan = CompositingPlan::layered(
+            [0.0; 4],
+            vec![
+                PlanLayer::Chrome {
+                    id: 0,
+                    rectangle: Rect::new(0, 0, 800, 600),
+                },
+                PlanLayer::Surface(below),
+                // The bezel, painted over the fullscreen view and under the
+                // handheld screen seated inside it.
+                PlanLayer::Chrome {
+                    id: 1,
+                    rectangle: Rect::new(0, 0, 800, 600),
+                },
+                PlanLayer::Surface(above),
+            ],
+        );
+
+        assert_eq!(plan.layers().len(), 4);
+        assert_eq!(
+            plan.placements().copied().collect::<Vec<_>>(),
+            vec![below, above],
+            "chrome must not be mistaken for a stream"
+        );
+        assert_eq!(plan.rectangle(2, 1), Some(above.rectangle));
+        assert_eq!(
+            plan.rectangle(0, 1),
+            None,
+            "a chrome id is not a connection"
+        );
+    }
+
+    /// A plan built from placements alone is every bit a layered plan, so the
+    /// compositor only has one path to walk.
+    #[test]
+    fn a_plan_without_chrome_is_all_surface_layers() {
+        let placement = SurfacePlacement {
+            connection: 7,
+            surface_id: 9,
+            rectangle: Rect::new(10, 20, 30, 40),
+        };
+        let plan = CompositingPlan::new([0.0; 4], vec![placement]);
+        assert_eq!(plan.layers(), [PlanLayer::Surface(placement)]);
     }
 }

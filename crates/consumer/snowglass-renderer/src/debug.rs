@@ -217,10 +217,74 @@ pub struct StatisticsSample {
     pub frame_interval_ms: f32,
 }
 
+/// Presentation rate against the display clock that is supposed to be pacing
+/// it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PacingRates {
+    pub presented: f64,
+    pub clock: f64,
+}
+
+/// Counts presents against composition-clock ticks.
+///
+/// A host that presents only when content changes cannot be judged by how often
+/// it repeats a frame, the way one presenting every refresh can: it never
+/// repeats. What matters instead is whether each composition interval received
+/// exactly one present. Presents landing at the clock's rate means every
+/// interval got a frame; falling short means intervals went by showing what
+/// they already had.
+#[derive(Clone, Debug, Default)]
+pub struct PacingTracker {
+    presented: u64,
+    clock: u64,
+    started: Option<Instant>,
+    rates: PacingRates,
+}
+
+impl PacingTracker {
+    pub const fn record_present(&mut self) {
+        self.presented += 1;
+    }
+
+    pub const fn record_clock(&mut self) {
+        self.clock += 1;
+    }
+
+    pub fn rates(&mut self) -> PacingRates {
+        self.rates_at(Instant::now())
+    }
+
+    fn rates_at(&mut self, now: Instant) -> PacingRates {
+        let started = *self.started.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(started);
+        if elapsed < STATISTICS_SAMPLE_INTERVAL {
+            return self.rates;
+        }
+        self.rates = PacingRates {
+            presented: self.presented as f64 / elapsed.as_secs_f64(),
+            clock: self.clock as f64 / elapsed.as_secs_f64(),
+        };
+        self.presented = 0;
+        self.clock = 0;
+        self.started = Some(now);
+        self.rates
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FrameDiagnostics {
     pub backend: String,
     pub consumer: String,
+    /// Zero until a host reports composition-clock pacing, which is what keeps
+    /// this out of overlays whose host does not have a clock to report.
+    pub pacing: PacingRates,
+    /// Host-specific lines appended to the panel. What limits a host's frame
+    /// rate is particular to how it is built, so the shared overlay carries
+    /// them rather than modelling any one host's internals.
+    pub notes: Vec<String>,
+    /// Guest capture to scanout, when the backend can attribute presents to
+    /// the vblank that displayed them.
+    pub display_latency: Option<crate::renderer::DisplayLatencyReport>,
     pub frame_number: u64,
     pub slot: u32,
     pub render_width: u32,
@@ -303,6 +367,45 @@ pub fn draw_debug_overlay(context: &egui::Context, diagnostics: &DebugOverlay) {
                 }
             }
             ui.label(format!("Dropped {}", frame.dropped));
+            if frame.pacing.clock > 0.0 {
+                let missed = (frame.pacing.clock - frame.pacing.presented).max(0.0);
+                ui.colored_label(
+                    if missed > frame.pacing.clock * 0.05 {
+                        egui::Color32::LIGHT_RED
+                    } else {
+                        egui::Color32::LIGHT_GREEN
+                    },
+                    format!(
+                        "Presented {:.1}/s · clock {:.1}/s",
+                        frame.pacing.presented, frame.pacing.clock
+                    ),
+                )
+                .on_hover_text(
+                    "Presents per second against composition-clock ticks per second. \
+                     Equal rates mean every composition interval received a frame; \
+                     presenting short of the clock means intervals went by still \
+                     showing the frame before.",
+                );
+            }
+            if let Some(latency) = frame.display_latency {
+                ui.colored_label(
+                    egui::Color32::LIGHT_BLUE,
+                    format!(
+                        "To display {:.1} ms · worst {:.1} ms",
+                        latency.average_ms, latency.worst_ms
+                    ),
+                )
+                .on_hover_text(format!(
+                    "Guest capture to the vblank that scanned the frame out, \
+                     measured on one clock: transport, the wait for a \
+                     composition pass, and the pass itself. Panel response is \
+                     not included. {} present(s) confirmed in the last window.",
+                    latency.confirmed
+                ));
+            }
+            for note in &frame.notes {
+                ui.monospace(note);
+            }
         });
     });
 
@@ -470,8 +573,57 @@ pub fn draw_statistics_graph(ui: &mut egui::Ui, history: &VecDeque<StatisticsSam
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameSequenceTracker, TargetStatisticsTracker};
+    use super::{FrameSequenceTracker, PacingRates, PacingTracker, TargetStatisticsTracker};
     use std::time::{Duration, Instant};
+
+    /// The whole point of the pair is comparability, so both rates have to come
+    /// from the same window — reading one must not resample the other.
+    #[test]
+    fn pacing_rates_share_one_sampling_window() {
+        let mut tracker = PacingTracker::default();
+        let started = Instant::now();
+        assert_eq!(tracker.rates_at(started), PacingRates::default());
+
+        // Two composition intervals out of every three carried a present.
+        for tick in 0..60 {
+            tracker.record_clock();
+            if tick % 3 != 0 {
+                tracker.record_present();
+            }
+        }
+        let rates = tracker.rates_at(started + Duration::from_secs(1));
+        assert_eq!(rates.clock, 60.0);
+        assert_eq!(rates.presented, 40.0);
+
+        // A window that has not elapsed reports the last full sample rather
+        // than a partial count that would read as a rate collapse.
+        tracker.record_clock();
+        assert_eq!(
+            tracker.rates_at(started + Duration::from_millis(1100)),
+            rates
+        );
+    }
+
+    #[test]
+    fn a_new_pacing_window_does_not_carry_the_previous_counts() {
+        let mut tracker = PacingTracker::default();
+        let started = Instant::now();
+        tracker.rates_at(started);
+        for _ in 0..120 {
+            tracker.record_clock();
+            tracker.record_present();
+        }
+        assert_eq!(
+            tracker.rates_at(started + Duration::from_secs(1)).clock,
+            120.0
+        );
+        for _ in 0..60 {
+            tracker.record_clock();
+        }
+        let second = tracker.rates_at(started + Duration::from_secs(2));
+        assert_eq!(second.clock, 60.0);
+        assert_eq!(second.presented, 0.0, "presents must not carry over");
+    }
 
     #[test]
     fn interleaved_streams_do_not_create_false_drops_or_intervals() {

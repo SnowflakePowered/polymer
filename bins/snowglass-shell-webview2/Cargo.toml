@@ -5,15 +5,22 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyrender = "0.6.2"
+anyrender_vello = "0.6.2"
+blitz-dom = "0.2.4"
+blitz-html = "0.2.0"
+blitz-paint = "0.2.1"
+blitz-traits = "0.2.0"
 clap = "4.6.1"
 egui = "0.29.1"
 egui-winit = "0.29.1"
+kurbo = "0.12"
+peniko = "0.5.0"
 raw-window-handle.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 snowglass-hook.workspace = true
-snowglass-hook-webview2 = { path = "../../crates/hooks/snowglass-hook-webview2" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true
@@ -40,7 +47,19 @@ windows = { workspace = true, features = [
 windows-core.workspace = true
 winit = "0.30.13"
 wry = { path = "../../../wry", default-features = false, features = ["os-webview", "transparent"] }
+pollster = "0.4"
 url = "2.5.8"
+vello = "0.6"
+# Vello rasterises through wgpu, but the compositor samples plain D3D12. The
+# HAL is how the texture Vello draws into is also a resource we can share.
+wgpu-hal = { version = "26", features = ["dx12"] }
+# The version wgpu-hal is built against. Its D3D12 types are distinct from the
+# workspace's newer `windows`, so the two meet at a shared HANDLE rather than
+# at a COM interface.
+windows-wgpu = { package = "windows", version = "0.58", features = [
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+] }
 
 [build-dependencies]
 serde_json.workspace = true

@@ -1,0 +1,103 @@
+<!doctype html>
+<!--
+  The game layer: the backdrop and the boxes the guest frames are shown in.
+
+  This is laid out and painted by the shell rather than by WebView2. A
+  `<canvas src="N">` is not painted at all: the compositor puts render target N
+  there instead, sampling its swapchain directly, so the guest frame reaches the
+  screen without passing through a renderer.
+
+  The `<canvas>` here is a placement marker, not a drawing surface: it has no
+  2D context and nothing scripts it. `data-snowglass-drag` marks a box the
+  pointer can move around; the shell writes `--snowglass-drag-x` and `-y` onto
+  it and this stylesheet decides what that does.
+
+  Only what this layer needs has to work, so `position: fixed`, `position:
+  sticky`, drawable canvas, and video are all absent by design — those belong
+  to the foreground, which is still a browser.
+-->
+<html>
+  <head>
+    <style>
+      :root, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      * { box-sizing: border-box; }
+
+      body { background: #555; }
+
+      .surface-stage { position: absolute; inset: 0; }
+
+      /* The main screen, filling the window under everything else. */
+      .primary-surface {
+        position: absolute;
+        inset: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        z-index: 0;
+      }
+
+      .game-view { display: block; flex: none; height: 100%; }
+
+      /* The handheld, sitting over the main screen bottom-right.
+
+         The bezel is the element's own backdrop rather than an image over a
+         cut-out, so the screen is simply a box positioned inside it. Its drop
+         shadow is baked into the artwork: `filter` is not supported here, and
+         a `box-shadow` would trace the element's rectangle rather than the
+         controller's silhouette. */
+      .drc-controller {
+        --drc-screen-left: 23.3%;
+        --drc-screen-top: 21.9%;
+        --drc-screen-right: 21.4%;
+        --drc-screen-bottom: 19.6%;
+
+        position: absolute;
+        /* Where a drag has moved it to. The shell only writes the two
+           properties; what they mean is decided here.
+
+           Offsetting the edges rather than applying a `transform`, because a
+           transform would move this element's own artwork and leave the game
+           view inside it behind: Blitz does not compose an ancestor's transform
+           onto its descendants yet. Layout it does compose, so the screen and
+           the frame travel together. */
+        right: calc(1.5rem - var(--snowglass-drag-x, 0px));
+        bottom: calc(1.5rem - var(--snowglass-drag-y, 0px));
+        width: clamp(18rem, 42vw, 44rem);
+        max-width: calc(100vw - 2rem);
+        aspect-ratio: 709 / 378;
+        background-image: url(assets/wiiu-drc.png);
+        background-size: 100% 100%;
+        background-repeat: no-repeat;
+        z-index: 20;
+      }
+
+      .drc-screen {
+        position: absolute;
+        inset:
+          var(--drc-screen-top)
+          var(--drc-screen-right)
+          var(--drc-screen-bottom)
+          var(--drc-screen-left);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        border-radius: 6px;
+        z-index: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="surface-stage">
+      <article class="primary-surface">
+        <canvas class="game-view" src="0"></canvas>
+      </article>
+      <div class="drc-controller" data-snowglass-drag>
+        <div class="drc-screen">
+          <canvas class="game-view" src="1"></canvas>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

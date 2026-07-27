@@ -1,18 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
-mod background_host;
 mod cli;
 mod composition;
+mod game_layer;
 mod host;
 mod input;
 mod launch;
+mod texture_stream;
 
 use api::{LaunchOptions, parse_input_binding};
 use cli::ShellOptions;
 use composition::{
-    CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, WebViewLayer,
+    CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
+    game_view_z_index,
 };
+use game_layer::GameLayer;
 use host::IGameViewHost;
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -24,12 +27,14 @@ use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{TargetProcess, performance_counter, performance_frequency};
 use snowglass_protocol::{PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
-    CompositingPlan, D3d12Compositor, Extent, Renderer, SurfacePlacement, WebRtcCompositor,
+    CompositingPlan, D3d12Compositor, DisplayLatencyReport, Extent, PlanLayer, Renderer,
+    SurfacePlacement, WebRtcCompositor,
     capture::{Capture, CaptureEvent, ConsumerPreference},
     cli::ViewerApi,
     debug::{
         DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
-        InputSlotDiagnostics, TargetStatisticsTracker, draw_debug_overlay,
+        InputSlotDiagnostics, PacingTracker, STATISTICS_SAMPLE_INTERVAL, TargetStatisticsTracker,
+        draw_debug_overlay,
     },
     input::PointerRoutingState,
     webrtc,
@@ -91,7 +96,6 @@ enum UserEvent {
     },
     Layout(Vec<SurfaceLayout>),
     InputPriority(InputPriority),
-    BackgroundMessage(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,11 +111,153 @@ const MAX_CAPTURE_EVENTS_PER_TURN: usize = 32;
 /// Composition-tree key for the single visual every stream shares when the
 /// shell composites them together. Not a real connection.
 const MERGED_VISUAL_KEY: u64 = u64::MAX;
-/// Target index for the background page, which occupies no tracked slot.
-const BACKGROUND_TARGET_INDEX: u32 = u32::MAX;
+/// Name the page passes to `chrome.webview.getTextureStream`.
+const TEXTURE_STREAM_ID: &str = "snowglass-gameview";
+/// How many game views the layer document may show at once.
+///
+/// This fixes how many chrome bands are kept, which is one more than the view
+/// count. Overshooting costs a command buffer each and nothing per frame, so it
+/// is set well above what a console layout needs rather than derived from the
+/// document, which can change under us.
+const GAME_LAYER_VIEWS: usize = 8;
 const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
+
+/// How long a compositor-clock tick waits for DXGI to return a present slot.
+///
+/// The clock ticks when DWM begins a composition pass; the slot for the frame
+/// that pass retires is released a moment later. Polling at the tick therefore
+/// misses it by a hair and defers the present a whole interval, which is the
+/// judder this budget exists to close. Expected waits are a fraction of a
+/// millisecond — the bound is only here so a stalled swapchain cannot hold the
+/// event loop, and the WebView2 host that shares this thread with it.
+const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
+
+/// Where an event-loop turn's wall time goes.
+///
+/// The shell runs WebView2, Vello, capture intake, and every present on one
+/// thread. A turn that runs long does not surface as an obviously slow
+/// function: it surfaces as coalesced compositor ticks and a present rate below
+/// the display's, which reads identically to a pacing bug. Attributing the time
+/// is what separates the two.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TurnPhase {
+    Capture,
+    Present,
+    GameLayer,
+    TextureStream,
+    Input,
+    Overlay,
+}
+
+impl TurnPhase {
+    const ALL: [Self; 6] = [
+        Self::Capture,
+        Self::Present,
+        Self::GameLayer,
+        Self::TextureStream,
+        Self::Input,
+        Self::Overlay,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::Present => "present",
+            Self::GameLayer => "layer",
+            Self::TextureStream => "stream",
+            Self::Input => "input",
+            Self::Overlay => "overlay",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// An open phase measurement, holding the enclosing phase's nested total so it
+/// can be restored when this one closes.
+#[derive(Clone, Copy, Debug)]
+struct PhaseEntry {
+    started: Instant,
+    outer_nested: Duration,
+}
+
+#[derive(Debug, Default)]
+struct TurnProfile {
+    spans: [Duration; TurnPhase::ALL.len()],
+    /// Time already attributed to phases nested inside the one currently open.
+    nested: Duration,
+    turns: u64,
+    started: Option<Instant>,
+    report: String,
+}
+
+impl TurnProfile {
+    /// Opens a phase. Phases nest — draining capture presents, and presenting
+    /// repaints chrome — so each reports the time it spent on its own work
+    /// rather than the time its callees spent. Otherwise the enclosing phase
+    /// always looks like the expensive one and names the wrong thing to cut.
+    fn enter(&mut self) -> PhaseEntry {
+        PhaseEntry {
+            started: Instant::now(),
+            outer_nested: std::mem::take(&mut self.nested),
+        }
+    }
+
+    fn record(&mut self, phase: TurnPhase, entry: PhaseEntry) {
+        let total = entry.started.elapsed();
+        self.spans[phase.index()] += total.saturating_sub(self.nested);
+        self.nested = entry.outer_nested + total;
+    }
+
+    /// Closes a turn, refreshing the report once a sampling window elapses.
+    ///
+    /// Costs are reported as milliseconds spent per second of wall clock, so a
+    /// phase reading 400 is eating 40% of the loop and a turn rate below the
+    /// refresh rate cannot be fixed by scheduling presents differently.
+    fn finish_turn(&mut self, now: Instant) {
+        self.turns += 1;
+        self.nested = Duration::ZERO;
+        let started = *self.started.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(started);
+        if elapsed < STATISTICS_SAMPLE_INTERVAL {
+            return;
+        }
+        let seconds = elapsed.as_secs_f64();
+        let mut phases = TurnPhase::ALL;
+        // Costliest first: the point of the line is to name what to cut.
+        phases.sort_by(|left, right| self.spans[right.index()].cmp(&self.spans[left.index()]));
+        let costs = phases
+            .iter()
+            .map(|phase| {
+                format!(
+                    "{} {:.0}",
+                    phase.label(),
+                    self.spans[phase.index()].as_secs_f64() * 1000.0 / seconds
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        self.report = format!(
+            "Loop {:.1} turns/s · {costs} ms/s",
+            self.turns as f64 / seconds
+        );
+        self.spans = <[Duration; TurnPhase::ALL.len()]>::default();
+        self.turns = 0;
+        self.started = Some(now);
+    }
+}
 const SURFACE_RESIZE_SETTLE: Duration = Duration::from_millis(75);
 const EGUI_STATISTICS_REFRESH: Duration = Duration::from_millis(100);
+
+/// How long after egui last took the pointer it keeps drawing at the rate it
+/// asks for rather than the statistics cadence.
+///
+/// Long enough to bridge the gaps between events within a drag and to let the
+/// animation that settles after one finish; short enough that releasing returns
+/// the overlay to its cadence without a visible tail.
+const EGUI_INTERACTION_GRACE: Duration = Duration::from_millis(250);
 const DOM_MK_LBUTTON: u32 = 0x0001;
 const DOM_MK_RBUTTON: u32 = 0x0002;
 const DOM_MK_SHIFT: u32 = 0x0004;
@@ -165,8 +311,12 @@ struct EguiOverlay {
     diagnostics: DebugOverlay,
     sequences: FrameSequenceTracker,
     target_statistics: TargetStatisticsTracker,
+    pacing: PacingTracker,
     frequency: f64,
     next_repaint: Instant,
+    /// Until when egui's own repaint requests are honoured instead of the
+    /// statistics cadence.
+    interactive_until: Option<Instant>,
 }
 
 impl EguiOverlay {
@@ -193,8 +343,10 @@ impl EguiOverlay {
             diagnostics,
             sequences: FrameSequenceTracker::default(),
             target_statistics: TargetStatisticsTracker::default(),
+            pacing: PacingTracker::default(),
             frequency: performance_frequency().unwrap_or(1) as f64,
             next_repaint: Instant::now(),
+            interactive_until: None,
         })
     }
 
@@ -238,10 +390,35 @@ impl EguiOverlay {
     }
 
     fn sample(&mut self) {
+        self.diagnostics.frame.pacing = self.pacing.rates();
         if !self.target_statistics.sample() {
             return;
         }
         self.diagnostics.frame.target_statistics = self.target_statistics.statistics();
+    }
+
+    const fn record_present(&mut self) {
+        self.pacing.record_present();
+    }
+
+    const fn record_clock(&mut self) {
+        self.pacing.record_clock();
+    }
+
+    fn set_display_latency(&mut self, latency: Option<DisplayLatencyReport>) {
+        if latency.is_some() {
+            self.diagnostics.frame.display_latency = latency;
+        }
+    }
+
+    fn set_note(&mut self, note: &str) {
+        let notes = &mut self.diagnostics.frame.notes;
+        if note.is_empty() {
+            notes.clear();
+        } else if notes.first().is_none_or(|first| first != note) {
+            notes.clear();
+            notes.push(note.to_owned());
+        }
     }
 
     fn remove_target(&mut self, connection: u64) {
@@ -260,30 +437,73 @@ impl EguiOverlay {
         Ok(())
     }
 
+    /// Notes that egui has the pointer, so it repaints at the rate it asks for
+    /// until the interaction settles.
+    fn note_interaction(&mut self, now: Instant) {
+        self.interactive_until = Some(now + EGUI_INTERACTION_GRACE);
+        // An interaction starting between scheduled repaints must not wait out
+        // the cadence it was released from.
+        self.next_repaint = self.next_repaint.min(now);
+    }
+
+    fn interactive(&self, now: Instant) -> bool {
+        self.interactive_until.is_some_and(|until| now < until)
+    }
+
     fn draw(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
+        // Idle, everything this overlay reports is sampled on the statistics
+        // interval, so repainting faster only spends the loop it is there to
+        // measure — egui asks for a repaint on the next frame whenever anything
+        // animates, and honouring that unconditionally ran it at display rate.
+        //
+        // Under the pointer that trade inverts: a drag has to track the cursor,
+        // and a diagnostics overlay that lags its own input is unusable. While
+        // egui holds the pointer it draws as often as it asks.
+        //
+        // The gate lives here rather than only where the loop schedules
+        // repaints because `request_redraw` reaches this directly, so anywhere
+        // else leaves the cost scaling with how many events the window gets.
+        let now = Instant::now();
+        let interactive = self.interactive(now);
+        if !interactive && !self.repaint_due(now) {
+            return Ok(false);
+        }
+        self.next_repaint = now + EGUI_STATISTICS_REFRESH;
         if !self.compositor.try_begin_frame() {
-            self.next_repaint = Instant::now() + PENDING_SURFACE_RETRY;
+            // Mid-interaction the permit frees within a refresh, and waiting a
+            // full cadence for it would drop the drag to 10 Hz.
+            if interactive {
+                self.next_repaint = now + PENDING_SURFACE_RETRY;
+            }
             return Ok(false);
         }
         self.sample();
         let input = self.state.take_egui_input(window);
         let diagnostics = &self.diagnostics;
-        let output = self.context.run(input, |context| {
+        let mut output = self.context.run(input, |context| {
             draw_debug_overlay(context, diagnostics);
         });
         self.state
-            .handle_platform_output(window, output.platform_output.clone());
+            .handle_platform_output(window, std::mem::take(&mut output.platform_output));
         let primitives = self
             .context
-            .tessellate(output.shapes.clone(), output.pixels_per_point);
-        let repaint_delay = output
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
-            .map_or(EGUI_STATISTICS_REFRESH, |viewport| viewport.repaint_delay)
-            .min(EGUI_STATISTICS_REFRESH);
-        self.next_repaint = Instant::now() + repaint_delay;
+            .tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        if interactive {
+            // What egui asked for, still floored by the statistics cadence so
+            // an idle interaction window does not stop refreshing the numbers.
+            let requested = output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(Duration::ZERO, |viewport| viewport.repaint_delay);
+            self.next_repaint = now + requested.min(EGUI_STATISTICS_REFRESH);
+        }
         let plan = CompositingPlan::new([0.0, 0.0, 0.0, 0.0], Vec::new());
         Renderer::draw(&mut self.compositor, &output, &primitives, &plan)?;
+        // A drag in progress, or a pointer resting over an egui window, keeps
+        // the interaction alive without needing a fresh event every frame.
+        if self.context.is_using_pointer() || self.context.wants_pointer_input() {
+            self.note_interaction(now);
+        }
         Ok(true)
     }
 
@@ -407,29 +627,38 @@ impl CompositorClock {
 struct ShellState {
     // Drop WebView2 and its COM host before tearing down their visual tree.
     foreground_webview: WebView,
-    /// `None` when the page is hosted on its own desktop instead, in which case
-    /// it is reached through `background_host`.
-    background_webview: Option<WebView>,
-    background_host: Option<background_host::BackgroundHost>,
     _gameview_host: IGameViewHost,
     window: Window,
     composition: CompositionTree,
+    /// Lays out and paints everything behind the foreground WebView. The
+    /// built-in document is always used unless the CLI supplies an override.
+    game_layer: Option<GameLayer>,
+    /// Bands the layer last painted, lowest first. Only these are placed in a
+    /// merged plan, so a band that stopped being drawn stops being composited.
+    chrome_bands_drawn: Vec<usize>,
+    /// Set when chrome reaches the merged compositor, so the shared swapchain
+    /// redraws even though no stream delivered a frame.
+    chrome_dirty: bool,
+    /// A drag moved the layer since its last paint. Raw pointer events can
+    /// arrive much faster than scanout, so only the latest position is painted
+    /// on the next compositor tick.
+    game_layer_refresh_pending: bool,
     overlay: EguiOverlay,
     capture: Capture,
     capture_wake_pending: Arc<AtomicBool>,
     capture_dirty: Arc<AtomicBool>,
     capture_work_pending: bool,
     compositor_clock: CompositorClock,
+    profile: TurnProfile,
     // Retained so the hosted background page keeps rendering and being captured.
     /// One window-spanning opaque swapchain shared by every stream. Opaque is
     /// what earns the overlay plane, and it is only safe to be opaque because
     /// the captured background fills the pixels no stream covers.
     merged: Option<D3d12Compositor>,
     merged_attached: bool,
-    merged_without_background: bool,
-    merged_presents_every_tick: bool,
+    texture_stream: Option<texture_stream::Publisher>,
+    texture_stream_requested_at: Option<Instant>,
     /// Stream carrying the captured background page, if it has connected.
-    background_connection: Option<u64>,
     session: String,
     surfaces: HashMap<u64, CapturedSurface>,
     target: Option<TargetProcess>,
@@ -458,7 +687,7 @@ impl ShellState {
         let ShellOptions {
             viewer: options,
             foreground_url,
-            background_url,
+            game_layer,
         } = options;
         if options.api != ViewerApi::D3d12 {
             return Err(
@@ -474,104 +703,39 @@ impl ShellState {
                 .with_inner_size(LogicalSize::new(1280.0, 720.0)),
         )?;
         let composition = CompositionTree::new(&window)?;
-        // The session has to exist before the background page does. WebView2
-        // spawns its processes from this one and they inherit this environment,
-        // which is the only way a hook injected into them afterwards can find
-        // the shell to publish frames to.
         let session = unique_session();
-        let capture_background = std::env::var_os("SNOWGLASS_BACKGROUND_CAPTURE").is_some();
-        if capture_background || std::env::var_os("SNOWGLASS_BACKGROUND_HOOK").is_some() {
-            // Must happen before the first WebView2 process is created.
-            if !arm_webview_process_hook() {
-                return Err(
-                    "the WebView2 process hook requires its DLL and injector beside the shell"
-                        .into(),
-                );
+        let (html, base_url) = match game_layer {
+            Some(path) => {
+                let html = std::fs::read_to_string(&path).map_err(|error| {
+                    format!("reading the game layer at {}: {error}", path.display())
+                })?;
+                // Assets are resolved against the document, so the base has to
+                // be the real location rather than the working directory.
+                let base = std::fs::canonicalize(&path)?;
+                let base_url = url::Url::from_file_path(&base)
+                    .map_err(|()| format!("{} is not an absolute path", base.display()))?;
+                (html, base_url.to_string())
             }
-            let log = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
-            // SAFETY: set before any thread that reads the environment is
-            // started, while the shell is still single-threaded here.
-            unsafe {
-                std::env::set_var(snowglass_hook::config::SESSION, &session);
-                if let Some(root) = log {
-                    std::env::set_var(
-                        snowglass_hook::config::DXGI_LOG_FILE,
-                        root.join("snowglass-dxgi.log"),
-                    );
-                    std::env::set_var(
-                        snowglass_hook::config::D3D11_LOG_FILE,
-                        root.join("snowglass-d3d11.log"),
-                    );
-                }
-            }
-        }
-        let background_script = include_str!(concat!(env!("OUT_DIR"), "/background.js"));
-        // WebView2 cannot render offscreen, so capturing the background page
-        // means hosting it in a real window and reading that window back.
-        // Visual hosting has no HWND to capture.
-        let (background_webview, background_host) = if capture_background {
-            let size = window.inner_size();
-            let animate = std::env::var_os("SNOWGLASS_BACKGROUND_ANIMATE").is_some();
-            let url = background_url.clone();
-            let background_data_directory = std::env::temp_dir()
-                .join(format!("snowglass-background-{}", std::process::id()));
-            let host = background_host::BackgroundHost::start(
-                size.width as i32,
-                size.height as i32,
-                move |target| {
-                    // Its own user data folder, because it now has its own
-                    // environment with its own browser arguments. Two
-                    // environments sharing a folder with different arguments is
-                    // rejected outright.
-                    let mut context = wry::WebContext::new(Some(background_data_directory));
-                    let webview = WebViewBuilder::new_with_web_context(&mut context)
-                        .with_focused(false)
-                        .with_initialization_script(background_script)
-                        // Chromium stops painting windows it decides are not
-                        // being seen, and nobody is looking at this desktop.
-                        // `--no-sandbox` is what lets the graphics hook reach
-                        // the GPU process that presents this page.
-                        .with_additional_browser_args(
-                            "--disable-features=CalculateNativeWinOcclusion \
-                             --disable-backgrounding-occluded-windows \
-                             --no-sandbox",
-                        )
-                        .build(target)?;
-                    if animate {
-                        webview.load_html(ANIMATED_BACKGROUND)?;
-                    } else {
-                        webview.load_url(&url)?;
-                    }
-                    Ok(webview)
-                },
-            )?;
-            (None, Some(host))
-        } else {
-            let background_visual = composition.webview_visual(WebViewLayer::Background)?;
-            let webview = WebViewBuilder::new()
-                .with_transparent(true)
-                .with_focused(false)
-                .with_initialization_script(background_script)
-                .with_composition_visual_target(background_visual)
-                .with_composition_input_enabled(false)
-                .build(&window)?;
-            (Some(webview), None)
+            None => (
+                include_str!("../frontend/src/game-layer.html").to_owned(),
+                "snowglass:///game-layer.html".to_owned(),
+            ),
         };
-        let foreground_visual = composition.webview_visual(WebViewLayer::Foreground)?;
+        let size = window.inner_size();
+        let game_layer = Some(GameLayer::new(
+            &html,
+            base_url,
+            GAME_LAYER_VIEWS,
+            size.width,
+            size.height,
+        )?);
+        let foreground_visual = composition.foreground_visual()?;
         let foreground_proxy = proxy.clone();
         let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
-        let mut foreground_builder = WebViewBuilder::new()
+        let foreground_builder = WebViewBuilder::new()
             .with_focused(false)
             .with_transparent(true)
             .with_initialization_script(gameview_script);
-        // Sharing the background's environment would put both pages in one
-        // browser process. A desktop-hosted background keeps its own, which is
-        // what confines its process tree to that desktop.
-        if let Some(background) = background_webview.as_ref() {
-            foreground_builder = foreground_builder.with_environment(background.environment());
-        }
         let foreground_webview = foreground_builder
             .with_composition_visual_target(foreground_visual)
             .with_composition_input_enabled(false)
@@ -583,6 +747,34 @@ impl ShellState {
                     Some("frontendReady") => {
                         let _ = foreground_proxy.send_event(UserEvent::FrontendReady);
                     }
+                    Some("textureStreamReady") => {
+                        eprintln!("snowglass: the page is displaying the texture stream");
+                    }
+                    Some("textureStreamError") => {
+                        eprintln!(
+                            "snowglass: the page could not open the texture stream: {}",
+                            message
+                                .get("message")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("unknown")
+                        );
+                    }
+                    Some("textureStreamFrame") => {
+                        // `mediaTime` is the stamp the host wrote on the
+                        // texture, so the gap to now is how long that frame
+                        // took to reach the page.
+                        let stamp = message
+                            .get("mediaTime")
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or_default();
+                        let presented = message
+                            .get("presentedFrames")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or_default();
+                        eprintln!(
+                            "snowglass: texture stream displayed frame {presented} mediaTime={stamp:.6}"
+                        );
+                    }
                     Some("setInputPriority") => {
                         let priority =
                             if message.get("priority").and_then(serde_json::Value::as_str)
@@ -593,12 +785,6 @@ impl ShellState {
                                 InputPriority::Game
                             };
                         let _ = foreground_proxy.send_event(UserEvent::InputPriority(priority));
-                    }
-                    Some("background") => {
-                        if let Some(payload) = message.get("message") {
-                            let _ = foreground_proxy
-                                .send_event(UserEvent::BackgroundMessage(payload.to_string()));
-                        }
                     }
                     Some("layout") => {
                         let Some(layouts) = message.get("layouts") else {
@@ -626,32 +812,45 @@ impl ShellState {
         // the call; WebView2 retains its own reference to the host object.
         unsafe { core.AddHostObjectToScript(w!("snowglass"), &mut host_variant)? };
 
+        if std::env::var_os("SNOWGLASS_TEXTURE_STREAM_PROBE").is_some() {
+            probe_texture_stream(&foreground_webview);
+        }
+
         // A page driven by `requestAnimationFrame`, which is what Chromium
         // throttles when it decides a window is not being seen. Used to check
         // that a hidden, captured background keeps producing frames.
-        const ANIMATED_BACKGROUND: &str = r#"<!doctype html><html><body style="margin:0">
-<script>
-let n = 0;
-function tick() {
-  n = (n + 1) % 256;
-  document.body.style.background = `rgb(${n},${n},${n})`;
-  requestAnimationFrame(tick);
-}
-requestAnimationFrame(tick);
-</script></body></html>"#;
-        // A desktop-hosted page loads on its own thread, at build time.
-        if let Some(background) = background_webview.as_ref() {
-            if std::env::var_os("SNOWGLASS_BACKGROUND_ANIMATE").is_some() {
-                background.load_html(ANIMATED_BACKGROUND)?;
-            } else {
-                background.load_url(&background_url)?;
-            }
-        }
         foreground_webview.load_url(&foreground_url)?;
 
         let mut overlay = EguiOverlay::new(&window)?;
         composition.set_egui_overlay_content(&overlay.content()?)?;
         overlay.draw(&window)?;
+
+        // Publishing guest frames into the page, so they can be laid out and
+        // styled as DOM nodes instead of composited beneath it.
+        let texture_stream = std::env::var_os("SNOWGLASS_TEXTURE_STREAM")
+            .map(|_| -> Result<_, Box<dyn Error>> {
+                let adapter = adapter_for_luid(overlay.compositor.adapter_luid())?;
+                let origin = url::Url::parse(&foreground_url)
+                    .ok()
+                    .and_then(|url| url.origin().ascii_serialization().into())
+                    .ok_or("the frontend URL has no origin to allow")?;
+                let size = window.inner_size();
+                let publisher = texture_stream::Publisher::start(
+                    &foreground_webview.environment(),
+                    &adapter,
+                    TEXTURE_STREAM_ID,
+                    &origin,
+                    size.width.max(1),
+                    size.height.max(1),
+                )?;
+                eprintln!(
+                    "snowglass: texture stream '{TEXTURE_STREAM_ID}' created for {origin} at {}x{}",
+                    publisher.extent().0,
+                    publisher.extent().1
+                );
+                Ok(publisher)
+            })
+            .transpose()?;
 
         let input = InputTransport::bind(&session)?;
         let input_provider = None;
@@ -672,25 +871,32 @@ requestAnimationFrame(tick);
         let compositor_clock = CompositorClock::spawn(proxy.clone())?;
         let target = None;
 
+        // Merging composites every stream into one opaque window-covering
+        // swapchain. A game layer supplies the chrome that swapchain draws
+        // around the streams, which is what lets it stay opaque and so stay
+        // eligible for a hardware overlay plane.
+
         composition.commit()?;
         Ok(Self {
             foreground_webview,
-            background_webview,
-            background_host,
             _gameview_host: gameview_host,
             window,
             composition,
+            game_layer,
+            chrome_bands_drawn: Vec::new(),
+            chrome_dirty: false,
+            game_layer_refresh_pending: false,
             overlay,
             capture,
             capture_wake_pending,
             capture_dirty,
             capture_work_pending: false,
             compositor_clock,
+            profile: TurnProfile::default(),
             merged: None,
             merged_attached: false,
-            merged_without_background: std::env::var_os("SNOWGLASS_MERGED_ONLY").is_some(),
-            merged_presents_every_tick: std::env::var_os("SNOWGLASS_MERGED_TICK").is_some(),
-            background_connection: None,
+            texture_stream,
+            texture_stream_requested_at: None,
             session,
             surfaces: HashMap::new(),
             target,
@@ -921,6 +1127,12 @@ requestAnimationFrame(tick);
     }
 
     fn process_capture(&mut self) {
+        let entered = self.profile.enter();
+        self.process_capture_inner();
+        self.profile.record(TurnPhase::Capture, entered);
+    }
+
+    fn process_capture_inner(&mut self) {
         // Leave the notification latched while draining. Producers can mark
         // `capture_dirty`, but cannot flood the event loop with one user event
         // per captured frame.
@@ -934,23 +1146,13 @@ requestAnimationFrame(tick);
             processed += 1;
             match event {
                 CaptureEvent::Stream(connection, stream, accepted) => {
-                    // The background page is not a guest surface: it connects
-                    // before any game is launched and occupies no tracked
-                    // target, so neither gate below applies to it.
-                    if !is_webview_producer(stream.producer_process_id) {
-                        let Some(active) = &self.active_game else {
-                            let _ = accepted.send(false);
-                            continue;
-                        };
-                        let tracked = self
-                            .surfaces
-                            .values()
-                            .filter(|surface| surface.index != BACKGROUND_TARGET_INDEX)
-                            .count();
-                        if tracked >= active.options.surfaces.len() {
-                            let _ = accepted.send(false);
-                            continue;
-                        }
+                    let Some(active) = &self.active_game else {
+                        let _ = accepted.send(false);
+                        continue;
+                    };
+                    if self.surfaces.len() >= active.options.surfaces.len() {
+                        let _ = accepted.send(false);
+                        continue;
                     }
                     match self.connect_stream(connection, &stream) {
                         Ok(()) => {
@@ -1018,7 +1220,7 @@ requestAnimationFrame(tick);
         {
             self.publish_targets_for(&instance_id);
         }
-        self.draw_pending_surfaces();
+        self.draw_unpaced_surfaces();
         self.capture_wake_pending.store(false, Ordering::Release);
 
         // A producer that ran while the notification was latched could not
@@ -1030,19 +1232,49 @@ requestAnimationFrame(tick);
             processed == MAX_CAPTURE_EVENTS_PER_TURN || arrived_while_draining;
     }
 
+    /// Presents pending content only while nothing else is pacing the shell.
+    ///
+    /// Once the compositor clock is running it owns every present, so that each
+    /// one lands at the start of a composition interval rather than wherever
+    /// the guest happened to finish a frame. Presenting on arrival puts it at
+    /// an arbitrary phase against DWM's sampling deadline, and a guest and a
+    /// display at nominally the same rate drift that phase slowly across the
+    /// deadline — a stretch of doubled and dropped frames every time it
+    /// crosses.
+    fn draw_unpaced_surfaces(&mut self) {
+        if !self.compositor_clock.is_pacing() {
+            self.draw_pending_surfaces();
+        }
+    }
+
     fn draw_pending_surfaces(&mut self) {
+        self.present_pending_surfaces(Duration::ZERO);
+    }
+
+    /// Presents every surface holding new content, waiting up to `permit_wait`
+    /// for DXGI to hand back a present slot.
+    fn present_pending_surfaces(&mut self, permit_wait: Duration) {
+        let entered = self.profile.enter();
+        self.present_pending_surfaces_inner(permit_wait);
+        self.profile.record(TurnPhase::Present, entered);
+    }
+
+    fn present_pending_surfaces_inner(&mut self, permit_wait: Duration) {
         if self.merged.is_some() {
-            self.draw_merged();
+            self.draw_merged(permit_wait);
             return;
         }
         let publisher = self
             .active_game
             .as_ref()
             .and_then(|active| active.webrtc.as_ref());
+        // One composition interval carries one present regardless of how many
+        // dedicated swapchains contributed to it.
+        let mut presented = false;
         for (&connection, surface) in &mut self.surfaces {
             let ready = surface.compositor.as_mut().is_some_and(|compositor| {
                 (Renderer::has_pending_frame(compositor) || surface.needs_redraw)
-                    && compositor.try_begin_frame()
+                    && compositor.begin_frame_within(permit_wait)
             });
             if !ready {
                 continue;
@@ -1053,7 +1285,10 @@ requestAnimationFrame(tick);
                 .as_mut()
                 .expect("a dedicated compositor was just checked");
             match compositor.draw_game_with_webrtc(&plan, surface.webrtc.as_mut()) {
-                Ok(_) => surface.needs_redraw = false,
+                Ok(_) => {
+                    surface.needs_redraw = false;
+                    presented = true;
+                }
                 Err(error) => {
                     eprintln!("snowglass: rendering stream {connection} failed: {error}");
                 }
@@ -1064,13 +1299,25 @@ requestAnimationFrame(tick);
                 }
             }
         }
+        if presented {
+            self.overlay.record_present();
+        }
+        // Whichever swapchain carried the streams is the one the display
+        // confirms presents against.
+        let latency = self
+            .surfaces
+            .values_mut()
+            .find_map(|surface| surface.compositor.as_mut()?.display_latency());
+        self.overlay.set_display_latency(latency);
     }
 
     fn has_pending_surfaces(&self) -> bool {
         if let Some(merged) = self.merged.as_ref() {
-            return self.merged_presents_every_tick
-                || Renderer::has_pending_frame(merged)
-                || self.surfaces.values().any(|surface| surface.needs_redraw);
+            // Re-presenting an unchanged shared buffer burns GPU time and can
+            // occupy the one-frame DXGI queue when a real guest frame arrives.
+            // DirectComposition retains the last buffer, so only new content
+            // or chrome needs another present.
+            return Renderer::has_pending_frame(merged) || self.chrome_dirty;
         }
         self.surfaces.values().any(|surface| {
             surface.needs_redraw
@@ -1086,21 +1333,24 @@ requestAnimationFrame(tick);
         connection: u64,
         stream: &snowglass_ipc::StreamReady,
     ) -> Result<(), Box<dyn Error>> {
-        // The background page publishes through the same producer path as a
-        // guest, so it arrives here like any other stream and has to be told
-        // apart before it consumes a tracked render target.
-        if is_webview_producer(stream.producer_process_id) {
-            return self.connect_background_stream(connection, stream);
-        }
         let (index, quarter_turns, publish_webrtc) = self
             .next_target_configuration()
             .ok_or("the shell already has a surface for every tracked render target")?;
         let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
-        // Merged compositing normally depends on the captured background to
-        // fill the pixels no stream covers. It can be enabled without one to
-        // separate the cost of merging from the cost of hosting the capture.
-        if self.background_host.is_some() || self.merged_without_background {
-            return self.connect_merged_stream(connection, stream, index, quarter_turns, width, height);
+        // One swapchain for every stream, which is what makes the window
+        // opaque and so eligible for a hardware overlay plane. It only works
+        // because the game layer fills the pixels no stream covers; without a
+        // layer there is nothing to fill them, so the streams keep their own
+        // visuals and DirectComposition blends them.
+        if self.game_layer.is_some() {
+            return self.connect_merged_stream(
+                connection,
+                stream,
+                index,
+                quarter_turns,
+                width,
+                height,
+            );
         }
         let render_window = SurfaceWindow::new(&self.window, width.max(1), height.max(1));
         let (mut compositor, mut video) = if publish_webrtc {
@@ -1158,6 +1408,9 @@ requestAnimationFrame(tick);
                 webrtc: video,
             },
         );
+        // The layer already knows where this view goes; it just had nothing to
+        // put there until now.
+        self.refresh_game_layer();
         Ok(())
     }
 
@@ -1175,12 +1428,18 @@ requestAnimationFrame(tick);
         let size = self.window.inner_size();
         let (swapchain_width, swapchain_height) = (size.width.max(1), size.height.max(1));
         if self.merged.is_none() {
-            let render_window =
-                SurfaceWindow::new(&self.window, swapchain_width, swapchain_height);
+            let render_window = SurfaceWindow::new(&self.window, swapchain_width, swapchain_height);
             self.merged = Some(D3d12Compositor::new_for_shared_composition(
                 &render_window,
                 stream.adapter_luid,
             )?);
+            // The layer was already painted into DirectComposition before a
+            // guest connected. Its document is still clean, but the new opaque
+            // swapchain needs its own copy of every band before it covers those
+            // old visuals.
+            if let Some(layer) = self.game_layer.as_mut() {
+                layer.invalidate();
+            }
         }
         let merged = self
             .merged
@@ -1216,66 +1475,9 @@ requestAnimationFrame(tick);
                 webrtc: None,
             },
         );
-        Ok(())
-    }
-
-    /// Adopts the captured background page as the lowest surface in the shared
-    /// swapchain. It is an ordinary placement rather than a special case: given
-    /// the lowest `z_index` and the whole window as its rectangle, the existing
-    /// ordering paints it under every stream and it fills the pixels no stream
-    /// covers, which is what lets the swapchain stay opaque.
-    fn connect_background_stream(
-        &mut self,
-        connection: u64,
-        stream: &snowglass_ipc::StreamReady,
-    ) -> Result<(), Box<dyn Error>> {
-        let size = self.window.inner_size();
-        let (swapchain_width, swapchain_height) = (size.width.max(1), size.height.max(1));
-        if self.merged.is_none() {
-            let render_window =
-                SurfaceWindow::new(&self.window, swapchain_width, swapchain_height);
-            self.merged = Some(D3d12Compositor::new_for_shared_composition(
-                &render_window,
-                stream.adapter_luid,
-            )?);
-        }
-        let merged = self
-            .merged
-            .as_mut()
-            .expect("the shared compositor exists by now");
-        Renderer::import_stream(merged, connection, stream, 0)?;
-        if !self.merged_attached {
-            let content = merged.composition_content()?;
-            self.composition
-                .add_render_target(MERGED_VISUAL_KEY, 0, &content)?;
-            self.composition.commit()?;
-            self.merged_attached = true;
-        }
-        self.background_connection = Some(connection);
-        self.surfaces.insert(
-            connection,
-            CapturedSurface {
-                index: BACKGROUND_TARGET_INDEX,
-                preferred_width: stream.width,
-                preferred_height: stream.height,
-                swapchain_width,
-                swapchain_height,
-                viewport_width: swapchain_width,
-                viewport_height: swapchain_height,
-                viewport_x: 0,
-                viewport_y: 0,
-                quarter_turns: 0,
-                // The page behind the streams is decoration; pointer routing
-                // belongs to the foreground WebView2 and the streams.
-                pointer_events: false,
-                z_index: i32::MIN,
-                needs_redraw: true,
-                resize_due: None,
-                compositor: None,
-                webrtc: None,
-            },
-        );
-        eprintln!("snowglass: background page connected as stream {connection}");
+        // The layer already knows where this view goes; it just had nothing to
+        // put there until now.
+        self.refresh_game_layer();
         Ok(())
     }
 
@@ -1291,7 +1493,7 @@ requestAnimationFrame(tick);
                 let surface = self.surfaces.get(&received.connection)?;
                 Some((
                     surface.z_index,
-                    SurfacePlacement {
+                    PlanLayer::Surface(SurfacePlacement {
                         connection: received.connection,
                         surface_id: received.surface_id,
                         rectangle: snowglass_input::mouse::layout::Rect::new(
@@ -1300,40 +1502,54 @@ requestAnimationFrame(tick);
                             surface.viewport_width,
                             surface.viewport_height,
                         ),
-                    },
+                    }),
                 ))
             })
             .collect::<Vec<_>>();
+        // The game layer's chrome is composited into this same swapchain rather
+        // than sitting in visuals behind it, because the swapchain is opaque and
+        // covers the window: anything left outside it would be hidden. Sharing
+        // the z-order is what keeps a bezel above the view it overlaps.
+        let window = self.window.inner_size();
+        ordered.extend(
+            self.chrome_bands_drawn
+                .iter()
+                .map(|&band| {
+                    (
+                        chrome_band_z_index(band),
+                        PlanLayer::Chrome {
+                            id: band as u64,
+                            rectangle: snowglass_input::mouse::layout::Rect::new(
+                                0,
+                                0,
+                                window.width,
+                                window.height,
+                            ),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
         ordered.sort_by_key(|(z_index, _)| *z_index);
-        CompositingPlan::new(
+        CompositingPlan::layered(
             [0.0, 0.0, 0.0, 1.0],
-            ordered.into_iter().map(|(_, placement)| placement).collect(),
+            ordered.into_iter().map(|(_, layer)| layer).collect(),
         )
     }
 
-    /// Draws every stream and the captured background into the shared
-    /// swapchain. The background slot is read with a plain atomic load, so a
-    /// stalled capture cannot hold a received frame back.
-    fn draw_merged(&mut self) {
-        // Presenting only when a stream delivers ties both streams to one
-        // timeline: a frame that lands just after a present has to wait for the
-        // next credit, which is the other stream's problem leaking into this
-        // one. Presenting on the compositor tick instead gives each stream the
-        // next tick regardless of what the other is doing, at the cost of
-        // redrawing content that has not changed.
-        let pending = self
-            .merged
-            .as_ref()
-            .is_some_and(Renderer::has_pending_frame)
-            || self.surfaces.values().any(|surface| surface.needs_redraw);
-        if !pending && !self.merged_presents_every_tick {
-            return;
-        }
+    /// Draws every stream and the game layer's chrome into the shared
+    /// swapchain when either has changed.
+    ///
+    /// Every stream keeps its newest frame independently. A draw samples all of
+    /// those newest frames, so one stream delivering does not make the others
+    /// wait for another producer frame, while an unchanged composition remains
+    /// resident in DirectComposition without redundant presents.
+    fn draw_merged(&mut self, permit_wait: Duration) {
         let plan = self.merged_plan();
         let Some(merged) = self.merged.as_mut() else {
             return;
         };
-        if !merged.try_begin_frame() {
+        if !merged.begin_frame_within(permit_wait) {
             return;
         }
         match merged.draw_game_with_webrtc(&plan, None) {
@@ -1341,9 +1557,17 @@ requestAnimationFrame(tick);
                 for surface in self.surfaces.values_mut() {
                     surface.needs_redraw = false;
                 }
+                // The draw is what consumed the pending chrome upload.
+                self.chrome_dirty = false;
+                self.overlay.record_present();
             }
             Err(error) => eprintln!("snowglass: rendering merged surfaces failed: {error}"),
         }
+        let latency = self
+            .merged
+            .as_mut()
+            .and_then(D3d12Compositor::display_latency);
+        self.overlay.set_display_latency(latency);
     }
 
     fn next_target_configuration(&self) -> Option<(u32, u8, bool)> {
@@ -1369,6 +1593,123 @@ requestAnimationFrame(tick);
             })
             .filter(|region| region.width != 0 && region.height != 0)
             .collect();
+        if self.game_layer.is_some() {
+            // The layer decides where the views go, so the foreground's idea of
+            // it is ignored rather than fought with. Its hit regions are still
+            // its own: they say where the foreground wants the pointer, which
+            // is not something this layer knows.
+            return;
+        }
+        self.place_surfaces(layouts);
+    }
+
+    /// Re-lays out the game layer and moves the compositor to match.
+    ///
+    /// The chrome is uploaded band by band and the game views are placed
+    /// between them, so a document whose bezel sits over a fullscreen view
+    /// composites in the order the document painted it.
+    ///
+    /// Which compositor receives the chrome depends on how the streams are
+    /// being shown. Separate swapchains means separate DirectComposition
+    /// visuals, and the chrome takes visuals of its own alongside them. One
+    /// merged swapchain is opaque and covers the window, so the chrome has to
+    /// go inside it or it would be hidden.
+    fn refresh_game_layer(&mut self) {
+        let entered = self.profile.enter();
+        self.refresh_game_layer_inner();
+        self.profile.record(TurnPhase::GameLayer, entered);
+    }
+
+    fn refresh_game_layer_inner(&mut self) {
+        self.game_layer_refresh_pending = false;
+        let Some(layer) = self.game_layer.as_mut() else {
+            return;
+        };
+        let composition = &mut self.composition;
+        let mut merged = self.merged.as_mut();
+        let mut bands = 0;
+        let mut failure = None;
+        let painted = layer.paint(|band, chrome| {
+            bands = band + 1;
+            match merged.as_deref_mut() {
+                Some(merged) => {
+                    merged.set_chrome_layer(band as u64, chrome.handle, chrome.width, chrome.height)
+                }
+                None => {
+                    if let Err(error) = composition.set_chrome_band(
+                        band,
+                        chrome.handle,
+                        chrome.width,
+                        chrome.height,
+                    ) {
+                        failure = Some(error);
+                    }
+                }
+            }
+        });
+        if painted {
+            if let Some(error) = failure {
+                eprintln!("snowglass: handing over the game layer chrome failed: {error}");
+            }
+            self.chrome_bands_drawn = (0..bands).collect();
+            self.chrome_dirty = self.merged.is_some();
+            match self.merged.as_mut() {
+                Some(merged) => {
+                    for band in bands..=GAME_LAYER_VIEWS {
+                        merged.drop_chrome_layer(band as u64);
+                    }
+                    // The shared swapchain only appears once the first stream
+                    // connects, so the bands painted before that went to
+                    // DirectComposition. They are behind an opaque swapchain
+                    // now and would never be seen again.
+                    if let Err(error) = self.composition.truncate_chrome_bands(0) {
+                        eprintln!(
+                            "snowglass: dropping superseded game layer chrome failed: {error}"
+                        );
+                    }
+                }
+                None => {
+                    if let Err(error) = self.composition.truncate_chrome_bands(bands) {
+                        eprintln!("snowglass: dropping unused game layer chrome failed: {error}");
+                    }
+                }
+            }
+        }
+
+        // Placing happens even when nothing was repainted: a view that
+        // connected since the last paint still has to be moved into the box
+        // that has been waiting for it.
+        //
+        // A placement names a render target by its tracked index; the shell
+        // knows it by the connection that publishes it.
+        let surfaces = &self.surfaces;
+        let layouts = layer
+            .placements()
+            .iter()
+            .filter_map(|placement| {
+                let connection = surfaces.iter().find_map(|(&connection, surface)| {
+                    (u64::from(surface.index) == placement.source_id).then_some(connection)
+                })?;
+                let rect = placement.rect;
+                Some(SurfaceLayout {
+                    connection,
+                    x: rect.x0.round() as i32,
+                    y: rect.y0.round() as i32,
+                    width: rect.width().round().max(0.0) as u32,
+                    height: rect.height().round().max(0.0) as u32,
+                    z_index: game_view_z_index(placement.band),
+                    pointer_events: true,
+                    foreground_hit_region: None,
+                    foreground_hit_regions: Vec::new(),
+                })
+            })
+            .collect::<Vec<_>>();
+        // Deliberately not `apply_layout`: the foreground owns the hit regions
+        // even when this layer owns where the views sit.
+        self.place_surfaces(layouts);
+    }
+
+    fn place_surfaces(&mut self, layouts: Vec<SurfaceLayout>) {
         let resize_due = Instant::now() + SURFACE_RESIZE_SETTLE;
         for item in layouts {
             if let Err(error) = self
@@ -1408,6 +1749,47 @@ requestAnimationFrame(tick);
         if let Err(error) = self.composition.commit() {
             eprintln!("snowglass: committing WebView2 layout failed: {error}");
         }
+    }
+
+    /// Takes hold of whatever the game layer will let the pointer move.
+    fn grab_game_layer(&mut self, x: f32, y: f32) -> bool {
+        self.game_layer
+            .as_mut()
+            .is_some_and(|layer| layer.grab(x, y))
+    }
+
+    /// Moves a grabbed box. Reports whether the pointer was spoken for, so a
+    /// drag does not also reach the guest underneath.
+    fn drag_game_layer(&mut self, x: f32, y: f32) -> bool {
+        let Some(layer) = self.game_layer.as_mut() else {
+            return false;
+        };
+        if !layer.is_dragging() {
+            return false;
+        }
+        if layer.drag_to(x, y) {
+            if self.compositor_clock.is_pacing() {
+                self.game_layer_refresh_pending = true;
+            } else {
+                self.refresh_game_layer();
+            }
+        }
+        true
+    }
+
+    fn refresh_pending_game_layer(&mut self) {
+        if self.game_layer_refresh_pending {
+            self.refresh_game_layer();
+        }
+    }
+
+    fn release_game_layer(&mut self) -> bool {
+        let Some(layer) = self.game_layer.as_mut() else {
+            return false;
+        };
+        let dragging = layer.is_dragging();
+        layer.release();
+        dragging
     }
 
     fn foreground_hit_test(&self) -> bool {
@@ -1584,6 +1966,12 @@ requestAnimationFrame(tick);
             priority
         };
         if self.input_priority == priority {
+            // A foreground pointer interaction moves focus into WebView2
+            // without changing the logical priority. Re-activating game input
+            // must still return keyboard focus to the shell HWND.
+            if priority == InputPriority::Game {
+                self.focus_game_input();
+            }
             return;
         }
         if let Some(connection) = self.pointer_routing.captured_connection() {
@@ -1605,18 +1993,7 @@ requestAnimationFrame(tick);
                         .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
                 };
             }
-            InputPriority::Game => {
-                if let Ok(handle) = self.window.window_handle()
-                    && let RawWindowHandle::Win32(handle) = handle.as_raw()
-                {
-                    // SAFETY: the winit HWND remains live for ShellState.
-                    let _ = unsafe {
-                        SetFocus(Some(windows::Win32::Foundation::HWND(
-                            handle.hwnd.get() as *mut _
-                        )))
-                    };
-                }
-            }
+            InputPriority::Game => self.focus_game_input(),
         }
         let script = format!(
             "window.__snowglassSetInputPriority?.({});",
@@ -1627,6 +2004,19 @@ requestAnimationFrame(tick);
             .expect("static input priority serializes")
         );
         let _ = self.foreground_webview.evaluate_script(&script);
+    }
+
+    fn focus_game_input(&self) {
+        if let Ok(handle) = self.window.window_handle()
+            && let RawWindowHandle::Win32(handle) = handle.as_raw()
+        {
+            // SAFETY: the winit HWND remains live for ShellState.
+            let _ = unsafe {
+                SetFocus(Some(windows::Win32::Foundation::HWND(
+                    handle.hwnd.get() as *mut _
+                )))
+            };
+        }
     }
 
     fn cancel_pointer_connection(&mut self, connection: u64) {
@@ -1831,22 +2221,6 @@ requestAnimationFrame(tick);
         let _ = self.foreground_webview.evaluate_script(&script);
     }
 
-    fn forward_background_message(&self, json: &str) {
-        let script = format!("window.__snowglassBackgroundMessage?.({json});");
-        // A desktop-hosted page lives on another thread, and WebView2 is
-        // apartment-threaded, so the script is queued for that thread rather
-        // than called across it.
-        if let Some(host) = self.background_host.as_ref() {
-            host.evaluate(script);
-            return;
-        }
-        if let Some(background) = self.background_webview.as_ref()
-            && let Err(error) = background.evaluate_script(&script)
-        {
-            eprintln!("snowglass: forwarding background message failed: {error}");
-        }
-    }
-
     fn publish_keyboard_input(&self, key: &str, pressed: bool, repeat: bool) {
         let event = serde_json::json!({
             "device": "keyboard",
@@ -1929,7 +2303,12 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             .take()
             .expect("shell options are consumed exactly once");
         match ShellState::new(event_loop, self.proxy.clone(), options) {
-            Ok(state) => self.state = Some(state),
+            Ok(mut state) => {
+                // The backdrop has to be on screen before any guest connects,
+                // otherwise the window shows through to nothing.
+                state.refresh_game_layer();
+                self.state = Some(state);
+            }
             Err(error) => {
                 self.error = Some(error);
                 event_loop.exit();
@@ -1942,12 +2321,25 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             return;
         };
         match event {
-            // Capture is drained from `about_to_wait`, after this cycle's
-            // native window messages have been delivered.
-            UserEvent::WakeCapture => state.capture_work_pending = true,
-            // Waking the loop is the whole job: `about_to_wait` draws whatever
-            // is pending once this cycle's messages have been delivered.
-            UserEvent::CompositorTick => state.compositor_clock.clear_tick(),
+            // Drain promptly rather than waiting for `about_to_wait`. A busy
+            // window can keep delivering compositor, WebView, and redraw
+            // events for most of a frame; postponing the drain holds the
+            // producer's three export slots and eventually makes it skip
+            // captures. `process_capture` is bounded, and carries any overflow
+            // into `about_to_wait`.
+            UserEvent::WakeCapture => state.process_capture(),
+            UserEvent::CompositorTick => {
+                state.compositor_clock.clear_tick();
+                state.overlay.record_clock();
+                // Mouse input can run several times faster than the display.
+                // Paint its latest position once for this scanout rather than
+                // blocking on a Vello repaint for every intermediate event.
+                state.refresh_pending_game_layer();
+                // Present here, in phase with DWM, rather than when a guest
+                // frame happened to arrive. The chrome refreshed just above
+                // rides the same present.
+                state.present_pending_surfaces(PRESENT_PERMIT_WAIT);
+            }
             UserEvent::FrontendReady => state.deliver_cli_launch(),
             UserEvent::Launch {
                 instance_id,
@@ -1961,7 +2353,6 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             } => state.game_message(&instance_id, &name, args),
             UserEvent::Layout(layouts) => state.apply_layout(layouts),
             UserEvent::InputPriority(priority) => state.set_input_priority(priority),
-            UserEvent::BackgroundMessage(message) => state.forward_background_message(&message),
         }
     }
 
@@ -1979,6 +2370,11 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
         }
         let response = state.overlay.state.on_window_event(&state.window, &event);
         let consumed = response.consumed;
+        if consumed {
+            // egui took this event, so it is being interacted with and gets to
+            // set its own repaint rate until the interaction settles.
+            state.overlay.note_interaction(Instant::now());
+        }
         if response.repaint {
             state.window.request_redraw();
         }
@@ -1989,16 +2385,15 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     position: wry::dpi::PhysicalPosition::new(0, 0).into(),
                     size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
                 };
-                if let Some(background) = state.background_webview.as_ref()
-                    && let Err(error) = background.set_bounds(bounds)
-                {
-                    eprintln!("snowglass: resizing background WebView2 failed: {error}");
-                }
                 if let Err(error) = state.foreground_webview.set_bounds(bounds) {
                     eprintln!("snowglass: resizing foreground WebView2 failed: {error}");
                 }
                 if let Err(error) = state.overlay.resize(&state.window) {
                     eprintln!("snowglass: resizing egui composition overlay failed: {error}");
+                }
+                if let Some(layer) = state.game_layer.as_mut() {
+                    layer.resize(size.width, size.height);
+                    state.refresh_game_layer();
                 }
                 // The shared swapchain and the background both cover the whole
                 // window, so the window is what resizes them, not a DOM box.
@@ -2017,13 +2412,6 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                             eprintln!("snowglass: resizing the shared swapchain failed: {error}");
                         }
                     }
-                }
-                if let Some(connection) = state.background_connection
-                    && let Some(background) = state.surfaces.get_mut(&connection)
-                {
-                    background.viewport_width = size.width.max(1);
-                    background.viewport_height = size.height.max(1);
-                    background.needs_redraw = true;
                 }
                 state.window.request_redraw();
             }
@@ -2076,6 +2464,11 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     x: position.x.round() as i32,
                     y: position.y.round() as i32,
                 };
+                // A grabbed box holds the pointer until it is let go, ahead of
+                // everything else that might want it.
+                if state.drag_game_layer(position.x as f32, position.y as f32) {
+                    return;
+                }
                 if state.input_priority == InputPriority::Foreground
                     || state.foreground_mouse_capture
                     || (!consumed
@@ -2098,9 +2491,30 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 || state.foreground_mouse_capture =>
             {
                 if let Some(button) = mouse_button(button) {
+                    // Letting go ends the drag wherever the pointer has got to,
+                    // which is why it is answered before anything else claims
+                    // the button.
+                    if button == 1
+                        && button_state == ElementState::Released
+                        && state.release_game_layer()
+                    {
+                        return;
+                    }
                     let foreground_hit = !consumed
                         && state.pointer_routing.captured_connection().is_none()
                         && state.foreground_hit_test();
+                    // A press on the layer's own chrome takes hold of it. This
+                    // comes before the foreground's blanket claim on the pointer
+                    // but after the regions it asked for by name: the chrome is
+                    // below the foreground, so anything the foreground put there
+                    // is on top of it.
+                    if button == 1
+                        && button_state == ElementState::Pressed
+                        && !foreground_hit
+                        && state.grab_game_layer(state.cursor.x as f32, state.cursor.y as f32)
+                    {
+                        return;
+                    }
                     if state.input_priority == InputPriority::Foreground
                         || state.foreground_mouse_capture
                         || foreground_hit
@@ -2169,9 +2583,11 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 state.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
             }
             WindowEvent::RedrawRequested => {
+                let entered = state.profile.enter();
                 if let Err(error) = state.overlay.draw(&state.window) {
                     eprintln!("snowglass: drawing egui composition overlay failed: {error}");
                 }
+                state.profile.record(TurnPhase::Overlay, entered);
             }
             _ => {}
         }
@@ -2188,13 +2604,85 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             // has to be retried from here. `process_capture` only runs when a
             // producer posts new work, which would hold an already-finished
             // frame back until the guest renders its next one.
-            if state.has_pending_surfaces() {
+            //
+            // While the compositor clock is pacing, its tick is that retry, and
+            // it lands in phase with DWM instead of at an arbitrary point in
+            // the interval. A clock that cannot be waited on at all reports
+            // itself unhealthy, which is what turns this fallback back on.
+            if state.has_pending_surfaces() && !state.compositor_clock.is_pacing() {
                 state.draw_pending_surfaces();
+                deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
             if let Some(resize_due) = state.resize_pending_surfaces(now) {
                 deadline = deadline.min(resize_due);
             }
+            let entered = state.profile.enter();
             state.publish_input_state();
+            state.profile.record(TurnPhase::Input, entered);
+            // Only meaningful once the page has asked for the stream; the host
+            // has ten seconds from that request to present, so this rides the
+            // same tick the compositor already wakes on.
+            if let Some(publisher) = state.texture_stream.as_mut()
+                && !publisher.started()
+                && state.texture_stream_requested_at.is_none()
+            {
+                // The page has to ask for the stream before the host may
+                // present into it.
+                let script = format!(
+                    r#"(async () => {{
+  if (window.__snowglassTextureStream) return;
+  window.__snowglassTextureStream = true;
+  try {{
+    const stream = await chrome.webview.getTextureStream("{TEXTURE_STREAM_ID}");
+    const video = document.createElement("video");
+    video.autoplay = true; video.muted = true; video.playsInline = true;
+    video.style.cssText = "position:fixed;left:0;top:0;width:320px;height:180px;z-index:99999";
+    video.srcObject = stream;
+    document.body.appendChild(video);
+    await video.play();
+    let reported = 0;
+    const onFrame = (now, meta) => {{
+      // `mediaTime` carries the host's stamp, so the page can report which
+      // frame it displayed and when it expects it on screen.
+      if (reported++ % 30 === 0) {{
+        chrome.webview.postMessage(JSON.stringify({{
+          type: "textureStreamFrame",
+          mediaTime: meta.mediaTime,
+          presentedFrames: meta.presentedFrames,
+          expectedDisplayTime: meta.expectedDisplayTime,
+          now,
+        }}));
+      }}
+      video.requestVideoFrameCallback(onFrame);
+    }};
+    video.requestVideoFrameCallback(onFrame);
+    chrome.webview.postMessage(JSON.stringify({{ type: "textureStreamReady" }}));
+  }} catch (error) {{
+    chrome.webview.postMessage(JSON.stringify({{
+      type: "textureStreamError", message: String(error),
+    }}));
+  }}
+}})();"#
+                );
+                if let Err(error) = state.foreground_webview.evaluate_script(&script) {
+                    eprintln!("snowglass: requesting the texture stream failed: {error}");
+                }
+                state.texture_stream_requested_at = Some(now);
+            }
+            let entered = state.profile.enter();
+            if let Some(publisher) = state.texture_stream.as_mut()
+                && publisher.started()
+            {
+                let stamp = performance_counter().unwrap_or_default() as u64;
+                match publisher.publish_test_pattern(stamp) {
+                    Ok(true) if publisher.frames() % 120 == 1 => {
+                        eprintln!("snowglass: texture stream frames={}", publisher.frames());
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("snowglass: texture stream publish failed: {error}"),
+                }
+            }
+            state.profile.record(TurnPhase::TextureStream, entered);
             state.poll_target();
             if state.overlay.repaint_due(now) {
                 state.window.request_redraw();
@@ -2205,116 +2693,15 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             state
                 .compositor_clock
                 .set_active(!state.surfaces.is_empty());
-            // The compositor clock already wakes the loop once per composition
-            // frame, which is the earliest a deferred present can be picked up.
-            // Only sessions without a usable clock need the timer fallback.
-            if state.has_pending_surfaces() && !state.compositor_clock.is_pacing() {
-                deadline = deadline.min(now + PENDING_SURFACE_RETRY);
-            }
             if state.capture_work_pending {
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
+            state.profile.finish_turn(Instant::now());
+            let report = std::mem::take(&mut state.profile.report);
+            state.overlay.set_note(&report);
+            state.profile.report = report;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-    }
-}
-
-/// Arms process-creation hooking so WebView2's children are hooked as they are
-/// created rather than after they are already running.
-///
-/// The DXGI detours only see factories created after they are installed, and
-/// WebView2 builds its swapchain during startup, so injecting into a process
-/// that already exists is always too late. Loading this before any WebView2
-/// process exists is what puts the graphics hooks in ahead of the swapchain.
-fn arm_webview_process_hook() -> bool {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-
-    let Ok(root) = std::env::current_exe() else {
-        return false;
-    };
-    let Some(artifact_root) = root.parent() else {
-        return false;
-    };
-    let library = artifact_root.join("snowglass_hook_webview2.dll");
-    if !library.is_file() || !artifact_root.join("snowglass-injector.exe").is_file() {
-        eprintln!(
-            "snowglass: the WebView2 process hook needs snowglass_hook_webview2.dll and the injector beside the shell"
-        );
-        return false;
-    }
-    // The hook shells out to the injector for each child it catches, so it has
-    // to be told where those artifacts live.
-    // SAFETY: set while the shell is still single-threaded, before the hook or
-    // any WebView2 process can read it.
-    unsafe {
-        std::env::set_var(snowglass_hook_webview2::ARTIFACT_DIR, artifact_root);
-    }
-    let wide = library
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    // SAFETY: the module stays loaded for the life of the shell, and the export
-    // takes no arguments.
-    unsafe {
-        let Ok(module) = LoadLibraryW(windows::core::PCWSTR(wide.as_ptr())) else {
-            eprintln!("snowglass: loading the WebView2 process hook failed");
-            return false;
-        };
-        let Some(install) =
-            GetProcAddress(module, windows::core::s!("SnowglassInstallWebView2Hook"))
-        else {
-            eprintln!("snowglass: the WebView2 process hook has no install export");
-            return false;
-        };
-        let install: unsafe extern "system" fn() -> i32 = std::mem::transmute(install);
-        let result = install();
-        if result < 0 {
-            eprintln!("snowglass: installing the WebView2 process hook failed: {result:#x}");
-            return false;
-        }
-    }
-    eprintln!("snowglass: WebView2 child processes will be hooked as they start");
-    true
-}
-
-/// Whether a producer is one of the WebView2 processes hosting the background
-/// page, which is how its stream is told apart from a guest's.
-fn is_webview_producer(process_id: u32) -> bool {
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
-    };
-    if process_id == 0 {
-        return false;
-    }
-    // SAFETY: the snapshot is closed before returning and the entry is a fully
-    // sized live local for the duration of the walk.
-    unsafe {
-        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return false;
-        };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        let mut found = false;
-        if Process32FirstW(snapshot, &mut entry).is_ok() {
-            loop {
-                if entry.th32ProcessID == process_id {
-                    found = String::from_utf16_lossy(&entry.szExeFile)
-                        .trim_end_matches('\0')
-                        .eq_ignore_ascii_case("msedgewebview2.exe");
-                    break;
-                }
-                if Process32NextW(snapshot, &mut entry).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
-        found
     }
 }
 
@@ -2328,6 +2715,59 @@ fn disconnect_from(
         (Some(compositor), _) => Renderer::disconnect_stream(compositor, connection),
         (None, Some(compositor)) => Renderer::disconnect_stream(compositor, connection),
         (None, None) => Ok(()),
+    }
+}
+
+/// Reports whether this WebView2 runtime exposes the experimental texture
+/// stream, which is what would let a guest frame become a DOM node in the
+/// page rather than a surface composited underneath it.
+///
+/// The interface only ships in prerelease SDKs, so `webview2-com` does not
+/// declare it and the identifier is taken from `WebView2Experimental.h`. A
+/// runtime without it fails the query and nothing else here can work.
+fn probe_texture_stream(webview: &WebView) {
+    // ICoreWebView2ExperimentalEnvironment12
+    const ENVIRONMENT12: windows::core::GUID =
+        windows::core::GUID::from_u128(0x96c27a45_f142_4873_80ad_9d0cd899b2b9);
+
+    let environment = webview.environment();
+    let mut queried: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `environment` is a live COM interface and `queried` is a live
+    // out-parameter; the result is released immediately.
+    let result = unsafe {
+        use windows::core::Interface;
+        environment.query(&ENVIRONMENT12, &mut queried)
+    };
+    if result.is_ok() && !queried.is_null() {
+        // SAFETY: a successful query returned an owned reference.
+        unsafe {
+            let unknown = windows::core::IUnknown::from_raw(queried);
+            drop(unknown);
+        }
+        eprintln!("snowglass: WebView2 texture streams are available on this runtime");
+    } else {
+        eprintln!(
+            "snowglass: WebView2 texture streams are unavailable on this runtime ({result:?})"
+        );
+    }
+}
+
+/// Finds the adapter the compositor is using, so textures shared with WebView2
+/// are allocated on the same device.
+fn adapter_for_luid(
+    luid: snowglass_protocol::AdapterLuid,
+) -> Result<windows::Win32::Graphics::Dxgi::IDXGIAdapter, Box<dyn Error>> {
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory4};
+    // SAFETY: the factory and adapter are returned to the caller, which retains
+    // them for as long as they are used.
+    unsafe {
+        let factory: IDXGIFactory4 = CreateDXGIFactory1()?;
+        Ok(
+            factory.EnumAdapterByLuid::<IDXGIAdapter>(windows::Win32::Foundation::LUID {
+                LowPart: luid.low_part,
+                HighPart: luid.high_part,
+            })?,
+        )
     }
 }
 
