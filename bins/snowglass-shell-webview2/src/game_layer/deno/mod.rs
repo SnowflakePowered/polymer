@@ -14,7 +14,7 @@ mod state;
 
 pub use dom::Mutation;
 pub use game::Command;
-pub use input::MouseEvent;
+pub use input::{KeyboardEvent, MouseEvent};
 pub use runtime::Runtime;
 
 #[cfg(test)]

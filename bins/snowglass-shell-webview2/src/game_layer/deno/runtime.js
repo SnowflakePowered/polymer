@@ -253,6 +253,19 @@
     }
   }
 
+  class KeyboardEvent extends Event {
+    constructor(type, init = {}) {
+      super(type, { bubbles: true, cancelable: true, ...init });
+      this.key = String(init.key || "");
+      this.code = String(init.code || "");
+      this.repeat = Boolean(init.repeat);
+      this.altKey = Boolean(init.altKey);
+      this.ctrlKey = Boolean(init.ctrlKey);
+      this.shiftKey = Boolean(init.shiftKey);
+      this.metaKey = Boolean(init.metaKey);
+    }
+  }
+
   class DOMTokenList {
     constructor(element, attribute) {
       this.element = element;
@@ -955,7 +968,7 @@
     }
   }
 
-  for (const type of ["mousedown", "mouseup", "mousemove", "click"]) {
+  for (const type of ["mousedown", "mouseup", "mousemove", "click", "keydown", "keyup"]) {
     defineEventHandler(Element.prototype, type);
     defineEventHandler(Document.prototype, type);
     defineEventHandler(globalThis, type);
@@ -1011,7 +1024,7 @@
           surface.attach.style.setProperty("--preferred-height", `${native.height}px`);
           surface.attach.style.setProperty(
             "--preferred-aspect-ratio",
-            native.width && native.height ? `${native.width} / ${native.height}` : "auto",
+            native.width && native.height ? String(native.width / native.height) : "auto",
           );
         }
       } else if (eventName === "closed") {
@@ -1162,6 +1175,7 @@
     parent: windowObject,
     top: windowObject,
     MouseEvent,
+    KeyboardEvent,
     Node,
     Text,
     Comment,
@@ -1195,9 +1209,16 @@
       windowObject.document = documentNode;
     },
     sync,
+    resize(width, height) {
+      dimensions = { width, height };
+      dispatch(windowObject, new Event("resize"));
+    },
     dispatchMouse(type, targetId, init) {
       const target = nodes.get(targetId) || documentNode;
       dispatch(target, new MouseEvent(type, init));
+    },
+    dispatchKeyboard(type, init) {
+      dispatch(windowObject, new KeyboardEvent(type, init));
     },
     dispatchMessage(data) {
       dispatch(windowObject, new MessageEvent("message", { data }));

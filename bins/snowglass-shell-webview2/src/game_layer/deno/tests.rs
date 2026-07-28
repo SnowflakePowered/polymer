@@ -1,6 +1,6 @@
 use blitz_dom::{DocumentConfig, local_name};
 
-use super::{Command, MouseEvent, Mutation, Runtime};
+use super::{Command, KeyboardEvent, MouseEvent, Mutation, Runtime};
 
 fn document(html: &str) -> blitz_html::HtmlDocument {
     let mut document = blitz_html::HtmlDocument::from_html(html, DocumentConfig::default());
@@ -141,6 +141,18 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
               order.push("window-bubble");
               postMessage({ type: "propagation", order });
             });
+            addEventListener("keydown", event => {
+              postMessage({
+                type: "keyboard",
+                key: event.key,
+                code: event.code,
+                altKey: event.altKey,
+              });
+              if (event.altKey && event.code === "Enter") event.preventDefault();
+            });
+            addEventListener("resize", () => {
+              postMessage({ type: "resize", width: innerWidth, height: innerHeight });
+            });
             onmessage = event => postMessage({
               type: "background-message",
               value: event.data.value,
@@ -260,6 +272,42 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
                 "order": ["document-capture", "target", "window-bubble"],
             }),
         ]
+    );
+
+    let result = runtime
+        .dispatch_keyboard(
+            "keydown",
+            KeyboardEvent {
+                key: "Enter".into(),
+                code: "Enter".into(),
+                repeat: false,
+                alt_key: true,
+                ctrl_key: false,
+                shift_key: false,
+                meta_key: false,
+            },
+        )
+        .unwrap();
+    assert!(result.handled);
+    assert!(result.default_prevented);
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "keyboard",
+            "key": "Enter",
+            "code": "Enter",
+            "altKey": true,
+        })]
+    );
+
+    runtime.resize(1024, 768).unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "resize",
+            "width": 1024,
+            "height": 768,
+        })]
     );
 
     runtime

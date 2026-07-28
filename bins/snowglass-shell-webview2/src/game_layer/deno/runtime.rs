@@ -17,7 +17,7 @@ use super::dom::{
     op_dom_set_attribute, op_dom_set_text, snapshot,
 };
 use super::game::{Command, op_game_close, op_game_input, op_game_launch, op_game_message};
-use super::input::{EventResult, MouseEvent, op_event_result};
+use super::input::{EventResult, KeyboardEvent, MouseEvent, op_event_result};
 use super::modules::{BrowserModuleLoader, NoNpm, document_scripts, execute_document_script};
 use super::state::{BridgeState, op_post_message, op_proxy_message};
 
@@ -205,6 +205,16 @@ impl Runtime {
         Ok(())
     }
 
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+        let tokio_context = self.tokio.enter();
+        self.worker.js_runtime.execute_script(
+            "snowglass:game-layer/deno/resize.js",
+            format!("__snowglassDom.resize({width}, {height});"),
+        )?;
+        drop(tokio_context);
+        self.poll_event_loop()
+    }
+
     pub fn dispatch_mouse(
         &mut self,
         kind: &str,
@@ -223,6 +233,37 @@ impl Runtime {
             "snowglass:game-layer/deno/mouse-event.js",
             format!(
                 "__snowglassDom.dispatchMouse({}, {target}, {init});",
+                serde_json::to_string(kind)?
+            ),
+        )?;
+        drop(tokio_context);
+        self.poll_event_loop()?;
+        Ok(self
+            .worker
+            .js_runtime
+            .op_state()
+            .borrow()
+            .borrow::<BridgeState>()
+            .event)
+    }
+
+    pub fn dispatch_keyboard(
+        &mut self,
+        kind: &str,
+        keyboard: KeyboardEvent,
+    ) -> Result<EventResult, Box<dyn std::error::Error>> {
+        let tokio_context = self.tokio.enter();
+        self.worker
+            .js_runtime
+            .op_state()
+            .borrow_mut()
+            .borrow_mut::<BridgeState>()
+            .event = EventResult::default();
+        let init = serde_json::to_string(&keyboard)?;
+        self.worker.js_runtime.execute_script(
+            "snowglass:game-layer/deno/keyboard-event.js",
+            format!(
+                "__snowglassDom.dispatchKeyboard({}, {init});",
                 serde_json::to_string(kind)?
             ),
         )?;

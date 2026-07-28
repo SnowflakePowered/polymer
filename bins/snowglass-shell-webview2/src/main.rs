@@ -4,6 +4,7 @@ mod api;
 mod cli;
 mod composition;
 mod game_layer;
+mod game_layer_state;
 mod input;
 mod launch;
 
@@ -13,7 +14,8 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
-use game_layer::{DomMouseEvent, GameLayer, GameLayerFactory};
+use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory};
+use game_layer_state::{GameLayerAction, GameLayerState, GameLayerWork};
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_input::{
@@ -71,6 +73,7 @@ use winit::{
     dpi::LogicalSize,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::Key,
     window::{Window, WindowId},
 };
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
@@ -616,57 +619,56 @@ impl CompositorClock {
     }
 }
 
+struct StreamState {
+    capture: Capture,
+    wake_pending: Arc<AtomicBool>,
+    dirty: Arc<AtomicBool>,
+    work_pending: bool,
+    surfaces: HashMap<u64, CapturedSurface>,
+}
+
+struct ShellInputState {
+    transport: InputTransport,
+    provider: Option<Sdl3Provider>,
+    pointer_routing: PointerRoutingState,
+    direct_input: DirectInputForwarder,
+    priority: InputPriority,
+    cursor: POINT,
+    dom_mouse_keys: u32,
+    dom_alt_key: bool,
+    foreground_hit_regions: Vec<ForegroundHitRegion>,
+    foreground_mouse_capture: bool,
+    last_published_state: String,
+    ui_controls: HashMap<String, i32>,
+    next_publish: Instant,
+}
+
+struct GameSessionState {
+    session: String,
+    target: Option<TargetProcess>,
+    active: Option<ActiveGame>,
+    pending_cli_launch: Option<LaunchOptions>,
+}
+
+struct PresentationState {
+    composition: CompositionTree,
+    overlay: EguiOverlay,
+    clock: CompositorClock,
+    profile: TurnProfile,
+    /// One window-spanning opaque swapchain shared by every stream.
+    merged: Option<D3d12Compositor>,
+    merged_attached: bool,
+}
+
 struct ShellState {
     // Drop WebView2 and its COM host before tearing down their visual tree.
     foreground_webview: WebView,
     window: Window,
-    composition: CompositionTree,
-    /// Lays out and paints the document selected by the foreground page's
-    /// `<link rel="background">`, when it supplies one.
-    game_layer: Option<GameLayer>,
-    /// Vello's D3D12 state is prepared before WebView2 initializes Chromium's
-    /// renderer, then consumed if the page links a game-layer document.
-    game_layer_factory: Option<GameLayerFactory>,
-    /// Bands the layer last painted, lowest first. Only these are placed in a
-    /// merged plan, so a band that stopped being drawn stops being composited.
-    chrome_bands_drawn: Vec<usize>,
-    /// Set when chrome reaches the merged compositor, so the shared swapchain
-    /// redraws even though no stream delivered a frame.
-    chrome_dirty: bool,
-    /// A drag moved the layer since its last paint. Raw pointer events can
-    /// arrive much faster than scanout, so only the latest position is painted
-    /// on the next compositor tick.
-    game_layer_refresh_pending: bool,
-    overlay: EguiOverlay,
-    capture: Capture,
-    capture_wake_pending: Arc<AtomicBool>,
-    capture_dirty: Arc<AtomicBool>,
-    capture_work_pending: bool,
-    compositor_clock: CompositorClock,
-    profile: TurnProfile,
-    /// One window-spanning opaque swapchain shared by every stream. Opaque is
-    /// what earns the overlay plane, and it is only safe to be opaque because
-    /// the captured background fills the pixels no stream covers.
-    merged: Option<D3d12Compositor>,
-    merged_attached: bool,
-    session: String,
-    surfaces: HashMap<u64, CapturedSurface>,
-    target: Option<TargetProcess>,
-    active_game: Option<ActiveGame>,
-    pending_cli_launch: Option<LaunchOptions>,
-    _input: InputTransport,
-    input_provider: Option<Sdl3Provider>,
-    pointer_routing: PointerRoutingState,
-    direct_input: DirectInputForwarder,
-    input_priority: InputPriority,
-    cursor: POINT,
-    dom_mouse_keys: u32,
-    game_layer_mouse_buttons: u8,
-    foreground_hit_regions: Vec<ForegroundHitRegion>,
-    foreground_mouse_capture: bool,
-    last_input_state: String,
-    ui_controls: HashMap<String, i32>,
-    next_input_publish: Instant,
+    game_layer: GameLayerState,
+    presentation: PresentationState,
+    streams: StreamState,
+    game: GameSessionState,
+    input: ShellInputState,
 }
 
 impl ShellState {
@@ -701,8 +703,7 @@ impl ShellState {
         // Prepare Vello before building WebView2. Initializing its D3D12 state
         // after Chromium has started WARP faults inside d3d10warp.dll on this
         // system; document discovery itself remains deferred to the page.
-        let game_layer_factory = Some(GameLayerFactory::new()?);
-        let game_layer = None;
+        let game_layer = GameLayerState::new(GameLayerFactory::new()?);
         let foreground_visual = composition.foreground_visual()?;
         let foreground_proxy = proxy.clone();
         let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
@@ -813,107 +814,100 @@ impl ShellState {
         Ok(Self {
             foreground_webview,
             window,
-            composition,
             game_layer,
-            game_layer_factory,
-            chrome_bands_drawn: Vec::new(),
-            chrome_dirty: false,
-            game_layer_refresh_pending: false,
-            overlay,
-            capture,
-            capture_wake_pending,
-            capture_dirty,
-            capture_work_pending: false,
-            compositor_clock,
-            profile: TurnProfile::default(),
-            merged: None,
-            merged_attached: false,
-            session,
-            surfaces: HashMap::new(),
-            target,
-            active_game: None,
-            pending_cli_launch,
-            _input: input,
-            input_provider,
-            pointer_routing: PointerRoutingState::new(Instant::now()),
-            direct_input: DirectInputForwarder::new(control_sender),
-            input_priority: InputPriority::Foreground,
-            cursor: POINT::default(),
-            dom_mouse_keys: 0,
-            game_layer_mouse_buttons: 0,
-            foreground_hit_regions: Vec::new(),
-            foreground_mouse_capture: false,
-            last_input_state: String::new(),
-            ui_controls: HashMap::new(),
-            next_input_publish: Instant::now(),
+            presentation: PresentationState {
+                composition,
+                overlay,
+                clock: compositor_clock,
+                profile: TurnProfile::default(),
+                merged: None,
+                merged_attached: false,
+            },
+            streams: StreamState {
+                capture,
+                wake_pending: capture_wake_pending,
+                dirty: capture_dirty,
+                work_pending: false,
+                surfaces: HashMap::new(),
+            },
+            game: GameSessionState {
+                session,
+                target,
+                active: None,
+                pending_cli_launch,
+            },
+            input: ShellInputState {
+                transport: input,
+                provider: input_provider,
+                pointer_routing: PointerRoutingState::new(Instant::now()),
+                direct_input: DirectInputForwarder::new(control_sender),
+                priority: InputPriority::Foreground,
+                cursor: POINT::default(),
+                dom_mouse_keys: 0,
+                dom_alt_key: false,
+                foreground_hit_regions: Vec::new(),
+                foreground_mouse_capture: false,
+                last_published_state: String::new(),
+                ui_controls: HashMap::new(),
+                next_publish: Instant::now(),
+            },
         })
     }
 
     fn deliver_cli_launch(&mut self) {
-        let Some(options) = self.pending_cli_launch.take() else {
+        let Some(options) = self.game.pending_cli_launch.take() else {
             return;
         };
         let Ok(options) = serde_json::to_value(&options) else {
             return;
         };
-        let Some(layer) = self.game_layer.as_mut() else {
-            eprintln!("snowglass: CLI launch requires a linked game layer");
-            return;
-        };
-        layer.post_message(&serde_json::json!({
+        if !self.game_layer.post_message(&serde_json::json!({
             "type": "snowglass-cli-launch",
             "options": options,
-        }));
-        self.process_game_layer_commands();
-        self.flush_game_layer_messages();
-        self.flush_game_layer_proxy_messages();
+        })) {
+            eprintln!("snowglass: CLI launch requires a linked game layer");
+            return;
+        }
+        let work = self.game_layer.service(&self.foreground_webview);
+        self.apply_game_layer_work(work);
     }
 
-    fn process_game_layer_commands(&mut self) {
-        let commands = self
-            .game_layer
-            .as_mut()
-            .map(GameLayer::take_commands)
-            .unwrap_or_default();
-        for command in commands {
-            match command {
-                game_layer::GameLayerCommand::Launch {
+    fn apply_game_layer_work(&mut self, work: GameLayerWork) {
+        if work.needs_refresh {
+            self.refresh_game_layer();
+        }
+        self.apply_game_layer_actions(work.actions);
+    }
+
+    fn apply_game_layer_actions(&mut self, actions: Vec<GameLayerAction>) {
+        for action in actions {
+            match action {
+                GameLayerAction::Launch {
                     instance_id,
                     options,
-                } => match serde_json::from_value::<LaunchOptions>(options) {
-                    Ok(options) => match options.validate() {
-                        Ok(()) => self.launch_game(instance_id, options),
-                        Err(error) => {
-                            self.emit_instance_event(
-                                &instance_id,
-                                "error",
-                                &serde_json::json!({ "message": error }),
-                            );
-                            self.emit_instance_event(
-                                &instance_id,
-                                "closed",
-                                &serde_json::Value::Null,
-                            );
-                        }
-                    },
-                    Err(error) => {
-                        self.emit_instance_event(
-                            &instance_id,
-                            "error",
-                            &serde_json::json!({
-                                "message": format!("invalid LaunchOptions: {error}")
-                            }),
-                        );
-                        self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
-                    }
-                },
-                game_layer::GameLayerCommand::Close(instance_id) => self.close_game(&instance_id),
-                game_layer::GameLayerCommand::Message {
+                } => self.launch_game(instance_id, options),
+                GameLayerAction::Reject {
+                    instance_id,
+                    message,
+                } => {
+                    self.emit_instance_event(
+                        &instance_id,
+                        "error",
+                        &serde_json::json!({ "message": message }),
+                    );
+                    self.emit_instance_event(
+                        &instance_id,
+                        "closed",
+                        &serde_json::Value::Null,
+                    );
+                }
+                GameLayerAction::Close(instance_id) => self.close_game(&instance_id),
+                GameLayerAction::Message {
                     instance_id,
                     name,
                     args,
                 } => self.game_message(&instance_id, &name, args),
-                game_layer::GameLayerCommand::Input(active) => {
+                GameLayerAction::Input(active) => {
                     self.set_input_priority(if active {
                         InputPriority::Game
                     } else {
@@ -934,7 +928,7 @@ impl ShellState {
         }
         if let Some(background) = background {
             let size = self.window.inner_size();
-            let Some(factory) = self.game_layer_factory.take() else {
+            let Some(factory) = self.game_layer.take_factory() else {
                 eprintln!(
                     "snowglass: ignoring a second game layer discovered at {}",
                     background.base_url
@@ -949,10 +943,9 @@ impl ShellState {
                 size.width,
                 size.height,
             );
-            self.game_layer = Some(layer);
+            self.game_layer.install(layer);
             self.refresh_game_layer();
-            self.flush_game_layer_messages();
-            self.flush_game_layer_proxy_messages();
+            self.game_layer.flush(&self.foreground_webview);
             eprintln!(
                 "snowglass: using game layer discovered at {}",
                 background.base_url
@@ -960,13 +953,13 @@ impl ShellState {
         } else {
             // A page without the link does not use composed chrome and should
             // not retain the renderer that was prepared solely for it.
-            self.game_layer_factory = None;
+            self.game_layer.discard_factory();
         }
         self.deliver_cli_launch();
     }
 
     fn launch_game(&mut self, instance_id: String, options: LaunchOptions) {
-        if self.active_game.is_some() {
+        if self.game.active.is_some() {
             self.emit_instance_event(
                 &instance_id,
                 "error",
@@ -975,7 +968,7 @@ impl ShellState {
             self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
             return;
         }
-        let invalid_background_attachment = self.game_layer.as_ref().and_then(|layer| {
+        let invalid_background_attachment = self.game_layer.layer().and_then(|layer| {
             options
                 .surfaces
                 .iter()
@@ -1001,7 +994,7 @@ impl ShellState {
         } else {
             let mut mappings = options.gamepad_mapping.iter().collect::<Vec<_>>();
             mappings.sort_by_key(|mapping| mapping.slot);
-            self._input
+            self.input.transport
                 .start_provider(Sdl3ProviderConfig {
                     slots: mappings
                         .into_iter()
@@ -1085,11 +1078,11 @@ impl ShellState {
                 }
             }
         };
-        match launch::launch(&options, &self.session) {
+        match launch::launch(&options, &self.game.session) {
             Ok(target) => {
-                self.target = Some(target);
-                self.input_provider = provider;
-                self.active_game = Some(ActiveGame {
+                self.game.target = Some(target);
+                self.input.provider = provider;
+                self.game.active = Some(ActiveGame {
                     instance_id: instance_id.clone(),
                     options,
                     webrtc: publisher,
@@ -1110,46 +1103,48 @@ impl ShellState {
 
     fn close_game(&mut self, instance_id: &str) {
         if self
-            .active_game
+            .game
+            .active
             .as_ref()
             .is_none_or(|active| active.instance_id != instance_id)
         {
             return;
         }
-        if let Some(target) = self.target.take() {
+        if let Some(target) = self.game.target.take() {
             let _ = target.terminate_tree_and_wait();
         }
         self.finish_active_game();
     }
 
     fn finish_active_game(&mut self) {
-        let Some(active) = self.active_game.take() else {
+        let Some(active) = self.game.active.take() else {
             return;
         };
-        let connections = self.surfaces.keys().copied().collect::<Vec<_>>();
+        let connections = self.streams.surfaces.keys().copied().collect::<Vec<_>>();
         for connection in connections {
             self.cancel_pointer_connection(connection);
             if let Some(publisher) = &active.webrtc {
                 publisher.remove_stream(connection);
             }
-            if let Some(mut surface) = self.surfaces.remove(&connection) {
-                self.capture.revoke(connection);
+            if let Some(mut surface) = self.streams.surfaces.remove(&connection) {
+                self.streams.capture.revoke(connection);
                 let _ = disconnect_from(&mut surface.compositor, &mut self.merged, connection);
                 let _ = self.composition.remove_render_target(connection);
-                self.capture.forget(connection);
+                self.streams.capture.forget(connection);
             }
         }
         let _ = self.composition.commit();
-        self.input_provider = None;
+        self.input.provider = None;
         self.set_input_priority(InputPriority::Foreground);
-        self.foreground_hit_regions.clear();
+        self.input.foreground_hit_regions.clear();
         self.publish_targets_for(&active.instance_id);
         self.emit_instance_event(&active.instance_id, "closed", &serde_json::Value::Null);
     }
 
     fn game_message(&mut self, instance_id: &str, name: &str, args: serde_json::Value) {
         if self
-            .active_game
+            .game
+            .active
             .as_ref()
             .is_some_and(|active| active.instance_id == instance_id)
         {
@@ -1173,7 +1168,7 @@ impl ShellState {
             "payload": payload,
         });
         let mut background_changed = false;
-        if let Some(layer) = self.game_layer.as_mut() {
+        if let Some(layer) = self.game_layer.layer_mut() {
             layer.dispatch_game_view_event(&event);
             background_changed = layer.needs_paint();
         }
@@ -1184,8 +1179,7 @@ impl ShellState {
         if let Err(error) = self.foreground_webview.evaluate_script(&script) {
             eprintln!("snowglass: publishing GameView event failed: {error}");
         }
-        self.flush_game_layer_messages();
-        self.flush_game_layer_proxy_messages();
+        self.game_layer.flush(&self.foreground_webview);
     }
 
     fn process_capture(&mut self) {
@@ -1198,21 +1192,21 @@ impl ShellState {
         // Leave the notification latched while draining. Producers can mark
         // `capture_dirty`, but cannot flood the event loop with one user event
         // per captured frame.
-        self.capture_dirty.store(false, Ordering::Release);
+        self.streams.dirty.store(false, Ordering::Release);
         let mut changed = false;
         let mut processed = 0;
         while processed < MAX_CAPTURE_EVENTS_PER_TURN {
-            let Ok(event) = self.capture.try_recv() else {
+            let Ok(event) = self.streams.capture.try_recv() else {
                 break;
             };
             processed += 1;
             match event {
                 CaptureEvent::Stream(connection, stream, accepted) => {
-                    let Some(active) = &self.active_game else {
+                    let Some(active) = &self.game.active else {
                         let _ = accepted.send(false);
                         continue;
                     };
-                    if self.surfaces.len() >= active.options.surfaces.len() {
+                    if self.streams.surfaces.len() >= active.options.surfaces.len() {
                         let _ = accepted.send(false);
                         continue;
                     }
@@ -1228,7 +1222,7 @@ impl ShellState {
                     }
                 }
                 CaptureEvent::Frame(connection, frame) => {
-                    let Some(surface) = self.surfaces.get_mut(&connection) else {
+                    let Some(surface) = self.streams.surfaces.get_mut(&connection) else {
                         continue;
                     };
                     self.overlay.observe_frame(connection, surface.index, frame);
@@ -1254,13 +1248,14 @@ impl ShellState {
                     self.overlay.remove_target(connection);
                     self.cancel_pointer_connection(connection);
                     if let Some(publisher) = self
-                        .active_game
+                        .game
+                        .active
                         .as_ref()
                         .and_then(|active| active.webrtc.as_ref())
                     {
                         publisher.remove_stream(connection);
                     }
-                    if let Some(mut surface) = self.surfaces.remove(&connection) {
+                    if let Some(mut surface) = self.streams.surfaces.remove(&connection) {
                         let _ =
                             disconnect_from(&mut surface.compositor, &mut self.merged, connection);
                         if let Err(error) = self.composition.remove_render_target(connection) {
@@ -1270,27 +1265,28 @@ impl ShellState {
                         }
                         changed = true;
                     }
-                    self.capture.forget(connection);
+                    self.streams.capture.forget(connection);
                 }
             }
         }
         if changed
             && let Some(instance_id) = self
-                .active_game
+                .game
+                .active
                 .as_ref()
                 .map(|active| active.instance_id.clone())
         {
             self.publish_targets_for(&instance_id);
         }
         self.draw_unpaced_surfaces();
-        self.capture_wake_pending.store(false, Ordering::Release);
+        self.streams.wake_pending.store(false, Ordering::Release);
 
         // A producer that ran while the notification was latched could not
         // enqueue another WakeCapture. Carry that work into the next event-loop
         // cycle instead. Resetting the latch before reading `capture_dirty`
         // closes the race: a later producer will enqueue a fresh notification.
-        let arrived_while_draining = self.capture_dirty.swap(false, Ordering::AcqRel);
-        self.capture_work_pending =
+        let arrived_while_draining = self.streams.dirty.swap(false, Ordering::AcqRel);
+        self.streams.work_pending =
             processed == MAX_CAPTURE_EVENTS_PER_TURN || arrived_while_draining;
     }
 
@@ -1327,13 +1323,14 @@ impl ShellState {
             return;
         }
         let publisher = self
-            .active_game
+            .game
+            .active
             .as_ref()
             .and_then(|active| active.webrtc.as_ref());
         // One composition interval carries one present regardless of how many
         // dedicated swapchains contributed to it.
         let mut presented = false;
-        for (&connection, surface) in &mut self.surfaces {
+        for (&connection, surface) in &mut self.streams.surfaces {
             let ready = surface.compositor.as_mut().is_some_and(|compositor| {
                 (Renderer::has_pending_frame(compositor) || surface.needs_redraw)
                     && compositor.begin_frame_within(permit_wait)
@@ -1367,6 +1364,7 @@ impl ShellState {
         // Whichever swapchain carried the streams is the one the display
         // confirms presents against.
         let latency = self
+            .streams
             .surfaces
             .values_mut()
             .find_map(|surface| surface.compositor.as_mut()?.display_latency());
@@ -1379,9 +1377,9 @@ impl ShellState {
             // occupy the one-frame DXGI queue when a real guest frame arrives.
             // DirectComposition retains the last buffer, so only new content
             // or chrome needs another present.
-            return Renderer::has_pending_frame(merged) || self.chrome_dirty;
+            return Renderer::has_pending_frame(merged) || self.game_layer.chrome_dirty();
         }
-        self.surfaces.values().any(|surface| {
+        self.streams.surfaces.values().any(|surface| {
             surface.needs_redraw
                 || surface
                     .compositor
@@ -1404,7 +1402,7 @@ impl ShellState {
         // because the game layer fills the pixels no stream covers; without a
         // layer there is nothing to fill them, so the streams keep their own
         // visuals and DirectComposition blends them.
-        if self.game_layer.is_some() {
+        if self.game_layer.is_linked() {
             return self.connect_merged_stream(
                 connection,
                 stream,
@@ -1442,14 +1440,15 @@ impl ShellState {
         self.composition.commit()?;
         if publish_webrtc
             && let Some(publisher) = self
-                .active_game
+                .game
+                .active
                 .as_ref()
                 .and_then(|active| active.webrtc.as_ref())
         {
             publisher.add_stream(connection, index);
         }
         self.overlay.set_backend(format!("{:?}", stream.image_kind));
-        self.surfaces.insert(
+        self.streams.surfaces.insert(
             connection,
             CapturedSurface {
                 index,
@@ -1499,7 +1498,7 @@ impl ShellState {
             // guest connected. Its document is still clean, but the new opaque
             // swapchain needs its own copy of every band before it covers those
             // old visuals.
-            if let Some(layer) = self.game_layer.as_mut() {
+            if let Some(layer) = self.game_layer.layer_mut() {
                 layer.invalidate();
             }
         }
@@ -1516,7 +1515,7 @@ impl ShellState {
             self.merged_attached = true;
         }
         self.overlay.set_backend(format!("{:?}", stream.image_kind));
-        self.surfaces.insert(
+        self.streams.surfaces.insert(
             connection,
             CapturedSurface {
                 index,
@@ -1552,7 +1551,7 @@ impl ShellState {
         let mut ordered = Renderer::received_surfaces(merged)
             .into_iter()
             .filter_map(|received| {
-                let surface = self.surfaces.get(&received.connection)?;
+                let surface = self.streams.surfaces.get(&received.connection)?;
                 Some((
                     surface.z_index,
                     PlanLayer::Surface(SurfacePlacement {
@@ -1574,7 +1573,8 @@ impl ShellState {
         // the z-order is what keeps a bezel above the view it overlaps.
         let window = self.window.inner_size();
         ordered.extend(
-            self.chrome_bands_drawn
+            self.game_layer
+                .chrome_bands()
                 .iter()
                 .map(|&band| {
                     (
@@ -1616,11 +1616,11 @@ impl ShellState {
         }
         match merged.draw_game_with_webrtc(&plan, None) {
             Ok(_) => {
-                for surface in self.surfaces.values_mut() {
+                for surface in self.streams.surfaces.values_mut() {
                     surface.needs_redraw = false;
                 }
                 // The draw is what consumed the pending chrome upload.
-                self.chrome_dirty = false;
+                self.game_layer.clear_chrome_dirty();
                 self.overlay.record_present();
             }
             Err(error) => eprintln!("snowglass: rendering merged surfaces failed: {error}"),
@@ -1633,8 +1633,8 @@ impl ShellState {
     }
 
     fn next_target_configuration(&self) -> Option<(u32, u8, bool)> {
-        let in_use = |index| self.surfaces.values().any(|surface| surface.index == index);
-        self.active_game
+        let in_use = |index| self.streams.surfaces.values().any(|surface| surface.index == index);
+        self.game.active
             .as_ref()?
             .options
             .surfaces
@@ -1644,7 +1644,7 @@ impl ShellState {
     }
 
     fn apply_layout(&mut self, layouts: Vec<SurfaceLayout>) {
-        self.foreground_hit_regions = layouts
+        self.input.foreground_hit_regions = layouts
             .iter()
             .flat_map(|layout| {
                 layout
@@ -1655,7 +1655,7 @@ impl ShellState {
             })
             .filter(|region| region.width != 0 && region.height != 0)
             .collect();
-        if self.game_layer.is_some() {
+        if self.game_layer.is_linked() {
             // The layer decides where the views go, so the foreground's idea of
             // it is ignored rather than fought with. Its hit regions are still
             // its own: they say where the foreground wants the pointer, which
@@ -1683,38 +1683,44 @@ impl ShellState {
     }
 
     fn refresh_game_layer_inner(&mut self) {
-        self.game_layer_refresh_pending = false;
-        let Some(layer) = self.game_layer.as_mut() else {
-            return;
-        };
+        self.game_layer.take_refresh_pending();
         let composition = &mut self.composition;
         let mut merged = self.merged.as_mut();
         let mut bands = 0;
         let mut failure = None;
-        let painted = layer.paint(|band, chrome| {
-            bands = band + 1;
-            match merged.as_deref_mut() {
-                Some(merged) => {
-                    merged.set_chrome_layer(band as u64, chrome.handle, chrome.width, chrome.height)
-                }
-                None => {
-                    if let Err(error) = composition.set_chrome_band(
-                        band,
+        let (painted, placements) = {
+            let Some(layer) = self.game_layer.layer_mut() else {
+                return;
+            };
+            let painted = layer.paint(|band, chrome| {
+                bands = band + 1;
+                match merged.as_deref_mut() {
+                    Some(merged) => merged.set_chrome_layer(
+                        band as u64,
                         chrome.handle,
                         chrome.width,
                         chrome.height,
-                    ) {
-                        failure = Some(error);
+                    ),
+                    None => {
+                        if let Err(error) = composition.set_chrome_band(
+                            band,
+                            chrome.handle,
+                            chrome.width,
+                            chrome.height,
+                        ) {
+                            failure = Some(error);
+                        }
                     }
                 }
-            }
-        });
+            });
+            (painted, layer.placements().to_vec())
+        };
         if painted {
             if let Some(error) = failure {
                 eprintln!("snowglass: handing over the game layer chrome failed: {error}");
             }
-            self.chrome_bands_drawn = (0..bands).collect();
-            self.chrome_dirty = self.merged.is_some();
+            self.game_layer
+                .set_painted_chrome(bands, self.merged.is_some());
             match self.merged.as_mut() {
                 Some(merged) => {
                     for band in bands..=GAME_LAYER_VIEWS {
@@ -1744,9 +1750,8 @@ impl ShellState {
         //
         // A placement names a render target by its tracked index; the shell
         // knows it by the connection that publishes it.
-        let surfaces = &self.surfaces;
-        let layouts = layer
-            .placements()
+        let surfaces = &self.streams.surfaces;
+        let mut layouts = placements
             .iter()
             .filter_map(|placement| {
                 let connection = surfaces.iter().find_map(|(&connection, surface)| {
@@ -1766,6 +1771,33 @@ impl ShellState {
                 })
             })
             .collect::<Vec<_>>();
+        // A tracked surface that is outside the viewport is culled by the
+        // painter and therefore has no placement. DirectComposition visuals
+        // retain their previous/default rectangle until explicitly moved, so
+        // absence must mean hidden rather than "leave it where it was".
+        if let Some(active) = &self.game.active {
+            for requested in &active.options.surfaces {
+                let Some(connection) = surfaces.iter().find_map(|(&connection, surface)| {
+                    (surface.index == requested.index).then_some(connection)
+                }) else {
+                    continue;
+                };
+                if layouts.iter().any(|layout| layout.connection == connection) {
+                    continue;
+                }
+                layouts.push(SurfaceLayout {
+                    connection,
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                    z_index: game_view_z_index(0),
+                    pointer_events: false,
+                    foreground_hit_region: None,
+                    foreground_hit_regions: Vec::new(),
+                });
+            }
+        }
         // Deliberately not `apply_layout`: the foreground owns the hit regions
         // even when this layer owns where the views sit.
         self.place_surfaces(layouts);
@@ -1783,7 +1815,7 @@ impl ShellState {
                     item.connection
                 );
             }
-            let Some(surface) = self.surfaces.get_mut(&item.connection) else {
+            let Some(surface) = self.streams.surfaces.get_mut(&item.connection) else {
                 continue;
             };
             surface.viewport_x = item.x;
@@ -1823,24 +1855,20 @@ impl ShellState {
         button: u16,
         pressed: Option<bool>,
     ) -> bool {
-        let previous_buttons = self.game_layer_mouse_buttons;
-        if let Some(pressed) = pressed {
-            let flag = match button {
-                0 => 1,
-                1 => 4,
-                2 => 2,
-                3 => 8,
-                4 => 16,
-                _ => 0,
-            };
-            if pressed {
-                self.game_layer_mouse_buttons |= flag;
-            } else {
-                self.game_layer_mouse_buttons &= !flag;
-            }
-        }
-        let Some(layer) = self.game_layer.as_mut() else {
-            self.game_layer_mouse_buttons = previous_buttons;
+        let flag = match button {
+            0 => 1,
+            1 => 4,
+            2 => 2,
+            3 => 8,
+            4 => 16,
+            _ => 0,
+        };
+        let previous_buttons = pressed
+            .map(|pressed| self.game_layer.set_mouse_button(flag, pressed))
+            .unwrap_or_else(|| self.game_layer.mouse_buttons());
+        let buttons = self.game_layer.mouse_buttons();
+        let Some(layer) = self.game_layer.layer_mut() else {
+            self.game_layer.restore_mouse_buttons(previous_buttons);
             return false;
         };
         let prevented = layer.mouse_event(DomMouseEvent {
@@ -1848,130 +1876,57 @@ impl ShellState {
             x,
             y,
             button: button.min(u16::from(u8::MAX)) as u8,
-            buttons: self.game_layer_mouse_buttons,
-            ctrl_key: self.dom_mouse_keys & DOM_MK_CONTROL != 0,
-            shift_key: self.dom_mouse_keys & DOM_MK_SHIFT != 0,
+            buttons,
+            ctrl_key: self.input.dom_mouse_keys & DOM_MK_CONTROL != 0,
+            shift_key: self.input.dom_mouse_keys & DOM_MK_SHIFT != 0,
         });
         let needs_paint = layer.needs_paint();
         if !prevented {
-            self.game_layer_mouse_buttons = previous_buttons;
+            self.game_layer.restore_mouse_buttons(previous_buttons);
         }
         if needs_paint {
             if self.compositor_clock.is_pacing() {
-                self.game_layer_refresh_pending = true;
+                self.game_layer.defer_refresh();
             } else {
                 self.refresh_game_layer();
             }
         }
-        self.flush_game_layer_messages();
-        self.flush_game_layer_proxy_messages();
-        self.process_game_layer_commands();
+        let work = self.game_layer.service(&self.foreground_webview);
+        self.apply_game_layer_actions(work.actions);
+        prevented
+    }
+
+    fn game_layer_keyboard(&mut self, kind: &str, key: String, code: String, repeat: bool) -> bool {
+        let Some(layer) = self.game_layer.layer_mut() else {
+            return false;
+        };
+        let prevented = layer.keyboard_event(DomKeyboardEvent {
+            kind,
+            key,
+            code,
+            repeat,
+            alt_key: self.input.dom_alt_key,
+            ctrl_key: self.input.dom_mouse_keys & DOM_MK_CONTROL != 0,
+            shift_key: self.input.dom_mouse_keys & DOM_MK_SHIFT != 0,
+        });
+        if layer.needs_paint() {
+            self.refresh_game_layer();
+        }
+        let work = self.game_layer.service(&self.foreground_webview);
+        self.apply_game_layer_actions(work.actions);
         prevented
     }
 
     fn refresh_pending_game_layer(&mut self) {
-        if self.game_layer_refresh_pending {
+        if self.game_layer.take_refresh_pending() {
             self.refresh_game_layer();
-        }
-    }
-
-    fn game_layer_message(&mut self, message: serde_json::Value) {
-        let Some(layer) = self.game_layer.as_mut() else {
-            return;
-        };
-        layer.post_message(&message);
-        if layer.needs_paint() {
-            self.refresh_game_layer();
-        }
-        self.flush_game_layer_messages();
-        self.flush_game_layer_proxy_messages();
-        self.process_game_layer_commands();
-    }
-
-    fn game_layer_proxy(&mut self, request: serde_json::Value) {
-        let result = self
-            .game_layer
-            .as_mut()
-            .ok_or_else(|| "the foreground has no linked background document".to_owned())
-            .and_then(|layer| layer.proxy_request(&request));
-        if let Err(error) = result {
-            let id = request
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default();
-            self.send_game_layer_proxy_message(&serde_json::json!({
-                "type": "response",
-                "id": id,
-                "ok": false,
-                "error": {
-                    "name": "Error",
-                    "message": error,
-                },
-            }));
-            return;
-        }
-        if self.game_layer.as_ref().is_some_and(GameLayer::needs_paint) {
-            self.refresh_game_layer();
-        }
-        self.flush_game_layer_messages();
-        self.flush_game_layer_proxy_messages();
-        self.process_game_layer_commands();
-    }
-
-    fn poll_game_layer_runtime(&mut self) -> bool {
-        let Some(layer) = self.game_layer.as_mut() else {
-            return false;
-        };
-        if !layer.poll_runtime() {
-            return false;
-        }
-        if layer.needs_paint() {
-            self.refresh_game_layer();
-        }
-        self.flush_game_layer_messages();
-        self.flush_game_layer_proxy_messages();
-        self.process_game_layer_commands();
-        true
-    }
-
-    fn flush_game_layer_messages(&mut self) {
-        let messages = self
-            .game_layer
-            .as_mut()
-            .map(GameLayer::take_messages)
-            .unwrap_or_default();
-        for message in messages {
-            let value = serde_json::to_string(&message).unwrap_or_else(|_| "null".to_owned());
-            let script = format!("window.__snowglassGameLayerMessage({value});");
-            if let Err(error) = self.foreground_webview.evaluate_script(&script) {
-                eprintln!("snowglass: delivering a game-layer message failed: {error}");
-            }
-        }
-    }
-
-    fn send_game_layer_proxy_message(&self, message: &serde_json::Value) {
-        let value = serde_json::to_string(message).unwrap_or_else(|_| "null".to_owned());
-        let script = format!("window.__snowglassGameLayerProxyMessage?.({value});");
-        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
-            eprintln!("snowglass: delivering a game-layer proxy message failed: {error}");
-        }
-    }
-
-    fn flush_game_layer_proxy_messages(&mut self) {
-        let messages = self
-            .game_layer
-            .as_mut()
-            .map(GameLayer::take_proxy_messages)
-            .unwrap_or_default();
-        for message in messages {
-            self.send_game_layer_proxy_message(&message);
         }
     }
 
     fn foreground_hit_test(&self) -> bool {
-        let x = i64::from(self.cursor.x);
-        let y = i64::from(self.cursor.y);
-        self.foreground_hit_regions.iter().any(|region| {
+        let x = i64::from(self.input.cursor.x);
+        let y = i64::from(self.input.cursor.y);
+        self.input.foreground_hit_regions.iter().any(|region| {
             let left = i64::from(region.x);
             let top = i64::from(region.y);
             x >= left
@@ -1984,7 +1939,7 @@ impl ShellState {
     fn resize_pending_surfaces(&mut self, now: Instant) -> Option<Instant> {
         let mut next_due: Option<Instant> = None;
         let mut resized = Vec::new();
-        for (&connection, surface) in &mut self.surfaces {
+        for (&connection, surface) in &mut self.streams.surfaces {
             let Some(due) = surface.resize_due else {
                 continue;
             };
@@ -2052,6 +2007,7 @@ impl ShellState {
         let mut received = Vec::new();
         let mut placements = Vec::new();
         let mut surfaces = self
+            .streams
             .surfaces
             .iter()
             .filter(|(_, surface)| surface.pointer_events)
@@ -2094,54 +2050,55 @@ impl ShellState {
 
     fn route_pointer(&mut self, phase: PointerPhase, button: u32, horizontal: i32, vertical: i32) {
         let (presentation, plan) = self.pointer_presentation();
-        if !self.pointer_routing.send(
+        if !self.input.pointer_routing.send(
             phase,
             button,
             horizontal,
             vertical,
             &presentation,
             &plan,
-            &self._input.control_sender(),
+            &self.input.transport.control_sender(),
         ) {
             if phase == PointerPhase::Move {
-                self.direct_input.reset_mouse_position();
-                if let Some(provider) = &self.input_provider {
+                self.input.direct_input.reset_mouse_position();
+                if let Some(provider) = &self.input.provider {
                     provider.set_pointer(None);
                 }
             }
             return;
         }
-        let Some(sent) = self.pointer_routing.last_sent() else {
+        let Some(sent) = self.input.pointer_routing.last_sent() else {
             return;
         };
         match phase {
             PointerPhase::Move => {
-                self.direct_input.mouse_position(
+                self.input.direct_input.mouse_position(
                     sent.surface_id,
                     sent.x,
                     sent.y,
                     sent.coordinate_width,
                     sent.coordinate_height,
                 );
-                if let Some(provider) = &self.input_provider {
+                if let Some(provider) = &self.input.provider {
                     provider.set_pointer(Some(pointer_axes(sent.normalized_x, sent.normalized_y)));
                 }
             }
             PointerPhase::ButtonDown | PointerPhase::ButtonUp => self
+                .input
                 .direct_input
                 .mouse_button(button as u16, phase == PointerPhase::ButtonDown),
-            PointerPhase::Wheel => self.direct_input.mouse_wheel(vertical),
+            PointerPhase::Wheel => self.input.direct_input.mouse_wheel(vertical),
             PointerPhase::Cancel => {}
         }
     }
 
     fn set_input_priority(&mut self, priority: InputPriority) {
-        let priority = if priority == InputPriority::Game && self.active_game.is_none() {
+        let priority = if priority == InputPriority::Game && self.game.active.is_none() {
             InputPriority::Foreground
         } else {
             priority
         };
-        if self.input_priority == priority {
+        if self.input.priority == priority {
             // A foreground pointer interaction moves focus into WebView2
             // without changing the logical priority. Re-activating game input
             // must still return keyboard focus to the shell HWND.
@@ -2150,16 +2107,16 @@ impl ShellState {
             }
             return;
         }
-        if let Some(connection) = self.pointer_routing.captured_connection() {
+        if let Some(connection) = self.input.pointer_routing.captured_connection() {
             self.cancel_pointer_connection(connection);
         }
-        self.direct_input.reset_mouse_position();
-        if let Some(provider) = &self.input_provider {
+        self.input.direct_input.reset_mouse_position();
+        if let Some(provider) = &self.input.provider {
             provider.clear_keys();
             provider.set_pointer(None);
             provider.set_enabled(priority == InputPriority::Game);
         }
-        self.input_priority = priority;
+        self.input.priority = priority;
         match priority {
             InputPriority::Foreground => {
                 // SAFETY: the controller is live while the WebView is retained.
@@ -2197,13 +2154,13 @@ impl ShellState {
 
     fn cancel_pointer_connection(&mut self, connection: u64) {
         let (presentation, plan) = self.pointer_presentation();
-        if let Some(buttons) = self.pointer_routing.cancel(
+        if let Some(buttons) = self.input.pointer_routing.cancel(
             connection,
             &presentation,
             &plan,
-            &self._input.control_sender(),
+            &self.input.transport.control_sender(),
         ) {
-            self.direct_input.release_mouse_buttons(buttons);
+            self.input.direct_input.release_mouse_buttons(buttons);
         }
     }
 
@@ -2218,9 +2175,9 @@ impl ShellState {
                 _ => 0,
             };
             if pressed {
-                self.dom_mouse_keys |= flag;
+                self.input.dom_mouse_keys |= flag;
             } else {
-                self.dom_mouse_keys &= !flag;
+                self.input.dom_mouse_keys &= !flag;
             }
             if pressed {
                 let _ = unsafe {
@@ -2241,32 +2198,34 @@ impl ShellState {
         let _ = unsafe {
             controller.SendMouseInput(
                 COREWEBVIEW2_MOUSE_EVENT_KIND(kind as i32),
-                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS(self.dom_mouse_keys as i32),
+                COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS(self.input.dom_mouse_keys as i32),
                 mouse_data,
-                self.cursor,
+                self.input.cursor,
             )
         };
     }
 
     fn publish_input_state(&mut self) {
-        if Instant::now() < self.next_input_publish {
+        if Instant::now() < self.input.next_publish {
             return;
         }
-        self.next_input_publish = Instant::now() + Duration::from_millis(16);
+        self.input.next_publish = Instant::now() + Duration::from_millis(16);
         let states = self
-            .input_provider
+            .input
+            .provider
             .as_ref()
             .map(Sdl3Provider::states)
             .unwrap_or_default();
-        let dispatch = self._input.dispatch_summary();
+        let dispatch = self.input.transport.dispatch_summary();
         self.overlay.diagnostics.input = InputDiagnostics {
-            active: self.input_priority == InputPriority::Game && self.target.is_some(),
+            active: self.input.priority == InputPriority::Game && self.game.target.is_some(),
             dispatch_samples: dispatch.samples,
             dispatch_p50_ms: dispatch.p50_ms,
             dispatch_p95_ms: dispatch.p95_ms,
             dispatch_p99_ms: dispatch.p99_ms,
             slots: self
-                .active_game
+                .game
+                .active
                 .as_ref()
                 .map(|active| active.options.gamepad_mapping.as_slice())
                 .unwrap_or_default()
@@ -2313,7 +2272,7 @@ impl ShellState {
         };
         let mut devices = Vec::new();
         let mut next_controls = HashMap::new();
-        let foreground_priority = self.input_priority == InputPriority::Foreground;
+        let foreground_priority = self.input.priority == InputPriority::Foreground;
         for (slot, state) in states.into_iter().enumerate() {
             let Some(state) = state else {
                 continue;
@@ -2371,26 +2330,26 @@ impl ShellState {
         }
         let mut routed = Vec::new();
         for (key, &value) in &next_controls {
-            if self.ui_controls.get(key).copied().unwrap_or_default() != value {
+            if self.input.ui_controls.get(key).copied().unwrap_or_default() != value {
                 routed.push(control_event(key, value));
             }
         }
-        for (key, &value) in &self.ui_controls {
+        for (key, &value) in &self.input.ui_controls {
             if value != 0 && !next_controls.contains_key(key) {
                 routed.push(control_event(key, 0));
             }
         }
-        self.ui_controls = next_controls;
+        self.input.ui_controls = next_controls;
         let Ok(json) = serde_json::to_string(&devices) else {
             return;
         };
-        let state_changed = json != self.last_input_state;
+        let state_changed = json != self.input.last_published_state;
         if !state_changed && routed.is_empty() {
             return;
         }
         self.overlay.next_repaint = Instant::now();
         if state_changed {
-            self.last_input_state.clone_from(&json);
+            self.input.last_published_state.clone_from(&json);
         }
         let routed = serde_json::to_string(&routed).unwrap_or_else(|_| "[]".to_owned());
         let script = format!("window.__snowglassSetInputState?.({json}, {routed});");
@@ -2412,6 +2371,7 @@ impl ShellState {
 
     fn publish_targets_for(&mut self, instance_id: &str) {
         let mut targets = self
+            .streams
             .surfaces
             .iter()
             .map(|(&connection, surface)| WebRenderTarget {
@@ -2429,18 +2389,18 @@ impl ShellState {
     }
 
     fn poll_target(&mut self) {
-        let Some(target) = self.target.as_mut() else {
+        let Some(target) = self.game.target.as_mut() else {
             return;
         };
         let finished = match target.try_wait() {
             Ok(Some(())) => {
-                self.target = None;
+                self.game.target = None;
                 true
             }
             Ok(None) => false,
             Err(error) => {
                 eprintln!("snowglass: target process wait failed: {error}");
-                self.target = None;
+                self.game.target = None;
                 true
             }
         };
@@ -2452,11 +2412,11 @@ impl ShellState {
 
 impl Drop for ShellState {
     fn drop(&mut self) {
-        for (&connection, surface) in &mut self.surfaces {
-            self.capture.revoke(connection);
+        for (&connection, surface) in &mut self.streams.surfaces {
+            self.streams.capture.revoke(connection);
             let _ = disconnect_from(&mut surface.compositor, &mut self.merged, connection);
         }
-        if let Some(target) = self.target.take() {
+        if let Some(target) = self.game.target.take() {
             let _ = target.terminate_tree_and_wait();
         }
     }
@@ -2516,8 +2476,18 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 background_error,
             } => state.frontend_ready(background, background_error),
             UserEvent::Layout(layouts) => state.apply_layout(layouts),
-            UserEvent::GameLayerMessage(message) => state.game_layer_message(message),
-            UserEvent::GameLayerProxy(request) => state.game_layer_proxy(request),
+            UserEvent::GameLayerMessage(message) => {
+                state.game_layer.post_message(&message);
+                let work = state.game_layer.service(&state.foreground_webview);
+                state.apply_game_layer_work(work);
+            }
+            UserEvent::GameLayerProxy(request) => {
+                state
+                    .game_layer
+                    .proxy_request(&request, &state.foreground_webview);
+                let work = state.game_layer.service(&state.foreground_webview);
+                state.apply_game_layer_work(work);
+            }
             UserEvent::InputPriority(priority) => state.set_input_priority(priority),
         }
     }
@@ -2535,7 +2505,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             return;
         }
         let response = state.overlay.state.on_window_event(&state.window, &event);
-        let consumed = response.consumed;
+        let mut consumed = response.consumed;
         if consumed {
             // egui took this event, so it is being interacted with and gets to
             // set its own repaint rate until the interaction settles.
@@ -2543,6 +2513,28 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
         }
         if response.repaint {
             state.window.request_redraw();
+        }
+        if !consumed
+            && let WindowEvent::KeyboardInput { event, .. } = &event
+            && let winit::keyboard::PhysicalKey::Code(code) = event.physical_key
+        {
+            let code = format!("{code:?}");
+            let key = match &event.logical_key {
+                Key::Named(key) => format!("{key:?}"),
+                Key::Character(key) => key.to_string(),
+                Key::Dead(_) => "Dead".into(),
+                Key::Unidentified(_) => "Unidentified".into(),
+            };
+            consumed = state.game_layer_keyboard(
+                if event.state == ElementState::Pressed {
+                    "keydown"
+                } else {
+                    "keyup"
+                },
+                key,
+                code,
+                event.repeat,
+            );
         }
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
@@ -2557,7 +2549,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 if let Err(error) = state.overlay.resize(&state.window) {
                     eprintln!("snowglass: resizing egui composition overlay failed: {error}");
                 }
-                if let Some(layer) = state.game_layer.as_mut() {
+                if let Some(layer) = state.game_layer.layer_mut() {
                     layer.resize(size.width, size.height);
                     state.refresh_game_layer();
                 }
@@ -2567,7 +2559,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     let render_window = SurfaceWindow::new(&state.window, size.width, size.height);
                     match Renderer::recreate_swapchain(merged, &render_window) {
                         Ok(true) => {
-                            for surface in state.surfaces.values_mut() {
+                            for surface in state.streams.surfaces.values_mut() {
                                 surface.swapchain_width = size.width;
                                 surface.swapchain_height = size.height;
                                 surface.needs_redraw = true;
@@ -2582,63 +2574,67 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 state.window.request_redraw();
             }
             WindowEvent::Focused(false) => {
-                if let Some(connection) = state.pointer_routing.captured_connection() {
+                if let Some(connection) = state.input.pointer_routing.captured_connection() {
                     state.cancel_pointer_connection(connection);
                 }
                 for (button, flag) in [(0, 1), (1, 4), (2, 2), (3, 8), (4, 16)] {
-                    if state.game_layer_mouse_buttons & flag != 0 {
+                    if state.game_layer.mouse_buttons() & flag != 0 {
                         state.game_layer_mouse(
                             "mouseup",
-                            state.cursor.x as f32,
-                            state.cursor.y as f32,
+                            state.input.cursor.x as f32,
+                            state.input.cursor.y as f32,
                             button,
                             Some(false),
                         );
                     }
                 }
-                state.game_layer_mouse_buttons = 0;
-                if let Some(provider) = &state.input_provider {
+                state.game_layer.clear_mouse_buttons();
+                state.input.dom_alt_key = false;
+                if let Some(provider) = &state.input.provider {
                     provider.clear_keys();
                     provider.set_pointer(None);
                 }
-                state.dom_mouse_keys &= DOM_MK_SHIFT | DOM_MK_CONTROL;
-                state.foreground_mouse_capture = false;
-                state.direct_input.reset_mouse_position();
+                state.input.dom_mouse_keys &= DOM_MK_SHIFT | DOM_MK_CONTROL;
+                state.input.foreground_mouse_capture = false;
+                state.input.direct_input.reset_mouse_position();
             }
             WindowEvent::KeyboardInput { event, .. }
-                if state.input_priority == InputPriority::Game =>
+                if state.input.priority == InputPriority::Game =>
             {
                 if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
                     let key = format!("{code:?}");
                     let pressed = event.state == ElementState::Pressed;
-                    if let Some(provider) = &state.input_provider
+                    if consumed {
+                        // A background DOM shortcut claimed the event.
+                    } else if let Some(provider) = &state.input.provider
                         && provider.is_key_mapped(&key)
                     {
                         provider.set_key(key, pressed);
-                    } else if !consumed {
+                    } else {
                         state.publish_keyboard_input(&key, pressed, event.repeat);
                     }
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
+                state.input.dom_alt_key = modifiers.state().alt_key();
                 self::set_modifier(
-                    &mut state.dom_mouse_keys,
+                    &mut state.input.dom_mouse_keys,
                     DOM_MK_SHIFT,
                     modifiers.state().shift_key(),
                 );
                 self::set_modifier(
-                    &mut state.dom_mouse_keys,
+                    &mut state.input.dom_mouse_keys,
                     DOM_MK_CONTROL,
                     modifiers.state().control_key(),
                 );
             }
             WindowEvent::CursorMoved { position, .. }
                 if !consumed
-                    || state.pointer_routing.captured_connection().is_some()
-                    || state.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
-                    || state.foreground_mouse_capture =>
+                    || state.input.pointer_routing.captured_connection().is_some()
+                    || state.input.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
+                    || state.input.foreground_mouse_capture =>
             {
-                state.cursor = POINT {
+                state.input.cursor = POINT {
                     x: position.x.round() as i32,
                     y: position.y.round() as i32,
                 };
@@ -2653,16 +2649,16 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 ) {
                     return;
                 }
-                if state.input_priority == InputPriority::Foreground
-                    || state.foreground_mouse_capture
+                if state.input.priority == InputPriority::Foreground
+                    || state.input.foreground_mouse_capture
                     || (!consumed
-                        && state.pointer_routing.captured_connection().is_none()
+                        && state.input.pointer_routing.captured_connection().is_none()
                         && state.foreground_hit_test())
                 {
                     state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
                     return;
                 }
-                state.pointer_routing.set_cursor(position.x, position.y);
+                state.input.pointer_routing.set_cursor(position.x, position.y);
                 state.route_pointer(PointerPhase::Move, 0, 0, 0);
             }
             WindowEvent::MouseInput {
@@ -2670,9 +2666,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 button,
                 ..
             } if !consumed
-                || state.pointer_routing.captured_connection().is_some()
-                || state.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
-                || state.foreground_mouse_capture =>
+                || state.input.pointer_routing.captured_connection().is_some()
+                || state.input.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
+                || state.input.foreground_mouse_capture =>
             {
                 if let Some(button) = mouse_button(button) {
                     let dom_button = match button {
@@ -2686,8 +2682,8 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     if button_state == ElementState::Released
                         && state.game_layer_mouse(
                             "mouseup",
-                            state.cursor.x as f32,
-                            state.cursor.y as f32,
+                            state.input.cursor.x as f32,
+                            state.input.cursor.y as f32,
                             dom_button,
                             Some(false),
                         )
@@ -2695,7 +2691,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                         return;
                     }
                     let foreground_hit = !consumed
-                        && state.pointer_routing.captured_connection().is_none()
+                        && state.input.pointer_routing.captured_connection().is_none()
                         && state.foreground_hit_test();
                     // Background DOM gets the press after foreground hit
                     // regions, but before the guest surface underneath.
@@ -2703,20 +2699,20 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                         && !foreground_hit
                         && state.game_layer_mouse(
                             "mousedown",
-                            state.cursor.x as f32,
-                            state.cursor.y as f32,
+                            state.input.cursor.x as f32,
+                            state.input.cursor.y as f32,
                             dom_button,
                             Some(true),
                         )
                     {
                         return;
                     }
-                    if state.input_priority == InputPriority::Foreground
-                        || state.foreground_mouse_capture
+                    if state.input.priority == InputPriority::Foreground
+                        || state.input.foreground_mouse_capture
                         || foreground_hit
                     {
                         if button_state == ElementState::Pressed && foreground_hit {
-                            state.foreground_mouse_capture = true;
+                            state.input.foreground_mouse_capture = true;
                         }
                         let kind = match (button, button_state) {
                             (1, ElementState::Pressed) => WM_LBUTTONDOWN,
@@ -2738,9 +2734,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                             },
                         );
                         if button_state == ElementState::Released
-                            && state.dom_mouse_keys & DOM_MOUSE_BUTTONS == 0
+                            && state.input.dom_mouse_keys & DOM_MOUSE_BUTTONS == 0
                         {
-                            state.foreground_mouse_capture = false;
+                            state.input.foreground_mouse_capture = false;
                         }
                         return;
                     }
@@ -2763,9 +2759,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     }
                     MouseScrollDelta::PixelDelta(delta) => (delta.x as i32, delta.y as i32),
                 };
-                if state.input_priority == InputPriority::Foreground
-                    || state.foreground_mouse_capture
-                    || (state.pointer_routing.captured_connection().is_none()
+                if state.input.priority == InputPriority::Foreground
+                    || state.input.foreground_mouse_capture
+                    || (state.input.pointer_routing.captured_connection().is_none()
                         && state.foreground_hit_test())
                 {
                     if horizontal != 0 {
@@ -2793,7 +2789,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
         let now = Instant::now();
         let mut deadline = now + Duration::from_millis(100);
         if let Some(state) = self.state.as_mut() {
-            if state.capture_work_pending {
+            if state.streams.work_pending {
                 state.process_capture();
             }
             // A frame the compositor deferred keeps its `latest` slot, so it
@@ -2816,7 +2812,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             state.publish_input_state();
             state.profile.record(TurnPhase::Input, entered);
             state.poll_target();
-            if state.poll_game_layer_runtime() {
+            if state.game_layer.poll_runtime() {
+                let work = state.game_layer.service(&state.foreground_webview);
+                state.apply_game_layer_work(work);
                 // Deno owns browser timers, fetch, WebSockets, promises, and
                 // inspector traffic. Keep that event loop moving even when
                 // the native window has no other reason to wake.
@@ -2830,8 +2828,8 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             // no matter which path added or dropped a stream.
             state
                 .compositor_clock
-                .set_active(!state.surfaces.is_empty());
-            if state.capture_work_pending {
+                .set_active(!state.streams.surfaces.is_empty());
+            if state.streams.work_pending {
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
             state.profile.finish_turn(Instant::now());

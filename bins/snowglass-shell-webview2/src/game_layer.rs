@@ -130,6 +130,16 @@ pub struct DomMouseEvent<'a> {
     pub shift_key: bool,
 }
 
+pub struct DomKeyboardEvent<'a> {
+    pub kind: &'a str,
+    pub key: String,
+    pub code: String,
+    pub repeat: bool,
+    pub alt_key: bool,
+    pub ctrl_key: bool,
+    pub shift_key: bool,
+}
+
 /// GPU state prepared before WebView2 starts its renderer.
 ///
 /// Creating Vello's D3D12 device and pipelines after Chromium has initialized
@@ -299,6 +309,12 @@ impl GameLayer {
                 1.0,
                 blitz_traits::shell::ColorScheme::Dark,
             ));
+        if let Some(runtime) = self.runtime.as_mut()
+            && let Err(error) = runtime.resize(width, height)
+        {
+            eprintln!("snowglass: resizing the game-layer window failed: {error}");
+        }
+        self.apply_script_mutations();
         // Every band's target is the wrong size now. They are dropped rather
         // than resized, and the next paint makes only the ones it uses.
         for target in &mut self.targets {
@@ -430,6 +446,37 @@ impl GameLayer {
             }
         }
         claimed
+    }
+
+    /// Dispatches a regular keyboard event to the background window.
+    pub fn keyboard_event(&mut self, event: DomKeyboardEvent<'_>) -> bool {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return false;
+        };
+        let result = runtime.dispatch_keyboard(
+            event.kind,
+            deno::KeyboardEvent {
+                key: event.key,
+                code: event.code,
+                repeat: event.repeat,
+                alt_key: event.alt_key,
+                ctrl_key: event.ctrl_key,
+                shift_key: event.shift_key,
+                meta_key: false,
+            },
+        );
+        let prevented = match result {
+            Ok(result) => result.default_prevented,
+            Err(error) => {
+                eprintln!(
+                    "snowglass: dispatching game-layer {} failed: {error}",
+                    event.kind
+                );
+                false
+            }
+        };
+        self.apply_script_mutations();
+        prevented
     }
 
     /// Delivers a structured message from the foreground WebView.

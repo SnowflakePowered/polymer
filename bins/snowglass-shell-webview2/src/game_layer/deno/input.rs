@@ -22,6 +22,18 @@ pub struct MouseEvent {
     pub meta_key: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyboardEvent {
+    pub key: String,
+    pub code: String,
+    pub repeat: bool,
+    pub alt_key: bool,
+    pub ctrl_key: bool,
+    pub shift_key: bool,
+    pub meta_key: bool,
+}
+
 #[op2(fast)]
 pub(super) fn op_event_result(state: &mut OpState, handled: bool, default_prevented: bool) {
     state.borrow_mut::<BridgeState>().event = EventResult {
