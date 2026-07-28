@@ -10370,6 +10370,7 @@ dependencies = [
  "snowglass-platform-windows",
  "snowglass-protocol",
  "snowglass-renderer",
+ "stylo",
  "swc",
  "swc_common 24.0.0",
  "sys_traits",

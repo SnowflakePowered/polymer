@@ -125,6 +125,7 @@ pub fn composition_plan(presentation: &Presentation) -> CompositingPlan {
             connection: surface.connection,
             surface_id: surface.surface_id,
             rectangle,
+            corner_radius: 0.0,
         })
         .collect();
     let plan = CompositingPlan::new(clear_color(), placements);

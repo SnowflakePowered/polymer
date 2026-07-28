@@ -7,6 +7,11 @@ import {
   type SetStateAction,
 } from "react";
 import { createRoot } from "react-dom/client";
+import type {
+  GameViewInstance,
+  HTMLTrackedSurfaceElement,
+  LaunchRequest,
+} from "./gameview";
 import "./gameview";
 
 type SurfaceDimensions = {
@@ -38,6 +43,7 @@ type GamepadAnimation = {
 
 type GamepadState = {
   visible: boolean;
+  userPositioned: boolean;
   x: number;
   y: number;
   width: number;
@@ -47,7 +53,25 @@ type GamepadState = {
   animation: GamepadAnimation | null;
 };
 
+type GamePhase = "idle" | "launching" | "running" | "closing";
+
+type SurfaceFade = {
+  from: number;
+  to: number;
+  started: number;
+  closeWhenDone: boolean;
+};
+
+type GameLifecycleState = {
+  phase: GamePhase;
+  instance: GameViewInstance | null;
+  confirmClose: boolean;
+  surfaceFade: number;
+  fade: SurfaceFade | null;
+};
+
 const DRAWER_DURATION_MS = 260;
+const SURFACE_FADE_DURATION_MS = 320;
 const DRAWER_MARGIN_PX = 24;
 const DRAWER_HORIZONTAL_PADDING_PX = 10.4;
 const DRAWER_HEADER_PX = 28;
@@ -80,6 +104,7 @@ function initialGamepadState(): GamepadState {
   const height = gamepadHeight(width);
   return {
     visible: false,
+    userPositioned: false,
     x: Math.max(0, (innerWidth - width) / 2),
     y: Math.max(0, innerHeight - height - DRAWER_MARGIN_PX),
     width,
@@ -93,39 +118,86 @@ function initialGamepadState(): GamepadState {
 function trackedSurface(
   index: number,
   className: string,
+  cornerRadius: number,
   style?: CSSProperties,
 ) {
   return createElement("tracked-surface", {
     className,
     src: String(index),
+    "data-corner-radius": String(cornerRadius),
     style,
   });
 }
 
-function launchFromCli(
-  event: MessageEvent,
+function publishLifecycle(phase: string, status: string, error?: string) {
+  postMessage({
+    type: "gameViewLifecycle",
+    phase,
+    status,
+    ...(error ? { error } : {}),
+  });
+  postMessage({ type: "gameViewStatus", status });
+}
+
+function launchGame(
+  rawOptions: LaunchRequest,
   onSurfacesChanged: (surfaces: SurfaceDimensions[]) => void,
 ) {
-  if (event.data?.type !== "snowglass-cli-launch") return;
-  const options = {
-    ...event.data.options,
-    surfaces: event.data.options.surfaces.map(
-      (surface: { index: number; [key: string]: unknown }) => ({
+  let instance: GameViewInstance | null;
+  try {
+    const surfaces = rawOptions.surfaces.map((surface) => {
+      const attach = document.querySelector<HTMLTrackedSurfaceElement>(
+        `tracked-surface[src="${surface.index}"]`,
+      );
+      if (!attach) {
+        throw new Error(
+          `No background tracked-surface exists for target ${surface.index}`,
+        );
+      }
+      return {
         ...surface,
-        attach: document.querySelector(
-          `tracked-surface[src="${surface.index}"]`,
-        ),
-      }),
-    ),
-  };
-  const instance = window.gameView.launch(options);
-  if (!instance) {
-    postMessage({ type: "gameViewStatus", status: "Game launch was rejected" });
+        attach,
+      };
+    });
+    instance = window.gameView.launch({
+      ...rawOptions,
+      surfaces,
+    });
+  } catch (launchError) {
+    const message =
+      launchError instanceof Error ? launchError.message : String(launchError);
+    bindings.setLifecycle?.((state) => ({
+      ...state,
+      phase: "idle",
+      instance: null,
+      confirmClose: false,
+      surfaceFade: 1,
+      fade: null,
+    }));
+    publishLifecycle("error", "Game launch failed", message);
     return;
   }
-  postMessage({ type: "gameViewStatus", status: "Launching game" });
+  if (!instance) {
+    publishLifecycle(
+      "error",
+      "Game launch was rejected",
+      "Another game may already be running",
+    );
+    return;
+  }
+  bindings.setLifecycle?.((state) => ({
+    ...state,
+    phase: "launching",
+    instance,
+    confirmClose: false,
+    surfaceFade: 1,
+    fade: null,
+  }));
+  publishLifecycle("launching", "Launching game");
   instance.on("ready", () => {
-    postMessage({ type: "gameViewStatus", status: "Game is running" });
+    bindings.setLifecycle?.((state) => ({ ...state, phase: "running" }));
+    startSurfaceFade(0, false);
+    publishLifecycle("running", "Game is running");
   });
   instance.on("surfacesChanged", (surfaces) => {
     onSurfacesChanged(surfaces as SurfaceDimensions[]);
@@ -135,13 +207,27 @@ function launchFromCli(
       error && typeof error === "object" && "message" in error
         ? String(error.message)
         : null;
-    postMessage({
-      type: "gameViewStatus",
-      status: message || "Game launch failed",
-    });
+    const status = message || "Game launch failed";
+    bindings.setLifecycle?.((state) => ({
+      ...state,
+      phase: "idle",
+      instance: null,
+      confirmClose: false,
+      surfaceFade: 1,
+      fade: null,
+    }));
+    publishLifecycle("error", status, status);
   });
   instance.on("closed", () => {
-    postMessage({ type: "gameViewStatus", status: "Game closed" });
+    bindings.setLifecycle?.((state) => ({
+      ...state,
+      phase: "idle",
+      instance: null,
+      confirmClose: false,
+      surfaceFade: 1,
+      fade: null,
+    }));
+    publishLifecycle("closed", "Game closed");
   });
 }
 
@@ -150,7 +236,9 @@ type GameLayerBindings = {
   shortcutHeld: boolean;
   interacting: boolean;
   animationTimer: ReturnType<typeof setInterval> | null;
+  fadeTimer: ReturnType<typeof setInterval> | null;
   setGamepad: Dispatch<SetStateAction<GamepadState>> | null;
+  setLifecycle: Dispatch<SetStateAction<GameLifecycleState>> | null;
   setMainSource: Dispatch<SetStateAction<{ width: number; height: number }>> | null;
   setViewport: Dispatch<SetStateAction<Viewport>> | null;
 };
@@ -160,7 +248,9 @@ const bindings: GameLayerBindings = {
   shortcutHeld: false,
   interacting: false,
   animationTimer: null,
+  fadeTimer: null,
   setGamepad: null,
+  setLifecycle: null,
   setMainSource: null,
   setViewport: null,
 };
@@ -196,6 +286,40 @@ function startAnimationClock() {
   }, 16);
 }
 
+function startSurfaceFade(to: number, closeWhenDone: boolean) {
+  const setter = bindings.setLifecycle;
+  if (!setter) return;
+  if (bindings.fadeTimer !== null) clearInterval(bindings.fadeTimer);
+  setter((state) => ({
+    ...state,
+    fade: {
+      from: state.surfaceFade,
+      to,
+      started: Date.now(),
+      closeWhenDone,
+    },
+  }));
+  bindings.fadeTimer = setInterval(() => {
+    bindings.setLifecycle?.((state) => {
+      const fade = state.fade;
+      if (!fade) return state;
+      const progress = Math.min(
+        1,
+        (Date.now() - fade.started) / SURFACE_FADE_DURATION_MS,
+      );
+      const eased = 1 - (1 - progress) ** 3;
+      const surfaceFade = fade.from + (fade.to - fade.from) * eased;
+      if (progress < 1) return { ...state, surfaceFade };
+      if (bindings.fadeTimer !== null) {
+        clearInterval(bindings.fadeTimer);
+        bindings.fadeTimer = null;
+      }
+      if (fade.closeWhenDone) state.instance?.close();
+      return { ...state, surfaceFade: fade.to, fade: null };
+    });
+  }, 16);
+}
+
 function toggleGamepad() {
   const setter = bindings.setGamepad;
   if (!setter) return;
@@ -218,17 +342,25 @@ function toggleGamepad() {
 
 function installGameLayerBindings(
   setGamepad: Dispatch<SetStateAction<GamepadState>>,
+  setLifecycle: Dispatch<SetStateAction<GameLifecycleState>>,
   setMainSource: Dispatch<SetStateAction<{ width: number; height: number }>>,
   setViewport: Dispatch<SetStateAction<Viewport>>,
 ) {
   bindings.setGamepad = setGamepad;
+  bindings.setLifecycle = setLifecycle;
   bindings.setMainSource = setMainSource;
   bindings.setViewport = setViewport;
   if (bindings.installed) return true;
   bindings.installed = true;
 
   addEventListener("message", (event) => {
-    launchFromCli(event, (surfaces) => {
+    if (
+      event.data?.type !== "snowglass-cli-launch" &&
+      event.data?.type !== "snowglass-browser-launch"
+    ) {
+      return;
+    }
+    launchGame(event.data.options as LaunchRequest, (surfaces) => {
       const main = surfaces.find((surface) => surface.index === 0);
       if (main && main.width > 0 && main.height > 0) {
         bindings.setMainSource?.({ width: main.width, height: main.height });
@@ -269,7 +401,7 @@ function installGameLayerBindings(
           0,
           Math.max(0, innerHeight - state.height),
         );
-        return { ...state, x, y, renderedY: y };
+        return { ...state, userPositioned: true, x, y, renderedY: y };
       }
 
       const availableWidth = Math.max(1, innerWidth - interaction.x);
@@ -314,7 +446,9 @@ function installGameLayerBindings(
         Math.max(1, innerWidth - DRAWER_MARGIN_PX * 2),
       );
       const height = gamepadHeight(width);
-      const x = clamp(state.x, 0, Math.max(0, innerWidth - width));
+      const x = state.userPositioned
+        ? clamp(state.x, 0, Math.max(0, innerWidth - width))
+        : Math.max(0, (innerWidth - width) / 2);
       const y = clamp(state.y, 0, Math.max(0, innerHeight - height));
       return {
         ...state,
@@ -334,13 +468,25 @@ function installGameLayerBindings(
 
 function GameLayer() {
   const [gamepad, setGamepad] = useState(initialGamepadState);
+  const [lifecycle, setLifecycle] = useState<GameLifecycleState>({
+    phase: "idle",
+    instance: null,
+    confirmClose: false,
+    surfaceFade: 1,
+    fade: null,
+  });
   const [mainSource, setMainSource] = useState({ width: 16, height: 9 });
   const [viewport, setViewport] = useState<Viewport>({
     width: innerWidth,
     height: innerHeight,
   });
   useState(() =>
-    installGameLayerBindings(setGamepad, setMainSource, setViewport),
+    installGameLayerBindings(
+      setGamepad,
+      setLifecycle,
+      setMainSource,
+      setViewport,
+    ),
   );
 
   const beginInteraction =
@@ -370,11 +516,36 @@ function GameLayer() {
       }));
     };
 
+  const requestClose = () => {
+    setLifecycle((state) =>
+      state.phase === "running"
+        ? { ...state, confirmClose: true }
+        : state,
+    );
+  };
+
+  const cancelClose = () => {
+    setLifecycle((state) => ({ ...state, confirmClose: false }));
+  };
+
+  const confirmClose = () => {
+    if (lifecycle.phase !== "running") return;
+    setLifecycle((state) => ({
+      ...state,
+      phase: "closing",
+      confirmClose: false,
+    }));
+    publishLifecycle("closing", "Closing game");
+    startSurfaceFade(1, true);
+  };
+
   const availableWidth = Math.max(1, viewport.width - MAIN_HORIZONTAL_MARGIN_PX);
   const availableHeight = Math.max(1, viewport.height - MAIN_VERTICAL_MARGIN_PX);
   const sourceRatio = mainSource.width / mainSource.height;
   const mainWidth = Math.min(availableWidth, availableHeight * sourceRatio);
   const mainHeight = mainWidth / sourceRatio;
+  const mainX = (viewport.width - mainWidth) / 2;
+  const mainY = (viewport.height - mainHeight) / 2;
   const gamepadStyle: CSSProperties = {
     left: `${gamepad.x.toFixed(1)}px`,
     top: `${gamepad.renderedY.toFixed(1)}px`,
@@ -385,12 +556,33 @@ function GameLayer() {
     width: `${mainWidth.toFixed(1)}px`,
     height: `${mainHeight.toFixed(1)}px`,
   };
+  const mainOverlayStyle: CSSProperties = {
+    left: `${mainX.toFixed(1)}px`,
+    top: `${mainY.toFixed(1)}px`,
+    width: `${mainWidth.toFixed(1)}px`,
+    height: `${mainHeight.toFixed(1)}px`,
+  };
 
   return (
     <section className="surface-stage">
       <article className="primary-surface">
-        {trackedSurface(0, "game-view main-game-view", mainStyle)}
+        {trackedSurface(0, "game-view main-game-view", 4, mainStyle)}
       </article>
+      <div className="main-view-overlay" style={mainOverlayStyle}>
+        <div
+          className="main-surface-fade"
+          style={{ opacity: lifecycle.surfaceFade }}
+        />
+        <div
+          className="close-game-button"
+          data-visible={lifecycle.phase === "running" ? "true" : "false"}
+          role="button"
+          aria-label="Close game"
+          onClick={requestClose}
+        >
+          <span className="close-game-icon">×</span>
+        </div>
+      </div>
       <div
         className="gamepad-drawer"
         data-visible={gamepad.visible ? "true" : "false"}
@@ -399,12 +591,49 @@ function GameLayer() {
         <div
           className="gamepad-drag-handle"
           onMouseDown={beginInteraction("drag")}
+        >
+          <span className="gamepad-grip" />
+        </div>
+        {trackedSurface(1, "game-view gamepad-view", 9)}
+        <div
+          className="gamepad-surface-fade"
+          style={{ opacity: lifecycle.surfaceFade }}
         />
-        {trackedSurface(1, "game-view gamepad-view")}
         <div
           className="gamepad-resize-handle"
           onMouseDown={beginInteraction("resize")}
         />
+      </div>
+      <div
+        className="close-confirmation"
+        data-visible={lifecycle.confirmClose ? "true" : "false"}
+        role="presentation"
+      >
+        <section
+          className="close-confirmation-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Close game?"
+        >
+          <h1>Close this game?</h1>
+          <p>Any unsaved progress will be lost.</p>
+          <div className="close-confirmation-actions">
+            <div
+              className="dialog-button secondary"
+              role="button"
+              onClick={cancelClose}
+            >
+              Keep playing
+            </div>
+            <div
+              className="dialog-button danger"
+              role="button"
+              onClick={confirmClose}
+            >
+              Close game
+            </div>
+          </div>
+        </section>
       </div>
     </section>
   );

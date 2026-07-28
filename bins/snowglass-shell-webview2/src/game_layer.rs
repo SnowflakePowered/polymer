@@ -20,13 +20,14 @@ use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
 pub use bands::GamePlacement;
 use blitz_dom::net::Resource;
-use blitz_dom::node::{CanvasData, SpecialElementData};
+use blitz_dom::node::{CanvasData, Node, SpecialElementData};
 use blitz_dom::{Document as _, LocalName, QualName, local_name, ns};
 use blitz_traits::events::{BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent};
 use blitz_traits::net::{BoxedHandler, NetProvider, Request, SharedCallback};
 pub use deno::Command as GameLayerCommand;
 pub use shared::SharedChrome;
 use shared::SharedTexture;
+use snowglass_protocol::AdapterLuid;
 use std::{
     collections::HashMap,
     error::Error,
@@ -35,6 +36,7 @@ use std::{
         mpsc::{Receiver, Sender, channel},
     },
 };
+use style::values::computed::PointerEvents;
 use vello::wgpu;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
@@ -44,6 +46,57 @@ const ASSET_ROUNDS: usize = 4;
 
 /// Set to report what each repaint of this layer costs.
 const PAINT_TIMING: &str = "SNOWGLASS_GAME_LAYER_TIMING";
+
+/// Blitz's stock hit test does not account for `pointer-events`, which lets a
+/// transparent full-window overlay starve the interactive layer below it.
+/// Walk the resolved paint order ourselves so `pointer-events: none` skips the
+/// current box while an explicitly re-enabled child remains targetable.
+fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) -> Option<usize> {
+    pointer_hit_node(document, document.root_element(), x, y)
+}
+
+fn pointer_hit_node(
+    document: &blitz_dom::BaseDocument,
+    node: &Node,
+    x: f32,
+    y: f32,
+) -> Option<usize> {
+    let mut local_x = x - node.final_layout.location.x + node.scroll_offset.x as f32;
+    let mut local_y = y - node.final_layout.location.y + node.scroll_offset.y as f32;
+    let size = node.final_layout.size;
+    let matches_self = local_x >= 0.0
+        && local_x <= size.width + node.scroll_offset.x as f32
+        && local_y >= 0.0
+        && local_y <= size.height + node.scroll_offset.y as f32;
+    let content = node.final_layout.content_size;
+    let matches_content = local_x >= 0.0
+        && local_x <= content.width + node.scroll_offset.x as f32
+        && local_y >= 0.0
+        && local_y <= content.height + node.scroll_offset.y as f32;
+    if !matches_self && !matches_content {
+        return None;
+    }
+
+    if node.flags.is_inline_root() {
+        local_x -= node.final_layout.padding.left + node.final_layout.border.left;
+        local_y -= node.final_layout.padding.top + node.final_layout.border.top;
+    }
+
+    let children = node.paint_children.borrow().clone().unwrap_or_default();
+    for child in children.into_iter().rev() {
+        if let Some(hit) = document
+            .get_node(child)
+            .and_then(|child| pointer_hit_node(document, child, local_x, local_y))
+        {
+            return Some(hit);
+        }
+    }
+
+    let accepts_pointer = node
+        .primary_styles()
+        .is_none_or(|styles| styles.clone_pointer_events() != PointerEvents::None);
+    (matches_self && accepts_pointer).then_some(node.id)
+}
 
 /// Loads the layer's own assets, and only those.
 ///
@@ -98,9 +151,9 @@ pub struct GameLayer {
     /// One encoded scene per band. Encoding is cheap and happens on the CPU;
     /// only rasterising is worth a GPU.
     bands: Vec<Scene>,
-    renderer: Renderer,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    gpu: GameLayerGpu,
+    adapter_luid: AdapterLuid,
+    alternate_gpus: Vec<(AdapterLuid, GameLayerGpu)>,
     /// Where each band is rasterised. Created on demand, because a document
     /// showing two views never touches the capacity kept for eight.
     targets: Vec<Option<SharedTexture>>,
@@ -147,30 +200,50 @@ pub struct DomKeyboardEvent<'a> {
 /// decides whether a layer document exists; this only reserves the renderer
 /// that will paint it if one is discovered.
 pub struct GameLayerFactory {
+    gpu: GameLayerGpu,
+    adapter_luid: AdapterLuid,
+    alternate_gpus: Vec<(AdapterLuid, GameLayerGpu)>,
+}
+
+struct GameLayerGpu {
     renderer: Renderer,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
 
-impl GameLayerFactory {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
-        // A device of its own rather than the compositor's: this rasterises
-        // rarely and off the present path, so it has nothing to gain from
-        // sharing a queue with the frames going to screen.
-        //
-        // D3D12 specifically, and not whichever backend wgpu would have picked.
-        // The compositor is D3D12, and a texture only passes between devices of
-        // the same API, which is the whole point of rendering into one here.
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::DX12,
-            ..Default::default()
-        });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }))
-        .map_err(|error| format!("the game layer found no D3D12 adapter: {error}"))?;
+fn adapter_luid(adapter: &wgpu::Adapter) -> Option<AdapterLuid> {
+    // SAFETY: the HAL adapter is borrowed only long enough to read its
+    // immutable DXGI description.
+    let adapter = unsafe { adapter.as_hal::<wgpu_hal::api::Dx12>()? };
+    let description = unsafe { adapter.raw_adapter().GetDesc2().ok()? };
+    Some(AdapterLuid {
+        low_part: description.AdapterLuid.LowPart,
+        high_part: description.AdapterLuid.HighPart,
+    })
+}
+
+fn switch_game_layer_gpu(
+    current: &mut GameLayerGpu,
+    current_luid: &mut AdapterLuid,
+    alternates: &mut Vec<(AdapterLuid, GameLayerGpu)>,
+    desired: AdapterLuid,
+) -> Result<bool, Box<dyn Error>> {
+    if *current_luid == desired {
+        return Ok(false);
+    }
+    let index = alternates
+        .iter()
+        .position(|(luid, _)| *luid == desired)
+        .ok_or("the game layer has no prepared renderer for the stream adapter")?;
+    let (next_luid, mut next) = alternates.remove(index);
+    std::mem::swap(current, &mut next);
+    alternates.push((*current_luid, next));
+    *current_luid = next_luid;
+    Ok(true)
+}
+
+impl GameLayerGpu {
+    fn new(adapter: &wgpu::Adapter) -> Result<Self, Box<dyn Error>> {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("snowglass game layer"),
             required_features: wgpu::Features::empty(),
@@ -197,6 +270,63 @@ impl GameLayerFactory {
             device,
             queue,
         })
+    }
+}
+
+impl GameLayerFactory {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
+        // Prepare every D3D12 adapter before WebView2 starts Chromium. A stream
+        // can later identify a different producer adapter without creating
+        // Vello's D3D12 pipelines inside Chromium's runtime context.
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::DX12,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .map_err(|error| {
+            format!("the game layer could not find a default D3D12 adapter: {error}")
+        })?;
+        let default_luid = adapter_luid(&adapter)
+            .ok_or("the game layer default D3D12 adapter did not expose an adapter LUID")?;
+        let gpu = GameLayerGpu::new(&adapter)?;
+
+        let mut alternate_gpus = Vec::new();
+        for adapter in instance.enumerate_adapters(wgpu::Backends::DX12) {
+            let Some(luid) = adapter_luid(&adapter) else {
+                continue;
+            };
+            if luid == default_luid {
+                continue;
+            }
+            match GameLayerGpu::new(&adapter) {
+                Ok(gpu) => alternate_gpus.push((luid, gpu)),
+                Err(error) => {
+                    eprintln!("snowglass: preparing game-layer adapter {luid:?} failed: {error}");
+                }
+            }
+        }
+        Ok(Self {
+            gpu,
+            adapter_luid: default_luid,
+            alternate_gpus,
+        })
+    }
+
+    pub const fn adapter_luid(&self) -> AdapterLuid {
+        self.adapter_luid
+    }
+
+    pub fn switch_adapter(&mut self, desired: AdapterLuid) -> Result<bool, Box<dyn Error>> {
+        switch_game_layer_gpu(
+            &mut self.gpu,
+            &mut self.adapter_luid,
+            &mut self.alternate_gpus,
+            desired,
+        )
     }
 
     /// `views` is how many game views the document can show; it fixes the
@@ -256,9 +386,9 @@ impl GameLayerFactory {
             document,
             arrivals,
             bands: (0..=views).map(|_| Scene::new()).collect(),
-            renderer: self.renderer,
-            device: self.device,
-            queue: self.queue,
+            gpu: self.gpu,
+            adapter_luid: self.adapter_luid,
+            alternate_gpus: self.alternate_gpus,
             targets: (0..=views).map(|_| None).collect(),
             placements: Vec::new(),
             width: 0,
@@ -292,6 +422,22 @@ impl GameLayerFactory {
 }
 
 impl GameLayer {
+    pub fn switch_adapter(&mut self, desired: AdapterLuid) -> Result<bool, Box<dyn Error>> {
+        let changed = switch_game_layer_gpu(
+            &mut self.gpu,
+            &mut self.adapter_luid,
+            &mut self.alternate_gpus,
+            desired,
+        )?;
+        if changed {
+            for target in &mut self.targets {
+                *target = None;
+            }
+            self.dirty = true;
+        }
+        Ok(changed)
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
         if (self.width, self.height) == (width, height) {
@@ -329,9 +475,8 @@ impl GameLayer {
 
     /// Forces the next paint even when the document itself did not change.
     ///
-    /// This is needed when the shell changes where the existing pixels are
-    /// composited, such as when the first stream replaces DirectComposition
-    /// chrome bands with chrome inside the shared D3D12 swapchain.
+    /// This is also needed after the merged compositor moves to another GPU,
+    /// because that device must open fresh shared chrome textures.
     pub fn invalidate(&mut self) {
         self.dirty = true;
     }
@@ -353,7 +498,7 @@ impl GameLayer {
             ctrl_key,
             shift_key,
         } = event;
-        let Some(target) = self.document.as_ref().hit(x, y).map(|hit| hit.node_id) else {
+        let Some(target) = pointer_hit(self.document.as_ref(), x, y) else {
             return false;
         };
         let targets_game_view = std::iter::successors(Some(target), |node| {
@@ -615,6 +760,7 @@ impl GameLayer {
             );
             (scene.bands_used(), scene.overflowed())
         };
+        apply_tracked_surface_radii(self.document.as_ref(), &mut self.placements);
         if overflowed {
             eprintln!(
                 "snowglass: the game layer shows more than {} views, so the ones past that \
@@ -636,7 +782,7 @@ impl GameLayer {
         for index in 0..used {
             let target = match &mut self.targets[index] {
                 Some(target) => target,
-                slot => match SharedTexture::new(&self.device, self.width, self.height) {
+                slot => match SharedTexture::new(&self.gpu.device, self.width, self.height) {
                     Ok(target) => slot.insert(target),
                     Err(error) => {
                         eprintln!("snowglass: the game layer could not make band {index}: {error}");
@@ -644,9 +790,9 @@ impl GameLayer {
                     }
                 },
             };
-            if let Err(error) = self.renderer.render_to_texture(
-                &self.device,
-                &self.queue,
+            if let Err(error) = self.gpu.renderer.render_to_texture(
+                &self.gpu.device,
+                &self.gpu.queue,
                 &self.bands[index],
                 &target.view,
                 &parameters,
@@ -660,7 +806,7 @@ impl GameLayer {
         // no fence between them. Waiting here is what makes that safe, and it
         // costs nothing in practice: this layer repaints on layout changes, not
         // on frames.
-        if let Err(error) = self.device.poll(wgpu::PollType::Wait) {
+        if let Err(error) = self.gpu.device.poll(wgpu::PollType::Wait) {
             eprintln!("snowglass: waiting for the game layer to finish failed: {error}");
         }
         for (index, shared) in drawn {
@@ -717,6 +863,43 @@ fn apply_dom_mutations(
     if mutations.is_empty() {
         return false;
     }
+
+    // Stylo assumes every descendant reached by attribute invalidation already
+    // has a primary computed style. React can append a newly-created subtree
+    // and then set an attribute on one of its ancestors in the same mutation
+    // batch. If we feed that order directly to Blitz, the later invalidation
+    // sees the attached-but-unstyled descendants and panics in
+    // `ElementStyles::primary`.
+    //
+    // Attach the new tree without attribute invalidations, give it its base
+    // styles, then apply attributes. The next normal paint resolve computes
+    // the final styles; the intermediate resolve is never presented.
+    let has_new_elements = mutations
+        .iter()
+        .any(|mutation| matches!(mutation, deno::Mutation::CreateElement { .. }));
+    if has_new_elements {
+        let (attributes, structure): (Vec<_>, Vec<_>) =
+            mutations.into_iter().partition(|mutation| {
+                matches!(
+                    mutation,
+                    deno::Mutation::SetAttribute { .. } | deno::Mutation::RemoveAttribute { .. }
+                )
+            });
+        apply_dom_mutation_batch(document, script_to_dom, dom_to_script, structure);
+        document.as_mut().resolve(1.0);
+        apply_dom_mutation_batch(document, script_to_dom, dom_to_script, attributes);
+    } else {
+        apply_dom_mutation_batch(document, script_to_dom, dom_to_script, mutations);
+    }
+    true
+}
+
+fn apply_dom_mutation_batch(
+    document: &mut blitz_html::HtmlDocument,
+    script_to_dom: &mut HashMap<usize, usize>,
+    dom_to_script: &mut HashMap<usize, usize>,
+    mutations: Vec<deno::Mutation>,
+) {
     let mut mutator = document.as_mut().mutate();
     for mutation in mutations {
         match mutation {
@@ -813,7 +996,37 @@ fn apply_dom_mutations(
             }
         }
     }
-    true
+}
+
+fn apply_tracked_surface_radii(
+    document: &blitz_dom::BaseDocument,
+    placements: &mut [GamePlacement],
+) {
+    let radii = document
+        .tree()
+        .iter()
+        .filter_map(|(_, node)| {
+            let element = node.element_data()?;
+            if !is_tracked_surface_element(element) {
+                return None;
+            }
+            let source = element.attr(local_name!("src"))?.parse::<u64>().ok()?;
+            let radius = element
+                .attr(LocalName::from("data-corner-radius"))
+                .and_then(|value| value.parse::<f32>().ok())
+                .unwrap_or_default()
+                .max(0.0);
+            Some((source, radius))
+        })
+        .collect::<HashMap<_, _>>();
+    for placement in placements {
+        let maximum = (placement.rect.width().min(placement.rect.height()) * 0.5) as f32;
+        placement.corner_radius = radii
+            .get(&placement.source_id)
+            .copied()
+            .unwrap_or_default()
+            .min(maximum);
+    }
 }
 
 fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocument) {
@@ -869,7 +1082,7 @@ mod tests {
     #[test]
     fn tracked_surface_becomes_a_custom_paint_placeholder() {
         let mut document = blitz_html::HtmlDocument::from_html(
-            r#"<style>.surface { display: block; width: 320px; height: 180px; }</style><tracked-surface class="surface" src="7"></tracked-surface>"#,
+            r#"<style>.surface { display: block; width: 320px; height: 180px; }</style><tracked-surface class="surface" src="7" data-corner-radius="12"></tracked-surface>"#,
             blitz_dom::DocumentConfig::default(),
         );
         initialise_tracked_surfaces(&mut document);
@@ -905,10 +1118,145 @@ mod tests {
         let mut placements = Vec::new();
         let mut scene = BandedScene::new(&mut painters, &mut placements);
         blitz_paint::paint_scene(&mut scene, document.as_ref(), 1.0, 800, 600);
+        apply_tracked_surface_radii(document.as_ref(), &mut placements);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].source_id, 7);
         assert_eq!(placements[0].rect.width(), 320.0);
         assert_eq!(placements[0].rect.height(), 180.0);
+        assert_eq!(placements[0].corner_radius, 12.0);
+    }
+
+    #[test]
+    fn pointer_hit_skips_disabled_overlays_but_keeps_reenabled_children() {
+        let html = r#"
+            <style>
+              :root, body { width: 100%; height: 100%; margin: 0; }
+              .surface, .overlay, .shield { position: absolute; inset: 0; }
+              .overlay, .shield { pointer-events: none; }
+              .button {
+                position: absolute;
+                left: 10px;
+                top: 10px;
+                width: 40px;
+                height: 40px;
+                pointer-events: auto;
+              }
+            </style>
+            <tracked-surface class="surface" id="surface" src="0"></tracked-surface>
+            <div class="overlay">
+              <div class="shield"></div>
+              <div class="button" id="button"></div>
+            </div>
+        "#;
+        let mut document =
+            blitz_html::HtmlDocument::from_html(html, blitz_dom::DocumentConfig::default());
+        document
+            .as_mut()
+            .set_viewport(blitz_traits::shell::Viewport::new(
+                800,
+                600,
+                1.0,
+                blitz_traits::shell::ColorScheme::Dark,
+            ));
+        document.as_mut().resolve(1.0);
+        let find = |id| {
+            document
+                .as_ref()
+                .tree()
+                .iter()
+                .find_map(|(node, current)| {
+                    (current.attr(local_name!("id")) == Some(id)).then_some(node)
+                })
+                .unwrap()
+        };
+        let surface = find("surface");
+        let button = find("button");
+
+        assert_eq!(pointer_hit(document.as_ref(), 20.0, 20.0), Some(button));
+        assert_eq!(pointer_hit(document.as_ref(), 100.0, 100.0), Some(surface));
+    }
+
+    #[test]
+    fn styles_new_react_subtrees_before_attribute_invalidation() {
+        let html = r#"
+            <style>
+              .stage { display: flex; width: 400px; height: 200px; }
+              .child { flex: 1; }
+            </style>
+            <div id="root"></div>
+        "#;
+        let mut document =
+            blitz_html::HtmlDocument::from_html(html, blitz_dom::DocumentConfig::default());
+        document
+            .as_mut()
+            .set_viewport(blitz_traits::shell::Viewport::new(
+                800,
+                600,
+                1.0,
+                blitz_traits::shell::ColorScheme::Dark,
+            ));
+        document.as_mut().resolve(1.0);
+        let root = document
+            .as_ref()
+            .tree()
+            .iter()
+            .find_map(|(id, node)| (node.attr(local_name!("id")) == Some("root")).then_some(id))
+            .unwrap();
+        let mut script_to_dom = document
+            .as_ref()
+            .tree()
+            .iter()
+            .map(|(id, _)| (id, id))
+            .collect::<HashMap<_, _>>();
+        let mut dom_to_script = script_to_dom.clone();
+        let stage = script_to_dom.keys().copied().max().unwrap() + 1;
+        let child = stage + 1;
+
+        apply_dom_mutations(
+            &mut document,
+            &mut script_to_dom,
+            &mut dom_to_script,
+            vec![
+                deno::Mutation::CreateElement {
+                    node: stage,
+                    tag: "section".to_owned(),
+                },
+                deno::Mutation::CreateElement {
+                    node: child,
+                    tag: "div".to_owned(),
+                },
+                deno::Mutation::AppendChild {
+                    parent: stage,
+                    child,
+                },
+                deno::Mutation::AppendChild {
+                    parent: root,
+                    child: stage,
+                },
+                deno::Mutation::SetAttribute {
+                    node: stage,
+                    name: "class".to_owned(),
+                    value: "stage".to_owned(),
+                },
+                deno::Mutation::SetAttribute {
+                    node: child,
+                    name: "class".to_owned(),
+                    value: "child".to_owned(),
+                },
+            ],
+        );
+        document.as_mut().resolve(1.0);
+
+        let stage = script_to_dom[&stage];
+        assert_eq!(
+            document
+                .as_ref()
+                .tree()
+                .get(stage)
+                .unwrap()
+                .attr(local_name!("class")),
+            Some("stage")
+        );
     }
 
     #[test]

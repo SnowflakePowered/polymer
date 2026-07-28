@@ -8,6 +8,8 @@ use crate::{
     game_layer::{GameLayer, GameLayerCommand, GameLayerFactory},
 };
 use serde_json::Value;
+use snowglass_protocol::AdapterLuid;
+use std::error::Error;
 use wry::WebView;
 
 pub(crate) enum GameLayerAction {
@@ -78,13 +80,21 @@ impl GameLayerState {
         self.layer = Some(layer);
     }
 
+    pub fn switch_adapter(&mut self, adapter: AdapterLuid) -> Result<bool, Box<dyn Error>> {
+        match (&mut self.layer, &mut self.factory) {
+            (Some(layer), _) => layer.switch_adapter(adapter),
+            (None, Some(factory)) => factory.switch_adapter(adapter),
+            (None, None) => Ok(false),
+        }
+    }
+
     pub fn chrome_bands(&self) -> &[usize] {
         &self.chrome_bands_drawn
     }
 
-    pub fn set_painted_chrome(&mut self, bands: usize, merged: bool) {
+    pub fn set_painted_chrome(&mut self, bands: usize) {
         self.chrome_bands_drawn = (0..bands).collect();
-        self.chrome_dirty = merged;
+        self.chrome_dirty = true;
     }
 
     pub fn chrome_dirty(&self) -> bool {
@@ -162,9 +172,7 @@ impl GameLayerState {
     }
 
     pub fn poll_runtime(&mut self) -> bool {
-        self.layer
-            .as_mut()
-            .is_some_and(GameLayer::poll_runtime)
+        self.layer.as_mut().is_some_and(GameLayer::poll_runtime)
     }
 
     pub fn flush(&mut self, foreground: &WebView) {

@@ -24,10 +24,10 @@ use snowglass_input::{
 };
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{TargetProcess, performance_counter, performance_frequency};
-use snowglass_protocol::{PresentationMappingKind, PresentationTransform};
+use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, DisplayLatencyReport, Extent, PlanLayer, Renderer,
-    SurfacePlacement, WebRtcCompositor,
+    SurfacePlacement,
     capture::{Capture, CaptureEvent, ConsumerPreference},
     cli::ViewerApi,
     debug::{
@@ -110,7 +110,6 @@ enum InputPriority {
 const MAX_CAPTURE_EVENTS_PER_TURN: usize = 32;
 /// Composition-tree key for the single visual every stream shares when the
 /// shell composites them together. Not a real connection.
-const MERGED_VISUAL_KEY: u64 = u64::MAX;
 /// How many game views the layer document may show at once.
 ///
 /// This fixes how many chrome bands are kept, which is one more than the view
@@ -243,7 +242,6 @@ impl TurnProfile {
         self.started = Some(now);
     }
 }
-const SURFACE_RESIZE_SETTLE: Duration = Duration::from_millis(75);
 const EGUI_STATISTICS_REFRESH: Duration = Duration::from_millis(100);
 
 /// How long after egui last took the pointer it keeps drawing at the rate it
@@ -276,8 +274,6 @@ struct CapturedSurface {
     index: u32,
     preferred_width: u32,
     preferred_height: u32,
-    swapchain_width: u32,
-    swapchain_height: u32,
     viewport_width: u32,
     viewport_height: u32,
     viewport_x: i32,
@@ -285,12 +281,7 @@ struct CapturedSurface {
     quarter_turns: u8,
     pointer_events: bool,
     z_index: i32,
-    needs_redraw: bool,
-    resize_due: Option<Instant>,
-    /// `None` when the shell composites every stream into one shared swapchain,
-    /// in which case the compositor lives on the shell instead.
-    compositor: Option<D3d12Compositor>,
-    webrtc: Option<WebRtcCompositor>,
+    corner_radius: f32,
 }
 
 struct ActiveGame {
@@ -511,33 +502,6 @@ impl EguiOverlay {
     }
 }
 
-impl CapturedSurface {
-    fn composition_plan(&self) -> CompositingPlan {
-        let extent = Extent::new(self.swapchain_width, self.swapchain_height);
-        let Some(compositor) = self.compositor.as_ref() else {
-            return CompositingPlan::new([0.0, 0.0, 0.0, 1.0], Vec::new());
-        };
-        let presentation = Renderer::received_presentation(compositor, extent);
-        CompositingPlan::new(
-            [0.0, 0.0, 0.0, 1.0],
-            presentation
-                .surfaces()
-                .iter()
-                .map(|surface| SurfacePlacement {
-                    connection: surface.connection,
-                    surface_id: surface.surface_id,
-                    rectangle: snowglass_input::mouse::layout::Rect::new(
-                        0,
-                        0,
-                        extent.width,
-                        extent.height,
-                    ),
-                })
-                .collect(),
-        )
-    }
-}
-
 /// Wakes the event loop once per DirectComposition frame.
 ///
 /// DWM samples composition swapchains once per composition pass. A present that
@@ -657,7 +621,7 @@ struct PresentationState {
     profile: TurnProfile,
     /// One window-spanning opaque swapchain shared by every stream.
     merged: Option<D3d12Compositor>,
-    merged_attached: bool,
+    merged_dirty: bool,
 }
 
 struct ShellState {
@@ -694,16 +658,27 @@ impl ShellState {
                 .with_title("Snowglass")
                 .with_inner_size(LogicalSize::new(1280.0, 720.0)),
         )?;
-        let composition = CompositionTree::new(&window)?;
+        let mut composition = CompositionTree::new(&window)?;
+        let size = window.inner_size();
+        let render_window = SurfaceWindow::new(&window, size.width.max(1), size.height.max(1));
+        // Prepare Vello before building WebView2. Initializing its D3D12 state
+        // after Chromium has started WARP faults inside d3d10warp.dll on this
+        // system. The factory chooses the initial adapter, and the merged
+        // compositor must use the same device so it can import Vello's shared
+        // game-layer textures before a captured stream supplies an adapter.
+        let game_layer_factory = GameLayerFactory::new()?;
+        let merged = D3d12Compositor::new_for_shared_composition(
+            &render_window,
+            game_layer_factory.adapter_luid(),
+        )?;
+        composition.set_merged_content(&merged.composition_content()?)?;
+        composition.commit()?;
         let session = unique_session();
         // The foreground page opts into a composed game layer with
         // `<link rel="background">`. Its initialization bridge discovers and
-        // fetches that document before announcing that the frontend is ready.
-        //
-        // Prepare Vello before building WebView2. Initializing its D3D12 state
-        // after Chromium has started WARP faults inside d3d10warp.dll on this
-        // system; document discovery itself remains deferred to the page.
-        let game_layer = GameLayerState::new(GameLayerFactory::new()?);
+        // fetches that document before announcing that the frontend is ready;
+        // document discovery itself remains deferred to the page.
+        let game_layer = GameLayerState::new(game_layer_factory);
         let foreground_visual = composition.foreground_visual()?;
         let foreground_proxy = proxy.clone();
         let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
@@ -820,8 +795,8 @@ impl ShellState {
                 overlay,
                 clock: compositor_clock,
                 profile: TurnProfile::default(),
-                merged: None,
-                merged_attached: false,
+                merged: Some(merged),
+                merged_dirty: true,
             },
             streams: StreamState {
                 capture,
@@ -895,11 +870,7 @@ impl ShellState {
                         "error",
                         &serde_json::json!({ "message": message }),
                     );
-                    self.emit_instance_event(
-                        &instance_id,
-                        "closed",
-                        &serde_json::Value::Null,
-                    );
+                    self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
                 }
                 GameLayerAction::Close(instance_id) => self.close_game(&instance_id),
                 GameLayerAction::Message {
@@ -994,7 +965,8 @@ impl ShellState {
         } else {
             let mut mappings = options.gamepad_mapping.iter().collect::<Vec<_>>();
             mappings.sort_by_key(|mapping| mapping.slot);
-            self.input.transport
+            self.input
+                .transport
                 .start_provider(Sdl3ProviderConfig {
                     slots: mappings
                         .into_iter()
@@ -1126,14 +1098,16 @@ impl ShellState {
             if let Some(publisher) = &active.webrtc {
                 publisher.remove_stream(connection);
             }
-            if let Some(mut surface) = self.streams.surfaces.remove(&connection) {
+            if self.streams.surfaces.remove(&connection).is_some() {
                 self.streams.capture.revoke(connection);
-                let _ = disconnect_from(&mut surface.compositor, &mut self.merged, connection);
-                let _ = self.composition.remove_render_target(connection);
+                if let Some(merged) = self.presentation.merged.as_mut() {
+                    let _ = Renderer::disconnect_stream(merged, connection);
+                }
+                self.presentation.merged_dirty = true;
                 self.streams.capture.forget(connection);
             }
         }
-        let _ = self.composition.commit();
+        let _ = self.presentation.composition.commit();
         self.input.provider = None;
         self.set_input_priority(InputPriority::Foreground);
         self.input.foreground_hit_regions.clear();
@@ -1183,9 +1157,11 @@ impl ShellState {
     }
 
     fn process_capture(&mut self) {
-        let entered = self.profile.enter();
+        let entered = self.presentation.profile.enter();
         self.process_capture_inner();
-        self.profile.record(TurnPhase::Capture, entered);
+        self.presentation
+            .profile
+            .record(TurnPhase::Capture, entered);
     }
 
     fn process_capture_inner(&mut self) {
@@ -1225,7 +1201,9 @@ impl ShellState {
                     let Some(surface) = self.streams.surfaces.get_mut(&connection) else {
                         continue;
                     };
-                    self.overlay.observe_frame(connection, surface.index, frame);
+                    self.presentation
+                        .overlay
+                        .observe_frame(connection, surface.index, frame);
                     let (width, height) = rotated_extent(
                         frame.render_width.max(1),
                         frame.render_height.max(1),
@@ -1236,16 +1214,12 @@ impl ShellState {
                         surface.preferred_height = height;
                         changed = true;
                     }
-                    match (surface.compositor.as_mut(), self.merged.as_mut()) {
-                        (Some(compositor), _) => {
-                            Renderer::set_latest(compositor, connection, frame);
-                        }
-                        (None, Some(merged)) => Renderer::set_latest(merged, connection, frame),
-                        (None, None) => {}
+                    if let Some(merged) = self.presentation.merged.as_mut() {
+                        Renderer::set_latest(merged, connection, frame);
                     }
                 }
                 CaptureEvent::Disconnected(connection) => {
-                    self.overlay.remove_target(connection);
+                    self.presentation.overlay.remove_target(connection);
                     self.cancel_pointer_connection(connection);
                     if let Some(publisher) = self
                         .game
@@ -1255,14 +1229,11 @@ impl ShellState {
                     {
                         publisher.remove_stream(connection);
                     }
-                    if let Some(mut surface) = self.streams.surfaces.remove(&connection) {
-                        let _ =
-                            disconnect_from(&mut surface.compositor, &mut self.merged, connection);
-                        if let Err(error) = self.composition.remove_render_target(connection) {
-                            eprintln!(
-                                "snowglass: removing composition surface {connection} failed: {error}"
-                            );
+                    if self.streams.surfaces.remove(&connection).is_some() {
+                        if let Some(merged) = self.presentation.merged.as_mut() {
+                            let _ = Renderer::disconnect_stream(merged, connection);
                         }
+                        self.presentation.merged_dirty = true;
                         changed = true;
                     }
                     self.streams.capture.forget(connection);
@@ -1300,7 +1271,7 @@ impl ShellState {
     /// deadline — a stretch of doubled and dropped frames every time it
     /// crosses.
     fn draw_unpaced_surfaces(&mut self) {
-        if !self.compositor_clock.is_pacing() {
+        if !self.presentation.clock.is_pacing() {
             self.draw_pending_surfaces();
         }
     }
@@ -1312,79 +1283,26 @@ impl ShellState {
     /// Presents every surface holding new content, waiting up to `permit_wait`
     /// for DXGI to hand back a present slot.
     fn present_pending_surfaces(&mut self, permit_wait: Duration) {
-        let entered = self.profile.enter();
+        let entered = self.presentation.profile.enter();
         self.present_pending_surfaces_inner(permit_wait);
-        self.profile.record(TurnPhase::Present, entered);
+        self.presentation
+            .profile
+            .record(TurnPhase::Present, entered);
     }
 
     fn present_pending_surfaces_inner(&mut self, permit_wait: Duration) {
-        if self.merged.is_some() {
-            self.draw_merged(permit_wait);
-            return;
-        }
-        let publisher = self
-            .game
-            .active
-            .as_ref()
-            .and_then(|active| active.webrtc.as_ref());
-        // One composition interval carries one present regardless of how many
-        // dedicated swapchains contributed to it.
-        let mut presented = false;
-        for (&connection, surface) in &mut self.streams.surfaces {
-            let ready = surface.compositor.as_mut().is_some_and(|compositor| {
-                (Renderer::has_pending_frame(compositor) || surface.needs_redraw)
-                    && compositor.begin_frame_within(permit_wait)
-            });
-            if !ready {
-                continue;
-            }
-            let plan = surface.composition_plan();
-            let compositor = surface
-                .compositor
-                .as_mut()
-                .expect("a dedicated compositor was just checked");
-            match compositor.draw_game_with_webrtc(&plan, surface.webrtc.as_mut()) {
-                Ok(_) => {
-                    surface.needs_redraw = false;
-                    presented = true;
-                }
-                Err(error) => {
-                    eprintln!("snowglass: rendering stream {connection} failed: {error}");
-                }
-            }
-            if let (Some(publisher), Some(video)) = (publisher, surface.webrtc.as_mut()) {
-                for frame in video.take_frames() {
-                    publisher.publish(frame);
-                }
-            }
-        }
-        if presented {
-            self.overlay.record_present();
-        }
-        // Whichever swapchain carried the streams is the one the display
-        // confirms presents against.
-        let latency = self
-            .streams
-            .surfaces
-            .values_mut()
-            .find_map(|surface| surface.compositor.as_mut()?.display_latency());
-        self.overlay.set_display_latency(latency);
+        self.draw_merged(permit_wait);
     }
 
     fn has_pending_surfaces(&self) -> bool {
-        if let Some(merged) = self.merged.as_ref() {
-            // Re-presenting an unchanged shared buffer burns GPU time and can
-            // occupy the one-frame DXGI queue when a real guest frame arrives.
-            // DirectComposition retains the last buffer, so only new content
-            // or chrome needs another present.
-            return Renderer::has_pending_frame(merged) || self.game_layer.chrome_dirty();
-        }
-        self.streams.surfaces.values().any(|surface| {
-            surface.needs_redraw
-                || surface
-                    .compositor
-                    .as_ref()
-                    .is_some_and(Renderer::has_pending_frame)
+        // Re-presenting an unchanged shared buffer burns GPU time and can
+        // occupy the one-frame DXGI queue when a real guest frame arrives.
+        // DirectComposition retains the last buffer, so only new content or
+        // chrome needs another present.
+        self.presentation.merged.as_ref().is_some_and(|merged| {
+            Renderer::has_pending_frame(merged)
+                || self.presentation.merged_dirty
+                || self.game_layer.chrome_dirty()
         })
     }
 
@@ -1393,69 +1311,29 @@ impl ShellState {
         connection: u64,
         stream: &snowglass_ipc::StreamReady,
     ) -> Result<(), Box<dyn Error>> {
-        let (index, quarter_turns, publish_webrtc) = self
+        let (index, quarter_turns) = self
             .next_target_configuration()
             .ok_or("the shell already has a surface for every tracked render target")?;
         let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
-        // One swapchain for every stream, which is what makes the window
-        // opaque and so eligible for a hardware overlay plane. It only works
-        // because the game layer fills the pixels no stream covers; without a
-        // layer there is nothing to fill them, so the streams keep their own
-        // visuals and DirectComposition blends them.
-        if self.game_layer.is_linked() {
-            return self.connect_merged_stream(
-                connection,
-                stream,
-                index,
-                quarter_turns,
-                width,
-                height,
-            );
-        }
-        let render_window = SurfaceWindow::new(&self.window, width.max(1), height.max(1));
-        let (mut compositor, mut video) = if publish_webrtc {
-            let (compositor, video) = D3d12Compositor::new_for_composition_stream_with_webrtc(
-                &render_window,
-                stream.adapter_luid,
-                connection,
-            )?;
-            (compositor, Some(video))
-        } else {
-            (
-                D3d12Compositor::new_for_composition_stream(
-                    &render_window,
-                    stream.adapter_luid,
-                    connection,
-                )?,
-                None,
-            )
-        };
-        Renderer::import_stream(&mut compositor, connection, stream, quarter_turns)?;
-        if let Some(video) = &mut video {
-            video.import_d3d12_stream(connection)?;
-        }
-        let content = compositor.composition_content()?;
-        self.composition
-            .add_render_target(connection, index, &content)?;
-        self.composition.commit()?;
-        if publish_webrtc
-            && let Some(publisher) = self
-                .game
-                .active
-                .as_ref()
-                .and_then(|active| active.webrtc.as_ref())
-        {
-            publisher.add_stream(connection, index);
-        }
-        self.overlay.set_backend(format!("{:?}", stream.image_kind));
+        self.ensure_merged_adapter(stream.adapter_luid)?;
+        // Every game surface is rendered into one window-sized swapchain.
+        // DirectComposition owns only that merged visual, which remains below
+        // WebView2 in the composition tree.
+        let merged = self
+            .presentation
+            .merged
+            .as_mut()
+            .expect("the shared compositor exists by now");
+        Renderer::import_stream(merged, connection, stream, quarter_turns)?;
+        self.presentation
+            .overlay
+            .set_backend(format!("{:?}", stream.image_kind));
         self.streams.surfaces.insert(
             connection,
             CapturedSurface {
                 index,
                 preferred_width: width,
                 preferred_height: height,
-                swapchain_width: width.max(1),
-                swapchain_height: height.max(1),
                 viewport_width: width.max(1),
                 viewport_height: height.max(1),
                 viewport_x: 0,
@@ -1463,89 +1341,50 @@ impl ShellState {
                 quarter_turns,
                 pointer_events: true,
                 z_index: index as i32,
-                needs_redraw: false,
-                resize_due: None,
-                compositor: Some(compositor),
-                webrtc: video,
+                corner_radius: 0.0,
             },
         );
+        self.presentation.merged_dirty = true;
         // The layer already knows where this view goes; it just had nothing to
         // put there until now.
         self.refresh_game_layer();
         Ok(())
     }
 
-    /// Adds a stream to the single window-spanning swapchain that every stream
-    /// shares, creating it on the first connection.
-    fn connect_merged_stream(
-        &mut self,
-        connection: u64,
-        stream: &snowglass_ipc::StreamReady,
-        index: u32,
-        quarter_turns: u8,
-        width: u32,
-        height: u32,
-    ) -> Result<(), Box<dyn Error>> {
-        let size = self.window.inner_size();
-        let (swapchain_width, swapchain_height) = (size.width.max(1), size.height.max(1));
-        if self.merged.is_none() {
-            let render_window = SurfaceWindow::new(&self.window, swapchain_width, swapchain_height);
-            self.merged = Some(D3d12Compositor::new_for_shared_composition(
-                &render_window,
-                stream.adapter_luid,
-            )?);
-            // The layer was already painted into DirectComposition before a
-            // guest connected. Its document is still clean, but the new opaque
-            // swapchain needs its own copy of every band before it covers those
-            // old visuals.
-            if let Some(layer) = self.game_layer.layer_mut() {
-                layer.invalidate();
-            }
-        }
-        let merged = self
+    fn ensure_merged_adapter(&mut self, desired: AdapterLuid) -> Result<(), Box<dyn Error>> {
+        if self
+            .presentation
             .merged
-            .as_mut()
-            .expect("the shared compositor exists by now");
-        Renderer::import_stream(merged, connection, stream, quarter_turns)?;
-        if !self.merged_attached {
-            let content = merged.composition_content()?;
-            self.composition
-                .add_render_target(MERGED_VISUAL_KEY, 0, &content)?;
-            self.composition.commit()?;
-            self.merged_attached = true;
+            .as_ref()
+            .is_some_and(|merged| merged.adapter_luid() == desired)
+        {
+            return Ok(());
         }
-        self.overlay.set_backend(format!("{:?}", stream.image_kind));
-        self.streams.surfaces.insert(
-            connection,
-            CapturedSurface {
-                index,
-                preferred_width: width,
-                preferred_height: height,
-                swapchain_width,
-                swapchain_height,
-                viewport_width: width.max(1),
-                viewport_height: height.max(1),
-                viewport_x: 0,
-                viewport_y: 0,
-                quarter_turns,
-                pointer_events: true,
-                z_index: index as i32,
-                needs_redraw: false,
-                resize_due: None,
-                compositor: None,
-                webrtc: None,
-            },
-        );
-        // The layer already knows where this view goes; it just had nothing to
-        // put there until now.
-        self.refresh_game_layer();
+        if !self.streams.surfaces.is_empty() {
+            return Err(
+                "captured streams from multiple adapters cannot share one swapchain".into(),
+            );
+        }
+
+        let size = self.window.inner_size();
+        let render_window = SurfaceWindow::new(&self.window, size.width.max(1), size.height.max(1));
+        let replacement = D3d12Compositor::new_for_shared_composition(&render_window, desired)?;
+        self.game_layer.switch_adapter(desired)?;
+        let content = replacement.composition_content()?;
+        self.presentation.composition.set_merged_content(&content)?;
+        self.presentation.composition.commit()?;
+        self.presentation.merged = Some(replacement);
+        self.presentation.merged_dirty = true;
+        if let Some(layer) = self.game_layer.layer_mut() {
+            layer.invalidate();
+        }
         Ok(())
     }
 
     /// Placements for the shared swapchain, ordered so a higher `z_index` is
     /// painted later and therefore on top.
     fn merged_plan(&self) -> CompositingPlan {
-        let Some(merged) = self.merged.as_ref() else {
+        let Some(merged) = self.presentation.merged.as_ref() else {
             return CompositingPlan::new([0.0, 0.0, 0.0, 1.0], Vec::new());
         };
         let mut ordered = Renderer::received_surfaces(merged)
@@ -1563,6 +1402,7 @@ impl ShellState {
                             surface.viewport_width,
                             surface.viewport_height,
                         ),
+                        corner_radius: surface.corner_radius,
                     }),
                 ))
             })
@@ -1608,7 +1448,7 @@ impl ShellState {
     /// resident in DirectComposition without redundant presents.
     fn draw_merged(&mut self, permit_wait: Duration) {
         let plan = self.merged_plan();
-        let Some(merged) = self.merged.as_mut() else {
+        let Some(merged) = self.presentation.merged.as_mut() else {
             return;
         };
         if !merged.begin_frame_within(permit_wait) {
@@ -1616,31 +1456,36 @@ impl ShellState {
         }
         match merged.draw_game_with_webrtc(&plan, None) {
             Ok(_) => {
-                for surface in self.streams.surfaces.values_mut() {
-                    surface.needs_redraw = false;
-                }
+                self.presentation.merged_dirty = false;
                 // The draw is what consumed the pending chrome upload.
                 self.game_layer.clear_chrome_dirty();
-                self.overlay.record_present();
+                self.presentation.overlay.record_present();
             }
             Err(error) => eprintln!("snowglass: rendering merged surfaces failed: {error}"),
         }
         let latency = self
+            .presentation
             .merged
             .as_mut()
             .and_then(D3d12Compositor::display_latency);
-        self.overlay.set_display_latency(latency);
+        self.presentation.overlay.set_display_latency(latency);
     }
 
-    fn next_target_configuration(&self) -> Option<(u32, u8, bool)> {
-        let in_use = |index| self.streams.surfaces.values().any(|surface| surface.index == index);
-        self.game.active
+    fn next_target_configuration(&self) -> Option<(u32, u8)> {
+        let in_use = |index| {
+            self.streams
+                .surfaces
+                .values()
+                .any(|surface| surface.index == index)
+        };
+        self.game
+            .active
             .as_ref()?
             .options
             .surfaces
             .iter()
             .find(|target| !in_use(target.index))
-            .map(|target| (target.index, target.quarter_turns(), target.webrtc))
+            .map(|target| (target.index, target.quarter_turns()))
     }
 
     fn apply_layout(&mut self, layouts: Vec<SurfaceLayout>) {
@@ -1671,76 +1516,37 @@ impl ShellState {
     /// between them, so a document whose bezel sits over a fullscreen view
     /// composites in the order the document painted it.
     ///
-    /// Which compositor receives the chrome depends on how the streams are
-    /// being shown. Separate swapchains means separate DirectComposition
-    /// visuals, and the chrome takes visuals of its own alongside them. One
-    /// merged swapchain is opaque and covers the window, so the chrome has to
-    /// go inside it or it would be hidden.
+    /// Before a stream connects, chrome can be shown in temporary
+    /// DirectComposition surfaces. Once the opaque merged swapchain exists,
+    /// chrome goes inside it or it would be hidden.
     fn refresh_game_layer(&mut self) {
-        let entered = self.profile.enter();
+        let entered = self.presentation.profile.enter();
         self.refresh_game_layer_inner();
-        self.profile.record(TurnPhase::GameLayer, entered);
+        self.presentation
+            .profile
+            .record(TurnPhase::GameLayer, entered);
     }
 
     fn refresh_game_layer_inner(&mut self) {
         self.game_layer.take_refresh_pending();
-        let composition = &mut self.composition;
-        let mut merged = self.merged.as_mut();
+        let Some(merged) = self.presentation.merged.as_mut() else {
+            return;
+        };
         let mut bands = 0;
-        let mut failure = None;
         let (painted, placements) = {
             let Some(layer) = self.game_layer.layer_mut() else {
                 return;
             };
             let painted = layer.paint(|band, chrome| {
                 bands = band + 1;
-                match merged.as_deref_mut() {
-                    Some(merged) => merged.set_chrome_layer(
-                        band as u64,
-                        chrome.handle,
-                        chrome.width,
-                        chrome.height,
-                    ),
-                    None => {
-                        if let Err(error) = composition.set_chrome_band(
-                            band,
-                            chrome.handle,
-                            chrome.width,
-                            chrome.height,
-                        ) {
-                            failure = Some(error);
-                        }
-                    }
-                }
+                merged.set_chrome_layer(band as u64, chrome.handle, chrome.width, chrome.height);
             });
             (painted, layer.placements().to_vec())
         };
         if painted {
-            if let Some(error) = failure {
-                eprintln!("snowglass: handing over the game layer chrome failed: {error}");
-            }
-            self.game_layer
-                .set_painted_chrome(bands, self.merged.is_some());
-            match self.merged.as_mut() {
-                Some(merged) => {
-                    for band in bands..=GAME_LAYER_VIEWS {
-                        merged.drop_chrome_layer(band as u64);
-                    }
-                    // The shared swapchain only appears once the first stream
-                    // connects, so the bands painted before that went to
-                    // DirectComposition. They are behind an opaque swapchain
-                    // now and would never be seen again.
-                    if let Err(error) = self.composition.truncate_chrome_bands(0) {
-                        eprintln!(
-                            "snowglass: dropping superseded game layer chrome failed: {error}"
-                        );
-                    }
-                }
-                None => {
-                    if let Err(error) = self.composition.truncate_chrome_bands(bands) {
-                        eprintln!("snowglass: dropping unused game layer chrome failed: {error}");
-                    }
-                }
+            self.game_layer.set_painted_chrome(bands);
+            for band in bands..=GAME_LAYER_VIEWS {
+                merged.drop_chrome_layer(band as u64);
             }
         }
 
@@ -1765,16 +1571,17 @@ impl ShellState {
                     width: rect.width().round().max(0.0) as u32,
                     height: rect.height().round().max(0.0) as u32,
                     z_index: game_view_z_index(placement.band),
+                    corner_radius: placement.corner_radius,
                     pointer_events: true,
                     foreground_hit_region: None,
                     foreground_hit_regions: Vec::new(),
                 })
             })
             .collect::<Vec<_>>();
-        // A tracked surface that is outside the viewport is culled by the
-        // painter and therefore has no placement. DirectComposition visuals
-        // retain their previous/default rectangle until explicitly moved, so
-        // absence must mean hidden rather than "leave it where it was".
+        // A tracked surface outside the viewport is culled by the painter and
+        // therefore has no placement. The merged plan retains its previous
+        // rectangle until explicitly updated, so absence means hidden rather
+        // than "leave it where it was".
         if let Some(active) = &self.game.active {
             for requested in &active.options.surfaces {
                 let Some(connection) = surfaces.iter().find_map(|(&connection, surface)| {
@@ -1792,6 +1599,7 @@ impl ShellState {
                     width: 0,
                     height: 0,
                     z_index: game_view_z_index(0),
+                    corner_radius: 0.0,
                     pointer_events: false,
                     foreground_hit_region: None,
                     foreground_hit_regions: Vec::new(),
@@ -1804,44 +1612,27 @@ impl ShellState {
     }
 
     fn place_surfaces(&mut self, layouts: Vec<SurfaceLayout>) {
-        let resize_due = Instant::now() + SURFACE_RESIZE_SETTLE;
         for item in layouts {
-            if let Err(error) = self
-                .composition
-                .set_render_target_z_index(item.connection, item.z_index)
-            {
-                eprintln!(
-                    "snowglass: reordering composition surface {} failed: {error}",
-                    item.connection
-                );
-            }
             let Some(surface) = self.streams.surfaces.get_mut(&item.connection) else {
                 continue;
             };
-            surface.viewport_x = item.x;
-            surface.viewport_y = item.y;
-            surface.viewport_width = item.width;
-            surface.viewport_height = item.height;
-            surface.pointer_events = item.pointer_events;
-            surface.z_index = item.z_index;
-            if let Err(error) = self.composition.apply_layout(
-                &item,
-                surface.swapchain_width,
-                surface.swapchain_height,
-            ) {
-                eprintln!(
-                    "snowglass: positioning composition surface {} failed: {error}",
-                    item.connection
-                );
+            let changed = surface.viewport_x != item.x
+                || surface.viewport_y != item.y
+                || surface.viewport_width != item.width
+                || surface.viewport_height != item.height
+                || surface.pointer_events != item.pointer_events
+                || surface.z_index != item.z_index
+                || surface.corner_radius != item.corner_radius;
+            if changed {
+                surface.viewport_x = item.x;
+                surface.viewport_y = item.y;
+                surface.viewport_width = item.width;
+                surface.viewport_height = item.height;
+                surface.pointer_events = item.pointer_events;
+                surface.z_index = item.z_index;
+                surface.corner_radius = item.corner_radius;
+                self.presentation.merged_dirty = true;
             }
-            surface.resize_due = (item.width != 0
-                && item.height != 0
-                && (surface.swapchain_width, surface.swapchain_height)
-                    != (item.width, item.height))
-                .then_some(resize_due);
-        }
-        if let Err(error) = self.composition.commit() {
-            eprintln!("snowglass: committing WebView2 layout failed: {error}");
         }
     }
 
@@ -1885,7 +1676,7 @@ impl ShellState {
             self.game_layer.restore_mouse_buttons(previous_buttons);
         }
         if needs_paint {
-            if self.compositor_clock.is_pacing() {
+            if self.presentation.clock.is_pacing() {
                 self.game_layer.defer_refresh();
             } else {
                 self.refresh_game_layer();
@@ -1936,73 +1727,6 @@ impl ShellState {
         })
     }
 
-    fn resize_pending_surfaces(&mut self, now: Instant) -> Option<Instant> {
-        let mut next_due: Option<Instant> = None;
-        let mut resized = Vec::new();
-        for (&connection, surface) in &mut self.streams.surfaces {
-            let Some(due) = surface.resize_due else {
-                continue;
-            };
-            if due > now {
-                next_due = Some(next_due.map_or(due, |current| current.min(due)));
-                continue;
-            }
-            surface.resize_due = None;
-            let render_window = SurfaceWindow::new(
-                &self.window,
-                surface.viewport_width,
-                surface.viewport_height,
-            );
-            let Some(compositor) = surface.compositor.as_mut() else {
-                // A shared swapchain tracks the window, not the DOM box, so a
-                // layout change only needs a redraw.
-                surface.needs_redraw = true;
-                continue;
-            };
-            match Renderer::recreate_swapchain(compositor, &render_window) {
-                Ok(true) => {
-                    surface.swapchain_width = surface.viewport_width;
-                    surface.swapchain_height = surface.viewport_height;
-                    surface.needs_redraw = true;
-                    resized.push((
-                        SurfaceLayout {
-                            connection,
-                            x: surface.viewport_x,
-                            y: surface.viewport_y,
-                            width: surface.viewport_width,
-                            height: surface.viewport_height,
-                            z_index: surface.z_index,
-                            pointer_events: surface.pointer_events,
-                            foreground_hit_region: None,
-                            foreground_hit_regions: Vec::new(),
-                        },
-                        (surface.swapchain_width, surface.swapchain_height),
-                    ));
-                }
-                Ok(false) => {}
-                Err(error) => eprintln!(
-                    "snowglass: resizing composition surface {connection} failed: {error}"
-                ),
-            }
-        }
-        let composition_changed = !resized.is_empty();
-        for (layout, extent) in resized {
-            if let Err(error) = self.composition.apply_layout(&layout, extent.0, extent.1) {
-                eprintln!(
-                    "snowglass: updating composition surface {} after resize failed: {error}",
-                    layout.connection
-                );
-            }
-        }
-        if composition_changed {
-            if let Err(error) = self.composition.commit() {
-                eprintln!("snowglass: committing resized composition surfaces failed: {error}");
-            }
-            self.draw_pending_surfaces();
-        }
-        next_due
-    }
-
     fn pointer_presentation(&self) -> (snowglass_renderer::Presentation, CompositingPlan) {
         let mut received = Vec::new();
         let mut placements = Vec::new();
@@ -2014,13 +1738,12 @@ impl ShellState {
             .collect::<Vec<_>>();
         surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.z_index));
         for (&connection, surface) in surfaces {
-            let received_surfaces = match (surface.compositor.as_ref(), self.merged.as_ref()) {
-                (Some(compositor), _) => Renderer::received_surfaces(compositor),
-                (None, Some(merged)) => Renderer::received_surfaces(merged)
+            let received_surfaces = match self.presentation.merged.as_ref() {
+                Some(merged) => Renderer::received_surfaces(merged)
                     .into_iter()
                     .filter(|received| received.connection == connection)
                     .collect(),
-                (None, None) => Vec::new(),
+                None => Vec::new(),
             };
             for mut received_surface in received_surfaces {
                 received_surface.frame.presentation_transform = shell_pointer_transform(
@@ -2037,6 +1760,7 @@ impl ShellState {
                         surface.viewport_width,
                         surface.viewport_height,
                     ),
+                    corner_radius: surface.corner_radius,
                 });
                 received.push(received_surface);
             }
@@ -2217,7 +1941,7 @@ impl ShellState {
             .map(Sdl3Provider::states)
             .unwrap_or_default();
         let dispatch = self.input.transport.dispatch_summary();
-        self.overlay.diagnostics.input = InputDiagnostics {
+        self.presentation.overlay.diagnostics.input = InputDiagnostics {
             active: self.input.priority == InputPriority::Game && self.game.target.is_some(),
             dispatch_samples: dispatch.samples,
             dispatch_p50_ms: dispatch.p50_ms,
@@ -2347,7 +2071,7 @@ impl ShellState {
         if !state_changed && routed.is_empty() {
             return;
         }
-        self.overlay.next_repaint = Instant::now();
+        self.presentation.overlay.next_repaint = Instant::now();
         if state_changed {
             self.input.last_published_state.clone_from(&json);
         }
@@ -2412,9 +2136,11 @@ impl ShellState {
 
 impl Drop for ShellState {
     fn drop(&mut self) {
-        for (&connection, surface) in &mut self.streams.surfaces {
+        for &connection in self.streams.surfaces.keys() {
             self.streams.capture.revoke(connection);
-            let _ = disconnect_from(&mut surface.compositor, &mut self.merged, connection);
+            if let Some(merged) = self.presentation.merged.as_mut() {
+                let _ = Renderer::disconnect_stream(merged, connection);
+            }
         }
         if let Some(target) = self.game.target.take() {
             let _ = target.terminate_tree_and_wait();
@@ -2460,8 +2186,8 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             // into `about_to_wait`.
             UserEvent::WakeCapture => state.process_capture(),
             UserEvent::CompositorTick => {
-                state.compositor_clock.clear_tick();
-                state.overlay.record_clock();
+                state.presentation.clock.clear_tick();
+                state.presentation.overlay.record_clock();
                 // Mouse input can run several times faster than the display.
                 // Paint its latest position once for this scanout rather than
                 // blocking on a Vello repaint for every intermediate event.
@@ -2504,12 +2230,16 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
         if window_id != state.window.id() {
             return;
         }
-        let response = state.overlay.state.on_window_event(&state.window, &event);
+        let response = state
+            .presentation
+            .overlay
+            .state
+            .on_window_event(&state.window, &event);
         let mut consumed = response.consumed;
         if consumed {
             // egui took this event, so it is being interacted with and gets to
             // set its own repaint rate until the interaction settles.
-            state.overlay.note_interaction(Instant::now());
+            state.presentation.overlay.note_interaction(Instant::now());
         }
         if response.repaint {
             state.window.request_redraw();
@@ -2546,7 +2276,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 if let Err(error) = state.foreground_webview.set_bounds(bounds) {
                     eprintln!("snowglass: resizing foreground WebView2 failed: {error}");
                 }
-                if let Err(error) = state.overlay.resize(&state.window) {
+                if let Err(error) = state.presentation.overlay.resize(&state.window) {
                     eprintln!("snowglass: resizing egui composition overlay failed: {error}");
                 }
                 if let Some(layer) = state.game_layer.layer_mut() {
@@ -2555,16 +2285,10 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 }
                 // The shared swapchain and the background both cover the whole
                 // window, so the window is what resizes them, not a DOM box.
-                if let Some(merged) = state.merged.as_mut() {
+                if let Some(merged) = state.presentation.merged.as_mut() {
                     let render_window = SurfaceWindow::new(&state.window, size.width, size.height);
                     match Renderer::recreate_swapchain(merged, &render_window) {
-                        Ok(true) => {
-                            for surface in state.streams.surfaces.values_mut() {
-                                surface.swapchain_width = size.width;
-                                surface.swapchain_height = size.height;
-                                surface.needs_redraw = true;
-                            }
-                        }
+                        Ok(true) => state.presentation.merged_dirty = true,
                         Ok(false) => {}
                         Err(error) => {
                             eprintln!("snowglass: resizing the shared swapchain failed: {error}");
@@ -2658,7 +2382,10 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
                     return;
                 }
-                state.input.pointer_routing.set_cursor(position.x, position.y);
+                state
+                    .input
+                    .pointer_routing
+                    .set_cursor(position.x, position.y);
                 state.route_pointer(PointerPhase::Move, 0, 0, 0);
             }
             WindowEvent::MouseInput {
@@ -2775,11 +2502,14 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 state.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
             }
             WindowEvent::RedrawRequested => {
-                let entered = state.profile.enter();
-                if let Err(error) = state.overlay.draw(&state.window) {
+                let entered = state.presentation.profile.enter();
+                if let Err(error) = state.presentation.overlay.draw(&state.window) {
                     eprintln!("snowglass: drawing egui composition overlay failed: {error}");
                 }
-                state.profile.record(TurnPhase::Overlay, entered);
+                state
+                    .presentation
+                    .profile
+                    .record(TurnPhase::Overlay, entered);
             }
             _ => {}
         }
@@ -2801,16 +2531,13 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             // it lands in phase with DWM instead of at an arbitrary point in
             // the interval. A clock that cannot be waited on at all reports
             // itself unhealthy, which is what turns this fallback back on.
-            if state.has_pending_surfaces() && !state.compositor_clock.is_pacing() {
+            if state.has_pending_surfaces() && !state.presentation.clock.is_pacing() {
                 state.draw_pending_surfaces();
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
-            if let Some(resize_due) = state.resize_pending_surfaces(now) {
-                deadline = deadline.min(resize_due);
-            }
-            let entered = state.profile.enter();
+            let entered = state.presentation.profile.enter();
             state.publish_input_state();
-            state.profile.record(TurnPhase::Input, entered);
+            state.presentation.profile.record(TurnPhase::Input, entered);
             state.poll_target();
             if state.game_layer.poll_runtime() {
                 let work = state.game_layer.service(&state.foreground_webview);
@@ -2820,37 +2547,25 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 // the native window has no other reason to wake.
                 deadline = deadline.min(now + Duration::from_millis(16));
             }
-            if state.overlay.repaint_due(now) {
+            if state.presentation.overlay.repaint_due(now) {
                 state.window.request_redraw();
             }
-            deadline = deadline.min(state.overlay.next_repaint());
+            deadline = deadline.min(state.presentation.overlay.next_repaint());
             // Cheap enough to reconcile every turn, which keeps pacing correct
             // no matter which path added or dropped a stream.
             state
-                .compositor_clock
+                .presentation
+                .clock
                 .set_active(!state.streams.surfaces.is_empty());
             if state.streams.work_pending {
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
-            state.profile.finish_turn(Instant::now());
-            let report = std::mem::take(&mut state.profile.report);
-            state.overlay.set_note(&report);
-            state.profile.report = report;
+            state.presentation.profile.finish_turn(Instant::now());
+            let report = std::mem::take(&mut state.presentation.profile.report);
+            state.presentation.overlay.set_note(&report);
+            state.presentation.profile.report = report;
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-    }
-}
-
-/// Drops a stream from whichever compositor owns it: its own, or the shared one.
-fn disconnect_from(
-    dedicated: &mut Option<D3d12Compositor>,
-    merged: &mut Option<D3d12Compositor>,
-    connection: u64,
-) -> Result<(), Box<dyn Error>> {
-    match (dedicated.as_mut(), merged.as_mut()) {
-        (Some(compositor), _) => Renderer::disconnect_stream(compositor, connection),
-        (None, Some(compositor)) => Renderer::disconnect_stream(compositor, connection),
-        (None, None) => Ok(()),
     }
 }
 

@@ -31,15 +31,17 @@ fn empty_interface() -> egui::FullOutput {
 }
 
 /// Final shell-supplied placement for one received surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfacePlacement {
     pub connection: u64,
     pub surface_id: u64,
     pub rectangle: Rect,
+    /// Radius of the analytic rounded-rectangle clip, in destination pixels.
+    pub corner_radius: f32,
 }
 
 /// One thing a composition pass draws, in back-to-front order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlanLayer {
     /// A received stream, drawn from the texture it was imported into.
     Surface(SurfacePlacement),
@@ -397,6 +399,7 @@ mod tests {
                 connection: 1,
                 surface_id: 2,
                 rectangle: Rect::new(0, 0, 1280, 720),
+                corner_radius: 0.0,
             }],
         );
         let messages =
@@ -419,6 +422,7 @@ mod tests {
                 connection: 1,
                 surface_id: 2,
                 rectangle: Rect::new(0, 0, 360, 640),
+                corner_radius: 0.0,
             }],
         );
         let messages =
@@ -442,6 +446,7 @@ mod tests {
                 connection: 7,
                 surface_id: 9,
                 rectangle: Rect::new(10, 20, 30, 40),
+                corner_radius: 0.0,
             }],
         );
         assert_eq!(plan.rectangle(7, 9), Some(Rect::new(10, 20, 30, 40)));
@@ -458,11 +463,13 @@ mod tests {
             connection: 1,
             surface_id: 1,
             rectangle: Rect::new(0, 0, 800, 600),
+            corner_radius: 0.0,
         };
         let above = SurfacePlacement {
             connection: 2,
             surface_id: 1,
             rectangle: Rect::new(600, 400, 200, 150),
+            corner_radius: 0.0,
         };
         let plan = CompositingPlan::layered(
             [0.0; 4],
@@ -504,6 +511,7 @@ mod tests {
             connection: 7,
             surface_id: 9,
             rectangle: Rect::new(10, 20, 30, 40),
+            corner_radius: 0.0,
         };
         let plan = CompositingPlan::new([0.0; 4], vec![placement]);
         assert_eq!(plan.layers(), [PlanLayer::Surface(placement)]);

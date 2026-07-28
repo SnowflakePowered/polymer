@@ -30,6 +30,10 @@ export type LaunchOptions = {
   webrtcBind?: string;
 };
 
+export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {
+  surfaces: Array<Omit<TrackedSurface, "attach">>;
+};
+
 export interface GameViewInstance {
   on(eventName: string, callback: (event: unknown) => void): void;
   readonly surfaces?: TrackedSurface[];

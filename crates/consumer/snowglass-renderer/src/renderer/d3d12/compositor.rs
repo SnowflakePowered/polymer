@@ -52,6 +52,10 @@ struct GpuVertex {
     position: [f32; 2],
     uv: [f32; 2],
     color: [u8; 4],
+    local: [f32; 2],
+    /// Destination width, height, corner radius, and whether sampled RGB is
+    /// straight alpha and must be premultiplied before blending.
+    clip: [f32; 4],
 }
 
 struct EguiTexture {
@@ -419,6 +423,23 @@ impl D3d12Compositor {
         )
     }
 
+    /// Creates the window-spanning composition swapchain on DXGI's default
+    /// hardware adapter. It can render chrome before any captured stream has
+    /// identified the producer adapter.
+    pub fn new_default_for_shared_composition(
+        window: &impl RenderWindow,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new_default()?,
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 1,
+            },
+            SwapchainMode::Shared,
+        )
+    }
+
     /// Creates a transparent composition swapchain suitable for an overlay
     /// visual. Its backbuffer alpha is interpreted as premultiplied alpha by
     /// DirectComposition.
@@ -475,22 +496,6 @@ impl D3d12Compositor {
         )
     }
 
-    /// Creates a composition swapchain dedicated to one received connection.
-    pub fn new_default_for_composition_stream(
-        window: &impl RenderWindow,
-        connection: u64,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::with_consumer(
-            window,
-            D3d12ConsumerDevice::new_default()?,
-            SwapchainTarget::Composition {
-                transparent: false,
-                sync_interval: 0,
-            },
-            SwapchainMode::Dedicated(connection),
-        )
-    }
-
     /// Creates an adapter-specific swapchain dedicated to one connection.
     pub fn new_for_stream(
         window: &impl RenderWindow,
@@ -501,24 +506,6 @@ impl D3d12Compositor {
             window,
             D3d12ConsumerDevice::new(adapter)?,
             swapchain_target(window)?,
-            SwapchainMode::Dedicated(connection),
-        )
-    }
-
-    /// Creates an adapter-specific composition swapchain dedicated to one
-    /// received connection.
-    pub fn new_for_composition_stream(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-        connection: u64,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::with_consumer(
-            window,
-            D3d12ConsumerDevice::new(adapter)?,
-            SwapchainTarget::Composition {
-                transparent: false,
-                sync_interval: 0,
-            },
             SwapchainMode::Dedicated(connection),
         )
     }
@@ -539,16 +526,6 @@ impl D3d12Compositor {
             },
             SwapchainMode::Shared,
         )
-    }
-
-    pub fn new_for_composition_stream_with_webrtc(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-        connection: u64,
-    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let compositor = Self::new_for_composition_stream(window, adapter, connection)?;
-        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
-        Ok((compositor, webrtc))
     }
 
     fn with_consumer(
@@ -1170,11 +1147,7 @@ impl D3d12Compositor {
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
 
-        if self
-            .surfaces
-            .iter()
-            .any(|surface| surface.display_frame.is_some())
-        {
+        if !plan.layers().is_empty() {
             self.draw_content(frame_index, plan)?;
         }
         self.draw_egui(frame_index, output.pixels_per_point, primitives)?;
@@ -1295,7 +1268,7 @@ impl D3d12Compositor {
                     let u = crop_w as f32 / surface.imported.width as f32;
                     let v = crop_h as f32 / surface.imported.height as f32;
                     Some((
-                        false,
+                        placement.corner_radius > 0.0,
                         surface.descriptor,
                         quad(
                             l,
@@ -1307,6 +1280,12 @@ impl D3d12Compositor {
                             surface.flip_y,
                             surface.quarter_turns,
                             [255; 4],
+                            [
+                                placement.rectangle.width as f32,
+                                placement.rectangle.height as f32,
+                                placement.corner_radius,
+                                0.0,
+                            ],
                         ),
                     ))
                 }
@@ -1319,7 +1298,18 @@ impl D3d12Compositor {
                     Some((
                         true,
                         layer.descriptor,
-                        quad(l, t, r, b, 1.0, 1.0, false, 0, [255; 4]),
+                        quad(
+                            l,
+                            t,
+                            r,
+                            b,
+                            1.0,
+                            1.0,
+                            false,
+                            0,
+                            [255; 4],
+                            [rectangle.width as f32, rectangle.height as f32, 0.0, 1.0],
+                        ),
                     ))
                 }
             })
@@ -1368,6 +1358,8 @@ impl D3d12Compositor {
                     ],
                     uv: [vertex.uv.x, vertex.uv.y],
                     color: vertex.color.to_array(),
+                    local: [0.0; 2],
+                    clip: [0.0; 4],
                 })
                 .collect::<Vec<_>>();
             let clip = primitive.clip_rect;
@@ -1454,10 +1446,9 @@ impl D3d12Compositor {
     /// Hands the compositor a texture to draw wherever a plan places
     /// [`PlanLayer::Chrome`] with this `id`.
     ///
-    /// `handle` is a Win32 shared handle to a premultiplied RGBA texture on
-    /// this adapter, which the compositor opens on its own device. The pixels
-    /// never leave the GPU: the shell rasterises them there and this samples
-    /// them there.
+    /// `handle` is a Win32 shared handle to Vello's straight-alpha RGBA texture
+    /// on this adapter, which the compositor opens on its own device. The pixel
+    /// shader premultiplies it before blending. Pixels never leave the GPU.
     ///
     /// The caller must have finished writing the texture before calling, since
     /// nothing here waits on the device that produced it.
@@ -1717,22 +1708,25 @@ fn quad(
     flip_y: bool,
     quarter_turns: u8,
     color: [u8; 4],
+    clip: [f32; 4],
 ) -> [GpuVertex; 6] {
-    let p = |position, uv| GpuVertex {
+    let p = |position, uv, local| GpuVertex {
         position,
         uv,
         color,
+        local,
+        clip,
     };
     let (top_v, bottom_v) = if flip_y { (v, 0.0) } else { (0.0, v) };
     let corners = [[0.0, top_v], [u, top_v], [u, bottom_v], [0.0, bottom_v]];
     let uv = |corner: usize| corners[(corner + quarter_turns as usize) % 4];
     [
-        p([l, t], uv(0)),
-        p([r, t], uv(1)),
-        p([r, b], uv(2)),
-        p([l, t], uv(0)),
-        p([r, b], uv(2)),
-        p([l, b], uv(3)),
+        p([l, t], uv(0), [0.0, 0.0]),
+        p([r, t], uv(1), [clip[0], 0.0]),
+        p([r, b], uv(2), [clip[0], clip[1]]),
+        p([l, t], uv(0), [0.0, 0.0]),
+        p([r, b], uv(2), [clip[0], clip[1]]),
+        p([l, b], uv(3), [0.0, clip[1]]),
     ]
 }
 
@@ -2000,21 +1994,59 @@ fn create_root_signature(device: &ID3D12Device) -> windows::core::Result<ID3D12R
     }
 }
 
+fn compositor_shader() -> &'static [u8] {
+    br#"
+struct VIn {
+    float2 pos : POSITION;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+    float2 local : TEXCOORD1;
+    float4 clip : TEXCOORD2;
+};
+struct VOut {
+    float4 pos : SV_POSITION;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+    float2 local : TEXCOORD1;
+    float4 clip : TEXCOORD2;
+};
+VOut vs_main(VIn v) {
+    VOut o;
+    o.pos=float4(v.pos,0,1);
+    o.uv=v.uv;
+    o.color=v.color;
+    o.local=v.local;
+    o.clip=v.clip;
+    return o;
+}
+Texture2D tex : register(t0); SamplerState samp : register(s0);
+float4 ps_main(VOut i) : SV_TARGET {
+    float4 result = tex.Sample(samp, i.uv) * i.color;
+    if (i.clip.w > 0.5) {
+        result.rgb *= result.a;
+    }
+    if (i.clip.z > 0.0) {
+        float radius = min(i.clip.z, min(i.clip.x, i.clip.y) * 0.5);
+        float2 half_size = i.clip.xy * 0.5;
+        float2 q = abs(i.local - half_size) - (half_size - radius);
+        float distance = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+        float coverage = saturate(0.5 - distance / max(fwidth(distance), 0.0001));
+        result *= coverage;
+    }
+    return result;
+}
+"#
+}
+
 fn create_pipeline(
     device: &ID3D12Device,
     root: &ID3D12RootSignature,
     alpha_blend: bool,
 ) -> windows::core::Result<ID3D12PipelineState> {
-    const SHADER: &[u8] = br#"
-struct VIn { float2 pos : POSITION; float2 uv : TEXCOORD0; float4 color : COLOR0; };
-struct VOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 color : COLOR0; };
-VOut vs_main(VIn v) { VOut o; o.pos=float4(v.pos,0,1); o.uv=v.uv; o.color=v.color; return o; }
-Texture2D tex : register(t0); SamplerState samp : register(s0);
-float4 ps_main(VOut i) : SV_TARGET { return tex.Sample(samp, i.uv) * i.color; }
-"#;
+    let shader = compositor_shader();
     unsafe {
-        let vs = compile(SHADER, b"vs_main\0", b"vs_5_0\0")?;
-        let ps = compile(SHADER, b"ps_main\0", b"ps_5_0\0")?;
+        let vs = compile(shader, b"vs_main\0", b"vs_5_0\0")?;
+        let ps = compile(shader, b"ps_main\0", b"ps_5_0\0")?;
         let input = [
             D3D12_INPUT_ELEMENT_DESC {
                 SemanticName: PCSTR(c"POSITION".as_ptr().cast()),
@@ -2033,6 +2065,22 @@ float4 ps_main(VOut i) : SV_TARGET { return tex.Sample(samp, i.uv) * i.color; }
                 SemanticName: PCSTR(c"COLOR".as_ptr().cast()),
                 Format: DXGI_FORMAT_R8G8B8A8_UNORM,
                 AlignedByteOffset: 16,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                ..Default::default()
+            },
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(c"TEXCOORD".as_ptr().cast()),
+                SemanticIndex: 1,
+                Format: DXGI_FORMAT_R32G32_FLOAT,
+                AlignedByteOffset: 20,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                ..Default::default()
+            },
+            D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(c"TEXCOORD".as_ptr().cast()),
+                SemanticIndex: 2,
+                Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                AlignedByteOffset: 28,
                 InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
                 ..Default::default()
             },
@@ -2148,7 +2196,7 @@ fn as_bytes<T>(items: &[T]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisplayLatency, UploadArena, quad};
+    use super::{DisplayLatency, UploadArena, compile, compositor_shader, quad};
     use std::time::{Duration, Instant};
 
     /// One tick of the QPC clock per millisecond, so latencies read directly.
@@ -2268,8 +2316,8 @@ mod tests {
         let first = UploadArena::placement(0, capacity, 20).expect("an empty arena fits 20 bytes");
         assert_eq!(first, 0);
 
-        // 20 bytes is one `GpuVertex`, so the next placement has to round up
-        // rather than start inside the bytes just written.
+        // An unaligned allocation makes the next placement round up rather
+        // than start inside the bytes just written.
         let second = UploadArena::placement(first + 20, capacity, 24).expect("still fits");
         assert!(second >= first + 20, "second allocation overlaps the first");
         assert_eq!(second % UploadArena::ALIGNMENT, 0);
@@ -2305,8 +2353,30 @@ mod tests {
 
     #[test]
     fn opengl_quad_reverses_texture_v() {
-        let normal = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, 0, [255; 4]);
-        let flipped = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, true, 0, [255; 4]);
+        let normal = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            0.75,
+            0.5,
+            false,
+            0,
+            [255; 4],
+            [800.0, 600.0, 0.0, 0.0],
+        );
+        let flipped = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            0.75,
+            0.5,
+            true,
+            0,
+            [255; 4],
+            [800.0, 600.0, 0.0, 0.0],
+        );
 
         assert_eq!(normal[0].uv[1], 0.0);
         assert_eq!(normal[2].uv[1], 0.5);
@@ -2315,22 +2385,86 @@ mod tests {
     }
 
     #[test]
+    fn quad_carries_destination_geometry_for_analytic_clipping() {
+        let vertices = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            1.0,
+            1.0,
+            false,
+            0,
+            [255; 4],
+            [320.0, 180.0, 12.0, 0.0],
+        );
+
+        assert_eq!(vertices[0].local, [0.0, 0.0]);
+        assert_eq!(vertices[2].local, [320.0, 180.0]);
+        assert_eq!(vertices[5].local, [0.0, 180.0]);
+        assert_eq!(vertices[0].clip, [320.0, 180.0, 12.0, 0.0]);
+    }
+
+    #[test]
+    fn merged_compositor_shader_compiles() {
+        // SAFETY: the compiler borrows these static source and entry-point
+        // buffers only for the duration of each call.
+        unsafe {
+            compile(compositor_shader(), b"vs_main\0", b"vs_5_0\0").unwrap();
+            compile(compositor_shader(), b"ps_main\0", b"ps_5_0\0").unwrap();
+        }
+    }
+
+    #[test]
     fn quarter_turns_rotate_texture_corners_counterclockwise() {
         // One counterclockwise quarter turn shows the source's top-right
         // corner at the destination's top-left.
-        let turned = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, 1, [255; 4]);
+        let turned = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            0.75,
+            0.5,
+            false,
+            1,
+            [255; 4],
+            [800.0, 600.0, 0.0, 0.0],
+        );
         assert_eq!(turned[0].uv, [0.75, 0.0]);
         assert_eq!(turned[1].uv, [0.75, 0.5]);
         assert_eq!(turned[2].uv, [0.0, 0.5]);
         assert_eq!(turned[5].uv, [0.0, 0.0]);
 
         // A half turn mirrors both axes.
-        let half = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, false, 2, [255; 4]);
+        let half = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            0.75,
+            0.5,
+            false,
+            2,
+            [255; 4],
+            [800.0, 600.0, 0.0, 0.0],
+        );
         assert_eq!(half[0].uv, [0.75, 0.5]);
         assert_eq!(half[2].uv, [0.0, 0.0]);
 
         // A flipped half turn cancels the vertical mirror.
-        let flipped_half = quad(-1.0, 1.0, 1.0, -1.0, 0.75, 0.5, true, 2, [255; 4]);
+        let flipped_half = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            0.75,
+            0.5,
+            true,
+            2,
+            [255; 4],
+            [800.0, 600.0, 0.0, 0.0],
+        );
         assert_eq!(flipped_half[0].uv, [0.75, 0.0]);
         assert_eq!(flipped_half[2].uv, [0.0, 0.5]);
     }

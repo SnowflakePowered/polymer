@@ -429,6 +429,7 @@ mod tests {
                 connection: 7,
                 surface_id: 99,
                 rectangle: Rect::new(0, 60, 800, 480),
+                corner_radius: 0.0,
             }]),
             &surfaces,
         )
@@ -475,6 +476,7 @@ mod tests {
                     connection: 7,
                     surface_id: 99,
                     rectangle: Rect::new(0, 60, 800, 480),
+                    corner_radius: 0.0,
                 }]),
                 &surfaces,
             )
@@ -518,11 +520,13 @@ mod tests {
                     connection: 7,
                     surface_id: 99,
                     rectangle: Rect::new(0, 0, 800, 480),
+                    corner_radius: 0.0,
                 },
                 SurfacePlacement {
                     connection: 8,
                     surface_id: 100,
                     rectangle: Rect::new(80, 480, 640, 480),
+                    corner_radius: 0.0,
                 },
             ]),
             &surfaces,
@@ -574,11 +578,13 @@ mod tests {
                     connection: 7,
                     surface_id: 99,
                     rectangle: Rect::new(0, 0, 800, 480),
+                    corner_radius: 0.0,
                 },
                 SurfacePlacement {
                     connection: 8,
                     surface_id: 100,
                     rectangle: Rect::new(80, 480, 640, 480),
+                    corner_radius: 0.0,
                 },
             ]),
             &surfaces,
@@ -598,11 +604,13 @@ mod tests {
                     connection: 7,
                     surface_id: 99,
                     rectangle: Rect::new(0, 0, 800, 480),
+                    corner_radius: 0.0,
                 },
                 SurfacePlacement {
                     connection: 8,
                     surface_id: 100,
                     rectangle: Rect::new(80, 480, 640, 480),
+                    corner_radius: 0.0,
                 },
             ]),
             &surfaces,
@@ -628,6 +636,7 @@ mod tests {
             connection: 7,
             surface_id: 99,
             rectangle: Rect::new(0, 60, 800, 480),
+            corner_radius: 0.0,
         }]);
         let (sender, receiver) = mpsc::channel();
         let mut routing = PointerRoutingState::new(Instant::now());

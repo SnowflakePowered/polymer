@@ -35,6 +35,9 @@ pub struct GamePlacement {
     /// belongs in this box.
     pub source_id: u64,
     pub rect: Rect,
+    /// Corner radius, in physical pixels, applied by the merged GPU
+    /// compositor to the guest texture.
+    pub corner_radius: f32,
     /// Index of the band painted immediately below this view. The view is
     /// composited above that band and below the next one.
     pub band: usize,
@@ -168,6 +171,7 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
             self.placements.push(GamePlacement {
                 source_id: custom.source_id,
                 rect: transform.transform_rect_bbox(shape.bounding_box()),
+                corner_radius: 0.0,
                 band: self.current,
             });
             self.advance_band();
