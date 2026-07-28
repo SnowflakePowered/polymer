@@ -20,6 +20,7 @@ snowglass-consumer-vulkan = { path = "../snowglass-consumer-vulkan" }
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-protocol.workspace = true
+snowglass-runtime = { path = "../../snowglass-runtime" }
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 webrtc = "0.14.0"
 webrtc-ice = "0.14.0"
@@ -29,3 +30,6 @@ winit = "0.30.13"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+parking_lot.workspace = true

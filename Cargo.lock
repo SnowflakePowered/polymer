@@ -302,7 +302,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 
@@ -888,6 +888,15 @@ checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
 
 [[package]]
 name = "block-buffer"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4152116fd6e9dadb291ae18fc1ec3575ed6d84c29642d97890f4b4a3417297e4"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
+name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
@@ -1350,8 +1359,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -1934,6 +1945,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
+name = "crossfire"
+version = "3.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "111ce8f7abfbac38b4bc4f32a3a2dda1a8034b873c90c7899f302cc9dbbc05ec"
+dependencies = [
+ "crossbeam-utils",
+ "futures-core",
+ "parking_lot",
+ "pointers",
+ "smallvec",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2309,7 +2333,7 @@ dependencies = [
  "hyper-util",
  "log",
  "rusqlite",
- "sha2",
+ "sha2 0.10.9",
  "slab",
  "thiserror 2.0.18",
  "tokio",
@@ -2337,7 +2361,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "sys_traits",
  "thiserror 2.0.18",
  "url",
@@ -2483,7 +2507,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "sha1",
- "sha2",
+ "sha2 0.10.9",
  "sha3",
  "signature 2.2.0",
  "spki 0.7.3",
@@ -2873,7 +2897,7 @@ dependencies = [
  "quinn",
  "rustls-tokio-stream",
  "serde",
- "sha2",
+ "sha2 0.10.9",
  "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
@@ -2973,7 +2997,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "k256",
- "md-5",
+ "md-5 0.10.6",
  "md4",
  "num-bigint",
  "num-bigint-dig",
@@ -2992,7 +3016,7 @@ dependencies = [
  "sec1 0.7.3",
  "serde",
  "sha1",
- "sha2",
+ "sha2 0.10.9",
  "sha3",
  "sm3",
  "spki 0.7.3",
@@ -3294,7 +3318,7 @@ dependencies = [
  "rustyline",
  "same-file",
  "serde",
- "sha2",
+ "sha2 0.10.9",
  "sys_traits",
  "thiserror 2.0.18",
  "tokio",
@@ -3745,6 +3769,15 @@ checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "digest"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3dd60d1080a57a05ab032377049e0591415d2b31afd7028356dbf3cc6dcb066"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
+name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
@@ -3959,7 +3992,7 @@ dependencies = [
  "num-traits",
  "pkcs8 0.10.2",
  "rfc6979",
- "sha2",
+ "sha2 0.10.9",
  "signature 2.2.0",
  "zeroize",
 ]
@@ -3992,7 +4025,7 @@ dependencies = [
  "sec1 0.7.3",
  "serde",
  "sha1",
- "sha2",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "webrtc-util",
@@ -4083,7 +4116,7 @@ dependencies = [
  "ed25519",
  "rand_core 0.6.4",
  "serde",
- "sha2",
+ "sha2 0.10.9",
  "signature 2.2.0",
  "subtle",
  "zeroize",
@@ -4304,6 +4337,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "event-listener"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67b215c49b2b248c855fb73579eb1f4f26c38ffdc12973e20e07b91d78d5646e"
+dependencies = [
+ "concurrent-queue",
+ "parking",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "exe"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cabca811b821f20c9e6f6fad5b04cad9c7661a506f1ba70c7726d7c136432c60"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "chrono",
+ "hex",
+ "md-5 0.9.1",
+ "num-traits",
+ "pkbuffer",
+ "sha-1",
+ "sha2 0.9.9",
+ "widestring",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4454,7 +4516,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f5626bf5534df4ebdbd2536465d7eaa8a9dc2cdeb7e036e0ecf291dcc80ffb6"
 dependencies = [
  "rand_core 0.6.4",
- "sha2",
+ "sha2 0.10.9",
  "sha3",
  "zeroize",
 ]
@@ -6243,7 +6305,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve 0.13.8",
  "once_cell",
- "sha2",
+ "sha2 0.10.9",
  "signature 2.2.0",
 ]
 
@@ -6634,6 +6696,17 @@ name = "matches"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
+
+[[package]]
+name = "md-5"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5a279bb9607f9f53c22d496eade00d138d1bdcccd07d74650387cf94942a15"
+dependencies = [
+ "block-buffer 0.9.0",
+ "digest 0.9.0",
+ "opaque-debug",
+]
 
 [[package]]
 name = "md-5"
@@ -7778,7 +7851,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve 0.13.8",
  "primeorder",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -7790,7 +7863,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve 0.13.8",
  "primeorder",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -7802,7 +7875,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve 0.13.8",
  "primeorder",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -7816,7 +7889,7 @@ dependencies = [
  "elliptic-curve 0.13.8",
  "primeorder",
  "rand_core 0.6.4",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -7862,6 +7935,12 @@ dependencies = [
  "either",
  "par-core",
 ]
+
+[[package]]
+name = "parking"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "parking_lot"
@@ -8144,6 +8223,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
+name = "pkbuffer"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce05469f252b6a62659dcc93728c8f35ff8efe145234f075e1fd41cb90e6fa7"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8165,7 +8253,7 @@ dependencies = [
  "der 0.7.10",
  "pbkdf2",
  "scrypt",
- "sha2",
+ "sha2 0.10.9",
  "spki 0.7.3",
 ]
 
@@ -8215,6 +8303,12 @@ dependencies = [
  "flate2",
  "miniz_oxide",
 ]
+
+[[package]]
+name = "pointers"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dcdc93847ad24990939cce6e1804361e903efcb5f99daa5abd87943a9d6d7ba"
 
 [[package]]
 name = "polling"
@@ -9389,7 +9483,7 @@ checksum = "0516a385866c09368f0b5bcd1caff3366aace790fcd46e2bb032697bb172fd1f"
 dependencies = [
  "pbkdf2",
  "salsa20",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -9685,6 +9779,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha-1"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99cd6713db3cf16b6c84e06321e049a9b9f699826e16096d23bbcc44d15d51a6"
+dependencies = [
+ "block-buffer 0.9.0",
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.9.0",
+ "opaque-debug",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9693,6 +9800,19 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d58a1e1bf39749807d89cf2d98ac2dfa0ff1cb3faa38fbb64dd88ac8013d800"
+dependencies = [
+ "block-buffer 0.9.0",
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.9.0",
+ "opaque-debug",
 ]
 
 [[package]]
@@ -10178,6 +10298,8 @@ dependencies = [
 name = "snowglass-input-dinput"
 version = "0.1.0"
 dependencies = [
+ "dashmap 6.1.0",
+ "parking_lot",
  "snowglass-input",
  "snowglass-ipc",
  "snowglass-platform-windows",
@@ -10223,6 +10345,7 @@ dependencies = [
 name = "snowglass-platform-windows"
 version = "0.1.0"
 dependencies = [
+ "exe",
  "ib-hook",
  "snowglass-hook",
  "snowglass-protocol",
@@ -10312,6 +10435,7 @@ dependencies = [
  "egui-ash-renderer",
  "log",
  "openh264",
+ "parking_lot",
  "raw-window-handle",
  "regex",
  "serde_json",
@@ -10320,6 +10444,7 @@ dependencies = [
  "snowglass-input",
  "snowglass-ipc",
  "snowglass-protocol",
+ "snowglass-runtime",
  "tokio",
  "webrtc",
  "webrtc-ice",
@@ -10332,9 +10457,17 @@ dependencies = [
 name = "snowglass-runtime"
 version = "0.1.0"
 dependencies = [
- "snowglass-api",
+ "crossfire",
+ "dashmap 6.1.0",
+ "parking_lot",
+ "serde_json",
+ "snowglass-hook",
  "snowglass-input",
  "snowglass-ipc",
+ "snowglass-platform-windows",
+ "snowglass-protocol",
+ "tempfile",
+ "watchable",
 ]
 
 [[package]]
@@ -10348,6 +10481,8 @@ dependencies = [
  "blitz-paint",
  "blitz-traits",
  "clap",
+ "crossfire",
+ "dashmap 6.1.0",
  "deno_core",
  "deno_runtime",
  "deno_semver",
@@ -10355,6 +10490,7 @@ dependencies = [
  "egui-winit",
  "kurbo 0.12.0",
  "node_resolver",
+ "parking_lot",
  "peniko",
  "pollster",
  "raw-window-handle",
@@ -10363,13 +10499,13 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "snowglass-hook",
  "snowglass-input",
  "snowglass-input-dinput",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",
  "snowglass-renderer",
+ "snowglass-runtime",
  "stylo",
  "swc",
  "swc_common 24.0.0",
@@ -10399,24 +10535,26 @@ name = "snowglass-viewer"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "crossfire",
  "cssparser 0.37.0",
  "cssparser-color",
+ "dashmap 6.1.0",
  "egui",
  "egui-winit",
  "log",
+ "parking_lot",
  "raw-window-handle",
  "regex",
  "serde_json",
- "snowglass-hook",
  "snowglass-input",
  "snowglass-input-dinput",
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",
  "snowglass-renderer",
+ "snowglass-runtime",
  "snowglass-ui",
  "taffy 0.12.2",
- "tempfile",
  "tokio",
  "webrtc",
  "windows 0.61.3",
@@ -10721,7 +10859,7 @@ dependencies = [
  "base64 0.22.1",
  "crc",
  "lazy_static",
- "md-5",
+ "md-5 0.10.6",
  "rand 0.9.5",
  "ring",
  "subtle",
@@ -12914,7 +13052,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "log",
- "md-5",
+ "md-5 0.10.6",
  "portable-atomic",
  "rand 0.9.5",
  "ring",
@@ -13387,6 +13525,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "watchable"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45b42a2f611916b5965120a9cde2b60f2db4454826dd9ad5e6f47c24a5b3b259"
+dependencies = [
+ "event-listener",
+ "futures-util",
+ "parking_lot",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13697,7 +13847,7 @@ dependencies = [
  "sdp",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "smol_str",
  "stun",
  "thiserror 1.0.69",
@@ -14911,7 +15061,7 @@ dependencies = [
  "once_cell",
  "percent-encoding",
  "raw-window-handle",
- "sha2",
+ "sha2 0.10.9",
  "soup3",
  "tao-macros",
  "thiserror 2.0.18",

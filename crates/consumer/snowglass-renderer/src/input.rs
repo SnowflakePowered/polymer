@@ -6,9 +6,9 @@ use snowglass_input::mouse::{
         aspect_fit, vertical_surface_layout,
     },
 };
-use snowglass_ipc::Message;
+use snowglass_ipc::{Message, MessageSink};
 use snowglass_protocol::{FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind};
-use std::{sync::mpsc, time::Instant};
+use std::time::Instant;
 
 #[derive(Clone, Copy)]
 pub struct PointerSendEvent {
@@ -72,7 +72,7 @@ impl PointerRoutingState {
         wheel_vertical: i32,
         presentation: &Presentation,
         plan: &CompositingPlan,
-        sender: &mpsc::Sender<Message>,
+        sender: &impl MessageSink,
     ) -> bool {
         let captured = self.captured_connection;
         let Some(destination) = map_pointer(presentation, plan, self.cursor, captured) else {
@@ -121,26 +121,24 @@ impl PointerRoutingState {
             .y
             .round()
             .clamp(0.0, f64::from(height.saturating_sub(1))) as i32;
-        let sent = sender
-            .send(Message::PointerInput(PointerInput {
-                surface_id: destination.surface_id,
-                target_window: destination.target_window,
-                frame_number: destination.frame.frame_number,
-                source: PointerSource::Mouse,
-                phase,
-                pointer_id: 0,
-                x,
-                y,
-                coordinate_width: width,
-                coordinate_height: height,
-                button,
-                buttons: self.buttons,
-                wheel_horizontal,
-                wheel_vertical,
-                timestamp: self.started.elapsed().as_millis() as u32,
-                sequence: self.sequence,
-            }))
-            .is_ok();
+        let sent = sender.send_message(Message::PointerInput(PointerInput {
+            surface_id: destination.surface_id,
+            target_window: destination.target_window,
+            frame_number: destination.frame.frame_number,
+            source: PointerSource::Mouse,
+            phase,
+            pointer_id: 0,
+            x,
+            y,
+            coordinate_width: width,
+            coordinate_height: height,
+            button,
+            buttons: self.buttons,
+            wheel_horizontal,
+            wheel_vertical,
+            timestamp: self.started.elapsed().as_millis() as u32,
+            sequence: self.sequence,
+        }));
         if sent {
             self.sent_count = self.sent_count.wrapping_add(1);
             self.last_sent = Some(PointerSendEvent {
@@ -174,7 +172,7 @@ impl PointerRoutingState {
         connection: u64,
         presentation: &Presentation,
         plan: &CompositingPlan,
-        sender: &mpsc::Sender<Message>,
+        sender: &impl MessageSink,
     ) -> Option<u32> {
         if self.captured_connection != Some(connection) {
             return None;
@@ -384,7 +382,25 @@ fn pointer_button_bit(button: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::SurfacePlacement;
+    use parking_lot::Mutex;
     use snowglass_protocol::PresentationTransform;
+    use std::{collections::VecDeque, sync::Arc};
+
+    #[derive(Clone, Default)]
+    struct MessageCollector(Arc<Mutex<VecDeque<Message>>>);
+
+    impl MessageSink for MessageCollector {
+        fn send_message(&self, message: Message) -> bool {
+            self.0.lock().push_back(message);
+            true
+        }
+    }
+
+    impl MessageCollector {
+        fn recv(&self) -> Message {
+            self.0.lock().pop_front().expect("expected message")
+        }
+    }
 
     fn frame(transform: PresentationTransform) -> FrameReady {
         FrameReady {
@@ -638,7 +654,7 @@ mod tests {
             rectangle: Rect::new(0, 60, 800, 480),
             corner_radius: 0.0,
         }]);
-        let (sender, receiver) = mpsc::channel();
+        let sender = MessageCollector::default();
         let mut routing = PointerRoutingState::new(Instant::now());
         routing.set_cursor(200.0, 420.0);
         assert!(routing.send(
@@ -650,7 +666,7 @@ mod tests {
             &plan,
             &sender,
         ));
-        let Message::PointerInput(down) = receiver.recv().expect("button event") else {
+        let Message::PointerInput(down) = sender.recv() else {
             panic!("expected pointer input");
         };
         assert_eq!((down.x, down.y, down.buttons), (320, 552, 1));
@@ -664,7 +680,7 @@ mod tests {
 
         routing.set_cursor(-100.0, -100.0);
         assert!(routing.send(PointerPhase::Move, 0, 0, 0, &presentation, &plan, &sender,));
-        let Message::PointerInput(moved) = receiver.recv().expect("captured move") else {
+        let Message::PointerInput(moved) = sender.recv() else {
             panic!("expected pointer input");
         };
         assert_eq!((moved.x, moved.y), (80, 120));
@@ -678,7 +694,7 @@ mod tests {
             &plan,
             &sender,
         ));
-        let Message::PointerInput(up) = receiver.recv().expect("button release") else {
+        let Message::PointerInput(up) = sender.recv() else {
             panic!("expected pointer input");
         };
         assert_eq!(up.buttons, 0);

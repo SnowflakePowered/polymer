@@ -5,9 +5,17 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-snowglass-api.workspace = true
+crossfire.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+snowglass-hook.workspace = true
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
+snowglass-platform-windows.workspace = true
+snowglass-protocol.workspace = true
+tempfile.workspace = true
+watchable.workspace = true
 
 [lints]
 workspace = true

@@ -1,31 +1,24 @@
-use crate::api::LaunchOptions;
+use crate::{EmulatorConfig, HookBackend};
 use snowglass_hook::config;
 use snowglass_platform_windows::{
     InjectionLibrary, TargetProcess, architecture_artifact_dir, executable_architecture,
 };
-use snowglass_renderer::cli::HookBackend;
 use std::{ffi::OsString, path::Path};
 
-pub fn launch(options: &LaunchOptions, session: &str) -> std::io::Result<TargetProcess> {
-    let target = options.target();
-    let command = &options.command;
-    let artifact_root = std::env::current_exe()?
-        .parent()
-        .ok_or_else(|| std::io::Error::other("shell executable has no parent directory"))?
-        .to_path_buf();
-    let target_architecture = executable_architecture(Path::new(command)).ok();
+pub(crate) fn launch(config: &EmulatorConfig) -> std::io::Result<TargetProcess> {
+    let target_architecture = executable_architecture(Path::new(&config.command[0])).ok();
     let artifact_dir = target_architecture
-        .map(|architecture| architecture_artifact_dir(&artifact_root, architecture))
-        .unwrap_or_else(|| artifact_root.clone());
-    let vulkan_manifest = options
-        .hook
-        .contains(&crate::api::GraphicsHook::Vulkan)
+        .map(|architecture| architecture_artifact_dir(&config.artifact_root, architecture))
+        .unwrap_or_else(|| config.artifact_root.clone());
+    let vulkan_manifest = config
+        .hooks
+        .contains(&HookBackend::Vulkan)
         .then(|| {
             create_vulkan_layer_manifest(&artifact_dir.join("snowglass_hook_vulkan_layer.dll"))
         })
         .transpose()?;
 
-    let mut environment = hook_environment(options, session, &artifact_root);
+    let mut environment = hook_environment(config);
     let sdl2_runtime = artifact_dir.join("SDL2.dll");
     let sdl3_runtime = artifact_dir.join("SDL3.dll");
     if std::env::var_os("SDL_DYNAMIC_API").is_none() && sdl2_runtime.is_file() {
@@ -51,86 +44,96 @@ pub fn launch(options: &LaunchOptions, session: &str) -> std::io::Result<TargetP
         ));
     }
 
-    let hooks = options
-        .hook
-        .iter()
-        .copied()
-        .map(HookBackend::from)
-        .collect::<Vec<_>>();
-    let libraries = hook_libraries(&hooks, options.isolated);
+    let libraries = hook_libraries(&config.hooks, config.isolate);
     let mut process = TargetProcess::launch(
-        &target,
-        &artifact_root,
+        &config.command,
+        &config.artifact_root,
         &environment,
-        options.isolated.then_some(session),
+        config.isolate.then_some(&config.session),
         &libraries,
     )?;
     if let Some(manifest) = vulkan_manifest {
         process.retain(manifest);
     }
-    eprintln!(
-        "snowglass: launched target process {} with {} graphics hook(s)",
-        process.id(),
-        hooks.len()
-    );
     Ok(process)
 }
 
-fn hook_environment(
-    options: &LaunchOptions,
-    session: &str,
-    artifact_root: &Path,
-) -> Vec<(OsString, OsString)> {
-    let layouts = options
-        .gamepad_mapping
-        .iter()
-        .map(|gamepad| gamepad.layout.as_str())
-        .collect::<Vec<_>>();
+fn hook_environment(runtime: &EmulatorConfig) -> Vec<(OsString, OsString)> {
     let mut environment = vec![
-        (OsString::from(config::SESSION), OsString::from(session)),
+        (
+            OsString::from(config::SESSION),
+            OsString::from(&runtime.session),
+        ),
         (
             OsString::from(config::STONE_LAYOUTS),
-            OsString::from(layouts.join(",")),
+            OsString::from(runtime.gamepad_layouts.join(",")),
         ),
         (
             OsString::from(config::SDL_GAMEPADS),
-            OsString::from(layouts.len().to_string()),
+            OsString::from(runtime.gamepad_layouts.len().to_string()),
         ),
         (
             OsString::from(config::LAYER_LOG_FILE),
-            artifact_root.join("snowglass-layer.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-layer.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::DINPUT_LOG_FILE),
-            artifact_root.join("snowglass-dinput.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-dinput.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::WIN32_LOG_FILE),
-            artifact_root.join("snowglass-win32.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-win32.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::SDL_LOG_FILE),
-            artifact_root.join("snowglass-sdl.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-sdl.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::DXGI_LOG_FILE),
-            artifact_root.join("snowglass-dxgi.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-dxgi.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::D3D11_LOG_FILE),
-            artifact_root.join("snowglass-d3d11.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-d3d11.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::D3D12_LOG_FILE),
-            artifact_root.join("snowglass-d3d12.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-d3d12.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::OPENGL_LOG_FILE),
-            artifact_root.join("snowglass-opengl.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-opengl.log")
+                .into_os_string(),
         ),
         (
             OsString::from(config::GDI_LOG_FILE),
-            artifact_root.join("snowglass-gdi.log").into_os_string(),
+            runtime
+                .artifact_root
+                .join("snowglass-gdi.log")
+                .into_os_string(),
         ),
         (OsString::from("SDL_JOYSTICK_HIDAPI"), OsString::from("0")),
         (
@@ -145,7 +148,13 @@ fn hook_environment(
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if !options.surfaces.is_empty() {
+    if let Some(database) = &runtime.stone_database {
+        environment.push((
+            OsString::from(config::STONE_DATABASE),
+            database.as_os_str().to_owned(),
+        ));
+    }
+    if runtime.tracking_enabled {
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGET),
             OsString::from("1"),
@@ -153,28 +162,40 @@ fn hook_environment(
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGETS),
             OsString::from(
-                options
-                    .surfaces
+                runtime
+                    .tracked_surfaces
                     .iter()
-                    .map(|target| target.index.to_string())
+                    .map(|surface| surface.render_target_index.to_string())
                     .collect::<Vec<_>>()
                     .join(","),
             ),
         ));
-        let patterns = options
-            .surfaces
+        if runtime
+            .tracked_surfaces
             .iter()
-            .map(|target| target.selector.as_deref())
-            .collect::<Vec<_>>();
-        if patterns.iter().any(Option::is_some) {
+            .any(|surface| surface.window_pattern.is_some())
+        {
+            let patterns = runtime
+                .tracked_surfaces
+                .iter()
+                .map(|surface| surface.window_pattern.as_deref())
+                .collect::<Vec<_>>();
             environment.push((
                 OsString::from(config::TRACK_RENDER_TARGET_SURFACE_PATTERNS),
                 OsString::from(
-                    serde_json::to_string(&patterns)
-                        .expect("render-target pattern serialization cannot fail"),
+                    serde_json::to_string(&patterns).expect("surface patterns always serialize"),
                 ),
             ));
         }
+    }
+    if runtime.tracking_enabled && runtime.graph_tracking {
+        environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
+    }
+    if runtime.force_keyed_mutex {
+        environment.push((
+            OsString::from(config::FORCE_KEYED_MUTEX),
+            OsString::from("1"),
+        ));
     }
     environment
 }

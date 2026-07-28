@@ -1,6 +1,5 @@
 //! Native Snowglass rendering and WebRTC publishing.
 
-pub mod capture;
 pub mod cli;
 pub mod debug;
 pub mod input;

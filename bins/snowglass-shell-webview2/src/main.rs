@@ -6,7 +6,6 @@ mod composition;
 mod game_layer;
 mod game_layer_state;
 mod input;
-mod launch;
 
 use api::{LaunchOptions, parse_input_binding};
 use cli::ShellOptions;
@@ -14,21 +13,23 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
+use crossfire::oneshot::{self, RxOneshot, TxOneshot};
+use dashmap::DashMap;
 use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory};
 use game_layer_state::{GameLayerAction, GameLayerState, GameLayerWork};
 use input::InputTransport;
+use parking_lot::Mutex;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_input::{
     mouse::{PointerPhase, layout::Rect},
     provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
 };
 use snowglass_input_dinput::DirectInputForwarder;
-use snowglass_platform_windows::{TargetProcess, performance_counter, performance_frequency};
+use snowglass_platform_windows::{performance_counter, performance_frequency};
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, DisplayLatencyReport, Extent, PlanLayer, Renderer,
     SurfacePlacement,
-    capture::{Capture, CaptureEvent, ConsumerPreference},
     cli::ViewerApi,
     debug::{
         DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
@@ -128,6 +129,17 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
 /// event loop, and the WebView2 host that shares this thread with it.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
+
+enum CaptureEvent {
+    Stream(u64, snowglass_ipc::StreamReady, TxOneshot<bool>),
+    Frame(u64, snowglass_protocol::FrameReady),
+    Disconnected(u64),
+}
+
+struct PendingCaptureOffer {
+    offer: snowglass_runtime::SurfaceOffer,
+    response: RxOneshot<bool>,
+}
 
 /// Where an event-loop turn's wall time goes.
 ///
@@ -261,6 +273,126 @@ const DOM_MK_XBUTTON2: u32 = 0x0040;
 const DOM_MOUSE_BUTTONS: u32 =
     DOM_MK_LBUTTON | DOM_MK_RBUTTON | DOM_MK_MBUTTON | DOM_MK_XBUTTON1 | DOM_MK_XBUTTON2;
 
+#[derive(Clone, Default)]
+struct RuntimeCaptureAdapter {
+    events: Arc<Mutex<Option<snowglass_runtime::SurfaceEventReceiver>>>,
+    frames: Arc<DashMap<u64, snowglass_runtime::SurfaceFrameReceiver>>,
+    connections: Arc<DashMap<snowglass_runtime::TrackedSurfaceId, u64>>,
+    replacements: Arc<DashMap<u64, u64>>,
+    pending: Arc<DashMap<u64, PendingCaptureOffer>>,
+}
+
+impl RuntimeCaptureAdapter {
+    fn attach(&self, instance: &snowglass_runtime::EmulatorInstance) {
+        *self.events.lock() = Some(instance.subscribe_surfaces());
+    }
+
+    fn detach(&self) {
+        *self.events.lock() = None;
+        self.frames.clear();
+        self.connections.clear();
+        self.replacements.clear();
+        self.pending.clear();
+    }
+
+    fn try_recv(&self) -> Result<CaptureEvent, crossfire::TryRecvError> {
+        self.resolve_offers();
+        let event = self
+            .events
+            .lock()
+            .as_ref()
+            .and_then(|events| events.try_recv().ok());
+        if let Some(event) = event {
+            return match event {
+                snowglass_runtime::SurfaceEvent::Offered(offer) => {
+                    let connection = offer.connection_id();
+                    let stream = *offer.stream();
+                    let (accepted, response) = oneshot::oneshot();
+                    self.pending
+                        .insert(connection, PendingCaptureOffer { offer, response });
+                    Ok(CaptureEvent::Stream(connection, stream, accepted))
+                }
+                snowglass_runtime::SurfaceEvent::ReconfigureOffered { offer, .. } => {
+                    let connection = offer.connection_id();
+                    let stream = *offer.stream();
+                    let id = offer.id();
+                    if let Some(previous) = self.connections.get(&id) {
+                        self.replacements.insert(connection, *previous);
+                    }
+                    let (accepted, response) = oneshot::oneshot();
+                    self.pending
+                        .insert(connection, PendingCaptureOffer { offer, response });
+                    Ok(CaptureEvent::Stream(connection, stream, accepted))
+                }
+                snowglass_runtime::SurfaceEvent::Removed { id } => {
+                    let connection = self
+                        .connections
+                        .remove(&id)
+                        .map_or(0, |(_, connection)| connection);
+                    self.frames.remove(&connection);
+                    Ok(CaptureEvent::Disconnected(connection))
+                }
+            };
+        }
+        for mut receiver in self.frames.iter_mut() {
+            if let Ok(Some(update)) = receiver.value_mut().try_next_frame() {
+                return Ok(CaptureEvent::Frame(*receiver.key(), update.frame));
+            }
+        }
+        Err(crossfire::TryRecvError::Empty)
+    }
+
+    fn revoke(&self, connection: u64) {
+        self.frames.remove(&connection);
+    }
+
+    fn forget(&self, _connection: u64) {}
+
+    fn take_replacement(&self, connection: u64) -> Option<u64> {
+        self.replacements
+            .remove(&connection)
+            .map(|(_, previous)| previous)
+    }
+
+    fn resolve_offers(&self) {
+        let resolved = {
+            let ready = self
+                .pending
+                .iter_mut()
+                .filter_map(|mut pending| {
+                    pending
+                        .value_mut()
+                        .response
+                        .try_recv()
+                        .ok()
+                        .map(|accepted| (*pending.key(), accepted))
+                })
+                .collect::<Vec<_>>();
+            ready
+                .into_iter()
+                .filter_map(|(connection, accepted)| {
+                    self.pending
+                        .remove(&connection)
+                        .map(|(_, pending)| (connection, accepted, pending.offer))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (connection, accepted, offer) in resolved {
+            if !accepted {
+                offer.reject();
+                continue;
+            }
+            let id = offer.id();
+            if let Ok(surface) = offer.accept() {
+                self.frames.insert(connection, surface.subscribe_frames());
+                if let Some(previous) = self.connections.insert(id, connection) {
+                    self.frames.remove(&previous);
+                }
+            }
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WebRenderTarget {
@@ -270,6 +402,7 @@ struct WebRenderTarget {
     height: u32,
 }
 
+#[derive(Clone)]
 struct CapturedSurface {
     index: u32,
     preferred_width: u32,
@@ -510,10 +643,11 @@ impl EguiOverlay {
 /// deadline at random. Waking on the compositor clock instead puts the retry in
 /// phase with DWM, giving each frame a full interval of headroom.
 struct CompositorClock {
-    waiter: std::thread::Thread,
+    worker: Option<std::thread::JoinHandle<()>>,
     active: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
     tick_pending: Arc<AtomicBool>,
+    stopping: Arc<AtomicBool>,
 }
 
 impl CompositorClock {
@@ -521,9 +655,11 @@ impl CompositorClock {
         let active = Arc::new(AtomicBool::new(false));
         let healthy = Arc::new(AtomicBool::new(true));
         let tick_pending = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::new(AtomicBool::new(false));
         let thread_active = Arc::clone(&active);
         let thread_healthy = Arc::clone(&healthy);
         let thread_tick_pending = Arc::clone(&tick_pending);
+        let thread_stopping = Arc::clone(&stopping);
         let handle = std::thread::Builder::new()
             .name("snowglass-compositor-clock".to_owned())
             .spawn(move || {
@@ -532,7 +668,13 @@ impl CompositorClock {
                     // Park instead of waking once per refresh for no reason;
                     // `park` may return spuriously, so re-check the flag.
                     while !thread_active.load(Ordering::Acquire) {
+                        if thread_stopping.load(Ordering::Acquire) {
+                            return;
+                        }
                         std::thread::park();
+                    }
+                    if thread_stopping.load(Ordering::Acquire) {
+                        return;
                     }
                     // SAFETY: the call reads the process-wide compositor clock
                     // and is passed no handles to borrow.
@@ -541,6 +683,9 @@ impl CompositorClock {
                         // Fall back to timer pacing rather than spinning on a
                         // clock this session cannot wait on.
                         thread_healthy.store(false, Ordering::Release);
+                        return;
+                    }
+                    if thread_stopping.load(Ordering::Acquire) {
                         return;
                     }
                     // With no handles supplied, a clock tick is the first (and
@@ -558,17 +703,21 @@ impl CompositorClock {
                 }
             })?;
         Ok(Self {
-            waiter: handle.thread().clone(),
+            worker: Some(handle),
             active,
             healthy,
             tick_pending,
+            stopping,
         })
     }
 
     /// Paces the event loop only while streams are on screen.
     fn set_active(&self, active: bool) {
-        if self.active.swap(active, Ordering::AcqRel) != active && active {
-            self.waiter.unpark();
+        if self.active.swap(active, Ordering::AcqRel) != active
+            && active
+            && let Some(worker) = &self.worker
+        {
+            worker.thread().unpark();
         }
     }
 
@@ -583,8 +732,19 @@ impl CompositorClock {
     }
 }
 
+impl Drop for CompositorClock {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        self.active.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
 struct StreamState {
-    capture: Capture,
+    capture: RuntimeCaptureAdapter,
     wake_pending: Arc<AtomicBool>,
     dirty: Arc<AtomicBool>,
     work_pending: bool,
@@ -609,7 +769,8 @@ struct ShellInputState {
 
 struct GameSessionState {
     session: String,
-    target: Option<TargetProcess>,
+    target: Option<snowglass_runtime::EmulatorInstance>,
+    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     active: Option<ActiveGame>,
     pending_cli_launch: Option<LaunchOptions>,
 }
@@ -761,22 +922,12 @@ impl ShellState {
         composition.set_egui_overlay_content(&overlay.content()?)?;
         overlay.draw(&window)?;
 
-        let input = InputTransport::bind(&session)?;
+        let input = InputTransport::runtime();
         let input_provider = None;
         let control_sender = input.control_sender();
-        let wake_proxy = proxy.clone();
         let capture_wake_pending = Arc::new(AtomicBool::new(false));
         let capture_dirty = Arc::new(AtomicBool::new(false));
-        let capture_wake_pending_for_thread = Arc::clone(&capture_wake_pending);
-        let capture_dirty_for_thread = Arc::clone(&capture_dirty);
-        let capture = Capture::bind_with_waker(&session, ConsumerPreference::D3d12, move || {
-            capture_dirty_for_thread.store(true, Ordering::Release);
-            if !capture_wake_pending_for_thread.swap(true, Ordering::AcqRel)
-                && wake_proxy.send_event(UserEvent::WakeCapture).is_err()
-            {
-                capture_wake_pending_for_thread.store(false, Ordering::Release);
-            }
-        })?;
+        let capture = RuntimeCaptureAdapter::default();
         let compositor_clock = CompositorClock::spawn(proxy.clone())?;
         let target = None;
 
@@ -808,6 +959,7 @@ impl ShellState {
             game: GameSessionState {
                 session,
                 target,
+                proxy,
                 active: None,
                 pending_cli_launch,
             },
@@ -960,58 +1112,40 @@ impl ShellState {
             return;
         }
         self.emit_instance_event(&instance_id, "start", &serde_json::Value::Null);
-        let provider = if options.gamepad_mapping.is_empty() {
-            Ok(None)
+        let provider_config = if options.gamepad_mapping.is_empty() {
+            None
         } else {
             let mut mappings = options.gamepad_mapping.iter().collect::<Vec<_>>();
             mappings.sort_by_key(|mapping| mapping.slot);
-            self.input
-                .transport
-                .start_provider(Sdl3ProviderConfig {
-                    slots: mappings
-                        .into_iter()
-                        .map(|mapping| SlotConfig {
-                            selector: mapping.selector(),
-                            layout_id: mapping.layout.clone(),
-                            force_mouse: mapping.mouse,
-                        })
-                        .collect(),
-                    stone_database: None,
-                    gamecontroller_database: None,
-                    keyboard_mapping_directory: None,
-                })
-                .map(Some)
+            Some(Sdl3ProviderConfig {
+                slots: mappings
+                    .into_iter()
+                    .map(|mapping| SlotConfig {
+                        selector: mapping.selector(),
+                        layout_id: mapping.layout.clone(),
+                        force_mouse: mapping.mouse,
+                    })
+                    .collect(),
+                stone_database: None,
+                gamecontroller_database: None,
+                keyboard_mapping_directory: None,
+            })
         };
-        let provider = match provider {
-            Ok(provider) => provider,
-            Err(error) => {
-                self.emit_instance_event(
-                    &instance_id,
-                    "error",
-                    &serde_json::json!({ "message": error }),
-                );
-                self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
-                return;
-            }
-        };
-        if let Some(provider) = &provider {
-            for mapping in &options.gamepad_mapping {
-                for (target, source) in &mapping.mapping {
-                    match parse_input_binding(source) {
-                        Ok(binding) => provider.set_binding(mapping.slot, target.clone(), binding),
-                        Err(error) => {
-                            self.emit_instance_event(
-                                &instance_id,
-                                "error",
-                                &serde_json::json!({ "message": error }),
-                            );
-                            self.emit_instance_event(
-                                &instance_id,
-                                "closed",
-                                &serde_json::Value::Null,
-                            );
-                            return;
-                        }
+        let mut gamepad_bindings = Vec::new();
+        for mapping in &options.gamepad_mapping {
+            for (target, source) in &mapping.mapping {
+                match parse_input_binding(source) {
+                    Ok(binding) => {
+                        gamepad_bindings.push((mapping.slot, target.clone(), binding));
+                    }
+                    Err(error) => {
+                        self.emit_instance_event(
+                            &instance_id,
+                            "error",
+                            &serde_json::json!({ "message": error }),
+                        );
+                        self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                        return;
                     }
                 }
             }
@@ -1050,8 +1184,89 @@ impl ShellState {
                 }
             }
         };
-        match launch::launch(&options, &self.game.session) {
-            Ok(target) => {
+        let artifact_root = match std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        {
+            Some(path) => path,
+            None => {
+                self.emit_instance_event(
+                    &instance_id,
+                    "error",
+                    &serde_json::json!({ "message": "shell executable has no parent directory" }),
+                );
+                self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                return;
+            }
+        };
+        let mut gamepad_layouts = options.gamepad_mapping.iter().collect::<Vec<_>>();
+        gamepad_layouts.sort_by_key(|mapping| mapping.slot);
+        let runtime_config = snowglass_runtime::EmulatorConfig {
+            session: self.game.session.clone(),
+            command: options.target(),
+            artifact_root,
+            hooks: options
+                .hook
+                .iter()
+                .copied()
+                .map(snowglass_renderer::cli::HookBackend::from)
+                .collect(),
+            consumer: snowglass_runtime::ConsumerPreference::D3d12,
+            isolate: options.isolated,
+            tracked_surfaces: options
+                .surfaces
+                .iter()
+                .map(|surface| snowglass_runtime::TrackedSurfaceConfig {
+                    id: snowglass_runtime::TrackedSurfaceId(surface.index),
+                    render_target_index: surface.index,
+                    window_pattern: surface.selector.clone(),
+                })
+                .collect(),
+            tracking_enabled: !options.surfaces.is_empty(),
+            skip_surfaces: 0,
+            graph_tracking: false,
+            force_keyed_mutex: false,
+            gamepad_layouts: gamepad_layouts
+                .into_iter()
+                .map(|mapping| mapping.layout.clone())
+                .collect(),
+            stone_database: None,
+        };
+        let wake_proxy = self.game.proxy.clone();
+        let capture_dirty = self.streams.dirty.clone();
+        let capture_wake_pending = self.streams.wake_pending.clone();
+        match snowglass_runtime::EmulatorInstance::spawn_with_waker(runtime_config, move || {
+            capture_dirty.store(true, Ordering::Release);
+            if !capture_wake_pending.swap(true, Ordering::AcqRel)
+                && wake_proxy.send_event(UserEvent::WakeCapture).is_err()
+            {
+                capture_wake_pending.store(false, Ordering::Release);
+            }
+        }) {
+            Ok(mut target) => {
+                let provider = match provider_config
+                    .map(|config| self.input.transport.start_provider(config, &target))
+                    .transpose()
+                {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        let _ = target.close_blocking();
+                        self.emit_instance_event(
+                            &instance_id,
+                            "error",
+                            &serde_json::json!({ "message": error }),
+                        );
+                        self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                        return;
+                    }
+                };
+                if let Some(provider) = &provider {
+                    for (slot, binding_target, binding) in gamepad_bindings {
+                        provider.set_binding(slot, binding_target, binding);
+                    }
+                }
+                self.streams.capture.attach(&target);
+                self.input.transport.attach(&target);
                 self.game.target = Some(target);
                 self.input.provider = provider;
                 self.game.active = Some(ActiveGame {
@@ -1082,9 +1297,11 @@ impl ShellState {
         {
             return;
         }
-        if let Some(target) = self.game.target.take() {
-            let _ = target.terminate_tree_and_wait();
+        if let Some(mut target) = self.game.target.take() {
+            target.close_blocking();
         }
+        self.streams.capture.detach();
+        self.input.transport.detach();
         self.finish_active_game();
     }
 
@@ -1179,21 +1396,29 @@ impl ShellState {
             match event {
                 CaptureEvent::Stream(connection, stream, accepted) => {
                     let Some(active) = &self.game.active else {
-                        let _ = accepted.send(false);
+                        accepted.send(false);
                         continue;
                     };
-                    if self.streams.surfaces.len() >= active.options.surfaces.len() {
-                        let _ = accepted.send(false);
+                    let replacement = self.streams.capture.take_replacement(connection);
+                    if replacement.is_none()
+                        && self.streams.surfaces.len() >= active.options.surfaces.len()
+                    {
+                        accepted.send(false);
                         continue;
                     }
-                    match self.connect_stream(connection, &stream) {
+                    let connected = if let Some(previous) = replacement {
+                        self.replace_stream(previous, connection, &stream)
+                    } else {
+                        self.connect_stream(connection, &stream)
+                    };
+                    match connected {
                         Ok(()) => {
-                            let _ = accepted.send(true);
+                            accepted.send(true);
                             changed = true;
                         }
                         Err(error) => {
                             eprintln!("snowglass: rejected capture stream {connection}: {error}");
-                            let _ = accepted.send(false);
+                            accepted.send(false);
                         }
                     }
                 }
@@ -1347,6 +1572,46 @@ impl ShellState {
         self.presentation.merged_dirty = true;
         // The layer already knows where this view goes; it just had nothing to
         // put there until now.
+        self.refresh_game_layer();
+        Ok(())
+    }
+
+    fn replace_stream(
+        &mut self,
+        previous: u64,
+        connection: u64,
+        stream: &snowglass_ipc::StreamReady,
+    ) -> Result<(), Box<dyn Error>> {
+        let surface = self
+            .streams
+            .surfaces
+            .get(&previous)
+            .cloned()
+            .ok_or("the replaced tracked surface is no longer connected")?;
+        self.ensure_merged_adapter(stream.adapter_luid)?;
+        let merged = self
+            .presentation
+            .merged
+            .as_mut()
+            .expect("the shared compositor exists by now");
+        Renderer::import_stream(merged, connection, stream, surface.quarter_turns)?;
+        self.streams.surfaces.insert(connection, surface);
+        self.streams.surfaces.remove(&previous);
+        let _ = Renderer::disconnect_stream(merged, previous);
+        self.presentation.overlay.remove_target(previous);
+        self.cancel_pointer_connection(previous);
+        if let Some(publisher) = self
+            .game
+            .active
+            .as_ref()
+            .and_then(|active| active.webrtc.as_ref())
+        {
+            publisher.remove_stream(previous);
+        }
+        self.presentation
+            .overlay
+            .set_backend(format!("{:?}", stream.image_kind));
+        self.presentation.merged_dirty = true;
         self.refresh_game_layer();
         Ok(())
     }
@@ -2113,22 +2378,14 @@ impl ShellState {
     }
 
     fn poll_target(&mut self) {
-        let Some(target) = self.game.target.as_mut() else {
+        let Some(target) = self.game.target.as_ref() else {
             return;
         };
-        let finished = match target.try_wait() {
-            Ok(Some(())) => {
-                self.game.target = None;
-                true
-            }
-            Ok(None) => false,
-            Err(error) => {
-                eprintln!("snowglass: target process wait failed: {error}");
-                self.game.target = None;
-                true
-            }
-        };
+        let finished = matches!(target.state(), snowglass_runtime::InstanceState::Exited(_));
         if finished {
+            self.game.target = None;
+            self.streams.capture.detach();
+            self.input.transport.detach();
             self.finish_active_game();
         }
     }
@@ -2142,8 +2399,8 @@ impl Drop for ShellState {
                 let _ = Renderer::disconnect_stream(merged, connection);
             }
         }
-        if let Some(target) = self.game.target.take() {
-            let _ = target.terminate_tree_and_wait();
+        if let Some(mut target) = self.game.target.take() {
+            target.close_blocking();
         }
     }
 }

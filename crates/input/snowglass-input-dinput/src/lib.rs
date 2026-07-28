@@ -2,16 +2,18 @@
 
 #![allow(unsafe_code)]
 
+use dashmap::DashMap;
+use parking_lot::Mutex;
 use snowglass_input::{DirectInputData, DirectInputDevice};
-use snowglass_ipc::{Message, input::InputSubscriber};
+use snowglass_ipc::{LocalSocket, Message, MessageSink, input::InputSubscriber};
 use snowglass_platform_windows::{NativeWindow, forward_raw_key};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::{
-        Arc, Mutex,
+        Arc, Weak,
         atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
-        mpsc,
     },
+    thread::JoinHandle,
     time::Instant,
 };
 
@@ -95,11 +97,14 @@ fn discard_log(_: &str) {}
 /// normalized pointer messages through the Win32 window-message backend.
 pub struct Runtime {
     receiver_started: AtomicBool,
+    stopping: AtomicBool,
     connected: AtomicBool,
     logged_keyboard_receive: AtomicBool,
     logged_mouse_receive: AtomicBool,
     queues: Mutex<InputQueues>,
-    notifications: Mutex<HashMap<usize, (DirectInputDevice, usize)>>,
+    notifications: DashMap<usize, (DirectInputDevice, usize)>,
+    receiver_socket: Mutex<Option<LocalSocket>>,
+    receiver_worker: Mutex<Option<JoinHandle<()>>>,
     log: Logger,
 }
 
@@ -107,11 +112,14 @@ impl Runtime {
     pub fn new(log: Logger) -> Self {
         Self {
             receiver_started: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
             connected: AtomicBool::new(false),
             logged_keyboard_receive: AtomicBool::new(false),
             logged_mouse_receive: AtomicBool::new(false),
             queues: Mutex::new(InputQueues::new()),
-            notifications: Mutex::new(HashMap::new()),
+            notifications: DashMap::new(),
+            receiver_socket: Mutex::new(None),
+            receiver_worker: Mutex::new(None),
             log,
         }
     }
@@ -124,8 +132,19 @@ impl Runtime {
         {
             return;
         }
-        let runtime = self.clone();
-        std::thread::spawn(move || runtime.receive(socket_name));
+        let runtime = Arc::downgrade(self);
+        match std::thread::Builder::new()
+            .name("snowglass-dinput-receive".to_owned())
+            .spawn(move || Self::receive(runtime, socket_name))
+        {
+            Ok(worker) => *self.receiver_worker.lock() = Some(worker),
+            Err(error) => {
+                self.receiver_started.store(false, Ordering::Release);
+                (self.log)(&format!(
+                    "snowglass: DirectInput input receiver failed to start: {error}"
+                ));
+            }
+        }
     }
 
     pub fn connected(&self) -> bool {
@@ -133,29 +152,19 @@ impl Runtime {
     }
 
     pub fn keyboard_state(&self) -> [u8; 256] {
-        self.queues
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .keyboard_state
+        self.queues.lock().keyboard_state
     }
 
     /// Returns the accumulated relative mouse state and consumes its axes.
     pub fn take_mouse_state(&self) -> MouseState {
-        let mut queues = self
-            .queues
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut queues = self.queues.lock();
         let state = queues.mouse_state;
         queues.mouse_state.axes = [0; 3];
         state
     }
 
     pub fn buffered_len(&self, device: DirectInputDevice) -> usize {
-        self.queues
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(device)
-            .len()
+        self.queues.lock().get(device).len()
     }
 
     pub fn buffered_data(
@@ -164,10 +173,7 @@ impl Runtime {
         requested: usize,
         peek: bool,
     ) -> Vec<DirectInputData> {
-        let mut queues = self
-            .queues
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut queues = self.queues.lock();
         let queue = queues.get_mut(device);
         let available = queue.len().min(requested);
         if peek {
@@ -183,39 +189,65 @@ impl Runtime {
         device: DirectInputDevice,
         event_handle: usize,
     ) {
-        let mut notifications = self
-            .notifications
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         if event_handle == 0 {
-            notifications.remove(&device_key);
+            self.notifications.remove(&device_key);
         } else {
-            notifications.insert(device_key, (device, event_handle));
+            self.notifications
+                .insert(device_key, (device, event_handle));
         }
     }
 
     pub fn remove_device(&self, device_key: usize) {
-        self.notifications
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&device_key);
+        self.notifications.remove(&device_key);
     }
 
-    fn receive(self: Arc<Self>, socket_name: String) {
+    pub fn shutdown(&self) {
+        if self.stopping.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(socket) = self.receiver_socket.lock().take() {
+            let _ = socket.shutdown();
+        }
+        if let Some(worker) = self.receiver_worker.lock().take() {
+            let _ = worker.join();
+        }
+        self.connected.store(false, Ordering::Release);
+    }
+
+    fn receive(runtime: Weak<Self>, socket_name: String) {
         let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
-            (self.log)("snowglass: DirectInput input socket connection failed");
+            if let Some(runtime) = runtime.upgrade() {
+                (runtime.log)("snowglass: DirectInput input socket connection failed");
+            }
             return;
         };
-        self.connected.store(true, Ordering::Release);
-        (self.log)("snowglass: DirectInput input socket connected");
+        let Some(owner) = runtime.upgrade() else {
+            return;
+        };
+        if owner.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        *owner.receiver_socket.lock() = input.control.try_clone().ok();
+        owner.connected.store(true, Ordering::Release);
+        (owner.log)("snowglass: DirectInput input socket connected");
+        drop(owner);
         while let Ok(message) = input.control.receive() {
+            let Some(owner) = runtime.upgrade() else {
+                break;
+            };
+            if owner.stopping.load(Ordering::Acquire) {
+                break;
+            }
             match message {
-                Message::DirectInputData(event) => self.apply(event),
+                Message::DirectInputData(event) => owner.apply(event),
                 Message::Shutdown => break,
                 _ => {}
             }
         }
-        self.connected.store(false, Ordering::Release);
+        if let Some(owner) = runtime.upgrade() {
+            owner.receiver_socket.lock().take();
+            owner.connected.store(false, Ordering::Release);
+        }
     }
 
     fn apply(&self, event: DirectInputData) {
@@ -235,17 +267,12 @@ impl Runtime {
                 event.offset, event.data as i32
             ));
         }
-        self.queues
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .apply(event);
+        self.queues.lock().apply(event);
         let handles = self
             .notifications
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .values()
-            .filter(|(device, _)| *device == event.device)
-            .map(|(_, handle)| *handle)
+            .iter()
+            .filter(|notification| notification.value().0 == event.device)
+            .map(|notification| notification.value().1)
             .collect::<Vec<_>>();
         for handle in handles {
             unsafe { windows_sys::Win32::System::Threading::SetEvent(handle as _) };
@@ -259,18 +286,24 @@ impl Default for Runtime {
     }
 }
 
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 /// Builds and sends buffered DirectInput mouse records.
 pub struct DirectInputForwarder {
-    sender: mpsc::Sender<Message>,
+    sender: Arc<dyn MessageSink>,
     sequence: u32,
     started: Instant,
     mouse_position: Option<(u64, i32, i32, u32, u32)>,
 }
 
 impl DirectInputForwarder {
-    pub fn new(sender: mpsc::Sender<Message>) -> Self {
+    pub fn new(sender: impl MessageSink) -> Self {
         Self {
-            sender,
+            sender: Arc::new(sender),
             sequence: 0,
             started: Instant::now(),
             mouse_position: None,
@@ -329,18 +362,19 @@ impl DirectInputForwarder {
 
     fn send(&mut self, device: DirectInputDevice, offset: u32, data: u32) {
         self.sequence = self.sequence.wrapping_add(1);
-        let _ = self.sender.send(Message::DirectInputData(DirectInputData {
-            device,
-            offset,
-            data,
-            timestamp: self.started.elapsed().as_millis() as u32,
-            sequence: self.sequence,
-        }));
+        self.sender
+            .send_message(Message::DirectInputData(DirectInputData {
+                device,
+                offset,
+                data,
+                timestamp: self.started.elapsed().as_millis() as u32,
+                sequence: self.sequence,
+            }));
     }
 }
 
 struct RawKeyboardContext {
-    sender: mpsc::Sender<Message>,
+    sender: Arc<dyn MessageSink>,
     backing_window: Arc<AtomicIsize>,
     sequence: AtomicU32,
     started: Instant,
@@ -356,7 +390,7 @@ pub struct RawKeyboardForwarder {
 impl RawKeyboardForwarder {
     pub fn install(
         window: NativeWindow,
-        sender: mpsc::Sender<Message>,
+        sender: impl MessageSink,
         backing_window: Arc<AtomicIsize>,
     ) -> std::io::Result<Self> {
         use windows_sys::Win32::UI::{
@@ -364,7 +398,7 @@ impl RawKeyboardForwarder {
             Shell::SetWindowSubclass,
         };
         let context = Box::into_raw(Box::new(RawKeyboardContext {
-            sender,
+            sender: Arc::new(sender),
             backing_window,
             sequence: AtomicU32::new(0),
             started: Instant::now(),
@@ -449,9 +483,9 @@ unsafe extern "system" fn raw_keyboard_subclass(
                     let repeat = pressed && *previous;
                     *previous = pressed;
                     let sequence = context.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-                    let _ = context
+                    context
                         .sender
-                        .send(Message::DirectInputData(DirectInputData {
+                        .send_message(Message::DirectInputData(DirectInputData {
                             device: DirectInputDevice::Keyboard,
                             offset,
                             data: if pressed { 0x80 } else { 0 },
@@ -479,6 +513,27 @@ unsafe extern "system" fn raw_keyboard_subclass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
+
+    #[derive(Clone, Default)]
+    struct MessageCollector(Arc<Mutex<VecDeque<Message>>>);
+
+    impl MessageSink for MessageCollector {
+        fn send_message(&self, message: Message) -> bool {
+            self.0.lock().push_back(message);
+            true
+        }
+    }
+
+    impl MessageCollector {
+        fn recv(&self) -> Message {
+            self.0.lock().pop_front().expect("expected message")
+        }
+
+        fn is_empty(&self) -> bool {
+            self.0.lock().is_empty()
+        }
+    }
 
     fn event(device: DirectInputDevice, offset: u32, data: u32) -> DirectInputData {
         DirectInputData {
@@ -528,16 +583,16 @@ mod tests {
 
     #[test]
     fn mapped_mouse_positions_become_relative_axes() {
-        let (sender, receiver) = mpsc::channel();
-        let mut forwarder = DirectInputForwarder::new(sender);
+        let messages = MessageCollector::default();
+        let mut forwarder = DirectInputForwarder::new(messages.clone());
         forwarder.mouse_position(7, 100, 200, 640, 480);
-        assert!(receiver.try_recv().is_err());
+        assert!(messages.is_empty());
 
         forwarder.mouse_position(7, 112, 195, 640, 480);
-        let Message::DirectInputData(horizontal) = receiver.recv().unwrap() else {
+        let Message::DirectInputData(horizontal) = messages.recv() else {
             panic!("expected horizontal DirectInput data");
         };
-        let Message::DirectInputData(vertical) = receiver.recv().unwrap() else {
+        let Message::DirectInputData(vertical) = messages.recv() else {
             panic!("expected vertical DirectInput data");
         };
         assert_eq!((horizontal.offset, horizontal.data), (0, 12));
@@ -546,10 +601,10 @@ mod tests {
 
     #[test]
     fn mapped_mouse_rebases_when_the_surface_changes() {
-        let (sender, receiver) = mpsc::channel();
-        let mut forwarder = DirectInputForwarder::new(sender);
+        let messages = MessageCollector::default();
+        let mut forwarder = DirectInputForwarder::new(messages.clone());
         forwarder.mouse_position(7, 100, 200, 640, 480);
         forwarder.mouse_position(8, 500, 400, 1280, 720);
-        assert!(receiver.try_recv().is_err());
+        assert!(messages.is_empty());
     }
 }

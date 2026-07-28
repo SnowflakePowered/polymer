@@ -14,10 +14,13 @@ use std::{
     fs,
     io::{self, Read, Write},
     mem,
-    net::TcpStream,
+    net::{Shutdown, TcpStream},
     os::windows::io::FromRawSocket,
     path::PathBuf,
-    sync::OnceLock,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -263,14 +266,23 @@ struct WireMapOffer {
     generation: U64,
 }
 
+#[derive(Clone)]
 pub struct LocalSocketListener {
-    socket: SOCKET,
+    inner: Arc<ListenerInner>,
+}
+
+struct ListenerInner {
+    socket: AtomicUsize,
     path: PathBuf,
+    path_owned: AtomicBool,
 }
 
 // SAFETY: the listener exclusively owns its socket. Moving the socket between
 // threads does not duplicate access or invalidate it.
 unsafe impl Send for LocalSocketListener {}
+// SAFETY: the socket value is atomic. Winsock permits closing a listening
+// socket from another thread to interrupt a blocking accept.
+unsafe impl Sync for LocalSocketListener {}
 
 impl LocalSocketListener {
     pub fn bind(name: &str) -> io::Result<Self> {
@@ -298,13 +310,26 @@ impl LocalSocketListener {
             let _ = fs::remove_file(&path);
             return Err(error);
         }
-        Ok(Self { socket, path })
+        Ok(Self {
+            inner: Arc::new(ListenerInner {
+                socket: AtomicUsize::new(socket),
+                path,
+                path_owned: AtomicBool::new(true),
+            }),
+        })
     }
 
     pub fn accept(&self) -> io::Result<LocalSocket> {
+        let socket = self.inner.socket.load(Ordering::Acquire);
+        if socket == INVALID_SOCKET {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "local socket listener is closed",
+            ));
+        }
         // SAFETY: self.socket is a listening socket. Peer address information is
         // not needed for this local, single-client transport.
-        let connected = unsafe { accept(self.socket, std::ptr::null_mut(), std::ptr::null_mut()) };
+        let connected = unsafe { accept(socket, std::ptr::null_mut(), std::ptr::null_mut()) };
         if connected == INVALID_SOCKET {
             return Err(winsock_error());
         }
@@ -315,16 +340,35 @@ impl LocalSocketListener {
             frame: None,
         })
     }
+
+    /// Stops this listener and wakes a thread blocked in [`Self::accept`].
+    pub fn close(&self) {
+        let socket = self.inner.socket.swap(INVALID_SOCKET, Ordering::AcqRel);
+        if socket != INVALID_SOCKET {
+            // SAFETY: the successful swap assigns this call sole responsibility
+            // for closing the live socket.
+            unsafe { closesocket(socket) };
+        }
+        // The acceptor thread owns another Arc while it unwinds. Unlink now so
+        // a replacement emulator instance can bind the same session name
+        // immediately after close returns.
+        if self.inner.path_owned.swap(false, Ordering::AcqRel) {
+            let _ = fs::remove_file(&self.inner.path);
+        }
+    }
 }
 
-impl Drop for LocalSocketListener {
+impl Drop for ListenerInner {
     fn drop(&mut self) {
-        if self.socket != INVALID_SOCKET {
-            // SAFETY: this object exclusively owns the live listening socket.
-            unsafe { closesocket(self.socket) };
-            self.socket = INVALID_SOCKET;
+        let socket = *self.socket.get_mut();
+        if socket != INVALID_SOCKET {
+            // SAFETY: the final Arc owns the remaining live listening socket.
+            unsafe { closesocket(socket) };
+            *self.socket.get_mut() = INVALID_SOCKET;
         }
-        let _ = fs::remove_file(&self.path);
+        if *self.path_owned.get_mut() {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -334,6 +378,17 @@ pub struct LocalSocket {
 }
 
 impl LocalSocket {
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            stream: self.stream.try_clone()?,
+            frame: None,
+        })
+    }
+
+    pub fn shutdown(&self) -> io::Result<()> {
+        self.stream.shutdown(Shutdown::Both)
+    }
+
     pub fn connect(name: &str) -> io::Result<Self> {
         initialize_winsock()?;
         let (address, _) = socket_address(name)?;
@@ -1071,6 +1126,24 @@ mod tests {
                 .unwrap();
             assert_eq!(client.receive().unwrap(), Message::Shutdown);
         }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn closed_listener_can_be_rebound_before_its_last_clone_drops() {
+        let name = format!("snowglass-rebind-test-{}", std::process::id());
+        let listener = LocalSocketListener::bind(&name).unwrap();
+        let lingering_clone = listener.clone();
+        listener.close();
+
+        let replacement = LocalSocketListener::bind(&name).unwrap();
+        drop(lingering_clone);
+        let server = std::thread::spawn(move || {
+            let mut socket = replacement.accept().unwrap();
+            socket.send(Message::Shutdown).unwrap();
+        });
+        let mut client = LocalSocket::connect(&name).unwrap();
+        assert_eq!(client.receive().unwrap(), Message::Shutdown);
         server.join().unwrap();
     }
 }

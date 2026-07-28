@@ -1,5 +1,6 @@
 //! Windows-specific handle, process, desktop, timing, and window utilities.
 
+mod audio;
 mod desktop;
 mod detour;
 mod handles;
@@ -10,12 +11,14 @@ mod timing;
 mod types;
 mod window;
 
+pub use audio::{ProcessAudioState, process_audio_state, set_process_audio};
 pub use desktop::{DesktopThreadAttachment, PrivateDesktop};
 pub use detour::{InlineDetour, call_original};
 pub use handles::duplicate_handle_into_process;
 pub use isolation::{IsolatedProcess, KillOnCloseJob};
 pub use process::{
-    ProcessArchitecture, executable_architecture, process_architecture, resume_initial_thread,
+    ProcessArchitecture, executable_architecture, process_architecture, process_tree_ids,
+    resume_initial_thread,
 };
 pub use target::{InjectionLibrary, TargetProcess, architecture_artifact_dir};
 pub use timing::{performance_counter, performance_frequency};

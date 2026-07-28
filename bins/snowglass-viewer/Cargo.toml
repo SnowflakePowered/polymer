@@ -11,6 +11,9 @@ egui-winit = "0.29.1"
 log = "0.4"
 cssparser = "0.37"
 cssparser-color = "0.5"
+crossfire.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
 raw-window-handle.workspace = true
 regex.workspace = true
 serde_json.workspace = true
@@ -18,12 +21,11 @@ taffy = { version = "0.12.2", default-features = false, features = ["std", "taff
 snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
-snowglass-hook.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
+snowglass-runtime = { path = "../../crates/snowglass-runtime" }
 snowglass-ui.workspace = true
-tempfile.workspace = true
 winit = "0.30.13"
 windows.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }

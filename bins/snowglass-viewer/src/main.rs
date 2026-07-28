@@ -1,30 +1,27 @@
-use snowglass_hook::config;
+use crossfire::oneshot::{self, RxOneshot, TxOneshot};
+use dashmap::DashMap;
+use parking_lot::Mutex;
 use snowglass_input::{
-    gamepad::LatestGamepadMailbox,
     mouse::{PointerPhase, layout::Extent},
     provider::sdl3::{
         DeviceSelector, ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig,
     },
     stone::{EMBEDDED_STONE_JSON, InputBinding, SdlAxis, SdlButton, StoneLayout, StoneRegistry},
 };
-use snowglass_ipc::{LocalSocketListener, StreamReady};
+use snowglass_ipc::StreamReady;
 use snowglass_platform_windows::{
-    InjectionLibrary, NativeWindow, TargetProcess, architecture_artifact_dir,
-    executable_architecture, forward_character, performance_counter, performance_frequency,
+    NativeWindow, forward_character, performance_counter, performance_frequency,
 };
 use snowglass_protocol::{ExternalImageKind, ExternalSyncKind, FrameReady};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
     error::Error,
-    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicIsize, Ordering},
-        mpsc,
+        atomic::{AtomicIsize, Ordering},
     },
-    thread,
     time::{Duration, Instant},
 };
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -40,17 +37,14 @@ use winit::{
 mod argument_tests;
 mod gui;
 mod input;
-mod ipc;
 mod layout;
 
 use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
-use ipc::UiRequest;
 #[cfg(test)]
 use snowglass_renderer::cli::{AUTO_HOOKS, parse_arguments};
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor,
     WebRtcCompositor,
-    capture::{Capture, CaptureEvent, ConsumerPreference},
     cli::{
         GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
@@ -62,11 +56,12 @@ use snowglass_renderer::{
     input::PointerRoutingState,
     webrtc,
 };
+use snowglass_runtime::UiRequest;
 
 use input::{
     dinput::{
-        DirectInputForwarder, InputLatencyStats, RawKeyboardForwarder, cancel_pointer_connection,
-        spawn_input_ipc,
+        DirectInputForwarder, InputLatencyStats, RawKeyboardForwarder, RoutedInputSender,
+        cancel_pointer_connection,
     },
     load_window, native_window,
     pointer::mouse_button,
@@ -75,6 +70,121 @@ use input::{
 
 type EventCallback = Box<dyn FnMut(Event<()>, &ActiveEventLoop)>;
 type EventInitializer = Box<dyn FnOnce(&ActiveEventLoop) -> Result<EventCallback, Box<dyn Error>>>;
+
+enum CaptureEvent {
+    Stream(u64, StreamReady, TxOneshot<bool>),
+    Frame(u64, FrameReady),
+    Disconnected(u64),
+}
+
+struct PendingCaptureOffer {
+    offer: snowglass_runtime::SurfaceOffer,
+    response: RxOneshot<bool>,
+}
+
+#[derive(Clone, Default)]
+struct RuntimeCaptureAdapter {
+    events: Arc<Mutex<Option<snowglass_runtime::SurfaceEventReceiver>>>,
+    frames: Arc<DashMap<u64, snowglass_runtime::SurfaceFrameReceiver>>,
+    connections: Arc<DashMap<snowglass_runtime::TrackedSurfaceId, u64>>,
+    pending: Arc<DashMap<u64, PendingCaptureOffer>>,
+}
+
+impl RuntimeCaptureAdapter {
+    fn set_instance(&self, instance: &snowglass_runtime::EmulatorInstance) {
+        *self.events.lock() = Some(instance.subscribe_surfaces());
+        self.frames.clear();
+        self.connections.clear();
+        self.pending.clear();
+    }
+
+    fn clear(&self) {
+        *self.events.lock() = None;
+        self.frames.clear();
+        self.connections.clear();
+        self.pending.clear();
+    }
+
+    fn try_recv(&self) -> Result<CaptureEvent, crossfire::TryRecvError> {
+        self.resolve_offers();
+        let event = self
+            .events
+            .lock()
+            .as_ref()
+            .and_then(|events| events.try_recv().ok());
+        if let Some(event) = event {
+            return match event {
+                snowglass_runtime::SurfaceEvent::Offered(offer)
+                | snowglass_runtime::SurfaceEvent::ReconfigureOffered { offer, .. } => {
+                    let connection = offer.connection_id();
+                    let stream = *offer.stream();
+                    let (accepted, response) = oneshot::oneshot();
+                    self.pending
+                        .insert(connection, PendingCaptureOffer { offer, response });
+                    Ok(CaptureEvent::Stream(connection, stream, accepted))
+                }
+                snowglass_runtime::SurfaceEvent::Removed { id } => {
+                    let connection = self
+                        .connections
+                        .remove(&id)
+                        .map_or(0, |(_, connection)| connection);
+                    self.frames.remove(&connection);
+                    Ok(CaptureEvent::Disconnected(connection))
+                }
+            };
+        }
+        for mut receiver in self.frames.iter_mut() {
+            if let Ok(Some(update)) = receiver.value_mut().try_next_frame() {
+                return Ok(CaptureEvent::Frame(*receiver.key(), update.frame));
+            }
+        }
+        Err(crossfire::TryRecvError::Empty)
+    }
+
+    fn revoke(&self, connection: u64) {
+        self.frames.remove(&connection);
+    }
+
+    fn forget(&self, _connection: u64) {}
+
+    fn resolve_offers(&self) {
+        let resolved = {
+            let ready = self
+                .pending
+                .iter_mut()
+                .filter_map(|mut pending| {
+                    pending
+                        .value_mut()
+                        .response
+                        .try_recv()
+                        .ok()
+                        .map(|accepted| (*pending.key(), accepted))
+                })
+                .collect::<Vec<_>>();
+            ready
+                .into_iter()
+                .filter_map(|(connection, accepted)| {
+                    self.pending
+                        .remove(&connection)
+                        .map(|(_, pending)| (connection, accepted, pending.offer))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (connection, accepted, offer) in resolved {
+            if !accepted {
+                offer.reject();
+                continue;
+            }
+            let surface_id = offer.id();
+            if let Ok(surface) = offer.accept() {
+                self.frames.insert(connection, surface.subscribe_frames());
+                if let Some(previous) = self.connections.insert(surface_id, connection) {
+                    self.frames.remove(&previous);
+                }
+            }
+        }
+    }
+}
 
 struct ViewerApplication {
     initializer: Option<EventInitializer>,
@@ -495,7 +605,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .and_then(|targets| targets.iter().max().copied())
             .map_or(1, |index| index.saturating_add(1)),
     );
-    let mut remaining_surface_skips = options.skip_surfaces;
+    let mut remaining_surface_skips = 0;
     let viewer_api = options.api;
     let resize_guest = options.resize;
     let webrtc = webrtc_targets
@@ -518,10 +628,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_nanos() as u64
         })
     );
-    let input_listener = LocalSocketListener::bind(&format!("{session}-input"))?;
-    let ui_listener = LocalSocketListener::bind(&format!("{session}-ui"))?;
-    let gamepad_mailbox = Arc::new(LatestGamepadMailbox::new(u8::MAX as usize + 1));
-    let (input_tx, input_latency) = spawn_input_ipc(input_listener, gamepad_mailbox.clone());
+    let capture = RuntimeCaptureAdapter::default();
+    let input_tx = RoutedInputSender::default();
+    let input_latency = InputLatencyStats::default();
     let stone_json = options
         .stone_db
         .as_ref()
@@ -539,9 +648,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         match start_target_session(
             &launcher,
             &gamepad_registry,
-            gamepad_mailbox.clone(),
             &executable_dir,
             &session,
+            surface_limit,
+            options.skip_surfaces,
+            viewer_api,
             launcher.tracked_render_target_indices(),
             launcher.render_target_surface_patterns(),
             launcher.graph_tracking,
@@ -554,22 +665,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 gamepad_layouts = started.layouts;
                 gamepad_remap_drafts = vec![HashMap::new(); gamepad_layouts.len()];
                 gamepad_provider = Some(started.provider);
+                input_tx.attach(&started.target.instance);
+                capture.set_instance(&started.target.instance);
                 active_target = Some(started.target);
             }
             Err(error) => launch_error = Some(error.to_string()),
         }
     }
     let backing_window = Arc::new(AtomicIsize::new(0));
-    let (ui_tx, ui_rx) = mpsc::channel();
-    ipc::spawn_ui(ui_listener, ui_tx);
-    let capture = Capture::bind(
-        &session,
-        match viewer_api {
-            ViewerApi::D3d12 => ConsumerPreference::D3d12,
-            ViewerApi::Vulkan => ConsumerPreference::Vulkan,
-        },
-    )?;
-
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     #[rustfmt::skip]
@@ -644,9 +747,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             match event {
                 WindowEvent::CloseRequested => {
-                    if let Some(active) = &active_target {
-                        active.stop.store(true, Ordering::Release);
+                    if let Some(mut active) = active_target.take() {
+                        let _ = active.instance.close_blocking();
                     }
+                    gamepad_provider = None;
+                    input_tx.detach();
                     target.exit();
                 }
                 WindowEvent::Resized(size) => {
@@ -804,14 +909,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    pending_ui.extend(ui_rx.try_iter());
+                    if let Some(active) = &active_target {
+                        while let Ok(request) = active.ui.try_recv() {
+                            pending_ui.push_back(request);
+                        }
+                    }
                     let size = window.inner_size();
                     if size.width == 0 || size.height == 0 {
                         return;
                     }
                     if active_target
                         .as_ref()
-                        .is_some_and(|active| active.done.try_recv().is_ok())
+                        .is_some_and(|active| {
+                            matches!(
+                                active.instance.state(),
+                                snowglass_runtime::InstanceState::Exited(_)
+                            )
+                        })
                     {
                         active_target = None;
                         gamepad_provider = None;
@@ -828,6 +942,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         stream_indices.clear();
                         active_backend = "Waiting";
                         active_consumer = "Waiting";
+                        capture.clear();
+                        input_tx.detach();
                     }
                     while let Ok(event) = capture.try_recv() {
                         match event {
@@ -843,7 +959,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         "snowglass: ignored {:?} surface window {:#x}; its backend is not hooked",
                                         stream.image_kind, stream.source_window
                                     );
-                                    let _ = accepted.send(false);
+                                    accepted.send(false);
                                     continue;
                                 };
                                 let previously_skipped = stream.surface_id.0 != 0
@@ -865,7 +981,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             remaining_surface_skips
                                         );
                                     }
-                                    let _ = accepted.send(false);
+                                    accepted.send(false);
                                     continue;
                                 }
                                 if !active_capture_connections.contains_key(&connection) {
@@ -887,7 +1003,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                 "snowglass: ignored lower-priority {:?} duplicate for window {:#x}",
                                                 stream.image_kind, stream.source_window
                                             );
-                                            let _ = accepted.send(false);
+                                            accepted.send(false);
                                             continue;
                                         }
                                         let size = window.inner_size();
@@ -1037,7 +1153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         "snowglass: ignored {:?} surface window {:#x}; surface limit {} is full",
                                         stream.image_kind, stream.source_window, surface_limit
                                     );
-                                    let _ = accepted.send(false);
+                                    accepted.send(false);
                                     continue;
                                 }
                                 active_backend = match stream.image_kind {
@@ -1120,14 +1236,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             stream.slot_count,
                                             active_consumer,
                                         );
-                                        let _ = accepted.send(true);
+                                        accepted.send(true);
                                     }
                                     Err(error) => {
                                         eprintln!("snowglass: direct import failed: {error}");
                                         launch_error = Some(format!(
                                             "The selected hooks did not publish output compatible with the fixed {viewer_api:?} viewer: {error}"
                                         ));
-                                        let _ = accepted.send(false);
+                                        accepted.send(false);
                                     }
                                 }
                             }
@@ -1409,9 +1525,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                             } else if let Some(result) = selected
                                 && let Some(forwarded) = pending_ui.pop_front()
                             {
-                                let _ = forwarded
-                                    .response
-                                    .send(snowglass_ipc::ui::MessageBoxResponse { result });
+                                let _ = forwarded.respond(
+                                    snowglass_ipc::ui::MessageBoxResponse { result },
+                                );
                             }
                         }
                         let statistics_frame = egui::Frame::window(&context.style())
@@ -1506,17 +1622,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 });
                         }
                     });
-                    if close_requested && let Some(active) = &active_target {
-                        active.stop.store(true, Ordering::Release);
+                    if close_requested {
+                        if let Some(mut active) = active_target.take() {
+                            let _ = active.instance.close_blocking();
+                        }
+                        gamepad_provider = None;
+                        capture.clear();
+                        input_tx.detach();
                     }
                     if launch_requested && active_target.is_none() {
                         launch_error = None;
                         match start_target_session(
                             &launcher,
                             &gamepad_registry,
-                            gamepad_mailbox.clone(),
                             &executable_dir,
                             &session,
+                            surface_limit,
+                            options.skip_surfaces,
+                            viewer_api,
                             launcher.tracked_render_target_indices(),
                             launcher.render_target_surface_patterns(),
                             launcher.graph_tracking,
@@ -1531,8 +1654,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 gamepad_remap_drafts =
                                     vec![HashMap::new(); gamepad_layouts.len()];
                                 gamepad_provider = Some(started.provider);
+                                input_tx.attach(&started.target.instance);
+                                capture.set_instance(&started.target.instance);
                                 active_target = Some(started.target);
-                                remaining_surface_skips = options.skip_surfaces;
+                                remaining_surface_skips = 0;
                                 stats = Statistics::default();
                             }
                             Err(error) => launch_error = Some(error.to_string()),
@@ -1585,29 +1710,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn spawn_target_monitor(
-    mut target_process: TargetProcess,
-    stop: Arc<AtomicBool>,
-    done: mpsc::Sender<()>,
-) {
-    thread::spawn(move || {
-        loop {
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            match target_process.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => thread::sleep(Duration::from_millis(8)),
-            }
-        }
-        let _ = target_process.terminate_tree_and_wait();
-        let _ = done.send(());
-    });
-}
-
 struct ActiveTarget {
-    stop: Arc<AtomicBool>,
-    done: mpsc::Receiver<()>,
+    instance: snowglass_runtime::EmulatorInstance,
+    ui: snowglass_runtime::UiRequestReceiver,
 }
 
 struct StartedTarget {
@@ -1621,9 +1726,11 @@ struct StartedTarget {
 fn start_target_session(
     launcher: &LauncherState,
     registry: &StoneRegistry,
-    mailbox: Arc<LatestGamepadMailbox>,
     executable_dir: &Path,
     session: &str,
+    surface_limit: u32,
+    skip_surfaces: u32,
+    viewer_api: ViewerApi,
     tracked_render_targets: Option<Vec<u32>>,
     tracked_surface_patterns: Vec<Option<String>>,
     graph_tracking: bool,
@@ -1649,6 +1756,47 @@ fn start_target_session(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let configured_surfaces = tracked_render_targets
+        .as_ref()
+        .map(|indices| {
+            indices
+                .iter()
+                .enumerate()
+                .map(|(slot, &index)| snowglass_runtime::TrackedSurfaceConfig {
+                    id: snowglass_runtime::TrackedSurfaceId(index),
+                    render_target_index: index,
+                    window_pattern: tracked_surface_patterns.get(slot).cloned().flatten(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            (0..surface_limit)
+                .map(|index| snowglass_runtime::TrackedSurfaceConfig {
+                    id: snowglass_runtime::TrackedSurfaceId(index),
+                    render_target_index: index,
+                    window_pattern: None,
+                })
+                .collect()
+        });
+    let mut instance =
+        snowglass_runtime::EmulatorInstance::spawn(snowglass_runtime::EmulatorConfig {
+            session: session.to_owned(),
+            command: target,
+            artifact_root: executable_dir.to_path_buf(),
+            hooks: launcher.hooks.clone(),
+            consumer: match viewer_api {
+                ViewerApi::D3d12 => snowglass_runtime::ConsumerPreference::D3d12,
+                ViewerApi::Vulkan => snowglass_runtime::ConsumerPreference::Vulkan,
+            },
+            isolate: launcher.isolate,
+            tracked_surfaces: configured_surfaces,
+            tracking_enabled: tracked_render_targets.is_some(),
+            skip_surfaces,
+            graph_tracking,
+            force_keyed_mutex,
+            gamepad_layouts: layouts.iter().map(|layout| layout.id.clone()).collect(),
+            stone_database: stone_database.map(Path::to_path_buf),
+        })?;
     let provider = Sdl3Provider::start(
         Sdl3ProviderConfig {
             slots: gamepads
@@ -1663,309 +1811,22 @@ fn start_target_session(
             gamecontroller_database,
             keyboard_mapping_directory: None,
         },
-        mailbox,
-    )
-    .map_err(|error| std::io::Error::other(format!("SDL3 gamepad input failed: {error}")))?;
-    let process = launch_target(
-        &target,
-        executable_dir,
-        session,
-        tracked_render_targets,
-        tracked_surface_patterns,
-        graph_tracking,
-        force_keyed_mutex,
-        &launcher.hooks,
-        launcher.isolate,
-        &layouts
-            .iter()
-            .map(|layout| layout.id.clone())
-            .collect::<Vec<_>>(),
-        stone_database,
-    )?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let (done_tx, done) = mpsc::channel();
-    spawn_target_monitor(process, stop.clone(), done_tx);
+        instance.gamepad_mailbox(),
+    );
+    let provider = match provider {
+        Ok(provider) => provider,
+        Err(error) => {
+            let _ = instance.close_blocking();
+            return Err(
+                std::io::Error::other(format!("SDL3 gamepad input failed: {error}")).into(),
+            );
+        }
+    };
+    let ui = instance.subscribe_ui_requests();
     Ok(StartedTarget {
-        target: ActiveTarget { stop, done },
+        target: ActiveTarget { instance, ui },
         provider,
         layouts,
         hooks: launcher.hooks.clone(),
     })
-}
-
-fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::TempDir> {
-    if !layer_dll.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("Vulkan hook is missing at {}", layer_dll.display()),
-        ));
-    }
-    let directory = tempfile::Builder::new()
-        .prefix("snowglass-vulkan-layer-")
-        .tempdir()?;
-    let manifest = serde_json::json!({
-        "file_format_version": "1.2.0",
-        "layer": {
-            "name": "VK_LAYER_SNOWGLASS_capture",
-            "type": "GLOBAL",
-            "library_path": layer_dll,
-            "api_version": "1.4.0",
-            "implementation_version": "1",
-            "description": "Snowglass Vulkan capture layer",
-            "functions": {
-                "vkNegotiateLoaderLayerInterfaceVersion":
-                    "vkNegotiateLoaderLayerInterfaceVersion"
-            },
-            "enable_environment": {
-                "SNOWGLASS_VULKAN_LAYER": "1"
-            },
-            "disable_environment": {
-                "DISABLE_SNOWGLASS_VULKAN_LAYER": "1"
-            }
-        }
-    });
-    let file = std::fs::File::create(directory.path().join("snowglass-layer.json"))?;
-    serde_json::to_writer_pretty(file, &manifest).map_err(std::io::Error::other)?;
-    Ok(directory)
-}
-
-#[expect(clippy::too_many_arguments)]
-fn launch_target(
-    target: &[String],
-    layer_dir: &Path,
-    session: &str,
-    track_render_targets: Option<Vec<u32>>,
-    tracked_surface_patterns: Vec<Option<String>>,
-    graph_tracking: bool,
-    force_keyed_mutex: bool,
-    hooks: &[HookBackend],
-    isolate: bool,
-    stone_layouts: &[String],
-    stone_database: Option<&Path>,
-) -> std::io::Result<TargetProcess> {
-    let target_architecture = executable_architecture(Path::new(&target[0])).ok();
-    let artifact_dir = target_architecture
-        .map(|architecture| architecture_artifact_dir(layer_dir, architecture))
-        .unwrap_or_else(|| layer_dir.to_path_buf());
-    let sdl2_runtime = artifact_dir.join("SDL2.dll");
-    let sdl3_runtime = artifact_dir.join("SDL3.dll");
-    let vulkan_manifest = hooks
-        .contains(&HookBackend::Vulkan)
-        .then(|| {
-            create_vulkan_layer_manifest(&artifact_dir.join("snowglass_hook_vulkan_layer.dll"))
-        })
-        .transpose()?;
-    let mut environment = vec![
-        (OsString::from(config::SESSION), OsString::from(session)),
-        (
-            OsString::from(config::STONE_LAYOUTS),
-            OsString::from(stone_layouts.join(",")),
-        ),
-        (
-            OsString::from(config::SDL_GAMEPADS),
-            OsString::from(stone_layouts.len().to_string()),
-        ),
-        (
-            OsString::from(config::LAYER_LOG_FILE),
-            layer_dir.join("snowglass-layer.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::DINPUT_LOG_FILE),
-            layer_dir.join("snowglass-dinput.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::WIN32_LOG_FILE),
-            layer_dir.join("snowglass-win32.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::SDL_LOG_FILE),
-            layer_dir.join("snowglass-sdl.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::DXGI_LOG_FILE),
-            layer_dir.join("snowglass-dxgi.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::D3D11_LOG_FILE),
-            layer_dir.join("snowglass-d3d11.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::D3D12_LOG_FILE),
-            layer_dir.join("snowglass-d3d12.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::OPENGL_LOG_FILE),
-            layer_dir.join("snowglass-opengl.log").into_os_string(),
-        ),
-        (
-            OsString::from(config::GDI_LOG_FILE),
-            layer_dir.join("snowglass-gdi.log").into_os_string(),
-        ),
-        // Physical controllers belong exclusively to the viewer-side SDL3
-        // provider. Disable every Windows hardware joystick backend before
-        // the target initializes SDL; the virtual driver remains available.
-        (OsString::from("SDL_JOYSTICK_HIDAPI"), OsString::from("0")),
-        (
-            OsString::from("SDL_JOYSTICK_DIRECTINPUT"),
-            OsString::from("0"),
-        ),
-        (OsString::from("SDL_JOYSTICK_RAWINPUT"), OsString::from("0")),
-        (OsString::from("SDL_JOYSTICK_WGI"), OsString::from("0")),
-        (
-            OsString::from("SDL_JOYSTICK_GAMEINPUT"),
-            OsString::from("0"),
-        ),
-        (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
-    ];
-    if let Some(path) = stone_database {
-        environment.push((
-            OsString::from(config::STONE_DATABASE),
-            path.as_os_str().to_owned(),
-        ));
-    }
-    // SDL's dynamic API redirects calls from statically linked applications
-    // (including Cemu and Dolphin) through these DLLs, making their public
-    // entry points available to the hooks. Preserve explicit caller overrides.
-    if std::env::var_os("SDL_DYNAMIC_API").is_none() && sdl2_runtime.is_file() {
-        environment.push((
-            OsString::from("SDL_DYNAMIC_API"),
-            sdl2_runtime.into_os_string(),
-        ));
-    }
-    if std::env::var_os("SDL3_DYNAMIC_API").is_none() && sdl3_runtime.is_file() {
-        environment.push((
-            OsString::from("SDL3_DYNAMIC_API"),
-            sdl3_runtime.into_os_string(),
-        ));
-    }
-    // The Vulkan producer installs as an instance layer rather than an
-    // injected DLL, so its selection travels through the loader environment.
-    if let Some(manifest) = &vulkan_manifest {
-        environment.push((
-            OsString::from("VK_LAYER_PATH"),
-            manifest.path().as_os_str().to_owned(),
-        ));
-        environment.push((
-            OsString::from("VK_INSTANCE_LAYERS"),
-            OsString::from("VK_LAYER_SNOWGLASS_capture"),
-        ));
-    }
-    if let Some(indices) = track_render_targets {
-        environment.push((
-            OsString::from(config::TRACK_RENDER_TARGET),
-            OsString::from("1"),
-        ));
-        environment.push((
-            OsString::from(config::TRACK_RENDER_TARGETS),
-            OsString::from(
-                indices
-                    .iter()
-                    .map(|index| index.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
-        ));
-        if tracked_surface_patterns.iter().any(Option::is_some) {
-            environment.push((
-                OsString::from(config::TRACK_RENDER_TARGET_SURFACE_PATTERNS),
-                OsString::from(
-                    serde_json::to_string(&tracked_surface_patterns)
-                        .map_err(std::io::Error::other)?,
-                ),
-            ));
-        }
-        if graph_tracking {
-            environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
-        }
-    }
-    if force_keyed_mutex {
-        environment.push((
-            OsString::from(config::FORCE_KEYED_MUTEX),
-            OsString::from("1"),
-        ));
-    }
-    let libraries = hook_libraries(hooks, isolate);
-    let mut process = TargetProcess::launch(
-        target,
-        layer_dir,
-        &environment,
-        isolate.then_some(session),
-        &libraries,
-    )?;
-    if let Some(manifest) = vulkan_manifest {
-        // The Vulkan loader may consult the manifest more than once during the
-        // process lifetime, so retain it with the shared target lifecycle.
-        process.retain(manifest);
-    }
-    Ok(process)
-}
-
-fn hook_libraries(hooks: &[HookBackend], isolate: bool) -> Vec<InjectionLibrary> {
-    let mut libraries = Vec::new();
-    if hooks
-        .iter()
-        .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
-    {
-        libraries.push(InjectionLibrary::new(
-            "DXGI",
-            "snowglass_hook_dxgi.dll",
-            c"SnowglassInstallDxgiHook",
-        ));
-    }
-    if hooks.contains(&HookBackend::D3d11) {
-        libraries.push(InjectionLibrary::new(
-            "D3D11",
-            "snowglass_hook_d3d11.dll",
-            c"SnowglassInstallD3d11Hook",
-        ));
-    }
-    if hooks.contains(&HookBackend::D3d12) {
-        libraries.push(InjectionLibrary::new(
-            "D3D12",
-            "snowglass_hook_d3d12.dll",
-            c"SnowglassInstallD3d12Hook",
-        ));
-    }
-    if hooks.contains(&HookBackend::OpenGl) {
-        libraries.push(InjectionLibrary::new(
-            "OpenGL",
-            "snowglass_hook_opengl32.dll",
-            c"SnowglassInstallOpenGlHook",
-        ));
-    }
-    if hooks.contains(&HookBackend::Gdi) {
-        libraries.push(InjectionLibrary::new(
-            "GDI",
-            "snowglass_hook_gdi.dll",
-            c"SnowglassInstallGdiHook",
-        ));
-    }
-    libraries.push(InjectionLibrary::new(
-        "DirectInput",
-        "snowglass_hook_dinput.dll",
-        c"SnowglassInstallDinputHook",
-    ));
-    libraries.push(InjectionLibrary::new(
-        "Win32 input",
-        "snowglass_hook_win32.dll",
-        c"SnowglassInstallWin32Hook",
-    ));
-    if isolate {
-        libraries.push(InjectionLibrary::new(
-            "UI",
-            "snowglass_hook_ui.dll",
-            c"SnowglassInstallUiHook",
-        ));
-    }
-    libraries.push(InjectionLibrary::new(
-        "SDL2",
-        "snowglass_hook_sdl2.dll",
-        c"SnowglassInstallSdl2Hook",
-    ));
-    libraries.push(InjectionLibrary::new(
-        "SDL3",
-        "snowglass_hook_sdl3.dll",
-        c"SnowglassInstallSdl3Hook",
-    ));
-    libraries
 }

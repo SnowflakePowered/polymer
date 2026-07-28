@@ -3,6 +3,7 @@
 use clap::ValueEnum;
 use clap::{ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, Parser};
 use snowglass_input::provider::sdl3::DeviceSelector;
+pub use snowglass_runtime::HookBackend;
 use std::{collections::HashSet, error::Error, net::SocketAddr, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -10,16 +11,6 @@ pub enum ViewerApi {
     #[default]
     D3d12,
     Vulkan,
-}
-
-/// A capture backend a renderer host can install into the target process.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HookBackend {
-    Vulkan,
-    OpenGl,
-    D3d12,
-    D3d11,
-    Gdi,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -54,36 +45,6 @@ pub const AUTO_HOOKS: [HookBackend; 4] = [
     HookBackend::D3d12,
     HookBackend::D3d11,
 ];
-
-impl HookBackend {
-    pub const ALL: [Self; 5] = [
-        Self::Vulkan,
-        Self::OpenGl,
-        Self::D3d12,
-        Self::D3d11,
-        Self::Gdi,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Vulkan => "Vulkan",
-            Self::OpenGl => "OpenGL",
-            Self::D3d12 => "D3D12",
-            Self::D3d11 => "D3D11",
-            Self::Gdi => "GDI",
-        }
-    }
-
-    pub const fn class(self) -> u8 {
-        match self {
-            Self::Gdi => 0,
-            Self::D3d11 => 1,
-            Self::D3d12 => 2,
-            Self::OpenGl => 3,
-            Self::Vulkan => 4,
-        }
-    }
-}
 
 fn expand_hook_choices(
     hooks: &mut Vec<HookBackend>,
