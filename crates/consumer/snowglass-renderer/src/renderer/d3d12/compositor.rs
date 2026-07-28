@@ -322,8 +322,45 @@ impl DisplayLatency {
 struct ChromeLayer {
     resource: ID3D12Resource,
     descriptor: u32,
-    /// The handle this was opened from, so an unchanged band is not reopened.
+    source: ChromeSource,
+}
+
+/// Identity of the shared texture supplied for one chrome band.
+///
+/// Win32 is allowed to reuse a closed handle value immediately. The game
+/// layer recreates its full-window textures on a resize, so the numeric handle
+/// alone cannot distinguish the replacement from the old-sized resource the
+/// compositor still has open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ChromeSource {
     handle: isize,
+    width: u32,
+    height: u32,
+}
+
+impl ChromeSource {
+    fn queue_open(
+        self,
+        id: u64,
+        held: Option<Self>,
+        opens: &mut Vec<(u64, Self)>,
+        removals: &mut Vec<u64>,
+    ) {
+        if opens
+            .iter()
+            .any(|(pending_id, pending)| *pending_id == id && *pending == self)
+        {
+            return;
+        }
+        // The latest paint wins. In particular, resizing A -> B -> A before
+        // the next draw must cancel the queued B texture instead of reopening
+        // it after the layer has already returned to A.
+        opens.retain(|(pending_id, _)| *pending_id != id);
+        removals.retain(|pending_id| *pending_id != id);
+        if held != Some(self) {
+            opens.push((id, self));
+        }
+    }
 }
 
 pub struct D3d12Compositor {
@@ -361,7 +398,7 @@ pub struct D3d12Compositor {
     /// Chrome handed over since the last frame. Opening a shared texture takes
     /// a descriptor slot, and a slot cannot be reused while an in-flight frame
     /// still refers to it, so the work waits for the start of a frame.
-    chrome_opens: Vec<(u64, isize)>,
+    chrome_opens: Vec<(u64, ChromeSource)>,
     chrome_removals: Vec<u64>,
     free_descriptors: Vec<u32>,
     display_latency: DisplayLatency,
@@ -1456,18 +1493,22 @@ impl D3d12Compositor {
         if width == 0 || height == 0 || handle == 0 {
             return;
         }
-        // Reopening the same handle would allocate a second view of the same
-        // pixels for nothing; the shell repaints in place.
-        if self
-            .chrome
-            .get(&id)
-            .is_some_and(|held| held.handle == handle)
-        {
-            return;
-        }
-        self.chrome_opens.retain(|(existing, _)| *existing != id);
-        self.chrome_removals.retain(|existing| *existing != id);
-        self.chrome_opens.push((id, handle));
+        let source = ChromeSource {
+            handle,
+            width,
+            height,
+        };
+        // Reopening the same live texture would allocate a second view of the
+        // same pixels for nothing; the shell normally repaints it in place.
+        // Include its extent in the identity because a resize closes the old
+        // handle before allocating the replacement, and Win32 may give that
+        // replacement the same numeric handle.
+        source.queue_open(
+            id,
+            self.chrome.get(&id).map(|held| held.source),
+            &mut self.chrome_opens,
+            &mut self.chrome_removals,
+        );
     }
 
     /// Releases a chrome layer the shell has stopped drawing.
@@ -1491,7 +1532,7 @@ impl D3d12Compositor {
                 self.frame_garbage[frame_index].push(layer.resource);
             }
         }
-        for (id, handle) in std::mem::take(&mut self.chrome_opens) {
+        for (id, source) in std::mem::take(&mut self.chrome_opens) {
             // Never overwrite a shader-visible descriptor still referenced by
             // another in-flight frame. Its old slot is recycled with that frame.
             let descriptor = self
@@ -1504,7 +1545,7 @@ impl D3d12Compositor {
             unsafe {
                 self.receiver
                     .device()
-                    .OpenSharedHandle(HANDLE(handle as *mut c_void), &mut opened)?;
+                    .OpenSharedHandle(HANDLE(source.handle as *mut c_void), &mut opened)?;
             }
             let resource = opened.ok_or("opening a shared chrome texture returned nothing")?;
             // SAFETY: the descriptor slot is free and the resource outlives it.
@@ -1522,7 +1563,7 @@ impl D3d12Compositor {
                 ChromeLayer {
                     resource,
                     descriptor,
-                    handle,
+                    source,
                 },
             ) {
                 self.frame_descriptors[frame_index].push(old.descriptor);
@@ -2196,11 +2237,52 @@ fn as_bytes<T>(items: &[T]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisplayLatency, UploadArena, compile, compositor_shader, quad};
+    use super::{ChromeSource, DisplayLatency, UploadArena, compile, compositor_shader, quad};
     use std::time::{Duration, Instant};
 
     /// One tick of the QPC clock per millisecond, so latencies read directly.
     const TEST_FREQUENCY: f64 = 1000.0;
+
+    #[test]
+    fn resized_chrome_is_not_deduplicated_when_windows_reuses_its_handle() {
+        let before = ChromeSource {
+            handle: 42,
+            width: 1280,
+            height: 720,
+        };
+        let resized = ChromeSource {
+            handle: 42,
+            width: 1920,
+            height: 1080,
+        };
+        let mut opens = Vec::new();
+        let mut removals = vec![0];
+
+        resized.queue_open(0, Some(before), &mut opens, &mut removals);
+
+        assert_eq!(opens, [(0, resized)]);
+        assert!(removals.is_empty());
+    }
+
+    #[test]
+    fn latest_chrome_size_wins_when_resizes_coalesce_before_a_draw() {
+        let held = ChromeSource {
+            handle: 42,
+            width: 1280,
+            height: 720,
+        };
+        let intermediate = ChromeSource {
+            handle: 42,
+            width: 1920,
+            height: 1080,
+        };
+        let mut opens = vec![(0, intermediate)];
+        let mut removals = Vec::new();
+
+        held.queue_open(0, Some(held), &mut opens, &mut removals);
+
+        assert!(opens.is_empty());
+    }
 
     /// A vblank timestamp only dates the present DXGI names alongside it.
     /// Attributing it to the wrong present would silently report a latency the
