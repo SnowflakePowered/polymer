@@ -36,8 +36,16 @@ export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {
 
 export interface GameViewInstance {
   on(eventName: string, callback: (event: unknown) => void): void;
+  off(eventName: string, callback: (event: unknown) => void): void;
   readonly surfaces?: TrackedSurface[];
+  readonly audio?: Readonly<{
+    available: boolean;
+    volume: number;
+    muted: boolean;
+  }>;
   message(messageName: string, args: unknown): void;
+  setVolume(volume: number): void;
+  setMuted(muted: boolean): void;
   close(): void;
 }
 

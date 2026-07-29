@@ -18,7 +18,7 @@ mod shared;
 
 use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
-pub use bands::GamePlacement;
+pub use bands::{GamePlacement, GameViewStyle};
 use blitz_dom::net::Resource;
 use blitz_dom::node::{CanvasData, Node, SpecialElementData};
 use blitz_dom::{Document as _, LocalName, QualName, local_name, ns};
@@ -760,7 +760,7 @@ impl GameLayer {
             );
             (scene.bands_used(), scene.overflowed())
         };
-        apply_tracked_surface_radii(self.document.as_ref(), &mut self.placements);
+        apply_tracked_surface_styles(self.document.as_ref(), &mut self.placements);
         if overflowed {
             eprintln!(
                 "snowglass: the game layer shows more than {} views, so the ones past that \
@@ -998,11 +998,11 @@ fn apply_dom_mutation_batch(
     }
 }
 
-fn apply_tracked_surface_radii(
+fn apply_tracked_surface_styles(
     document: &blitz_dom::BaseDocument,
     placements: &mut [GamePlacement],
 ) {
-    let radii = document
+    let styles = document
         .tree()
         .iter()
         .filter_map(|(_, node)| {
@@ -1016,16 +1016,30 @@ fn apply_tracked_surface_radii(
                 .and_then(|value| value.parse::<f32>().ok())
                 .unwrap_or_default()
                 .max(0.0);
-            Some((source, radius))
+            let styles = node.primary_styles()?;
+            Some((
+                source,
+                (
+                    radius,
+                    GameViewStyle {
+                        object_fit: styles.clone_object_fit(),
+                        object_position: styles.clone_object_position(),
+                    },
+                ),
+            ))
         })
         .collect::<HashMap<_, _>>();
     for placement in placements {
         let maximum = (placement.rect.width().min(placement.rect.height()) * 0.5) as f32;
-        placement.corner_radius = radii
+        placement.corner_radius = styles
             .get(&placement.source_id)
-            .copied()
+            .map(|(radius, _)| *radius)
             .unwrap_or_default()
             .min(maximum);
+        placement.style = styles
+            .get(&placement.source_id)
+            .map(|(_, style)| style.clone());
+        placement.opacity = placement.opacity.clamp(0.0, 1.0);
     }
 }
 
@@ -1082,7 +1096,14 @@ mod tests {
     #[test]
     fn tracked_surface_becomes_a_custom_paint_placeholder() {
         let mut document = blitz_html::HtmlDocument::from_html(
-            r#"<style>.surface { display: block; width: 320px; height: 180px; }</style><tracked-surface class="surface" src="7" data-corner-radius="12"></tracked-surface>"#,
+            r#"<style>.surface {
+                display: block;
+                width: 320px;
+                height: 180px;
+                object-fit: cover;
+                object-position: 25% 75%;
+                opacity: 0.4;
+            }</style><tracked-surface class="surface" src="7" data-corner-radius="12"></tracked-surface>"#,
             blitz_dom::DocumentConfig::default(),
         );
         initialise_tracked_surfaces(&mut document);
@@ -1118,12 +1139,34 @@ mod tests {
         let mut placements = Vec::new();
         let mut scene = BandedScene::new(&mut painters, &mut placements);
         blitz_paint::paint_scene(&mut scene, document.as_ref(), 1.0, 800, 600);
-        apply_tracked_surface_radii(document.as_ref(), &mut placements);
+        apply_tracked_surface_styles(document.as_ref(), &mut placements);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].source_id, 7);
         assert_eq!(placements[0].rect.width(), 320.0);
         assert_eq!(placements[0].rect.height(), 180.0);
         assert_eq!(placements[0].corner_radius, 12.0);
+        assert!((placements[0].opacity - 0.4).abs() < f32::EPSILON);
+        let style = placements[0].style.as_ref().unwrap();
+        assert_eq!(
+            style.object_fit,
+            style::properties::generated::longhands::object_fit::computed_value::T::Cover
+        );
+        assert_eq!(
+            style
+                .object_position
+                .horizontal
+                .resolve(style::values::computed::CSSPixelLength::new(100.0))
+                .px(),
+            25.0
+        );
+        assert_eq!(
+            style
+                .object_position
+                .vertical
+                .resolve(style::values::computed::CSSPixelLength::new(100.0))
+                .px(),
+            75.0
+        );
     }
 
     #[test]

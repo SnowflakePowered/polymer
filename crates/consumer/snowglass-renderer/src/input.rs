@@ -247,35 +247,81 @@ fn pointer_destination(
         .zip(presentation_mappings)
         .enumerate()
         .filter_map(|(surface_index, (surface, presentation_mapping))| {
-            Some(snowglass_input::mouse::layout::CompositePlacement {
+            Some((
                 surface_index,
-                viewer_rect: plan.rectangle(surface.connection, surface.surface_id)?,
-                presentation_extent: Extent::new(
-                    surface.frame.presentation_width,
-                    surface.frame.presentation_height,
-                ),
+                *plan.placements().find(|placement| {
+                    placement.connection == surface.connection
+                        && placement.surface_id == surface.surface_id
+                })?,
                 presentation_mapping,
-            })
+            ))
         });
-    placements.into_iter().find_map(|placement| {
-        let surface = surfaces.get(placement.surface_index)?;
-        if captured_connection.is_some_and(|connection| connection != surface.connection) {
-            return None;
-        }
-        let position = placement.map_to_presentation(point, outside)?;
-        let normalized_position =
-            normalized_surface_position(placement.viewer_rect, point, outside)?;
-        Some(MappedPointer {
-            connection: surface.connection,
-            surface_id: surface.surface_id,
-            target_window: surface.target_window,
-            frame: surface.frame,
-            position,
-            normalized_position,
+    placements
+        .into_iter()
+        .find_map(|(surface_index, placement, presentation_mapping)| {
+            let surface = surfaces.get(surface_index)?;
+            if captured_connection.is_some_and(|connection| connection != surface.connection) {
+                return None;
+            }
+            let (sample_position, normalized_position) =
+                content_positions(placement, point, outside)?;
+            let position = presentation_mapping?.map(sample_position.x, sample_position.y);
+            Some(MappedPointer {
+                connection: surface.connection,
+                surface_id: surface.surface_id,
+                target_window: surface.target_window,
+                frame: surface.frame,
+                position,
+                normalized_position,
+            })
         })
-    })
 }
 
+fn content_positions(
+    placement: crate::SurfacePlacement,
+    point: Point,
+    outside: OutsideBehavior,
+) -> Option<(Point, Point)> {
+    let hit = placement.rectangle;
+    if hit.is_empty() || (outside == OutsideBehavior::Reject && !hit.contains(point)) {
+        return None;
+    }
+    let destination = placement.content.destination;
+    let width = f64::from(destination[2] - destination[0]);
+    let height = f64::from(destination[3] - destination[1]);
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let local_x = point.x - f64::from(destination[0]);
+    let local_y = point.y - f64::from(destination[1]);
+    let source = placement.content.source;
+    let map_source = |u: f64, v: f64| {
+        Point::new(
+            f64::from(source[0]) + u.clamp(0.0, 1.0) * f64::from(source[2] - source[0]),
+            f64::from(source[1]) + v.clamp(0.0, 1.0) * f64::from(source[3] - source[1]),
+        )
+    };
+    let sample = map_source(local_x / width, local_y / height);
+    // DirectInput's normalized axes use the existing pixel-endpoint
+    // convention: the first and last destination pixels map exactly to 0 and
+    // 1. Presentation transforms use continuous box coordinates above.
+    let normalized = map_source(
+        local_x / (width - 1.0).max(1.0),
+        local_y / (height - 1.0).max(1.0),
+    );
+    Some((sample, normalized))
+}
+
+#[cfg(test)]
+fn normalized_content_position(
+    placement: crate::SurfacePlacement,
+    point: Point,
+    outside: OutsideBehavior,
+) -> Option<Point> {
+    content_positions(placement, point, outside).map(|(_, normalized)| normalized)
+}
+
+#[cfg(test)]
 fn normalized_surface_position(
     rect: Rect,
     point: Point,
@@ -449,12 +495,12 @@ mod tests {
             Point::new(200.0, 420.0),
             None,
             OutsideBehavior::Reject,
-            &plan([SurfacePlacement {
-                connection: 7,
-                surface_id: 99,
-                rectangle: Rect::new(0, 60, 800, 480),
-                corner_radius: 0.0,
-            }]),
+            &plan([SurfacePlacement::new(
+                7,
+                99,
+                Rect::new(0, 60, 800, 480),
+                0.0,
+            )]),
             &surfaces,
         )
         .expect("point is inside the displayed surface");
@@ -481,6 +527,26 @@ mod tests {
     }
 
     #[test]
+    fn fitted_content_maps_pointer_coordinates_through_its_crop() {
+        let mut placement = SurfacePlacement::new(7, 99, Rect::new(0, 0, 200, 200), 0.0);
+        placement.content.destination = [0.0, 50.0, 200.0, 150.0];
+        placement.content.source = [0.25, 0.0, 0.75, 1.0];
+
+        assert_eq!(
+            normalized_content_position(placement, Point::new(0.0, 0.0), OutsideBehavior::Reject),
+            Some(Point::new(0.25, 0.0))
+        );
+        assert_eq!(
+            normalized_content_position(
+                placement,
+                Point::new(199.0, 149.0),
+                OutsideBehavior::Reject
+            ),
+            Some(Point::new(0.75, 1.0))
+        );
+    }
+
+    #[test]
     fn unavailable_presentation_mapping_does_not_route_input() {
         let surfaces = [ReceivedSurface {
             connection: 7,
@@ -496,12 +562,12 @@ mod tests {
                 Point::new(200.0, 420.0),
                 None,
                 OutsideBehavior::Reject,
-                &plan([SurfacePlacement {
-                    connection: 7,
-                    surface_id: 99,
-                    rectangle: Rect::new(0, 60, 800, 480),
-                    corner_radius: 0.0,
-                }]),
+                &plan([SurfacePlacement::new(
+                    7,
+                    99,
+                    Rect::new(0, 60, 800, 480),
+                    0.0,
+                )]),
                 &surfaces,
             )
             .is_none()
@@ -540,18 +606,8 @@ mod tests {
             None,
             OutsideBehavior::Reject,
             &plan([
-                SurfacePlacement {
-                    connection: 7,
-                    surface_id: 99,
-                    rectangle: Rect::new(0, 0, 800, 480),
-                    corner_radius: 0.0,
-                },
-                SurfacePlacement {
-                    connection: 8,
-                    surface_id: 100,
-                    rectangle: Rect::new(80, 480, 640, 480),
-                    corner_radius: 0.0,
-                },
+                SurfacePlacement::new(7, 99, Rect::new(0, 0, 800, 480), 0.0),
+                SurfacePlacement::new(8, 100, Rect::new(80, 480, 640, 480), 0.0),
             ]),
             &surfaces,
         )
@@ -598,18 +654,8 @@ mod tests {
             None,
             OutsideBehavior::Reject,
             &plan([
-                SurfacePlacement {
-                    connection: 7,
-                    surface_id: 99,
-                    rectangle: Rect::new(0, 0, 800, 480),
-                    corner_radius: 0.0,
-                },
-                SurfacePlacement {
-                    connection: 8,
-                    surface_id: 100,
-                    rectangle: Rect::new(80, 480, 640, 480),
-                    corner_radius: 0.0,
-                },
+                SurfacePlacement::new(7, 99, Rect::new(0, 0, 800, 480), 0.0),
+                SurfacePlacement::new(8, 100, Rect::new(80, 480, 640, 480), 0.0),
             ]),
             &surfaces,
         )
@@ -624,18 +670,8 @@ mod tests {
             None,
             OutsideBehavior::Reject,
             &plan([
-                SurfacePlacement {
-                    connection: 7,
-                    surface_id: 99,
-                    rectangle: Rect::new(0, 0, 800, 480),
-                    corner_radius: 0.0,
-                },
-                SurfacePlacement {
-                    connection: 8,
-                    surface_id: 100,
-                    rectangle: Rect::new(80, 480, 640, 480),
-                    corner_radius: 0.0,
-                },
+                SurfacePlacement::new(7, 99, Rect::new(0, 0, 800, 480), 0.0),
+                SurfacePlacement::new(8, 100, Rect::new(80, 480, 640, 480), 0.0),
             ]),
             &surfaces,
         )
@@ -656,12 +692,12 @@ mod tests {
             frame: frame(PresentationTransform::axis_aligned(80, 120, 960, 576)),
         }];
         let presentation = Presentation::new(Extent::new(800, 600), surfaces.to_vec());
-        let plan = plan([SurfacePlacement {
-            connection: 7,
-            surface_id: 99,
-            rectangle: Rect::new(0, 60, 800, 480),
-            corner_radius: 0.0,
-        }]);
+        let plan = plan([SurfacePlacement::new(
+            7,
+            99,
+            Rect::new(0, 60, 800, 480),
+            0.0,
+        )]);
         let sender = MessageCollector::default();
         let mut routing = PointerRoutingState::new(Instant::now());
         routing.set_cursor(200.0, 420.0);

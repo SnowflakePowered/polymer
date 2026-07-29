@@ -11,6 +11,13 @@ interface Window {
   __snowglassKeyboardInput(event: unknown): void;
 }
 
+type ForegroundHitRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 interface HTMLLinkElement {
   readonly contentWindow: BackgroundWindowProxy | null;
 }
@@ -66,6 +73,88 @@ window.__snowglassSetInputPriority = (priority) => {
 window.__snowglassKeyboardInput = (event) => {
   dispatchEvent(new CustomEvent("snowglassinput", { detail: event }));
 };
+
+let publishedForegroundHitRegions = "";
+let foregroundHitRegionFrame = 0;
+const foregroundHitRegionElements = new Set<Element>();
+const foregroundHitRegionResizeObserver = new ResizeObserver(() => {
+  scheduleForegroundHitRegions();
+});
+
+function collectForegroundHitRegions(): ForegroundHitRegion[] {
+  const scale = window.devicePixelRatio;
+  const regions: ForegroundHitRegion[] = [];
+  for (const element of document.querySelectorAll(
+    "[data-snowglass-foreground-hit-region]",
+  )) {
+    const style = getComputedStyle(element);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.pointerEvents === "none"
+    ) {
+      continue;
+    }
+    for (const rect of element.getClientRects()) {
+      const left = Math.floor(rect.left * scale);
+      const top = Math.floor(rect.top * scale);
+      const right = Math.ceil(rect.right * scale);
+      const bottom = Math.ceil(rect.bottom * scale);
+      if (right > left && bottom > top) {
+        regions.push({
+          x: left,
+          y: top,
+          width: right - left,
+          height: bottom - top,
+        });
+      }
+    }
+  }
+  return regions;
+}
+
+function publishForegroundHitRegions(): void {
+  foregroundHitRegionFrame = 0;
+  const regions = collectForegroundHitRegions();
+  const serialized = JSON.stringify(regions);
+  if (serialized !== publishedForegroundHitRegions) {
+    publishedForegroundHitRegions = serialized;
+    window.ipc.postMessage(
+      JSON.stringify({ type: "foregroundHitRegions", regions }),
+    );
+  }
+
+  const current = new Set(
+    document.querySelectorAll("[data-snowglass-foreground-hit-region]"),
+  );
+  for (const element of foregroundHitRegionElements) {
+    if (!current.has(element)) {
+      foregroundHitRegionResizeObserver.unobserve(element);
+      foregroundHitRegionElements.delete(element);
+    }
+  }
+  for (const element of current) {
+    if (!foregroundHitRegionElements.has(element)) {
+      foregroundHitRegionElements.add(element);
+      foregroundHitRegionResizeObserver.observe(element);
+    }
+  }
+}
+
+function scheduleForegroundHitRegions(): void {
+  if (!foregroundHitRegionFrame) {
+    foregroundHitRegionFrame = requestAnimationFrame(publishForegroundHitRegions);
+  }
+}
+
+new MutationObserver(scheduleForegroundHitRegions).observe(document, {
+  attributes: true,
+  childList: true,
+  subtree: true,
+});
+addEventListener("resize", scheduleForegroundHitRegions);
+addEventListener("transitionrun", scheduleForegroundHitRegions, true);
+addEventListener("transitionend", scheduleForegroundHitRegions, true);
 
 Object.defineProperty(window, "snowglassInput", {
   value: Object.freeze({
@@ -345,9 +434,15 @@ async function announceFrontendReady(): Promise<void> {
 }
 
 if (document.readyState === "loading") {
-  addEventListener("DOMContentLoaded", () => void announceFrontendReady(), {
-    once: true,
-  });
+  addEventListener(
+    "DOMContentLoaded",
+    () => {
+      scheduleForegroundHitRegions();
+      void announceFrontendReady();
+    },
+    { once: true },
+  );
 } else {
+  scheduleForegroundHitRegions();
   queueMicrotask(() => void announceFrontendReady());
 }

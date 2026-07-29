@@ -10,6 +10,14 @@ pub enum Command {
         options: Value,
     },
     Close(String),
+    SetVolume {
+        instance_id: String,
+        volume: f64,
+    },
+    SetMuted {
+        instance_id: String,
+        muted: bool,
+    },
     Message {
         instance_id: String,
         name: String,
@@ -37,6 +45,25 @@ pub(super) fn op_game_close(state: &mut OpState, #[string] instance_id: String) 
         .borrow_mut::<BridgeState>()
         .commands
         .push(Command::Close(instance_id));
+}
+
+#[op2(fast)]
+pub(super) fn op_game_set_volume(state: &mut OpState, #[string] instance_id: String, volume: f64) {
+    state
+        .borrow_mut::<BridgeState>()
+        .commands
+        .push(Command::SetVolume {
+            instance_id,
+            volume,
+        });
+}
+
+#[op2(fast)]
+pub(super) fn op_game_set_muted(state: &mut OpState, #[string] instance_id: String, muted: bool) {
+    state
+        .borrow_mut::<BridgeState>()
+        .commands
+        .push(Command::SetMuted { instance_id, muted });
 }
 
 #[op2]

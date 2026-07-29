@@ -13,7 +13,7 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
-use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory};
+use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory, GameViewStyle};
 use game_layer_state::{GameLayerAction, GameLayerState, GameLayerWork};
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -30,7 +30,7 @@ use snowglass_platform_windows::{performance_counter, performance_frequency};
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, Extent, PlanLayer, Renderer, SurfaceCapture,
-    SurfaceCaptureEvent, SurfacePlacement, SurfacePointerSender, cli::ViewerApi,
+    SurfaceCaptureEvent, SurfaceContent, SurfacePlacement, SurfacePointerSender, cli::ViewerApi,
     input::PointerRoutingState, webrtc,
 };
 use snowglass_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
@@ -83,6 +83,7 @@ enum UserEvent {
         background_error: Option<String>,
     },
     Layout(Vec<SurfaceLayout>),
+    ForegroundHitRegions(Vec<ForegroundHitRegion>),
     GameLayerMessage(serde_json::Value),
     GameLayerProxy(serde_json::Value),
     InputPriority(InputPriority),
@@ -279,12 +280,15 @@ struct CapturedSurface {
     pointer_events: bool,
     z_index: i32,
     corner_radius: f32,
+    game_view_style: Option<GameViewStyle>,
+    opacity: f32,
 }
 
 struct ActiveGame {
     instance_id: String,
     options: LaunchOptions,
     webrtc: Option<webrtc::Publisher>,
+    audio: snowglass_runtime::AudioState,
 }
 
 struct EguiOverlay {
@@ -776,6 +780,22 @@ impl ShellState {
                             }
                         }
                     }
+                    Some("foregroundHitRegions") => {
+                        let Some(regions) = message.get("regions") else {
+                            return;
+                        };
+                        match serde_json::from_value::<Vec<ForegroundHitRegion>>(regions.clone()) {
+                            Ok(regions) => {
+                                let _ = foreground_proxy
+                                    .send_event(UserEvent::ForegroundHitRegions(regions));
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "snowglass: invalid WebView2 foreground hit regions: {error}"
+                                );
+                            }
+                        }
+                    }
                     Some("gameLayerMessage") => {
                         let message = message
                             .get("message")
@@ -908,6 +928,13 @@ impl ShellState {
                     self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
                 }
                 GameLayerAction::Close(instance_id) => self.close_game(&instance_id),
+                GameLayerAction::SetVolume {
+                    instance_id,
+                    volume,
+                } => self.set_game_volume(&instance_id, volume),
+                GameLayerAction::SetMuted { instance_id, muted } => {
+                    self.set_game_muted(&instance_id, muted)
+                }
                 GameLayerAction::Message {
                     instance_id,
                     name,
@@ -1150,15 +1177,18 @@ impl ShellState {
                 }
                 self.streams.capture.attach(&target);
                 self.input.transport.attach(&target);
+                let audio = target.audio_state();
                 self.game.target = Some(target);
                 self.input.provider = provider;
                 self.game.active = Some(ActiveGame {
                     instance_id: instance_id.clone(),
                     options,
                     webrtc: publisher,
+                    audio,
                 });
                 self.set_input_priority(InputPriority::Game);
                 self.emit_instance_event(&instance_id, "ready", &serde_json::Value::Null);
+                self.publish_audio_state(true);
             }
             Err(error) => {
                 self.emit_instance_event(
@@ -1228,6 +1258,69 @@ impl ShellState {
                 &serde_json::json!({ "name": name, "args": args }),
             );
         }
+    }
+
+    fn set_game_volume(&mut self, instance_id: &str, volume: f64) {
+        if !self
+            .game
+            .active
+            .as_ref()
+            .is_some_and(|active| active.instance_id == instance_id)
+        {
+            return;
+        }
+        let Some(volume) = snowglass_runtime::NormalizedVolume::new(volume as f32) else {
+            return;
+        };
+        if let Some(target) = self.game.target.as_ref() {
+            target.set_volume(volume);
+            self.publish_audio_state(false);
+        }
+    }
+
+    fn set_game_muted(&mut self, instance_id: &str, muted: bool) {
+        if !self
+            .game
+            .active
+            .as_ref()
+            .is_some_and(|active| active.instance_id == instance_id)
+        {
+            return;
+        }
+        if let Some(target) = self.game.target.as_ref() {
+            target.set_muted(muted);
+            self.publish_audio_state(false);
+        }
+    }
+
+    fn publish_audio_state(&mut self, force: bool) {
+        let Some(audio) = self
+            .game
+            .target
+            .as_ref()
+            .map(snowglass_runtime::EmulatorInstance::audio_state)
+        else {
+            return;
+        };
+        let instance_id = {
+            let Some(active) = self.game.active.as_mut() else {
+                return;
+            };
+            if !force && active.audio == audio {
+                return;
+            }
+            active.audio = audio;
+            active.instance_id.clone()
+        };
+        self.emit_instance_event(
+            &instance_id,
+            "audioChanged",
+            &serde_json::json!({
+                "available": audio.available,
+                "volume": audio.volume.get(),
+                "muted": audio.muted,
+            }),
+        );
     }
 
     fn emit_instance_event(
@@ -1468,6 +1561,8 @@ impl ShellState {
                 pointer_events: true,
                 z_index: index as i32,
                 corner_radius: 0.0,
+                game_view_style: None,
+                opacity: 1.0,
             },
         );
         self.presentation.merged_dirty = true;
@@ -1558,20 +1653,25 @@ impl ShellState {
             .into_iter()
             .filter_map(|received| {
                 let surface = self.streams.surfaces.get(&received.connection)?;
-                Some((
-                    surface.z_index,
-                    PlanLayer::Surface(SurfacePlacement {
-                        connection: received.connection,
-                        surface_id: received.surface_id,
-                        rectangle: snowglass_input::mouse::layout::Rect::new(
-                            surface.viewport_x,
-                            surface.viewport_y,
-                            surface.viewport_width,
-                            surface.viewport_height,
-                        ),
-                        corner_radius: surface.corner_radius,
-                    }),
-                ))
+                let rectangle = Rect::new(
+                    surface.viewport_x,
+                    surface.viewport_y,
+                    surface.viewport_width,
+                    surface.viewport_height,
+                );
+                let mut placement = SurfacePlacement::new(
+                    received.connection,
+                    received.surface_id,
+                    rectangle,
+                    surface.corner_radius,
+                );
+                placement.content = fit_surface_content(
+                    rectangle,
+                    received.image_extent,
+                    surface.game_view_style.as_ref(),
+                    surface.opacity,
+                );
+                Some((surface.z_index, PlanLayer::Surface(placement)))
             })
             .collect::<Vec<_>>();
         // The game layer's chrome is composited into this same swapchain rather
@@ -1651,22 +1751,10 @@ impl ShellState {
     }
 
     fn apply_layout(&mut self, layouts: Vec<SurfaceLayout>) {
-        self.input.foreground_hit_regions = layouts
-            .iter()
-            .flat_map(|layout| {
-                layout
-                    .foreground_hit_region
-                    .iter()
-                    .chain(&layout.foreground_hit_regions)
-                    .copied()
-            })
-            .filter(|region| region.width != 0 && region.height != 0)
-            .collect();
         if self.game_layer.is_linked() {
             // The layer decides where the views go, so the foreground's idea of
-            // it is ignored rather than fought with. Its hit regions are still
-            // its own: they say where the foreground wants the pointer, which
-            // is not something this layer knows.
+            // their placement is ignored rather than fought with. Foreground
+            // hit regions arrive independently from the WebView DOM.
             return;
         }
         self.place_surfaces(layouts);
@@ -1734,9 +1822,9 @@ impl ShellState {
                     height: rect.height().round().max(0.0) as u32,
                     z_index: game_view_z_index(placement.band),
                     corner_radius: placement.corner_radius,
+                    game_view_style: placement.style.clone(),
+                    opacity: placement.opacity,
                     pointer_events: true,
-                    foreground_hit_region: None,
-                    foreground_hit_regions: Vec::new(),
                 })
             })
             .collect::<Vec<_>>();
@@ -1762,14 +1850,14 @@ impl ShellState {
                     height: 0,
                     z_index: game_view_z_index(0),
                     corner_radius: 0.0,
+                    game_view_style: None,
+                    opacity: 1.0,
                     pointer_events: false,
-                    foreground_hit_region: None,
-                    foreground_hit_regions: Vec::new(),
                 });
             }
         }
-        // Deliberately not `apply_layout`: the foreground owns the hit regions
-        // even when this layer owns where the views sit.
+        // Deliberately not `apply_layout`: these are already compositor-owned
+        // placements rather than a foreground layout update.
         self.place_surfaces(layouts);
     }
 
@@ -1784,7 +1872,9 @@ impl ShellState {
                 || surface.viewport_height != item.height
                 || surface.pointer_events != item.pointer_events
                 || surface.z_index != item.z_index
-                || surface.corner_radius != item.corner_radius;
+                || surface.corner_radius != item.corner_radius
+                || surface.game_view_style != item.game_view_style
+                || surface.opacity != item.opacity;
             if changed {
                 surface.viewport_x = item.x;
                 surface.viewport_y = item.y;
@@ -1793,6 +1883,8 @@ impl ShellState {
                 surface.pointer_events = item.pointer_events;
                 surface.z_index = item.z_index;
                 surface.corner_radius = item.corner_radius;
+                surface.game_view_style = item.game_view_style;
+                surface.opacity = item.opacity;
                 self.presentation.merged_dirty = true;
             }
         }
@@ -1913,17 +2005,25 @@ impl ShellState {
                     received_surface.frame.presentation_width,
                     received_surface.frame.presentation_height,
                 );
-                placements.push(SurfacePlacement {
+                let rectangle = Rect::new(
+                    surface.viewport_x,
+                    surface.viewport_y,
+                    surface.viewport_width,
+                    surface.viewport_height,
+                );
+                let mut placement = SurfacePlacement::new(
                     connection,
-                    surface_id: received_surface.surface_id,
-                    rectangle: Rect::new(
-                        surface.viewport_x,
-                        surface.viewport_y,
-                        surface.viewport_width,
-                        surface.viewport_height,
-                    ),
-                    corner_radius: surface.corner_radius,
-                });
+                    received_surface.surface_id,
+                    rectangle,
+                    surface.corner_radius,
+                );
+                placement.content = fit_surface_content(
+                    rectangle,
+                    received_surface.image_extent,
+                    surface.game_view_style.as_ref(),
+                    surface.opacity,
+                );
+                placements.push(placement);
                 received.push(received_surface);
             }
         }
@@ -2279,6 +2379,8 @@ impl ShellState {
             self.streams.capture.detach();
             self.input.transport.detach();
             self.finish_active_game();
+        } else {
+            self.publish_audio_state(false);
         }
     }
 }
@@ -2356,6 +2458,12 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 background_error,
             } => state.frontend_ready(background, background_error),
             UserEvent::Layout(layouts) => state.apply_layout(layouts),
+            UserEvent::ForegroundHitRegions(regions) => {
+                state.input.foreground_hit_regions = regions
+                    .into_iter()
+                    .filter(|region| region.width != 0 && region.height != 0)
+                    .collect();
+            }
             UserEvent::GameLayerMessage(message) => {
                 state.game_layer.post_message(&message);
                 let work = state.game_layer.service(&state.foreground_webview);
@@ -2516,8 +2624,24 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     x: position.x.round() as i32,
                     y: position.y.round() as i32,
                 };
-                // A background DOM handler that owns a pointer sequence stays
-                // ahead of everything underneath it.
+                if state.input.priority == InputPriority::Foreground
+                    || state.input.foreground_mouse_capture
+                    || (!consumed
+                        && state.input.pointer_routing.captured_connection().is_none()
+                        && state.game_layer.mouse_buttons() == 0
+                        && state.foreground_hit_test())
+                {
+                    state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
+                    return;
+                }
+                // WebView2 still needs the move when the pointer leaves a
+                // foreground region so CSS :hover and mouseleave state clear.
+                // A move outside a published region does not claim the event,
+                // so it continues down to Blitz.
+                state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
+                // Blitz owns the background DOM and its tracked-surface
+                // placements. It only sees events that neither egui nor the
+                // foreground WebView claimed.
                 if state.game_layer_mouse(
                     "mousemove",
                     position.x as f32,
@@ -2525,15 +2649,6 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     0,
                     None,
                 ) {
-                    return;
-                }
-                if state.input.priority == InputPriority::Foreground
-                    || state.input.foreground_mouse_capture
-                    || (!consumed
-                        && state.input.pointer_routing.captured_connection().is_none()
-                        && state.foreground_hit_test())
-                {
-                    state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
                     return;
                 }
                 state
@@ -2558,36 +2673,10 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                         3 => 1,
                         value => value.saturating_sub(1),
                     };
-                    // Script-owned pointer sequences get their release before
-                    // anything underneath can claim it.
-                    if button_state == ElementState::Released
-                        && state.game_layer_mouse(
-                            "mouseup",
-                            state.input.cursor.x as f32,
-                            state.input.cursor.y as f32,
-                            dom_button,
-                            Some(false),
-                        )
-                    {
-                        return;
-                    }
                     let foreground_hit = !consumed
                         && state.input.pointer_routing.captured_connection().is_none()
+                        && state.game_layer.mouse_buttons() == 0
                         && state.foreground_hit_test();
-                    // Background DOM gets the press after foreground hit
-                    // regions, but before the guest surface underneath.
-                    if button_state == ElementState::Pressed
-                        && !foreground_hit
-                        && state.game_layer_mouse(
-                            "mousedown",
-                            state.input.cursor.x as f32,
-                            state.input.cursor.y as f32,
-                            dom_button,
-                            Some(true),
-                        )
-                    {
-                        return;
-                    }
                     if state.input.priority == InputPriority::Foreground
                         || state.input.foreground_mouse_capture
                         || foreground_hit
@@ -2619,6 +2708,20 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                         {
                             state.input.foreground_mouse_capture = false;
                         }
+                        return;
+                    }
+                    let game_layer_kind = if button_state == ElementState::Pressed {
+                        "mousedown"
+                    } else {
+                        "mouseup"
+                    };
+                    if state.game_layer_mouse(
+                        game_layer_kind,
+                        state.input.cursor.x as f32,
+                        state.input.cursor.y as f32,
+                        dom_button,
+                        Some(button_state == ElementState::Pressed),
+                    ) {
                         return;
                     }
                     state.route_pointer(
@@ -2785,6 +2888,88 @@ fn control_event(key: &str, value: i32) -> serde_json::Value {
     })
 }
 
+/// Resolves CSS replaced-element sizing without changing the layout rectangle
+/// used for guest resizing and input. Overflow is converted into a source crop
+/// so the compositor never draws outside the tracked surface's box.
+fn fit_surface_content(
+    rectangle: Rect,
+    source: Extent,
+    style: Option<&GameViewStyle>,
+    opacity: f32,
+) -> SurfaceContent {
+    use style::{
+        properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
+        values::computed::CSSPixelLength,
+    };
+
+    let mut content = SurfaceContent::fill(rectangle);
+    content.opacity = if opacity.is_finite() {
+        opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if rectangle.is_empty() || source.is_empty() {
+        return content;
+    }
+
+    let container_width = rectangle.width as f32;
+    let container_height = rectangle.height as f32;
+    let source_width = source.width as f32;
+    let source_height = source.height as f32;
+    let Some(style) = style else {
+        return content;
+    };
+
+    let contain_scale = (container_width / source_width).min(container_height / source_height);
+    let cover_scale = (container_width / source_width).max(container_height / source_height);
+    let (object_width, object_height) = match style.object_fit {
+        ObjectFit::Fill => (container_width, container_height),
+        ObjectFit::Contain => (source_width * contain_scale, source_height * contain_scale),
+        ObjectFit::Cover => (source_width * cover_scale, source_height * cover_scale),
+        ObjectFit::None => (source_width, source_height),
+        ObjectFit::ScaleDown
+            if source_width <= container_width && source_height <= container_height =>
+        {
+            (source_width, source_height)
+        }
+        ObjectFit::ScaleDown => (source_width * contain_scale, source_height * contain_scale),
+    };
+
+    let x_offset = style
+        .object_position
+        .horizontal
+        .resolve(CSSPixelLength::new(container_width - object_width))
+        .px();
+    let y_offset = style
+        .object_position
+        .vertical
+        .resolve(CSSPixelLength::new(container_height - object_height))
+        .px();
+    let container_left = rectangle.x as f32;
+    let container_top = rectangle.y as f32;
+    let container_right = container_left + container_width;
+    let container_bottom = container_top + container_height;
+    let object_left = container_left + x_offset;
+    let object_top = container_top + y_offset;
+    let object_right = object_left + object_width;
+    let object_bottom = object_top + object_height;
+    let draw_left = object_left.max(container_left).min(container_right);
+    let draw_top = object_top.max(container_top).min(container_bottom);
+    let draw_right = object_right.min(container_right).max(container_left);
+    let draw_bottom = object_bottom.min(container_bottom).max(container_top);
+
+    content.destination = [draw_left, draw_top, draw_right, draw_bottom];
+    if draw_right > draw_left && draw_bottom > draw_top {
+        content.source = [
+            ((draw_left - object_left) / object_width).clamp(0.0, 1.0),
+            ((draw_top - object_top) / object_height).clamp(0.0, 1.0),
+            ((draw_right - object_left) / object_width).clamp(0.0, 1.0),
+            ((draw_bottom - object_top) / object_height).clamp(0.0, 1.0),
+        ];
+    }
+    content
+}
+
 const fn rotated_extent(width: u32, height: u32, quarter_turns: u8) -> (u32, u32) {
     if quarter_turns % 2 == 1 {
         (height, width)
@@ -2838,6 +3023,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use style::{
+        properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
+        values::computed::{LengthPercentage, Percentage, position::Position},
+    };
+
+    fn game_view_style(object_fit: ObjectFit, x: f32, y: f32) -> GameViewStyle {
+        GameViewStyle {
+            object_fit,
+            object_position: Position::new(
+                LengthPercentage::new_percent(Percentage(x)),
+                LengthPercentage::new_percent(Percentage(y)),
+            ),
+        }
+    }
 
     #[test]
     fn shell_targets_fall_back_to_their_full_presentation_for_pointer_input() {
@@ -2851,5 +3050,55 @@ mod tests {
     fn shell_targets_preserve_explicit_pointer_transforms() {
         let transform = PresentationTransform::axis_aligned(10, 20, 300, 200);
         assert_eq!(shell_pointer_transform(transform, 854, 480), transform);
+    }
+
+    #[test]
+    fn cover_crops_the_source_without_changing_the_layout_box() {
+        let rectangle = Rect::new(10, 20, 200, 200);
+        let style = game_view_style(ObjectFit::Cover, 0.5, 0.5);
+        let content = fit_surface_content(rectangle, Extent::new(400, 200), Some(&style), 0.35);
+
+        assert_eq!(content.destination, [10.0, 20.0, 210.0, 220.0]);
+        assert_eq!(content.source, [0.25, 0.0, 0.75, 1.0]);
+        assert!((content.opacity - 0.35).abs() < f32::EPSILON);
+        let placement = SurfacePlacement {
+            connection: 1,
+            surface_id: 2,
+            rectangle,
+            content,
+            corner_radius: 0.0,
+        };
+        assert_eq!(
+            CompositingPlan::new([0.0; 4], vec![placement]).rectangle(1, 2),
+            Some(rectangle)
+        );
+    }
+
+    #[test]
+    fn contain_and_object_position_move_only_the_draw_quad() {
+        let style = game_view_style(ObjectFit::Contain, 1.0, 1.0);
+        let content = fit_surface_content(
+            Rect::new(10, 20, 200, 200),
+            Extent::new(400, 200),
+            Some(&style),
+            1.0,
+        );
+
+        assert_eq!(content.destination, [10.0, 120.0, 210.0, 220.0]);
+        assert_eq!(content.source, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn none_is_clipped_at_the_object_position() {
+        let style = game_view_style(ObjectFit::None, 1.0, 1.0);
+        let content = fit_surface_content(
+            Rect::new(0, 0, 200, 100),
+            Extent::new(400, 200),
+            Some(&style),
+            1.0,
+        );
+
+        assert_eq!(content.destination, [0.0, 0.0, 200.0, 100.0]);
+        assert_eq!(content.source, [0.5, 0.5, 1.0, 1.0]);
     }
 }

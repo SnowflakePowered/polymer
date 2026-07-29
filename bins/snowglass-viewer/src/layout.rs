@@ -122,11 +122,8 @@ pub fn composition_plan(presentation: &Presentation) -> CompositingPlan {
     let placements = surfaces
         .iter()
         .zip(rectangles)
-        .map(|(surface, rectangle)| SurfacePlacement {
-            connection: surface.connection,
-            surface_id: surface.surface_id,
-            rectangle,
-            corner_radius: 0.0,
+        .map(|(surface, rectangle)| {
+            SurfacePlacement::new(surface.connection, surface.surface_id, rectangle, 0.0)
         })
         .collect();
     let plan = CompositingPlan::new(clear_color(), placements);

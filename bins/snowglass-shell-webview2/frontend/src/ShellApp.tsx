@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type {
+  BackgroundRemoteValue,
   GamePadMapping,
   GraphicsHook,
   LaunchRequest,
@@ -9,6 +10,17 @@ import "./shell.css";
 
 type InputMapping = "none" | "controller" | "keyboard" | "keyboard-mouse";
 type ForegroundPhase = "idle" | "launching" | "running" | "closing";
+type GameAudioState = {
+  available: boolean;
+  volume: number;
+  muted: boolean;
+};
+
+const DEFAULT_AUDIO: GameAudioState = {
+  available: false,
+  volume: 1,
+  muted: false,
+};
 
 const HOOKS: Array<{ id: GraphicsHook; label: string }> = [
   { id: "vulkan", label: "Vulkan" },
@@ -51,6 +63,23 @@ function gamepadMapping(choice: InputMapping): GamePadMapping[] {
   ];
 }
 
+function activeGameInstance(): BackgroundRemoteValue {
+  return window.gameLayer.contentWindow.gameView.activeInstance;
+}
+
+function audioState(value: unknown): GameAudioState {
+  const audio =
+    value && typeof value === "object"
+      ? (value as Partial<GameAudioState>)
+      : DEFAULT_AUDIO;
+  const volume = Number(audio.volume);
+  return {
+    available: Boolean(audio.available),
+    volume: Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 1,
+    muted: Boolean(audio.muted),
+  };
+}
+
 export function ShellApp() {
   const [command, setCommand] = useState("");
   const [argumentsText, setArgumentsText] = useState("");
@@ -63,6 +92,8 @@ export function ShellApp() {
   const [phase, setPhase] = useState<ForegroundPhase>("idle");
   const [status, setStatus] = useState("Choose a game to start");
   const [error, setError] = useState("");
+  const [audio, setAudio] = useState<GameAudioState>(DEFAULT_AUDIO);
+  const [confirmClose, setConfirmClose] = useState(false);
 
   useEffect(() => {
     const listener = (event: Event) => {
@@ -84,6 +115,8 @@ export function ShellApp() {
         setError("");
       } else if (message.phase === "closed" || message.phase === "error") {
         setPhase("idle");
+        setAudio(DEFAULT_AUDIO);
+        setConfirmClose(false);
         setError(
           message.phase === "error" && typeof message.error === "string"
             ? message.error
@@ -94,6 +127,35 @@ export function ShellApp() {
     window.gameLayer.addEventListener("message", listener);
     return () => window.gameLayer.removeEventListener("message", listener);
   }, []);
+
+  useEffect(() => {
+    if (phase !== "running") return;
+    let subscribed = true;
+    let instance: BackgroundRemoteValue | null = null;
+    const updateAudio = (value: unknown) => {
+      if (subscribed) setAudio(audioState(value));
+    };
+    void (async () => {
+      const resolved = (await activeGameInstance()) as unknown;
+      if (!subscribed || !resolved) return;
+      instance = resolved as BackgroundRemoteValue;
+      await instance.on("audioChanged", updateAudio);
+      if (subscribed) {
+        const initial = (await instance.audio) as unknown;
+        updateAudio(initial);
+      }
+    })().catch((subscriptionError: unknown) => {
+      if (subscribed) {
+        console.error("Could not subscribe to game audio", subscriptionError);
+      }
+    });
+    return () => {
+      subscribed = false;
+      if (instance) {
+        void instance.off("audioChanged", updateAudio).catch(() => {});
+      }
+    };
+  }, [phase]);
 
   const toggleHook = (hook: GraphicsHook) => {
     setHooks((selected) =>
@@ -147,10 +209,40 @@ export function ShellApp() {
   };
 
   const gameActive = phase !== "idle";
+  const hotbarVisible = phase === "running";
+
+  const setGameVolume = (volume: number) => {
+    volume = Math.max(0, Math.min(1, volume));
+    setAudio((state) => ({ ...state, volume }));
+    void activeGameInstance().setVolume(volume).catch((volumeError: unknown) => {
+      console.error("Could not set game volume", volumeError);
+    });
+  };
+
+  const toggleGameMuted = () => {
+    const muted = !audio.muted;
+    setAudio((state) => ({ ...state, muted }));
+    void activeGameInstance().setMuted(muted).catch((muteError: unknown) => {
+      console.error("Could not change game mute state", muteError);
+    });
+  };
+
+  const closeGame = () => {
+    setConfirmClose(false);
+    setPhase("closing");
+    setStatus("Closing game");
+    void activeGameInstance().close().catch((closeError: unknown) => {
+      setPhase("running");
+      setError(
+        closeError instanceof Error ? closeError.message : String(closeError),
+      );
+    });
+  };
 
   return (
-    <main className="shell" data-game-active={gameActive ? "true" : "false"}>
-      <section className="launcher-panel" aria-label="Start a game">
+    <>
+      <main className="shell" data-game-active={gameActive ? "true" : "false"}>
+        <section className="launcher-panel" aria-label="Start a game">
         <header>
           <span className="snowglass-mark" aria-hidden="true">
             ◈
@@ -242,7 +334,108 @@ export function ShellApp() {
             Start game
           </button>
         </form>
-      </section>
-    </main>
+        </section>
+      </main>
+
+      <div
+        className="game-controls-layer"
+        data-visible={hotbarVisible ? "true" : "false"}
+      >
+        <div
+          className="game-hotbar-trigger"
+          data-snowglass-foreground-hit-region
+        >
+          <div
+            className="game-hotbar"
+            role="toolbar"
+            aria-label="Game controls"
+          >
+            <button
+              className="hotbar-button hotbar-power"
+              type="button"
+              aria-label="Close game"
+              title="Close game"
+              onClick={() => setConfirmClose(true)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 2.5v9" />
+                <path d="M6.35 5.65a8 8 0 1 0 11.3 0" />
+              </svg>
+            </button>
+            <span className="hotbar-divider" />
+            <button
+              className="hotbar-button hotbar-audio"
+              type="button"
+              aria-label={audio.muted ? "Unmute game" : "Mute game"}
+              aria-pressed={audio.muted}
+              title={audio.muted ? "Unmute" : "Mute"}
+              onClick={toggleGameMuted}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9v6h4l5 4V5L8 9H4z" className="speaker-body" />
+                {audio.muted || audio.volume === 0 ? (
+                  <>
+                    <path d="m17 9 5 5" />
+                    <path d="m22 9-5 5" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M16 8.5a5 5 0 0 1 0 7" />
+                    {audio.volume > 0.55 && (
+                      <path d="M18.5 6a8.5 8.5 0 0 1 0 12" />
+                    )}
+                  </>
+                )}
+              </svg>
+            </button>
+            <input
+              className="hotbar-volume"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={audio.volume}
+              aria-label="Game volume"
+              title={`Volume ${Math.round(audio.volume * 100)}%`}
+              onChange={(event) => setGameVolume(Number(event.target.value))}
+            />
+          </div>
+        </div>
+      </div>
+
+      {confirmClose && (
+        <div
+          className="close-confirmation"
+          role="presentation"
+          data-snowglass-foreground-hit-region
+        >
+          <section
+            className="close-confirmation-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Close game?"
+          >
+            <h1>Close this game?</h1>
+            <p>Any unsaved progress will be lost.</p>
+            <div className="close-confirmation-actions">
+              <button
+                className="dialog-button secondary"
+                type="button"
+                onClick={() => setConfirmClose(false)}
+              >
+                Keep playing
+              </button>
+              <button
+                className="dialog-button danger"
+                type="button"
+                onClick={closeGame}
+              >
+                Close game
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </>
   );
 }

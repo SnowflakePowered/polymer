@@ -1,4 +1,4 @@
-use crate::renderer::{CompositingPlan, RenderWindow};
+use crate::renderer::{CompositingPlan, RenderWindow, SurfacePlacement};
 use ash::{Entry, vk};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_input::mouse::layout::Extent;
@@ -15,33 +15,46 @@ use crate::{fit_inside, renderer::ReceivedSurface, surface_sort_key, webrtc};
 use super::VulkanReceiver;
 
 const FRAMES_IN_FLIGHT: usize = 2;
+const SURFACE_DESCRIPTOR_COUNT: u32 = 1024;
+
 struct ImportedVulkanSurface {
     connection: u64,
     surface_id: u64,
     target_window: i64,
     imported: ImportedImageRing,
+    sample_views: Vec<vk::ImageView>,
+    sample_sets: Vec<vk::DescriptorSet>,
     flip_y: bool,
     quarter_turns: u8,
-    rotation: Option<VulkanRotation>,
     latest: Option<FrameReady>,
     last_released_frame: u64,
 }
 
-struct VulkanRotation {
-    stage_image: vk::Image,
-    stage_memory: vk::DeviceMemory,
-    stage_view: vk::ImageView,
-    rotated_image: vk::Image,
-    rotated_memory: vk::DeviceMemory,
-    rotated_view: vk::ImageView,
-    descriptor_set: vk::DescriptorSet,
-}
-
-struct RotationPipeline {
+struct CompositionPipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
+    opaque_pipeline: vk::Pipeline,
+    blend_pipeline: vk::Pipeline,
     descriptor_pool: vk::DescriptorPool,
+    sampler: vk::Sampler,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SurfacePush {
+    source: [f32; 4],
+    active_uv: [f32; 2],
+    opacity: f32,
+    transform: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SurfaceDraw {
+    image: vk::Image,
+    external_queue: bool,
+    descriptor_set: vk::DescriptorSet,
+    placement: SurfacePlacement,
+    push: SurfacePush,
 }
 
 pub struct VulkanCompositor {
@@ -71,7 +84,7 @@ pub struct VulkanCompositor {
     receiver: VulkanReceiver,
     mode: SwapchainMode,
     surfaces: Vec<ImportedVulkanSurface>,
-    rotation_pipeline: Option<RotationPipeline>,
+    composition_pipeline: CompositionPipeline,
     keyed_mutex_enabled: bool,
 }
 
@@ -420,6 +433,7 @@ impl VulkanCompositor {
                     .subpasses(std::slice::from_ref(&subpass)),
                 None,
             )?;
+            let composition_pipeline = create_composition_pipeline(&device, render_pass)?;
             let framebuffers = swapchain_views
                 .iter()
                 .map(|view| {
@@ -503,7 +517,7 @@ impl VulkanCompositor {
                     receiver,
                     mode,
                     surfaces: Vec::new(),
-                    rotation_pipeline: None,
+                    composition_pipeline,
                     keyed_mutex_enabled: enable_keyed_mutex,
                 },
                 webrtc,
@@ -553,112 +567,28 @@ impl VulkanCompositor {
         self.disconnect_stream(connection)?;
         let imported = self.receiver.import_stream(stream)?;
         let quarter_turns = quarter_turns % 4;
-        let rotation = if quarter_turns % 2 == 1 {
-            self.ensure_rotation_pipeline()?;
-            let pipeline = self
-                .rotation_pipeline
-                .as_ref()
-                .expect("rotation pipeline was just created");
-            Some(unsafe {
-                create_vulkan_rotation(
-                    &self.instance,
-                    &self.device,
-                    self.physical_device,
-                    imported.width,
-                    imported.height,
-                    pipeline,
-                )?
-            })
-        } else {
-            None
+        let (sample_views, sample_sets) = unsafe {
+            create_surface_samples(
+                &self.device,
+                &imported,
+                stream.slot_count,
+                &self.composition_pipeline,
+            )?
         };
         self.surfaces.push(ImportedVulkanSurface {
             connection,
             surface_id: stream.surface_id.0,
             target_window: stream.source_window,
             imported,
+            sample_views,
+            sample_sets,
             flip_y: stream.bottom_up,
             quarter_turns,
-            rotation,
             latest: None,
             last_released_frame: 0,
         });
         self.surfaces
             .sort_by_key(|surface| surface_sort_key(surface.surface_id));
-        Ok(())
-    }
-
-    fn ensure_rotation_pipeline(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.rotation_pipeline.is_some() {
-            return Ok(());
-        }
-        // SAFETY: every created object is owned by the returned pipeline and
-        // destroyed together after the device idles; the shader module is
-        // consumed by pipeline creation.
-        unsafe {
-            let bindings = [
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            ];
-            let descriptor_set_layout = self.device.create_descriptor_set_layout(
-                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
-                None,
-            )?;
-            let push_range = vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .size(3 * size_of::<u32>() as u32);
-            let pipeline_layout = self.device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default()
-                    .set_layouts(std::slice::from_ref(&descriptor_set_layout))
-                    .push_constant_ranges(std::slice::from_ref(&push_range)),
-                None,
-            )?;
-            let words = ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
-                "../../rotate_quarter.comp.spv"
-            )))?;
-            let module = self
-                .device
-                .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)?;
-            let pipelines = self.device.create_compute_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(
-                        vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::COMPUTE)
-                            .module(module)
-                            .name(c"main"),
-                    )
-                    .layout(pipeline_layout)],
-                None,
-            );
-            self.device.destroy_shader_module(module, None);
-            let pipeline = pipelines.map_err(|(_, error)| error)?[0];
-            // One set per surface; the surface limit is 16.
-            let pool_size = vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(32);
-            let descriptor_pool = self.device.create_descriptor_pool(
-                &vk::DescriptorPoolCreateInfo::default()
-                    .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                    .max_sets(16)
-                    .pool_sizes(std::slice::from_ref(&pool_size)),
-                None,
-            )?;
-            self.rotation_pipeline = Some(RotationPipeline {
-                descriptor_set_layout,
-                pipeline_layout,
-                pipeline,
-                descriptor_pool,
-            });
-        }
         Ok(())
     }
 
@@ -735,16 +665,14 @@ impl VulkanCompositor {
                 )?;
             }
         }
-        let surface = self.surfaces.remove(index);
+        let mut surface = self.surfaces.remove(index);
         unsafe {
-            if let Some(rotation) = surface.rotation {
-                let pool = self
-                    .rotation_pipeline
-                    .as_ref()
-                    .expect("rotation images require the rotation pipeline")
-                    .descriptor_pool;
-                destroy_vulkan_rotation(&self.device, pool, rotation);
-            }
+            destroy_surface_samples(
+                &self.device,
+                self.composition_pipeline.descriptor_pool,
+                &mut surface.sample_views,
+                &mut surface.sample_sets,
+            );
         };
         Ok(())
     }
@@ -764,14 +692,12 @@ impl VulkanCompositor {
         }
         for mut surface in self.surfaces.drain(..) {
             unsafe {
-                if let Some(rotation) = surface.rotation.take() {
-                    let pool = self
-                        .rotation_pipeline
-                        .as_ref()
-                        .expect("rotation images require the rotation pipeline")
-                        .descriptor_pool;
-                    destroy_vulkan_rotation(&self.device, pool, rotation);
-                }
+                destroy_surface_samples(
+                    &self.device,
+                    self.composition_pipeline.descriptor_pool,
+                    &mut surface.sample_views,
+                    &mut surface.sample_sets,
+                );
             };
         }
         Ok(())
@@ -998,6 +924,7 @@ impl VulkanCompositor {
             let mut video_publish_budget = video_parts
                 .as_ref()
                 .map_or(0, |(swapchain, _)| swapchain.available());
+            let mut surface_draws = Vec::new();
             for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
                 let imported = &surface.imported;
                 let Some(frame) = surface.latest else {
@@ -1031,183 +958,6 @@ impl VulkanCompositor {
                         imported.width,
                         imported.height,
                     );
-                    if let Some(rect) = plan
-                        .rectangle(surface.connection, surface.surface_id)
-                        .filter(|rectangle| !rectangle.is_empty())
-                    {
-                        let destination_offsets = [
-                            vk::Offset3D {
-                                x: rect.x,
-                                y: rect.y,
-                                z: 0,
-                            },
-                            vk::Offset3D {
-                                x: rect.x + rect.width as i32,
-                                y: rect.y + rect.height as i32,
-                                z: 1,
-                            },
-                        ];
-                        if let Some(rotation) = &surface.rotation {
-                            // Do rotation via compute shader
-                            let pipeline = self
-                                .rotation_pipeline
-                                .as_ref()
-                                .expect("rotation images require the rotation pipeline");
-                            let stage_to_transfer = vk::ImageMemoryBarrier::default()
-                                .src_access_mask(vk::AccessFlags::MEMORY_READ)
-                                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                                .old_layout(vk::ImageLayout::UNDEFINED)
-                                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                .image(rotation.stage_image)
-                                .subresource_range(color_range());
-                            self.device.cmd_pipeline_barrier(
-                                command,
-                                vk::PipelineStageFlags::ALL_COMMANDS,
-                                vk::PipelineStageFlags::TRANSFER,
-                                vk::DependencyFlags::empty(),
-                                &[],
-                                &[],
-                                &[stage_to_transfer],
-                            );
-                            self.device.cmd_blit_image(
-                                command,
-                                source,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                rotation.stage_image,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                &[vk::ImageBlit::default()
-                                    .src_subresource(color_layers())
-                                    .src_offsets(blit_source_offsets(
-                                        content_width,
-                                        content_height,
-                                        surface.flip_y,
-                                        0,
-                                    ))
-                                    .dst_subresource(color_layers())
-                                    .dst_offsets([
-                                        vk::Offset3D::default(),
-                                        vk::Offset3D {
-                                            x: content_width as i32,
-                                            y: content_height as i32,
-                                            z: 1,
-                                        },
-                                    ])],
-                                vk::Filter::NEAREST,
-                            );
-                            let stage_to_compute = vk::ImageMemoryBarrier::default()
-                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                                .new_layout(vk::ImageLayout::GENERAL)
-                                .image(rotation.stage_image)
-                                .subresource_range(color_range());
-                            let rotated_to_compute = vk::ImageMemoryBarrier::default()
-                                .src_access_mask(vk::AccessFlags::MEMORY_READ)
-                                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                .old_layout(vk::ImageLayout::UNDEFINED)
-                                .new_layout(vk::ImageLayout::GENERAL)
-                                .image(rotation.rotated_image)
-                                .subresource_range(color_range());
-                            self.device.cmd_pipeline_barrier(
-                                command,
-                                vk::PipelineStageFlags::TRANSFER,
-                                vk::PipelineStageFlags::COMPUTE_SHADER,
-                                vk::DependencyFlags::empty(),
-                                &[],
-                                &[],
-                                &[stage_to_compute, rotated_to_compute],
-                            );
-                            self.device.cmd_bind_pipeline(
-                                command,
-                                vk::PipelineBindPoint::COMPUTE,
-                                pipeline.pipeline,
-                            );
-                            self.device.cmd_bind_descriptor_sets(
-                                command,
-                                vk::PipelineBindPoint::COMPUTE,
-                                pipeline.pipeline_layout,
-                                0,
-                                &[rotation.descriptor_set],
-                                &[],
-                            );
-                            let push = [
-                                content_width,
-                                content_height,
-                                u32::from(surface.quarter_turns),
-                            ];
-                            self.device.cmd_push_constants(
-                                command,
-                                pipeline.pipeline_layout,
-                                vk::ShaderStageFlags::COMPUTE,
-                                0,
-                                std::slice::from_raw_parts(
-                                    push.as_ptr().cast::<u8>(),
-                                    size_of_val(&push),
-                                ),
-                            );
-                            self.device.cmd_dispatch(
-                                command,
-                                content_height.div_ceil(16),
-                                content_width.div_ceil(16),
-                                1,
-                            );
-                            let rotated_to_transfer = vk::ImageMemoryBarrier::default()
-                                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                                .old_layout(vk::ImageLayout::GENERAL)
-                                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                                .image(rotation.rotated_image)
-                                .subresource_range(color_range());
-                            self.device.cmd_pipeline_barrier(
-                                command,
-                                vk::PipelineStageFlags::COMPUTE_SHADER,
-                                vk::PipelineStageFlags::TRANSFER,
-                                vk::DependencyFlags::empty(),
-                                &[],
-                                &[],
-                                &[rotated_to_transfer],
-                            );
-                            self.device.cmd_blit_image(
-                                command,
-                                rotation.rotated_image,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                destination,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                &[vk::ImageBlit::default()
-                                    .src_subresource(color_layers())
-                                    .src_offsets([
-                                        vk::Offset3D::default(),
-                                        vk::Offset3D {
-                                            x: content_height as i32,
-                                            y: content_width as i32,
-                                            z: 1,
-                                        },
-                                    ])
-                                    .dst_subresource(color_layers())
-                                    .dst_offsets(destination_offsets)],
-                                vk::Filter::LINEAR,
-                            );
-                        } else {
-                            self.device.cmd_blit_image(
-                                command,
-                                source,
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                destination,
-                                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                                &[vk::ImageBlit::default()
-                                    .src_subresource(color_layers())
-                                    .src_offsets(blit_source_offsets(
-                                        content_width,
-                                        content_height,
-                                        surface.flip_y,
-                                        surface.quarter_turns,
-                                    ))
-                                    .dst_subresource(color_layers())
-                                    .dst_offsets(destination_offsets)],
-                                vk::Filter::LINEAR,
-                            );
-                        }
-                    }
                     if video_publish_ready
                         && video_publish_budget > 0
                         && let Some(cache) = video_parts
@@ -1309,27 +1059,77 @@ impl VulkanCompositor {
                         );
                         video_copies.push((surface_index, frame));
                     }
-                    let mut source_to_general = vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-                        .dst_access_mask(vk::AccessFlags::MEMORY_READ)
-                        .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .image(source)
-                        .subresource_range(color_range());
-                    if imported.uses_external_queue_family() {
-                        source_to_general = source_to_general
-                            .src_queue_family_index(self.queue_family)
-                            .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
+                    let placement = plan
+                        .placements()
+                        .find(|placement| {
+                            placement.connection == surface.connection
+                                && placement.surface_id == surface.surface_id
+                        })
+                        .copied();
+                    let descriptor_set = surface.sample_sets.get(frame.slot as usize).copied();
+                    let drawable = placement.zip(descriptor_set).filter(|(placement, _)| {
+                        let content = placement.content;
+                        content.opacity.is_finite()
+                            && content.opacity > 0.0
+                            && content.destination[2] > content.destination[0]
+                            && content.destination[3] > content.destination[1]
+                    });
+                    if let Some((placement, descriptor_set)) = drawable {
+                        let source_to_shader = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .image(source)
+                            .subresource_range(color_range());
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::FRAGMENT_SHADER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[source_to_shader],
+                        );
+                        surface_draws.push(SurfaceDraw {
+                            image: source,
+                            external_queue: imported.uses_external_queue_family(),
+                            descriptor_set,
+                            placement,
+                            push: SurfacePush {
+                                source: placement.content.source,
+                                active_uv: [
+                                    content_width as f32 / imported.width as f32,
+                                    content_height as f32 / imported.height as f32,
+                                ],
+                                opacity: placement.content.opacity.clamp(0.0, 1.0),
+                                transform: u32::from(surface.quarter_turns)
+                                    | if surface.flip_y { 0x100 } else { 0 },
+                            },
+                        });
+                    } else {
+                        let mut source_to_general = vk::ImageMemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                            .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+                            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                            .new_layout(vk::ImageLayout::GENERAL)
+                            .image(source)
+                            .subresource_range(color_range());
+                        if imported.uses_external_queue_family() {
+                            source_to_general = source_to_general
+                                .src_queue_family_index(self.queue_family)
+                                .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
+                        }
+                        self.device.cmd_pipeline_barrier(
+                            command,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::ALL_COMMANDS,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &[source_to_general],
+                        );
                     }
-                    self.device.cmd_pipeline_barrier(
-                        command,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::PipelineStageFlags::ALL_COMMANDS,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &[source_to_general],
-                    );
                 }
             }
             let to_color = vk::ImageMemoryBarrier::default()
@@ -1359,6 +1159,14 @@ impl VulkanCompositor {
                     }),
                 vk::SubpassContents::INLINE,
             );
+            draw_surface_content(
+                &self.device,
+                command,
+                self.extent,
+                &self.composition_pipeline,
+                plan,
+                &surface_draws,
+            );
             record(&mut VulkanRenderPass {
                 device: &self.device,
                 command_buffer: command,
@@ -1366,6 +1174,29 @@ impl VulkanCompositor {
                 frame_index: flight,
             })?;
             self.device.cmd_end_render_pass(command);
+            for draw in &surface_draws {
+                let mut to_general = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags::MEMORY_READ)
+                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(draw.image)
+                    .subresource_range(color_range());
+                if draw.external_queue {
+                    to_general = to_general
+                        .src_queue_family_index(self.queue_family)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
+                }
+                self.device.cmd_pipeline_barrier(
+                    command,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[to_general],
+                );
+            }
             let to_present = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
                 .dst_access_mask(vk::AccessFlags::empty())
@@ -1393,7 +1224,9 @@ impl VulkanCompositor {
                 {
                     waits.push(surface.imported.timeline());
                     wait_values.push(frame.sync_value);
-                    wait_stages.push(vk::PipelineStageFlags::TRANSFER);
+                    wait_stages.push(
+                        vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    );
                 }
             }
             let video_wait_value = video_parts.as_ref().map_or(0, |(_, video)| {
@@ -1656,15 +1489,20 @@ impl Drop for VulkanCompositor {
             for semaphore in self.image_available.drain(..) {
                 self.device.destroy_semaphore(semaphore, None);
             }
-            if let Some(pipeline) = self.rotation_pipeline.take() {
-                self.device.destroy_pipeline(pipeline.pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(pipeline.pipeline_layout, None);
-                self.device
-                    .destroy_descriptor_set_layout(pipeline.descriptor_set_layout, None);
-                self.device
-                    .destroy_descriptor_pool(pipeline.descriptor_pool, None);
-            }
+            self.device
+                .destroy_pipeline(self.composition_pipeline.opaque_pipeline, None);
+            self.device
+                .destroy_pipeline(self.composition_pipeline.blend_pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.composition_pipeline.pipeline_layout, None);
+            self.device.destroy_descriptor_set_layout(
+                self.composition_pipeline.descriptor_set_layout,
+                None,
+            );
+            self.device
+                .destroy_descriptor_pool(self.composition_pipeline.descriptor_pool, None);
+            self.device
+                .destroy_sampler(self.composition_pipeline.sampler, None);
             self.device.destroy_command_pool(self.command_pool, None);
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer, None);
@@ -1786,153 +1624,6 @@ unsafe fn create_vulkan_video_cache(
         memory,
         initialized: false,
     })
-}
-
-/// Rotation intermediates always use RGBA8: blits convert the imported format
-/// on the way in and the swapchain format on the way out, and RGBA8 storage
-/// images are universally supported.
-const ROTATION_FORMAT: vk::Format = vk::Format::R8G8B8A8_UNORM;
-
-unsafe fn create_vulkan_rotation(
-    instance: &ash::Instance,
-    device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
-    width: u32,
-    height: u32,
-    pipeline: &RotationPipeline,
-) -> Result<VulkanRotation, vk::Result> {
-    unsafe {
-        let (stage_image, stage_memory) = create_vulkan_rotation_image(
-            instance,
-            device,
-            physical_device,
-            width,
-            height,
-            vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE,
-        )?;
-        let (rotated_image, rotated_memory) = create_vulkan_rotation_image(
-            instance,
-            device,
-            physical_device,
-            height,
-            width,
-            vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
-        )?;
-        let view = |image| {
-            device.create_image_view(
-                &vk::ImageViewCreateInfo::default()
-                    .image(image)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(ROTATION_FORMAT)
-                    .subresource_range(color_range()),
-                None,
-            )
-        };
-        let stage_view = view(stage_image)?;
-        let rotated_view = view(rotated_image)?;
-        let descriptor_set = device.allocate_descriptor_sets(
-            &vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(pipeline.descriptor_pool)
-                .set_layouts(std::slice::from_ref(&pipeline.descriptor_set_layout)),
-        )?[0];
-        let stage_info = vk::DescriptorImageInfo::default()
-            .image_view(stage_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        let rotated_info = vk::DescriptorImageInfo::default()
-            .image_view(rotated_view)
-            .image_layout(vk::ImageLayout::GENERAL);
-        device.update_descriptor_sets(
-            &[
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_set)
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(std::slice::from_ref(&stage_info)),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_set)
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(std::slice::from_ref(&rotated_info)),
-            ],
-            &[],
-        );
-        Ok(VulkanRotation {
-            stage_image,
-            stage_memory,
-            stage_view,
-            rotated_image,
-            rotated_memory,
-            rotated_view,
-            descriptor_set,
-        })
-    }
-}
-
-unsafe fn create_vulkan_rotation_image(
-    instance: &ash::Instance,
-    device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
-    width: u32,
-    height: u32,
-    usage: vk::ImageUsageFlags,
-) -> Result<(vk::Image, vk::DeviceMemory), vk::Result> {
-    unsafe {
-        let image = device.create_image(
-            &vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(ROTATION_FORMAT)
-                .extent(vk::Extent3D {
-                    width,
-                    height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(usage)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .initial_layout(vk::ImageLayout::UNDEFINED),
-            None,
-        )?;
-        let requirements = device.get_image_memory_requirements(image);
-        let properties = instance.get_physical_device_memory_properties(physical_device);
-        let memory_type = properties.memory_types[..properties.memory_type_count as usize]
-            .iter()
-            .enumerate()
-            .find(|(index, memory)| {
-                requirements.memory_type_bits & (1 << index) != 0
-                    && memory
-                        .property_flags
-                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-            })
-            .map(|(index, _)| index as u32)
-            .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
-        let memory = device.allocate_memory(
-            &vk::MemoryAllocateInfo::default()
-                .allocation_size(requirements.size)
-                .memory_type_index(memory_type),
-            None,
-        )?;
-        device.bind_image_memory(image, memory, 0)?;
-        Ok((image, memory))
-    }
-}
-
-unsafe fn destroy_vulkan_rotation(
-    device: &ash::Device,
-    descriptor_pool: vk::DescriptorPool,
-    rotation: VulkanRotation,
-) {
-    unsafe {
-        let _ = device.free_descriptor_sets(descriptor_pool, &[rotation.descriptor_set]);
-        device.destroy_image_view(rotation.stage_view, None);
-        device.destroy_image_view(rotation.rotated_view, None);
-        device.destroy_image(rotation.stage_image, None);
-        device.destroy_image(rotation.rotated_image, None);
-        device.free_memory(rotation.stage_memory, None);
-        device.free_memory(rotation.rotated_memory, None);
-    }
 }
 
 unsafe fn create_vulkan_video_readbacks(
@@ -2069,6 +1760,299 @@ unsafe fn create_framebuffers(
         .collect()
 }
 
+unsafe fn create_composition_pipeline(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+) -> Result<CompositionPipeline, Box<dyn Error>> {
+    unsafe {
+        let binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let descriptor_set_layout = device.create_descriptor_set_layout(
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding)),
+            None,
+        )?;
+        let push_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .size(size_of::<SurfacePush>() as u32);
+        let pipeline_layout = device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+                .push_constant_ranges(std::slice::from_ref(&push_range)),
+            None,
+        )?;
+        let sampler = device.create_sampler(
+            &vk::SamplerCreateInfo::default()
+                .mag_filter(vk::Filter::LINEAR)
+                .min_filter(vk::Filter::LINEAR)
+                .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                .max_lod(0.0),
+            None,
+        )?;
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(SURFACE_DESCRIPTOR_COUNT);
+        let descriptor_pool = device.create_descriptor_pool(
+            &vk::DescriptorPoolCreateInfo::default()
+                .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+                .max_sets(SURFACE_DESCRIPTOR_COUNT)
+                .pool_sizes(std::slice::from_ref(&pool_size)),
+            None,
+        )?;
+
+        let vertex_words = ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
+            "../../surface.vert.spv"
+        )))?;
+        let fragment_words = ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
+            "../../surface.frag.spv"
+        )))?;
+        let vertex_module = device.create_shader_module(
+            &vk::ShaderModuleCreateInfo::default().code(&vertex_words),
+            None,
+        )?;
+        let fragment_module = device.create_shader_module(
+            &vk::ShaderModuleCreateInfo::default().code(&fragment_words),
+            None,
+        )?;
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex_module)
+                .name(c"main"),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fragment_module)
+                .name(c"main"),
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        let viewport = vk::PipelineViewportStateCreateInfo::default()
+            .viewport_count(1)
+            .scissor_count(1);
+        let raster = vk::PipelineRasterizationStateCreateInfo::default()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0);
+        let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let make_pipeline = |blending| {
+            let attachment = vk::PipelineColorBlendAttachmentState::default()
+                .blend_enable(blending)
+                .src_color_blend_factor(vk::BlendFactor::ONE)
+                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                .alpha_blend_op(vk::BlendOp::ADD)
+                .color_write_mask(vk::ColorComponentFlags::RGBA);
+            let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+                .attachments(std::slice::from_ref(&attachment));
+            device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    &[vk::GraphicsPipelineCreateInfo::default()
+                        .stages(&stages)
+                        .vertex_input_state(&vertex_input)
+                        .input_assembly_state(&assembly)
+                        .viewport_state(&viewport)
+                        .rasterization_state(&raster)
+                        .multisample_state(&multisample)
+                        .color_blend_state(&color_blend)
+                        .dynamic_state(&dynamic)
+                        .layout(pipeline_layout)
+                        .render_pass(render_pass)
+                        .subpass(0)],
+                    None,
+                )
+                .map(|pipelines| pipelines[0])
+                .map_err(|(_, error)| error)
+        };
+        let opaque_pipeline = make_pipeline(false)?;
+        let blend_pipeline = make_pipeline(true)?;
+        device.destroy_shader_module(fragment_module, None);
+        device.destroy_shader_module(vertex_module, None);
+        Ok(CompositionPipeline {
+            descriptor_set_layout,
+            pipeline_layout,
+            opaque_pipeline,
+            blend_pipeline,
+            descriptor_pool,
+            sampler,
+        })
+    }
+}
+
+unsafe fn create_surface_samples(
+    device: &ash::Device,
+    imported: &ImportedImageRing,
+    slot_count: u32,
+    pipeline: &CompositionPipeline,
+) -> Result<(Vec<vk::ImageView>, Vec<vk::DescriptorSet>), vk::Result> {
+    unsafe {
+        let mut views = Vec::with_capacity(slot_count as usize);
+        for slot in 0..slot_count {
+            let Some(image) = imported.image(slot) else {
+                for view in views {
+                    device.destroy_image_view(view, None);
+                }
+                return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
+            };
+            match device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(imported.format)
+                    .subresource_range(color_range()),
+                None,
+            ) {
+                Ok(view) => views.push(view),
+                Err(error) => {
+                    for view in views {
+                        device.destroy_image_view(view, None);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let layouts = vec![pipeline.descriptor_set_layout; views.len()];
+        let sets = match device.allocate_descriptor_sets(
+            &vk::DescriptorSetAllocateInfo::default()
+                .descriptor_pool(pipeline.descriptor_pool)
+                .set_layouts(&layouts),
+        ) {
+            Ok(sets) => sets,
+            Err(error) => {
+                for view in views {
+                    device.destroy_image_view(view, None);
+                }
+                return Err(error);
+            }
+        };
+        let images = views
+            .iter()
+            .map(|&view| {
+                vk::DescriptorImageInfo::default()
+                    .sampler(pipeline.sampler)
+                    .image_view(view)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            })
+            .collect::<Vec<_>>();
+        let writes = sets
+            .iter()
+            .zip(&images)
+            .map(|(&set, image)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(std::slice::from_ref(image))
+            })
+            .collect::<Vec<_>>();
+        device.update_descriptor_sets(&writes, &[]);
+        Ok((views, sets))
+    }
+}
+
+unsafe fn destroy_surface_samples(
+    device: &ash::Device,
+    pool: vk::DescriptorPool,
+    views: &mut Vec<vk::ImageView>,
+    sets: &mut Vec<vk::DescriptorSet>,
+) {
+    unsafe {
+        if !sets.is_empty() {
+            let _ = device.free_descriptor_sets(pool, sets);
+            sets.clear();
+        }
+        for view in views.drain(..) {
+            device.destroy_image_view(view, None);
+        }
+    }
+}
+
+unsafe fn draw_surface_content(
+    device: &ash::Device,
+    command: vk::CommandBuffer,
+    extent: vk::Extent2D,
+    pipeline: &CompositionPipeline,
+    plan: &CompositingPlan,
+    draws: &[SurfaceDraw],
+) {
+    unsafe {
+        device.cmd_set_scissor(
+            command,
+            0,
+            &[vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent,
+            }],
+        );
+        let mut blending = None;
+        for placement in plan.placements() {
+            let Some(draw) = draws.iter().find(|draw| {
+                draw.placement.connection == placement.connection
+                    && draw.placement.surface_id == placement.surface_id
+            }) else {
+                continue;
+            };
+            let content = draw.placement.content;
+            let blend = content.opacity < 1.0;
+            if blending != Some(blend) {
+                blending = Some(blend);
+                device.cmd_bind_pipeline(
+                    command,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    if blend {
+                        pipeline.blend_pipeline
+                    } else {
+                        pipeline.opaque_pipeline
+                    },
+                );
+            }
+            device.cmd_set_viewport(
+                command,
+                0,
+                &[vk::Viewport {
+                    x: content.destination[0],
+                    y: content.destination[1],
+                    width: content.destination[2] - content.destination[0],
+                    height: content.destination[3] - content.destination[1],
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            device.cmd_bind_descriptor_sets(
+                command,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.pipeline_layout,
+                0,
+                &[draw.descriptor_set],
+                &[],
+            );
+            device.cmd_push_constants(
+                command,
+                pipeline.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    (&draw.push as *const SurfacePush).cast::<u8>(),
+                    size_of::<SurfacePush>(),
+                ),
+            );
+            device.cmd_draw(command, 6, 1, 0, 0);
+        }
+    }
+}
+
 fn color_layers() -> vk::ImageSubresourceLayers {
     vk::ImageSubresourceLayers {
         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -2106,4 +2090,106 @@ pub fn blit_source_offsets(
             z: 1,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texture_coordinate(
+        active_uv: [f32; 2],
+        source: [f32; 4],
+        flip_y: bool,
+        quarter_turns: u8,
+        corner: [f32; 2],
+    ) -> [f32; 2] {
+        let top = if flip_y { active_uv[1] } else { 0.0 };
+        let bottom = if flip_y { 0.0 } else { active_uv[1] };
+        let raw = [
+            [0.0, top],
+            [active_uv[0], top],
+            [active_uv[0], bottom],
+            [0.0, bottom],
+        ];
+        let turns = quarter_turns as usize % 4;
+        let full = [
+            raw[turns],
+            raw[(turns + 1) % 4],
+            raw[(turns + 2) % 4],
+            raw[(turns + 3) % 4],
+        ];
+        let oriented = [
+            source[0] + (source[2] - source[0]) * corner[0],
+            source[1] + (source[3] - source[1]) * corner[1],
+        ];
+        let top = [
+            full[0][0] + (full[1][0] - full[0][0]) * oriented[0],
+            full[0][1] + (full[1][1] - full[0][1]) * oriented[0],
+        ];
+        let bottom = [
+            full[3][0] + (full[2][0] - full[3][0]) * oriented[0],
+            full[3][1] + (full[2][1] - full[3][1]) * oriented[0],
+        ];
+        [
+            top[0] + (bottom[0] - top[0]) * oriented[1],
+            top[1] + (bottom[1] - top[1]) * oriented[1],
+        ]
+    }
+
+    fn assert_close(actual: [f32; 2], expected: [f32; 2]) {
+        assert!((actual[0] - expected[0]).abs() < f32::EPSILON);
+        assert!((actual[1] - expected[1]).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn surface_push_layout_matches_glsl_push_block() {
+        assert_eq!(size_of::<SurfacePush>(), 32);
+        assert_eq!(std::mem::offset_of!(SurfacePush, source), 0);
+        assert_eq!(std::mem::offset_of!(SurfacePush, active_uv), 16);
+        assert_eq!(std::mem::offset_of!(SurfacePush, opacity), 24);
+        assert_eq!(std::mem::offset_of!(SurfacePush, transform), 28);
+    }
+
+    #[test]
+    fn embedded_surface_shaders_are_spirv() {
+        ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
+            "../../surface.vert.spv"
+        )))
+        .unwrap();
+        ash::util::read_spv(&mut std::io::Cursor::new(include_bytes!(
+            "../../surface.frag.spv"
+        )))
+        .unwrap();
+    }
+
+    #[test]
+    fn source_crop_is_applied_after_presentation_rotation() {
+        let active_uv = [0.8, 0.6];
+        let source = [0.25, 0.0, 0.75, 1.0];
+
+        assert_close(
+            texture_coordinate(active_uv, source, false, 1, [0.0, 0.0]),
+            [0.8, 0.15],
+        );
+        assert_close(
+            texture_coordinate(active_uv, source, false, 1, [1.0, 0.0]),
+            [0.8, 0.45],
+        );
+        assert_close(
+            texture_coordinate(active_uv, source, false, 1, [1.0, 1.0]),
+            [0.0, 0.45],
+        );
+    }
+
+    #[test]
+    fn vertical_flip_composes_with_half_turn() {
+        assert_close(
+            texture_coordinate([0.75, 0.5], [0.0, 0.0, 1.0, 1.0], true, 2, [0.0, 0.0]),
+            [0.75, 0.0],
+        );
+        assert_close(
+            texture_coordinate([0.75, 0.5], [0.0, 0.0, 1.0, 1.0], true, 2, [1.0, 1.0]),
+            [0.0, 0.5],
+        );
+    }
 }

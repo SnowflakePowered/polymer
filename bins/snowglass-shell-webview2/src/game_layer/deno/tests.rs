@@ -194,6 +194,8 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
               }],
               gamepadMapping: [],
             });
+            instance.setVolume(0.35);
+            instance.setMuted(true);
             postMessage({
               type: "attached",
               launched: instance !== null,
@@ -224,8 +226,23 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
 
     assert!(matches!(
         runtime.take_commands().as_slice(),
-        [Command::Launch { options, .. }]
-            if options["surfaces"][0]["attach"] == serde_json::json!(surface_node)
+        [
+            Command::Launch {
+                instance_id,
+                options,
+            },
+            Command::SetVolume {
+                instance_id: volume_instance,
+                volume,
+            },
+            Command::SetMuted {
+                instance_id: muted_instance,
+                muted: true,
+            },
+        ] if options["surfaces"][0]["attach"] == serde_json::json!(surface_node)
+            && instance_id == volume_instance
+            && instance_id == muted_instance
+            && (*volume - 0.35).abs() < f64::EPSILON
     ));
     assert_eq!(
         runtime.take_messages(),
@@ -320,6 +337,29 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "value": "from-foreground",
         })]
     );
+
+    runtime
+        .proxy_request(&serde_json::json!({
+            "id": 0,
+            "operation": "apply",
+            "handle": 0,
+            "path": ["gameView", "activeInstance", "setVolume"],
+            "args": [{ "kind": "value", "value": 0.6 }],
+        }))
+        .unwrap();
+    assert_eq!(
+        runtime.take_proxy_messages(),
+        [serde_json::json!({
+            "type": "response",
+            "id": 0,
+            "ok": true,
+            "value": { "kind": "undefined" },
+        })]
+    );
+    assert!(matches!(
+        runtime.take_commands().as_slice(),
+        [Command::SetVolume { volume, .. }] if (*volume - 0.6).abs() < f64::EPSILON
+    ));
 
     runtime
         .proxy_request(&serde_json::json!({

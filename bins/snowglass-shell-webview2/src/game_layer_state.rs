@@ -22,6 +22,14 @@ pub(crate) enum GameLayerAction {
         message: String,
     },
     Close(String),
+    SetVolume {
+        instance_id: String,
+        volume: f64,
+    },
+    SetMuted {
+        instance_id: String,
+        muted: bool,
+    },
     Message {
         instance_id: String,
         name: String,
@@ -228,6 +236,16 @@ impl GameLayerState {
                 },
             },
             GameLayerCommand::Close(instance_id) => GameLayerAction::Close(instance_id),
+            GameLayerCommand::SetVolume {
+                instance_id,
+                volume,
+            } => GameLayerAction::SetVolume {
+                instance_id,
+                volume,
+            },
+            GameLayerCommand::SetMuted { instance_id, muted } => {
+                GameLayerAction::SetMuted { instance_id, muted }
+            }
             GameLayerCommand::Message {
                 instance_id,
                 name,

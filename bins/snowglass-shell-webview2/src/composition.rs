@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use crate::game_layer::GameViewStyle;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_renderer::Extent;
 use std::{collections::HashMap, error::Error, ffi::c_void};
@@ -39,16 +40,22 @@ pub struct SurfaceLayout {
     pub z_index: i32,
     #[serde(default)]
     pub corner_radius: f32,
+    /// GPU-only CSS properties supplied by the Blitz game layer. Foreground
+    /// WebView layout messages deliberately cannot set these.
+    #[serde(skip)]
+    pub game_view_style: Option<GameViewStyle>,
+    #[serde(skip, default = "default_opacity")]
+    pub opacity: f32,
     #[serde(default = "default_pointer_events")]
     pub pointer_events: bool,
-    #[serde(default)]
-    pub foreground_hit_region: Option<ForegroundHitRegion>,
-    #[serde(default)]
-    pub foreground_hit_regions: Vec<ForegroundHitRegion>,
 }
 
 const fn default_pointer_events() -> bool {
     true
+}
+
+const fn default_opacity() -> f32 {
+    1.0
 }
 
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
@@ -221,7 +228,7 @@ impl snowglass_renderer::RenderWindow for SurfaceWindow<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::SurfaceLayout;
+    use super::{ForegroundHitRegion, SurfaceLayout};
 
     #[test]
     fn layout_preserves_connection_ids_larger_than_javascript_safe_integers() {
@@ -231,40 +238,12 @@ mod tests {
                 "x": 10,
                 "y": 20,
                 "width": 854,
-                "height": 480,
-                "foregroundHitRegion": {
-                    "x": 400,
-                    "y": 300,
-                    "width": 716,
-                    "height": 380
-                },
-                "foregroundHitRegions": [{
-                    "x": 10,
-                    "y": 20,
-                    "width": 100,
-                    "height": 40
-                }, {
-                    "x": 10,
-                    "y": 200,
-                    "width": 100,
-                    "height": 40
-                }]
+                "height": 480
             }"#,
         )
         .unwrap();
 
         assert_eq!(layout.connection, 6_000_765_028_494_475_265);
-        let hit_region = layout.foreground_hit_region.unwrap();
-        assert_eq!((hit_region.x, hit_region.y), (400, 300));
-        assert_eq!((hit_region.width, hit_region.height), (716, 380));
-        assert_eq!(layout.foreground_hit_regions.len(), 2);
-        assert_eq!(
-            (
-                layout.foreground_hit_regions[1].x,
-                layout.foreground_hit_regions[1].y
-            ),
-            (10, 200)
-        );
     }
 
     #[test]
@@ -274,5 +253,14 @@ mod tests {
                 .unwrap();
 
         assert_eq!(layout.connection, 42);
+    }
+
+    #[test]
+    fn foreground_hit_regions_deserialize_independently_of_surface_layout() {
+        let region: ForegroundHitRegion =
+            serde_json::from_str(r#"{"x": 400, "y": 300, "width": 716, "height": 380}"#).unwrap();
+
+        assert_eq!((region.x, region.y), (400, 300));
+        assert_eq!((region.width, region.height), (716, 380));
     }
 }

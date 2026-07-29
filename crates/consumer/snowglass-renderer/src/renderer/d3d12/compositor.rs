@@ -1250,13 +1250,12 @@ impl D3d12Compositor {
         // imported in, so a shell that stacks surfaces gets the z-order it
         // asked for. Chrome is interleaved rather than drawn first, because a
         // stream can have chrome both below and above it.
-        let corners = |rect: snowglass_input::mouse::layout::Rect| {
-            let (x, y, w, h) = (rect.x, rect.y, rect.width as i32, rect.height as i32);
+        let corners = |rect: [f32; 4]| {
             (
-                x as f32 / self.extent.0 as f32 * 2.0 - 1.0,
-                1.0 - y as f32 / self.extent.1 as f32 * 2.0,
-                (x + w) as f32 / self.extent.0 as f32 * 2.0 - 1.0,
-                1.0 - (y + h) as f32 / self.extent.1 as f32 * 2.0,
+                rect[0] / self.extent.0 as f32 * 2.0 - 1.0,
+                1.0 - rect[1] / self.extent.1 as f32 * 2.0,
+                rect[2] / self.extent.0 as f32 * 2.0 - 1.0,
+                1.0 - rect[3] / self.extent.1 as f32 * 2.0,
             )
         };
         let draws = plan
@@ -1264,6 +1263,12 @@ impl D3d12Compositor {
             .iter()
             .filter_map(|layer| match layer {
                 PlanLayer::Surface(placement) => {
+                    if placement.content.opacity <= 0.0
+                        || placement.content.destination[2] <= placement.content.destination[0]
+                        || placement.content.destination[3] <= placement.content.destination[1]
+                    {
+                        return None;
+                    }
                     let surface = self.surfaces.iter().find(|surface| {
                         surface.connection == placement.connection
                             && surface.surface_id == placement.surface_id
@@ -1275,11 +1280,15 @@ impl D3d12Compositor {
                         surface.imported.width,
                         surface.imported.height,
                     );
-                    let (l, t, r, b) = corners(placement.rectangle);
+                    let (l, t, r, b) = corners(placement.content.destination);
                     let u = crop_w as f32 / surface.imported.width as f32;
                     let v = crop_h as f32 / surface.imported.height as f32;
+                    let width = placement.content.destination[2] - placement.content.destination[0];
+                    let height =
+                        placement.content.destination[3] - placement.content.destination[1];
+                    let opacity = (placement.content.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                     Some((
-                        placement.corner_radius > 0.0,
+                        placement.corner_radius > 0.0 || opacity < 255,
                         surface.descriptor,
                         quad(
                             l,
@@ -1288,21 +1297,22 @@ impl D3d12Compositor {
                             b,
                             u,
                             v,
+                            placement.content.source,
                             surface.flip_y,
                             surface.quarter_turns,
-                            [255; 4],
-                            [
-                                placement.rectangle.width as f32,
-                                placement.rectangle.height as f32,
-                                placement.corner_radius,
-                                0.0,
-                            ],
+                            [255, 255, 255, opacity],
+                            [width, height, placement.corner_radius, 0.0],
                         ),
                     ))
                 }
                 PlanLayer::Chrome { id, rectangle } => {
                     let layer = self.chrome.get(id)?;
-                    let (l, t, r, b) = corners(*rectangle);
+                    let (l, t, r, b) = corners([
+                        rectangle.x as f32,
+                        rectangle.y as f32,
+                        rectangle.x as f32 + rectangle.width as f32,
+                        rectangle.y as f32 + rectangle.height as f32,
+                    ]);
                     // Chrome is mostly transparent by design — a band covering
                     // only a bezel is empty everywhere else — so it composites
                     // rather than overwriting what is already there.
@@ -1316,6 +1326,7 @@ impl D3d12Compositor {
                             b,
                             1.0,
                             1.0,
+                            [0.0, 0.0, 1.0, 1.0],
                             false,
                             0,
                             [255; 4],
@@ -1588,6 +1599,7 @@ fn quad(
     b: f32,
     u: f32,
     v: f32,
+    source: [f32; 4],
     flip_y: bool,
     quarter_turns: u8,
     color: [u8; 4],
@@ -1602,14 +1614,39 @@ fn quad(
     };
     let (top_v, bottom_v) = if flip_y { (v, 0.0) } else { (0.0, v) };
     let corners = [[0.0, top_v], [u, top_v], [u, bottom_v], [0.0, bottom_v]];
-    let uv = |corner: usize| corners[(corner + quarter_turns as usize) % 4];
+    let full = [
+        corners[quarter_turns as usize % 4],
+        corners[(1 + quarter_turns as usize) % 4],
+        corners[(2 + quarter_turns as usize) % 4],
+        corners[(3 + quarter_turns as usize) % 4],
+    ];
+    let sample = |x: f32, y: f32| {
+        let top = [
+            full[0][0] + (full[1][0] - full[0][0]) * x,
+            full[0][1] + (full[1][1] - full[0][1]) * x,
+        ];
+        let bottom = [
+            full[3][0] + (full[2][0] - full[3][0]) * x,
+            full[3][1] + (full[2][1] - full[3][1]) * x,
+        ];
+        [
+            top[0] + (bottom[0] - top[0]) * y,
+            top[1] + (bottom[1] - top[1]) * y,
+        ]
+    };
+    let uv = [
+        sample(source[0], source[1]),
+        sample(source[2], source[1]),
+        sample(source[2], source[3]),
+        sample(source[0], source[3]),
+    ];
     [
-        p([l, t], uv(0), [0.0, 0.0]),
-        p([r, t], uv(1), [clip[0], 0.0]),
-        p([r, b], uv(2), [clip[0], clip[1]]),
-        p([l, t], uv(0), [0.0, 0.0]),
-        p([r, b], uv(2), [clip[0], clip[1]]),
-        p([l, b], uv(3), [0.0, clip[1]]),
+        p([l, t], uv[0], [0.0, 0.0]),
+        p([r, t], uv[1], [clip[0], 0.0]),
+        p([r, b], uv[2], [clip[0], clip[1]]),
+        p([l, t], uv[0], [0.0, 0.0]),
+        p([r, b], uv[2], [clip[0], clip[1]]),
+        p([l, b], uv[3], [0.0, clip[1]]),
     ]
 }
 
@@ -1833,10 +1870,11 @@ VOut vs_main(VIn v) {
 }
 Texture2D tex : register(t0); SamplerState samp : register(s0);
 float4 ps_main(VOut i) : SV_TARGET {
-    float4 result = tex.Sample(samp, i.uv) * i.color;
+    float4 result = tex.Sample(samp, i.uv) * float4(i.color.rgb, 1.0);
     if (i.clip.w > 0.5) {
         result.rgb *= result.a;
     }
+    result *= i.color.a;
     if (i.clip.z > 0.0) {
         float radius = min(i.clip.z, min(i.clip.x, i.clip.y) * 0.5);
         float2 half_size = i.clip.xy * 0.5;
@@ -2165,6 +2203,7 @@ mod tests {
             -1.0,
             0.75,
             0.5,
+            [0.0, 0.0, 1.0, 1.0],
             false,
             0,
             [255; 4],
@@ -2177,6 +2216,7 @@ mod tests {
             -1.0,
             0.75,
             0.5,
+            [0.0, 0.0, 1.0, 1.0],
             true,
             0,
             [255; 4],
@@ -2198,6 +2238,7 @@ mod tests {
             -1.0,
             1.0,
             1.0,
+            [0.0, 0.0, 1.0, 1.0],
             false,
             0,
             [255; 4],
@@ -2231,6 +2272,7 @@ mod tests {
             -1.0,
             0.75,
             0.5,
+            [0.0, 0.0, 1.0, 1.0],
             false,
             1,
             [255; 4],
@@ -2249,6 +2291,7 @@ mod tests {
             -1.0,
             0.75,
             0.5,
+            [0.0, 0.0, 1.0, 1.0],
             false,
             2,
             [255; 4],
@@ -2265,6 +2308,7 @@ mod tests {
             -1.0,
             0.75,
             0.5,
+            [0.0, 0.0, 1.0, 1.0],
             true,
             2,
             [255; 4],
@@ -2272,5 +2316,30 @@ mod tests {
         );
         assert_eq!(flipped_half[0].uv, [0.75, 0.0]);
         assert_eq!(flipped_half[2].uv, [0.0, 0.5]);
+    }
+
+    #[test]
+    fn source_crop_is_applied_after_presentation_rotation() {
+        let cropped = quad(
+            -1.0,
+            1.0,
+            1.0,
+            -1.0,
+            0.8,
+            0.6,
+            [0.25, 0.0, 0.75, 1.0],
+            false,
+            1,
+            [255, 255, 255, 128],
+            [200.0, 100.0, 0.0, 0.0],
+        );
+
+        assert_eq!(cropped[0].uv[0], 0.8);
+        assert!((cropped[0].uv[1] - 0.15).abs() < f32::EPSILON);
+        assert_eq!(cropped[1].uv[0], 0.8);
+        assert!((cropped[1].uv[1] - 0.45).abs() < f32::EPSILON);
+        assert_eq!(cropped[2].uv[0], 0.0);
+        assert!((cropped[2].uv[1] - 0.45).abs() < f32::EPSILON);
+        assert_eq!(cropped[0].color[3], 128);
     }
 }

@@ -53,19 +53,17 @@ type GamepadState = {
   animation: GamepadAnimation | null;
 };
 
-type GamePhase = "idle" | "launching" | "running" | "closing";
+type GamePhase = "idle" | "launching" | "running";
 
 type SurfaceFade = {
   from: number;
   to: number;
   started: number;
-  closeWhenDone: boolean;
 };
 
 type GameLifecycleState = {
   phase: GamePhase;
   instance: GameViewInstance | null;
-  confirmClose: boolean;
   surfaceFade: number;
   fade: SurfaceFade | null;
 };
@@ -170,7 +168,6 @@ function launchGame(
       ...state,
       phase: "idle",
       instance: null,
-      confirmClose: false,
       surfaceFade: 1,
       fade: null,
     }));
@@ -189,14 +186,13 @@ function launchGame(
     ...state,
     phase: "launching",
     instance,
-    confirmClose: false,
     surfaceFade: 1,
     fade: null,
   }));
   publishLifecycle("launching", "Launching game");
   instance.on("ready", () => {
     bindings.setLifecycle?.((state) => ({ ...state, phase: "running" }));
-    startSurfaceFade(0, false);
+    startSurfaceFade(0);
     publishLifecycle("running", "Game is running");
   });
   instance.on("surfacesChanged", (surfaces) => {
@@ -212,7 +208,6 @@ function launchGame(
       ...state,
       phase: "idle",
       instance: null,
-      confirmClose: false,
       surfaceFade: 1,
       fade: null,
     }));
@@ -223,7 +218,6 @@ function launchGame(
       ...state,
       phase: "idle",
       instance: null,
-      confirmClose: false,
       surfaceFade: 1,
       fade: null,
     }));
@@ -235,7 +229,6 @@ type GameLayerBindings = {
   installed: boolean;
   shortcutHeld: boolean;
   interacting: boolean;
-  closeScheduled: boolean;
   animationTimer: ReturnType<typeof setInterval> | null;
   fadeTimer: ReturnType<typeof setInterval> | null;
   setGamepad: Dispatch<SetStateAction<GamepadState>> | null;
@@ -248,7 +241,6 @@ const bindings: GameLayerBindings = {
   installed: false,
   shortcutHeld: false,
   interacting: false,
-  closeScheduled: false,
   animationTimer: null,
   fadeTimer: null,
   setGamepad: null,
@@ -288,7 +280,7 @@ function startAnimationClock() {
   }, 16);
 }
 
-function startSurfaceFade(to: number, closeWhenDone: boolean) {
+function startSurfaceFade(to: number) {
   const setter = bindings.setLifecycle;
   if (!setter) return;
   if (bindings.fadeTimer !== null) clearInterval(bindings.fadeTimer);
@@ -298,7 +290,6 @@ function startSurfaceFade(to: number, closeWhenDone: boolean) {
       from: state.surfaceFade,
       to,
       started: Date.now(),
-      closeWhenDone,
     },
   }));
   bindings.fadeTimer = setInterval(() => {
@@ -315,17 +306,6 @@ function startSurfaceFade(to: number, closeWhenDone: boolean) {
       if (bindings.fadeTimer !== null) {
         clearInterval(bindings.fadeTimer);
         bindings.fadeTimer = null;
-      }
-      if (fade.closeWhenDone && state.instance && !bindings.closeScheduled) {
-        const instance = state.instance;
-        bindings.closeScheduled = true;
-        // Closing synchronously from a React state updater re-enters the game
-        // layer when the native side publishes its `closed` event. Leave the
-        // updater before crossing that boundary.
-        queueMicrotask(() => {
-          bindings.closeScheduled = false;
-          instance.close();
-        });
       }
       return { ...state, surfaceFade: fade.to, fade: null };
     });
@@ -483,7 +463,6 @@ function GameLayer() {
   const [lifecycle, setLifecycle] = useState<GameLifecycleState>({
     phase: "idle",
     instance: null,
-    confirmClose: false,
     surfaceFade: 1,
     fade: null,
   });
@@ -528,29 +507,6 @@ function GameLayer() {
       }));
     };
 
-  const requestClose = () => {
-    setLifecycle((state) =>
-      state.phase === "running"
-        ? { ...state, confirmClose: true }
-        : state,
-    );
-  };
-
-  const cancelClose = () => {
-    setLifecycle((state) => ({ ...state, confirmClose: false }));
-  };
-
-  const confirmClose = () => {
-    if (lifecycle.phase !== "running") return;
-    setLifecycle((state) => ({
-      ...state,
-      phase: "closing",
-      confirmClose: false,
-    }));
-    publishLifecycle("closing", "Closing game");
-    startSurfaceFade(1, true);
-  };
-
   const availableWidth = Math.max(1, viewport.width - MAIN_HORIZONTAL_MARGIN_PX);
   const availableHeight = Math.max(1, viewport.height - MAIN_VERTICAL_MARGIN_PX);
   const sourceRatio = mainSource.width / mainSource.height;
@@ -585,15 +541,6 @@ function GameLayer() {
           className="main-surface-fade"
           style={{ opacity: lifecycle.surfaceFade }}
         />
-        <div
-          className="close-game-button"
-          data-visible={lifecycle.phase === "running" ? "true" : "false"}
-          role="button"
-          aria-label="Close game"
-          onClick={requestClose}
-        >
-          <span className="close-game-icon">×</span>
-        </div>
       </div>
       <div
         className="gamepad-drawer"
@@ -615,37 +562,6 @@ function GameLayer() {
           className="gamepad-resize-handle"
           onMouseDown={beginInteraction("resize")}
         />
-      </div>
-      <div
-        className="close-confirmation"
-        data-visible={lifecycle.confirmClose ? "true" : "false"}
-        role="presentation"
-      >
-        <section
-          className="close-confirmation-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Close game?"
-        >
-          <h1>Close this game?</h1>
-          <p>Any unsaved progress will be lost.</p>
-          <div className="close-confirmation-actions">
-            <div
-              className="dialog-button secondary"
-              role="button"
-              onClick={cancelClose}
-            >
-              Keep playing
-            </div>
-            <div
-              className="dialog-button danger"
-              role="button"
-              onClick={confirmClose}
-            >
-              Close game
-            </div>
-          </div>
-        </section>
       </div>
     </section>
   );

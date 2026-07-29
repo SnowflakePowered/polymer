@@ -23,13 +23,24 @@
 use anyrender::{CustomPaint, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene};
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
+use style::{
+    properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
+    values::computed::position::Position,
+};
 
 /// Curve tolerance for flattening a clip shape so it can be replayed. Well
 /// below a pixel, so a replayed clip is indistinguishable from the original.
 const CLIP_TOLERANCE: f64 = 0.05;
 
+/// Computed CSS properties the GPU compositor needs for a game view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameViewStyle {
+    pub object_fit: ObjectFit,
+    pub object_position: Position,
+}
+
 /// Where one game view landed, and which chrome band it is drawn over.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GamePlacement {
     /// The `src` of the `<tracked-surface>`, naming which tracked render target
     /// belongs in this box.
@@ -38,6 +49,13 @@ pub struct GamePlacement {
     /// Corner radius, in physical pixels, applied by the merged GPU
     /// compositor to the guest texture.
     pub corner_radius: f32,
+    /// CSS image sizing and alignment resolved for this tracked surface.
+    ///
+    /// The painter only gives custom paints their box and source id, so this is
+    /// populated from the DOM immediately after painting.
+    pub style: Option<GameViewStyle>,
+    /// Effective opacity of the open Blitz layer stack.
+    pub opacity: f32,
     /// Index of the band painted immediately below this view. The view is
     /// composited above that band and below the next one.
     pub band: usize,
@@ -172,6 +190,8 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
                 source_id: custom.source_id,
                 rect: transform.transform_rect_bbox(shape.bounding_box()),
                 corner_radius: 0.0,
+                style: None,
+                opacity: self.stack.iter().map(|layer| layer.alpha).product(),
                 band: self.current,
             });
             self.advance_band();

@@ -16,7 +16,10 @@ use super::dom::{
     op_dom_create_text, op_dom_insert_before, op_dom_remove_attribute, op_dom_remove_child,
     op_dom_set_attribute, op_dom_set_text, snapshot,
 };
-use super::game::{Command, op_game_close, op_game_input, op_game_launch, op_game_message};
+use super::game::{
+    Command, op_game_close, op_game_input, op_game_launch, op_game_message, op_game_set_muted,
+    op_game_set_volume,
+};
 use super::input::{EventResult, KeyboardEvent, MouseEvent, op_event_result};
 use super::modules::{BrowserModuleLoader, NoNpm, document_scripts, execute_document_script};
 use super::state::{BridgeState, op_post_message, op_proxy_message};
@@ -40,6 +43,8 @@ deno_core::extension!(
         op_event_result,
         op_game_launch,
         op_game_close,
+        op_game_set_volume,
+        op_game_set_muted,
         op_game_message,
         op_game_input,
     ],
@@ -62,6 +67,8 @@ deno_core::extension!(
                   op_game_input,
                   op_game_launch,
                   op_game_message,
+                  op_game_set_muted,
+                  op_game_set_volume,
                   op_post_message,
                   op_proxy_message,
                 } from "ext:core/ops";
@@ -83,6 +90,8 @@ deno_core::extension!(
                       op_game_input,
                       op_game_launch,
                       op_game_message,
+                      op_game_set_muted,
+                      op_game_set_volume,
                       op_post_message,
                       op_proxy_message,
                     }),

@@ -986,6 +986,11 @@
       this.id = id;
       this.requested = Object.freeze([...requested]);
       this.surfaces = Object.freeze([]);
+      this.audio = Object.freeze({
+        available: false,
+        volume: 1,
+        muted: false,
+      });
     }
 
     on(eventName, callback) {
@@ -995,8 +1000,29 @@
       this.#listeners.set(String(eventName), listeners);
     }
 
+    off(eventName, callback) {
+      const listeners = this.#listeners.get(String(eventName));
+      if (!listeners) return;
+      listeners.delete(callback);
+      if (listeners.size === 0) this.#listeners.delete(String(eventName));
+    }
+
     message(name, args) {
       if (!this.#closed) ops.op_game_message(this.id, String(name), args ?? null);
+    }
+
+    setVolume(volume) {
+      volume = Number(volume);
+      if (!Number.isFinite(volume)) {
+        throw new TypeError("GameView volume must be a finite number");
+      }
+      if (!this.#closed) {
+        ops.op_game_set_volume(this.id, Math.max(0, Math.min(1, volume)));
+      }
+    }
+
+    setMuted(muted) {
+      if (!this.#closed) ops.op_game_set_muted(this.id, Boolean(muted));
     }
 
     close() {
@@ -1027,6 +1053,12 @@
             native.width && native.height ? String(native.width / native.height) : "auto",
           );
         }
+      } else if (eventName === "audioChanged") {
+        this.audio = Object.freeze({
+          available: Boolean(payload?.available),
+          volume: Math.max(0, Math.min(1, Number(payload?.volume) || 0)),
+          muted: Boolean(payload?.muted),
+        });
       } else if (eventName === "closed") {
         this.#closed = true;
         this.surfaces = Object.freeze([]);

@@ -9,8 +9,8 @@ pub mod webrtc;
 pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfacePointerSender};
 pub use renderer::{
     CompositingPlan, D3d12Compositor, D3d12RenderPass, MappedPointer, PlanLayer, Presentation,
-    ReceivedSurface, RenderWindow, Renderer, SurfacePlacement, SwapchainMode, VideoSwapchain,
-    VulkanCompositor, VulkanRenderPass, WebRtcCompositor,
+    ReceivedSurface, RenderWindow, Renderer, SurfaceContent, SurfacePlacement, SwapchainMode,
+    VideoSwapchain, VulkanCompositor, VulkanRenderPass, WebRtcCompositor,
 };
 pub use snowglass_input::mouse::layout::Extent;
 

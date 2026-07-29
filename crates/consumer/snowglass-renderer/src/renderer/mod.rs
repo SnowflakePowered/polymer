@@ -13,14 +13,55 @@ pub use d3d12::{D3d12Compositor, D3d12RenderPass};
 pub use vulkan::{VulkanCompositor, VulkanRenderPass};
 pub use webrtc::{VideoSwapchain, WebRtcCompositor};
 
+/// How a surface's pixels are sampled and drawn inside its layout rectangle.
+///
+/// Coordinates are in output pixels for `destination` and normalized,
+/// post-presentation-transform coordinates for `source`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceContent {
+    pub destination: [f32; 4],
+    pub source: [f32; 4],
+    pub opacity: f32,
+}
+
+impl SurfaceContent {
+    pub fn fill(rectangle: Rect) -> Self {
+        Self {
+            destination: [
+                rectangle.x as f32,
+                rectangle.y as f32,
+                rectangle.x as f32 + rectangle.width as f32,
+                rectangle.y as f32 + rectangle.height as f32,
+            ],
+            source: [0.0, 0.0, 1.0, 1.0],
+            opacity: 1.0,
+        }
+    }
+}
+
 /// Final shell-supplied placement for one received surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfacePlacement {
     pub connection: u64,
     pub surface_id: u64,
     pub rectangle: Rect,
+    /// Visual placement and sampling. The layout rectangle above remains
+    /// authoritative for producer sizing and the surface's pointer hit box.
+    pub content: SurfaceContent,
     /// Radius of the analytic rounded-rectangle clip, in destination pixels.
     pub corner_radius: f32,
+}
+
+impl SurfacePlacement {
+    pub fn new(connection: u64, surface_id: u64, rectangle: Rect, corner_radius: f32) -> Self {
+        Self {
+            connection,
+            surface_id,
+            rectangle,
+            content: SurfaceContent::fill(rectangle),
+            corner_radius,
+        }
+    }
 }
 
 /// One thing a composition pass draws, in back-to-front order.
@@ -354,12 +395,7 @@ mod tests {
     fn resize_windows_fits_the_active_presentation() {
         let plan = CompositingPlan::new(
             [0.0; 4],
-            vec![SurfacePlacement {
-                connection: 1,
-                surface_id: 2,
-                rectangle: Rect::new(0, 0, 1280, 720),
-                corner_radius: 0.0,
-            }],
+            vec![SurfacePlacement::new(1, 2, Rect::new(0, 0, 1280, 720), 0.0)],
         );
         let messages =
             Presentation::new(Extent::new(1280, 720), vec![surface(0)]).resize_windows(&plan);
@@ -377,12 +413,7 @@ mod tests {
     fn resize_windows_unrotates_guest_dimensions() {
         let plan = CompositingPlan::new(
             [0.0; 4],
-            vec![SurfacePlacement {
-                connection: 1,
-                surface_id: 2,
-                rectangle: Rect::new(0, 0, 360, 640),
-                corner_radius: 0.0,
-            }],
+            vec![SurfacePlacement::new(1, 2, Rect::new(0, 0, 360, 640), 0.0)],
         );
         let messages =
             Presentation::new(Extent::new(360, 640), vec![surface(1)]).resize_windows(&plan);
@@ -401,12 +432,7 @@ mod tests {
     fn composition_plans_match_surfaces_by_identity() {
         let plan = CompositingPlan::new(
             [0.25, 0.5, 0.75, 1.0],
-            vec![SurfacePlacement {
-                connection: 7,
-                surface_id: 9,
-                rectangle: Rect::new(10, 20, 30, 40),
-                corner_radius: 0.0,
-            }],
+            vec![SurfacePlacement::new(7, 9, Rect::new(10, 20, 30, 40), 0.0)],
         );
         assert_eq!(plan.rectangle(7, 9), Some(Rect::new(10, 20, 30, 40)));
         assert_eq!(plan.rectangle(9, 7), None);
@@ -418,18 +444,8 @@ mod tests {
     /// the same plan have to stay consistent.
     #[test]
     fn chrome_layers_draw_between_streams_without_appearing_as_surfaces() {
-        let below = SurfacePlacement {
-            connection: 1,
-            surface_id: 1,
-            rectangle: Rect::new(0, 0, 800, 600),
-            corner_radius: 0.0,
-        };
-        let above = SurfacePlacement {
-            connection: 2,
-            surface_id: 1,
-            rectangle: Rect::new(600, 400, 200, 150),
-            corner_radius: 0.0,
-        };
+        let below = SurfacePlacement::new(1, 1, Rect::new(0, 0, 800, 600), 0.0);
+        let above = SurfacePlacement::new(2, 1, Rect::new(600, 400, 200, 150), 0.0);
         let plan = CompositingPlan::layered(
             [0.0; 4],
             vec![
@@ -466,12 +482,7 @@ mod tests {
     /// compositor only has one path to walk.
     #[test]
     fn a_plan_without_chrome_is_all_surface_layers() {
-        let placement = SurfacePlacement {
-            connection: 7,
-            surface_id: 9,
-            rectangle: Rect::new(10, 20, 30, 40),
-            corner_radius: 0.0,
-        };
+        let placement = SurfacePlacement::new(7, 9, Rect::new(10, 20, 30, 40), 0.0);
         let plan = CompositingPlan::new([0.0; 4], vec![placement]);
         assert_eq!(plan.layers(), [PlanLayer::Surface(placement)]);
     }
