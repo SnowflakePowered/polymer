@@ -29,6 +29,8 @@ snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
 snowglass-runtime = { path = "../../crates/snowglass-runtime" }
 snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
+snowglass-egui.workspace = true
+snowglass-statistics.workspace = true
 tempfile.workspace = true
 webview2-com = "0.38"
 windows = { workspace = true, features = [

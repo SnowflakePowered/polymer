@@ -37,6 +37,7 @@ mod input;
 mod layout;
 
 use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
+use snowglass_egui::{D3d12EguiPainter, VulkanEguiPainter, draw_statistics_graph};
 #[cfg(test)]
 use snowglass_renderer::cli::{AUTO_HOOKS, parse_arguments};
 use snowglass_renderer::{
@@ -46,19 +47,17 @@ use snowglass_renderer::{
         GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
-    debug::{
-        FrameSequenceTracker, TargetStatisticsDiagnostics, TargetStatisticsTracker,
-        draw_statistics_graph,
-    },
     input::PointerRoutingState,
     webrtc,
 };
 use snowglass_runtime::UiRequest;
+use snowglass_statistics::{
+    FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle, StatisticsSnapshot,
+};
 
 use input::{
     dinput::{
-        DirectInputForwarder, InputLatencyStats, RawKeyboardForwarder, RoutedInputSender,
-        cancel_pointer_connection,
+        DirectInputForwarder, RawKeyboardForwarder, RoutedInputSender, cancel_pointer_connection,
     },
     load_window, native_window,
     pointer::mouse_button,
@@ -127,7 +126,6 @@ impl ApplicationHandler for ViewerApplication {
     }
 }
 
-#[derive(Default)]
 struct Statistics {
     frame_number: u64,
     slot: u32,
@@ -137,48 +135,105 @@ struct Statistics {
     capture_y: u32,
     capture_width: u32,
     capture_height: u32,
-    sequences: FrameSequenceTracker,
-    target_statistics_tracker: TargetStatisticsTracker,
-    target_statistics: Vec<TargetStatisticsDiagnostics>,
-    dropped: u64,
-    composited: u64,
-    repeated: u64,
-    composite_sampled: Option<Instant>,
-    composite_fps: f64,
-    repeat_fps: f64,
-    display_latency: Option<snowglass_renderer::DisplayLatencyReport>,
+    frames: HashMap<u64, FrameMetrics>,
+    live: LiveStatistics,
+    presentation: PresentationMetrics,
+    snapshot: StatisticsSnapshot,
 }
 
 impl Statistics {
-    /// Records one composition pass and whether it had a guest frame to show.
-    ///
-    /// Every other number here is measured on the producer's clock, which says
-    /// nothing about what the display actually did with those frames. A guest
-    /// and a display running at nominally the same rate but with unlocked
-    /// phases keep perfect producer statistics while steadily showing one frame
-    /// twice and dropping the next; that only becomes visible as a repeat rate.
-    fn observe_composited(&mut self, has_new_frame: bool) {
-        self.composited += 1;
-        if !has_new_frame {
-            self.repeated += 1;
+    fn new(recorder: RecorderHandle, backend: ViewerApi) -> Self {
+        Self {
+            frame_number: 0,
+            slot: 0,
+            render_width: 0,
+            render_height: 0,
+            capture_x: 0,
+            capture_y: 0,
+            capture_width: 0,
+            capture_height: 0,
+            frames: HashMap::new(),
+            live: LiveStatistics::new(recorder),
+            presentation: PresentationMetrics::new(match backend {
+                ViewerApi::D3d12 => "d3d12",
+                ViewerApi::Vulkan => "vulkan",
+            }),
+            snapshot: StatisticsSnapshot::default(),
         }
-        let started = *self.composite_sampled.get_or_insert_with(Instant::now);
-        let elapsed = started.elapsed();
-        if elapsed < snowglass_renderer::debug::STATISTICS_SAMPLE_INTERVAL {
-            return;
+    }
+
+    fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+        self.frames
+            .insert(connection, FrameMetrics::new(connection, surface, target));
+    }
+
+    fn observe_frame(&mut self, connection: u64, frame: FrameReady, frequency: f64) {
+        let latency_ticks = performance_counter()
+            .unwrap_or(frame.timestamp_qpc)
+            .saturating_sub(frame.timestamp_qpc);
+        if let Some(metrics) = self.frames.get_mut(&connection) {
+            metrics.observe(
+                frame.frame_number,
+                frame.timestamp_qpc,
+                frequency,
+                Duration::from_secs_f64(latency_ticks as f64 / frequency.max(1.0)),
+            );
         }
-        self.composite_fps = self.composited as f64 / elapsed.as_secs_f64();
-        self.repeat_fps = self.repeated as f64 / elapsed.as_secs_f64();
-        self.composited = 0;
-        self.repeated = 0;
-        self.composite_sampled = Some(Instant::now());
+        self.frame_number = frame.frame_number;
+        self.slot = frame.slot;
+        self.render_width = frame.render_width;
+        self.render_height = frame.render_height;
+        self.capture_x = frame.capture_x;
+        self.capture_y = frame.capture_y;
+        self.capture_width = frame.capture_width;
+        self.capture_height = frame.capture_height;
+    }
+
+    fn remove_surface(&mut self, connection: u64) {
+        self.frames.remove(&connection);
+        self.live.remove_connection(connection);
+    }
+
+    fn sample(&mut self) {
+        self.snapshot = self.live.sample().clone();
     }
 }
 
+struct VulkanViewer {
+    // Dropped before the compositor destroys the Vulkan device.
+    painter: VulkanEguiPainter,
+    compositor: VulkanCompositor,
+}
+
+struct D3d12Viewer {
+    painter: D3d12EguiPainter,
+    compositor: D3d12Compositor,
+}
+
 enum ViewerCompositor {
-    Vulkan(Box<VulkanCompositor>),
-    D3d12(Box<D3d12Compositor>),
+    Vulkan(Box<VulkanViewer>),
+    D3d12(Box<D3d12Viewer>),
     Empty,
+}
+
+fn d3d12_viewer(compositor: D3d12Compositor) -> Result<D3d12Viewer, Box<dyn Error>> {
+    let painter = D3d12EguiPainter::new(
+        compositor.d3d12_device().clone(),
+        compositor.target_format(),
+        compositor.frames_in_flight(),
+    )?;
+    Ok(D3d12Viewer {
+        painter,
+        compositor,
+    })
+}
+
+fn vulkan_viewer(compositor: VulkanCompositor) -> Result<VulkanViewer, Box<dyn Error>> {
+    let painter = VulkanEguiPainter::new(&compositor)?;
+    Ok(VulkanViewer {
+        painter,
+        compositor,
+    })
 }
 
 /// Whether the native D3D12 consumer can import this stream: either a
@@ -206,18 +261,28 @@ impl ViewerCompositor {
         match api {
             ViewerApi::D3d12 if publish_video => {
                 let (compositor, webrtc) = D3d12Compositor::new_default_with_webrtc(window)?;
-                Ok((Self::D3d12(Box::new(compositor)), Some(webrtc)))
+                Ok((
+                    Self::D3d12(Box::new(d3d12_viewer(compositor)?)),
+                    Some(webrtc),
+                ))
             }
             ViewerApi::D3d12 => Ok((
-                Self::D3d12(Box::new(D3d12Compositor::new_default(window)?)),
+                Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new_default(
+                    window,
+                )?)?)),
                 None,
             )),
             ViewerApi::Vulkan if publish_video => {
                 let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, None, true)?;
-                Ok((Self::Vulkan(Box::new(compositor)), Some(webrtc)))
+                Ok((
+                    Self::Vulkan(Box::new(vulkan_viewer(compositor)?)),
+                    Some(webrtc),
+                ))
             }
             ViewerApi::Vulkan => Ok((
-                Self::Vulkan(Box::new(VulkanCompositor::new(window, None, true)?)),
+                Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
+                    window, None, true,
+                )?)?)),
                 None,
             )),
         }
@@ -243,26 +308,31 @@ impl ViewerCompositor {
             .into());
         }
         if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
-            let matches =
-                matches!(self, Self::D3d12(value) if value.adapter_luid() == stream.adapter_luid);
+            let matches = matches!(
+                self,
+                Self::D3d12(value)
+                    if value.compositor.adapter_luid() == stream.adapter_luid
+            );
             if !matches {
                 *video = None;
                 drop(std::mem::replace(self, Self::Empty));
                 if publish_video {
                     let (compositor, webrtc) =
                         D3d12Compositor::new_with_webrtc(window, stream.adapter_luid)?;
-                    *self = Self::D3d12(Box::new(compositor));
+                    *self = Self::D3d12(Box::new(d3d12_viewer(compositor)?));
                     *video = Some(webrtc);
                 } else {
-                    *self =
-                        Self::D3d12(Box::new(D3d12Compositor::new(window, stream.adapter_luid)?));
+                    *self = Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new(
+                        window,
+                        stream.adapter_luid,
+                    )?)?));
                     *video = None;
                 }
             }
             let Self::D3d12(value) = self else {
                 unreachable!()
             };
-            Renderer::import_surface_offer(value.as_mut(), offer, quarter_turns)?;
+            Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
             if publish_stream && let Some(video) = video {
                 video.import_d3d12_stream(connection)?;
             }
@@ -272,8 +342,9 @@ impl ViewerCompositor {
         let needs_keyed_mutex = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
         let adapter = stream.adapter_luid;
         let matches = matches!(self, Self::Vulkan(value)
-            if (!needs_keyed_mutex || value.keyed_mutex_enabled())
-                && ((adapter.low_part == 0 && adapter.high_part == 0) || value.matches_adapter(adapter)));
+            if (!needs_keyed_mutex || value.compositor.keyed_mutex_enabled())
+                && ((adapter.low_part == 0 && adapter.high_part == 0)
+                    || value.compositor.matches_adapter(adapter)));
         if !matches {
             *video = None;
             drop(std::mem::replace(self, Self::Empty));
@@ -281,47 +352,49 @@ impl ViewerCompositor {
             if publish_video {
                 let (compositor, webrtc) =
                     VulkanCompositor::new_with_webrtc(window, preferred, needs_keyed_mutex)?;
-                *self = Self::Vulkan(Box::new(compositor));
+                *self = Self::Vulkan(Box::new(vulkan_viewer(compositor)?));
                 *video = Some(webrtc);
             } else {
-                *self = Self::Vulkan(Box::new(VulkanCompositor::new(
+                *self = Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
                     window,
                     preferred,
                     needs_keyed_mutex,
-                )?));
+                )?)?));
                 *video = None;
             }
         }
         let Self::Vulkan(value) = self else {
             unreachable!()
         };
-        Renderer::import_surface_offer(value.as_mut(), offer, quarter_turns)?;
+        Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
         if publish_stream && let Some(video) = video {
-            video.import_vulkan_stream(value, connection)?;
+            video.import_vulkan_stream(&value.compositor, connection)?;
         }
         Ok(())
     }
 
     fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
         match self {
-            Self::Vulkan(value) => Renderer::recreate_swapchain(value.as_mut(), window),
-            Self::D3d12(value) => Renderer::recreate_swapchain(value.as_mut(), window),
+            Self::Vulkan(value) => Renderer::recreate_swapchain(&mut value.compositor, window),
+            Self::D3d12(value) => Renderer::recreate_swapchain(&mut value.compositor, window),
             Self::Empty => Ok(false),
         }
     }
 
     fn set_latest(&mut self, connection: u64, frame: FrameReady) {
         match self {
-            Self::Vulkan(value) => Renderer::set_latest(value.as_mut(), connection, frame),
-            Self::D3d12(value) => Renderer::set_latest(value.as_mut(), connection, frame),
+            Self::Vulkan(value) => Renderer::set_latest(&mut value.compositor, connection, frame),
+            Self::D3d12(value) => Renderer::set_latest(&mut value.compositor, connection, frame),
             Self::Empty => {}
         }
     }
 
     fn presentation(&self, viewer_extent: Extent) -> Presentation {
         match self {
-            Self::Vulkan(value) => Renderer::received_presentation(value.as_ref(), viewer_extent),
-            Self::D3d12(value) => Renderer::received_presentation(value.as_ref(), viewer_extent),
+            Self::Vulkan(value) => {
+                Renderer::received_presentation(&value.compositor, viewer_extent)
+            }
+            Self::D3d12(value) => Renderer::received_presentation(&value.compositor, viewer_extent),
             Self::Empty => Presentation::new(viewer_extent, Vec::new()),
         }
     }
@@ -330,34 +403,25 @@ impl ViewerCompositor {
         let presentation = self.presentation(window.render_extent());
         let plan = layout::composition_plan(&presentation);
         match self {
-            Self::Vulkan(value) => Renderer::resize_windows(value.as_ref(), window, &plan),
-            Self::D3d12(value) => Renderer::resize_windows(value.as_ref(), window, &plan),
+            Self::Vulkan(value) => Renderer::resize_windows(&value.compositor, window, &plan),
+            Self::D3d12(value) => Renderer::resize_windows(&value.compositor, window, &plan),
             Self::Empty => Vec::new(),
         }
     }
 
     fn has_pending_frame(&self) -> bool {
         match self {
-            Self::Vulkan(value) => Renderer::has_pending_frame(value.as_ref()),
-            Self::D3d12(value) => Renderer::has_pending_frame(value.as_ref()),
+            Self::Vulkan(value) => Renderer::has_pending_frame(&value.compositor),
+            Self::D3d12(value) => Renderer::has_pending_frame(&value.compositor),
             Self::Empty => false,
         }
     }
 
     fn begin_frame(&mut self) {
         match self {
-            Self::Vulkan(value) => Renderer::begin_frame(value.as_mut()),
-            Self::D3d12(value) => Renderer::begin_frame(value.as_mut()),
+            Self::Vulkan(value) => Renderer::begin_frame(&mut value.compositor),
+            Self::D3d12(value) => Renderer::begin_frame(&mut value.compositor),
             Self::Empty => {}
-        }
-    }
-
-    /// Only D3D12 can attribute a present to the vblank that displayed it, so
-    /// the other backends report nothing rather than an estimate.
-    fn display_latency(&mut self) -> Option<snowglass_renderer::DisplayLatencyReport> {
-        match self {
-            Self::D3d12(value) => value.display_latency(),
-            Self::Vulkan(_) | Self::Empty => None,
         }
     }
 
@@ -370,8 +434,8 @@ impl ViewerCompositor {
             video.disconnect_stream(connection);
         }
         match self {
-            Self::Vulkan(value) => Renderer::disconnect_stream(value.as_mut(), connection),
-            Self::D3d12(value) => Renderer::disconnect_stream(value.as_mut(), connection),
+            Self::Vulkan(value) => Renderer::disconnect_stream(&mut value.compositor, connection),
+            Self::D3d12(value) => Renderer::disconnect_stream(&mut value.compositor, connection),
             Self::Empty => Ok(()),
         }
     }
@@ -384,8 +448,21 @@ impl ViewerCompositor {
         video: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         match self {
-            Self::Vulkan(value) => value.draw_with_webrtc(output, primitives, plan, video),
-            Self::D3d12(value) => value.draw_with_webrtc(output, primitives, plan, video),
+            Self::Vulkan(value) => {
+                let VulkanViewer {
+                    painter,
+                    compositor,
+                } = value.as_mut();
+                painter.prepare(compositor, output)?;
+                compositor.present_with(plan, video, |pass| painter.paint(pass, output, primitives))
+            }
+            Self::D3d12(value) => {
+                let D3d12Viewer {
+                    painter,
+                    compositor,
+                } = value.as_mut();
+                compositor.present_with(plan, video, |pass| painter.paint(pass, output, primitives))
+            }
             Self::Empty => Ok(false),
         }
     }
@@ -412,6 +489,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let _ = log::set_boxed_logger(Box::new(StderrLogger));
         log::set_max_level(log::LevelFilter::Trace);
     }
+    let statistics_recorder = snowglass_statistics::install()?;
     let options = parse_target()?;
     layout::configure(options.layout_css.as_deref())?;
     let mut layout_css = options
@@ -456,8 +534,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
     );
     let mut capture = SurfaceCapture::default();
+    let pointer_tx = capture.pointer_sender();
     let input_tx = RoutedInputSender::default();
-    let input_latency = InputLatencyStats::default();
     let stone_json = options
         .stone_db
         .as_ref()
@@ -524,7 +602,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (mut compositor, mut video_compositor) =
             ViewerCompositor::new(&window, viewer_api, publish_video)?;
         let frequency = performance_frequency().unwrap_or(1) as f64;
-        let mut stats = Statistics::default();
+        let mut stats = Statistics::new(statistics_recorder, viewer_api);
         let mut pointer_routing = PointerRoutingState::new(Instant::now());
         let mut stream_indices = HashMap::<u64, u32>::new();
         let mut active_backend = "Waiting";
@@ -601,7 +679,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 &mut pointer_routing,
                                 &presentation,
                                 &plan,
-                                &input_tx,
+                                &pointer_tx,
                                 &mut direct_input,
                             );
                         }
@@ -653,7 +731,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         0,
                         &presentation,
                         &plan,
-                        &input_tx,
+                        &pointer_tx,
                     ) {
                         if let Some(mapped) = pointer_routing.last_sent() {
                             if let Some(provider) = &gamepad_provider {
@@ -698,7 +776,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             0,
                             &presentation,
                             &plan,
-                            &input_tx,
+                            &pointer_tx,
                         ) {
                             direct_input.mouse_button(button, state == ElementState::Pressed);
                         }
@@ -725,7 +803,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         vertical,
                         &presentation,
                         &plan,
-                        &input_tx,
+                        &pointer_tx,
                     ) {
                         direct_input.mouse_wheel(vertical);
                     }
@@ -757,6 +835,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .copied()
                             .collect::<Vec<_>>()
                         {
+                            stats.remove_surface(connection);
                             let _ = compositor
                                 .disconnect_stream(connection, &mut video_compositor);
                         }
@@ -842,10 +921,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                 &mut pointer_routing,
                                                 &presentation,
                                                 &plan,
-                                                &input_tx,
+                                                &pointer_tx,
                                                 &mut direct_input,
                                             );
                                             stream_indices.remove(&existing);
+                                            stats.remove_surface(existing);
                                             if let Some(publisher) = &webrtc {
                                                 publisher.remove_stream(existing);
                                             }
@@ -860,6 +940,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             }
                                         }
                                         stream_indices.insert(connection, stream_index);
+                                        stats.add_surface(
+                                            connection,
+                                            stream.surface_id.0,
+                                            stream_index,
+                                        );
                                         if publish_stream && let Some(publisher) = &webrtc {
                                             publisher.add_stream(connection, stream_index);
                                         }
@@ -912,37 +997,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         "snowglass: received first {active_backend} frame on connection {connection}"
                                     );
                                 }
-                                let observation = stats.sequences.observe(
-                                    connection,
-                                    frame.frame_number,
-                                    frame.timestamp_qpc,
-                                );
-                                let frame_interval_ms = observation
-                                    .interval_qpc
-                                    .map(|interval_qpc| interval_qpc * 1000.0 / frequency);
-                                stats.dropped = stats.sequences.dropped();
-                                let target_index =
-                                    stream_indices.get(&connection).copied().unwrap_or(0);
-                                let latency_ms = performance_counter()
-                                    .unwrap_or(frame.timestamp_qpc)
-                                    .saturating_sub(frame.timestamp_qpc)
-                                    as f64
-                                    * 1000.0
-                                    / frequency;
-                                stats.target_statistics_tracker.observe(
-                                    connection,
-                                    target_index,
-                                    latency_ms,
-                                    frame_interval_ms,
-                                );
-                                stats.frame_number = frame.frame_number;
-                                stats.slot = frame.slot;
-                                stats.render_width = frame.render_width;
-                                stats.render_height = frame.render_height;
-                                stats.capture_x = frame.capture_x;
-                                stats.capture_y = frame.capture_y;
-                                stats.capture_width = frame.capture_width;
-                                stats.capture_height = frame.capture_height;
+                                stats.observe_frame(connection, frame, frequency);
                                 compositor.set_latest(connection, frame);
                                 if active_backend == "D3D11" {
                                     // Keyed-mutex frames must be consumed and released in order;
@@ -951,10 +1006,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                             SurfaceCaptureEvent::Removed { connection, .. } => {
-                                stats.sequences.remove(connection);
-                                stats.target_statistics_tracker.remove(connection);
-                                stats.target_statistics =
-                                    stats.target_statistics_tracker.statistics();
+                                stats.remove_surface(connection);
                                 if let Some(publisher) = &webrtc {
                                     publisher.remove_stream(connection);
                                 }
@@ -967,7 +1019,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &mut pointer_routing,
                                     &presentation,
                                     &plan,
-                                    &input_tx,
+                                    &pointer_tx,
                                     &mut direct_input,
                                 );
                                 if stream_indices.remove(&connection).is_none() {
@@ -987,14 +1039,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         // an older capture back onto the screen and look like temporal ghosting.
                         return;
                     }
-                    stats.observe_composited(compositor.has_pending_frame());
-                    if let Some(latency) = compositor.display_latency() {
-                        stats.display_latency = Some(latency);
-                    }
-                    if stats.target_statistics_tracker.sample() {
-                        stats.target_statistics =
-                            stats.target_statistics_tracker.statistics();
-                    }
+                    let has_pending_frame = compositor.has_pending_frame();
+                    stats.sample();
                     let input = egui_state.take_egui_input(&window);
                     let webrtc_stats = webrtc.as_ref().map(webrtc::Publisher::stats);
                     let last_pointer_sent = pointer_routing.last_sent();
@@ -1025,23 +1071,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     stats.capture_width,
                                     stats.capture_height
                                 ));
-                                if stats.target_statistics.is_empty() {
+                                if stats.snapshot.targets.is_empty() {
                                     ui.label("Target statistics waiting");
                                 } else {
-                                    for target in &stats.target_statistics {
+                                    for target in &stats.snapshot.targets {
                                         ui.label(format!(
                                             "Target {}: {:.1} FPS · latency {:.2} ms · frame Δ {:.2} ms",
                                             target.target,
                                             target.fps,
-                                            target.latency_ms,
-                                            target.frame_interval_ms,
+                                            target.capture_latency.average,
+                                            target.frame_interval.average,
                                         ));
                                     }
                                 }
-                                ui.label(format!("Dropped {}", stats.dropped));
+                                ui.label(format!("Dropped {}", stats.snapshot.dropped_frames));
                                 ui.label(format!(
                                     "Composited {:.1}/s · repeated {:.1}/s",
-                                    stats.composite_fps, stats.repeat_fps
+                                    stats.snapshot.pacing.presented,
+                                    stats.snapshot.pacing.repeated,
                                 ))
                                 .on_hover_text(
                                     "Composition passes per second, and how many of them \
@@ -1050,12 +1097,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                                      are running at nominally the same rate with drifting \
                                      phase.",
                                 );
-                                if let Some(latency) = stats.display_latency {
+                                if let Some(latency) =
+                                    stats.snapshot.display_latency.values().next()
+                                {
                                     ui.colored_label(
                                         egui::Color32::LIGHT_BLUE,
                                         format!(
                                             "To display {:.1} ms · worst {:.1} ms",
-                                            latency.average_ms, latency.worst_ms
+                                            latency.average, latency.maximum
                                         ),
                                     )
                                     .on_hover_text(format!(
@@ -1064,7 +1113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                          a present slot, and the scanout. Panel response is \
                                          not included. {} present(s) confirmed in the last \
                                          window.",
-                                        latency.confirmed
+                                        latency.samples
                                     ));
                                 }
                                 if let Some(sent) = last_pointer_sent {
@@ -1199,10 +1248,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .collapsible(true)
                             .frame(statistics_frame)
                             .show(context, |ui| {
-                                if stats.target_statistics.is_empty() {
+                                if stats.snapshot.targets.is_empty() {
                                     ui.label("Collecting per-target frame statistics…");
                                 }
-                                for target in &stats.target_statistics {
+                                for target in &stats.snapshot.targets {
                                     ui.strong(format!("Target {}", target.target));
                                     draw_statistics_graph(ui, &target.history);
                                 }
@@ -1213,7 +1262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 provider,
                                 &gamepad_layouts,
                                 &mut gamepad_remap_drafts,
-                                &input_latency,
+                                &stats.snapshot.input.combined(),
                             );
                         }
                         if let Some(webrtc_stats) = &webrtc_stats
@@ -1310,7 +1359,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 input_tx.attach(&started.target.instance);
                                 capture.attach(&started.target.instance);
                                 active_target = Some(started.target);
-                                stats = Statistics::default();
+                                for connection in
+                                    stats.frames.keys().copied().collect::<Vec<_>>()
+                                {
+                                    stats.remove_surface(connection);
+                                }
                             }
                             Err(error) => launch_error = Some(error.to_string()),
                         }
@@ -1331,7 +1384,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &composition_plan,
                         video_compositor.as_mut(),
                     ) {
-                        Ok(true) => {}
+                        Ok(true) => stats.presentation.record_present(has_pending_frame),
                         Ok(false) => {
                             if let Err(error) = compositor.recreate_swapchain(&window) {
                                 eprintln!("snowglass: swapchain recreation failed: {error}");

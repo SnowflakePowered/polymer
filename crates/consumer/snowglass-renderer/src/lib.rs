@@ -2,16 +2,15 @@
 
 pub mod capture;
 pub mod cli;
-pub mod debug;
 pub mod input;
 pub mod renderer;
 pub mod webrtc;
 
-pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent};
+pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfacePointerSender};
 pub use renderer::{
-    CompositingPlan, D3d12Compositor, DisplayLatencyReport, MappedPointer, PlanLayer, Presentation,
+    CompositingPlan, D3d12Compositor, D3d12RenderPass, MappedPointer, PlanLayer, Presentation,
     ReceivedSurface, RenderWindow, Renderer, SurfacePlacement, SwapchainMode, VideoSwapchain,
-    VulkanCompositor, WebRtcCompositor,
+    VulkanCompositor, VulkanRenderPass, WebRtcCompositor,
 };
 pub use snowglass_input::mouse::layout::Extent;
 

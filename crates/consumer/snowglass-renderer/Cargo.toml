@@ -9,8 +9,7 @@ ash.workspace = true
 ash-window.workspace = true
 clap = { version = "4.6.1", features = ["derive"] }
 crossfire.workspace = true
-egui = "0.29.1"
-egui-ash-renderer = "0.6.0"
+dashmap.workspace = true
 log = "0.4"
 openh264 = "0.9.7"
 parking_lot.workspace = true
@@ -23,6 +22,7 @@ snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-protocol.workspace = true
 snowglass-runtime = { path = "../../snowglass-runtime" }
+snowglass-statistics.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 webrtc = "0.14.0"
 webrtc-ice = "0.14.0"

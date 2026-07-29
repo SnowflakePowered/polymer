@@ -450,6 +450,10 @@ impl LocalSocket {
         self.stream.set_read_timeout(timeout)
     }
 
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.stream.set_write_timeout(timeout)
+    }
+
     pub(crate) fn write_packet(&mut self, payload: &[u8]) -> io::Result<()> {
         let length = u32::try_from(payload.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "packet is too large"))?;

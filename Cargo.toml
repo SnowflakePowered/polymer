@@ -6,6 +6,7 @@ members = [
     "crates/snowglass-ipc",
     "crates/snowglass-platform-windows",
     "crates/snowglass-runtime",
+    "crates/snowglass-statistics",
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
@@ -30,6 +31,8 @@ bcast = "0.0.29"
 crossfire = "3.1.19"
 dashmap = "6.1.0"
 exe = "0.5.7"
+metrics = "0.24.6"
+metrics-util = { version = "0.20.4", default-features = false }
 parking_lot = "0.12.5"
 raw-window-handle = "0.6.2"
 regex = "1.13"
@@ -91,6 +94,8 @@ zerocopy = { version = "0.8.52", features = ["derive"] }
 snowglass-api = { path = "crates/snowglass-api" }
 snowglass-protocol = { path = "crates/snowglass-protocol" }
 snowglass-ipc = { path = "crates/snowglass-ipc" }
+snowglass-egui = { path = "crates/consumer/snowglass-egui" }
+snowglass-statistics = { path = "crates/snowglass-statistics" }
 snowglass-ui = { path = "crates/snowglass-ui" }
 snowglass-platform-windows = { path = "crates/snowglass-platform-windows" }
 snowglass-input = { path = "crates/input/snowglass-input" }

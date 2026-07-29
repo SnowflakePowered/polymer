@@ -6,9 +6,14 @@ use snowglass_input::mouse::{
         aspect_fit, vertical_surface_layout,
     },
 };
-use snowglass_ipc::{Message, MessageSink};
+#[cfg(test)]
+use snowglass_ipc::Message;
 use snowglass_protocol::{FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind};
 use std::time::Instant;
+
+pub trait PointerEventSink {
+    fn send_pointer(&self, connection: u64, event: PointerInput) -> bool;
+}
 
 #[derive(Clone, Copy)]
 pub struct PointerSendEvent {
@@ -72,7 +77,7 @@ impl PointerRoutingState {
         wheel_vertical: i32,
         presentation: &Presentation,
         plan: &CompositingPlan,
-        sender: &impl MessageSink,
+        sender: &impl PointerEventSink,
     ) -> bool {
         let captured = self.captured_connection;
         let Some(destination) = map_pointer(presentation, plan, self.cursor, captured) else {
@@ -121,24 +126,27 @@ impl PointerRoutingState {
             .y
             .round()
             .clamp(0.0, f64::from(height.saturating_sub(1))) as i32;
-        let sent = sender.send_message(Message::PointerInput(PointerInput {
-            surface_id: destination.surface_id,
-            target_window: destination.target_window,
-            frame_number: destination.frame.frame_number,
-            source: PointerSource::Mouse,
-            phase,
-            pointer_id: 0,
-            x,
-            y,
-            coordinate_width: width,
-            coordinate_height: height,
-            button,
-            buttons: self.buttons,
-            wheel_horizontal,
-            wheel_vertical,
-            timestamp: self.started.elapsed().as_millis() as u32,
-            sequence: self.sequence,
-        }));
+        let sent = sender.send_pointer(
+            destination.connection,
+            PointerInput {
+                surface_id: destination.surface_id,
+                target_window: destination.target_window,
+                frame_number: destination.frame.frame_number,
+                source: PointerSource::Mouse,
+                phase,
+                pointer_id: 0,
+                x,
+                y,
+                coordinate_width: width,
+                coordinate_height: height,
+                button,
+                buttons: self.buttons,
+                wheel_horizontal,
+                wheel_vertical,
+                timestamp: self.started.elapsed().as_millis() as u32,
+                sequence: self.sequence,
+            },
+        );
         if sent {
             self.sent_count = self.sent_count.wrapping_add(1);
             self.last_sent = Some(PointerSendEvent {
@@ -172,7 +180,7 @@ impl PointerRoutingState {
         connection: u64,
         presentation: &Presentation,
         plan: &CompositingPlan,
-        sender: &impl MessageSink,
+        sender: &impl PointerEventSink,
     ) -> Option<u32> {
         if self.captured_connection != Some(connection) {
             return None;
@@ -389,9 +397,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct MessageCollector(Arc<Mutex<VecDeque<Message>>>);
 
-    impl MessageSink for MessageCollector {
-        fn send_message(&self, message: Message) -> bool {
-            self.0.lock().push_back(message);
+    impl PointerEventSink for MessageCollector {
+        fn send_pointer(&self, _connection: u64, event: PointerInput) -> bool {
+            self.0.lock().push_back(Message::PointerInput(event));
             true
         }
     }

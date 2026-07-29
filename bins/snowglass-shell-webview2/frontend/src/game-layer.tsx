@@ -235,6 +235,7 @@ type GameLayerBindings = {
   installed: boolean;
   shortcutHeld: boolean;
   interacting: boolean;
+  closeScheduled: boolean;
   animationTimer: ReturnType<typeof setInterval> | null;
   fadeTimer: ReturnType<typeof setInterval> | null;
   setGamepad: Dispatch<SetStateAction<GamepadState>> | null;
@@ -247,6 +248,7 @@ const bindings: GameLayerBindings = {
   installed: false,
   shortcutHeld: false,
   interacting: false,
+  closeScheduled: false,
   animationTimer: null,
   fadeTimer: null,
   setGamepad: null,
@@ -314,7 +316,17 @@ function startSurfaceFade(to: number, closeWhenDone: boolean) {
         clearInterval(bindings.fadeTimer);
         bindings.fadeTimer = null;
       }
-      if (fade.closeWhenDone) state.instance?.close();
+      if (fade.closeWhenDone && state.instance && !bindings.closeScheduled) {
+        const instance = state.instance;
+        bindings.closeScheduled = true;
+        // Closing synchronously from a React state updater re-enters the game
+        // layer when the native side publishes its `closed` event. Leave the
+        // updater before crossing that boundary.
+        queueMicrotask(() => {
+          bindings.closeScheduled = false;
+          instance.close();
+        });
+      }
       return { ...state, surfaceFade: fade.to, fade: null };
     });
   }, 16);

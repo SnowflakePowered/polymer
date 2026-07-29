@@ -17,6 +17,10 @@ use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory};
 use game_layer_state::{GameLayerAction, GameLayerState, GameLayerWork};
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use snowglass_egui::{
+    D3d12EguiPainter, DebugOverlayModel, InputAxisDiagnostics, InputDiagnostics,
+    InputSlotDiagnostics, draw_debug_overlay,
+};
 use snowglass_input::{
     mouse::{PointerPhase, layout::Rect},
     provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
@@ -25,17 +29,11 @@ use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{performance_counter, performance_frequency};
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
-    CompositingPlan, D3d12Compositor, DisplayLatencyReport, Extent, PlanLayer, Renderer,
-    SurfaceCapture, SurfaceCaptureEvent, SurfacePlacement,
-    cli::ViewerApi,
-    debug::{
-        DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
-        InputSlotDiagnostics, PacingTracker, STATISTICS_SAMPLE_INTERVAL, TargetStatisticsTracker,
-        draw_debug_overlay,
-    },
-    input::PointerRoutingState,
-    webrtc,
+    CompositingPlan, D3d12Compositor, Extent, PlanLayer, Renderer, SurfaceCapture,
+    SurfaceCaptureEvent, SurfacePlacement, SurfacePointerSender, cli::ViewerApi,
+    input::PointerRoutingState, webrtc,
 };
+use snowglass_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
 use std::{
     collections::HashMap,
     error::Error,
@@ -213,7 +211,7 @@ impl TurnProfile {
         self.nested = Duration::ZERO;
         let started = *self.started.get_or_insert(now);
         let elapsed = now.saturating_duration_since(started);
-        if elapsed < STATISTICS_SAMPLE_INTERVAL {
+        if elapsed < snowglass_statistics::SAMPLE_INTERVAL {
             return;
         }
         let seconds = elapsed.as_secs_f64();
@@ -290,13 +288,14 @@ struct ActiveGame {
 }
 
 struct EguiOverlay {
+    painter: D3d12EguiPainter,
     compositor: D3d12Compositor,
     context: egui::Context,
     state: egui_winit::State,
-    diagnostics: DebugOverlay,
-    sequences: FrameSequenceTracker,
-    target_statistics: TargetStatisticsTracker,
-    pacing: PacingTracker,
+    diagnostics: DebugOverlayModel,
+    frames: HashMap<u64, FrameMetrics>,
+    statistics: LiveStatistics,
+    presentation: PresentationMetrics,
     frequency: f64,
     next_repaint: Instant,
     /// Until when egui's own repaint requests are honoured instead of the
@@ -305,10 +304,15 @@ struct EguiOverlay {
 }
 
 impl EguiOverlay {
-    fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
+    fn new(window: &Window, recorder: RecorderHandle) -> Result<Self, Box<dyn Error>> {
         let size = window.inner_size();
         let render_window = SurfaceWindow::new(window, size.width.max(1), size.height.max(1));
         let compositor = D3d12Compositor::new_default_for_transparent_composition(&render_window)?;
+        let painter = D3d12EguiPainter::new(
+            compositor.d3d12_device().clone(),
+            compositor.target_format(),
+            compositor.frames_in_flight(),
+        )?;
         let context = egui::Context::default();
         let state = egui_winit::State::new(
             context.clone(),
@@ -318,17 +322,18 @@ impl EguiOverlay {
             window.theme(),
             None,
         );
-        let mut diagnostics = DebugOverlay::default();
-        diagnostics.frame.backend = "Waiting".to_owned();
-        diagnostics.frame.consumer = "D3D12/DXGI".to_owned();
+        let mut diagnostics = DebugOverlayModel::default();
+        diagnostics.backend = "Waiting".to_owned();
+        diagnostics.consumer = "D3D12/DXGI".to_owned();
         Ok(Self {
+            painter,
             compositor,
             context,
             state,
             diagnostics,
-            sequences: FrameSequenceTracker::default(),
-            target_statistics: TargetStatisticsTracker::default(),
-            pacing: PacingTracker::default(),
+            frames: HashMap::new(),
+            statistics: LiveStatistics::new(recorder),
+            presentation: PresentationMetrics::new("d3d12"),
             frequency: performance_frequency().unwrap_or(1) as f64,
             next_repaint: Instant::now(),
             interactive_until: None,
@@ -340,64 +345,50 @@ impl EguiOverlay {
     }
 
     fn set_backend(&mut self, backend: String) {
-        self.diagnostics.frame.backend = backend;
+        self.diagnostics.backend = backend;
     }
 
-    fn observe_frame(
-        &mut self,
-        connection: u64,
-        target: u32,
-        frame: snowglass_protocol::FrameReady,
-    ) {
-        let diagnostics = &mut self.diagnostics.frame;
-        let observation =
-            self.sequences
-                .observe(connection, frame.frame_number, frame.timestamp_qpc);
-        let frame_interval_ms = observation
-            .interval_qpc
-            .map(|interval_qpc| interval_qpc * 1000.0 / self.frequency);
-        diagnostics.dropped = self.sequences.dropped();
-        let latency_ms = performance_counter()
+    fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+        self.frames
+            .insert(connection, FrameMetrics::new(connection, surface, target));
+    }
+
+    fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
+        let latency_ticks = performance_counter()
             .unwrap_or(frame.timestamp_qpc)
-            .saturating_sub(frame.timestamp_qpc) as f64
-            * 1000.0
-            / self.frequency;
-        self.target_statistics
-            .observe(connection, target, latency_ms, frame_interval_ms);
-        diagnostics.frame_number = frame.frame_number;
-        diagnostics.slot = frame.slot;
-        diagnostics.render_width = frame.render_width;
-        diagnostics.render_height = frame.render_height;
-        diagnostics.capture_x = frame.capture_x;
-        diagnostics.capture_y = frame.capture_y;
-        diagnostics.capture_width = frame.capture_width;
-        diagnostics.capture_height = frame.capture_height;
+            .saturating_sub(frame.timestamp_qpc);
+        if let Some(metrics) = self.frames.get_mut(&connection) {
+            metrics.observe(
+                frame.frame_number,
+                frame.timestamp_qpc,
+                self.frequency,
+                Duration::from_secs_f64(latency_ticks as f64 / self.frequency.max(1.0)),
+            );
+        }
+        self.diagnostics.frame_number = frame.frame_number;
+        self.diagnostics.slot = frame.slot;
+        self.diagnostics.render_width = frame.render_width;
+        self.diagnostics.render_height = frame.render_height;
+        self.diagnostics.capture_x = frame.capture_x;
+        self.diagnostics.capture_y = frame.capture_y;
+        self.diagnostics.capture_width = frame.capture_width;
+        self.diagnostics.capture_height = frame.capture_height;
     }
 
     fn sample(&mut self) {
-        self.diagnostics.frame.pacing = self.pacing.rates();
-        if !self.target_statistics.sample() {
-            return;
-        }
-        self.diagnostics.frame.target_statistics = self.target_statistics.statistics();
+        self.diagnostics.statistics = self.statistics.sample().clone();
     }
 
-    const fn record_present(&mut self) {
-        self.pacing.record_present();
+    fn record_present(&mut self, carried_new_frame: bool) {
+        self.presentation.record_present(carried_new_frame);
     }
 
-    const fn record_clock(&mut self) {
-        self.pacing.record_clock();
-    }
-
-    fn set_display_latency(&mut self, latency: Option<DisplayLatencyReport>) {
-        if latency.is_some() {
-            self.diagnostics.frame.display_latency = latency;
-        }
+    fn record_clock(&mut self) {
+        self.presentation.record_clock();
     }
 
     fn set_note(&mut self, note: &str) {
-        let notes = &mut self.diagnostics.frame.notes;
+        let notes = &mut self.diagnostics.notes;
         if note.is_empty() {
             notes.clear();
         } else if notes.first().is_none_or(|first| first != note) {
@@ -407,9 +398,9 @@ impl EguiOverlay {
     }
 
     fn remove_target(&mut self, connection: u64) {
-        self.sequences.remove(connection);
-        self.target_statistics.remove(connection);
-        self.diagnostics.frame.target_statistics = self.target_statistics.statistics();
+        self.frames.remove(&connection);
+        self.statistics.remove_connection(connection);
+        self.diagnostics.statistics = self.statistics.snapshot().clone();
     }
 
     fn resize(&mut self, window: &Window) -> Result<(), Box<dyn Error>> {
@@ -483,7 +474,14 @@ impl EguiOverlay {
             self.next_repaint = now + requested.min(EGUI_STATISTICS_REFRESH);
         }
         let plan = CompositingPlan::new([0.0, 0.0, 0.0, 0.0], Vec::new());
-        Renderer::draw(&mut self.compositor, &output, &primitives, &plan)?;
+        let Self {
+            painter,
+            compositor,
+            ..
+        } = self;
+        compositor.present_with(&plan, None, |pass| {
+            painter.paint(pass, &output, &primitives)
+        })?;
         // A drag in progress, or a pointer resting over an egui window, keeps
         // the interaction alive without needing a fresh event every frame.
         if self.context.is_using_pointer() || self.context.wants_pointer_input() {
@@ -626,6 +624,7 @@ impl Drop for CompositorClock {
 
 struct StreamState {
     capture: SurfaceCapture,
+    pointer: SurfacePointerSender,
     wake_pending: Arc<AtomicBool>,
     dirty: Arc<AtomicBool>,
     work_pending: bool,
@@ -682,6 +681,7 @@ impl ShellState {
         event_loop: &ActiveEventLoop,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
         options: ShellOptions,
+        statistics_recorder: RecorderHandle,
     ) -> Result<Self, Box<dyn Error>> {
         let ShellOptions {
             viewer: options,
@@ -799,7 +799,7 @@ impl ShellState {
         // that a hidden, captured background keeps producing frames.
         foreground_webview.load_url(&foreground_url)?;
 
-        let mut overlay = EguiOverlay::new(&window)?;
+        let mut overlay = EguiOverlay::new(&window, statistics_recorder)?;
         composition.set_egui_overlay_content(&overlay.content()?)?;
         overlay.draw(&window)?;
 
@@ -809,6 +809,7 @@ impl ShellState {
         let capture_wake_pending = Arc::new(AtomicBool::new(false));
         let capture_dirty = Arc::new(AtomicBool::new(false));
         let capture = SurfaceCapture::default();
+        let pointer = capture.pointer_sender();
         let compositor_clock = CompositorClock::spawn(proxy.clone())?;
         let target = None;
 
@@ -832,6 +833,7 @@ impl ShellState {
             },
             streams: StreamState {
                 capture,
+                pointer,
                 wake_pending: capture_wake_pending,
                 dirty: capture_dirty,
                 work_pending: false,
@@ -1193,6 +1195,7 @@ impl ShellState {
         let connections = self.streams.surfaces.keys().copied().collect::<Vec<_>>();
         for connection in connections {
             self.cancel_pointer_connection(connection);
+            self.presentation.overlay.remove_target(connection);
             if let Some(publisher) = &active.webrtc {
                 publisher.remove_stream(connection);
             }
@@ -1276,6 +1279,7 @@ impl ShellState {
             match event {
                 SurfaceCaptureEvent::Offered(offer) => {
                     let connection = offer.connection_id();
+                    let surface_id = offer.stream().surface_id.0;
                     let Some(active) = &self.game.active else {
                         self.streams.capture.reject(offer);
                         continue;
@@ -1294,7 +1298,16 @@ impl ShellState {
                     };
                     match connected {
                         Ok(()) => match self.streams.capture.accept(offer) {
-                            Ok(_) => changed = true,
+                            Ok(_) => {
+                                if let Some(surface) = self.streams.surfaces.get(&connection) {
+                                    self.presentation.overlay.add_surface(
+                                        connection,
+                                        surface_id,
+                                        surface.index,
+                                    );
+                                }
+                                changed = true;
+                            }
                             Err(error) => {
                                 self.streams.surfaces.remove(&connection);
                                 if let Some(merged) = self.presentation.merged.as_mut() {
@@ -1316,9 +1329,7 @@ impl ShellState {
                     let Some(surface) = self.streams.surfaces.get_mut(&connection) else {
                         continue;
                     };
-                    self.presentation
-                        .overlay
-                        .observe_frame(connection, surface.index, frame);
+                    self.presentation.overlay.observe_frame(connection, frame);
                     let (width, height) = rotated_extent(
                         frame.render_width.max(1),
                         frame.render_height.max(1),
@@ -1607,24 +1618,19 @@ impl ShellState {
         let Some(merged) = self.presentation.merged.as_mut() else {
             return;
         };
+        let carried_new_frame = Renderer::has_pending_frame(merged);
         if !merged.begin_frame_within(permit_wait) {
             return;
         }
-        match merged.draw_game_with_webrtc(&plan, None) {
+        match merged.present_with_webrtc(&plan, None) {
             Ok(_) => {
                 self.presentation.merged_dirty = false;
                 // The draw is what consumed the pending chrome upload.
                 self.game_layer.clear_chrome_dirty();
-                self.presentation.overlay.record_present();
+                self.presentation.overlay.record_present(carried_new_frame);
             }
             Err(error) => eprintln!("snowglass: rendering merged surfaces failed: {error}"),
         }
-        let latency = self
-            .presentation
-            .merged
-            .as_mut()
-            .and_then(D3d12Compositor::display_latency);
-        self.presentation.overlay.set_display_latency(latency);
     }
 
     fn next_target_configuration(&self) -> Option<(u32, u8)> {
@@ -1937,7 +1943,7 @@ impl ShellState {
             vertical,
             &presentation,
             &plan,
-            &self.input.transport.control_sender(),
+            &self.streams.pointer,
         ) {
             if phase == PointerPhase::Move {
                 self.input.direct_input.reset_mouse_position();
@@ -2038,7 +2044,7 @@ impl ShellState {
             connection,
             &presentation,
             &plan,
-            &self.input.transport.control_sender(),
+            &self.streams.pointer,
         ) {
             self.input.direct_input.release_mouse_buttons(buttons);
         }
@@ -2096,13 +2102,8 @@ impl ShellState {
             .as_ref()
             .map(Sdl3Provider::states)
             .unwrap_or_default();
-        let dispatch = self.input.transport.dispatch_summary();
         self.presentation.overlay.diagnostics.input = InputDiagnostics {
             active: self.input.priority == InputPriority::Game && self.game.target.is_some(),
-            dispatch_samples: dispatch.samples,
-            dispatch_p50_ms: dispatch.p50_ms,
-            dispatch_p95_ms: dispatch.p95_ms,
-            dispatch_p99_ms: dispatch.p99_ms,
             slots: self
                 .game
                 .active
@@ -2299,6 +2300,7 @@ impl Drop for ShellState {
 struct ShellApplication {
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     options: Option<ShellOptions>,
+    statistics_recorder: Option<RecorderHandle>,
     state: Option<ShellState>,
     error: Option<Box<dyn Error>>,
 }
@@ -2312,7 +2314,11 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             .options
             .take()
             .expect("shell options are consumed exactly once");
-        match ShellState::new(event_loop, self.proxy.clone(), options) {
+        let statistics_recorder = self
+            .statistics_recorder
+            .take()
+            .expect("statistics recorder is consumed exactly once");
+        match ShellState::new(event_loop, self.proxy.clone(), options, statistics_recorder) {
             Ok(state) => self.state = Some(state),
             Err(error) => {
                 self.error = Some(error);
@@ -2813,6 +2819,7 @@ impl Drop for TimerResolution {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let statistics_recorder = snowglass_statistics::install()?;
     let options = cli::parse()?;
     let _timer_resolution = TimerResolution::raise();
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
@@ -2820,6 +2827,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut application = ShellApplication {
         proxy,
         options: Some(options),
+        statistics_recorder: Some(statistics_recorder),
         state: None,
         error: None,
     };

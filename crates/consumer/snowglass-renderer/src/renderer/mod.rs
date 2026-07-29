@@ -9,26 +9,9 @@ pub mod d3d12;
 pub mod vulkan;
 pub mod webrtc;
 
-pub use d3d12::{D3d12Compositor, DisplayLatencyReport};
-pub use vulkan::VulkanCompositor;
+pub use d3d12::{D3d12Compositor, D3d12RenderPass};
+pub use vulkan::{VulkanCompositor, VulkanRenderPass};
 pub use webrtc::{VideoSwapchain, WebRtcCompositor};
-
-/// An egui frame that draws nothing, for compositing a plan on its own.
-///
-/// A host with no interface to contribute still has to satisfy the compositor's
-/// draw signature. Doing that by running a throwaway `egui::Context` is far
-/// from free: a fresh context rasterises the whole default font atlas, and the
-/// frame it produces carries that atlas in its texture deltas, so the
-/// compositor re-converts and re-uploads it on *every* present. An empty output
-/// skips the texture upload and the interface pass alike.
-///
-/// The scale is nominal rather than zero so nothing downstream divides by it.
-fn empty_interface() -> egui::FullOutput {
-    egui::FullOutput {
-        pixels_per_point: 1.0,
-        ..Default::default()
-    }
-}
 
 /// Final shell-supplied placement for one received surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -244,18 +227,7 @@ pub trait Renderer {
     /// one. Backends that already block inside their present path leave this as
     /// the default.
     fn begin_frame(&mut self) {}
-    fn draw(
-        &mut self,
-        output: &egui::FullOutput,
-        primitives: &[egui::ClippedPrimitive],
-        plan: &CompositingPlan,
-    ) -> Result<bool, Box<dyn Error>>;
-    /// Composites a plan with no interface drawn over it.
-    ///
-    /// See [`empty_interface`] for why this does not build a real context.
-    fn draw_game(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
-        self.draw(&empty_interface(), &[], plan)
-    }
+    fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>>;
 
     fn received_presentation(&self, viewer_extent: Extent) -> Presentation {
         Presentation::new(viewer_extent, self.received_surfaces())
@@ -303,13 +275,8 @@ impl Renderer for D3d12Compositor {
         D3d12Compositor::begin_frame(self);
     }
 
-    fn draw(
-        &mut self,
-        output: &egui::FullOutput,
-        primitives: &[egui::ClippedPrimitive],
-        plan: &CompositingPlan,
-    ) -> Result<bool, Box<dyn Error>> {
-        D3d12Compositor::draw(self, output, primitives, plan)
+    fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
+        D3d12Compositor::present(self, plan)
     }
 }
 
@@ -342,13 +309,8 @@ impl Renderer for VulkanCompositor {
         VulkanCompositor::recreate_swapchain(self, window)
     }
 
-    fn draw(
-        &mut self,
-        output: &egui::FullOutput,
-        primitives: &[egui::ClippedPrimitive],
-        plan: &CompositingPlan,
-    ) -> Result<bool, Box<dyn Error>> {
-        VulkanCompositor::draw(self, output, primitives, plan)
+    fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
+        VulkanCompositor::present(self, plan)
     }
 }
 

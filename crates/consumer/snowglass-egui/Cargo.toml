@@ -1,0 +1,15 @@
+[package]
+name = "snowglass-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui = "0.29.1"
+egui-ash-renderer = "0.6.0"
+snowglass-renderer = { path = "../snowglass-renderer" }
+snowglass-statistics.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

@@ -7,14 +7,13 @@ use std::{
     ffi::c_void,
     mem::{ManuallyDrop, size_of},
     ptr,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crate::renderer::{
-    CompositingPlan, PlanLayer, ReceivedSurface, RenderWindow, SwapchainMode, empty_interface,
+    CompositingPlan, PlanLayer, ReceivedSurface, RenderWindow, SwapchainMode,
     webrtc::WebRtcCompositor,
 };
-use egui::{ClippedPrimitive, TextureId, epaint::Primitive};
 use raw_window_handle::RawWindowHandle;
 use snowglass_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
 use snowglass_ipc::StreamReady;
@@ -43,7 +42,7 @@ const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
 /// a swapchain which stops signalling cannot stall an event loop.
 const FRAME_PERMIT_TIMEOUT_MS: u32 = 250;
 const FIRST_CONTENT_DESCRIPTOR: u32 = 0;
-const FIRST_EGUI_DESCRIPTOR: u32 = 64;
+const FIRST_DYNAMIC_DESCRIPTOR: u32 = 64;
 const SWAPCHAIN_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 #[repr(C)]
@@ -56,13 +55,6 @@ struct GpuVertex {
     /// Destination width, height, corner radius, and whether sampled RGB is
     /// straight alpha and must be premultiplied before blending.
     clip: [f32; 4],
-}
-
-struct EguiTexture {
-    resource: ID3D12Resource,
-    pixels: Vec<u8>,
-    size: [usize; 2],
-    descriptor: u32,
 }
 
 /// A persistently mapped upload heap that one frame's vertex and index data is
@@ -232,22 +224,6 @@ struct PresentedFrame {
 struct DisplayLatency {
     /// Presents issued but not yet known to have reached the display.
     pending: VecDeque<PresentedFrame>,
-    samples: u32,
-    total_ms: f64,
-    worst_ms: f64,
-    report: Option<DisplayLatencyReport>,
-    started: Option<Instant>,
-}
-
-/// Guest-capture-to-scanout latency over one sampling window.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct DisplayLatencyReport {
-    pub average_ms: f64,
-    pub worst_ms: f64,
-    /// Presents the display confirmed in this window. Far below the present
-    /// rate means most presents could not be attributed and the average is
-    /// drawn from a thin sample.
-    pub confirmed: u32,
 }
 
 impl DisplayLatency {
@@ -291,29 +267,10 @@ impl DisplayLatency {
         let Some(ticks) = displayed_qpc.checked_sub(frame.captured_qpc) else {
             return;
         };
-        let milliseconds = ticks as f64 * 1000.0 / frequency;
-        self.samples += 1;
-        self.total_ms += milliseconds;
-        self.worst_ms = self.worst_ms.max(milliseconds);
-    }
-
-    fn sample(&mut self, now: Instant) -> Option<DisplayLatencyReport> {
-        let started = *self.started.get_or_insert(now);
-        if now.saturating_duration_since(started) < crate::debug::STATISTICS_SAMPLE_INTERVAL {
-            return self.report;
-        }
-        if self.samples > 0 {
-            self.report = Some(DisplayLatencyReport {
-                average_ms: self.total_ms / f64::from(self.samples),
-                worst_ms: self.worst_ms,
-                confirmed: self.samples,
-            });
-        }
-        self.samples = 0;
-        self.total_ms = 0.0;
-        self.worst_ms = 0.0;
-        self.started = Some(now);
-        self.report
+        snowglass_statistics::display_latency(
+            "d3d12",
+            Duration::from_secs_f64(ticks as f64 / frequency),
+        );
     }
 }
 
@@ -379,7 +336,7 @@ pub struct D3d12Compositor {
     srv_stride: u32,
     root_signature: ID3D12RootSignature,
     content_pipeline: ID3D12PipelineState,
-    egui_pipeline: ID3D12PipelineState,
+    blend_pipeline: ID3D12PipelineState,
     allocators: Vec<ID3D12CommandAllocator>,
     command_list: ID3D12GraphicsCommandList,
     fence: ID3D12Fence,
@@ -393,7 +350,6 @@ pub struct D3d12Compositor {
     // Standalone copy submission used to bound keyed-mutex holds; the main
     // command list executes too late to release the mutex promptly.
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
-    textures: HashMap<TextureId, EguiTexture>,
     chrome: HashMap<u64, ChromeLayer>,
     /// Chrome handed over since the last frame. Opening a shared texture takes
     /// a descriptor slot, and a slot cannot be reused while an in-flight frame
@@ -404,6 +360,40 @@ pub struct D3d12Compositor {
     display_latency: DisplayLatency,
     /// QPC ticks per second, for turning vblank stamps into milliseconds.
     counter_frequency: f64,
+}
+
+/// Open D3D12 frame after game composition and before presentation.
+///
+/// Viewer-owned renderers may append commands through this narrowly scoped
+/// pass. The compositor remains responsible for acquisition, synchronization,
+/// submission, and presentation.
+pub struct D3d12RenderPass<'a> {
+    device: &'a ID3D12Device,
+    command_list: &'a ID3D12GraphicsCommandList,
+    frame_index: usize,
+    extent: (u32, u32),
+}
+
+impl D3d12RenderPass<'_> {
+    pub const fn frame_index(&self) -> usize {
+        self.frame_index
+    }
+
+    pub const fn extent(&self) -> (u32, u32) {
+        self.extent
+    }
+
+    pub const fn format(&self) -> DXGI_FORMAT {
+        SWAPCHAIN_FORMAT
+    }
+
+    pub fn device(&self) -> &ID3D12Device {
+        self.device
+    }
+
+    pub fn command_list(&self) -> &ID3D12GraphicsCommandList {
+        self.command_list
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -660,7 +650,7 @@ impl D3d12Compositor {
                 create_backbuffers(consumer.device(), &swapchain, &rtv_heap, rtv_stride)?;
             let root_signature = create_root_signature(consumer.device())?;
             let content_pipeline = create_pipeline(consumer.device(), &root_signature, false)?;
-            let egui_pipeline = create_pipeline(consumer.device(), &root_signature, true)?;
+            let blend_pipeline = create_pipeline(consumer.device(), &root_signature, true)?;
             let mut allocators = Vec::with_capacity(FRAME_COUNT);
             for _ in 0..FRAME_COUNT {
                 allocators.push(
@@ -673,7 +663,7 @@ impl D3d12Compositor {
                 0,
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
                 &allocators[0],
-                Some(&egui_pipeline),
+                Some(&content_pipeline),
             )?;
             command_list.Close()?;
             let fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
@@ -695,7 +685,7 @@ impl D3d12Compositor {
                 srv_stride,
                 root_signature,
                 content_pipeline,
-                egui_pipeline,
+                blend_pipeline,
                 allocators,
                 command_list,
                 fence,
@@ -707,11 +697,10 @@ impl D3d12Compositor {
                 frame_uploads: std::array::from_fn(|_| UploadArena::new()),
                 surfaces: Vec::new(),
                 mutex_copy: None,
-                textures: HashMap::new(),
                 chrome: HashMap::new(),
                 chrome_opens: Vec::new(),
                 chrome_removals: Vec::new(),
-                free_descriptors: (FIRST_EGUI_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
+                free_descriptors: (FIRST_DYNAMIC_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
                 display_latency: DisplayLatency::default(),
                 counter_frequency: counter_frequency(),
             })
@@ -722,8 +711,16 @@ impl D3d12Compositor {
         self.receiver.adapter_luid()
     }
 
-    pub(crate) fn d3d12_device(&self) -> &ID3D12Device {
+    pub fn d3d12_device(&self) -> &ID3D12Device {
         self.receiver.device()
+    }
+
+    pub const fn target_format(&self) -> DXGI_FORMAT {
+        SWAPCHAIN_FORMAT
+    }
+
+    pub const fn frames_in_flight(&self) -> usize {
+        FRAME_COUNT
     }
 
     pub const fn swapchain_mode(&self) -> SwapchainMode {
@@ -791,17 +788,9 @@ impl D3d12Compositor {
         self.frame_permit
     }
 
-    /// Reports how long guest frames are taking to reach the display.
-    ///
-    /// Call once per frame. DXGI names the vblank a present went out on, which
-    /// is paired here against the moment the producer captured that frame, so
-    /// the result spans the whole path — capture, transport, the wait for a
-    /// composition pass, and the scanout — on one clock. Panel response is not
-    /// included; nothing on this side can see it.
-    ///
-    /// `None` until enough presents have been confirmed, and on backends or
-    /// swapchains where DXGI declines to report statistics at all.
-    pub fn display_latency(&mut self) -> Option<DisplayLatencyReport> {
+    /// Emits measured guest-capture-to-vblank latency when DXGI can attribute
+    /// a present to an exact display refresh.
+    fn poll_display_latency(&mut self) {
         // SAFETY: the swapchain is live for the compositor's lifetime.
         //
         // Statistics are unavailable on some configurations and go disjoint
@@ -823,7 +812,6 @@ impl D3d12Compositor {
                 );
             }
         }
-        self.display_latency.sample(Instant::now())
     }
 
     pub(crate) fn import_stream(
@@ -1011,22 +999,13 @@ impl D3d12Compositor {
         Ok(true)
     }
 
-    pub(crate) fn draw(
+    pub fn present_with(
         &mut self,
-        output: &egui::FullOutput,
-        primitives: &[ClippedPrimitive],
-        plan: &CompositingPlan,
-    ) -> Result<bool, Box<dyn Error>> {
-        self.draw_with_webrtc(output, primitives, plan, None)
-    }
-
-    pub fn draw_with_webrtc(
-        &mut self,
-        output: &egui::FullOutput,
-        primitives: &[ClippedPrimitive],
         plan: &CompositingPlan,
         mut webrtc: Option<&mut WebRtcCompositor>,
+        record: impl FnOnce(&mut D3d12RenderPass<'_>) -> Result<(), Box<dyn Error>>,
     ) -> Result<bool, Box<dyn Error>> {
+        self.poll_display_latency();
         if webrtc
             .as_deref()
             .is_some_and(|webrtc| !webrtc.d3d12_matches(self.adapter_luid()))
@@ -1045,10 +1024,9 @@ impl D3d12Compositor {
         unsafe {
             allocator.Reset()?;
             self.command_list
-                .Reset(allocator, Some(&self.egui_pipeline))?;
+                .Reset(allocator, Some(&self.content_pipeline))?;
         }
 
-        self.upload_texture_deltas(frame_index, &output.textures_delta.set)?;
         self.upload_chrome(frame_index)?;
 
         let mut release_values = Vec::new();
@@ -1100,9 +1078,10 @@ impl D3d12Compositor {
                         captured = Some(frame);
                     }
                 } else {
-                    surface
-                        .imported
-                        .wait_on_queue(self.receiver.queue(), frame.sync_value)?;
+                    if !surface.imported.producer_ready(frame.sync_value) {
+                        self.surfaces.insert(index, surface);
+                        continue;
+                    }
                     unsafe {
                         transition(
                             &self.command_list,
@@ -1187,7 +1166,12 @@ impl D3d12Compositor {
         if !plan.layers().is_empty() {
             self.draw_content(frame_index, plan)?;
         }
-        self.draw_egui(frame_index, output.pixels_per_point, primitives)?;
+        record(&mut D3d12RenderPass {
+            device: self.receiver.device(),
+            command_list: &self.command_list,
+            frame_index,
+            extent: self.extent,
+        })?;
 
         unsafe {
             transition(
@@ -1242,29 +1226,19 @@ impl D3d12Compositor {
                     .record(self.swapchain.GetLastPresentCount()?, captured_qpc);
             }
         }
-        for texture_id in &output.textures_delta.free {
-            if let Some(texture) = self.textures.remove(texture_id) {
-                self.frame_descriptors[frame_index].push(texture.descriptor);
-                self.frame_garbage[frame_index].push(texture.resource);
-            }
-        }
         Ok(true)
     }
 
-    /// Composites a plan with no interface drawn over it.
-    ///
-    /// Hosts that paint their own chrome contribute no egui pass, so this
-    /// hands the compositor an empty one rather than manufacturing a real
-    /// context to satisfy the signature. Building a fresh `egui::Context` per
-    /// frame rasterised the entire default font atlas and then re-uploaded it
-    /// as a texture delta on every present, for a UI whose contents were
-    /// always empty.
-    pub fn draw_game_with_webrtc(
+    pub fn present_with_webrtc(
         &mut self,
         plan: &CompositingPlan,
         webrtc: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
-        self.draw_with_webrtc(&empty_interface(), &[], plan, webrtc)
+        self.present_with(plan, webrtc, |_| Ok(()))
+    }
+
+    pub fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
+        self.present_with_webrtc(plan, None)
     }
 
     fn draw_content(
@@ -1358,61 +1332,13 @@ impl D3d12Compositor {
                 // SAFETY: the command list is open for this frame.
                 unsafe {
                     self.command_list.SetPipelineState(if blend {
-                        &self.egui_pipeline
+                        &self.blend_pipeline
                     } else {
                         &self.content_pipeline
                     });
                 }
             }
             self.draw_vertices(frame_index, descriptor, &vertices, None)?;
-        }
-        Ok(())
-    }
-
-    fn draw_egui(
-        &mut self,
-        frame_index: usize,
-        ppp: f32,
-        primitives: &[ClippedPrimitive],
-    ) -> Result<(), Box<dyn Error>> {
-        unsafe {
-            self.command_list.SetPipelineState(&self.egui_pipeline);
-        }
-        for primitive in primitives {
-            let Primitive::Mesh(mesh) = &primitive.primitive else {
-                continue;
-            };
-            let Some(texture) = self.textures.get(&mesh.texture_id) else {
-                continue;
-            };
-            let vertices = mesh
-                .vertices
-                .iter()
-                .map(|vertex| GpuVertex {
-                    position: [
-                        vertex.pos.x * ppp / self.extent.0 as f32 * 2.0 - 1.0,
-                        1.0 - vertex.pos.y * ppp / self.extent.1 as f32 * 2.0,
-                    ],
-                    uv: [vertex.uv.x, vertex.uv.y],
-                    color: vertex.color.to_array(),
-                    local: [0.0; 2],
-                    clip: [0.0; 4],
-                })
-                .collect::<Vec<_>>();
-            let clip = primitive.clip_rect;
-            let rect = RECT {
-                left: (clip.min.x * ppp).floor().max(0.0) as i32,
-                top: (clip.min.y * ppp).floor().max(0.0) as i32,
-                right: (clip.max.x * ppp).ceil().min(self.extent.0 as f32) as i32,
-                bottom: (clip.max.y * ppp).ceil().min(self.extent.1 as f32) as i32,
-            };
-            self.draw_indexed(
-                frame_index,
-                texture.descriptor,
-                &vertices,
-                &mesh.indices,
-                rect,
-            )?;
         }
         Ok(())
     }
@@ -1569,90 +1495,6 @@ impl D3d12Compositor {
                 self.frame_descriptors[frame_index].push(old.descriptor);
                 self.frame_garbage[frame_index].push(old.resource);
             }
-        }
-        Ok(())
-    }
-
-    fn upload_texture_deltas(
-        &mut self,
-        frame_index: usize,
-        deltas: &[(TextureId, egui::epaint::ImageDelta)],
-    ) -> Result<(), Box<dyn Error>> {
-        for (id, delta) in deltas {
-            let patch_size = delta.image.size();
-            let patch = match &delta.image {
-                egui::ImageData::Color(image) => image
-                    .pixels
-                    .iter()
-                    .flat_map(|p| p.to_array())
-                    .collect::<Vec<_>>(),
-                egui::ImageData::Font(image) => image
-                    .srgba_pixels(None)
-                    .flat_map(|p| p.to_array())
-                    .collect::<Vec<_>>(),
-            };
-            let (size, mut pixels) = if let Some(pos) = delta.pos {
-                let old = self.textures.get(id);
-                // A backend switch can happen after egui emitted its initial full atlas,
-                // leaving the new renderer's first delta as a partial update. Grow an
-                // initially transparent retained image in that case (and whenever the
-                // atlas expands).
-                let size = [
-                    old.map_or(0, |value| value.size[0])
-                        .max(pos[0] + patch_size[0]),
-                    old.map_or(0, |value| value.size[1])
-                        .max(pos[1] + patch_size[1]),
-                ];
-                let mut pixels = vec![0; size[0] * size[1] * 4];
-                if let Some(old) = old {
-                    for row in 0..old.size[1] {
-                        let source = row * old.size[0] * 4;
-                        let destination = row * size[0] * 4;
-                        pixels[destination..destination + old.size[0] * 4]
-                            .copy_from_slice(&old.pixels[source..source + old.size[0] * 4]);
-                    }
-                }
-                for row in 0..patch_size[1] {
-                    let dst = ((pos[1] + row) * size[0] + pos[0]) * 4;
-                    let src = row * patch_size[0] * 4;
-                    pixels[dst..dst + patch_size[0] * 4]
-                        .copy_from_slice(&patch[src..src + patch_size[0] * 4]);
-                }
-                (size, pixels)
-            } else {
-                (patch_size, patch)
-            };
-            // Never overwrite a shader-visible descriptor still referenced by another
-            // in-flight frame. Its old slot is recycled with that frame's fence.
-            let descriptor = self
-                .free_descriptors
-                .pop()
-                .ok_or("egui descriptor heap exhausted")?;
-            let (resource, upload) = unsafe {
-                upload_texture(self.receiver.device(), &self.command_list, size, &pixels)?
-            };
-            unsafe {
-                create_srv(
-                    self.receiver.device(),
-                    &self.srv_heap,
-                    self.srv_stride,
-                    descriptor,
-                    &resource,
-                )
-            };
-            if let Some(old) = self.textures.insert(
-                *id,
-                EguiTexture {
-                    resource,
-                    pixels: std::mem::take(&mut pixels),
-                    size,
-                    descriptor,
-                },
-            ) {
-                self.frame_descriptors[frame_index].push(old.descriptor);
-                self.frame_garbage[frame_index].push(old.resource);
-            }
-            self.frame_garbage[frame_index].push(upload);
         }
         Ok(())
     }
@@ -1886,77 +1728,6 @@ unsafe fn create_upload_buffer(
     }
     resource
         .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER))
-}
-
-unsafe fn upload_texture(
-    device: &ID3D12Device,
-    list: &ID3D12GraphicsCommandList,
-    size: [usize; 2],
-    pixels: &[u8],
-) -> windows::core::Result<(ID3D12Resource, ID3D12Resource)> {
-    let texture = unsafe {
-        create_texture(
-            device,
-            size[0] as u32,
-            size[1] as u32,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-        )?
-    };
-    let pitch = (size[0] * 4).div_ceil(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT as usize)
-        * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT as usize;
-    let upload = unsafe { create_upload_buffer(device, (pitch * size[1]) as u64)? };
-    let mut mapped = ptr::null_mut();
-    unsafe {
-        upload.Map(0, None, Some(&mut mapped))?;
-    }
-    for row in 0..size[1] {
-        unsafe {
-            ptr::copy_nonoverlapping(
-                pixels.as_ptr().add(row * size[0] * 4),
-                mapped.cast::<u8>().add(row * pitch),
-                size[0] * 4,
-            );
-        }
-    }
-    unsafe {
-        upload.Unmap(0, None);
-    }
-    let mut dst = D3D12_TEXTURE_COPY_LOCATION {
-        pResource: ManuallyDrop::new(Some(texture.clone())),
-        Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-            SubresourceIndex: 0,
-        },
-    };
-    let mut src = D3D12_TEXTURE_COPY_LOCATION {
-        pResource: ManuallyDrop::new(Some(upload.clone())),
-        Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-            PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
-                Offset: 0,
-                Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
-                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-                    Width: size[0] as u32,
-                    Height: size[1] as u32,
-                    Depth: 1,
-                    RowPitch: pitch as u32,
-                },
-            },
-        },
-    };
-    unsafe {
-        list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
-        transition(
-            list,
-            &texture,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        );
-        ManuallyDrop::drop(&mut dst.pResource);
-        ManuallyDrop::drop(&mut src.pResource);
-    }
-    Ok((texture, upload))
 }
 
 unsafe fn transition(
@@ -2238,7 +2009,6 @@ fn as_bytes<T>(items: &[T]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::{ChromeSource, DisplayLatency, UploadArena, compile, compositor_shader, quad};
-    use std::time::{Duration, Instant};
 
     /// One tick of the QPC clock per millisecond, so latencies read directly.
     const TEST_FREQUENCY: f64 = 1000.0;
@@ -2284,44 +2054,25 @@ mod tests {
         assert!(opens.is_empty());
     }
 
-    /// A vblank timestamp only dates the present DXGI names alongside it.
-    /// Attributing it to the wrong present would silently report a latency the
-    /// display never had.
-    /// Arms the sampling window and returns the instant one window later, so a
-    /// test's first real `sample` is the one that reports.
-    fn armed(latency: &mut DisplayLatency) -> Instant {
-        let start = Instant::now();
-        assert_eq!(
-            latency.sample(start),
-            None,
-            "an empty window reports nothing"
-        );
-        start + crate::debug::STATISTICS_SAMPLE_INTERVAL
-    }
-
     #[test]
     fn a_vblank_dates_only_the_present_it_named() {
         let mut latency = DisplayLatency::default();
-        let due = armed(&mut latency);
         latency.record(10, 1_000);
         latency.record(11, 1_016);
         latency.record(12, 1_032);
 
         // Present 11 displayed at 1032: 16 ticks after it was captured.
         latency.observe(11, 1_032, TEST_FREQUENCY);
-        let report = latency.sample(due).expect("a confirmed present reports");
-        assert_eq!(report.confirmed, 1);
-        assert!((report.average_ms - 16.0).abs() < f64::EPSILON);
+        assert_eq!(
+            latency.pending.front().map(|frame| frame.present_count),
+            Some(12)
+        );
 
         // Present 10 went out on an earlier, never-timestamped vblank. It must
         // be discarded rather than dated with 11's, and 12 must survive to be
         // matched on its own vblank.
         latency.observe(12, 1_048, TEST_FREQUENCY);
-        let report = latency
-            .sample(due + crate::debug::STATISTICS_SAMPLE_INTERVAL)
-            .expect("a confirmed present reports");
-        assert_eq!(report.confirmed, 1);
-        assert!((report.average_ms - 16.0).abs() < f64::EPSILON);
+        assert!(latency.pending.is_empty());
     }
 
     /// Statistics stall and resume; an unrecorded present must not be
@@ -2329,15 +2080,10 @@ mod tests {
     #[test]
     fn an_unknown_present_reports_nothing() {
         let mut latency = DisplayLatency::default();
-        let due = armed(&mut latency);
         latency.record(5, 1_000);
         // Never recorded, and newer than everything queued.
         latency.observe(9, 2_000, TEST_FREQUENCY);
-        assert_eq!(
-            latency.sample(due),
-            None,
-            "an unmatched vblank must not produce a sample"
-        );
+        assert!(latency.pending.is_empty());
     }
 
     /// A vblank stamped before the capture it supposedly displayed means the
@@ -2346,10 +2092,9 @@ mod tests {
     #[test]
     fn a_vblank_older_than_its_capture_is_discarded() {
         let mut latency = DisplayLatency::default();
-        let due = armed(&mut latency);
         latency.record(1, 5_000);
         latency.observe(1, 4_000, TEST_FREQUENCY);
-        assert_eq!(latency.sample(due), None);
+        assert!(latency.pending.is_empty());
     }
 
     /// Frame statistics can go unavailable for long stretches, and this is
@@ -2365,28 +2110,6 @@ mod tests {
         assert_eq!(
             latency.pending.back().map(|frame| frame.present_count),
             Some(DisplayLatency::PENDING_LIMIT as u32 * 4 - 1)
-        );
-    }
-
-    /// The window reports the previous result until a new one is complete, so
-    /// the panel does not blank between samples.
-    #[test]
-    fn a_partial_window_keeps_the_last_report() {
-        let mut latency = DisplayLatency::default();
-        let start = Instant::now();
-        assert_eq!(latency.sample(start), None);
-        latency.record(1, 0);
-        latency.observe(1, 20, TEST_FREQUENCY);
-        let report = latency
-            .sample(start + crate::debug::STATISTICS_SAMPLE_INTERVAL)
-            .expect("the window elapsed");
-        assert!((report.average_ms - 20.0).abs() < f64::EPSILON);
-        assert_eq!(
-            latency.sample(
-                start + crate::debug::STATISTICS_SAMPLE_INTERVAL + Duration::from_millis(1)
-            ),
-            Some(report),
-            "a window still filling must not blank the report"
         );
     }
 

@@ -1,6 +1,5 @@
 use crate::renderer::{CompositingPlan, RenderWindow};
 use ash::{Entry, vk};
-use egui_ash_renderer::{Options as EguiRendererOptions, Renderer as EguiRenderer};
 use snowglass_consumer_vulkan::ImportedImageRing;
 use snowglass_input::mouse::layout::Extent;
 use snowglass_ipc::StreamReady;
@@ -74,7 +73,32 @@ pub struct VulkanCompositor {
     surfaces: Vec<ImportedVulkanSurface>,
     rotation_pipeline: Option<RotationPipeline>,
     keyed_mutex_enabled: bool,
-    egui_renderer: Option<EguiRenderer>,
+}
+
+/// Open Vulkan render pass after game composition and before presentation.
+pub struct VulkanRenderPass<'a> {
+    device: &'a ash::Device,
+    command_buffer: vk::CommandBuffer,
+    extent: vk::Extent2D,
+    frame_index: usize,
+}
+
+impl VulkanRenderPass<'_> {
+    pub fn device(&self) -> &ash::Device {
+        self.device
+    }
+
+    pub const fn command_buffer(&self) -> vk::CommandBuffer {
+        self.command_buffer
+    }
+
+    pub const fn extent(&self) -> vk::Extent2D {
+        self.extent
+    }
+
+    pub const fn frame_index(&self) -> usize {
+        self.frame_index
+    }
 }
 
 impl VulkanCompositor {
@@ -437,17 +461,6 @@ impl VulkanCompositor {
                 render_finished
                     .push(device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)?);
             }
-            let egui_renderer = EguiRenderer::with_default_allocator(
-                &instance,
-                physical_device,
-                device.clone(),
-                render_pass,
-                EguiRendererOptions {
-                    in_flight_frames: FRAMES_IN_FLIGHT,
-                    srgb_framebuffer: false,
-                    ..Default::default()
-                },
-            )?;
             let initialized_count = swapchain_images.len();
             let receiver = VulkanReceiver::new(instance.clone(), device.clone(), physical_device);
             let webrtc = publish_video.then(|| {
@@ -492,11 +505,38 @@ impl VulkanCompositor {
                     surfaces: Vec::new(),
                     rotation_pipeline: None,
                     keyed_mutex_enabled: enable_keyed_mutex,
-                    egui_renderer: Some(egui_renderer),
                 },
                 webrtc,
             ))
         }
+    }
+
+    pub fn instance(&self) -> &ash::Instance {
+        &self.instance
+    }
+
+    pub const fn physical_device(&self) -> vk::PhysicalDevice {
+        self.physical_device
+    }
+
+    pub fn device(&self) -> &ash::Device {
+        &self.device
+    }
+
+    pub const fn queue(&self) -> vk::Queue {
+        self.queue
+    }
+
+    pub const fn command_pool(&self) -> vk::CommandPool {
+        self.command_pool
+    }
+
+    pub const fn render_pass(&self) -> vk::RenderPass {
+        self.render_pass
+    }
+
+    pub const fn frames_in_flight(&self) -> usize {
+        FRAMES_IN_FLIGHT
     }
 
     pub(crate) fn import_stream(
@@ -822,21 +862,11 @@ impl VulkanCompositor {
         }
     }
 
-    pub(crate) fn draw(
+    pub fn present_with(
         &mut self,
-        output: &egui::FullOutput,
-        primitives: &[egui::ClippedPrimitive],
-        plan: &CompositingPlan,
-    ) -> Result<bool, Box<dyn Error>> {
-        self.draw_with_webrtc(output, primitives, plan, None)
-    }
-
-    pub fn draw_with_webrtc(
-        &mut self,
-        output: &egui::FullOutput,
-        primitives: &[egui::ClippedPrimitive],
         plan: &CompositingPlan,
         webrtc: Option<&mut WebRtcCompositor>,
+        record: impl FnOnce(&mut VulkanRenderPass<'_>) -> Result<(), Box<dyn Error>>,
     ) -> Result<bool, Box<dyn Error>> {
         let mut video_parts = webrtc.and_then(WebRtcCompositor::vulkan_parts_mut);
         if video_parts
@@ -897,14 +927,6 @@ impl VulkanCompositor {
                     .imported
                     .wait_for(surface.latest.unwrap().sync_value, u64::MAX)?;
             }
-            self.egui_renderer
-                .as_mut()
-                .expect("egui renderer is live")
-                .free_textures(&output.textures_delta.free)?;
-            self.egui_renderer
-                .as_mut()
-                .expect("egui renderer is live")
-                .set_textures(self.queue, self.command_pool, &output.textures_delta.set)?;
             let (image_index, acquire_suboptimal) = match self.swapchain_loader.acquire_next_image(
                 self.swapchain,
                 u64::MAX,
@@ -1337,10 +1359,12 @@ impl VulkanCompositor {
                     }),
                 vk::SubpassContents::INLINE,
             );
-            self.egui_renderer
-                .as_mut()
-                .expect("egui renderer is live")
-                .cmd_draw(command, self.extent, output.pixels_per_point, primitives)?;
+            record(&mut VulkanRenderPass {
+                device: &self.device,
+                command_buffer: command,
+                extent: self.extent,
+                frame_index: flight,
+            })?;
             self.device.cmd_end_render_pass(command);
             let to_present = vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
@@ -1538,6 +1562,18 @@ impl VulkanCompositor {
             Ok(!(acquire_suboptimal || present_suboptimal))
         }
     }
+
+    pub fn present_with_webrtc(
+        &mut self,
+        plan: &CompositingPlan,
+        webrtc: Option<&mut WebRtcCompositor>,
+    ) -> Result<bool, Box<dyn Error>> {
+        self.present_with(plan, webrtc, |_| Ok(()))
+    }
+
+    pub fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
+        self.present_with_webrtc(plan, None)
+    }
 }
 
 impl WebRtcCompositor {
@@ -1611,7 +1647,6 @@ impl Drop for VulkanCompositor {
         unsafe {
             let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
             let _ = self.device.device_wait_idle();
-            self.egui_renderer = None;
             for fence in self.fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }

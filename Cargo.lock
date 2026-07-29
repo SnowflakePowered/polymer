@@ -6776,6 +6776,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "metrics"
+version = "0.24.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
+dependencies = [
+ "portable-atomic",
+ "rapidhash",
+]
+
+[[package]]
+name = "metrics-util"
+version = "0.20.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96f8722f8562635f92f8ed992f26df0532266eb03d5202607c20c0d7e9745e13"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "hashbrown 0.16.1",
+ "metrics",
+ "rand 0.9.5",
+ "rand_xoshiro",
+ "rapidhash",
+ "sketches-ddsketch",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8798,10 +8824,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xoshiro"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+dependencies = [
+ "rand_core 0.9.5",
+]
+
+[[package]]
 name = "range-alloc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
+
+[[package]]
+name = "rapidhash"
+version = "4.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "raw-window-handle"
@@ -9943,6 +9987,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
+name = "sketches-ddsketch"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
+
+[[package]]
 name = "skrifa"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10127,6 +10177,17 @@ dependencies = [
  "snowglass-ipc",
  "snowglass-protocol",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "snowglass-egui"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-ash-renderer",
+ "snowglass-renderer",
+ "snowglass-statistics",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -10448,8 +10509,7 @@ dependencies = [
  "ash-window",
  "clap",
  "crossfire",
- "egui",
- "egui-ash-renderer",
+ "dashmap 6.1.0",
  "log",
  "openh264",
  "parking_lot",
@@ -10462,6 +10522,7 @@ dependencies = [
  "snowglass-ipc",
  "snowglass-protocol",
  "snowglass-runtime",
+ "snowglass-statistics",
  "tokio",
  "webrtc",
  "webrtc-ice",
@@ -10483,6 +10544,7 @@ dependencies = [
  "snowglass-ipc",
  "snowglass-platform-windows",
  "snowglass-protocol",
+ "snowglass-statistics",
  "tempfile",
  "watchable",
 ]
@@ -10514,6 +10576,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "snowglass-egui",
  "snowglass-input",
  "snowglass-input-dinput",
  "snowglass-ipc",
@@ -10521,6 +10584,7 @@ dependencies = [
  "snowglass-protocol",
  "snowglass-renderer",
  "snowglass-runtime",
+ "snowglass-statistics",
  "stylo",
  "swc",
  "swc_common 24.0.0",
@@ -10535,6 +10599,14 @@ dependencies = [
  "windows-core 0.61.2",
  "winit",
  "wry",
+]
+
+[[package]]
+name = "snowglass-statistics"
+version = "0.1.0"
+dependencies = [
+ "metrics",
+ "metrics-util",
 ]
 
 [[package]]
@@ -10559,6 +10631,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "serde_json",
+ "snowglass-egui",
  "snowglass-input",
  "snowglass-input-dinput",
  "snowglass-ipc",
@@ -10566,6 +10639,7 @@ dependencies = [
  "snowglass-protocol",
  "snowglass-renderer",
  "snowglass-runtime",
+ "snowglass-statistics",
  "snowglass-ui",
  "taffy 0.12.2",
  "tokio",

@@ -277,6 +277,19 @@ impl ImportedD3d12Stream {
         }
     }
 
+    /// Whether the producer has finished the frame without adding an
+    /// unbounded wait to the consumer queue.
+    ///
+    /// A queue wait cannot be cancelled if the producer exits before signaling
+    /// it. Checking first lets the compositor defer that frame while keeping
+    /// its own queue usable for stream teardown.
+    pub fn producer_ready(&self, value: u64) -> bool {
+        match &self.sync {
+            StreamSync::Fence { producer, .. } => unsafe { producer.GetCompletedValue() >= value },
+            StreamSync::KeyedMutex(_) => true,
+        }
+    }
+
     pub fn signal_release(
         &self,
         queue: &ID3D12CommandQueue,

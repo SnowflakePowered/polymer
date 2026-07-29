@@ -16,6 +16,8 @@ use std::{
 type ControlTx = MTx<mpsc::List<ControlCommand>>;
 type ControlRx = Rx<mpsc::List<ControlCommand>>;
 
+const CONTROL_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+
 enum ControlCommand {
     Send(Message),
     Stop,
@@ -68,7 +70,7 @@ impl InputTransport {
             stopping.clone(),
         );
         let gamepad = spawn_gamepad_writer(mailbox.clone(), gamepads, stopping.clone());
-        let control_worker = spawn_control_writer(receiver, clients.clone());
+        let control_worker = spawn_control_writer(receiver, clients.clone(), stopping.clone());
         let workers = match (acceptor, gamepad, control_worker) {
             (Ok(acceptor), Ok(gamepad), Ok(control)) => InputWorkers {
                 acceptor,
@@ -177,6 +179,7 @@ fn spawn_gamepad_writer(
     gamepads: Arc<Mutex<InputPublisher>>,
     stopping: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
+    let metrics = snowglass_statistics::InputMetrics::new("sdl3");
     thread::Builder::new()
         .name("snowglass-runtime-gamepad-send".to_owned())
         .spawn(move || {
@@ -186,6 +189,7 @@ fn spawn_gamepad_writer(
                         return;
                     }
                     let _ = gamepads.lock().publish(update.update);
+                    metrics.record_dispatch(update.sampled_at.elapsed());
                 }
             }
         })
@@ -221,6 +225,15 @@ fn spawn_acceptor(
                 pending_socket.lock().take();
                 if accepted && !stopping.load(Ordering::Acquire) {
                     let _ = socket.set_read_timeout(None);
+                    if let Err(error) =
+                        socket.set_write_timeout(Some(CONTROL_WRITE_TIMEOUT))
+                    {
+                        eprintln!(
+                            "snowglass: input IPC client rejected because writes could not be bounded: {error}"
+                        );
+                        let _ = socket.shutdown();
+                        continue;
+                    }
                     clients.lock().push(socket);
                 } else if stopping.load(Ordering::Acquire) {
                     return;
@@ -232,6 +245,7 @@ fn spawn_acceptor(
 fn spawn_control_writer(
     receiver: ControlRx,
     clients: Arc<Mutex<Vec<LocalSocket>>>,
+    stopping: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name("snowglass-runtime-input-send".to_owned())
@@ -240,19 +254,31 @@ fn spawn_control_writer(
                 let ControlCommand::Send(message) = command else {
                     return;
                 };
-                let sockets = clients
-                    .lock()
-                    .iter()
-                    .filter_map(|socket| socket.try_clone().ok())
-                    .collect::<Vec<_>>();
-                for mut socket in sockets {
-                    if let Err(error) = socket.send(message)
-                        && error.kind() != std::io::ErrorKind::BrokenPipe
-                        && error.kind() != std::io::ErrorKind::ConnectionReset
-                    {
-                        eprintln!("snowglass: input IPC send failed: {error}");
+                // Never leave a stale injected client at the head of the
+                // process-wide input stream. Take ownership while writing so
+                // the acceptor and shutdown paths do not wait on this lock,
+                // and retain only clients that accepted the message within
+                // the bounded socket timeout.
+                let mut active = std::mem::take(&mut *clients.lock());
+                active.retain_mut(|socket| match socket.send(message) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        if !stopping.load(Ordering::Acquire)
+                            && !matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                                    | std::io::ErrorKind::TimedOut
+                                    | std::io::ErrorKind::WouldBlock
+                            )
+                        {
+                            eprintln!("snowglass: input IPC send failed: {error}");
+                        }
+                        let _ = socket.shutdown();
+                        false
                     }
-                }
+                });
+                clients.lock().extend(active);
             }
         })
 }
@@ -260,6 +286,7 @@ fn spawn_control_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn shutdown_joins_workers_and_releases_listener() {
@@ -268,5 +295,49 @@ mod tests {
         transport.shutdown();
         let replacement = LocalSocketListener::bind(&format!("{session}-input")).unwrap();
         replacement.close();
+    }
+
+    #[test]
+    fn stalled_client_is_evicted_instead_of_blocking_the_writer() {
+        let session = format!(
+            "snowglass-runtime-stalled-input-test-{}",
+            std::process::id()
+        );
+        let listener = LocalSocketListener::bind(&session).unwrap();
+        let client = LocalSocket::connect(&session).unwrap();
+        let server = listener.accept().unwrap();
+        server
+            .set_write_timeout(Some(CONTROL_WRITE_TIMEOUT))
+            .unwrap();
+
+        let clients = Arc::new(Mutex::new(vec![server]));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::unbounded_blocking();
+        let worker = spawn_control_writer(receiver, clients.clone(), stopping).unwrap();
+
+        // Fill the socket buffer while the client deliberately does not read.
+        // Once the bounded send expires, the writer must remove that client so
+        // the remaining queued messages and Stop command can drain promptly.
+        for _ in 0..32_768 {
+            sender
+                .send(ControlCommand::Send(Message::Shutdown))
+                .unwrap();
+        }
+        sender.send(ControlCommand::Stop).unwrap();
+
+        let started = Instant::now();
+        while !worker.is_finished() && started.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let finished_without_peer = worker.is_finished();
+        drop(client);
+        worker.join().unwrap();
+        listener.close();
+
+        assert!(
+            finished_without_peer,
+            "control writer remained blocked on a non-reading client"
+        );
+        assert!(clients.lock().is_empty());
     }
 }

@@ -17,6 +17,8 @@ regex.workspace = true
 serde_json.workspace = true
 taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "parse"] }
 snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
+snowglass-egui.workspace = true
+snowglass-statistics.workspace = true
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true

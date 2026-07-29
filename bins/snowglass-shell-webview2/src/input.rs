@@ -3,10 +3,10 @@
 //! The emulator instance owns IPC. This adapter only gives long-lived shell
 //! input objects a stable endpoint while game instances are replaced.
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use snowglass_input::provider::sdl3::{ProviderConfig, Sdl3Provider};
 use snowglass_ipc::{Message, MessageSink};
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub struct RoutedInputSender(Arc<RwLock<Option<snowglass_runtime::ProtocolInputSender>>>);
@@ -32,25 +32,13 @@ impl MessageSink for RoutedInputSender {
 
 pub struct InputTransport {
     control: RoutedInputSender,
-    dispatch_latency: Arc<Mutex<VecDeque<Duration>>>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DispatchSummary {
-    pub samples: usize,
-    pub p50_ms: f64,
-    pub p95_ms: f64,
-    pub p99_ms: f64,
 }
 
 impl InputTransport {
     pub fn runtime() -> Self {
         let control = RoutedInputSender::default();
 
-        Self {
-            control,
-            dispatch_latency: Arc::new(Mutex::new(VecDeque::new())),
-        }
+        Self { control }
     }
 
     pub fn attach(&self, instance: &snowglass_runtime::EmulatorInstance) {
@@ -71,27 +59,5 @@ impl InputTransport {
 
     pub fn control_sender(&self) -> RoutedInputSender {
         self.control.clone()
-    }
-
-    pub fn dispatch_summary(&self) -> DispatchSummary {
-        let samples = self.dispatch_latency.lock();
-        let mut values = samples
-            .iter()
-            .map(Duration::as_secs_f64)
-            .collect::<Vec<_>>();
-        values.sort_by(f64::total_cmp);
-        let percentile = |fraction: f64| {
-            values
-                .get(((values.len().saturating_sub(1)) as f64 * fraction).round() as usize)
-                .copied()
-                .unwrap_or_default()
-                * 1000.0
-        };
-        DispatchSummary {
-            samples: values.len(),
-            p50_ms: percentile(0.50),
-            p95_ms: percentile(0.95),
-            p99_ms: percentile(0.99),
-        }
     }
 }

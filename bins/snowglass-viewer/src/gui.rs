@@ -195,7 +195,7 @@ pub(crate) fn draw_gamepad_window(
     provider: &Sdl3Provider,
     layouts: &[StoneLayout],
     drafts: &mut [HashMap<String, String>],
-    latency: &InputLatencyStats,
+    latency: &snowglass_statistics::DistributionStatistics,
 ) {
     const BUTTONS: [SdlButton; 21] = [
         SdlButton::South,
@@ -234,13 +234,12 @@ pub(crate) fn draw_gamepad_window(
         .default_pos(egui::pos2(880.0, 48.0))
         .default_width(380.0)
         .show(context, |ui| {
-            let latency = latency.summary();
             if latency.samples == 0 {
                 ui.colored_label(egui::Color32::GRAY, "Input dispatch latency: waiting");
             } else {
                 ui.label(format!(
                     "Input dispatch latency  p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  (n={})",
-                    latency.p50_ms, latency.p95_ms, latency.p99_ms, latency.samples
+                    latency.p50, latency.p95, latency.p99, latency.samples
                 ))
                 .on_hover_text(
                     "Physical SDL sample to completion of the AF_UNIX send; excludes Dolphin's subsequent SDL update.",
