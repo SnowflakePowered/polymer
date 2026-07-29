@@ -1,11 +1,13 @@
 //! Native Snowglass rendering and WebRTC publishing.
 
+pub mod capture;
 pub mod cli;
 pub mod debug;
 pub mod input;
 pub mod renderer;
 pub mod webrtc;
 
+pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent};
 pub use renderer::{
     CompositingPlan, D3d12Compositor, DisplayLatencyReport, MappedPointer, PlanLayer, Presentation,
     ReceivedSurface, RenderWindow, Renderer, SurfacePlacement, SwapchainMode, VideoSwapchain,

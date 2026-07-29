@@ -1,7 +1,8 @@
+use parking_lot::Mutex;
 use snowglass_ipc::ui::{DialogButton, MessageBoxRequest, UI_PROTOCOL_VERSION};
 use std::{
     collections::HashMap,
-    sync::{Mutex, OnceLock},
+    sync::OnceLock,
 };
 use windows_strings::PCWSTR;
 use windows_sys::Win32::{
@@ -72,8 +73,8 @@ pub(super) unsafe fn draw_text_w(
     let window = if window.is_null() {
         memory_dcs()
             .lock()
-            .ok()
-            .and_then(|dcs| dcs.get(&(dc as isize)).copied())
+            .get(&(dc as isize))
+            .copied()
             .unwrap_or_default() as HWND
     } else {
         window
@@ -91,9 +92,7 @@ pub(super) unsafe fn draw_text_w(
     if label.is_empty() {
         return result;
     }
-    let Ok(mut dialogs) = candidates().lock() else {
-        return result;
-    };
+    let mut dialogs = candidates().lock();
     let candidate = dialogs.entry(root as isize).or_default();
     if is_button {
         if !candidate
@@ -116,17 +115,15 @@ pub(super) unsafe fn create_compatible_dc(
     let compatible = snowglass_hook::next!(context, dc);
     let window = unsafe { WindowFromDC(dc) };
     if !compatible.is_null() && !window.is_null() {
-        if let Ok(mut dcs) = memory_dcs().lock() {
-            dcs.insert(compatible as isize, window as isize);
-        }
+        memory_dcs()
+            .lock()
+            .insert(compatible as isize, window as isize);
     }
     compatible
 }
 
 pub(super) unsafe fn delete_dc(dc: HDC, mut context: super::hooks::DeleteDcContext<'_>) -> i32 {
-    if let Ok(mut dcs) = memory_dcs().lock() {
-        dcs.remove(&(dc as isize));
-    }
+    memory_dcs().lock().remove(&(dc as isize));
     snowglass_hook::next!(context, dc)
 }
 
@@ -204,17 +201,16 @@ pub(super) unsafe fn enable_window(
                     &mut candidate as *mut _ as LPARAM,
                 )
             };
-            if let Ok(mut dialogs) = candidates().lock() {
-                let existing = dialogs.entry(discovery.dialog as isize).or_default();
-                for text in candidate.text {
-                    if !existing.text.contains(&text) {
-                        existing.text.push(text);
-                    }
+            let mut dialogs = candidates().lock();
+            let existing = dialogs.entry(discovery.dialog as isize).or_default();
+            for text in candidate.text {
+                if !existing.text.contains(&text) {
+                    existing.text.push(text);
                 }
-                for button in candidate.buttons {
-                    if !existing.buttons.iter().any(|value| value.0 == button.0) {
-                        existing.buttons.push(button);
-                    }
+            }
+            for button in candidate.buttons {
+                if !existing.buttons.iter().any(|value| value.0 == button.0) {
+                    existing.buttons.push(button);
                 }
             }
         }
@@ -235,7 +231,7 @@ unsafe extern "system" fn find_disabled_window(window: HWND, parameter: LPARAM) 
 }
 
 fn ready_dialog() -> Option<(HWND, Candidate)> {
-    let mut dialogs = candidates().lock().ok()?;
+    let mut dialogs = candidates().lock();
     let key = dialogs.iter().find_map(|(key, candidate)| {
         let root = *key as HWND;
         let mut disabled = (root, false);

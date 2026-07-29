@@ -2,6 +2,7 @@
 
 #![allow(unsafe_code)]
 
+use parking_lot::Mutex;
 use snowglass_input::{
     RawKeyInput,
     mouse::{PointerInput, PointerPhase},
@@ -13,7 +14,7 @@ use snowglass_platform_windows::{
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -90,10 +91,7 @@ impl Runtime {
     }
 
     pub fn cursor_position(&self) -> Option<(i32, i32)> {
-        *self
-            .cursor_position
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
+        *self.cursor_position.lock()
     }
 
     fn receive(self: Arc<Self>, socket_name: String) {
@@ -117,10 +115,7 @@ impl Runtime {
 
     fn apply(&self, event: PointerInput) {
         if let Some(position) = pointer_screen_position(event) {
-            *self
-                .cursor_position
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(position);
+            *self.cursor_position.lock() = Some(position);
         }
         if !self.logged_pointer_receive.swap(true, Ordering::AcqRel) {
             (self.log)(&format!(
@@ -273,7 +268,6 @@ impl WindowMessageForwarder {
                 let mut buttons = self
                     .pointer_buttons
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
                     .remove(&key)
                     .unwrap_or(event.buttons);
                 for button in 1..=5 {
@@ -297,10 +291,7 @@ impl WindowMessageForwarder {
     }
 
     fn remember_buttons(&self, key: (u64, u32), buttons: u32) {
-        let mut state = self
-            .pointer_buttons
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.pointer_buttons.lock();
         if buttons == 0 {
             state.remove(&key);
         } else {

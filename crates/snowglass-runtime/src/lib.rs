@@ -13,10 +13,10 @@ pub use capture::ConsumerPreference;
 pub use input::ProtocolInputSender;
 pub use instance::{
     AudioState, EmulatorConfig, EmulatorInstance, HotkeyChord, HotkeyKey, InstanceExit,
-    InstanceState, InstanceStateReceiver, LaunchError, NormalizedVolume, PresentedFrameToken,
-    ResizeDimensions, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
-    SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
-    TrackedSurfaceHandle, TrackedSurfaceId,
+    InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken, ResizeDimensions,
+    SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver, SurfaceFrameUpdate,
+    SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig, TrackedSurfaceHandle,
+    TrackedSurfaceId,
 };
 pub use ui::{UiRequest, UiRequestReceiver};
 

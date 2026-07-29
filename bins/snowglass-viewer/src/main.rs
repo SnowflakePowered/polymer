@@ -1,6 +1,3 @@
-use crossfire::oneshot::{self, RxOneshot, TxOneshot};
-use dashmap::DashMap;
-use parking_lot::Mutex;
 use snowglass_input::{
     mouse::{PointerPhase, layout::Extent},
     provider::sdl3::{
@@ -43,8 +40,8 @@ use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_
 #[cfg(test)]
 use snowglass_renderer::cli::{AUTO_HOOKS, parse_arguments};
 use snowglass_renderer::{
-    CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, VulkanCompositor,
-    WebRtcCompositor,
+    CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, SurfaceCapture,
+    SurfaceCaptureEvent, VulkanCompositor, WebRtcCompositor,
     cli::{
         GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
@@ -70,121 +67,6 @@ use input::{
 
 type EventCallback = Box<dyn FnMut(Event<()>, &ActiveEventLoop)>;
 type EventInitializer = Box<dyn FnOnce(&ActiveEventLoop) -> Result<EventCallback, Box<dyn Error>>>;
-
-enum CaptureEvent {
-    Stream(u64, StreamReady, TxOneshot<bool>),
-    Frame(u64, FrameReady),
-    Disconnected(u64),
-}
-
-struct PendingCaptureOffer {
-    offer: snowglass_runtime::SurfaceOffer,
-    response: RxOneshot<bool>,
-}
-
-#[derive(Clone, Default)]
-struct RuntimeCaptureAdapter {
-    events: Arc<Mutex<Option<snowglass_runtime::SurfaceEventReceiver>>>,
-    frames: Arc<DashMap<u64, snowglass_runtime::SurfaceFrameReceiver>>,
-    connections: Arc<DashMap<snowglass_runtime::TrackedSurfaceId, u64>>,
-    pending: Arc<DashMap<u64, PendingCaptureOffer>>,
-}
-
-impl RuntimeCaptureAdapter {
-    fn set_instance(&self, instance: &snowglass_runtime::EmulatorInstance) {
-        *self.events.lock() = Some(instance.subscribe_surfaces());
-        self.frames.clear();
-        self.connections.clear();
-        self.pending.clear();
-    }
-
-    fn clear(&self) {
-        *self.events.lock() = None;
-        self.frames.clear();
-        self.connections.clear();
-        self.pending.clear();
-    }
-
-    fn try_recv(&self) -> Result<CaptureEvent, crossfire::TryRecvError> {
-        self.resolve_offers();
-        let event = self
-            .events
-            .lock()
-            .as_ref()
-            .and_then(|events| events.try_recv().ok());
-        if let Some(event) = event {
-            return match event {
-                snowglass_runtime::SurfaceEvent::Offered(offer)
-                | snowglass_runtime::SurfaceEvent::ReconfigureOffered { offer, .. } => {
-                    let connection = offer.connection_id();
-                    let stream = *offer.stream();
-                    let (accepted, response) = oneshot::oneshot();
-                    self.pending
-                        .insert(connection, PendingCaptureOffer { offer, response });
-                    Ok(CaptureEvent::Stream(connection, stream, accepted))
-                }
-                snowglass_runtime::SurfaceEvent::Removed { id } => {
-                    let connection = self
-                        .connections
-                        .remove(&id)
-                        .map_or(0, |(_, connection)| connection);
-                    self.frames.remove(&connection);
-                    Ok(CaptureEvent::Disconnected(connection))
-                }
-            };
-        }
-        for mut receiver in self.frames.iter_mut() {
-            if let Ok(Some(update)) = receiver.value_mut().try_next_frame() {
-                return Ok(CaptureEvent::Frame(*receiver.key(), update.frame));
-            }
-        }
-        Err(crossfire::TryRecvError::Empty)
-    }
-
-    fn revoke(&self, connection: u64) {
-        self.frames.remove(&connection);
-    }
-
-    fn forget(&self, _connection: u64) {}
-
-    fn resolve_offers(&self) {
-        let resolved = {
-            let ready = self
-                .pending
-                .iter_mut()
-                .filter_map(|mut pending| {
-                    pending
-                        .value_mut()
-                        .response
-                        .try_recv()
-                        .ok()
-                        .map(|accepted| (*pending.key(), accepted))
-                })
-                .collect::<Vec<_>>();
-            ready
-                .into_iter()
-                .filter_map(|(connection, accepted)| {
-                    self.pending
-                        .remove(&connection)
-                        .map(|(_, pending)| (connection, accepted, pending.offer))
-                })
-                .collect::<Vec<_>>()
-        };
-        for (connection, accepted, offer) in resolved {
-            if !accepted {
-                offer.reject();
-                continue;
-            }
-            let surface_id = offer.id();
-            if let Ok(surface) = offer.accept() {
-                self.frames.insert(connection, surface.subscribe_frames());
-                if let Some(previous) = self.connections.insert(surface_id, connection) {
-                    self.frames.remove(&previous);
-                }
-            }
-        }
-    }
-}
 
 struct ViewerApplication {
     initializer: Option<EventInitializer>,
@@ -299,12 +181,6 @@ enum ViewerCompositor {
     Empty,
 }
 
-/// Returns the preemption rank of a backend class under the configured hook
-/// order: lower is higher priority, `None` means the backend is not enabled.
-fn class_priority(hooks: &[HookBackend], class: u8) -> Option<usize> {
-    hooks.iter().position(|hook| hook.class() == class)
-}
-
 /// Whether the native D3D12 consumer can import this stream: either a
 /// fence-synchronized D3D12-shareable resource, or a keyed-mutex D3D11
 /// resource acquired through D3D11On12 (which needs the adapter LUID).
@@ -319,55 +195,6 @@ fn d3d12_consumable(stream: &StreamReady) -> bool {
     ) || (stream.image_kind == ExternalImageKind::D3d11SharedResourceNt
         && stream.sync_kind == ExternalSyncKind::D3d11KeyedMutex
         && (stream.adapter_luid.low_part != 0 || stream.adapter_luid.high_part != 0))
-}
-
-fn stream_backend_class(kind: ExternalImageKind) -> u8 {
-    match kind {
-        ExternalImageKind::GdiD3d12Resource => HookBackend::Gdi.class(),
-        ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d11D3d12Resource => {
-            HookBackend::D3d11.class()
-        }
-        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => {
-            HookBackend::D3d12.class()
-        }
-        ExternalImageKind::OpenGlD3d12Resource => HookBackend::OpenGl.class(),
-        ExternalImageKind::VulkanOpaqueWin32 | ExternalImageKind::VulkanD3d12Resource => {
-            HookBackend::Vulkan.class()
-        }
-    }
-}
-
-/// A stream replaces an earlier stream for the same window when its backend
-/// ranks at least as high in the configured hook order; a recreated surface
-/// from the same backend always replaces its predecessor.
-fn should_replace_same_window_backend(hooks: &[HookBackend], existing: u8, incoming: u8) -> bool {
-    match (
-        class_priority(hooks, incoming),
-        class_priority(hooks, existing),
-    ) {
-        (Some(incoming), Some(existing)) => incoming <= existing,
-        (Some(_), None) => true,
-        (None, _) => false,
-    }
-}
-
-fn matching_surface_connection(
-    active: &HashMap<u64, (u64, u8)>,
-    surface_id: u64,
-) -> Option<(u64, u8)> {
-    active
-        .iter()
-        .find_map(|(&connection, &(existing, backend))| {
-            (existing == surface_id).then_some((connection, backend))
-        })
-}
-
-fn graph_surface_index(surface_id: u64) -> Option<u32> {
-    const GRAPH_SURFACE_TAG: u64 = 0x5347_0000_0000_0000;
-    const GRAPH_SURFACE_TAG_MASK: u64 = 0xffff_0000_0000_0000;
-    (surface_id & GRAPH_SURFACE_TAG_MASK == GRAPH_SURFACE_TAG)
-        .then_some(surface_id & !GRAPH_SURFACE_TAG_MASK)
-        .and_then(|index| u32::try_from(index).ok())
 }
 
 impl ViewerCompositor {
@@ -396,17 +223,18 @@ impl ViewerCompositor {
         }
     }
 
-    fn import_stream(
+    fn import_surface_offer(
         &mut self,
         window: &Window,
-        connection: u64,
-        stream: &StreamReady,
+        offer: &snowglass_runtime::SurfaceOffer,
         api: ViewerApi,
         publish_video: bool,
         publish_stream: bool,
         quarter_turns: u8,
         video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
+        let connection = offer.connection_id();
+        let stream = offer.stream();
         if api == ViewerApi::D3d12 && !d3d12_consumable(stream) {
             return Err(format!(
                 "the selected D3D12 viewer cannot consume {:?} output; enable a hook that exports D3D12-compatible resources",
@@ -434,7 +262,7 @@ impl ViewerCompositor {
             let Self::D3d12(value) = self else {
                 unreachable!()
             };
-            Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns)?;
+            Renderer::import_surface_offer(value.as_mut(), offer, quarter_turns)?;
             if publish_stream && let Some(video) = video {
                 video.import_d3d12_stream(connection)?;
             }
@@ -467,7 +295,7 @@ impl ViewerCompositor {
         let Self::Vulkan(value) = self else {
             unreachable!()
         };
-        Renderer::import_stream(value.as_mut(), connection, stream, quarter_turns)?;
+        Renderer::import_surface_offer(value.as_mut(), offer, quarter_turns)?;
         if publish_stream && let Some(video) = video {
             video.import_vulkan_stream(value, connection)?;
         }
@@ -605,7 +433,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             .and_then(|targets| targets.iter().max().copied())
             .map_or(1, |index| index.saturating_add(1)),
     );
-    let mut remaining_surface_skips = 0;
     let viewer_api = options.api;
     let resize_guest = options.resize;
     let webrtc = webrtc_targets
@@ -628,7 +455,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_nanos() as u64
         })
     );
-    let capture = RuntimeCaptureAdapter::default();
+    let mut capture = SurfaceCapture::default();
     let input_tx = RoutedInputSender::default();
     let input_latency = InputLatencyStats::default();
     let stone_json = options
@@ -638,7 +465,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .transpose()?
         .unwrap_or_else(|| EMBEDDED_STONE_JSON.to_owned());
     let gamepad_registry = StoneRegistry::from_json(&stone_json).map_err(std::io::Error::other)?;
-    let mut hooks = launcher.hooks.clone();
     let mut gamepad_provider = None;
     let mut gamepad_layouts = Vec::new();
     let mut gamepad_remap_drafts = Vec::new();
@@ -661,12 +487,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             options.gamecontroller_db.clone(),
         ) {
             Ok(started) => {
-                hooks = started.hooks;
                 gamepad_layouts = started.layouts;
                 gamepad_remap_drafts = vec![HashMap::new(); gamepad_layouts.len()];
                 gamepad_provider = Some(started.provider);
                 input_tx.attach(&started.target.instance);
-                capture.set_instance(&started.target.instance);
+                capture.attach(&started.target.instance);
                 active_target = Some(started.target);
             }
             Err(error) => launch_error = Some(error.to_string()),
@@ -701,10 +526,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let frequency = performance_frequency().unwrap_or(1) as f64;
         let mut stats = Statistics::default();
         let mut pointer_routing = PointerRoutingState::new(Instant::now());
-        let mut active_capture_connections = HashMap::<u64, (u64, u8)>::new();
         let mut stream_indices = HashMap::<u64, u32>::new();
-        let mut skipped_surface_windows = HashSet::<(u64, u8)>::new();
-        let mut skipped_surface_backends = HashSet::<u8>::new();
         let mut active_backend = "Waiting";
         let mut active_consumer = "Waiting";
         let mut direct_input = DirectInputForwarder::new(input_tx.clone());
@@ -748,7 +570,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             match event {
                 WindowEvent::CloseRequested => {
                     if let Some(mut active) = active_target.take() {
-                        let _ = active.instance.close_blocking();
+                        let _ = active.instance.close();
                     }
                     gamepad_provider = None;
                     input_tx.detach();
@@ -930,7 +752,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         active_target = None;
                         gamepad_provider = None;
                         backing_window.store(0, Ordering::Release);
-                        for connection in active_capture_connections
+                        for connection in stream_indices
                             .keys()
                             .copied()
                             .collect::<Vec<_>>()
@@ -938,222 +760,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                             let _ = compositor
                                 .disconnect_stream(connection, &mut video_compositor);
                         }
-                        active_capture_connections.clear();
                         stream_indices.clear();
                         active_backend = "Waiting";
                         active_consumer = "Waiting";
-                        capture.clear();
+                        capture.detach();
                         input_tx.detach();
                     }
                     while let Ok(event) = capture.try_recv() {
                         match event {
-                            CaptureEvent::Stream(connection, stream, accepted) => {
-                                let surface_identity = (
-                                    stream.surface_id.0,
-                                    stream_backend_class(stream.image_kind),
-                                );
-                                let Some(stream_rank) =
-                                    class_priority(&hooks, surface_identity.1)
-                                else {
+                            SurfaceCaptureEvent::Offered(offer) => {
+                                let connection = offer.connection_id();
+                                let replaced = offer.replaced_connection_id();
+                                let stream = *offer.stream();
+                                let stream_index = offer.id().0;
+                                if stream_index >= surface_limit {
                                     eprintln!(
-                                        "snowglass: ignored {:?} surface window {:#x}; its backend is not hooked",
-                                        stream.image_kind, stream.source_window
+                                        "snowglass: ignored {:?} surface window {:#x}; tracked surface {} is outside the viewer limit {}",
+                                        stream.image_kind,
+                                        stream.source_window,
+                                        stream_index,
+                                        surface_limit
                                     );
-                                    accepted.send(false);
-                                    continue;
-                                };
-                                let previously_skipped = stream.surface_id.0 != 0
-                                    && skipped_surface_windows.contains(&surface_identity);
-                                if previously_skipped
-                                    || (!active_capture_connections.contains_key(&connection)
-                                        && remaining_surface_skips != 0)
-                                {
-                                    if !previously_skipped {
-                                        remaining_surface_skips -= 1;
-                                        if stream.surface_id.0 != 0 {
-                                            skipped_surface_windows.insert(surface_identity);
-                                        }
-                                        skipped_surface_backends.insert(surface_identity.1);
-                                        eprintln!(
-                                            "snowglass: skipped {:?} surface window {:#x}; {} initial surface(s) still to skip",
-                                            stream.image_kind,
-                                            stream.source_window,
-                                            remaining_surface_skips
-                                        );
-                                    }
-                                    accepted.send(false);
-                                    continue;
-                                }
-                                if !active_capture_connections.contains_key(&connection) {
-                                    let replaced = (stream.surface_id.0 != 0)
-                                        .then(|| {
-                                            matching_surface_connection(
-                                                &active_capture_connections,
-                                                stream.surface_id.0,
-                                            )
-                                        })
-                                        .flatten();
-                                    if let Some((existing, backend)) = replaced {
-                                        if !should_replace_same_window_backend(
-                                            &hooks,
-                                            backend,
-                                            surface_identity.1,
-                                        ) {
-                                            eprintln!(
-                                                "snowglass: ignored lower-priority {:?} duplicate for window {:#x}",
-                                                stream.image_kind, stream.source_window
-                                            );
-                                            accepted.send(false);
-                                            continue;
-                                        }
-                                        let size = window.inner_size();
-                                        let presentation = compositor.presentation(Extent::new(
-                                            size.width,
-                                            size.height,
-                                        ));
-                                        let plan = layout::composition_plan(&presentation);
-                                        cancel_pointer_connection(
-                                            existing,
-                                            &mut pointer_routing,
-                                            &presentation,
-                                            &plan,
-                                            &input_tx,
-                                            &mut direct_input,
-                                        );
-                                        active_capture_connections.remove(&existing);
-                                        stream_indices.remove(&existing);
-                                        if let Some(publisher) = &webrtc {
-                                            publisher.remove_stream(existing);
-                                        }
-                                        capture.revoke(existing);
-                                        if let Err(error) =
-                                            compositor.disconnect_stream(
-                                                existing,
-                                                &mut video_compositor,
-                                            )
-                                        {
-                                            eprintln!(
-                                                "snowglass: failed to replace prior stream for window: {error}"
-                                            );
-                                        }
-                                    }
-                                }
-                                if !active_capture_connections.contains_key(&connection)
-                                    && active_capture_connections.len()
-                                        >= surface_limit as usize
-                                    && !skipped_surface_backends.contains(&surface_identity.1)
-                                {
-                                    let provisional = active_capture_connections
-                                        .iter()
-                                        .find_map(|(&existing, &(_, backend))| {
-                                            skipped_surface_backends
-                                                .contains(&backend)
-                                                .then_some(existing)
-                                    });
-                                    if let Some(existing) = provisional {
-                                        let size = window.inner_size();
-                                        let presentation = compositor.presentation(Extent::new(
-                                            size.width,
-                                            size.height,
-                                        ));
-                                        let plan = layout::composition_plan(&presentation);
-                                        cancel_pointer_connection(
-                                            existing,
-                                            &mut pointer_routing,
-                                            &presentation,
-                                            &plan,
-                                            &input_tx,
-                                            &mut direct_input,
-                                        );
-                                        active_capture_connections.remove(&existing);
-                                        stream_indices.remove(&existing);
-                                        if let Some(publisher) = &webrtc {
-                                            publisher.remove_stream(existing);
-                                        }
-                                        capture.revoke(existing);
-                                        if let Err(error) =
-                                            compositor.disconnect_stream(
-                                                existing,
-                                                &mut video_compositor,
-                                            )
-                                        {
-                                            eprintln!(
-                                                "snowglass: failed to replace provisional skipped-backend stream: {error}"
-                                            );
-                                        }
-                                        eprintln!(
-                                            "snowglass: replaced provisional skipped-backend surface with {:?} window {:#x}",
-                                            stream.image_kind, stream.source_window
-                                        );
-                                    }
-                                }
-                                if !active_capture_connections.contains_key(&connection)
-                                    && active_capture_connections.len()
-                                        >= surface_limit as usize
-                                    && !skipped_surface_backends.contains(&surface_identity.1)
-                                {
-                                    // Probe swapchains and GUI shells (GDI blits, a
-                                    // frontend's D3D11 surface) must not hold the slot
-                                    // once the real renderer attaches: a stream from a
-                                    // higher-priority backend preempts the lowest-ranked,
-                                    // oldest surface.
-                                    let victim = active_capture_connections
-                                        .iter()
-                                        .filter_map(|(&existing, &(_, backend))| {
-                                            class_priority(&hooks, backend)
-                                                .filter(|&rank| rank > stream_rank)
-                                                .map(|rank| (existing, rank))
-                                        })
-                                        .max_by_key(|&(existing, rank)| {
-                                            (rank, std::cmp::Reverse(existing))
-                                        })
-                                        .map(|(existing, _)| existing);
-                                    if let Some(existing) = victim {
-                                        let size = window.inner_size();
-                                        let presentation = compositor.presentation(Extent::new(
-                                            size.width,
-                                            size.height,
-                                        ));
-                                        let plan = layout::composition_plan(&presentation);
-                                        cancel_pointer_connection(
-                                            existing,
-                                            &mut pointer_routing,
-                                            &presentation,
-                                            &plan,
-                                            &input_tx,
-                                            &mut direct_input,
-                                        );
-                                        active_capture_connections.remove(&existing);
-                                        stream_indices.remove(&existing);
-                                        if let Some(publisher) = &webrtc {
-                                            publisher.remove_stream(existing);
-                                        }
-                                        capture.revoke(existing);
-                                        if let Err(error) =
-                                            compositor.disconnect_stream(
-                                                existing,
-                                                &mut video_compositor,
-                                            )
-                                        {
-                                            eprintln!(
-                                                "snowglass: failed to preempt lower-priority stream: {error}"
-                                            );
-                                        }
-                                        eprintln!(
-                                            "snowglass: preempted lower-priority surface for {:?} window {:#x}",
-                                            stream.image_kind, stream.source_window
-                                        );
-                                    }
-                                }
-                                if !active_capture_connections.contains_key(&connection)
-                                    && active_capture_connections.len()
-                                        >= surface_limit as usize
-                                {
-                                    eprintln!(
-                                        "snowglass: ignored {:?} surface window {:#x}; surface limit {} is full",
-                                        stream.image_kind, stream.source_window, surface_limit
-                                    );
-                                    accepted.send(false);
+                                    capture.reject(offer);
                                     continue;
                                 }
                                 active_backend = match stream.image_kind {
@@ -1170,19 +798,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
                                 }
-                                let stream_index = stream_indices
-                                    .get(&connection)
-                                    .copied()
-                                    .or_else(|| {
-                                        graph_surface_index(stream.surface_id.0)
-                                            .filter(|index| *index < surface_limit)
-                                    })
-                                    .or_else(|| {
-                                        (0..surface_limit).find(|index| {
-                                            !stream_indices.values().any(|v| v == index)
-                                        })
-                                    })
-                                    .expect("surface limit admitted a stream index");
                                 let publish_stream = webrtc_targets
                                     .as_ref()
                                     .is_some_and(|targets| targets.contains(&stream_index));
@@ -1190,10 +805,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     .get(stream_index as usize)
                                     .copied()
                                     .unwrap_or(0);
-                                match compositor.import_stream(
+                                match compositor.import_surface_offer(
                                     &window,
-                                    connection,
-                                    &stream,
+                                    &offer,
                                     viewer_api,
                                     publish_video,
                                     publish_stream,
@@ -1201,12 +815,54 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &mut video_compositor,
                                 ) {
                                     Ok(()) => {
+                                        let accepted = match capture.accept(offer) {
+                                            Ok(accepted) => accepted,
+                                            Err(error) => {
+                                                let _ = compositor.disconnect_stream(
+                                                    connection,
+                                                    &mut video_compositor,
+                                                );
+                                                eprintln!(
+                                                    "snowglass: capture stream {connection} disappeared while it was being imported: {error}"
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        if let Some(existing) =
+                                            accepted.replaced_connection.or(replaced)
+                                        {
+                                            let size = window.inner_size();
+                                            let presentation = compositor.presentation(
+                                                Extent::new(size.width, size.height),
+                                            );
+                                            let plan =
+                                                layout::composition_plan(&presentation);
+                                            cancel_pointer_connection(
+                                                existing,
+                                                &mut pointer_routing,
+                                                &presentation,
+                                                &plan,
+                                                &input_tx,
+                                                &mut direct_input,
+                                            );
+                                            stream_indices.remove(&existing);
+                                            if let Some(publisher) = &webrtc {
+                                                publisher.remove_stream(existing);
+                                            }
+                                            capture.revoke(existing);
+                                            if let Err(error) = compositor.disconnect_stream(
+                                                existing,
+                                                &mut video_compositor,
+                                            ) {
+                                                eprintln!(
+                                                    "snowglass: failed to replace prior stream: {error}"
+                                                );
+                                            }
+                                        }
                                         stream_indices.insert(connection, stream_index);
                                         if publish_stream && let Some(publisher) = &webrtc {
                                             publisher.add_stream(connection, stream_index);
                                         }
-                                        active_capture_connections
-                                            .insert(connection, surface_identity);
                                         // A deferred or replaced graphics backend has no copy
                                         // of textures emitted to its predecessor. A fresh egui
                                         // context guarantees that Managed(0) is emitted as a full
@@ -1236,19 +892,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             stream.slot_count,
                                             active_consumer,
                                         );
-                                        accepted.send(true);
                                     }
                                     Err(error) => {
                                         eprintln!("snowglass: direct import failed: {error}");
                                         launch_error = Some(format!(
                                             "The selected hooks did not publish output compatible with the fixed {viewer_api:?} viewer: {error}"
                                         ));
-                                        accepted.send(false);
+                                        capture.reject(offer);
                                     }
                                 }
                             }
-                            CaptureEvent::Frame(connection, frame) => {
-                                if !active_capture_connections.contains_key(&connection) {
+                            SurfaceCaptureEvent::Frame { connection, update } => {
+                                let frame = update.frame;
+                                if !stream_indices.contains_key(&connection) {
                                     continue;
                                 }
                                 if frame.frame_number == 1 {
@@ -1294,7 +950,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     break;
                                 }
                             }
-                            CaptureEvent::Disconnected(connection) => {
+                            SurfaceCaptureEvent::Removed { connection, .. } => {
                                 stats.sequences.remove(connection);
                                 stats.target_statistics_tracker.remove(connection);
                                 stats.target_statistics =
@@ -1314,9 +970,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &input_tx,
                                     &mut direct_input,
                                 );
-                                stream_indices.remove(&connection);
-                                capture.forget(connection);
-                                if active_capture_connections.remove(&connection).is_none() {
+                                if stream_indices.remove(&connection).is_none() {
                                     continue;
                                 }
                                 if let Err(error) = compositor
@@ -1624,10 +1278,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     });
                     if close_requested {
                         if let Some(mut active) = active_target.take() {
-                            let _ = active.instance.close_blocking();
+                            let _ = active.instance.close();
                         }
                         gamepad_provider = None;
-                        capture.clear();
+                        capture.detach();
                         input_tx.detach();
                     }
                     if launch_requested && active_target.is_none() {
@@ -1648,16 +1302,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                             options.gamecontroller_db.clone(),
                         ) {
                             Ok(started) => {
-                                hooks = started.hooks;
                                 render_target_rotations = launcher.render_target_rotations();
                                 gamepad_layouts = started.layouts;
                                 gamepad_remap_drafts =
                                     vec![HashMap::new(); gamepad_layouts.len()];
                                 gamepad_provider = Some(started.provider);
                                 input_tx.attach(&started.target.instance);
-                                capture.set_instance(&started.target.instance);
+                                capture.attach(&started.target.instance);
                                 active_target = Some(started.target);
-                                remaining_surface_skips = 0;
                                 stats = Statistics::default();
                             }
                             Err(error) => launch_error = Some(error.to_string()),
@@ -1719,7 +1371,6 @@ struct StartedTarget {
     target: ActiveTarget,
     provider: Sdl3Provider,
     layouts: Vec<StoneLayout>,
-    hooks: Vec<HookBackend>,
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1811,12 +1462,12 @@ fn start_target_session(
             gamecontroller_database,
             keyboard_mapping_directory: None,
         },
-        instance.gamepad_mailbox(),
+        instance.gamepad_input(),
     );
     let provider = match provider {
         Ok(provider) => provider,
         Err(error) => {
-            let _ = instance.close_blocking();
+            let _ = instance.close();
             return Err(
                 std::io::Error::other(format!("SDL3 gamepad input failed: {error}")).into(),
             );
@@ -1827,6 +1478,5 @@ fn start_target_session(
         target: ActiveTarget { instance, ui },
         provider,
         layouts,
-        hooks: launcher.hooks.clone(),
     })
 }

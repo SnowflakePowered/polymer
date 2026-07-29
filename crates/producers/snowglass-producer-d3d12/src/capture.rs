@@ -1,6 +1,7 @@
 //! Swapchain capture state, copy submission, and viewer handoff.
 
 use crate::{D3d12CaptureSourceState, D3d12SwapchainCapture, Tracking};
+use parking_lot::Mutex;
 use snowglass_hook_dxgi::{SwapchainOwner, SwapchainOwnerHandle};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
@@ -8,10 +9,7 @@ use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId, transport_unorm_dxgi_format,
 };
-use std::{
-    ffi::c_void,
-    sync::{Arc, Mutex},
-};
+use std::{ffi::c_void, sync::Arc};
 use windows::{
     Win32::Graphics::Direct3D12::ID3D12CommandQueue,
     core::{IUnknown, Interface},
@@ -94,7 +92,7 @@ impl SwapchainOwner for SwapchainCapture {
             .is_none()
             .then(|| presentation.as_ref().and_then(|value| value.region))
             .flatten();
-        let mut capture = self.capture.lock().unwrap_or_else(|e| e.into_inner());
+        let mut capture = self.capture.lock();
         if let Some(source) = tracked_source
             && matches!(&*capture, Capture::Active(state) if {
                 let desc = state.capture.desc();
@@ -234,10 +232,7 @@ impl SwapchainOwner for SwapchainCapture {
     ///
     /// `swapchain` must point to the live swapchain being resized.
     unsafe fn before_resize(&self, swapchain: *mut c_void) {
-        let previous = std::mem::replace(
-            &mut *self.capture.lock().unwrap_or_else(|e| e.into_inner()),
-            Capture::Idle,
-        );
+        let previous = std::mem::replace(&mut *self.capture.lock(), Capture::Idle);
         crate::d3d12_log(format!(
             "snowglass: D3D12 resize released capture state: {}",
             matches!(previous, Capture::Active(_))

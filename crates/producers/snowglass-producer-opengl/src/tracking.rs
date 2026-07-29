@@ -7,11 +7,12 @@ use crate::interop::{
     GL_TEXTURE_WIDTH, GL_TEXTURE0, GL_VIEWPORT, GlActiveTexture, Glenum, Gluint, current_context,
     glBindTexture, glGetIntegerv, glGetTexLevelParameteriv, glIsEnabled, proc,
 };
+use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
     sync::{
-        Mutex, OnceLock,
+        OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -124,10 +125,7 @@ impl Tracking {
 
     fn upsert_render_target(&self, candidate: DrawCandidate) {
         let now = self.generation();
-        let mut targets = self
-            .render_targets
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut targets = self.render_targets.lock();
         if let Some((existing, seen)) = targets
             .iter_mut()
             .find(|(existing, _)| existing.key() == candidate.key())
@@ -143,10 +141,7 @@ impl Tracking {
 
     fn record_dependencies(&self, key: TargetKey, sources: &[Gluint]) {
         let now = self.generation();
-        let mut graphs = self
-            .dependencies
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut graphs = self.dependencies.lock();
         let inputs = graphs.entry(key).or_default();
         for &source in sources {
             if source == key.texture {
@@ -162,10 +157,7 @@ impl Tracking {
 
     fn record_renderbuffer_inputs(&self, renderbuffer: Gluint, sources: &[Gluint]) {
         let now = self.generation();
-        let mut all_inputs = self
-            .renderbuffer_inputs
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut all_inputs = self.renderbuffer_inputs.lock();
         let inputs = all_inputs.entry(renderbuffer).or_default();
         for &source in sources {
             if let Some((_, seen)) = inputs.iter_mut().find(|(texture, _)| *texture == source) {
@@ -178,10 +170,7 @@ impl Tracking {
 
     fn record_presented(&self, context: usize, sources: &[Gluint], via_blit: bool) {
         {
-            let mut presented = self
-                .presented_textures
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presented = self.presented_textures.lock();
             let presented = presented.entry(context).or_default();
             for &source in sources {
                 if let Some((_, blit)) =
@@ -201,10 +190,7 @@ impl Tracking {
     /// their history must not decay while that lasts.
     fn touch_render_targets(&self, sources: &[Gluint]) {
         let now = self.generation();
-        let mut targets = self
-            .render_targets
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut targets = self.render_targets.lock();
         for (candidate, seen) in targets.iter_mut() {
             if sources.contains(&candidate.texture) {
                 *seen = now;
@@ -234,20 +220,15 @@ impl Tracking {
         let fallback = self
             .draw_candidates
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .remove(&context)
             .unwrap_or_default();
         let presented = self
             .presented_textures
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .remove(&context)
             .unwrap_or_default();
         let mut targets = {
-            let mut store = self
-                .render_targets
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut store = self.render_targets.lock();
             store.retain(|(_, seen)| *seen >= horizon);
             store
                 .iter()
@@ -255,10 +236,7 @@ impl Tracking {
                 .collect::<Vec<_>>()
         };
         {
-            let info = self
-                .texture_info
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let info = self.texture_info.lock();
             targets.retain_mut(|candidate| {
                 let Some(&(target, width, height)) = info.get(&candidate.texture) else {
                     return false;
@@ -270,23 +248,17 @@ impl Tracking {
             });
         }
         let dependency_graph = {
-            let mut graphs = self
-                .dependencies
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut graphs = self.dependencies.lock();
             graphs.retain(|_, inputs| {
                 inputs.retain(|(_, seen)| *seen >= horizon);
                 !inputs.is_empty()
             });
             graphs.clone()
         };
-        self.renderbuffer_inputs
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .retain(|_, inputs| {
-                inputs.retain(|(_, seen)| *seen >= horizon);
-                !inputs.is_empty()
-            });
+        self.renderbuffer_inputs.lock().retain(|_, inputs| {
+            inputs.retain(|(_, seen)| *seen >= horizon);
+            !inputs.is_empty()
+        });
         if !snowglass_hook::config::graph_tracking_enabled() {
             return (
                 select_screen_cohort(
@@ -319,10 +291,7 @@ impl Tracking {
         // even when it was filled by CPU uploads that no draw or blit observed,
         // so give such roots a stand-in candidate if rendering never made one.
         {
-            let info = self
-                .texture_info
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let info = self.texture_info.lock();
             for &root in &blit_roots {
                 if targets.iter().any(|candidate| candidate.texture == root) {
                     continue;
@@ -396,7 +365,6 @@ impl Tracking {
     pub(crate) fn take_present_quads(&self, context: usize) -> Vec<(Gluint, QuadBounds)> {
         self.presented_quads
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .remove(&context)
             .unwrap_or_default()
     }
@@ -409,26 +377,11 @@ impl Tracking {
     /// fresh launch does) recovers both. `texture_info` is kept — it is
     /// re-measured on demand and holds no cross-frame selection state.
     pub(crate) fn reset_graph(&self) {
-        self.render_targets
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        self.dependencies
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        self.renderbuffer_inputs
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        self.presented_textures
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        self.draw_candidates
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
+        self.render_targets.lock().clear();
+        self.dependencies.lock().clear();
+        self.renderbuffer_inputs.lock().clear();
+        self.presented_textures.lock().clear();
+        self.draw_candidates.lock().clear();
     }
 
     /// Re-validates a held selection against the live GPU texture state,
@@ -455,10 +408,7 @@ impl Tracking {
         else {
             return sources.to_vec();
         };
-        let mut info = self
-            .texture_info
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut info = self.texture_info.lock();
         sources
             .iter()
             .filter(|source| {
@@ -812,7 +762,6 @@ impl Tracking {
                 });
                 self.texture_info
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
                     .insert(texture as u32, (target, width as u32, height as u32));
             }
         }
@@ -894,16 +843,12 @@ impl Tracking {
         if let (Some(quad), Some(candidate)) = (present_quad, best) {
             self.presented_quads
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
                 .entry(context as usize)
                 .or_default()
                 .push((candidate.texture, quad));
         }
         if let Some(candidate) = best {
-            let mut candidates = self
-                .draw_candidates
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut candidates = self.draw_candidates.lock();
             let candidates = candidates.entry(context as usize).or_default();
             if let Some(existing) = candidates.iter_mut().find(|existing| {
                 (existing.texture, existing.target, existing.layer)
@@ -1112,12 +1057,7 @@ impl Tracking {
     /// direct-state-access query, which handles any texture target and leaves the
     /// application's bindings untouched; falls back to a temporary 2D binding.
     unsafe fn measure_texture(&self, texture: Gluint, target: Glenum) -> Option<(u32, u32)> {
-        if let Some(&(_, width, height)) = self
-            .texture_info
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&texture)
-        {
+        if let Some(&(_, width, height)) = self.texture_info.lock().get(&texture) {
             return Some((width, height));
         }
         let direct = *self
@@ -1147,7 +1087,6 @@ impl Tracking {
         }
         self.texture_info
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .insert(texture, (target, width as u32, height as u32));
         Some((width as u32, height as u32))
     }
@@ -1180,7 +1119,6 @@ impl Tracking {
         let inputs: Vec<Gluint> = if src_target == GL_RENDERBUFFER {
             self.renderbuffer_inputs
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
                 .get(&src_name)
                 .map(|inputs| inputs.iter().map(|(texture, _)| *texture).collect())
                 .unwrap_or_default()
@@ -1283,10 +1221,7 @@ impl Tracking {
             // Re-presenting a renderbuffer keeps its recorded inputs alive even
             // when the scene is static and nothing redraws them.
             let now = self.generation();
-            let mut all_inputs = self
-                .renderbuffer_inputs
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut all_inputs = self.renderbuffer_inputs.lock();
             all_inputs
                 .get_mut(&(source_object as u32))
                 .map(|inputs| {
@@ -1400,26 +1335,10 @@ mod tests {
     fn tracking_instances_do_not_share_textures() {
         let first = Tracking::default();
         let second = Tracking::default();
-        first
-            .texture_info
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(7, (0x0de1, 640, 480));
+        first.texture_info.lock().insert(7, (0x0de1, 640, 480));
 
-        assert!(
-            first
-                .texture_info
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .contains_key(&7)
-        );
-        assert!(
-            !second
-                .texture_info
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .contains_key(&7)
-        );
+        assert!(first.texture_info.lock().contains_key(&7));
+        assert!(!second.texture_info.lock().contains_key(&7));
     }
 
     #[test]

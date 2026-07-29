@@ -26,8 +26,10 @@ pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::{Mutex, MutexGuard};
+
     use super::*;
-    use snowglass_ipc::{LocalSocketListener, Message};
+    use snowglass_ipc::{LocalSocketListener, Message, frame::FrameSubscriber};
     use snowglass_protocol::{Handshake, PROTOCOL_VERSION};
     use std::ffi::c_void;
     use windows::Win32::Graphics::Dxgi::Common::{
@@ -56,10 +58,10 @@ mod tests {
         },
     };
 
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    fn test_lock() -> MutexGuard<'static, ()> {
+        TEST_LOCK.lock()
     }
 
     unsafe fn release(object: *mut c_void) {
@@ -229,8 +231,15 @@ mod tests {
                         preferred_consumer: snowglass_protocol::ConsumerApi::Vulkan,
                     }))
                     .unwrap();
+                let Message::MapOffer(offer) = socket.receive().unwrap() else {
+                    panic!("capture did not offer its frame channel");
+                };
+                let mut frames = FrameSubscriber::from_offer(offer).unwrap();
                 let ready = socket.receive().unwrap();
-                let frame = socket.receive().unwrap();
+                let Message::FrameAvailable = socket.receive().unwrap() else {
+                    panic!("capture did not signal a shared frame");
+                };
+                let frame = Message::FrameReady(frames.latest().unwrap().unwrap());
                 let _ = message_sender.send((ready, frame));
             }
         });
@@ -520,7 +529,16 @@ mod tests {
                     preferred_consumer: ConsumerApi::D3d12,
                 }))
                 .unwrap();
+            let Message::MapOffer(offer) = socket.receive().unwrap() else {
+                panic!("capture did not offer its frame channel");
+            };
+            let mut frames = FrameSubscriber::from_offer(offer).unwrap();
             while let Ok(message) = socket.receive() {
+                let message = if matches!(message, Message::FrameAvailable) {
+                    Message::FrameReady(frames.latest().unwrap().unwrap())
+                } else {
+                    message
+                };
                 if message_sender.send(message).is_err() {
                     break;
                 }

@@ -1,6 +1,7 @@
 //! SDL3 module discovery and detour ownership.
 
 use crate::api;
+use parking_lot::Mutex;
 use snowglass_hook::config;
 use snowglass_input::stone::{EMBEDDED_STONE_JSON, StoneRegistry};
 use snowglass_input_sdl::Runtime;
@@ -10,7 +11,7 @@ use std::{
     io::Write,
     os::windows::ffi::OsStrExt,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -274,10 +275,7 @@ unsafe fn captured_dynapi_table(
 }
 
 fn prepare_enumeration(state: &Sdl3TableState) {
-    let mut backend = state
-        .backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let mut backend = state.backend.lock();
     if let Err(error) = state.runtime.prepare_enumeration(&mut *backend) {
         log(error.0);
     }
@@ -299,10 +297,7 @@ unsafe fn enumerate_joysticks(
 
 fn enumerate_virtual(count: *mut i32, state: &Sdl3TableState) -> *mut api::JoystickId {
     prepare_enumeration(state);
-    let backend = state
-        .backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let backend = state.backend.lock();
     let result = unsafe { backend.enumerate(count) };
     if !state.logged_enumeration.swap(true, Ordering::AcqRel) {
         let count = if count.is_null() {
@@ -319,10 +314,7 @@ fn flush_gamepads(state: &Sdl3TableState) {
     if !state.logged_gamepad_consumer.swap(true, Ordering::AcqRel) {
         log("target first consumed SDL3 gamepad state");
     }
-    let mut backend = state
-        .backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let mut backend = state.backend.lock();
     if state.runtime.flush(&mut *backend)
         && !state.logged_gamepad_update.swap(true, Ordering::AcqRel)
     {

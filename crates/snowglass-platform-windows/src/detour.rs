@@ -1,4 +1,6 @@
-static INLINE_HOOK_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use parking_lot::{Mutex, RwLock};
+
+static INLINE_HOOK_MUTATION: Mutex<()> = Mutex::new(());
 
 /// A thread-safe owner for an `ib-hook` inline hook.
 ///
@@ -7,21 +9,19 @@ static INLINE_HOOK_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// before enabling it, so a detour can always find its original trampoline.
 #[derive(Debug)]
 pub struct InlineDetour<F: ib_hook::FnPtr> {
-    hook: std::sync::RwLock<ib_hook::inline::InlineHook<F>>,
+    hook: RwLock<ib_hook::inline::InlineHook<F>>,
 }
 
 impl<F: ib_hook::FnPtr> InlineDetour<F> {
     pub const fn new(target: F, detour: F) -> Self {
         Self {
-            hook: std::sync::RwLock::new(ib_hook::inline::InlineHook::new(target, detour)),
+            hook: RwLock::new(ib_hook::inline::InlineHook::new(target, detour)),
         }
     }
 
     pub fn enable(&self) -> Result<(), i32> {
-        let _mutation = INLINE_HOOK_MUTATION
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut hook = self.hook.write().unwrap_or_else(|error| error.into_inner());
+        let _mutation = INLINE_HOOK_MUTATION.lock();
+        let mut hook = self.hook.write();
         let result = hook.enable();
         if result.is_ok() {
             Ok(())
@@ -31,10 +31,8 @@ impl<F: ib_hook::FnPtr> InlineDetour<F> {
     }
 
     pub fn disable(&self) -> Result<(), i32> {
-        let _mutation = INLINE_HOOK_MUTATION
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut hook = self.hook.write().unwrap_or_else(|error| error.into_inner());
+        let _mutation = INLINE_HOOK_MUTATION.lock();
+        let mut hook = self.hook.write();
         let result = hook.disable();
         if result.is_ok() {
             Ok(())
@@ -44,17 +42,11 @@ impl<F: ib_hook::FnPtr> InlineDetour<F> {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.hook
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .is_enabled()
+        self.hook.read().is_enabled()
     }
 
     pub fn trampoline(&self) -> F {
-        self.hook
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .trampoline()
+        self.hook.read().trampoline()
     }
 }
 

@@ -66,7 +66,7 @@ impl InputTransport {
         config: ProviderConfig,
         instance: &snowglass_runtime::EmulatorInstance,
     ) -> Result<Sdl3Provider, String> {
-        Sdl3Provider::start(config, instance.gamepad_mailbox())
+        Sdl3Provider::start(config, instance.gamepad_input())
     }
 
     pub fn control_sender(&self) -> RoutedInputSender {

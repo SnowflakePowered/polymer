@@ -1,10 +1,11 @@
 use crate::vtable::{
     IDXGIFactoryHook, IDXGIFactoryMediaHook, IDXGISwapchainHook, SwapchainContext, SwapchainHook,
 };
+use parking_lot::RwLock;
 use std::{
     ffi::c_void,
     sync::{
-        Arc, LazyLock, RwLock,
+        Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -182,7 +183,7 @@ pub type SwapchainClaim =
 
 static CLAIMS: LazyLock<RwLock<Vec<SwapchainClaim>>> = LazyLock::new(Default::default);
 pub fn register_claim(claim: SwapchainClaim) {
-    let mut registered = CLAIMS.write().unwrap_or_else(|error| error.into_inner());
+    let mut registered = CLAIMS.write();
     if !registered
         .iter()
         .any(|existing| *existing as usize == claim as usize)
@@ -207,15 +208,11 @@ pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c
     let context = SwapchainContext::new(allow_tearing);
     let installed =
         unsafe { IDXGISwapchainHook::install_all_interfaces(swapchain, context.clone()) };
-    let owner = CLAIMS
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .iter()
-        .find_map(|claim| {
-            let mut handle = std::mem::MaybeUninit::<SwapchainOwnerHandle>::uninit();
-            unsafe { claim(swapchain, creation_device, handle.as_mut_ptr()) }
-                .then(|| unsafe { handle.assume_init() })
-        });
+    let owner = CLAIMS.read().iter().find_map(|claim| {
+        let mut handle = std::mem::MaybeUninit::<SwapchainOwnerHandle>::uninit();
+        unsafe { claim(swapchain, creation_device, handle.as_mut_ptr()) }
+            .then(|| unsafe { handle.assume_init() })
+    });
     if let Some(owner) = owner {
         context.set_owner(Some(Arc::new(owner)));
     }
@@ -541,12 +538,7 @@ pub(crate) unsafe fn resize_buffers(
 }
 
 pub(crate) unsafe fn swapchain_destroyed(this: *mut c_void, state: &dyn SwapchainHook) {
-    let owner = state
-        .state()
-        .owner
-        .write()
-        .unwrap_or_else(|error| error.into_inner())
-        .take();
+    let owner = state.state().owner.write().take();
     if let Some(owner) = owner {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             owner.destroyed(this)

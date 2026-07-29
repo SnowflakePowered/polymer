@@ -1,5 +1,8 @@
 //! API-neutral virtual gamepad topology and forwarded state.
 
+use parking_lot::Mutex;
+use std::{sync::mpsc, time::Instant};
+
 /// SDL's standard gamepad layout has six axes. Snowglass appends two raw
 /// joystick axes carrying an absolute pointer position.
 pub const GAMEPAD_AXIS_COUNT: usize = 8;
@@ -120,6 +123,16 @@ pub struct LatestGamepadMailbox {
     wake_rx: Mutex<mpsc::Receiver<()>>,
 }
 
+pub trait GamepadUpdateSink: Send + Sync {
+    fn publish(&self, update: GamepadUpdate);
+}
+
+impl GamepadUpdateSink for LatestGamepadMailbox {
+    fn publish(&self, update: GamepadUpdate) {
+        Self::publish(self, update);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct StampedGamepadUpdate {
     pub update: GamepadUpdate,
@@ -137,7 +150,7 @@ impl LatestGamepadMailbox {
     }
 
     pub fn publish(&self, update: GamepadUpdate) {
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
+        let mut slots = self.slots.lock();
         let Some(slot) = slots.get_mut(update.slot.index()) else {
             return;
         };
@@ -150,18 +163,11 @@ impl LatestGamepadMailbox {
     }
 
     pub fn wait_and_drain(&self) -> Vec<StampedGamepadUpdate> {
-        if self
-            .wake_rx
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .recv()
-            .is_err()
-        {
+        if self.wake_rx.lock().recv().is_err() {
             return Vec::new();
         }
         self.slots
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .iter_mut()
             .filter_map(Option::take)
             .collect()
@@ -224,7 +230,3 @@ mod tests {
         assert_eq!(updates[1].update.sequence, 7);
     }
 }
-use std::{
-    sync::{Mutex, mpsc},
-    time::Instant,
-};

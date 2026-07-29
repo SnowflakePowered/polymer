@@ -409,7 +409,6 @@ macro_rules! function_table_hook {
                         #[context] struct {
                             state: ::std::sync::Arc<$state> =
                                 [<__ $table_hook _registry>].lock()
-                                    .unwrap_or_else(|error| error.into_inner())
                                     .as_ref()
                                     .map(|installation| installation.state.clone())
                                     .expect("function table hook is not installed"),
@@ -428,12 +427,11 @@ macro_rules! function_table_hook {
 
         #[allow(non_upper_case_globals)]
         static [<__ $table_hook _registry>]:
-            ::std::sync::Mutex<Option<[<$table_hook Installation>]>> =
-            ::std::sync::Mutex::new(None);
+            $crate::__Mutex<Option<[<$table_hook Installation>]>> =
+            $crate::__Mutex::new(None);
 
         fn [<__resolve_ $table_hook:snake>]() -> ::std::sync::Arc<$table_hook> {
             [<__ $table_hook _registry>].lock()
-                .unwrap_or_else(|error| error.into_inner())
                 .as_ref().map(|installation| installation.hook.clone())
                 .expect("function table hook is not installed")
         }
@@ -449,8 +447,7 @@ macro_rules! function_table_hook {
                 table: *mut ::core::ffi::c_void,
                 table_bytes: u32,
             ) -> Result<::std::sync::Arc<$state>, &'static str> {
-                let mut registry = [<__ $table_hook _registry>].lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                let mut registry = [<__ $table_hook _registry>].lock();
                 if registry.is_none() {
                     let hook = ::std::sync::Arc::new(unsafe {
                         $table_hook::capture(table, table_bytes)?
@@ -475,14 +472,12 @@ macro_rules! function_table_hook {
                 select: impl FnOnce(&$state) -> T,
             ) -> Option<T> {
                 [<__ $table_hook _registry>].lock()
-                    .unwrap_or_else(|error| error.into_inner())
                     .as_ref()
                     .map(|installation| select(installation.state.as_ref()))
             }
 
             $visibility fn uninstall() -> Result<(), &'static str> {
-                let mut registry = [<__ $table_hook _registry>].lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                let mut registry = [<__ $table_hook _registry>].lock();
                 let Some(installation) = registry.as_mut() else { return Ok(()); };
                 let mut first_error = None;
                 let mut index = installation.tables.len();
@@ -609,7 +604,7 @@ macro_rules! function_table_hook {
     ) => { $crate::__paste! {
         $visibility struct $table_hook {
             $($dispatch: unsafe extern $abi fn($($argument_type),*) $(-> $result)?,)+
-            $([<$dispatch _hooks>]: ::std::sync::RwLock<
+            $([<$dispatch _hooks>]: $crate::__RwLock<
                 Vec<[<$dispatch:camel Hook>]>,
             >,)+
         }
@@ -649,7 +644,7 @@ macro_rules! function_table_hook {
                 )+
                 Ok(Self {
                     $($dispatch,
-                    [<$dispatch _hooks>]: ::std::sync::RwLock::new(
+                    [<$dispatch _hooks>]: $crate::__RwLock::new(
                         $crate::chain_hooks!(@infix_slice_as [<$dispatch:camel Hook>];
                             $(infix($($infix),*))?
                         ).to_vec()
@@ -753,8 +748,7 @@ macro_rules! function_table_hook {
                 let base = table_hook.$dispatch();
                 $(let $context_field = $context_field_value;)*
                 let chain = table_hook.[<$dispatch _hooks>]
-                    .read()
-                    .unwrap_or_else(|error| error.into_inner());
+                    .read();
                 let mut hooks = chain.iter();
                 let terminal: [<$dispatch:camel Hook>] = terminal;
                 let _prefix_context = [<$dispatch:camel Context>] {

@@ -2,7 +2,7 @@
 
 use crossfire::{MTx, Rx, mpsc};
 use parking_lot::Mutex;
-use snowglass_input::gamepad::{GamepadUpdate, LatestGamepadMailbox};
+use snowglass_input::gamepad::{GamepadUpdate, GamepadUpdateSink, LatestGamepadMailbox};
 use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
 use std::{
     sync::{
@@ -121,12 +121,14 @@ impl InputTransport {
         Ok(())
     }
 
-    pub(crate) fn gamepad_mailbox(&self) -> Arc<LatestGamepadMailbox> {
-        self.0.mailbox.clone()
-    }
-
     pub(crate) fn shutdown(&self) {
         self.0.shutdown();
+    }
+}
+
+impl GamepadUpdateSink for InputTransport {
+    fn publish(&self, update: GamepadUpdate) {
+        let _ = self.publish_gamepad(update);
     }
 }
 
@@ -143,13 +145,13 @@ impl InputInner {
         let Some(workers) = self.workers.lock().take() else {
             return;
         };
-        let _ = workers.control.join();
         if let Some(socket) = self.pending_socket.lock().as_ref() {
             let _ = socket.shutdown();
         }
         for socket in self.clients.lock().iter() {
             let _ = socket.shutdown();
         }
+        let _ = workers.control.join();
         let _ = workers.acceptor.join();
         let _ = workers.gamepad.join();
     }
@@ -238,19 +240,19 @@ fn spawn_control_writer(
                 let ControlCommand::Send(message) = command else {
                     return;
                 };
-                clients
+                let sockets = clients
                     .lock()
-                    .retain_mut(|socket| match socket.send(message) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            if error.kind() != std::io::ErrorKind::BrokenPipe
-                                && error.kind() != std::io::ErrorKind::ConnectionReset
-                            {
-                                eprintln!("snowglass: input IPC send failed: {error}");
-                            }
-                            false
-                        }
-                    });
+                    .iter()
+                    .filter_map(|socket| socket.try_clone().ok())
+                    .collect::<Vec<_>>();
+                for mut socket in sockets {
+                    if let Err(error) = socket.send(message)
+                        && error.kind() != std::io::ErrorKind::BrokenPipe
+                        && error.kind() != std::io::ErrorKind::ConnectionReset
+                    {
+                        eprintln!("snowglass: input IPC send failed: {error}");
+                    }
+                }
             }
         })
 }

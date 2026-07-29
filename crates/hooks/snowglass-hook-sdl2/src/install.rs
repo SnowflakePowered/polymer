@@ -1,6 +1,7 @@
 //! SDL2 module discovery and detour ownership.
 
 use crate::api;
+use parking_lot::Mutex;
 use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
 use std::{
@@ -9,7 +10,7 @@ use std::{
     io::Write,
     os::windows::ffi::OsStrExt,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -223,11 +224,7 @@ unsafe fn captured_dynapi_table(
 }
 
 unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 {
-    let mut backend = next
-        .state
-        .backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let mut backend = next.state.backend.lock();
     if let Err(error) = next.state.runtime.prepare_enumeration(&mut *backend) {
         log(error.0);
     }
@@ -247,10 +244,7 @@ fn flush_gamepads(state: &Sdl2TableState) {
     if !state.logged_gamepad_poll.swap(true, Ordering::AcqRel) {
         log("target first polled the virtual gamepad");
     }
-    let mut backend = state
-        .backend
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let mut backend = state.backend.lock();
     if state.runtime.flush(&mut *backend)
         && !state.logged_gamepad_update.swap(true, Ordering::AcqRel)
     {

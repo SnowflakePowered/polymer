@@ -8,6 +8,7 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+parking_lot.workspace = true
 snowglass-hook.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true

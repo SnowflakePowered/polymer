@@ -1,13 +1,14 @@
 //! WebRTC signaling and one-track-per-capture-stream publishing.
 #![allow(unsafe_code)]
 
+use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -256,7 +257,7 @@ impl Publisher {
         let api = Arc::new(runtime.block_on(build_api(bind))?);
         let tracks = Tracks::default();
         {
-            let mut table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+            let mut table = tracks.lock();
             for &target_index in targets {
                 table.tracks.insert(
                     target_index,
@@ -299,22 +300,13 @@ impl Publisher {
     pub fn add_stream(&self, connection: u64, target_index: u32) {
         self.tracks
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .connections
             .insert(connection, target_index);
     }
 
     pub fn remove_stream(&self, connection: u64) {
-        self.tracks
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .connections
-            .remove(&connection);
-        self.stats
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .encodings
-            .remove(&connection);
+        self.tracks.lock().connections.remove(&connection);
+        self.stats.lock().encodings.remove(&connection);
     }
 
     pub fn publish(&self, frame: VideoFrame) {
@@ -323,7 +315,7 @@ impl Publisher {
     }
 
     pub fn stats(&self) -> Stats {
-        let mut stats = self.stats.lock().unwrap_or_else(|error| error.into_inner());
+        let mut stats = self.stats.lock();
         stats.refresh();
         let mut encoders = stats
             .encodings
@@ -452,7 +444,6 @@ async fn rebind_track(
 ) {
     let peers = sessions
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
         .iter()
         .map(|(session_id, peer)| (*session_id, peer.clone()))
         .collect::<Vec<_>>();
@@ -496,7 +487,7 @@ fn spawn_encoder(
                 .and_then(|path| std::fs::File::create(path).ok());
             while let Ok(mut frame) = frames.recv() {
                 let existing = {
-                    let table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+                    let table = tracks.lock();
                     table.connections.get(&frame.connection).copied().and_then(
                         |target_index| {
                             table
@@ -544,7 +535,6 @@ fn spawn_encoder(
                         let encode_time = encode_started.elapsed();
                         stats
                             .lock()
-                            .unwrap_or_else(|error| error.into_inner())
                             .record_encode(
                                 connection,
                                 encoded.data.len(),
@@ -567,7 +557,6 @@ fn spawn_encoder(
                             ));
                             tracks
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner())
                                 .tracks
                                 .insert(target_index, replacement.clone());
                             eprintln!(
@@ -665,18 +654,9 @@ fn serve_http(
     }
     if method == "DELETE" && path.starts_with("/session/") {
         let session_id = path.trim_start_matches("/session/").parse::<u64>().ok();
-        if let Some(peer) = session_id.and_then(|session_id| {
-            sessions
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .remove(&session_id)
-        }) {
+        if let Some(peer) = session_id.and_then(|session_id| sessions.lock().remove(&session_id)) {
             if let Some(session_id) = session_id {
-                stats
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .connected_clients
-                    .remove(&session_id);
+                stats.lock().connected_clients.remove(&session_id);
             }
             handle.block_on(peer.close())?;
         }
@@ -695,11 +675,7 @@ fn serve_http(
             VIEWER_HTML.as_bytes(),
         ),
         ("GET", "/tracks") => {
-            let count = tracks
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .tracks
-                .len();
+            let count = tracks.lock().tracks.len();
             respond(
                 &mut stream,
                 "200 OK",
@@ -766,7 +742,7 @@ async fn answer_offer(
         Box::pin(async move {
             eprintln!("snowglass: WebRTC session {session_id} state {state}");
             if let Some(stats) = weak_stats.upgrade() {
-                let mut stats = stats.lock().unwrap_or_else(|error| error.into_inner());
+                let mut stats = stats.lock();
                 if state == RTCPeerConnectionState::Connected {
                     stats.connected_clients.insert(session_id);
                 } else {
@@ -800,13 +776,12 @@ async fn answer_offer(
             {
                 sessions
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
                     .remove(&session_id);
             }
         })
     }));
     let (current_tracks, downgrades) = {
-        let mut table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+        let mut table = tracks.lock();
         let mut downgrades = Vec::new();
         if !offered_hevc {
             for track in table.tracks.values_mut() {
@@ -877,10 +852,7 @@ async fn answer_offer(
         .local_description()
         .await
         .ok_or("WebRTC answer has no local description")?;
-    sessions
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .insert(session_id, peer);
+    sessions.lock().insert(session_id, peer);
     Ok(answer)
 }
 
@@ -1042,7 +1014,7 @@ mod tests {
             "snowglass-test".to_owned(),
         ));
         {
-            let mut table = tracks.lock().unwrap_or_else(|error| error.into_inner());
+            let mut table = tracks.lock();
             table.tracks.insert(0, server_track.clone());
             table.connections.insert(1, 0);
         }

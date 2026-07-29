@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 exe.workspace = true
 ib-hook.workspace = true
+parking_lot.workspace = true
 snowglass-hook.workspace = true
 snowglass-protocol.workspace = true
 windows = { workspace = true, features = [

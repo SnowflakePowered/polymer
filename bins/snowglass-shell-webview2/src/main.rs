@@ -13,12 +13,9 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
-use crossfire::oneshot::{self, RxOneshot, TxOneshot};
-use dashmap::DashMap;
 use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory};
 use game_layer_state::{GameLayerAction, GameLayerState, GameLayerWork};
 use input::InputTransport;
-use parking_lot::Mutex;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_input::{
     mouse::{PointerPhase, layout::Rect},
@@ -29,7 +26,7 @@ use snowglass_platform_windows::{performance_counter, performance_frequency};
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, DisplayLatencyReport, Extent, PlanLayer, Renderer,
-    SurfacePlacement,
+    SurfaceCapture, SurfaceCaptureEvent, SurfacePlacement,
     cli::ViewerApi,
     debug::{
         DebugOverlay, FrameSequenceTracker, InputAxisDiagnostics, InputDiagnostics,
@@ -54,10 +51,10 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use windows::{
     Win32::{
-        Foundation::{POINT, WAIT_FAILED, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, HANDLE, POINT, WAIT_FAILED, WAIT_OBJECT_0},
         Graphics::DirectComposition::DCompositionWaitForCompositorClock,
         Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod},
-        System::Threading::INFINITE,
+        System::Threading::{CreateEventW, INFINITE, SetEvent},
         UI::{
             Input::KeyboardAndMouse::SetFocus,
             WindowsAndMessaging::{
@@ -129,17 +126,6 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
 /// event loop, and the WebView2 host that shares this thread with it.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
-
-enum CaptureEvent {
-    Stream(u64, snowglass_ipc::StreamReady, TxOneshot<bool>),
-    Frame(u64, snowglass_protocol::FrameReady),
-    Disconnected(u64),
-}
-
-struct PendingCaptureOffer {
-    offer: snowglass_runtime::SurfaceOffer,
-    response: RxOneshot<bool>,
-}
 
 /// Where an event-loop turn's wall time goes.
 ///
@@ -272,126 +258,6 @@ const DOM_MK_XBUTTON1: u32 = 0x0020;
 const DOM_MK_XBUTTON2: u32 = 0x0040;
 const DOM_MOUSE_BUTTONS: u32 =
     DOM_MK_LBUTTON | DOM_MK_RBUTTON | DOM_MK_MBUTTON | DOM_MK_XBUTTON1 | DOM_MK_XBUTTON2;
-
-#[derive(Clone, Default)]
-struct RuntimeCaptureAdapter {
-    events: Arc<Mutex<Option<snowglass_runtime::SurfaceEventReceiver>>>,
-    frames: Arc<DashMap<u64, snowglass_runtime::SurfaceFrameReceiver>>,
-    connections: Arc<DashMap<snowglass_runtime::TrackedSurfaceId, u64>>,
-    replacements: Arc<DashMap<u64, u64>>,
-    pending: Arc<DashMap<u64, PendingCaptureOffer>>,
-}
-
-impl RuntimeCaptureAdapter {
-    fn attach(&self, instance: &snowglass_runtime::EmulatorInstance) {
-        *self.events.lock() = Some(instance.subscribe_surfaces());
-    }
-
-    fn detach(&self) {
-        *self.events.lock() = None;
-        self.frames.clear();
-        self.connections.clear();
-        self.replacements.clear();
-        self.pending.clear();
-    }
-
-    fn try_recv(&self) -> Result<CaptureEvent, crossfire::TryRecvError> {
-        self.resolve_offers();
-        let event = self
-            .events
-            .lock()
-            .as_ref()
-            .and_then(|events| events.try_recv().ok());
-        if let Some(event) = event {
-            return match event {
-                snowglass_runtime::SurfaceEvent::Offered(offer) => {
-                    let connection = offer.connection_id();
-                    let stream = *offer.stream();
-                    let (accepted, response) = oneshot::oneshot();
-                    self.pending
-                        .insert(connection, PendingCaptureOffer { offer, response });
-                    Ok(CaptureEvent::Stream(connection, stream, accepted))
-                }
-                snowglass_runtime::SurfaceEvent::ReconfigureOffered { offer, .. } => {
-                    let connection = offer.connection_id();
-                    let stream = *offer.stream();
-                    let id = offer.id();
-                    if let Some(previous) = self.connections.get(&id) {
-                        self.replacements.insert(connection, *previous);
-                    }
-                    let (accepted, response) = oneshot::oneshot();
-                    self.pending
-                        .insert(connection, PendingCaptureOffer { offer, response });
-                    Ok(CaptureEvent::Stream(connection, stream, accepted))
-                }
-                snowglass_runtime::SurfaceEvent::Removed { id } => {
-                    let connection = self
-                        .connections
-                        .remove(&id)
-                        .map_or(0, |(_, connection)| connection);
-                    self.frames.remove(&connection);
-                    Ok(CaptureEvent::Disconnected(connection))
-                }
-            };
-        }
-        for mut receiver in self.frames.iter_mut() {
-            if let Ok(Some(update)) = receiver.value_mut().try_next_frame() {
-                return Ok(CaptureEvent::Frame(*receiver.key(), update.frame));
-            }
-        }
-        Err(crossfire::TryRecvError::Empty)
-    }
-
-    fn revoke(&self, connection: u64) {
-        self.frames.remove(&connection);
-    }
-
-    fn forget(&self, _connection: u64) {}
-
-    fn take_replacement(&self, connection: u64) -> Option<u64> {
-        self.replacements
-            .remove(&connection)
-            .map(|(_, previous)| previous)
-    }
-
-    fn resolve_offers(&self) {
-        let resolved = {
-            let ready = self
-                .pending
-                .iter_mut()
-                .filter_map(|mut pending| {
-                    pending
-                        .value_mut()
-                        .response
-                        .try_recv()
-                        .ok()
-                        .map(|accepted| (*pending.key(), accepted))
-                })
-                .collect::<Vec<_>>();
-            ready
-                .into_iter()
-                .filter_map(|(connection, accepted)| {
-                    self.pending
-                        .remove(&connection)
-                        .map(|(_, pending)| (connection, accepted, pending.offer))
-                })
-                .collect::<Vec<_>>()
-        };
-        for (connection, accepted, offer) in resolved {
-            if !accepted {
-                offer.reject();
-                continue;
-            }
-            let id = offer.id();
-            if let Ok(surface) = offer.accept() {
-                self.frames.insert(connection, surface.subscribe_frames());
-                if let Some(previous) = self.connections.insert(id, connection) {
-                    self.frames.remove(&previous);
-                }
-            }
-        }
-    }
-}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -644,6 +510,7 @@ impl EguiOverlay {
 /// phase with DWM, giving each frame a full interval of headroom.
 struct CompositorClock {
     worker: Option<std::thread::JoinHandle<()>>,
+    stop_event: HANDLE,
     active: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
     tick_pending: Arc<AtomicBool>,
@@ -652,6 +519,8 @@ struct CompositorClock {
 
 impl CompositorClock {
     fn spawn(proxy: winit::event_loop::EventLoopProxy<UserEvent>) -> std::io::Result<Self> {
+        let stop_event =
+            unsafe { CreateEventW(None, true, false, None) }.map_err(std::io::Error::other)?;
         let active = Arc::new(AtomicBool::new(false));
         let healthy = Arc::new(AtomicBool::new(true));
         let tick_pending = Arc::new(AtomicBool::new(false));
@@ -660,9 +529,11 @@ impl CompositorClock {
         let thread_healthy = Arc::clone(&healthy);
         let thread_tick_pending = Arc::clone(&tick_pending);
         let thread_stopping = Arc::clone(&stopping);
-        let handle = std::thread::Builder::new()
+        let thread_stop_event = stop_event.0 as usize;
+        let handle = match std::thread::Builder::new()
             .name("snowglass-compositor-clock".to_owned())
             .spawn(move || {
+                let thread_stop_event = HANDLE(thread_stop_event as *mut _);
                 loop {
                     // A shell with no streams on screen has nothing to pace.
                     // Park instead of waking once per refresh for no reason;
@@ -678,7 +549,9 @@ impl CompositorClock {
                     }
                     // SAFETY: the call reads the process-wide compositor clock
                     // and is passed no handles to borrow.
-                    let status = unsafe { DCompositionWaitForCompositorClock(None, INFINITE) };
+                    let status = unsafe {
+                        DCompositionWaitForCompositorClock(Some(&[thread_stop_event]), INFINITE)
+                    };
                     if status == WAIT_FAILED.0 {
                         // Fall back to timer pacing rather than spinning on a
                         // clock this session cannot wait on.
@@ -688,9 +561,8 @@ impl CompositorClock {
                     if thread_stopping.load(Ordering::Acquire) {
                         return;
                     }
-                    // With no handles supplied, a clock tick is the first (and
-                    // only) wait object.
-                    if status != WAIT_OBJECT_0.0 {
+
+                    if status != WAIT_OBJECT_0.0 + 1 {
                         continue;
                     }
                     // Coalesce ticks so a busy loop cannot accumulate a backlog
@@ -701,9 +573,16 @@ impl CompositorClock {
                         return;
                     }
                 }
-            })?;
+            }) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = unsafe { CloseHandle(stop_event) };
+                return Err(error);
+            }
+        };
         Ok(Self {
             worker: Some(handle),
+            stop_event,
             active,
             healthy,
             tick_pending,
@@ -736,15 +615,17 @@ impl Drop for CompositorClock {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
         self.active.store(true, Ordering::Release);
+        let _ = unsafe { SetEvent(self.stop_event) };
         if let Some(worker) = self.worker.take() {
             worker.thread().unpark();
             let _ = worker.join();
         }
+        let _ = unsafe { CloseHandle(self.stop_event) };
     }
 }
 
 struct StreamState {
-    capture: RuntimeCaptureAdapter,
+    capture: SurfaceCapture,
     wake_pending: Arc<AtomicBool>,
     dirty: Arc<AtomicBool>,
     work_pending: bool,
@@ -927,7 +808,7 @@ impl ShellState {
         let control_sender = input.control_sender();
         let capture_wake_pending = Arc::new(AtomicBool::new(false));
         let capture_dirty = Arc::new(AtomicBool::new(false));
-        let capture = RuntimeCaptureAdapter::default();
+        let capture = SurfaceCapture::default();
         let compositor_clock = CompositorClock::spawn(proxy.clone())?;
         let target = None;
 
@@ -1250,7 +1131,7 @@ impl ShellState {
                 {
                     Ok(provider) => provider,
                     Err(error) => {
-                        let _ = target.close_blocking();
+                        let _ = target.close();
                         self.emit_instance_event(
                             &instance_id,
                             "error",
@@ -1298,7 +1179,7 @@ impl ShellState {
             return;
         }
         if let Some(mut target) = self.game.target.take() {
-            target.close_blocking();
+            target.close();
         }
         self.streams.capture.detach();
         self.input.transport.detach();
@@ -1321,7 +1202,6 @@ impl ShellState {
                     let _ = Renderer::disconnect_stream(merged, connection);
                 }
                 self.presentation.merged_dirty = true;
-                self.streams.capture.forget(connection);
             }
         }
         let _ = self.presentation.composition.commit();
@@ -1394,35 +1274,45 @@ impl ShellState {
             };
             processed += 1;
             match event {
-                CaptureEvent::Stream(connection, stream, accepted) => {
+                SurfaceCaptureEvent::Offered(offer) => {
+                    let connection = offer.connection_id();
                     let Some(active) = &self.game.active else {
-                        accepted.send(false);
+                        self.streams.capture.reject(offer);
                         continue;
                     };
-                    let replacement = self.streams.capture.take_replacement(connection);
+                    let replacement = offer.replaced_connection_id();
                     if replacement.is_none()
                         && self.streams.surfaces.len() >= active.options.surfaces.len()
                     {
-                        accepted.send(false);
+                        self.streams.capture.reject(offer);
                         continue;
                     }
                     let connected = if let Some(previous) = replacement {
-                        self.replace_stream(previous, connection, &stream)
+                        self.replace_stream(previous, &offer)
                     } else {
-                        self.connect_stream(connection, &stream)
+                        self.connect_stream(&offer)
                     };
                     match connected {
-                        Ok(()) => {
-                            accepted.send(true);
-                            changed = true;
-                        }
+                        Ok(()) => match self.streams.capture.accept(offer) {
+                            Ok(_) => changed = true,
+                            Err(error) => {
+                                self.streams.surfaces.remove(&connection);
+                                if let Some(merged) = self.presentation.merged.as_mut() {
+                                    let _ = Renderer::disconnect_stream(merged, connection);
+                                }
+                                eprintln!(
+                                    "snowglass: capture stream {connection} disappeared while it was being imported: {error}"
+                                );
+                            }
+                        },
                         Err(error) => {
                             eprintln!("snowglass: rejected capture stream {connection}: {error}");
-                            accepted.send(false);
+                            self.streams.capture.reject(offer);
                         }
                     }
                 }
-                CaptureEvent::Frame(connection, frame) => {
+                SurfaceCaptureEvent::Frame { connection, update } => {
+                    let frame = update.frame;
                     let Some(surface) = self.streams.surfaces.get_mut(&connection) else {
                         continue;
                     };
@@ -1443,7 +1333,7 @@ impl ShellState {
                         Renderer::set_latest(merged, connection, frame);
                     }
                 }
-                CaptureEvent::Disconnected(connection) => {
+                SurfaceCaptureEvent::Removed { connection, .. } => {
                     self.presentation.overlay.remove_target(connection);
                     self.cancel_pointer_connection(connection);
                     if let Some(publisher) = self
@@ -1461,7 +1351,6 @@ impl ShellState {
                         self.presentation.merged_dirty = true;
                         changed = true;
                     }
-                    self.streams.capture.forget(connection);
                 }
             }
         }
@@ -1533,9 +1422,10 @@ impl ShellState {
 
     fn connect_stream(
         &mut self,
-        connection: u64,
-        stream: &snowglass_ipc::StreamReady,
+        offer: &snowglass_runtime::SurfaceOffer,
     ) -> Result<(), Box<dyn Error>> {
+        let connection = offer.connection_id();
+        let stream = offer.stream();
         let (index, quarter_turns) = self
             .next_target_configuration()
             .ok_or("the shell already has a surface for every tracked render target")?;
@@ -1549,7 +1439,7 @@ impl ShellState {
             .merged
             .as_mut()
             .expect("the shared compositor exists by now");
-        Renderer::import_stream(merged, connection, stream, quarter_turns)?;
+        Renderer::import_surface_offer(merged, offer, quarter_turns)?;
         self.presentation
             .overlay
             .set_backend(format!("{:?}", stream.image_kind));
@@ -1579,9 +1469,10 @@ impl ShellState {
     fn replace_stream(
         &mut self,
         previous: u64,
-        connection: u64,
-        stream: &snowglass_ipc::StreamReady,
+        offer: &snowglass_runtime::SurfaceOffer,
     ) -> Result<(), Box<dyn Error>> {
+        let connection = offer.connection_id();
+        let stream = offer.stream();
         let surface = self
             .streams
             .surfaces
@@ -1594,7 +1485,7 @@ impl ShellState {
             .merged
             .as_mut()
             .expect("the shared compositor exists by now");
-        Renderer::import_stream(merged, connection, stream, surface.quarter_turns)?;
+        Renderer::import_surface_offer(merged, offer, surface.quarter_turns)?;
         self.streams.surfaces.insert(connection, surface);
         self.streams.surfaces.remove(&previous);
         let _ = Renderer::disconnect_stream(merged, previous);
@@ -2400,7 +2291,7 @@ impl Drop for ShellState {
             }
         }
         if let Some(mut target) = self.game.target.take() {
-            target.close_blocking();
+            target.close();
         }
     }
 }

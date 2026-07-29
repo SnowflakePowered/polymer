@@ -1,10 +1,11 @@
 //! SDL-version-neutral virtual gamepad state and forwarding runtime.
 
+use parking_lot::Mutex;
 use seqlock::SeqLock;
 use snowglass_input::gamepad::{GamepadState, GamepadUpdate};
 use snowglass_ipc::input::InputSubscriber;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -124,10 +125,7 @@ impl Runtime {
             return false;
         }
         let mut forwarded = false;
-        let mut published = self
-            .published_sequences
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut published = self.published_sequences.lock();
         for (index, slot) in self.slots.iter().enumerate() {
             let slot = slot.read();
             if slot.received == 0 || published[index] == Some(slot.sequence) {

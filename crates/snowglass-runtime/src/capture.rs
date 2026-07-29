@@ -20,15 +20,11 @@ pub enum ConsumerPreference {
     Vulkan,
 }
 
-pub(crate) enum CaptureEvent {
-    Stream {
-        connection: u64,
-        stream: snowglass_ipc::StreamReady,
-        accepted: oneshot::TxOneshot<bool>,
-    },
-    Disconnected {
-        connection: u64,
-    },
+#[derive(Clone)]
+pub(crate) struct CaptureCallbacks {
+    pub(crate) offer:
+        Arc<dyn Fn(u64, snowglass_ipc::StreamReady, oneshot::TxOneshot<bool>) + Send + Sync>,
+    pub(crate) disconnected: Arc<dyn Fn(u64) + Send + Sync>,
 }
 
 #[derive(Clone)]
@@ -131,7 +127,7 @@ impl Drop for CaptureWorkers {
 pub(crate) fn bind(
     session: &str,
     preference: ConsumerPreference,
-    events: crate::instance::ActorSender,
+    callbacks: CaptureCallbacks,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> std::io::Result<FrameRouter> {
     let listener = LocalSocketListener::bind(session)?;
@@ -146,7 +142,7 @@ pub(crate) fn bind(
     let connections = Arc::new(Mutex::new(Vec::new()));
     let acceptor = spawn_acceptor(
         listener,
-        events,
+        callbacks,
         preference,
         shared.clone(),
         connections.clone(),
@@ -161,7 +157,7 @@ pub(crate) fn bind(
 
 fn spawn_acceptor(
     listener: LocalSocketListener,
-    events: crate::instance::ActorSender,
+    callbacks: CaptureCallbacks,
     preference: ConsumerPreference,
     shared: Arc<CaptureShared>,
     connections: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -200,12 +196,12 @@ fn spawn_acceptor(
                 if let Ok(shutdown_socket) = socket.try_clone() {
                     shared.sockets.insert(connection, shutdown_socket);
                 }
-                let worker_events = events.clone();
+                let worker_callbacks = callbacks.clone();
                 let worker_shared = shared.clone();
                 let worker = thread::Builder::new()
                     .name(format!("snowglass-runtime-capture-{connection}"))
                     .spawn(move || {
-                        receive_connection(connection, socket, worker_events, &worker_shared);
+                        receive_connection(connection, socket, worker_callbacks, &worker_shared);
                     });
                 match worker {
                     Ok(worker) => connections.lock().push(worker),
@@ -223,7 +219,7 @@ fn spawn_acceptor(
 fn receive_connection(
     connection: u64,
     mut socket: LocalSocket,
-    events: crate::instance::ActorSender,
+    callbacks: CaptureCallbacks,
     shared: &CaptureShared,
 ) {
     let result = (|| -> std::io::Result<()> {
@@ -237,15 +233,7 @@ fn receive_connection(
             match message {
                 Message::StreamReady(stream) => {
                     let (accepted, mut response) = oneshot::oneshot();
-                    events
-                        .send(crate::instance::ActorMessage::Capture(
-                            CaptureEvent::Stream {
-                                connection,
-                                stream,
-                                accepted,
-                            },
-                        ))
-                        .map_err(|_| std::io::Error::other("emulator actor closed"))?;
+                    (callbacks.offer)(connection, stream, accepted);
                     accepted_stream = loop {
                         match response.try_recv() {
                             Ok(accepted) => break accepted,
@@ -293,9 +281,7 @@ fn receive_connection(
         eprintln!("snowglass: capture IPC connection {connection} ended: {error}");
     }
     shared.revoke(connection);
-    let _ = events.send(crate::instance::ActorMessage::Capture(
-        CaptureEvent::Disconnected { connection },
-    ));
+    (callbacks.disconnected)(connection);
 }
 
 #[cfg(test)]
@@ -305,8 +291,11 @@ mod tests {
     #[test]
     fn shutdown_joins_workers_and_releases_listener() {
         let session = format!("snowglass-runtime-capture-test-{}", std::process::id());
-        let (events, _) = crossfire::mpsc::unbounded_blocking();
-        let router = bind(&session, ConsumerPreference::D3d12, events, None).unwrap();
+        let callbacks = CaptureCallbacks {
+            offer: Arc::new(|_, _, accepted| accepted.send(false)),
+            disconnected: Arc::new(|_| {}),
+        };
+        let router = bind(&session, ConsumerPreference::D3d12, callbacks, None).unwrap();
         router.shutdown();
         let replacement = LocalSocketListener::bind(&session).unwrap();
         replacement.close();

@@ -1,6 +1,7 @@
 //! Direct GDI rendering into a shared D3D11 surface.
 #![allow(unsafe_code)]
 
+use parking_lot::Mutex;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_producer_d3d11::D3d11ImageRing;
@@ -9,7 +10,7 @@ use snowglass_protocol::{
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
-    sync::{Mutex, OnceLock},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 use windows::{
@@ -80,7 +81,7 @@ pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4])
     if hwnd == 0 || width == 0 || height == 0 || width > 8192 || height > 8192 {
         return None;
     }
-    let mut state = state().lock().unwrap_or_else(|error| error.into_inner());
+    let mut state = state().lock();
     if state
         .capture
         .as_ref()
@@ -138,7 +139,7 @@ pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4])
 
 /// Completes a redirected paint and publishes the shared surface.
 pub unsafe fn end_paint(hwnd: isize, dc: isize) {
-    let mut state = state().lock().unwrap_or_else(|error| error.into_inner());
+    let mut state = state().lock();
     let Some(capture) = state.capture.as_mut() else {
         return;
     };

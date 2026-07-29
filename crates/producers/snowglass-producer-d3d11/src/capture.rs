@@ -1,6 +1,7 @@
 //! Swapchain capture state and viewer handoff.
 
 use crate::{D3d11RingMode, D3d11SwapchainCapture, Tracking};
+use parking_lot::Mutex;
 use snowglass_hook_dxgi::{SwapchainOwner, SwapchainOwnerHandle};
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
@@ -8,10 +9,7 @@ use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
     PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
-use std::{
-    ffi::c_void,
-    sync::{Arc, Mutex},
-};
+use std::{ffi::c_void, sync::Arc};
 use windows::{
     Win32::Graphics::Direct3D11::ID3D11Device,
     core::{IUnknown, Interface},
@@ -80,10 +78,7 @@ impl SwapchainOwner for SwapchainCapture {
     unsafe fn before_present(&self, swapchain: *mut c_void) {
         let presentation = self.tracking.take_swapchain_presentation(swapchain);
         let tracked_region = presentation.as_ref().map(|value| value.region);
-        let mut capture = self
-            .capture
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut capture = self.capture.lock();
         if matches!(*capture, Capture::Idle) {
             let connection = match begin_viewer_connection() {
                 Ok(connection) => Some(connection),
@@ -243,13 +238,7 @@ impl SwapchainOwner for SwapchainCapture {
     ///
     /// `swapchain` must point to the live swapchain being resized.
     unsafe fn before_resize(&self, _swapchain: *mut c_void) {
-        let previous = std::mem::replace(
-            &mut *self
-                .capture
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-            Capture::Idle,
-        );
+        let previous = std::mem::replace(&mut *self.capture.lock(), Capture::Idle);
         if matches!(previous, Capture::Active(_)) {
             crate::d3d11_log("snowglass: released D3D11 capture for ResizeBuffers");
         }

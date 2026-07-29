@@ -1,4 +1,7 @@
-use std::{cell::RefCell, sync::RwLock};
+#[cfg(test)]
+use parking_lot::Mutex;
+use parking_lot::RwLock;
+use std::cell::RefCell;
 
 use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserInput, ParserState,
@@ -41,9 +44,7 @@ pub const DEFAULT_CSS: &str = r#"#viewer {
 
 pub fn configure(css: Option<&str>) -> Result<(), String> {
     css.map(RenderTargetLayout::parse).transpose()?;
-    let mut source = LAYOUT_SOURCE
-        .write()
-        .map_err(|_| "render-target layout state is unavailable".to_owned())?;
+    let mut source = LAYOUT_SOURCE.write();
     source.revision = source.revision.wrapping_add(1);
     source.css = css.map(str::to_owned);
     Ok(())
@@ -134,10 +135,7 @@ pub fn composition_plan(presentation: &Presentation) -> CompositingPlan {
 }
 
 fn layout_revision() -> u64 {
-    LAYOUT_SOURCE
-        .read()
-        .unwrap_or_else(|error| error.into_inner())
-        .revision
+    LAYOUT_SOURCE.read().revision
 }
 
 fn default_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Vec<Rect> {
@@ -164,9 +162,7 @@ fn default_rectangles(extent: Extent, images: &[Extent], reverse: bool) -> Vec<R
 }
 
 fn with_active_layout<T>(read: impl FnOnce(Option<&RenderTargetLayout>) -> T) -> T {
-    let source = LAYOUT_SOURCE
-        .read()
-        .unwrap_or_else(|error| error.into_inner());
+    let source = LAYOUT_SOURCE.read();
     ACTIVE_LAYOUT.with(|active| {
         let mut active = active.borrow_mut();
         if active.0 != source.revision {
@@ -607,7 +603,6 @@ fn parse_grid_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     static LAYOUT_TEST: Mutex<()> = Mutex::new(());
 
@@ -656,9 +651,7 @@ mod tests {
     /// changes the answer has to miss the cache.
     #[test]
     fn plans_are_reused_only_while_their_inputs_hold() {
-        let _guard = LAYOUT_TEST
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _guard = LAYOUT_TEST.lock();
         configure(None).unwrap();
 
         let one = presentation(Extent::new(320, 200), &[Extent::new(320, 200)]);
@@ -745,9 +738,7 @@ mod tests {
 
     #[test]
     fn invalid_live_edit_keeps_the_last_valid_layout() {
-        let _test = LAYOUT_TEST
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _test = LAYOUT_TEST.lock();
         configure(Some(
             "#viewer { flex-direction:row } .render-target { flex-grow:1 }",
         ))
@@ -763,9 +754,7 @@ mod tests {
 
     #[test]
     fn viewer_background_color_controls_the_clear_color() {
-        let _test = LAYOUT_TEST
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _test = LAYOUT_TEST.lock();
         configure(Some("#viewer { background-color: #12345680; }")).unwrap();
         let actual = clear_color();
         let expected = [
@@ -782,9 +771,7 @@ mod tests {
 
     #[test]
     fn clearing_css_restores_the_default_clear_color() {
-        let _test = LAYOUT_TEST
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _test = LAYOUT_TEST.lock();
         configure(Some("#viewer { background-color: rgb(0, 128, 255); }")).unwrap();
         configure(None).unwrap();
         assert_eq!(clear_color(), [1.0, 0.0, 1.0, 1.0]);
@@ -792,9 +779,7 @@ mod tests {
 
     #[test]
     fn configured_css_is_visible_on_the_render_thread() {
-        let _test = LAYOUT_TEST
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _test = LAYOUT_TEST.lock();
         configure(Some(
             "#viewer { flex-direction:row } .render-target { flex-grow:1 }",
         ))

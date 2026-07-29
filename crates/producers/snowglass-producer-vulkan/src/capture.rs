@@ -11,6 +11,7 @@ use crate::{
 };
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use snowglass_hook::config;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{
@@ -23,7 +24,7 @@ use snowglass_protocol::{
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -200,11 +201,7 @@ impl CaptureState {
         if !config::tracking_enabled() {
             return None;
         }
-        let windows = self
-            .swapchain_windows
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
+        let windows = self.swapchain_windows.lock().clone();
         config::tracked_render_target_surface_slots(&windows, |window| {
             window_title(NativeWindow(window))
         })
@@ -244,10 +241,7 @@ impl CaptureState {
                 state.source_window
             ));
         }
-        let mut presentations = self
-            .graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut presentations = self.graph_presentations.lock();
         if sources.is_empty() {
             presentations.remove(&swapchain);
         } else {
@@ -294,10 +288,7 @@ impl CaptureState {
             source_extents.sort_unstable();
             candidate_extents == source_extents
         };
-        let presentations = self
-            .graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let presentations = self.graph_presentations.lock();
         let mut by_window = HashMap::<isize, GraphPresentation>::new();
         for candidate in presentations.values().filter(|candidate| {
             candidate.source_window != 0
@@ -339,10 +330,7 @@ impl CaptureState {
                 .collect::<Vec<_>>()
         });
         drop(presentations);
-        let mut layouts = self
-            .graph_target_layouts
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut layouts = self.graph_target_layouts.lock();
         if let Some(discovered) = discovered {
             for (source, target) in sources.iter().zip(discovered) {
                 if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -456,10 +444,7 @@ impl CaptureState {
     }
 
     fn claim_tracked_streaming(&self, swapchain: vk::SwapchainKHR, now: u64) -> bool {
-        let mut owner = self
-            .tracked_owner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut owner = self.tracked_owner.lock();
         match *owner {
             Some((incumbent, refreshed))
                 if incumbent != swapchain && now.saturating_sub(refreshed) <= CLAIM_HORIZON =>
@@ -474,10 +459,7 @@ impl CaptureState {
     }
 
     fn release_tracked_streaming(&self, swapchain: vk::SwapchainKHR) {
-        let mut owner = self
-            .tracked_owner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut owner = self.tracked_owner.lock();
         if owner.is_some_and(|(incumbent, _)| incumbent == swapchain) {
             *owner = None;
         }
@@ -971,10 +953,7 @@ fn create_transport(
 impl CaptureState {
     pub fn surface_created(&self, surface: vk::SurfaceKHR, source_window: isize) {
         self.surface_windows.insert(surface, source_window);
-        let mut windows = self
-            .window_order
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut windows = self.window_order.lock();
         if source_window != 0 && !windows.contains(&source_window) {
             windows.push(source_window);
         }
@@ -1002,17 +981,13 @@ impl CaptureState {
         {
             self.swapchain_windows
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
                 .retain(|window| *window != source_window);
         }
     }
 
     pub fn device_destroyed(&self, device: vk::Device) {
         self.swapchains.retain(|_, state| state.device != device);
-        let mut presentations = self
-            .graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut presentations = self.graph_presentations.lock();
         presentations.retain(|swapchain, _| self.swapchains.contains_key(swapchain));
     }
 
@@ -1035,15 +1010,11 @@ impl CaptureState {
         let window_order = self
             .window_order
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
             .iter()
             .position(|window| *window == source_window)
             .unwrap_or(usize::MAX);
         {
-            let mut windows = self
-                .swapchain_windows
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut windows = self.swapchain_windows.lock();
             if source_window != 0 && !windows.contains(&source_window) {
                 windows.push(source_window);
             }
@@ -1102,10 +1073,7 @@ impl CaptureState {
             }
         }
         self.swapchains.remove(&swapchain);
-        self.graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&swapchain);
+        self.graph_presentations.lock().remove(&swapchain);
         // A freed claim lets a surviving window take over the tracked streams.
         self.release_tracked_streaming(swapchain);
     }
@@ -1897,29 +1865,13 @@ mod tests {
         let second = vk::SurfaceKHR::from_raw(2);
         capture.surface_created(first, 42);
         capture.surface_created(second, 42);
-        capture
-            .swapchain_windows
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(42);
+        capture.swapchain_windows.lock().push(42);
 
         capture.surface_destroyed(first);
-        assert!(
-            capture
-                .swapchain_windows
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .contains(&42)
-        );
+        assert!(capture.swapchain_windows.lock().contains(&42));
 
         capture.surface_destroyed(second);
-        assert!(
-            !capture
-                .swapchain_windows
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .contains(&42)
-        );
+        assert!(!capture.swapchain_windows.lock().contains(&42));
     }
 
     #[test]
@@ -1936,10 +1888,7 @@ mod tests {
         let capture = CaptureState::default();
         let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             // Azahar recreates the secondary swapchain before the primary one.
             presentations.insert(
                 vk::SwapchainKHR::from_raw(30),
@@ -1981,10 +1930,7 @@ mod tests {
             height: 240,
         };
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             // Deliberately put the bottom HWND first. Source 0 is still the
             // 400x240 top screen after its configured quarter turn.
             presentations.insert(vk::SwapchainKHR::from_raw(1), bottom);
@@ -2011,10 +1957,7 @@ mod tests {
         let capture = CaptureState::default();
         let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             presentations.insert(
                 vk::SwapchainKHR::from_raw(1),
                 graph_presentation(10, 1, 0, &sources),
@@ -2033,10 +1976,7 @@ mod tests {
         assert_eq!(initial[1].source_window, 20);
 
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             presentations.clear();
             presentations.insert(
                 vk::SwapchainKHR::from_raw(3),
@@ -2057,10 +1997,7 @@ mod tests {
         let capture = CaptureState::default();
         let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             presentations.insert(
                 vk::SwapchainKHR::from_raw(1),
                 graph_presentation(10, 1, 0, &sources),
@@ -2079,19 +2016,12 @@ mod tests {
 
         // Destruction removes swapchain observations, but not the stable
         // source-layout association used by replacement swapchains.
-        capture
-            .graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
+        capture.graph_presentations.lock().clear();
         let (_, during_gap) = capture.presentation_targets(10, extent, &sources, &[0, 1], 101);
         assert_eq!(during_gap[0].source_window, 10);
         assert_eq!(during_gap[1].source_window, 20);
 
-        let mut presentations = capture
-            .graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut presentations = capture.graph_presentations.lock();
         presentations.insert(
             vk::SwapchainKHR::from_raw(3),
             graph_presentation(20, 3, 1, &sources),
@@ -2111,10 +2041,7 @@ mod tests {
         let capture = CaptureState::default();
         let sources = [graph_source(1, 240, 400), graph_source(2, 240, 320)];
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             presentations.insert(
                 vk::SwapchainKHR::from_raw(1),
                 graph_presentation(10, 1, 0, &sources),
@@ -2149,10 +2076,7 @@ mod tests {
             ..source
         });
         {
-            let mut presentations = capture
-                .graph_presentations
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut presentations = capture.graph_presentations.lock();
             presentations.clear();
             presentations.insert(
                 vk::SwapchainKHR::from_raw(3),
@@ -2177,11 +2101,7 @@ mod tests {
         // The refreshed geometry is retained as the last-known value while
         // the window's presents drop out (a minimized window keeps routing
         // against its last live geometry).
-        capture
-            .graph_presentations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
+        capture.graph_presentations.lock().clear();
         let (_, idle) = capture.presentation_targets(10, extent, &sources, &[0, 1], 102);
         assert_eq!(idle[1].source_window, 20);
         assert_eq!(dimensions(idle[1].presentation_extent), (800, 600));

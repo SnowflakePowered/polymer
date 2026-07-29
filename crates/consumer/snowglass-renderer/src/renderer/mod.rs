@@ -2,8 +2,8 @@ use std::error::Error;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use snowglass_input::mouse::layout::{Extent, Point, Rect};
-use snowglass_ipc::StreamReady;
 use snowglass_protocol::{FrameReady, ResizeWindow};
+use snowglass_runtime::SurfaceOffer;
 
 pub mod d3d12;
 pub mod vulkan;
@@ -224,10 +224,9 @@ impl Presentation {
 }
 
 pub trait Renderer {
-    fn import_stream(
+    fn import_surface_offer(
         &mut self,
-        connection: u64,
-        stream: &StreamReady,
+        offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>>;
 
@@ -272,13 +271,12 @@ pub trait Renderer {
 }
 
 impl Renderer for D3d12Compositor {
-    fn import_stream(
+    fn import_surface_offer(
         &mut self,
-        connection: u64,
-        stream: &StreamReady,
+        offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
-        D3d12Compositor::import_stream(self, connection, stream, quarter_turns)
+        D3d12Compositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)
     }
 
     fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
@@ -316,13 +314,12 @@ impl Renderer for D3d12Compositor {
 }
 
 impl Renderer for VulkanCompositor {
-    fn import_stream(
+    fn import_surface_offer(
         &mut self,
-        connection: u64,
-        stream: &StreamReady,
+        offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
-        VulkanCompositor::import_stream(self, connection, stream, quarter_turns)
+        VulkanCompositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)
     }
 
     fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {

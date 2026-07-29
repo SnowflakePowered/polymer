@@ -20,7 +20,7 @@ pub use process::{
     ProcessArchitecture, executable_architecture, process_architecture, process_tree_ids,
     resume_initial_thread,
 };
-pub use target::{InjectionLibrary, TargetProcess, architecture_artifact_dir};
+pub use target::{InjectionLibrary, ProcessWaitHandle, TargetProcess, architecture_artifact_dir};
 pub use timing::{performance_counter, performance_frequency};
 pub use types::{NativeWindow, ProcessId};
 pub use window::{

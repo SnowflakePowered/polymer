@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 dashmap.workspace = true
+parking_lot.workspace = true
 snowglass-api.workspace = true
 snowglass-hook.workspace = true
 snowglass-hook-dxgi = { path = "../../hooks/snowglass-hook-dxgi" }

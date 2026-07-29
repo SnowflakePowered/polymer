@@ -1,13 +1,16 @@
 //! SDL3 physical-gamepad capture normalized into Stone-labelled snapshots.
 
+#[cfg(test)]
+use crate::gamepad::LatestGamepadMailbox;
 use crate::{
-    gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, LatestGamepadMailbox},
+    gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, GamepadUpdateSink},
     stone::{
         EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, EMBEDDED_STONE_JSON,
         InputBinding, KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
         StoneLayout, StoneRegistry,
     },
 };
+use parking_lot::Mutex;
 use sdl3::event::Event;
 use sdl3::gamepad::{Axis, Button, ButtonLabel, Gamepad};
 use sdl3::sensor::SensorType;
@@ -16,7 +19,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -120,7 +123,7 @@ impl Sdl3Provider {
 
     pub fn start(
         config: ProviderConfig,
-        updates: Arc<LatestGamepadMailbox>,
+        updates: Arc<dyn GamepadUpdateSink>,
     ) -> Result<Self, String> {
         validate_config(&config)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -169,10 +172,7 @@ impl Sdl3Provider {
     }
 
     pub fn states(&self) -> Vec<Option<PhysicalGamepadState>> {
-        self.states
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+        self.states.lock().clone()
     }
 
     pub fn set_binding(&self, slot: usize, target: String, binding: InputBinding) {
@@ -202,19 +202,13 @@ impl Sdl3Provider {
     }
 
     pub fn is_key_mapped(&self, key: &str) -> bool {
-        self.mapped_keys
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .contains(key)
+        self.mapped_keys.lock().contains(key)
     }
 
     /// Sets the absolute pointer carried by the first virtual gamepad. `None`
     /// neutralizes the axes. Dolphin mappings may bind or ignore these axes.
     pub fn set_pointer(&self, pointer: Option<[i16; 2]>) {
-        *self
-            .pointer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = pointer;
+        *self.pointer.lock() = pointer;
     }
 }
 
@@ -350,7 +344,7 @@ impl CompiledKeyboardMapping {
 
 fn run(
     config: ProviderConfig,
-    updates: Arc<LatestGamepadMailbox>,
+    updates: Arc<dyn GamepadUpdateSink>,
     stop: Arc<AtomicBool>,
     started: mpsc::SyncSender<Result<(), String>>,
     states: Arc<Mutex<Vec<Option<PhysicalGamepadState>>>>,
@@ -382,9 +376,7 @@ fn run(
             return;
         }
     };
-    *mapped_keys
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = keyboard_mappings
+    *mapped_keys.lock() = keyboard_mappings
         .iter()
         .flatten()
         .flat_map(|mapping| mapping.bindings.iter().map(|(key, _)| key.clone()))
@@ -452,11 +444,8 @@ fn run(
             next_topology_refresh = Instant::now() + Duration::from_millis(100);
         }
 
-        let mut snapshots = states.lock().unwrap_or_else(|error| error.into_inner());
-        let pointer = pointer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .unwrap_or_default();
+        let mut snapshots = states.lock();
+        let pointer = pointer.lock().unwrap_or_default();
         for (slot, pad) in pads.iter_mut().enumerate() {
             let mut state = if let Some(mapping) = &keyboard_mappings[slot] {
                 mapping.state(&pressed_keys)
@@ -517,7 +506,7 @@ fn run(
             connected: false,
             state: GamepadState::default(),
         });
-        states.lock().unwrap_or_else(|error| error.into_inner())[slot] = None;
+        states.lock()[slot] = None;
     }
 }
 

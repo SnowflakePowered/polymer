@@ -54,6 +54,14 @@ impl TargetChild {
         }
     }
 
+    fn duplicate_wait_handle(&self) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+        use std::os::windows::io::{BorrowedHandle, RawHandle};
+
+        // SAFETY: the child owns this handle for the duration of the clone.
+        let handle = unsafe { BorrowedHandle::borrow_raw(self.raw_handle() as RawHandle) };
+        handle.try_clone_to_owned()
+    }
+
     fn kill(&mut self) -> std::io::Result<()> {
         match self {
             Self::Standard(child) => child.kill(),
@@ -86,6 +94,28 @@ pub struct TargetProcess {
     desktop: Option<PrivateDesktop>,
     architecture: ProcessArchitecture,
     retained: Vec<Box<dyn Send>>,
+}
+
+/// An independently owned handle that can only be used to observe target exit.
+pub struct ProcessWaitHandle(std::os::windows::io::OwnedHandle);
+
+impl ProcessWaitHandle {
+    pub fn wait(&self) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::{
+            Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0},
+            System::Threading::{INFINITE, WaitForSingleObject},
+        };
+
+        let handle = HANDLE(self.0.as_raw_handle());
+        match unsafe { WaitForSingleObject(handle, INFINITE) } {
+            WAIT_OBJECT_0 => Ok(()),
+            WAIT_FAILED => Err(std::io::Error::last_os_error()),
+            result => Err(std::io::Error::other(format!(
+                "unexpected process wait result {result:?}"
+            ))),
+        }
+    }
 }
 
 impl TargetProcess {
@@ -165,6 +195,10 @@ impl TargetProcess {
 
     pub const fn architecture(&self) -> ProcessArchitecture {
         self.architecture
+    }
+
+    pub fn wait_handle(&self) -> std::io::Result<ProcessWaitHandle> {
+        self.child.duplicate_wait_handle().map(ProcessWaitHandle)
     }
 
     pub fn try_wait(&mut self) -> std::io::Result<Option<()>> {
@@ -305,7 +339,6 @@ fn run_injector(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn launches_resumes_and_waits_for_a_target() {
@@ -327,10 +360,8 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let mut process = TargetProcess::launch(&target, &artifact_root, &[], None, &[]).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while process.try_wait().unwrap().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let wait = process.wait_handle().unwrap();
+        wait.wait().unwrap();
         assert!(process.try_wait().unwrap().is_some());
         process.terminate_tree_and_wait().unwrap();
     }

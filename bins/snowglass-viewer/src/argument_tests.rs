@@ -201,13 +201,6 @@ fn hook_order_defines_priority() -> Result<(), Box<dyn Error>> {
         options.hooks,
         [HookBackend::Gdi, HookBackend::D3d11, HookBackend::Vulkan]
     );
-    let gdi = HookBackend::Gdi.class();
-    let vulkan = HookBackend::Vulkan.class();
-    assert!(class_priority(&options.hooks, gdi) < class_priority(&options.hooks, vulkan));
-    assert_eq!(
-        class_priority(&options.hooks, HookBackend::OpenGl.class()),
-        None
-    );
     Ok(())
 }
 
@@ -382,76 +375,6 @@ fn accepts_a_surface_skip_count_and_defaults_to_one() -> Result<(), Box<dyn Erro
 #[test]
 fn rejects_an_invalid_surface_skip_count() {
     assert!(arguments(&["--skip-surfaces=menu", "--", "game.exe"]).is_err());
-}
-
-#[test]
-fn originating_api_stream_wins_same_window_duplicates() {
-    let d3d11 = stream_backend_class(ExternalImageKind::D3d11D3d12Resource);
-    let d3d12 = stream_backend_class(ExternalImageKind::D3d12Resource);
-    let opengl = stream_backend_class(ExternalImageKind::OpenGlD3d12Resource);
-    let vulkan = stream_backend_class(ExternalImageKind::VulkanD3d12Resource);
-    assert!(should_replace_same_window_backend(
-        &AUTO_HOOKS,
-        d3d11,
-        d3d12
-    ));
-    assert!(should_replace_same_window_backend(
-        &AUTO_HOOKS,
-        d3d12,
-        opengl
-    ));
-    assert!(should_replace_same_window_backend(
-        &AUTO_HOOKS,
-        d3d12,
-        vulkan
-    ));
-    assert!(!should_replace_same_window_backend(
-        &AUTO_HOOKS,
-        vulkan,
-        d3d12
-    ));
-    assert!(!should_replace_same_window_backend(
-        &AUTO_HOOKS,
-        opengl,
-        d3d12
-    ));
-    // A recreated surface from the same backend still replaces its predecessor.
-    assert!(should_replace_same_window_backend(
-        &AUTO_HOOKS,
-        vulkan,
-        vulkan
-    ));
-    // The submitted hook order overrides the automatic ranking.
-    let reversed = [HookBackend::D3d11, HookBackend::Vulkan];
-    assert!(!should_replace_same_window_backend(
-        &reversed, d3d11, vulkan
-    ));
-    assert!(should_replace_same_window_backend(&reversed, vulkan, d3d11));
-}
-
-#[test]
-fn recreated_logical_surface_replaces_its_previous_connection() {
-    let active = HashMap::from([(7, (graph_surface_for_test(1), 4))]);
-
-    assert_eq!(
-        matching_surface_connection(&active, graph_surface_for_test(1)),
-        Some((7, 4))
-    );
-    assert_eq!(
-        matching_surface_connection(&active, graph_surface_for_test(2)),
-        None
-    );
-}
-
-#[test]
-fn graph_surface_identity_determines_display_and_rotation_slot() {
-    assert_eq!(graph_surface_index(graph_surface_for_test(0)), Some(0));
-    assert_eq!(graph_surface_index(graph_surface_for_test(1)), Some(1));
-    assert_eq!(graph_surface_index(0x1234), None);
-}
-
-fn graph_surface_for_test(index: u64) -> u64 {
-    0x5347_0000_0000_0000 | index
 }
 
 fn offset_tuples(offsets: [ash::vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {

@@ -1,41 +1,36 @@
 use crate::{
     HookBackend,
-    capture::{self, CaptureEvent as TransportCaptureEvent, ConsumerPreference, FrameRouter},
+    capture::{self, ConsumerPreference, FrameRouter},
     input::{InputTransport, ProtocolInputSender},
     ui::{UiRequestReceiver, UiTransport},
 };
-use crossfire::{
-    MRx, MTx, Rx, mpmc, mpsc,
-    oneshot::{self, TxOneshot},
-};
-use dashmap::DashMap;
-use parking_lot::RwLock;
+use crossfire::{MRx, MTx, mpmc, oneshot::TxOneshot};
+use dashmap::{DashMap, DashSet};
+use parking_lot::{Condvar, Mutex, RwLock};
 use snowglass_input::{
     RawKeyInput,
-    gamepad::{GamepadUpdate, LatestGamepadMailbox},
+    gamepad::{GamepadUpdate, GamepadUpdateSink},
     mouse::{PointerInput, PointerPhase, PointerSource},
 };
 use snowglass_ipc::{Message, StreamReady};
 use snowglass_platform_windows::{
-    NativeWindow, ProcessId, TargetProcess, client_size, process_audio_state, process_tree_ids,
-    set_process_audio,
+    NativeWindow, ProcessId, ProcessWaitHandle, TargetProcess, client_size, process_audio_state,
+    process_tree_ids, set_process_audio,
 };
 use snowglass_protocol::{ExternalImageKind, FrameReady};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt,
     path::PathBuf,
     sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
+        Arc, Weak,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 use watchable::{TimeoutError, Watchable, Watcher};
 
-pub(crate) type ActorSender = MTx<mpsc::List<ActorMessage>>;
-type ActorReceiver = Rx<mpsc::List<ActorMessage>>;
 type SurfaceEventSender = MTx<mpmc::List<SurfaceEvent>>;
 type SurfaceEventChannel = MRx<mpmc::List<SurfaceEvent>>;
 
@@ -140,28 +135,6 @@ pub enum InstanceState {
     Running,
     Closing,
     Exited(InstanceExit),
-}
-
-pub struct InstanceStateReceiver {
-    receiver: Watcher<InstanceState>,
-}
-
-impl InstanceStateReceiver {
-    pub fn latest(&self) -> InstanceState {
-        self.receiver.peek().clone()
-    }
-
-    pub async fn next_state(&mut self) -> Result<InstanceState, watchable::Disconnected> {
-        self.receiver.next_value_async().await
-    }
-
-    pub fn try_next_state(&mut self) -> Result<Option<InstanceState>, watchable::Disconnected> {
-        match self.receiver.watch_timeout(Duration::ZERO) {
-            Ok(()) => Ok(Some(self.receiver.get())),
-            Err(TimeoutError::Timeout) => Ok(None),
-            Err(TimeoutError::Disconnected) => Err(watchable::Disconnected),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -479,12 +452,9 @@ impl std::error::Error for SurfaceError {}
 
 pub enum SurfaceEvent {
     Offered(SurfaceOffer),
-    ReconfigureOffered {
-        surface: TrackedSurfaceHandle,
-        offer: SurfaceOffer,
-    },
     Removed {
         id: TrackedSurfaceId,
+        connection: u64,
     },
 }
 
@@ -506,7 +476,8 @@ pub struct SurfaceOffer {
     connection: u64,
     stream: StreamReady,
     surface: TrackedSurfaceHandle,
-    actor: ActorSender,
+    replacing: Option<u64>,
+    manager: Weak<SurfaceManager>,
     resolved: bool,
 }
 
@@ -523,6 +494,10 @@ impl SurfaceOffer {
         self.connection
     }
 
+    pub const fn replaced_connection_id(&self) -> Option<u64> {
+        self.replacing
+    }
+
     pub const fn stream(&self) -> &StreamReady {
         &self.stream
     }
@@ -532,46 +507,37 @@ impl SurfaceOffer {
     }
 
     pub fn accept(mut self) -> Result<TrackedSurfaceHandle, SurfaceError> {
-        let (accepted, result) = oneshot::oneshot();
-        self.actor
-            .send(ActorMessage::AcceptOffer {
-                offer: self.offer,
-                accepted,
-            })
-            .map_err(|_| SurfaceError::Unavailable)?;
-        if !result.recv().unwrap_or(false) {
+        let Some(manager) = self.manager.upgrade() else {
             return Err(SurfaceError::Unavailable);
-        }
+        };
+        manager.resolve_offer(self.offer, true)?;
         self.resolved = true;
         Ok(self.surface.clone())
     }
 
     pub fn reject(mut self) {
-        let _ = self.actor.send(ActorMessage::RejectOffer(self.offer));
+        if let Some(manager) = self.manager.upgrade() {
+            let _ = manager.resolve_offer(self.offer, false);
+        }
         self.resolved = true;
     }
 }
 
 impl Drop for SurfaceOffer {
     fn drop(&mut self) {
-        if !self.resolved {
-            let _ = self.actor.send(ActorMessage::RejectOffer(self.offer));
+        if !self.resolved
+            && let Some(manager) = self.manager.upgrade()
+        {
+            let _ = manager.resolve_offer(self.offer, false);
         }
     }
 }
 
 pub struct EmulatorInstance {
     process_id: u32,
-    hooks: Arc<[HookBackend]>,
-    input: InputTransport,
-    actor: ActorSender,
-    actor_thread: Option<JoinHandle<()>>,
-    state: Watchable<InstanceState>,
-    surfaces: Arc<DashMap<TrackedSurfaceId, TrackedSurfaceHandle>>,
+    lifecycle: Arc<InstanceLifecycle>,
     events: SurfaceEventReceiver,
     ui_requests: UiRequestReceiver,
-    audio: Arc<RwLock<AudioState>>,
-    close_on_drop: bool,
 }
 
 impl EmulatorInstance {
@@ -584,7 +550,6 @@ impl EmulatorInstance {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, LaunchError> {
         config.validate()?;
-        let hooks: Arc<[HookBackend]> = Arc::from(config.hooks.clone());
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
         let input = InputTransport::bind(&config.session)?;
         let (ui, ui_requests) = match UiTransport::bind(&config.session, wake.clone()) {
@@ -594,58 +559,84 @@ impl EmulatorInstance {
                 return Err(error.into());
             }
         };
-        let (actor, messages) = mpsc::unbounded_blocking();
-        let router =
-            match capture::bind(&config.session, config.consumer, actor.clone(), Some(wake)) {
-                Ok(router) => router,
-                Err(error) => {
-                    input.shutdown();
-                    ui.shutdown();
-                    return Err(error.into());
+        let (event_sender, event_receiver) = mpmc::unbounded_blocking();
+        let surfaces = Arc::new(SurfaceManager::new(&config, input.clone(), event_sender));
+        let offer_manager = Arc::downgrade(&surfaces);
+        let disconnect_manager = Arc::downgrade(&surfaces);
+        let callbacks = capture::CaptureCallbacks {
+            offer: Arc::new(move |connection, stream, accepted| {
+                if let Some(manager) = offer_manager.upgrade() {
+                    manager.offer(connection, stream, accepted);
+                } else {
+                    accepted.send(false);
                 }
-            };
+            }),
+            disconnected: Arc::new(move |connection| {
+                if let Some(manager) = disconnect_manager.upgrade() {
+                    manager.disconnected(connection);
+                }
+            }),
+        };
+        let router = match capture::bind(&config.session, config.consumer, callbacks, Some(wake)) {
+            Ok(router) => router,
+            Err(error) => {
+                input.shutdown();
+                ui.shutdown();
+                return Err(error.into());
+            }
+        };
+        surfaces.install_router(router.clone());
         let process = match crate::launch::launch(&config) {
             Ok(process) => process,
             Err(error) => {
+                surfaces.shutdown();
                 input.shutdown();
-                router.shutdown();
                 ui.shutdown();
                 return Err(error.into());
             }
         };
         let process_id = process.id();
+        let wait_handle = match process.wait_handle() {
+            Ok(wait_handle) => wait_handle,
+            Err(error) => {
+                surfaces.shutdown();
+                input.shutdown();
+                ui.shutdown();
+                let _ = process.terminate_tree_and_wait();
+                return Err(error.into());
+            }
+        };
+        let audio = match AudioWorker::spawn(ProcessId(process_id)) {
+            Ok(audio) => audio,
+            Err(error) => {
+                surfaces.shutdown();
+                input.shutdown();
+                ui.shutdown();
+                let _ = process.terminate_tree_and_wait();
+                return Err(error.into());
+            }
+        };
         let state = Watchable::new(InstanceState::Starting);
-        let (event_sender, event_receiver) = mpmc::unbounded_blocking();
-        let surfaces = Arc::new(DashMap::new());
-        let audio = Arc::new(RwLock::new(AudioState::default()));
-        let actor_state = ActorState::new(
-            config,
-            process,
-            input.clone(),
-            router,
+        let lifecycle = Arc::new(InstanceLifecycle {
+            process: Mutex::new(Some(process)),
+            input: input.clone(),
             ui,
-            actor.clone(),
-            state.clone(),
-            event_sender,
-            surfaces.clone(),
-            audio.clone(),
-        );
-        let actor_thread = thread::Builder::new()
-            .name(format!("snowglass-emulator-{process_id}"))
-            .spawn(move || actor_state.run(messages))
-            .map_err(LaunchError::Io)?;
+            state: state.clone(),
+            surfaces: surfaces.clone(),
+            audio,
+            finishing: AtomicBool::new(false),
+            monitor: Mutex::new(None),
+        });
+        state.replace(InstanceState::Running);
+        if let Err(error) = lifecycle.start_monitor(wait_handle) {
+            lifecycle.finish(InstanceExit::Terminated);
+            return Err(error.into());
+        }
         Ok(Self {
             process_id,
-            hooks,
-            input,
-            actor,
-            actor_thread: Some(actor_thread),
-            state,
-            surfaces,
+            lifecycle,
             events: SurfaceEventReceiver(event_receiver),
             ui_requests,
-            audio,
-            close_on_drop: true,
         })
     }
 
@@ -654,41 +645,24 @@ impl EmulatorInstance {
     }
 
     pub fn state(&self) -> InstanceState {
-        self.state.get()
-    }
-
-    pub fn subscribe_state(&self) -> InstanceStateReceiver {
-        let receiver = self.state.watch();
-        receiver.mark_read();
-        InstanceStateReceiver { receiver }
-    }
-
-    pub fn configured_hooks(&self) -> Arc<[HookBackend]> {
-        self.hooks.clone()
-    }
-
-    pub fn active_backends(&self) -> Vec<HookBackend> {
-        let mut backends = self
-            .surfaces
-            .iter()
-            .map(|surface| surface.value().backend())
-            .collect::<Vec<_>>();
-        backends.sort_by_key(|backend| backend.class());
-        backends.dedup();
-        backends
+        self.lifecycle.state.get()
     }
 
     pub fn tracked_surface(&self, id: TrackedSurfaceId) -> Option<TrackedSurfaceHandle> {
-        self.surfaces
+        self.lifecycle
+            .surfaces
+            .active
             .get(&id)
-            .map(|surface| surface.value().clone())
+            .map(|surface| surface.value().handle.clone())
     }
 
     pub fn tracked_surfaces(&self) -> Vec<TrackedSurfaceHandle> {
         let mut surfaces = self
+            .lifecycle
             .surfaces
+            .active
             .iter()
-            .map(|surface| surface.value().clone())
+            .map(|surface| surface.value().handle.clone())
             .collect::<Vec<_>>();
         surfaces.sort_by_key(TrackedSurfaceHandle::id);
         surfaces
@@ -703,11 +677,14 @@ impl EmulatorInstance {
     }
 
     pub fn send_gamepad_update(&self, update: GamepadUpdate) -> Result<(), SurfaceError> {
-        self.input.publish_gamepad(update).map_err(SurfaceError::Io)
+        self.lifecycle
+            .input
+            .publish_gamepad(update)
+            .map_err(SurfaceError::Io)
     }
 
-    pub fn gamepad_mailbox(&self) -> Arc<LatestGamepadMailbox> {
-        self.input.gamepad_mailbox()
+    pub fn gamepad_input(&self) -> Arc<dyn GamepadUpdateSink> {
+        Arc::new(self.lifecycle.input.clone())
     }
 
     /// Compatibility bridge for input encoders that already produce the
@@ -715,79 +692,48 @@ impl EmulatorInstance {
     /// connection and writer lifecycle.
     #[doc(hidden)]
     pub fn protocol_input_sender(&self) -> ProtocolInputSender {
-        self.input.sender()
+        self.lifecycle.input.sender()
     }
 
     pub fn audio_state(&self) -> AudioState {
-        *self.audio.read()
+        self.lifecycle.audio.state()
     }
 
     pub fn set_volume(&self, volume: NormalizedVolume) {
-        self.audio.write().volume = volume;
-        let _ = self.actor.send(ActorMessage::SetVolume(volume));
+        self.lifecycle.audio.set_volume(volume);
     }
 
     pub fn set_muted(&self, muted: bool) {
-        self.audio.write().muted = muted;
-        let _ = self.actor.send(ActorMessage::SetMuted(muted));
+        self.lifecycle.audio.set_muted(muted);
     }
 
-    pub async fn close(&mut self) -> InstanceExit {
-        self.close_on_drop = false;
-        let (reply, result) = oneshot::oneshot();
-        if self.actor.send(ActorMessage::Close(reply)).is_err() {
-            self.join_actor();
-            return terminal_exit(&self.state).unwrap_or(InstanceExit::Natural);
-        }
-        let exit = result
-            .await
-            .unwrap_or_else(|_| terminal_exit(&self.state).unwrap_or(InstanceExit::Natural));
-        self.join_actor();
-        exit
-    }
-
-    pub fn close_blocking(&mut self) -> InstanceExit {
-        self.close_on_drop = false;
-        let (reply, result) = oneshot::oneshot();
-        if self.actor.send(ActorMessage::Close(reply)).is_err() {
-            self.join_actor();
-            return terminal_exit(&self.state).unwrap_or(InstanceExit::Natural);
-        }
-        let exit = result
-            .recv()
-            .unwrap_or_else(|_| terminal_exit(&self.state).unwrap_or(InstanceExit::Natural));
-        self.join_actor();
+    pub fn close(&mut self) -> InstanceExit {
+        self.lifecycle.finish(InstanceExit::Terminated);
+        let exit = self.lifecycle.wait_blocking();
+        self.lifecycle.join_monitor();
         exit
     }
 
     pub async fn wait(&mut self) -> InstanceExit {
-        let mut states = self.subscribe_state();
+        let states = self.lifecycle.state.watch();
+        states.mark_read();
         loop {
-            if let Some(exit) = terminal_exit(&self.state) {
-                self.close_on_drop = false;
-                self.join_actor();
+            if let Some(exit) = terminal_exit(&self.lifecycle.state) {
+                self.lifecycle.join_monitor();
                 return exit;
             }
-            if states.next_state().await.is_err() {
-                return InstanceExit::Natural;
+            if states.next_value_async().await.is_err() {
+                let exit = terminal_exit(&self.lifecycle.state).unwrap_or(InstanceExit::Natural);
+                self.lifecycle.join_monitor();
+                return exit;
             }
-        }
-    }
-
-    fn join_actor(&mut self) {
-        if let Some(actor) = self.actor_thread.take() {
-            let _ = actor.join();
         }
     }
 }
 
 impl Drop for EmulatorInstance {
     fn drop(&mut self) {
-        if self.close_on_drop {
-            let _ = self.close_blocking();
-        } else {
-            self.join_actor();
-        }
+        let _ = self.close();
     }
 }
 
@@ -796,18 +742,6 @@ fn terminal_exit(state: &Watchable<InstanceState>) -> Option<InstanceExit> {
         InstanceState::Exited(exit) => Some(exit.clone()),
         _ => None,
     }
-}
-
-pub(crate) enum ActorMessage {
-    Capture(TransportCaptureEvent),
-    AcceptOffer {
-        offer: u64,
-        accepted: TxOneshot<bool>,
-    },
-    RejectOffer(u64),
-    SetVolume(NormalizedVolume),
-    SetMuted(bool),
-    Close(TxOneshot<InstanceExit>),
 }
 
 struct PendingOffer {
@@ -827,137 +761,73 @@ struct ActiveSurface {
     handle: TrackedSurfaceHandle,
 }
 
-struct ActorState {
-    config: EmulatorConfig,
-    process: Option<TargetProcess>,
-    process_id: ProcessId,
+pub(crate) struct SurfaceManager {
+    hooks: Arc<[HookBackend]>,
+    tracked_surfaces: Arc<[TrackedSurfaceConfig]>,
     input: InputTransport,
-    router: FrameRouter,
-    ui: UiTransport,
-    actor: ActorSender,
-    state: Watchable<InstanceState>,
+    router: RwLock<Option<FrameRouter>>,
     events: SurfaceEventSender,
-    public_surfaces: Arc<DashMap<TrackedSurfaceId, TrackedSurfaceHandle>>,
-    audio: Arc<RwLock<AudioState>>,
-    audio_override: Option<(NormalizedVolume, bool)>,
-    next_audio_refresh: Instant,
-    active: HashMap<TrackedSurfaceId, ActiveSurface>,
-    pending: HashMap<u64, PendingOffer>,
-    next_offer: u64,
-    closing_reply: Option<TxOneshot<InstanceExit>>,
-    remaining_skips: u32,
-    skipped_surfaces: HashSet<(u64, HookBackend)>,
+    active: DashMap<TrackedSurfaceId, ActiveSurface>,
+    pending: DashMap<u64, PendingOffer>,
+    topology: Mutex<()>,
+    next_offer: AtomicU64,
+    remaining_skips: AtomicU32,
+    skipped_surfaces: DashSet<(u64, HookBackend)>,
+    stopping: AtomicBool,
 }
 
-impl ActorState {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        config: EmulatorConfig,
-        process: TargetProcess,
-        input: InputTransport,
-        router: FrameRouter,
-        ui: UiTransport,
-        actor: ActorSender,
-        state: Watchable<InstanceState>,
-        events: SurfaceEventSender,
-        public_surfaces: Arc<DashMap<TrackedSurfaceId, TrackedSurfaceHandle>>,
-        audio: Arc<RwLock<AudioState>>,
-    ) -> Self {
-        let remaining_skips = config.skip_surfaces;
-        let process_id = ProcessId(process.id());
+impl SurfaceManager {
+    fn new(config: &EmulatorConfig, input: InputTransport, events: SurfaceEventSender) -> Self {
         Self {
-            config,
-            process: Some(process),
-            process_id,
+            hooks: Arc::from(config.hooks.clone()),
+            tracked_surfaces: Arc::from(config.tracked_surfaces.clone()),
             input,
-            router,
-            ui,
-            actor,
-            state,
+            router: RwLock::new(None),
             events,
-            public_surfaces,
-            audio,
-            audio_override: None,
-            next_audio_refresh: Instant::now(),
-            active: HashMap::new(),
-            pending: HashMap::new(),
-            next_offer: 1,
-            closing_reply: None,
-            remaining_skips,
-            skipped_surfaces: HashSet::new(),
+            active: DashMap::new(),
+            pending: DashMap::new(),
+            topology: Mutex::new(()),
+            next_offer: AtomicU64::new(1),
+            remaining_skips: AtomicU32::new(config.skip_surfaces),
+            skipped_surfaces: DashSet::new(),
+            stopping: AtomicBool::new(false),
         }
     }
 
-    fn run(mut self, messages: ActorReceiver) {
-        self.state.replace(InstanceState::Running);
-        loop {
-            match messages.recv_timeout(Duration::from_millis(8)) {
-                Ok(message) => self.handle(message),
-                Err(crossfire::RecvTimeoutError::Disconnected) => self.begin_close(None),
-                Err(crossfire::RecvTimeoutError::Timeout) => {}
-            }
-            if self.poll_process() {
-                return;
-            }
-            self.poll_audio();
-            if matches!(self.state.get(), InstanceState::Closing) {
-                self.finish_close();
-                return;
-            }
-        }
+    fn install_router(&self, router: FrameRouter) {
+        *self.router.write() = Some(router);
     }
 
-    fn handle(&mut self, message: ActorMessage) {
-        match message {
-            ActorMessage::Capture(event) => self.capture(event),
-            ActorMessage::AcceptOffer { offer, accepted } => {
-                let result = self.resolve_offer(offer, true);
-                accepted.send(result);
-            }
-            ActorMessage::RejectOffer(offer) => {
-                self.resolve_offer(offer, false);
-            }
-            ActorMessage::SetVolume(volume) => {
-                let muted = self
-                    .audio_override
-                    .map(|(_, muted)| muted)
-                    .unwrap_or_else(|| self.audio.read().muted);
-                self.audio_override = Some((volume, muted));
-                self.next_audio_refresh = Instant::now();
-            }
-            ActorMessage::SetMuted(muted) => {
-                let volume = self
-                    .audio_override
-                    .map(|(volume, _)| volume)
-                    .unwrap_or_else(|| self.audio.read().volume);
-                self.audio_override = Some((volume, muted));
-                self.next_audio_refresh = Instant::now();
-            }
-            ActorMessage::Close(reply) => self.begin_close(Some(reply)),
-        }
+    fn router(&self) -> Option<FrameRouter> {
+        self.router.read().clone()
     }
 
-    fn capture(&mut self, event: TransportCaptureEvent) {
-        match event {
-            TransportCaptureEvent::Stream {
-                connection,
-                stream,
-                accepted,
-            } => self.offer(connection, stream, accepted),
-            TransportCaptureEvent::Disconnected { connection } => self.disconnected(connection),
+    pub(crate) fn offer(
+        self: &Arc<Self>,
+        connection: u64,
+        stream: StreamReady,
+        accepted: TxOneshot<bool>,
+    ) {
+        let _topology = self.topology.lock();
+        if self.stopping.load(Ordering::Acquire) {
+            accepted.send(false);
+            return;
         }
-    }
-
-    fn offer(&mut self, connection: u64, stream: StreamReady, accepted: TxOneshot<bool>) {
+        let Some(router) = self.router() else {
+            accepted.send(false);
+            return;
+        };
         let backend = stream_backend(stream.image_kind);
-        let Some(incoming_rank) = self.config.hooks.iter().position(|hook| *hook == backend) else {
+        let Some(incoming_rank) = self.hooks.iter().position(|hook| *hook == backend) else {
             accepted.send(false);
             return;
         };
         let skip_identity = (stream.surface_id.0, backend);
-        if self.skipped_surfaces.contains(&skip_identity) || self.remaining_skips != 0 {
+        let remaining_skips = self.remaining_skips.load(Ordering::Acquire);
+        if self.skipped_surfaces.contains(&skip_identity) || remaining_skips != 0 {
             if !self.skipped_surfaces.contains(&skip_identity) {
-                self.remaining_skips -= 1;
+                self.remaining_skips
+                    .store(remaining_skips - 1, Ordering::Release);
                 if stream.surface_id.0 != 0 {
                     self.skipped_surfaces.insert(skip_identity);
                 }
@@ -968,26 +838,33 @@ impl ActorState {
         let existing = self
             .active
             .iter()
-            .find(|(_, active)| {
-                stream.surface_id.0 != 0 && active.protocol_surface_id == stream.surface_id.0
+            .find(|active| {
+                stream.surface_id.0 != 0
+                    && active.value().protocol_surface_id == stream.surface_id.0
             })
-            .map(|(&id, active)| (id, active.connection, active.handle.backend()));
+            .map(|active| {
+                (
+                    *active.key(),
+                    active.value().connection,
+                    active.value().handle.backend(),
+                )
+            });
         let pending = self
             .pending
             .iter()
-            .find(|(_, pending)| {
-                stream.surface_id.0 != 0 && pending.stream.surface_id.0 == stream.surface_id.0
+            .find(|pending| {
+                stream.surface_id.0 != 0
+                    && pending.value().stream.surface_id.0 == stream.surface_id.0
             })
-            .map(|(&offer, pending)| {
+            .map(|pending| {
                 (
-                    offer,
-                    pending.surface_id,
-                    stream_backend(pending.stream.image_kind),
+                    *pending.key(),
+                    pending.value().surface_id,
+                    stream_backend(pending.value().stream.image_kind),
                 )
             });
         let (surface_id, replacing) = if let Some((offer, id, old_backend)) = pending {
             let old_rank = self
-                .config
                 .hooks
                 .iter()
                 .position(|hook| *hook == old_backend)
@@ -996,11 +873,11 @@ impl ActorState {
                 accepted.send(false);
                 return;
             }
-            self.resolve_offer(offer, false);
-            (id, None)
+            self.reject_pending_locked(offer);
+            let replacing = self.active.get(&id).map(|active| active.connection);
+            (id, replacing)
         } else if let Some((id, old_connection, old_backend)) = existing {
             let old_rank = self
-                .config
                 .hooks
                 .iter()
                 .position(|hook| *hook == old_backend)
@@ -1020,7 +897,7 @@ impl ActorState {
         let generation = self
             .active
             .get(&surface_id)
-            .map_or(1, |active| active.handle.snapshot().generation + 1);
+            .map_or(1, |active| active.value().handle.snapshot().generation + 1);
         let frames = Watchable::new(None);
         let snapshot = SurfaceSnapshot {
             generation,
@@ -1033,7 +910,7 @@ impl ActorState {
         let handle = self
             .active
             .get(&surface_id)
-            .map(|active| active.handle.clone())
+            .map(|active| active.value().handle.clone())
             .unwrap_or_else(|| TrackedSurfaceHandle {
                 id: surface_id,
                 shared: Arc::new(SurfaceShared {
@@ -1044,9 +921,8 @@ impl ActorState {
                     started: Instant::now(),
                 }),
             });
-        self.router.route(connection, frames.clone());
-        let offer_id = self.next_offer;
-        self.next_offer += 1;
+        router.route(connection, frames.clone());
+        let offer_id = self.next_offer.fetch_add(1, Ordering::AcqRel);
         self.pending.insert(
             offer_id,
             PendingOffer {
@@ -1065,36 +941,39 @@ impl ActorState {
             connection,
             stream,
             surface: handle.clone(),
-            actor: self.actor.clone(),
+            replacing,
+            manager: Arc::downgrade(self),
             resolved: false,
         };
-        let event = if replacing.is_some() {
-            SurfaceEvent::ReconfigureOffered {
-                surface: handle,
-                offer,
-            }
+        if self.events.send(SurfaceEvent::Offered(offer)).is_err() {
+            self.reject_pending_locked(offer_id);
         } else {
-            SurfaceEvent::Offered(offer)
-        };
-        if self.events.send(event).is_err() {
-            self.resolve_offer(offer_id, false);
-        } else {
-            self.router.wake();
+            router.wake();
         }
     }
 
-    fn resolve_offer(&mut self, offer: u64, accept: bool) -> bool {
-        let Some(pending) = self.pending.remove(&offer) else {
-            return false;
+    fn resolve_offer(&self, offer: u64, accept: bool) -> Result<(), SurfaceError> {
+        let _topology = self.topology.lock();
+        let Some((_, pending)) = self.pending.remove(&offer) else {
+            return Err(SurfaceError::Unavailable);
         };
-        if !accept {
+        let Some(router) = self.router() else {
             pending.frames.shutdown();
-            self.router.revoke(pending.connection);
             pending.accepted.send(false);
-            return true;
+            return Err(SurfaceError::Unavailable);
+        };
+        if !accept || self.stopping.load(Ordering::Acquire) {
+            pending.frames.shutdown();
+            router.revoke(pending.connection);
+            pending.accepted.send(false);
+            return if accept {
+                Err(SurfaceError::Unavailable)
+            } else {
+                Ok(())
+            };
         }
         if let Some(replaced) = pending.replacing {
-            self.router.revoke(replaced);
+            router.revoke(replaced);
         }
         let mut snapshot = pending.snapshot;
         snapshot.active = true;
@@ -1112,166 +991,318 @@ impl ActorState {
                 handle: pending.handle.clone(),
             },
         );
-        self.public_surfaces
-            .insert(pending.surface_id, pending.handle);
         pending.accepted.send(true);
-        true
+        Ok(())
     }
 
-    fn disconnected(&mut self, connection: u64) {
+    fn reject_pending_locked(&self, offer: u64) {
+        let Some((_, pending)) = self.pending.remove(&offer) else {
+            return;
+        };
+        pending.frames.shutdown();
+        if let Some(router) = self.router() {
+            router.revoke(pending.connection);
+        }
+        pending.accepted.send(false);
+    }
+
+    pub(crate) fn disconnected(&self, connection: u64) {
+        let _topology = self.topology.lock();
         let removed = self
             .active
             .iter()
-            .find_map(|(&id, active)| (active.connection == connection).then_some(id));
+            .find_map(|active| (active.value().connection == connection).then_some(*active.key()));
         let Some(id) = removed else {
             return;
         };
-        if let Some(active) = self.active.remove(&id) {
+        if let Some((_, active)) = self.active.remove(&id) {
             active.handle.shared.snapshot.write().active = false;
             active.handle.shared.frames.read().shutdown();
         }
-        self.public_surfaces.remove(&id);
-        let _ = self.events.send(SurfaceEvent::Removed { id });
-        self.router.wake();
+        let _ = self.events.send(SurfaceEvent::Removed { id, connection });
+        if let Some(router) = self.router() {
+            router.wake();
+        }
     }
 
     fn unassigned_surface(&self, stream: &StreamReady) -> Option<TrackedSurfaceId> {
         graph_surface_index(stream.surface_id.0)
             .and_then(|index| {
-                self.config
-                    .tracked_surfaces
+                self.tracked_surfaces
                     .iter()
                     .find(|surface| surface.render_target_index == index)
                     .map(|surface| surface.id)
             })
             .filter(|id| !self.active.contains_key(id))
             .or_else(|| {
-                self.config
-                    .tracked_surfaces
+                self.tracked_surfaces
                     .iter()
                     .find(|surface| {
                         !self.active.contains_key(&surface.id)
                             && !self
                                 .pending
-                                .values()
-                                .any(|pending| pending.surface_id == surface.id)
+                                .iter()
+                                .any(|pending| pending.value().surface_id == surface.id)
                     })
                     .map(|surface| surface.id)
             })
     }
 
-    fn begin_close(&mut self, reply: Option<TxOneshot<InstanceExit>>) {
-        if let Some(reply) = reply {
-            self.closing_reply = Some(reply);
+    fn shutdown(&self) {
+        if self.stopping.swap(true, Ordering::AcqRel) {
+            return;
         }
-        self.state.replace(InstanceState::Closing);
+        {
+            let _topology = self.topology.lock();
+            let pending = self
+                .pending
+                .iter()
+                .map(|pending| *pending.key())
+                .collect::<Vec<_>>();
+            for offer in pending {
+                self.reject_pending_locked(offer);
+            }
+            let active = self
+                .active
+                .iter()
+                .map(|active| *active.key())
+                .collect::<Vec<_>>();
+            for id in active {
+                let Some((_, active)) = self.active.remove(&id) else {
+                    continue;
+                };
+                if let Some(router) = self.router() {
+                    router.revoke(active.connection);
+                }
+                active.handle.shared.snapshot.write().active = false;
+                active.handle.shared.frames.read().shutdown();
+                let _ = self.events.send(SurfaceEvent::Removed {
+                    id,
+                    connection: active.connection,
+                });
+            }
+            if let Some(router) = self.router() {
+                router.wake();
+            }
+        }
+        if let Some(router) = self.router() {
+            router.shutdown();
+        }
+    }
+}
+
+struct AudioControl {
+    stopping: bool,
+    desired: Option<(NormalizedVolume, bool)>,
+}
+
+struct AudioShared {
+    process_id: ProcessId,
+    state: RwLock<AudioState>,
+    control: Mutex<AudioControl>,
+    wake: Condvar,
+}
+
+struct AudioWorker {
+    shared: Arc<AudioShared>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl AudioWorker {
+    fn spawn(process_id: ProcessId) -> std::io::Result<Self> {
+        let shared = Arc::new(AudioShared {
+            process_id,
+            state: RwLock::new(AudioState::default()),
+            control: Mutex::new(AudioControl {
+                stopping: false,
+                desired: None,
+            }),
+            wake: Condvar::new(),
+        });
+        let worker_shared = shared.clone();
+        let worker = thread::Builder::new()
+            .name(format!("snowglass-audio-{}", process_id.0))
+            .spawn(move || run_audio(worker_shared))?;
+        Ok(Self {
+            shared,
+            worker: Mutex::new(Some(worker)),
+        })
     }
 
-    fn poll_audio(&mut self) {
-        let now = Instant::now();
-        if now < self.next_audio_refresh {
-            return;
-        }
-        self.next_audio_refresh = now + Duration::from_millis(500);
-        let processes = process_tree_ids(self.process_id).unwrap_or_else(|_| vec![self.process_id]);
-        let mut sessions = 0;
+    fn state(&self) -> AudioState {
+        *self.shared.state.read()
+    }
 
-        if let Some((volume, muted)) = self.audio_override {
-            for process in processes {
-                sessions += set_process_audio(process.0, volume.get(), muted).unwrap_or_default();
+    fn set_volume(&self, volume: NormalizedVolume) {
+        self.shared.state.write().volume = volume;
+        let mut control = self.shared.control.lock();
+        let muted = control
+            .desired
+            .map(|(_, muted)| muted)
+            .unwrap_or_else(|| self.shared.state.read().muted);
+        control.desired = Some((volume, muted));
+        self.shared.wake.notify_one();
+    }
+
+    fn set_muted(&self, muted: bool) {
+        self.shared.state.write().muted = muted;
+        let mut control = self.shared.control.lock();
+        let volume = control
+            .desired
+            .map(|(volume, _)| volume)
+            .unwrap_or_else(|| self.shared.state.read().volume);
+        control.desired = Some((volume, muted));
+        self.shared.wake.notify_one();
+    }
+
+    fn shutdown(&self) {
+        {
+            let mut control = self.shared.control.lock();
+            if !control.stopping {
+                control.stopping = true;
+                self.shared.wake.notify_one();
             }
-            *self.audio.write() = AudioState {
-                available: sessions != 0,
-                volume,
-                muted,
-                active_sessions: sessions,
-            };
+        }
+        if let Some(worker) = self.worker.lock().take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for AudioWorker {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn run_audio(shared: Arc<AudioShared>) {
+    loop {
+        refresh_audio(&shared);
+        let mut control = shared.control.lock();
+        if control.stopping {
             return;
         }
+        shared
+            .wake
+            .wait_for(&mut control, Duration::from_millis(500));
+        if control.stopping {
+            return;
+        }
+    }
+}
 
-        let mut discovered = None;
+fn refresh_audio(shared: &AudioShared) {
+    let desired = shared.control.lock().desired;
+    let processes = process_tree_ids(shared.process_id).unwrap_or_else(|_| vec![shared.process_id]);
+    let mut sessions = 0;
+
+    if let Some((volume, muted)) = desired {
         for process in processes {
-            let Ok(state) = process_audio_state(process.0) else {
-                continue;
-            };
-            sessions += state.sessions;
-            if discovered.is_none() && state.available {
-                discovered = Some((
-                    NormalizedVolume::new(state.volume).unwrap_or_default(),
-                    state.muted,
-                ));
-            }
+            sessions += set_process_audio(process.0, volume.get(), muted).unwrap_or_default();
         }
-        let (volume, muted) = discovered.unwrap_or_else(|| {
-            let current = *self.audio.read();
-            (current.volume, current.muted)
-        });
-        *self.audio.write() = AudioState {
+        *shared.state.write() = AudioState {
             available: sessions != 0,
             volume,
             muted,
             active_sessions: sessions,
         };
+        return;
     }
 
-    fn poll_process(&mut self) -> bool {
-        let Some(process) = self.process.as_mut() else {
-            return true;
+    let mut discovered = None;
+    for process in processes {
+        let Ok(state) = process_audio_state(process.0) else {
+            continue;
         };
-        match process.try_wait() {
-            Ok(Some(())) => {
-                self.finish(InstanceExit::Natural);
-                true
-            }
-            Ok(None) => false,
-            Err(error) => {
-                self.finish(InstanceExit::Failed(Arc::from(error.to_string())));
-                true
-            }
+        sessions += state.sessions;
+        if discovered.is_none() && state.available {
+            discovered = Some((
+                NormalizedVolume::new(state.volume).unwrap_or_default(),
+                state.muted,
+            ));
         }
     }
+    let (volume, muted) = discovered.unwrap_or_else(|| {
+        let current = *shared.state.read();
+        (current.volume, current.muted)
+    });
+    *shared.state.write() = AudioState {
+        available: sessions != 0,
+        volume,
+        muted,
+        active_sessions: sessions,
+    };
+}
 
-    fn finish_close(&mut self) {
-        self.finish(InstanceExit::Terminated);
+struct InstanceLifecycle {
+    process: Mutex<Option<TargetProcess>>,
+    input: InputTransport,
+    ui: UiTransport,
+    state: Watchable<InstanceState>,
+    surfaces: Arc<SurfaceManager>,
+    audio: AudioWorker,
+    finishing: AtomicBool,
+    monitor: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl InstanceLifecycle {
+    fn start_monitor(self: &Arc<Self>, wait: ProcessWaitHandle) -> std::io::Result<()> {
+        let lifecycle = Arc::downgrade(self);
+        let worker = thread::Builder::new()
+            .name("snowglass-process-wait".to_owned())
+            .spawn(move || {
+                let exit = wait.wait().map_or_else(
+                    |error| InstanceExit::Failed(Arc::from(error.to_string())),
+                    |()| InstanceExit::Natural,
+                );
+                if let Some(lifecycle) = lifecycle.upgrade() {
+                    lifecycle.finish(exit);
+                }
+            })?;
+        *self.monitor.lock() = Some(worker);
+        Ok(())
     }
 
-    fn finish(&mut self, exit: InstanceExit) {
+    fn finish(&self, exit: InstanceExit) {
+        if self.finishing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.state.replace(InstanceState::Closing);
+        self.surfaces.shutdown();
         self.input.shutdown();
-        for pending in self.pending.drain().map(|(_, pending)| pending) {
-            pending.frames.shutdown();
-            self.router.revoke(pending.connection);
-            pending.accepted.send(false);
-        }
-        for (&id, active) in &self.active {
-            self.router.revoke(active.connection);
-            active.handle.shared.snapshot.write().active = false;
-            active.handle.shared.frames.read().shutdown();
-            let _ = self.events.send(SurfaceEvent::Removed { id });
-        }
-        self.router.shutdown();
         self.ui.shutdown();
-        self.router.wake();
-        self.active.clear();
-        self.public_surfaces.clear();
-        if let Some(process) = self.process.take() {
+        self.audio.shutdown();
+        if let Some(process) = self.process.lock().take() {
             let _ = process.terminate_tree_and_wait();
         }
-        self.state.replace(InstanceState::Exited(exit.clone()));
-        if let Some(reply) = self.closing_reply.take() {
-            reply.send(exit);
+        self.state.replace(InstanceState::Exited(exit));
+        self.state.shutdown();
+    }
+
+    fn wait_blocking(&self) -> InstanceExit {
+        let watcher = self.state.watch();
+        watcher.mark_read();
+        loop {
+            if let Some(exit) = terminal_exit(&self.state) {
+                return exit;
+            }
+            if watcher.next_value().is_err() {
+                return terminal_exit(&self.state).unwrap_or(InstanceExit::Natural);
+            }
+        }
+    }
+
+    fn join_monitor(&self) {
+        if let Some(worker) = self.monitor.lock().take() {
+            let _ = worker.join();
         }
     }
 }
 
-impl Drop for ActorState {
+impl Drop for InstanceLifecycle {
     fn drop(&mut self) {
-        self.input.shutdown();
-        self.router.shutdown();
-        self.ui.shutdown();
-        if let Some(process) = self.process.take() {
-            let _ = process.terminate_tree_and_wait();
-        }
-        self.state.shutdown();
+        self.finish(InstanceExit::Terminated);
+        self.join_monitor();
     }
 }
 

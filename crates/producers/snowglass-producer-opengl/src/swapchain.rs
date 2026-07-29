@@ -13,6 +13,7 @@ use crate::{
     timeline::Timeline,
     tracking::{DrawCandidate, QuadBounds, Tracking},
 };
+use parking_lot::Mutex;
 use snowglass_hook::config;
 use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{
@@ -27,7 +28,7 @@ use std::{
     collections::HashMap,
     ffi::c_void,
     sync::{
-        Mutex, OnceLock,
+        OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -321,9 +322,7 @@ const SELECTION_HORIZON: u64 = 240;
 static WINDOW_ORDER: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 fn window_order(hwnd: isize) -> usize {
-    let mut windows = WINDOW_ORDER
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let mut windows = WINDOW_ORDER.lock();
     if let Some(position) = windows.iter().position(|window| *window == hwnd) {
         position
     } else {
@@ -336,10 +335,7 @@ fn tracked_window_slot(hwnd: isize) -> Option<usize> {
     if !config::tracking_enabled() {
         return None;
     }
-    let windows = WINDOW_ORDER
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone();
+    let windows = WINDOW_ORDER.lock().clone();
     config::tracked_render_target_surface_slots(&windows, |window| {
         window_title(NativeWindow(window))
     })
@@ -472,7 +468,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     let key = (hdc as usize, context as usize);
     let now = SWAP_CLOCK.fetch_add(1, Ordering::Relaxed) + 1;
     let order = window_order(hwnd as isize);
-    let mut map = captures().lock().unwrap_or_else(|error| error.into_inner());
+    let mut map = captures().lock();
     {
         let entry = map.entry(key).or_default();
         // A trusted graph selection is complete: padding it with slots from an
@@ -547,10 +543,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     if config::tracking_enabled() {
         let mut allowed = HashMap::<isize, Vec<SurfaceId>>::new();
         if resolved.is_empty() {
-            let windows = WINDOW_ORDER
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clone();
+            let windows = WINDOW_ORDER.lock().clone();
             for (slot, window) in config::tracked_render_target_surface_slots(&windows, |window| {
                 window_title(NativeWindow(window))
             })

@@ -6,13 +6,16 @@ mod vtable;
 #[doc(hidden)]
 pub use dashmap::DashMap as __DashMap;
 #[doc(hidden)]
+pub use parking_lot::{Mutex as __Mutex, RwLock as __RwLock};
+#[doc(hidden)]
 pub use paste::paste as __paste;
 pub use vtable::ComProxy;
 pub use vtable::VtableHook;
 #[doc(hidden)]
 pub use windows_core::GUID as __GUID;
 
-use std::sync::{Arc, Condvar, Mutex};
+use parking_lot::{Condvar, Mutex};
+use std::sync::Arc;
 
 /// Provenance-preserving identity key for pointers stored in hook registries.
 #[doc(hidden)]
@@ -146,7 +149,7 @@ impl<T: ?Sized> TerminalSlot<T> {
     /// absent or being uninstalled. Generated dispatchers translate `None`
     /// into the terminal declaration's explicit fallback value.
     pub fn acquire(&'static self) -> Option<TerminalCall<T>> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock();
         let entry = state.entry.as_mut()?;
         if entry.phase != TerminalPhase::Installed {
             return None;
@@ -168,7 +171,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
     ) -> Result<TerminalInstallation<T>, TerminalInstallError> {
         self.retry_failed_cleanup();
         let generation = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self.state.lock();
             if state.entry.is_some() {
                 return Err(TerminalInstallError::Occupied);
             }
@@ -195,7 +198,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
     }
 
     fn remove_failed_install(&'static self, generation: u64, terminal: &Arc<T>) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock();
         let Some(entry) = state
             .entry
             .as_mut()
@@ -205,14 +208,11 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
         };
         entry.phase = TerminalPhase::Draining;
         while state.entry.as_ref().is_some_and(|entry| entry.active != 0) {
-            state = self
-                .drained
-                .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
+            self.drained.wait(&mut state);
         }
         drop(state);
         let disabled = terminal.disable().is_ok();
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock();
         if disabled
             && state
                 .entry
@@ -225,7 +225,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
 
     fn retry_failed_cleanup(&'static self) {
         let candidate = {
-            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let state = self.state.lock();
             state.entry.as_ref().and_then(|entry| {
                 (entry.phase == TerminalPhase::Draining && entry.active == 0)
                     .then(|| (entry.generation, Arc::clone(&entry.terminal)))
@@ -237,7 +237,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
         if terminal.disable().is_err() {
             return;
         }
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock();
         if state.entry.as_ref().is_some_and(|entry| {
             entry.generation == generation && entry.phase == TerminalPhase::Draining
         }) {
@@ -247,7 +247,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
 
     fn uninstall(&'static self, generation: u64) -> Result<(), TerminalUninstallError> {
         let terminal = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self.state.lock();
             let Some(entry) = state.entry.as_mut() else {
                 return Err(TerminalUninstallError::Stale);
             };
@@ -256,10 +256,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
             }
             entry.phase = TerminalPhase::Draining;
             while state.entry.as_ref().is_some_and(|entry| entry.active != 0) {
-                state = self
-                    .drained
-                    .wait(state)
-                    .unwrap_or_else(|error| error.into_inner());
+                self.drained.wait(&mut state);
             }
             Arc::clone(
                 &state
@@ -271,7 +268,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
         };
 
         if let Err(error) = terminal.disable() {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = self.state.lock();
             if let Some(entry) = state
                 .entry
                 .as_mut()
@@ -282,7 +279,7 @@ impl<T: TerminalLifecycle + ?Sized> TerminalSlot<T> {
             return Err(TerminalUninstallError::Disable(error));
         }
 
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.lock();
         if state
             .entry
             .as_ref()
@@ -315,11 +312,7 @@ impl<T: ?Sized> TerminalCall<T> {
 
 impl<T: ?Sized> Drop for TerminalCall<T> {
     fn drop(&mut self) {
-        let mut state = self
-            .slot
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.slot.state.lock();
         let Some(entry) = state
             .entry
             .as_mut()
@@ -412,10 +405,7 @@ impl<I> HookInstallationRegistry<I> {
 
 impl<I: ManagedHookInstallation> HookInstallationRegistry<I> {
     pub fn install(&self) -> Result<(), HookRegistryError> {
-        let mut slot = self
-            .installation
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut slot = self.installation.lock();
         if let Some(installation) = slot.as_mut() {
             if installation.is_complete() {
                 return Ok(());
@@ -438,10 +428,7 @@ impl<I: ManagedHookInstallation> HookInstallationRegistry<I> {
     }
 
     pub fn uninstall(&self) -> Result<(), HookRegistryError> {
-        let mut slot = self
-            .installation
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut slot = self.installation.lock();
         let Some(installation) = slot.as_mut() else {
             return Ok(());
         };
@@ -540,7 +527,6 @@ macro_rules! chain_hooks {
             > {
                 [<__ $installer _registry>].install()?;
                 Ok([<$installer:upper _STATE>].read()
-                    .unwrap_or_else(|error| error.into_inner())
                     .as_ref().cloned()
                     .expect("raw hook state is not installed"))
             }
@@ -551,7 +537,6 @@ macro_rules! chain_hooks {
                 select: impl FnOnce(&$state) -> T,
             ) -> Option<T> {
                 [<$installer:upper _STATE>].read()
-                    .unwrap_or_else(|error| error.into_inner())
                     .as_deref()
                     .map(select)
             }
@@ -561,7 +546,6 @@ macro_rules! chain_hooks {
             #![detour($detour)]
             #![state(::std::sync::Arc<$state> =
                 [<$installer:upper _STATE>].read()
-                    .unwrap_or_else(|error| error.into_inner())
                     .as_ref().cloned()
                     .expect("raw hook state is not installed")
             )]
@@ -652,9 +636,9 @@ macro_rules! chain_hooks {
     (@declare_installer
         [$visibility:vis] [$installer:ident] [state $state:ty] [$($items:tt)*]
     ) => { $crate::__paste! {
-        static [<$installer:upper _STATE>]: ::std::sync::RwLock<
+        static [<$installer:upper _STATE>]: $crate::__RwLock<
             Option<::std::sync::Arc<$state>>
-        > = ::std::sync::RwLock::new(None);
+        > = $crate::__RwLock::new(None);
 
         $visibility struct $installer {
             terminals: ::std::vec::Vec<
@@ -671,7 +655,7 @@ macro_rules! chain_hooks {
             fn create() -> Result<Self, $crate::HookInstallError<Self>> {
                 let state = ::std::sync::Arc::new(<$state as Default>::default());
                 *[<$installer:upper _STATE>].write()
-                    .unwrap_or_else(|error| error.into_inner()) = Some(state.clone());
+                    = Some(state.clone());
                 let mut installation = Self {
                     terminals: ::std::vec::Vec::new(),
                     _state: state,
@@ -694,7 +678,7 @@ macro_rules! chain_hooks {
                 }
                 if self.terminals.is_empty() {
                     *[<$installer:upper _STATE>].write()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
+                        = None;
                 }
                 first_error.map_or(Ok(()), Err)
             }
@@ -1772,8 +1756,9 @@ macro_rules! chain_hooks {
 
 #[cfg(test)]
 mod static_chain_tests {
+    use parking_lot::Mutex;
     use std::sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -1781,63 +1766,63 @@ mod static_chain_tests {
     static FORWARD_EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
     unsafe fn terminal(value: usize) -> usize {
-        EVENTS.lock().unwrap().push("terminal");
+        EVENTS.lock().push("terminal");
         value * 2
     }
 
     unsafe fn forward_terminal(value: usize) -> usize {
-        FORWARD_EVENTS.lock().unwrap().push("terminal");
+        FORWARD_EVENTS.lock().push("terminal");
         value * 2
     }
 
     unsafe fn prefix_one(value: usize, context: &OperationContext<'_>) {
         assert_eq!(*context.offset, 3);
         assert_eq!(value, 4);
-        EVENTS.lock().unwrap().push("prefix-one");
+        EVENTS.lock().push("prefix-one");
     }
 
     unsafe fn prefix_two(context: &OperationContext<'_>) {
         assert_eq!(*context.offset, 3);
-        EVENTS.lock().unwrap().push("prefix-two");
+        EVENTS.lock().push("prefix-two");
     }
 
     unsafe fn infix_one(value: usize, mut next: OperationContext<'_>) -> usize {
-        EVENTS.lock().unwrap().push("infix-one-enter");
+        EVENTS.lock().push("infix-one-enter");
         let result = crate::next!(next, value);
-        EVENTS.lock().unwrap().push("infix-one-exit");
+        EVENTS.lock().push("infix-one-exit");
         result
     }
 
     unsafe fn infix_two(value: usize, mut next: OperationContext<'_>) -> usize {
-        EVENTS.lock().unwrap().push("infix-two-enter");
+        EVENTS.lock().push("infix-two-enter");
         let result = crate::next!(next, value);
-        EVENTS.lock().unwrap().push("infix-two-exit");
+        EVENTS.lock().push("infix-two-exit");
         result
     }
 
     unsafe fn postfix_one(result: usize, context: &OperationContext<'_>) {
         assert_eq!(*context.offset, 3);
         assert_eq!(result, 8);
-        EVENTS.lock().unwrap().push("postfix-one");
+        EVENTS.lock().push("postfix-one");
     }
 
     unsafe fn postfix_two(value: usize, result: usize, _context: &OperationContext<'_>) {
         assert_eq!((value, result), (4, 8));
-        EVENTS.lock().unwrap().push("postfix-two");
+        EVENTS.lock().push("postfix-two");
     }
 
     unsafe fn forward_infix(value: usize, mut next: ForwardOperationContext<'_>) -> usize {
-        FORWARD_EVENTS.lock().unwrap().push("forward-infix");
+        FORWARD_EVENTS.lock().push("forward-infix");
         crate::next!(next, value)
     }
 
     unsafe fn forward_prefix() {
-        FORWARD_EVENTS.lock().unwrap().push("forward-prefix");
+        FORWARD_EVENTS.lock().push("forward-prefix");
     }
 
     unsafe fn forward_postfix(result: usize) {
         assert_eq!(result, 10);
-        FORWARD_EVENTS.lock().unwrap().push("forward-postfix");
+        FORWARD_EVENTS.lock().push("forward-postfix");
     }
 
     crate::chain_hooks! {
@@ -1926,10 +1911,10 @@ mod static_chain_tests {
 
     #[test]
     fn static_chain_uses_reverse_order_in_each_phase() {
-        EVENTS.lock().unwrap().clear();
+        EVENTS.lock().clear();
         assert_eq!(unsafe { operation(4) }, 8);
         assert_eq!(
-            *EVENTS.lock().unwrap(),
+            *EVENTS.lock(),
             [
                 "prefix-two",
                 "prefix-one",
@@ -1946,10 +1931,10 @@ mod static_chain_tests {
 
     #[test]
     fn static_chain_supports_forward_order_and_an_inferred_empty_context() {
-        FORWARD_EVENTS.lock().unwrap().clear();
+        FORWARD_EVENTS.lock().clear();
         assert_eq!(unsafe { forward_operation(5) }, 10);
         assert_eq!(
-            *FORWARD_EVENTS.lock().unwrap(),
+            *FORWARD_EVENTS.lock(),
             [
                 "forward-prefix",
                 "forward-infix",

@@ -38,8 +38,10 @@ fn d3d12_log(message: impl std::fmt::Display) {
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::Mutex;
+
     use super::*;
-    use snowglass_ipc::{LocalSocketListener, Message};
+    use snowglass_ipc::{LocalSocketListener, Message, frame::FrameSubscriber};
     use snowglass_protocol::{Handshake, PROTOCOL_VERSION};
     use std::mem::ManuallyDrop;
     use windows::{
@@ -66,7 +68,7 @@ mod tests {
         },
     };
 
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn transition(
         resource: &ID3D12Resource,
@@ -102,14 +104,14 @@ mod tests {
 
     #[test]
     fn early_detour_installation_is_idempotent() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = TEST_LOCK.lock();
         assert_eq!(unsafe { SnowglassInstallD3d12Hook() }, 0);
         assert_eq!(unsafe { SnowglassInstallD3d12Hook() }, 0);
     }
 
     #[test]
     fn captures_and_imports_a_real_hardware_swapchain_present() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = TEST_LOCK.lock();
         let session = format!(
             "snowglass-d3d12-test-{}-{}",
             std::process::id(),
@@ -134,8 +136,15 @@ mod tests {
                         preferred_consumer: snowglass_protocol::ConsumerApi::D3d12,
                     }))
                     .unwrap();
+                let Message::MapOffer(offer) = socket.receive().unwrap() else {
+                    panic!("capture did not offer its frame channel");
+                };
+                let mut frames = FrameSubscriber::from_offer(offer).unwrap();
                 let ready = socket.receive().unwrap();
-                let frame = socket.receive().unwrap();
+                let Message::FrameAvailable = socket.receive().unwrap() else {
+                    panic!("capture did not signal a shared frame");
+                };
+                let frame = Message::FrameReady(frames.latest().unwrap().unwrap());
                 let _ = sender.send((ready, frame));
             }
         });
