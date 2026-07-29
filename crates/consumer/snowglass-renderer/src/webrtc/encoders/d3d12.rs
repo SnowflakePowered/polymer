@@ -116,7 +116,7 @@ impl Encoder {
         match Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::Hevc) {
             Ok(encoder) => Ok(encoder),
             Err(hevc_error) => {
-                eprintln!("snowglass: D3D12 HEVC unavailable; trying H.264: {hevc_error}");
+                tracing::warn!("snowglass: D3D12 HEVC unavailable; trying H.264: {hevc_error}");
                 Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::H264)
             }
         }
@@ -2111,15 +2111,15 @@ mod tests {
                 };
                 match Encoder::new_with_codec(&frame, width, height, 2_000_000, 30.0, Codec::Hevc) {
                     Ok(mut encoder) => {
-                        eprintln!("probe {width}x{height}: HEVC init OK");
+                        tracing::info!("probe {width}x{height}: HEVC init OK");
                         let mut stream = Vec::new();
                         for index in 0..3 {
                             match encoder.encode_frame(&mut frame, width, height) {
                                 Ok(encoded) => {
-                                    eprintln!("  frame {index}: {} bytes", encoded.len());
+                                    tracing::info!("  frame {index}: {} bytes", encoded.len());
                                     stream.extend_from_slice(&encoded);
                                 }
-                                Err(error) => eprintln!("  frame {index} failed: {error}"),
+                                Err(error) => tracing::error!("  frame {index} failed: {error}"),
                             }
                         }
                         if let Some(path) = std::env::var_os("SNOWGLASS_HEVC_PROBE_DUMP") {
@@ -2128,7 +2128,9 @@ mod tests {
                             let _ = std::fs::write(path, &stream);
                         }
                     }
-                    Err(error) => eprintln!("probe {width}x{height}: HEVC init failed: {error}"),
+                    Err(error) => {
+                        tracing::error!("probe {width}x{height}: HEVC init failed: {error}")
+                    }
                 }
                 if let Ok(queue) =
                     device.cast::<windows::Win32::Graphics::Direct3D12::ID3D12InfoQueue>()
@@ -2150,7 +2152,7 @@ mod tests {
                                 message.pDescription.cast::<u8>(),
                                 message.DescriptionByteLength.saturating_sub(1),
                             );
-                            eprintln!("  d3d12: {}", String::from_utf8_lossy(text));
+                            tracing::debug!("  d3d12: {}", String::from_utf8_lossy(text));
                         }
                     }
                     queue.ClearStoredMessages();

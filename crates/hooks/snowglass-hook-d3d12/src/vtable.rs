@@ -263,11 +263,11 @@ pub(crate) unsafe fn install_device(
         return;
     }
     match unsafe { try_install_device(output, tracking) } {
-        Ok(true) => crate::d3d12_log("snowglass: installed D3D12 viewport/scissor tracking"),
+        Ok(true) => tracing::debug!("snowglass: installed D3D12 viewport/scissor tracking"),
         Ok(false) => {}
-        Err(error) => crate::d3d12_log(format!(
-            "snowglass: failed to install D3D12 viewport/scissor tracking: {error}"
-        )),
+        Err(error) => {
+            tracing::debug!("snowglass: failed to install D3D12 viewport/scissor tracking: {error}")
+        }
     }
 }
 
@@ -280,11 +280,11 @@ unsafe fn try_install_device(
         .ok_or_else(|| "D3D12CreateDevice returned a null device".to_owned())?;
     let device: ID3D12Device = unknown.cast().map_err(|error| error.to_string())?;
     if let Some(enhanced_barriers) = tracking.detect_device_features(&device)? {
-        crate::d3d12_log(if enhanced_barriers {
+        tracing::debug!(message = %(if enhanced_barriers {
             "snowglass: D3D12 enhanced capture barriers enabled"
         } else {
             "snowglass: D3D12 capture using legacy resource barriers"
-        });
+        }));
     }
     let base = device.as_raw();
     let already_hooked = unsafe { ID3D12DeviceHook::is_installed(base) };

@@ -78,21 +78,22 @@ unsafe fn dxgi_hook_export<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallDxgiHook() -> i32 {
+    snowglass_hook::telemetry::init_file_tracing(snowglass_hook::config::dxgi_log_file());
     // These detours only see factories created after they are installed, so
     // record whether DXGI was already running when this process was hooked.
     // A process injected after it built its factory reports a loaded module
     // here and then never logs a created factory, which is the signature of
     // arriving too late rather than of the detours failing.
     let already_loaded = unsafe { dxgi_module_loaded() };
-    dxgi_log(format!(
+    tracing::debug!(
         "install requested in process {} (dxgi already loaded: {already_loaded})",
         std::process::id()
-    ));
+    );
     if unsafe { install_factory_detours() } {
-        dxgi_log("factory creation detours installed");
+        tracing::debug!("factory creation detours installed");
         0
     } else {
-        dxgi_log("factory creation detours failed to install");
+        tracing::debug!("factory creation detours failed to install");
         windows_sys::Win32::Foundation::E_FAIL
     }
 }
@@ -213,20 +214,5 @@ mod tests {
             original[PRESENT_INDEX], present as *const () as usize,
             "the application's own vtable should be left alone"
         );
-    }
-}
-
-pub(crate) fn dxgi_log(message: impl std::fmt::Display) {
-    use std::io::Write;
-    eprintln!("{message}");
-    let Some(path) = snowglass_hook::config::dxgi_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{message}");
     }
 }

@@ -83,9 +83,7 @@ impl SwapchainOwner for SwapchainCapture {
             let connection = match begin_viewer_connection() {
                 Ok(connection) => Some(connection),
                 Err(error) => {
-                    crate::d3d11_log(format!(
-                        "snowglass: D3D11 viewer connection failed: {error}"
-                    ));
+                    tracing::debug!("snowglass: D3D11 viewer connection failed: {error}");
                     None
                 }
             };
@@ -114,15 +112,13 @@ impl SwapchainOwner for SwapchainCapture {
                         break;
                     }
                     Err(error) if index + 1 < mode_chain.len() => {
-                        crate::d3d11_log(format!(
+                        tracing::debug!(
                             "snowglass: D3D11 {mode:?} capture unavailable, trying {:?}: {error}",
                             mode_chain[index + 1]
-                        ));
+                        );
                     }
                     Err(error) => {
-                        crate::d3d11_log(format!(
-                            "snowglass: D3D11 capture creation failed: {error}"
-                        ));
+                        tracing::debug!("snowglass: D3D11 capture creation failed: {error}");
                     }
                 }
             }
@@ -133,18 +129,18 @@ impl SwapchainOwner for SwapchainCapture {
                 match send_stream_ready(&mut connection, &ring) {
                     Ok(()) => Some(connection.socket),
                     Err(error) => {
-                        crate::d3d11_log(format!(
-                            "snowglass: D3D11 viewer connection failed: {error}"
-                        ));
+                        tracing::debug!("snowglass: D3D11 viewer connection failed: {error}");
                         None
                     }
                 }
             });
             let desc = ring.ring().desc();
-            crate::d3d11_log(format!(
+            tracing::debug!(
                 "snowglass: attached D3D11 {}x{} {}-slot shared texture ring",
-                desc.width, desc.height, desc.slots
-            ));
+                desc.width,
+                desc.height,
+                desc.slots
+            );
             *capture = Capture::Active(Box::new(CaptureState {
                 capture: ring,
                 ipc,
@@ -160,20 +156,22 @@ impl SwapchainOwner for SwapchainCapture {
             Err(error) => {
                 state.copy_failures += 1;
                 if state.copy_failures == 1 || state.copy_failures % 120 == 0 {
-                    crate::d3d11_log(format!(
+                    tracing::debug!(
                         "snowglass: D3D11 capture copy deferred ({error}, count={})",
                         state.copy_failures
-                    ));
+                    );
                 }
                 return;
             }
         };
         state.frame_number = state.frame_number.wrapping_add(1);
         if state.frame_number == 1 || state.frame_number % 120 == 0 {
-            crate::d3d11_log(format!(
+            tracing::debug!(
                 "snowglass: submitted D3D11 capture {}x{} (count={})",
-                submission.width, submission.height, state.frame_number
-            ));
+                submission.width,
+                submission.height,
+                state.frame_number
+            );
         }
         let capture_desc = state.capture.ring().desc();
         let presentation_extent = presentation
@@ -225,9 +223,7 @@ impl SwapchainOwner for SwapchainCapture {
         {
             // The viewer declined or preempted this stream; release the ring
             // instead of copying frames nobody consumes.
-            crate::d3d11_log(
-                "snowglass: viewer released D3D11 stream; capture parked until resize",
-            );
+            tracing::debug!("snowglass: viewer released D3D11 stream; capture parked until resize",);
             *capture = Capture::Declined;
         }
     }
@@ -240,7 +236,7 @@ impl SwapchainOwner for SwapchainCapture {
     unsafe fn before_resize(&self, _swapchain: *mut c_void) {
         let previous = std::mem::replace(&mut *self.capture.lock(), Capture::Idle);
         if matches!(previous, Capture::Active(_)) {
-            crate::d3d11_log("snowglass: released D3D11 capture for ResizeBuffers");
+            tracing::debug!("snowglass: released D3D11 capture for ResizeBuffers");
         }
     }
 }
@@ -344,8 +340,6 @@ fn send_stream_ready(
         consumer_semaphore_handle: consumer_fence,
         bottom_up: false,
     }))?;
-    crate::d3d11_log(format!(
-        "snowglass: connected D3D11 ring to viewer process {viewer_pid}"
-    ));
+    tracing::debug!("snowglass: connected D3D11 ring to viewer process {viewer_pid}");
     Ok(())
 }

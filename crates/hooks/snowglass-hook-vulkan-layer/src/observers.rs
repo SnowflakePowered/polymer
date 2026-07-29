@@ -469,7 +469,5 @@ pub(crate) fn enumerate_physical_devices(
 }
 
 pub(crate) fn create_instance(result: vk::Result) {
-    layer_log(format!(
-        "snowglass: downstream vkCreateInstance returned {result}"
-    ));
+    tracing::debug!("snowglass: downstream vkCreateInstance returned {result}");
 }

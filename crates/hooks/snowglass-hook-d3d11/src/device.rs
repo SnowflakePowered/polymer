@@ -50,7 +50,7 @@ pub(crate) unsafe fn create_device(
     _context: &crate::hooks::CreateDeviceContext,
 ) {
     if result >= 0 {
-        crate::d3d11_log("snowglass: intercepted D3D11CreateDevice");
+        tracing::debug!("snowglass: intercepted D3D11CreateDevice");
     }
     // Do not hook the context yet. D3D12 applications can create auxiliary
     // D3D11 devices for interop, video, or UI work; mutating those contexts
@@ -71,7 +71,7 @@ pub(crate) unsafe fn create_device_and_swapchain(
     if result < 0 || swapchain.is_null() {
         return;
     }
-    crate::d3d11_log("snowglass: intercepted D3D11CreateDeviceAndSwapChain");
+    tracing::debug!("snowglass: intercepted D3D11CreateDeviceAndSwapChain");
     let swapchain = unsafe { *swapchain };
     if !swapchain.is_null() {
         let creation_device = if device.is_null() {

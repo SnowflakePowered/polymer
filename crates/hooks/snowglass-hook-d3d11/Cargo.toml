@@ -16,6 +16,7 @@ snowglass-hook-dxgi = { path = "../snowglass-hook-dxgi" }
 snowglass-platform-windows.workspace = true
 snowglass-producer-d3d11 = { path = "../../producers/snowglass-producer-d3d11" }
 snowglass-protocol.workspace = true
+tracing.workspace = true
 windows-sys.workspace = true
 windows.workspace = true
 

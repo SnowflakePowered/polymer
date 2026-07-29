@@ -265,16 +265,16 @@ unsafe fn set_maximum_frame_latency(swapchain: *mut c_void, creation_device: *mu
         device.ok()
     });
     let Some(device) = device else {
-        crate::dxgi_log("snowglass: IDXGIDevice1 unavailable; frame latency left at its default");
+        tracing::debug!("snowglass: IDXGIDevice1 unavailable; frame latency left at its default");
         return;
     };
     match unsafe { device.SetMaximumFrameLatency(GUEST_FRAME_LATENCY) } {
-        Ok(()) => crate::dxgi_log(format!(
+        Ok(()) => tracing::debug!(
             "snowglass: set DXGI maximum frame latency to {GUEST_FRAME_LATENCY} so presents do not pace the guest"
-        )),
-        Err(error) => crate::dxgi_log(format!(
+        ),
+        Err(error) => tracing::debug!(
             "snowglass: IDXGIDevice1::SetMaximumFrameLatency({GUEST_FRAME_LATENCY}) failed: {error}"
-        )),
+        ),
     }
 }
 
@@ -338,9 +338,7 @@ pub(crate) unsafe fn factory_created_swapchain<C>(
     result: i32,
     _context: &C,
 ) {
-    crate::dxgi_log(format!(
-        "snowglass: DXGI swapchain creation returned {result:#x}"
-    ));
+    tracing::debug!("snowglass: DXGI swapchain creation returned {result:#x}");
     if result < 0 || swapchain.is_null() {
         return;
     }
@@ -399,9 +397,9 @@ fn guarded(this: *mut c_void, stage: &str, run: impl FnOnce()) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
     if result.is_err() {
         set_swapchain_owner(this, None);
-        crate::dxgi_log(format!(
+        tracing::debug!(
             "snowglass: {stage} callback panicked; capture disabled for swapchain {this:p}"
-        ));
+        );
     }
 }
 
@@ -453,10 +451,13 @@ fn log_present_result(
     } else {
         ""
     };
-    crate::dxgi_log(format!(
+    tracing::debug!(
         "snowglass: {entry_point} returned {:#010x}{status} (count={count}, sync {}->{}, flags={:#x})",
-        result as u32, original_sync_interval, forwarded_sync_interval, forwarded_flags
-    ));
+        result as u32,
+        original_sync_interval,
+        forwarded_sync_interval,
+        forwarded_flags
+    );
 }
 
 pub(crate) unsafe fn present(

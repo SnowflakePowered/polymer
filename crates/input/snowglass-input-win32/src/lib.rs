@@ -39,10 +39,6 @@ pub struct WindowMessageForwarder {
     pointer_buttons: Mutex<HashMap<(u64, u32), u32>>,
 }
 
-type Logger = fn(&str);
-
-fn discard_log(_: &str) {}
-
 /// Receives normalized pointer input, forwards Win32 window messages, and
 /// maintains the cursor position exposed by the Win32 hook.
 pub struct Runtime {
@@ -55,11 +51,10 @@ pub struct Runtime {
     logged_key_rejection: AtomicBool,
     cursor_position: Mutex<Option<(i32, i32)>>,
     window_messages: WindowMessageForwarder,
-    log: Logger,
 }
 
 impl Runtime {
-    pub fn new(log: Logger) -> Self {
+    pub fn new() -> Self {
         Self {
             receiver_started: AtomicBool::new(false),
             connected: AtomicBool::new(false),
@@ -70,7 +65,6 @@ impl Runtime {
             logged_key_rejection: AtomicBool::new(false),
             cursor_position: Mutex::new(None),
             window_messages: WindowMessageForwarder::default(),
-            log,
         }
     }
 
@@ -96,11 +90,11 @@ impl Runtime {
 
     fn receive(self: Arc<Self>, socket_name: String) {
         let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
-            (self.log)("snowglass: Win32 input socket connection failed");
+            tracing::error!("Win32 input socket connection failed");
             return;
         };
         self.connected.store(true, Ordering::Release);
-        (self.log)("snowglass: Win32 input socket connected");
+        tracing::debug!("Win32 input socket connected");
         while let Ok(message) = input.control.receive() {
             match message {
                 Message::PointerInput(event) => self.apply(event),
@@ -118,26 +112,26 @@ impl Runtime {
             *self.cursor_position.lock() = Some(position);
         }
         if !self.logged_pointer_receive.swap(true, Ordering::AcqRel) {
-            (self.log)(&format!(
-                "snowglass: received first pointer hwnd={:#x} surface={} phase={:?} position=({}, {}) extent={}x{}",
-                event.target_window,
-                event.surface_id,
-                event.phase,
-                event.x,
-                event.y,
-                event.coordinate_width,
-                event.coordinate_height,
-            ));
+            tracing::debug!(
+                window = event.target_window,
+                surface = event.surface_id,
+                phase = ?event.phase,
+                x = event.x,
+                y = event.y,
+                width = event.coordinate_width,
+                height = event.coordinate_height,
+                "received first pointer"
+            );
         }
         if self.window_messages.apply(event) {
             if !self.logged_pointer_delivery.swap(true, Ordering::AcqRel) {
-                (self.log)("snowglass: posted first pointer message to target window");
+                tracing::debug!("posted first pointer message to target window");
             }
         } else if !self.logged_pointer_rejection.swap(true, Ordering::AcqRel) {
-            (self.log)(&format!(
-                "snowglass: rejected pointer message for hwnd={:#x}; window is missing, invalid, foreign, or has an empty client area",
-                event.target_window,
-            ));
+            tracing::warn!(
+                window = event.target_window,
+                "rejected pointer message; window is missing, invalid, foreign, or has an empty client area"
+            );
         }
     }
 
@@ -147,10 +141,10 @@ impl Runtime {
             || !is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
         {
             if !self.logged_key_rejection.swap(true, Ordering::AcqRel) {
-                (self.log)(&format!(
-                    "snowglass: rejected raw key for hwnd={:#x}; window is missing, invalid, or foreign",
-                    event.target_window
-                ));
+                tracing::warn!(
+                    window = event.target_window,
+                    "rejected raw key; window is missing, invalid, or foreign"
+                );
             }
             return;
         }
@@ -163,10 +157,13 @@ impl Runtime {
             event.repeat,
         );
         if !self.logged_key_receive.swap(true, Ordering::AcqRel) {
-            (self.log)(&format!(
-                "snowglass: posted first raw key hwnd={:#x} vk={:#x} scan={:#x} pressed={}",
-                event.target_window, event.virtual_key, event.scan_code, event.pressed
-            ));
+            tracing::debug!(
+                window = event.target_window,
+                virtual_key = event.virtual_key,
+                scan_code = event.scan_code,
+                pressed = event.pressed,
+                "posted first raw key"
+            );
         }
     }
 
@@ -176,10 +173,13 @@ impl Runtime {
             && is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
         {
             if let Err(error) = resize_client(window, event.width, event.height) {
-                (self.log)(&format!(
-                    "snowglass: failed to resize hwnd={:#x} to {}x{}: {error}",
-                    event.target_window, event.width, event.height
-                ));
+                tracing::error!(
+                    %error,
+                    window = event.target_window,
+                    width = event.width,
+                    height = event.height,
+                    "failed to resize window"
+                );
             }
         }
     }
@@ -187,7 +187,7 @@ impl Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
-        Self::new(discard_log)
+        Self::new()
     }
 }
 

@@ -9,7 +9,6 @@ use crate::{
         memory_object_win32::{ExternalImage, GL_DEVICE_LUID_EXT, GlFunctions},
         nv_dx, pbo,
     },
-    log,
     timeline::Timeline,
     tracking::{DrawCandidate, QuadBounds, Tracking},
 };
@@ -487,7 +486,9 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             // one screen; resetting lets the next frames rebuild both from
             // scratch, exactly as a fresh launch does.
             if refreshed.len() < entry.tracked_sources.len() {
-                log("snowglass: OpenGL render targets reallocated; resetting tracking graph");
+                tracing::debug!(
+                    "snowglass: OpenGL render targets reallocated; resetting tracking graph"
+                );
                 tracking.reset_graph();
             }
             merge_tracked_sources(
@@ -608,10 +609,13 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         if let Some(quad) = pairing
             && entry.placements.insert(slot, quad) != Some(quad)
         {
-            log(format!(
+            tracing::debug!(
                 "snowglass: present placement {slot} -> {},{} {}x{} (bottom-up, window {window_width}x{window_height})",
-                quad.x, quad.y, quad.width, quad.height
-            ));
+                quad.x,
+                quad.y,
+                quad.width,
+                quad.height
+            );
         }
     }
     for (slot, source) in &mut chosen {
@@ -689,7 +693,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         .map(|&(width, height, _)| (width, height))
         .collect::<Vec<_>>();
     if desired_extents != current && !chosen.is_empty() {
-        log(format!(
+        tracing::debug!(
             "snowglass: selected OpenGL render targets {}",
             chosen
                 .iter()
@@ -699,7 +703,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
-        ));
+        );
     }
     while entry.streams.len() > desired.len() {
         entry.streams.pop();
@@ -737,9 +741,7 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
                 }
             }
             Err(error) => {
-                log(format!(
-                    "snowglass: OpenGL capture creation failed: {error}"
-                ));
+                tracing::debug!("snowglass: OpenGL capture creation failed: {error}");
                 return;
             }
         }
@@ -776,10 +778,10 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         if let Err(error) = unsafe { capture.copy_frame(stream_id, source) } {
             let deferred = capture.defer();
             if deferred == 1 || deferred % 600 == 0 {
-                log(format!(
+                tracing::debug!(
                     "snowglass: OpenGL capture deferred: {error} (count={})",
                     deferred
-                ));
+                );
             }
         }
     }
@@ -812,16 +814,14 @@ impl NvCapture {
             bottom_up,
         )
         .map_err(|error| {
-            log(format!(
-                "snowglass: OpenGL NV viewer connection failed: {error}"
-            ));
+            tracing::debug!("snowglass: OpenGL NV viewer connection failed: {error}");
             error
         })
         .ok();
-        log(format!(
+        tracing::debug!(
             "snowglass: attached WGL_NV_DX_interop ring {width}x{height} (surface {:#x})",
             surface_id.0
-        ));
+        );
         Ok(Self {
             width,
             height,
@@ -1010,16 +1010,14 @@ impl PboCapture {
         unsafe { gen_framebuffers(1, &mut read_framebuffer) };
         let ipc = connect_pbo_viewer(&transport, surface_id, source_window, width, height)
             .map_err(|error| {
-                log(format!(
-                    "snowglass: OpenGL PBO viewer connection failed: {error}"
-                ));
+                tracing::debug!("snowglass: OpenGL PBO viewer connection failed: {error}");
                 error
             })
             .ok();
-        log(format!(
+        tracing::debug!(
             "snowglass: attached asynchronous OpenGL PBO ring {width}x{height} (surface {:#x})",
             surface_id.0
-        ));
+        );
         Ok(Self {
             width,
             height,
@@ -1217,16 +1215,14 @@ impl ExtCapture {
         ) {
             Ok(socket) => Some(socket),
             Err(error) => {
-                log(format!(
-                    "snowglass: OpenGL viewer connection failed: {error}"
-                ));
+                tracing::debug!("snowglass: OpenGL viewer connection failed: {error}");
                 None
             }
         };
-        log(format!(
+        tracing::debug!(
             "snowglass: attached OpenGL EXT external-object ring {width}x{height} (surface {:#x}, window {source_window:#x} {window_width}x{window_height})",
             surface_id.0
-        ));
+        );
         Ok(Self {
             width,
             height,
@@ -1415,7 +1411,7 @@ impl ExtCapture {
             timestamp_qpc: performance_counter().unwrap_or(0),
         });
         if self.frame_number <= self.slots.len() as u64 || self.frame_number % 120 == 0 {
-            log(format!(
+            tracing::debug!(
                 "snowglass: submitted OpenGL EXT frame {} tracked={} at {}x{} into slot {} (quad {},{} {}x{})",
                 self.frame_number,
                 source.is_some(),
@@ -1426,7 +1422,7 @@ impl ExtCapture {
                 bounds.y,
                 bounds.width,
                 bounds.height
-            ));
+            );
         }
         if self
             .ipc

@@ -89,10 +89,6 @@ impl Default for InputQueues {
     }
 }
 
-type Logger = fn(&str);
-
-fn discard_log(_: &str) {}
-
 /// Receives the shared input stream, maintains DirectInput state, and routes
 /// normalized pointer messages through the Win32 window-message backend.
 pub struct Runtime {
@@ -105,11 +101,10 @@ pub struct Runtime {
     notifications: DashMap<usize, (DirectInputDevice, usize)>,
     receiver_socket: Mutex<Option<LocalSocket>>,
     receiver_worker: Mutex<Option<JoinHandle<()>>>,
-    log: Logger,
 }
 
 impl Runtime {
-    pub fn new(log: Logger) -> Self {
+    pub fn new() -> Self {
         Self {
             receiver_started: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -120,7 +115,6 @@ impl Runtime {
             notifications: DashMap::new(),
             receiver_socket: Mutex::new(None),
             receiver_worker: Mutex::new(None),
-            log,
         }
     }
 
@@ -140,9 +134,7 @@ impl Runtime {
             Ok(worker) => *self.receiver_worker.lock() = Some(worker),
             Err(error) => {
                 self.receiver_started.store(false, Ordering::Release);
-                (self.log)(&format!(
-                    "snowglass: DirectInput input receiver failed to start: {error}"
-                ));
+                tracing::error!(%error, "DirectInput input receiver failed to start");
             }
         }
     }
@@ -216,8 +208,8 @@ impl Runtime {
 
     fn receive(runtime: Weak<Self>, socket_name: String) {
         let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
-            if let Some(runtime) = runtime.upgrade() {
-                (runtime.log)("snowglass: DirectInput input socket connection failed");
+            if runtime.upgrade().is_some() {
+                tracing::error!("DirectInput input socket connection failed");
             }
             return;
         };
@@ -229,7 +221,7 @@ impl Runtime {
         }
         *owner.receiver_socket.lock() = input.control.try_clone().ok();
         owner.connected.store(true, Ordering::Release);
-        (owner.log)("snowglass: DirectInput input socket connected");
+        tracing::debug!("DirectInput input socket connected");
         drop(owner);
         while let Ok(message) = input.control.receive() {
             let Some(owner) = runtime.upgrade() else {
@@ -254,18 +246,20 @@ impl Runtime {
         if event.device == DirectInputDevice::Keyboard
             && !self.logged_keyboard_receive.swap(true, Ordering::AcqRel)
         {
-            (self.log)(&format!(
-                "snowglass: received first keyboard transition offset={:#x} data={:#x}",
-                event.offset, event.data
-            ));
+            tracing::debug!(
+                offset = event.offset,
+                data = event.data,
+                "received first keyboard transition"
+            );
         }
         if event.device == DirectInputDevice::Mouse
             && !self.logged_mouse_receive.swap(true, Ordering::AcqRel)
         {
-            (self.log)(&format!(
-                "snowglass: received first mouse transition offset={} data={}",
-                event.offset, event.data as i32
-            ));
+            tracing::debug!(
+                offset = event.offset,
+                data = event.data as i32,
+                "received first mouse transition"
+            );
         }
         self.queues.lock().apply(event);
         let handles = self
@@ -282,7 +276,7 @@ impl Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
-        Self::new(discard_log)
+        Self::new()
     }
 }
 

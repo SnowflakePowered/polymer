@@ -8,6 +8,7 @@
 /// concurrently unload the D3D11 module while installation is in progress.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn SnowglassInstallD3d11Hook() -> i32 {
+    snowglass_hook::telemetry::init_file_tracing(snowglass_hook::config::d3d11_log_file());
     unsafe { crate::install::install() }
 }
 

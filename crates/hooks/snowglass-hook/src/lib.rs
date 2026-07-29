@@ -1,6 +1,7 @@
 //! Shared typed-hook infrastructure.
 
 pub mod config;
+pub mod telemetry;
 mod vtable;
 
 #[doc(hidden)]

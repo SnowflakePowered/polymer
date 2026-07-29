@@ -191,7 +191,7 @@ impl GameLayerState {
             let value = serde_json::to_string(&message).unwrap_or_else(|_| "null".to_owned());
             let script = format!("window.__snowglassGameLayerMessage({value});");
             if let Err(error) = foreground.evaluate_script(&script) {
-                eprintln!("snowglass: delivering a game-layer message failed: {error}");
+                tracing::error!("snowglass: delivering a game-layer message failed: {error}");
             }
         }
         for message in layer.take_proxy_messages() {
@@ -263,7 +263,7 @@ impl GameLayerState {
         let value = serde_json::to_string(message).unwrap_or_else(|_| "null".to_owned());
         let script = format!("window.__snowglassGameLayerProxyMessage?.({value});");
         if let Err(error) = foreground.evaluate_script(&script) {
-            eprintln!("snowglass: delivering a game-layer proxy message failed: {error}");
+            tracing::error!("snowglass: delivering a game-layer proxy message failed: {error}");
         }
     }
 }

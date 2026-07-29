@@ -12,6 +12,7 @@ const LOADER_LAYER_INTERFACE_VERSION: u32 = 2;
 pub(crate) unsafe fn negotiate(
     interface: *mut crate::layer::VkNegotiateLayerInterface,
 ) -> vk::Result {
+    snowglass_hook::telemetry::init_file_tracing(snowglass_hook::config::layer_log_file());
     let _ = crate::layer::install_hook_state(Arc::new(crate::layer::VulkanHookState::default()));
     if interface.is_null() {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
@@ -402,9 +403,7 @@ pub(crate) unsafe fn create_swapchain(
         )
     };
     if result != vk::Result::SUCCESS && pacing_override.is_some() {
-        crate::layer::layer_log(format!(
-            "snowglass: unthrottled vkCreateSwapchainKHR failed with {result}"
-        ));
+        tracing::debug!("snowglass: unthrottled vkCreateSwapchainKHR failed with {result}");
     }
     result
 }
@@ -434,10 +433,10 @@ unsafe fn unthrottled_swapchain_info<'a>(
         )
     };
     if result != vk::Result::SUCCESS || count == 0 {
-        crate::layer::layer_log(format!(
+        tracing::debug!(
             "snowglass: present-mode query failed with {result}; preserving {}",
             original.present_mode.as_raw()
-        ));
+        );
         return None;
     }
     let mut modes = vec![vk::PresentModeKHR::FIFO; count as usize];
@@ -450,19 +449,19 @@ unsafe fn unthrottled_swapchain_info<'a>(
         )
     };
     if !matches!(result, vk::Result::SUCCESS | vk::Result::INCOMPLETE) {
-        crate::layer::layer_log(format!(
+        tracing::debug!(
             "snowglass: present-mode enumeration failed with {result}; preserving {}",
             original.present_mode.as_raw()
-        ));
+        );
         return None;
     }
     modes.truncate(count as usize);
     let present_mode = preferred_unthrottled_present_mode(&modes);
     let Some(present_mode) = present_mode else {
-        crate::layer::layer_log(format!(
+        tracing::debug!(
             "snowglass: neither IMMEDIATE nor MAILBOX is supported; preserving {}",
             original.present_mode.as_raw()
-        ));
+        );
         return None;
     };
 
@@ -483,13 +482,13 @@ unsafe fn unthrottled_swapchain_info<'a>(
             modified.min_image_count = capabilities.min_image_count;
         }
     }
-    crate::layer::layer_log(format!(
+    tracing::debug!(
         "snowglass: overriding Vulkan present mode {}->{}, image count {}->{}",
         original.present_mode.as_raw(),
         present_mode.as_raw(),
         original.min_image_count,
         modified.min_image_count
-    ));
+    );
     Some(modified)
 }
 

@@ -1642,7 +1642,7 @@ unsafe fn create_vulkan_video_readbacks(
             | vk::Format::B8G8R8A8_SRGB
             | vk::Format::A2B10G10R10_UNORM_PACK32
     ) {
-        eprintln!(
+        tracing::error!(
             "snowglass: WebRTC does not support Vulkan format {}",
             format.as_raw()
         );

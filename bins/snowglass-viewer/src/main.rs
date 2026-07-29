@@ -468,27 +468,15 @@ impl ViewerCompositor {
     }
 }
 
-struct StderrLogger;
-
-impl log::Log for StderrLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.target().starts_with("webrtc")
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
-    if std::env::var_os("SNOWGLASS_WEBRTC_TRACE").is_some() {
-        let _ = log::set_boxed_logger(Box::new(StderrLogger));
-        log::set_max_level(log::LevelFilter::Trace);
-    }
+    let default_filter = if std::env::var_os("SNOWGLASS_WEBRTC_TRACE").is_some() {
+        "info,webrtc=trace"
+    } else {
+        "info"
+    };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let statistics_recorder = snowglass_statistics::install()?;
     let options = parse_target()?;
     layout::configure(options.layout_css.as_deref())?;
@@ -659,7 +647,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         && size.height != 0
                         && let Err(error) = compositor.recreate_swapchain(&window)
                     {
-                        eprintln!("snowglass: swapchain recreation failed: {error}");
+                        tracing::error!("snowglass: swapchain recreation failed: {error}");
                         target.exit();
                     }
                 }
@@ -853,7 +841,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 let stream = *offer.stream();
                                 let stream_index = offer.id().0;
                                 if stream_index >= surface_limit {
-                                    eprintln!(
+                                    tracing::warn!(
                                         "snowglass: ignored {:?} surface window {:#x}; tracked surface {} is outside the viewer limit {}",
                                         stream.image_kind,
                                         stream.source_window,
@@ -901,7 +889,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                     connection,
                                                     &mut video_compositor,
                                                 );
-                                                eprintln!(
+                                                tracing::error!(
                                                     "snowglass: capture stream {connection} disappeared while it was being imported: {error}"
                                                 );
                                                 continue;
@@ -934,7 +922,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                 existing,
                                                 &mut video_compositor,
                                             ) {
-                                                eprintln!(
+                                                tracing::error!(
                                                     "snowglass: failed to replace prior stream: {error}"
                                                 );
                                             }
@@ -968,7 +956,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         } else {
                                             "Vulkan"
                                         };
-                                        eprintln!(
+                                        tracing::info!(
                                             "snowglass: imported {active_backend} stream {}x{} (surface {:#x}) for window {:#x} with {} slots using {}",
                                             stream.width,
                                             stream.height,
@@ -979,7 +967,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                         );
                                     }
                                     Err(error) => {
-                                        eprintln!("snowglass: direct import failed: {error}");
+                                        tracing::error!("snowglass: direct import failed: {error}");
                                         launch_error = Some(format!(
                                             "The selected hooks did not publish output compatible with the fixed {viewer_api:?} viewer: {error}"
                                         ));
@@ -993,7 +981,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     continue;
                                 }
                                 if frame.frame_number == 1 {
-                                    eprintln!(
+                                    tracing::debug!(
                                         "snowglass: received first {active_backend} frame on connection {connection}"
                                     );
                                 }
@@ -1028,7 +1016,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if let Err(error) = compositor
                                     .disconnect_stream(connection, &mut video_compositor)
                                 {
-                                    eprintln!("snowglass: stream disconnect failed: {error}");
+                                    tracing::error!("snowglass: stream disconnect failed: {error}");
                                 }
                             }
                         }
@@ -1387,12 +1375,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         Ok(true) => stats.presentation.record_present(has_pending_frame),
                         Ok(false) => {
                             if let Err(error) = compositor.recreate_swapchain(&window) {
-                                eprintln!("snowglass: swapchain recreation failed: {error}");
+                                tracing::error!("snowglass: swapchain recreation failed: {error}");
                                 target.exit();
                             }
                         }
                         Err(error) => {
-                            eprintln!("snowglass: direct composition failed: {error}");
+                            tracing::error!("snowglass: direct composition failed: {error}");
                             target.exit();
                         }
                     }

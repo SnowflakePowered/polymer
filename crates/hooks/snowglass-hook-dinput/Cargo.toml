@@ -8,6 +8,7 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+tracing.workspace = true
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true

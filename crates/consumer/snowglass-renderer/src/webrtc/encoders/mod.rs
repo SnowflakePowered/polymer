@@ -115,7 +115,7 @@ impl Encoder {
                 ) {
                     Ok(encoder) => self.d3d12 = Some(encoder),
                     Err(error) => {
-                        eprintln!(
+                        tracing::warn!(
                             "snowglass: D3D12 Video Encode unavailable; using OpenH264: {error}"
                         );
                         self.d3d12_disabled = true;
@@ -126,7 +126,7 @@ impl Encoder {
                 match encoder.encode_frame(gpu, width, height) {
                     Ok(encoded) => {
                         if !self.d3d12_announced {
-                            eprintln!(
+                            tracing::info!(
                                 "snowglass: using D3D12 Video Encode {} for {width}x{height}",
                                 encoder.codec().name()
                             );
@@ -139,7 +139,9 @@ impl Encoder {
                         });
                     }
                     Err(error) => {
-                        eprintln!("snowglass: D3D12 Video Encode failed; using OpenH264: {error}");
+                        tracing::warn!(
+                            "snowglass: D3D12 Video Encode failed; using OpenH264: {error}"
+                        );
                         self.d3d12 = None;
                         self.d3d12_disabled = true;
                     }
@@ -172,7 +174,7 @@ impl Encoder {
                 ) {
                     Ok(encoder) => self.vulkan = Some(encoder),
                     Err(error) => {
-                        eprintln!(
+                        tracing::warn!(
                             "snowglass: Vulkan Video Encode unavailable; using OpenH264: {error}"
                         );
                         self.vulkan_disabled = true;
@@ -183,7 +185,7 @@ impl Encoder {
                 match encoder.encode_frame(gpu, width, height) {
                     Ok(encoded) => {
                         if !self.vulkan_announced {
-                            eprintln!(
+                            tracing::info!(
                                 "snowglass: using Vulkan Video Encode {} for {width}x{height}",
                                 encoder.codec().name()
                             );
@@ -197,7 +199,7 @@ impl Encoder {
                     }
                     Err(error) => {
                         if encoder.has_in_flight_work() {
-                            eprintln!(
+                            tracing::error!(
                                 "snowglass: Vulkan Video Encode GPU timeout; disabling WebRTC encoding for this stream: {error}"
                             );
                             // Destroying objects referenced by a stalled queue is invalid and
@@ -209,7 +211,9 @@ impl Encoder {
                             self.vulkan_gpu_stalled = true;
                             return Err(error);
                         }
-                        eprintln!("snowglass: Vulkan Video Encode failed; using OpenH264: {error}");
+                        tracing::warn!(
+                            "snowglass: Vulkan Video Encode failed; using OpenH264: {error}"
+                        );
                         self.vulkan = None;
                         self.vulkan_disabled = true;
                         if gpu.completion_submitted() {
@@ -240,7 +244,7 @@ impl Encoder {
         });
         let encoded = encoder.encode(rgba, width, height)?;
         if !self.openh264_announced {
-            eprintln!("snowglass: using OpenH264 for {width}x{height}");
+            tracing::info!("snowglass: using OpenH264 for {width}x{height}");
             self.openh264_announced = true;
         }
         Ok(EncodedFrame {

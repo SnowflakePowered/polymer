@@ -97,7 +97,7 @@ impl Encoder {
         match Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::Hevc) {
             Ok(encoder) => Ok(encoder),
             Err(hevc_error) => {
-                eprintln!("snowglass: Vulkan HEVC unavailable; trying H.264: {hevc_error}");
+                tracing::warn!("snowglass: Vulkan HEVC unavailable; trying H.264: {hevc_error}");
                 Self::new_with_codec(frame, width, height, bitrate, frame_rate, Codec::H264)
             }
         }
@@ -529,7 +529,7 @@ impl Encoder {
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
             if !self.synchronization_announced {
-                eprintln!(
+                tracing::debug!(
                     "snowglass: Vulkan WebRTC conversion waiting for ready timeline value {}",
                     frame.ready_value
                 );
@@ -544,7 +544,7 @@ impl Encoder {
             )?;
             self.conversion_fence_in_flight = false;
             if !self.synchronization_announced {
-                eprintln!("snowglass: Vulkan WebRTC conversion completed");
+                tracing::debug!("snowglass: Vulkan WebRTC conversion completed");
                 self.synchronization_announced = true;
             }
             self.output_initialized = true;
@@ -1217,7 +1217,7 @@ impl VideoState {
             self.fence_in_flight = true;
             frame.mark_completion_submitted();
             if !self.initialized {
-                eprintln!(
+                tracing::debug!(
                     "snowglass: Vulkan Video Encode waiting for conversion timeline value {conversion_value}"
                 );
             }
@@ -1233,7 +1233,7 @@ impl VideoState {
             }
             self.fence_in_flight = false;
             if !self.initialized {
-                eprintln!("snowglass: Vulkan Video Encode completed");
+                tracing::debug!("snowglass: Vulkan Video Encode completed");
             }
             self.initialized = true;
 
@@ -1444,7 +1444,7 @@ impl VideoState {
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
             if !self.initialized {
-                eprintln!("snowglass: Vulkan HEVC encode submitting first frame");
+                tracing::debug!("snowglass: Vulkan HEVC encode submitting first frame");
             }
             device.queue_submit(self.queue, &[submit], self.fence)?;
             self.fence_in_flight = true;
@@ -1459,7 +1459,7 @@ impl VideoState {
             }
             self.fence_in_flight = false;
             if !self.initialized {
-                eprintln!("snowglass: Vulkan HEVC encode first frame completed");
+                tracing::debug!("snowglass: Vulkan HEVC encode first frame completed");
             }
             self.initialized = true;
             // The encode fence has signaled, so the query must be resolvable.

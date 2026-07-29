@@ -104,7 +104,7 @@ pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4])
         state.capture = match unsafe { Capture::new(hwnd, width, height) } {
             Ok(capture) => Some(capture),
             Err(error) => {
-                log(format!("snowglass: GDI capture creation failed: {error}"));
+                tracing::debug!("snowglass: GDI capture creation failed: {error}");
                 None
             }
         };
@@ -151,13 +151,13 @@ pub unsafe fn end_paint(hwnd: isize, dc: isize) {
         Ok(surface) => surface,
         Err(error) => {
             capture.active_dc = None;
-            log(format!("snowglass: GDI surface query failed: {error}"));
+            tracing::debug!("snowglass: GDI surface query failed: {error}");
             return;
         }
     };
     if let Err(error) = unsafe { surface.ReleaseDC(Some(&raw const capture.dirty)) } {
         capture.active_dc = None;
-        log(format!("snowglass: GDI ReleaseDC failed: {error}"));
+        tracing::debug!("snowglass: GDI ReleaseDC failed: {error}");
         return;
     }
     capture.active_dc = None;
@@ -167,9 +167,7 @@ pub unsafe fn end_paint(hwnd: isize, dc: isize) {
         .fence()
         .expect("GDI rings carry a producer fence");
     if let Err(error) = unsafe { capture.context.Signal(fence, value) } {
-        log(format!(
-            "snowglass: GDI producer-fence signal failed: {error}"
-        ));
+        tracing::debug!("snowglass: GDI producer-fence signal failed: {error}");
         return;
     }
     capture.sync_value = value;
@@ -204,10 +202,12 @@ pub unsafe fn end_paint(hwnd: isize, dc: isize) {
         capture.ipc = None;
     }
     if capture.frame_number == 1 || capture.frame_number % 120 == 0 {
-        log(format!(
+        tracing::debug!(
             "snowglass: submitted GDI capture {}x{} (count={})",
-            capture.width, capture.height, capture.frame_number
-        ));
+            capture.width,
+            capture.height,
+            capture.frame_number
+        );
     }
 }
 
@@ -260,9 +260,7 @@ impl Capture {
                 format!("viewer connection: {error}"),
             )
         })?;
-        log(format!(
-            "snowglass: attached GDI {width}x{height} shared DXGI surface"
-        ));
+        tracing::debug!("snowglass: attached GDI {width}x{height} shared DXGI surface");
         Ok(Self {
             hwnd,
             width,
@@ -345,19 +343,4 @@ fn connect_viewer(
 
 fn invalid_pointer() -> Error {
     Error::from_hresult(HRESULT(0x8000_4003u32 as i32))
-}
-
-fn log(message: impl std::fmt::Display) {
-    use std::io::Write;
-    eprintln!("{message}");
-    let Some(path) = snowglass_hook::config::gdi_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{message}");
-    }
 }

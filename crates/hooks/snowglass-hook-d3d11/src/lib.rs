@@ -9,21 +9,6 @@ mod vtable;
 
 pub use sys::{SnowglassInstallD3d11Hook, SnowglassUninstallD3d11Hook};
 
-pub(crate) fn d3d11_log(message: impl std::fmt::Display) {
-    use std::io::Write;
-    eprintln!("{message}");
-    let Some(path) = snowglass_hook::config::d3d11_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use parking_lot::{Mutex, MutexGuard};

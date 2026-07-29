@@ -43,22 +43,6 @@ pub struct CaptureDevice {
     pub adapter_luid: AdapterLuid,
 }
 
-fn log(message: impl std::fmt::Display) {
-    use std::io::Write;
-
-    eprintln!("{message}");
-    let Some(path) = config::layer_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
 /// One exported stream: a ring, its synchronization, its viewer connection,
 /// and the engine copying into it. Each tracked render target gets its own
 /// stream so the viewer can show the screens as separate surfaces.
@@ -236,10 +220,10 @@ impl CaptureState {
                 })
                 .collect::<Vec<_>>()
                 .join(",");
-            log(format!(
+            tracing::debug!(
                 "snowglass: graph presentation {swapchain:?} window {:#x}: [{sources}]",
                 state.source_window
-            ));
+            );
         }
         let mut presentations = self.graph_presentations.lock();
         if sources.is_empty() {
@@ -336,14 +320,14 @@ impl CaptureState {
                 if let std::collections::hash_map::Entry::Vacant(entry) =
                     layouts.entry((source.extent.width, source.extent.height))
                 {
-                    log(format!(
+                    tracing::debug!(
                         "snowglass: graph target layout {}x{} -> window {:#x} ({}x{})",
                         source.extent.width,
                         source.extent.height,
                         target.source_window,
                         target.presentation_extent.width,
                         target.presentation_extent.height,
-                    ));
+                    );
                     entry.insert(target);
                 }
             }
@@ -474,11 +458,11 @@ impl CaptureState {
             {
                 continue;
             }
-            log(format!(
+            tracing::debug!(
                 "snowglass: retiring {} stream(s) of an idle swapchain (window {:#x})",
                 entry.streams.len(),
                 entry.source_window
-            ));
+            );
             for mut stream in entry.streams.drain(..) {
                 stream.retire();
             }
@@ -626,16 +610,14 @@ fn begin_viewer_connection() -> Option<ViewerConnection> {
     let mut socket = match LocalSocket::connect(&session) {
         Ok(socket) => socket,
         Err(error) => {
-            log(format!(
-                "snowglass: viewer socket connection failed: {error}"
-            ));
+            tracing::debug!("snowglass: viewer socket connection failed: {error}");
             return None;
         }
     };
     match socket.receive() {
         Ok(Message::Hello(hello)) if hello.protocol_version == PROTOCOL_VERSION => {
             if let Err(error) = socket.enable_frame_channel(hello.process_id) {
-                log(format!("snowglass: shared frame channel failed: {error}"));
+                tracing::debug!("snowglass: shared frame channel failed: {error}");
                 return None;
             }
             Some(ViewerConnection {
@@ -645,18 +627,19 @@ fn begin_viewer_connection() -> Option<ViewerConnection> {
             })
         }
         Ok(Message::Hello(hello)) => {
-            log(format!(
+            tracing::debug!(
                 "snowglass: viewer protocol {} is incompatible with {}",
-                hello.protocol_version, PROTOCOL_VERSION
-            ));
+                hello.protocol_version,
+                PROTOCOL_VERSION
+            );
             None
         }
         Ok(_) => {
-            log("snowglass: viewer did not begin with a Hello message");
+            tracing::debug!("snowglass: viewer did not begin with a Hello message");
             None
         }
         Err(error) => {
-            log(format!("snowglass: viewer handshake failed: {error}"));
+            tracing::debug!("snowglass: viewer handshake failed: {error}");
             None
         }
     }
@@ -675,7 +658,7 @@ fn publish_stream(
 ) -> Option<LocalSocket> {
     let viewer_pid = connection.process_id;
     if ring.slots().len() > MAX_IMAGE_SLOTS {
-        log("snowglass: export ring exceeds protocol slot capacity");
+        tracing::debug!("snowglass: export ring exceeds protocol slot capacity");
         return None;
     }
     let mut handles = [0; MAX_IMAGE_SLOTS];
@@ -683,9 +666,7 @@ fn publish_stream(
         match duplicate_handle_into_process(slot.raw_handle(), ProcessId(viewer_pid)) {
             Ok(handle) => *destination = handle as i64,
             Err(error) => {
-                log(format!(
-                    "snowglass: image handle duplication failed: {error}"
-                ));
+                tracing::debug!("snowglass: image handle duplication failed: {error}");
                 return None;
             }
         }
@@ -695,10 +676,10 @@ fn publish_stream(
         match dxgi_format(format) {
             Some(format) => format,
             None => {
-                log(format!(
+                tracing::debug!(
                     "snowglass: Vulkan format {} has no D3D12 interop mapping",
                     format.as_raw()
-                ));
+                );
                 return None;
             }
         }
@@ -731,9 +712,7 @@ fn publish_stream(
         ) {
             Ok(handle) => handle as i64,
             Err(error) => {
-                log(format!(
-                    "snowglass: timeline handle duplication failed: {error}"
-                ));
+                tracing::debug!("snowglass: timeline handle duplication failed: {error}");
                 return None;
             }
         },
@@ -742,9 +721,7 @@ fn publish_stream(
                 match duplicate_handle_into_process(timeline.raw_handle(), ProcessId(viewer_pid)) {
                     Ok(handle) => handle as i64,
                     Err(error) => {
-                        log(format!(
-                            "snowglass: consumer fence duplication failed: {error}"
-                        ));
+                        tracing::debug!("snowglass: consumer fence duplication failed: {error}");
                         return None;
                     }
                 }
@@ -754,7 +731,7 @@ fn publish_stream(
         bottom_up: false,
     };
     if let Err(error) = connection.socket.send(Message::StreamReady(ready)) {
-        log(format!("snowglass: StreamReady send failed: {error}"));
+        tracing::debug!("snowglass: StreamReady send failed: {error}");
         return None;
     }
     // The viewer acknowledges only accepted streams; a rejection closes the
@@ -764,17 +741,15 @@ fn publish_stream(
     match connection.socket.receive() {
         Ok(Message::StreamAccepted) => {}
         Ok(_) => {
-            log("snowglass: viewer did not acknowledge the stream");
+            tracing::debug!("snowglass: viewer did not acknowledge the stream");
             return None;
         }
         Err(error) => {
-            log(format!("snowglass: viewer declined the stream: {error}"));
+            tracing::debug!("snowglass: viewer declined the stream: {error}");
             return None;
         }
     }
-    log(format!(
-        "snowglass: connected export ring to viewer process {viewer_pid}"
-    ));
+    tracing::debug!("snowglass: connected export ring to viewer process {viewer_pid}");
     Some(connection.socket)
 }
 
@@ -840,7 +815,7 @@ fn create_transport(
             .as_ref()
             .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
         {
-            log(
+            tracing::debug!(
                 "snowglass: Vulkan device cannot provide D3D12 interop; using Vulkan opaque handles",
             );
         }
@@ -866,18 +841,18 @@ fn create_transport(
                     .iter()
                     .map(|slot| slot.raw_handle())
                     .collect::<Vec<_>>();
-                log(format!(
+                tracing::debug!(
                     "snowglass: attached {}-slot export ring {}x{} (format={}) {:?}",
                     ring.slots().len(),
                     extent.width,
                     extent.height,
                     format.as_raw(),
                     handles
-                ));
+                );
                 Some(ring)
             }
             Err(error) => {
-                log(format!("snowglass: export ring allocation failed: {error}"));
+                tracing::debug!("snowglass: export ring allocation failed: {error}");
                 None
             }
         }
@@ -893,9 +868,7 @@ fn create_transport(
         ) {
             Ok(timeline) => Some(timeline),
             Err(error) => {
-                log(format!(
-                    "snowglass: export timeline semaphore creation failed: {error}"
-                ));
+                tracing::debug!("snowglass: export timeline semaphore creation failed: {error}");
                 None
             }
         }
@@ -911,9 +884,7 @@ fn create_transport(
                 handle_mode,
             )
             .map_err(|error| {
-                log(format!(
-                    "snowglass: consumer timeline semaphore creation failed: {error}"
-                ));
+                tracing::debug!("snowglass: consumer timeline semaphore creation failed: {error}");
                 error
             })
             .ok()
@@ -959,9 +930,9 @@ impl CaptureState {
         }
         drop(windows);
         let title = window_title(NativeWindow(source_window)).unwrap_or_default();
-        log(format!(
+        tracing::debug!(
             "snowglass: associated Vulkan surface with HWND {source_window:#x} title {title:?}"
-        ));
+        );
     }
 
     pub fn surface_destroyed(&self, surface: vk::SurfaceKHR) {
@@ -1060,9 +1031,9 @@ impl CaptureState {
                 last_present: self.presents_seen.load(Ordering::Relaxed),
             },
         );
-        log(format!(
+        tracing::debug!(
             "snowglass: intercepted vkCreateSwapchainKHR (count={count}, window {source_window:#x}, tracking slot {tracked_slot:?}, selected={selected})"
-        ));
+        );
     }
 
     pub fn swapchain_destroyed(&self, swapchain: vk::SwapchainKHR) {
@@ -1087,13 +1058,13 @@ impl CaptureState {
                     state.tracking.swapchain_image_added(*image, state.extent);
                 }
             }
-            log(format!(
+            tracing::debug!(
                 "snowglass: associated {} swapchain images ({}x{}, format={})",
                 state.images.len(),
                 state.extent.width,
                 state.extent.height,
                 state.format.as_raw()
-            ));
+            );
         }
     }
 
@@ -1131,9 +1102,7 @@ impl CaptureState {
         }
         let count = self.presents_seen.fetch_add(1, Ordering::Relaxed) + 1;
         if count == 1 || count % 120 == 0 {
-            log(format!(
-                "snowglass: intercepted vkQueuePresentKHR (count={count})"
-            ));
+            tracing::debug!("snowglass: intercepted vkQueuePresentKHR (count={count})");
         }
         copied.then_some(chained_waits)
     }
@@ -1164,7 +1133,9 @@ impl CaptureState {
             .unwrap_or_default();
         let previous = tracking.refresh_sources(&state.tracked_sources);
         if reallocated {
-            log("snowglass: Vulkan render targets reallocated; resetting tracking graph");
+            tracing::debug!(
+                "snowglass: Vulkan render targets reallocated; resetting tracking graph"
+            );
             tracking.reset_graph();
         }
         if resolved.is_empty() {
@@ -1352,10 +1323,13 @@ impl CaptureState {
                 .filter(|stream| is_graph_surface_id(stream.surface_id))
                 .map_or(proposed_surface_id, |stream| stream.surface_id);
             if index >= state.streams.len() {
-                log(format!(
+                tracing::debug!(
                     "snowglass: stream {index} ({}x{}, surface {:#x}) targets window {:#x}",
-                    extent.width, extent.height, surface_id.0, target.source_window
-                ));
+                    extent.width,
+                    extent.height,
+                    surface_id.0,
+                    target.source_window
+                );
                 let transport = create_transport(
                     state.capture.as_deref(),
                     extent,
@@ -1377,14 +1351,14 @@ impl CaptureState {
                 || stream.surface_id != surface_id
                 || stream.target_window != target.source_window
             {
-                log(format!(
+                tracing::debug!(
                     "snowglass: stream {index} ({}x{}, surface {:#x}) retargets window {:#x} -> {:#x}",
                     extent.width,
                     extent.height,
                     surface_id.0,
                     stream.target_window,
                     target.source_window
-                ));
+                );
                 stream.retire();
                 let transport = create_transport(
                     state.capture.as_deref(),
@@ -1469,7 +1443,7 @@ impl CaptureState {
                 ) {
                     Ok(engine) => stream.copy_engine = Some(engine),
                     Err(error) => {
-                        log(format!("snowglass: copy engine creation failed: {error}"));
+                        tracing::debug!("snowglass: copy engine creation failed: {error}");
                         continue;
                     }
                 }
@@ -1604,7 +1578,7 @@ impl CaptureState {
                         .as_mut()
                         .is_some_and(|socket| socket.send(notification).is_err())
                     {
-                        log("snowglass: viewer socket disconnected");
+                        tracing::debug!("snowglass: viewer socket disconnected");
                         stream.ipc = None;
                     }
                     if count == 1 || count % 120 == 0 {
@@ -1620,12 +1594,12 @@ impl CaptureState {
                                 )
                             },
                         );
-                        log(format!(
+                        tracing::debug!(
                             "snowglass: submitted capture {}x{} (count={count}, stream={index}, tracked={}, placement={placement})",
                             render_extent.width,
                             render_extent.height,
                             source.is_some(),
-                        ));
+                        );
                     }
                     waits.clear();
                     waits.push(submission.present_ready);
@@ -1633,7 +1607,7 @@ impl CaptureState {
                 }
                 Err(vk::Result::NOT_READY) => {}
                 Err(error) => {
-                    log(format!("snowglass: swapchain copy failed: {error}"));
+                    tracing::debug!("snowglass: swapchain copy failed: {error}");
                 }
             }
         }
@@ -1700,9 +1674,9 @@ impl CaptureState {
                     capture.set_loader_data,
                 ) {
                     Ok(engine) => stream.copy_engine = Some(engine),
-                    Err(error) => log(format!(
-                        "snowglass: tracked copy engine creation failed: {error}"
-                    )),
+                    Err(error) => {
+                        tracing::debug!("snowglass: tracked copy engine creation failed: {error}")
+                    }
                 }
             }
             if let Some(engine) = stream.copy_engine.as_mut() {
@@ -1739,14 +1713,15 @@ impl CaptureState {
                             stream.ipc = None;
                         }
                         if count == 1 || count % 120 == 0 {
-                            log(format!(
+                            tracing::debug!(
                                 "snowglass: submitted graphics-queue capture {}x{} (count={count})",
-                                candidate.extent.width, candidate.extent.height
-                            ));
+                                candidate.extent.width,
+                                candidate.extent.height
+                            );
                         }
                     }
                     Err(vk::Result::NOT_READY) => {}
-                    Err(error) => log(format!("snowglass: tracked copy failed: {error}")),
+                    Err(error) => tracing::debug!("snowglass: tracked copy failed: {error}"),
                 }
             }
         }

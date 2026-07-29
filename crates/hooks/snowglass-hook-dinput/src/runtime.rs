@@ -8,8 +8,6 @@ use snowglass_input::DirectInputDevice;
 use snowglass_input_dinput::Runtime as InputRuntime;
 use std::{
     ffi::c_void,
-    fs::OpenOptions,
-    io::Write,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -37,28 +35,16 @@ pub(crate) struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
+        snowglass_hook::telemetry::init_file_tracing(config::dinput_log_file());
         Self {
             logged_delivery: AtomicBool::new(false),
             logged_keyboard_poll: AtomicBool::new(false),
             logged_keyboard_pressed: AtomicBool::new(false),
             logged_mouse_poll: AtomicBool::new(false),
             logged_mouse_activity: AtomicBool::new(false),
-            input: Arc::new(InputRuntime::new(input_log)),
+            input: Arc::new(InputRuntime::new()),
         }
     }
-}
-
-fn dinput_log(message: impl std::fmt::Display) {
-    let Some(path) = config::dinput_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
-fn input_log(message: &str) {
-    dinput_log(message);
 }
 
 impl Runtime {
@@ -124,19 +110,21 @@ pub(crate) unsafe fn create_device(
     let runtime = context.state.runtime.clone();
     if !class.is_null() {
         let class = unsafe { &*class };
-        dinput_log(format!(
+        tracing::debug!(
             "snowglass: DirectInput CreateDevice {:08x}-{:04x}-{:04x}",
-            class.data1, class.data2, class.data3
-        ));
+            class.data1,
+            class.data2,
+            class.data3
+        );
     }
-    dinput_log(format!(
+    tracing::debug!(
         "snowglass: DirectInput CreateDevice returned {result:#x} interface={:#x}",
         if output.is_null() {
             0
         } else {
             (unsafe { *output }) as usize
         }
-    ));
+    );
     if result >= 0 && !class.is_null() && !output.is_null() {
         let device_class = if unsafe { guid_eq(&*class, &GUID_SysKeyboard) } {
             Some(DirectInputDevice::Keyboard)
@@ -151,9 +139,7 @@ pub(crate) unsafe fn create_device(
             {
                 unsafe { *output = proxy };
             }
-            dinput_log(format!(
-                "snowglass: hooked {device_class:?} DirectInput device"
-            ));
+            tracing::debug!("snowglass: hooked {device_class:?} DirectInput device");
         }
     }
 }
@@ -239,7 +225,7 @@ pub(crate) unsafe fn get_device_state(
                 .logged_keyboard_poll
                 .swap(true, Ordering::AcqRel)
             {
-                dinput_log("snowglass: target first polled forwarded keyboard state");
+                tracing::debug!("snowglass: target first polled forwarded keyboard state");
             }
             if state.iter().any(|state| *state != 0)
                 && !next
@@ -248,7 +234,7 @@ pub(crate) unsafe fn get_device_state(
                     .logged_keyboard_pressed
                     .swap(true, Ordering::AcqRel)
             {
-                dinput_log("snowglass: target polled a pressed forwarded keyboard key");
+                tracing::debug!("snowglass: target polled a pressed forwarded keyboard key");
             }
             unsafe {
                 std::ptr::copy_nonoverlapping(state.as_ptr(), output.cast::<u8>(), state.len());
@@ -266,7 +252,7 @@ pub(crate) unsafe fn get_device_state(
                 .logged_mouse_poll
                 .swap(true, Ordering::AcqRel)
             {
-                dinput_log("snowglass: target first polled forwarded mouse state");
+                tracing::debug!("snowglass: target first polled forwarded mouse state");
             }
             let state = next.state.runtime.input.take_mouse_state();
             if (state.axes != [0; 3] || state.buttons != [0; 8])
@@ -276,10 +262,10 @@ pub(crate) unsafe fn get_device_state(
                     .logged_mouse_activity
                     .swap(true, Ordering::AcqRel)
             {
-                dinput_log(format!(
+                tracing::debug!(
                     "snowglass: target polled forwarded mouse activity axes={:?}",
                     state.axes
-                ));
+                );
             }
             let output = output.cast::<u8>();
             for (index, axis) in state.axes.iter().enumerate() {
@@ -352,9 +338,7 @@ pub(crate) unsafe fn get_device_data(
             .logged_delivery
             .swap(true, Ordering::AcqRel)
     {
-        dinput_log(format!(
-            "snowglass: returned first forwarded {device:?} record from GetDeviceData"
-        ));
+        tracing::debug!("snowglass: returned first forwarded {device:?} record from GetDeviceData");
     }
     0
 }
@@ -369,9 +353,9 @@ pub(crate) unsafe fn direct_input_8_create(
     context: &crate::hooks::DirectInput8CreateContext,
 ) {
     context.state.start_input_receiver();
-    dinput_log(format!(
+    tracing::debug!(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
-    ));
+    );
     if result >= 0 && !interface_id.is_null() && !output.is_null() && outer.is_null() {
         if let Some(proxy) =
             unsafe { wrap_direct_input(context.state.clone(), *output, &*interface_id) }

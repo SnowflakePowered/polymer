@@ -32,7 +32,7 @@ snowglass_hook::chain_hooks! {
 
 unsafe fn created_device(device: *mut *mut c_void, result: i32, context: &CreateDeviceContext<'_>) {
     if result >= 0 {
-        crate::d3d12_log("snowglass: intercepted D3D12CreateDevice");
+        tracing::debug!("snowglass: intercepted D3D12CreateDevice");
         unsafe { crate::vtable::install_device(device, context.common.tracking.clone()) };
     }
 }

@@ -71,6 +71,8 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] 
 rustls = { version = "0.23.40", default-features = false, features = ["aws_lc_rs"] }
 sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
 tokio = { version = "1.53.0", features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

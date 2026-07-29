@@ -190,7 +190,7 @@ impl Runtime {
             if let Err(error) = result {
                 // A browser reports an individual script error without
                 // discarding the document's realm or preventing later scripts.
-                eprintln!("snowglass: game-layer script {index} failed: {error}");
+                tracing::error!("snowglass: game-layer script {index} failed: {error}");
             }
         }
         drop(tokio_context);
@@ -409,7 +409,7 @@ fn start_inspector_server() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .map_err(|error| error.to_string())?;
-        eprintln!(
+        tracing::error!(
             "snowglass: game-layer DevTools targets: http://{}/json",
             server.host
         );

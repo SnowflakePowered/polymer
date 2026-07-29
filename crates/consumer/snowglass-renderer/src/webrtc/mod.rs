@@ -288,7 +288,7 @@ impl Publisher {
             sessions,
             stats.clone(),
         );
-        eprintln!("snowglass: WebRTC signaling and ICE listening on {bind}");
+        tracing::info!("snowglass: WebRTC signaling and ICE listening on {bind}");
         Ok(Self {
             tracks,
             frames,
@@ -461,7 +461,7 @@ async fn rebind_track(
                 ))
                 .await
             {
-                eprintln!(
+                tracing::error!(
                     "snowglass: WebRTC session {session_id} cannot switch to {}: {error}",
                     replacement.codec().mime_type
                 );
@@ -507,7 +507,7 @@ fn spawn_encoder(
                 if source_extent != (frame.width, frame.height)
                     && announced_crops.insert(frame.connection)
                 {
-                    eprintln!(
+                    tracing::debug!(
                         "snowglass: cropping WebRTC track {} from {}x{} to {}x{} for 4:2:0 encoding",
                         frame.connection,
                         source_extent.0,
@@ -559,7 +559,7 @@ fn spawn_encoder(
                                 .lock()
                                 .tracks
                                 .insert(target_index, replacement.clone());
-                            eprintln!(
+                            tracing::info!(
                                 "snowglass: WebRTC track {connection} switching to {}",
                                 replacement.codec().mime_type
                             );
@@ -571,7 +571,7 @@ fn spawn_encoder(
                             replacement
                         };
                         if announced_samples.insert(connection) {
-                            eprintln!(
+                            tracing::debug!(
                                 "snowglass: encoded first WebRTC sample for track {connection} ({} bytes)",
                                 encoded.data.len()
                             );
@@ -585,10 +585,10 @@ fn spawn_encoder(
                             ..Default::default()
                         };
                         if let Err(error) = handle.block_on(track.write_sample(&sample)) {
-                            eprintln!("snowglass: WebRTC track write failed: {error}");
+                            tracing::error!("snowglass: WebRTC track write failed: {error}");
                         }
                     }
-                    Err(error) => eprintln!("snowglass: video encoding failed: {error}"),
+                    Err(error) => tracing::error!("snowglass: video encoding failed: {error}"),
                 }
             }
         })
@@ -625,7 +625,7 @@ fn spawn_signaling(
                                 )
                             });
                         if !idle_connection {
-                            eprintln!("snowglass: WebRTC signaling request failed: {error}");
+                            tracing::error!("snowglass: WebRTC signaling request failed: {error}");
                         }
                     }
                 });
@@ -729,7 +729,7 @@ async fn answer_offer(
     let offered_hevc = offer_supports_hevc(&offer.sdp);
     let peer = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
     peer.on_ice_connection_state_change(Box::new(move |state| {
-        eprintln!("snowglass: WebRTC session {session_id} ICE state {state}");
+        tracing::debug!("snowglass: WebRTC session {session_id} ICE state {state}");
         Box::pin(async {})
     }));
     let weak_sessions = Arc::downgrade(sessions);
@@ -740,7 +740,7 @@ async fn answer_offer(
         let weak_stats = weak_stats.clone();
         let weak_peer = weak_peer.clone();
         Box::pin(async move {
-            eprintln!("snowglass: WebRTC session {session_id} state {state}");
+            tracing::info!("snowglass: WebRTC session {session_id} state {state}");
             if let Some(stats) = weak_stats.upgrade() {
                 let mut stats = stats.lock();
                 if state == RTCPeerConnectionState::Connected {
@@ -764,7 +764,7 @@ async fn answer_offer(
                             _ => (packets, bytes),
                         },
                     );
-                    eprintln!(
+                    tracing::debug!(
                         "snowglass: WebRTC session {session_id} sent {packets} RTP packets ({bytes} payload bytes)"
                     );
                 });
@@ -809,7 +809,7 @@ async fn answer_offer(
         )
     };
     for (track_id, replacement) in downgrades {
-        eprintln!(
+        tracing::warn!(
             "snowglass: WebRTC session {session_id} offer has no HEVC; switching track {track_id} to H.264"
         );
         rebind_track(sessions, &track_id, &replacement).await;
@@ -833,7 +833,7 @@ async fn answer_offer(
         .await?;
     for transceiver in peer.get_transceivers().await {
         let has_track = transceiver.sender().await.track().await.is_some();
-        eprintln!(
+        tracing::debug!(
             "snowglass: WebRTC session {session_id} {:?} transceiver direction={} negotiated={} track={has_track}",
             transceiver.kind(),
             transceiver.direction(),
@@ -844,7 +844,7 @@ async fn answer_offer(
         .await
         .is_err()
     {
-        eprintln!(
+        tracing::warn!(
             "snowglass: WebRTC session {session_id} ICE gathering timed out; returning gathered candidates"
         );
     }

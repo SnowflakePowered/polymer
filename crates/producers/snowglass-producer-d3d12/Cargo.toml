@@ -12,5 +12,6 @@ snowglass-hook-dxgi = { path = "../../hooks/snowglass-hook-dxgi" }
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
+tracing.workspace = true
 windows.workspace = true
 windows-sys.workspace = true

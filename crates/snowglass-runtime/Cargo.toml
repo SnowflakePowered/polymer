@@ -16,6 +16,7 @@ snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
 snowglass-statistics.workspace = true
 tempfile.workspace = true
+tracing.workspace = true
 watchable.workspace = true
 
 [lints]

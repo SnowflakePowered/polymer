@@ -21,19 +21,6 @@ use windows::{
     core::Interface,
 };
 
-pub(crate) fn d3d12_log(message: impl std::fmt::Display) {
-    use std::io::Write;
-    eprintln!("{message}");
-    if let Some(path) = snowglass_hook::config::d3d12_log_file()
-        && let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-    {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
 pub struct D3d12SharedSlot {
     resource: ID3D12Resource,
     handle: isize,

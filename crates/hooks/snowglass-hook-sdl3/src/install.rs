@@ -7,8 +7,6 @@ use snowglass_input::stone::{EMBEDDED_STONE_JSON, StoneRegistry};
 use snowglass_input_sdl::Runtime;
 use std::{
     ffi::c_void,
-    fs::OpenOptions,
-    io::Write,
     os::windows::ffi::OsStrExt,
     sync::{
         Arc,
@@ -214,6 +212,7 @@ snowglass_hook::function_table_hook! {
 /// The caller must invoke this only after the DLL has been loaded into a
 /// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
+    snowglass_hook::telemetry::init_file_tracing(config::sdl_log_file());
     preload_dynamic_api();
     discover_loaded_module();
     0
@@ -226,7 +225,7 @@ fn preload_dynamic_api() {
     let mut wide = path.encode_wide().collect::<Vec<_>>();
     wide.push(0);
     if unsafe { LoadLibraryW(wide.as_ptr()) }.is_null() {
-        log("failed to preload SDL3_DYNAMIC_API runtime");
+        tracing::debug!("failed to preload SDL3_DYNAMIC_API runtime");
     }
 }
 
@@ -245,10 +244,10 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
 
 fn install() {
     if Sdl3EntryInstallation::install().is_err() {
-        log("failed to enable SDL3 dynamic API detour");
+        tracing::debug!("failed to enable SDL3 dynamic API detour");
         return;
     }
-    log("installed SDL3 virtual gamepad hooks");
+    tracing::debug!("installed SDL3 virtual gamepad hooks");
 }
 
 unsafe fn captured_dynapi_table(
@@ -264,20 +263,20 @@ unsafe fn captured_dynapi_table(
     let state = match unsafe { Sdl3DynapiHook::install(table, tablesize) } {
         Ok(state) => state,
         Err(error) => {
-            log(error);
+            tracing::debug!(message = %(error));
             return;
         }
     };
     if let Ok(session) = config::session() {
         state.runtime.start_receiver(format!("{session}-input"));
     }
-    log("patched SDL3 dynamic API gamepad entries");
+    tracing::debug!("patched SDL3 dynamic API gamepad entries");
 }
 
 fn prepare_enumeration(state: &Sdl3TableState) {
     let mut backend = state.backend.lock();
     if let Err(error) = state.runtime.prepare_enumeration(&mut *backend) {
-        log(error.0);
+        tracing::debug!(message = %(error.0));
     }
 }
 
@@ -305,28 +304,19 @@ fn enumerate_virtual(count: *mut i32, state: &Sdl3TableState) -> *mut api::Joyst
         } else {
             unsafe { *count }
         };
-        log(format!("enumerated {count} SDL3 gamepad(s)"));
+        tracing::debug!("enumerated {count} SDL3 gamepad(s)");
     }
     result
 }
 
 fn flush_gamepads(state: &Sdl3TableState) {
     if !state.logged_gamepad_consumer.swap(true, Ordering::AcqRel) {
-        log("target first consumed SDL3 gamepad state");
+        tracing::debug!("target first consumed SDL3 gamepad state");
     }
     let mut backend = state.backend.lock();
     if state.runtime.flush(&mut *backend)
         && !state.logged_gamepad_update.swap(true, Ordering::AcqRel)
     {
-        log("forwarded the first virtual gamepad update");
-    }
-}
-
-fn log(message: impl std::fmt::Display) {
-    let Some(path) = config::sdl_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "snowglass SDL3: {message}");
+        tracing::debug!("forwarded the first virtual gamepad update");
     }
 }

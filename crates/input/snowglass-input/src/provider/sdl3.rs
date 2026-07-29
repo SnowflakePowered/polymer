@@ -600,7 +600,7 @@ fn refresh_devices(
                 });
                 used.insert(id);
             }
-            Err(error) => eprintln!("snowglass: failed to open SDL3 gamepad: {error}"),
+            Err(error) => tracing::error!("snowglass: failed to open SDL3 gamepad: {error}"),
         }
     }
 }

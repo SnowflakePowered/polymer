@@ -120,6 +120,9 @@ fn depacketize_h264(payload: &[u8], fragment: &mut Vec<u8>) -> Vec<Vec<u8>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let mut args = std::env::args().skip(1);
     let url = args.next().unwrap_or("http://127.0.0.1:9001/".to_owned());
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(10);
@@ -182,7 +185,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let bytes = bytes.clone();
             let dump_path = dump_path.clone();
             let mime = track.codec().capability.mime_type;
-            eprintln!("probe: on_track kind={} codec={mime}", track.kind());
+            tracing::info!("probe: on_track kind={} codec={mime}", track.kind());
             Box::pin(async move {
                 let mut dump = dump_path
                     .and_then(|path| std::fs::File::create(path).ok())
@@ -208,11 +211,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }));
     }
     peer.on_peer_connection_state_change(Box::new(move |state| {
-        eprintln!("probe: peer state {state}");
+        tracing::info!("probe: peer state {state}");
         Box::pin(async {})
     }));
     peer.on_ice_connection_state_change(Box::new(move |state| {
-        eprintln!("probe: ice state {state}");
+        tracing::info!("probe: ice state {state}");
         Box::pin(async {})
     }));
 
@@ -221,7 +224,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     let _ = gathering.recv().await;
     let offer = peer.local_description().await.ok_or("no local offer")?.sdp;
-    eprintln!("probe: sending offer ({} bytes) to {address}", offer.len());
+    tracing::info!("probe: sending offer ({} bytes) to {address}", offer.len());
 
     let (status, answer) = tokio::task::spawn_blocking({
         let address = address.clone();
@@ -248,7 +251,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     })
     .await??;
-    eprintln!("probe: signaling response: {status}");
+    tracing::info!("probe: signaling response: {status}");
     if !status.contains("201") {
         return Err(format!("unexpected signaling status: {status}\n{answer}").into());
     }
@@ -257,7 +260,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     for second in 1..=seconds {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        eprintln!(
+        tracing::info!(
             "probe: t={second}s packets={} payload_bytes={} state={}",
             packets.load(Ordering::Relaxed),
             bytes.load(Ordering::Relaxed),
@@ -267,9 +270,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let received = packets.load(Ordering::Relaxed);
     peer.close().await?;
     if received == 0 {
-        eprintln!("probe: FAILED - no RTP received");
+        tracing::error!("probe: FAILED - no RTP received");
         std::process::exit(2);
     }
-    eprintln!("probe: OK - received {received} RTP packets");
+    tracing::info!("probe: OK - received {received} RTP packets");
     Ok(())
 }

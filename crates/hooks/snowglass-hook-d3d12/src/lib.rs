@@ -23,19 +23,6 @@ unsafe extern "system" fn claim_swapchain(
     }
 }
 
-fn d3d12_log(message: impl std::fmt::Display) {
-    use std::io::Write;
-    eprintln!("{message}");
-    if let Some(path) = snowglass_hook::config::d3d12_log_file()
-        && let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-    {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use parking_lot::Mutex;
@@ -213,7 +200,7 @@ mod tests {
                 .expect("CreateSwapChainForHwnd failed")
                 .cast::<IDXGISwapChain3>()
                 .unwrap();
-            d3d12_log("snowglass-test: swapchain created");
+            tracing::debug!("snowglass-test: swapchain created");
 
             let allocator: ID3D12CommandAllocator = device
                 .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
@@ -274,17 +261,17 @@ mod tests {
             list.Close().unwrap();
             let command: ID3D12CommandList = list.cast().unwrap();
             queue.ExecuteCommandLists(&[Some(command)]);
-            d3d12_log("snowglass-test: application clear submitted");
+            tracing::debug!("snowglass-test: application clear submitted");
             swapchain
                 .Present(0, DXGI_PRESENT(0))
                 .ok()
                 .expect("Present failed");
-            d3d12_log("snowglass-test: present returned");
+            tracing::debug!("snowglass-test: present returned");
 
             let (ready, frame) = receiver
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("D3D12 capture did not publish a frame");
-            d3d12_log("snowglass-test: IPC frame received");
+            tracing::debug!("snowglass-test: IPC frame received");
             let Message::StreamReady(ready) = ready else {
                 panic!("expected StreamReady, got {ready:?}");
             };
@@ -311,14 +298,14 @@ mod tests {
                 snowglass_protocol::PresentationTransform::axis_aligned(8, 4, 48, 48)
             );
 
-            d3d12_log("snowglass-test: importing D3D12 handles into Vulkan");
+            tracing::debug!("snowglass-test: importing D3D12 handles into Vulkan");
             let mut imported = snowglass_consumer_vulkan::ImportedStream::import(&ready)
                 .expect("Vulkan could not import D3D12 resources");
-            d3d12_log("snowglass-test: D3D12 handles imported into Vulkan");
+            tracing::debug!("snowglass-test: D3D12 handles imported into Vulkan");
             let pixels = imported
                 .read_frame_rgba(frame.slot, frame.sync_value)
                 .expect("Vulkan could not read the D3D12 frame");
-            d3d12_log("snowglass-test: Vulkan readback complete");
+            tracing::debug!("snowglass-test: Vulkan readback complete");
             let pixel = &pixels[..4];
             assert!((63..=65).contains(&pixel[0]), "red channel: {pixel:?}");
             assert!((127..=129).contains(&pixel[1]), "green channel: {pixel:?}");
@@ -373,7 +360,7 @@ mod tests {
             // keep its same-process D3D12 peer alive for the same reason.
             std::mem::forget(swapchain);
             DestroyWindow(window);
-            d3d12_log("snowglass-test: window destroyed");
+            tracing::debug!("snowglass-test: window destroyed");
             std::env::remove_var(snowglass_hook::config::SESSION);
         }
     }

@@ -118,7 +118,7 @@ fn spawn_ui_worker(
                     Ok(socket) => socket,
                     Err(error) => {
                         if !shared.stopping.load(Ordering::Acquire) {
-                            eprintln!("snowglass: UI IPC accept ended: {error}");
+                            tracing::error!("snowglass: UI IPC accept ended: {error}");
                         }
                         return;
                     }
@@ -136,7 +136,7 @@ fn spawn_ui_worker(
                     && error.kind() != std::io::ErrorKind::ConnectionReset
                     && error.kind() != std::io::ErrorKind::BrokenPipe
                 {
-                    eprintln!("snowglass: UI IPC connection ended: {error}");
+                    tracing::error!("snowglass: UI IPC connection ended: {error}");
                 }
             }
         })

@@ -7,23 +7,11 @@ use snowglass_hook::HookChain;
 use snowglass_producer_vulkan::{SetDeviceLoaderData, tracking::Tracking};
 use std::{
     ffi::{c_char, c_void},
-    fs::OpenOptions,
-    io::Write,
     mem,
     sync::{Arc, LazyLock, OnceLock},
 };
 
 pub(crate) use snowglass_producer_vulkan::capture::{CaptureDevice, CaptureState};
-
-pub(crate) fn layer_log(message: impl std::fmt::Display) {
-    eprintln!("{message}");
-    let Some(path) = snowglass_hook::config::layer_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
-    }
-}
 
 const VK_LAYER_LINK_INFO: u32 = 0;
 
@@ -219,7 +207,7 @@ pub(crate) unsafe fn take_instance_bootstrap(
     create_info: *const vk::InstanceCreateInfo<'_>,
 ) -> Option<InstanceBootstrap> {
     let Some(chain_info) = (unsafe { find_instance_link(create_info) }) else {
-        layer_log("snowglass: loader instance link was not present");
+        tracing::debug!("snowglass: loader instance link was not present");
         return None;
     };
     let link = unsafe { (*chain_info).data.p_layer_info };
@@ -314,9 +302,7 @@ pub(crate) fn register_device_dispatch(device: vk::Device, dispatch: DeviceDispa
 
 pub(crate) fn observe_create_device(injected_extension_count: usize) {
     if injected_extension_count != 0 {
-        layer_log(format!(
-            "snowglass: enabled {injected_extension_count} capture device extensions"
-        ));
+        tracing::debug!("snowglass: enabled {injected_extension_count} capture device extensions");
     }
 }
 

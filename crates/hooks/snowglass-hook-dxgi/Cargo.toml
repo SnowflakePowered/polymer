@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 parking_lot.workspace = true
 snowglass-hook.workspace = true
 snowglass-platform-windows.workspace = true
+tracing.workspace = true
 windows.workspace = true
 windows-sys.workspace = true
 

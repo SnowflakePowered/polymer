@@ -171,7 +171,7 @@ fn spawn_acceptor(
                     Ok(socket) => socket,
                     Err(error) => {
                         if !shared.stopping.load(Ordering::Acquire) {
-                            eprintln!("snowglass: capture IPC accept ended: {error}");
+                            tracing::error!("snowglass: capture IPC accept ended: {error}");
                         }
                         return;
                     }
@@ -190,7 +190,7 @@ fn spawn_acceptor(
                     process_id: std::process::id(),
                     preferred_consumer,
                 })) {
-                    eprintln!("snowglass: capture IPC handshake failed: {error}");
+                    tracing::error!("snowglass: capture IPC handshake failed: {error}");
                     continue;
                 }
                 if let Ok(shutdown_socket) = socket.try_clone() {
@@ -207,7 +207,7 @@ fn spawn_acceptor(
                     Ok(worker) => connections.lock().push(worker),
                     Err(error) => {
                         shared.revoke(connection);
-                        eprintln!(
+                        tracing::error!(
                             "snowglass: failed to start capture connection {connection}: {error}"
                         );
                     }
@@ -278,7 +278,7 @@ fn receive_connection(
         && error.kind() != std::io::ErrorKind::UnexpectedEof
         && error.kind() != std::io::ErrorKind::ConnectionReset
     {
-        eprintln!("snowglass: capture IPC connection {connection} ended: {error}");
+        tracing::error!("snowglass: capture IPC connection {connection} ended: {error}");
     }
     shared.revoke(connection);
     (callbacks.disconnected)(connection);

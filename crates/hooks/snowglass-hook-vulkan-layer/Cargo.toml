@@ -15,4 +15,5 @@ snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
 snowglass-producer-vulkan = { path = "../../producers/snowglass-producer-vulkan" }
+tracing.workspace = true
 windows.workspace = true

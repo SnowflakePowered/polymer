@@ -2,13 +2,9 @@
 
 use snowglass_hook::config;
 use snowglass_input_win32::Runtime as InputRuntime;
-use std::{
-    fs::OpenOptions,
-    io::Write,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use windows_sys::Win32::Foundation::POINT;
 
@@ -19,24 +15,12 @@ pub(crate) struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
+        snowglass_hook::telemetry::init_file_tracing(config::win32_log_file());
         Self {
             logged_cursor_poll: AtomicBool::new(false),
-            input: Arc::new(InputRuntime::new(input_log)),
+            input: Arc::new(InputRuntime::new()),
         }
     }
-}
-
-fn win32_log(message: impl std::fmt::Display) {
-    let Some(path) = config::win32_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{message}");
-    }
-}
-
-fn input_log(message: &str) {
-    win32_log(message);
 }
 
 impl Runtime {
@@ -56,9 +40,7 @@ pub(crate) unsafe fn get_cursor_pos(
         && let Some((x, y)) = next.state.input.cursor_position()
     {
         if !next.state.logged_cursor_poll.swap(true, Ordering::AcqRel) {
-            win32_log(format!(
-                "snowglass: target first polled forwarded cursor position=({x}, {y})"
-            ));
+            tracing::debug!("snowglass: target first polled forwarded cursor position=({x}, {y})");
         }
         unsafe { *point = POINT { x, y } };
         return 1;

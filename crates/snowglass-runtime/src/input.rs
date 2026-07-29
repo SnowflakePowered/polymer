@@ -210,7 +210,7 @@ fn spawn_acceptor(
                     Ok(socket) => socket,
                     Err(error) => {
                         if !stopping.load(Ordering::Acquire) {
-                            eprintln!("snowglass: input IPC accept ended: {error}");
+                            tracing::error!("snowglass: input IPC accept ended: {error}");
                         }
                         return;
                     }
@@ -228,7 +228,7 @@ fn spawn_acceptor(
                     if let Err(error) =
                         socket.set_write_timeout(Some(CONTROL_WRITE_TIMEOUT))
                     {
-                        eprintln!(
+                        tracing::error!(
                             "snowglass: input IPC client rejected because writes could not be bounded: {error}"
                         );
                         let _ = socket.shutdown();
@@ -272,7 +272,7 @@ fn spawn_control_writer(
                                     | std::io::ErrorKind::WouldBlock
                             )
                         {
-                            eprintln!("snowglass: input IPC send failed: {error}");
+                            tracing::error!("snowglass: input IPC send failed: {error}");
                         }
                         let _ = socket.shutdown();
                         false

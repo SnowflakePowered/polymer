@@ -91,7 +91,7 @@ impl PointerRoutingState {
                             != PresentationMappingKind::Unavailable
                     })
                     .count();
-                eprintln!(
+                tracing::warn!(
                     "snowglass: pointer button was not routed at ({:.1}, {:.1}); displayed surfaces={}, mapped surfaces={}, pointer targets={}",
                     self.cursor.x,
                     self.cursor.y,
@@ -164,9 +164,14 @@ impl PointerRoutingState {
         }
         if sent && (!self.logged_route || phase == PointerPhase::ButtonDown) {
             self.logged_route = true;
-            eprintln!(
+            tracing::debug!(
                 "snowglass: routed pointer to surface {} hwnd={:#x} presentation=({}, {})/{}x{}",
-                destination.surface_id, destination.target_window, x, y, width, height,
+                destination.surface_id,
+                destination.target_window,
+                x,
+                y,
+                width,
+                height,
             );
         }
         if matches!(phase, PointerPhase::ButtonUp | PointerPhase::Cancel) && self.buttons == 0 {

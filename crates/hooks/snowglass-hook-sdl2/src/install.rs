@@ -6,8 +6,6 @@ use snowglass_hook::config;
 use snowglass_input_sdl::Runtime;
 use std::{
     ffi::c_void,
-    fs::OpenOptions,
-    io::Write,
     os::windows::ffi::OsStrExt,
     sync::{
         Arc,
@@ -160,6 +158,7 @@ snowglass_hook::function_table_hook! {
 /// The caller must invoke this only after the DLL has been loaded into a
 /// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn SnowglassInstallSdl2Hook() -> i32 {
+    snowglass_hook::telemetry::init_file_tracing(config::sdl_log_file());
     preload_dynamic_api();
     discover_loaded_module();
     0
@@ -172,7 +171,7 @@ fn preload_dynamic_api() {
     let mut wide = path.encode_wide().collect::<Vec<_>>();
     wide.push(0);
     if unsafe { LoadLibraryW(wide.as_ptr()) }.is_null() {
-        log("failed to preload SDL_DYNAMIC_API runtime");
+        tracing::debug!("failed to preload SDL_DYNAMIC_API runtime");
     }
 }
 
@@ -195,10 +194,10 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
 
 fn install() {
     if Sdl2EntryInstallation::install().is_err() {
-        log("failed to enable SDL2 dynamic API detour");
+        tracing::debug!("failed to enable SDL2 dynamic API detour");
         return;
     }
-    log("installed SDL2 virtual gamepad hooks");
+    tracing::debug!("installed SDL2 virtual gamepad hooks");
 }
 
 unsafe fn captured_dynapi_table(
@@ -213,20 +212,20 @@ unsafe fn captured_dynapi_table(
     let state = match unsafe { Sdl2DynapiHook::install(table, tablesize) } {
         Ok(state) => state,
         Err(error) => {
-            log(error);
+            tracing::debug!(message = %(error));
             return;
         }
     };
     if let Ok(session) = config::session() {
         state.runtime.start_receiver(format!("{session}-input"));
     }
-    log("patched SDL2 dynamic API gamepad entries");
+    tracing::debug!("patched SDL2 dynamic API gamepad entries");
 }
 
 unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 {
     let mut backend = next.state.backend.lock();
     if let Err(error) = next.state.runtime.prepare_enumeration(&mut *backend) {
-        log(error.0);
+        tracing::debug!(message = %(error.0));
     }
     drop(backend);
     // Virtual joysticks are appended to SDL's existing device list. Returning
@@ -235,28 +234,19 @@ unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 
     let log_enumeration = !next.state.logged_enumeration.swap(true, Ordering::AcqRel);
     let count = snowglass_hook::next!(next);
     if log_enumeration {
-        log(format!("enumerated {count} SDL2 joystick(s)"));
+        tracing::debug!("enumerated {count} SDL2 joystick(s)");
     }
     count
 }
 
 fn flush_gamepads(state: &Sdl2TableState) {
     if !state.logged_gamepad_poll.swap(true, Ordering::AcqRel) {
-        log("target first polled the virtual gamepad");
+        tracing::debug!("target first polled the virtual gamepad");
     }
     let mut backend = state.backend.lock();
     if state.runtime.flush(&mut *backend)
         && !state.logged_gamepad_update.swap(true, Ordering::AcqRel)
     {
-        log("forwarded the first virtual gamepad update");
-    }
-}
-
-fn log(message: impl std::fmt::Display) {
-    let Some(path) = config::sdl_log_file() else {
-        return;
-    };
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "snowglass SDL2: {message}");
+        tracing::debug!("forwarded the first virtual gamepad update");
     }
 }

@@ -115,13 +115,13 @@ impl NetProvider<Resource> for LocalAssets {
         let bytes = match url.scheme() {
             "file" => {
                 let Ok(path) = url.to_file_path() else {
-                    eprintln!("snowglass: the game layer cannot resolve {url} to a path");
+                    tracing::error!("snowglass: the game layer cannot resolve {url} to a path");
                     return;
                 };
                 match std::fs::read(&path) {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        eprintln!(
+                        tracing::error!(
                             "snowglass: the game layer could not read {}: {error}",
                             path.display()
                         );
@@ -133,7 +133,7 @@ impl NetProvider<Resource> for LocalAssets {
                 include_bytes!("../frontend/src/assets/wiiu-drc.png").to_vec()
             }
             _ => {
-                eprintln!("snowglass: the game layer will not fetch {url}");
+                tracing::error!("snowglass: the game layer will not fetch {url}");
                 return;
             }
         };
@@ -305,7 +305,9 @@ impl GameLayerFactory {
             match GameLayerGpu::new(&adapter) {
                 Ok(gpu) => alternate_gpus.push((luid, gpu)),
                 Err(error) => {
-                    eprintln!("snowglass: preparing game-layer adapter {luid:?} failed: {error}");
+                    tracing::error!(
+                        "snowglass: preparing game-layer adapter {luid:?} failed: {error}"
+                    );
                 }
             }
         }
@@ -413,7 +415,7 @@ impl GameLayerFactory {
         ) {
             Ok(runtime) => layer.runtime = Some(runtime),
             Err(error) => {
-                eprintln!("snowglass: starting game-layer JavaScript failed: {error}");
+                tracing::error!("snowglass: starting game-layer JavaScript failed: {error}");
             }
         }
         layer.apply_script_mutations();
@@ -458,7 +460,7 @@ impl GameLayer {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.resize(width, height)
         {
-            eprintln!("snowglass: resizing the game-layer window failed: {error}");
+            tracing::error!("snowglass: resizing the game-layer window failed: {error}");
         }
         self.apply_script_mutations();
         // Every band's target is the wrong size now. They are dropped rather
@@ -532,7 +534,7 @@ impl GameLayer {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                eprintln!("snowglass: dispatching game-layer {kind} failed: {error}");
+                tracing::error!("snowglass: dispatching game-layer {kind} failed: {error}");
                 Default::default()
             }
         };
@@ -560,7 +562,7 @@ impl GameLayer {
                         claimed |= click.default_prevented || (click.handled && !targets_game_view);
                     }
                     Err(error) => {
-                        eprintln!("snowglass: dispatching game-layer click failed: {error}");
+                        tracing::error!("snowglass: dispatching game-layer click failed: {error}");
                     }
                 }
             }
@@ -613,7 +615,7 @@ impl GameLayer {
         let prevented = match result {
             Ok(result) => result.default_prevented,
             Err(error) => {
-                eprintln!(
+                tracing::error!(
                     "snowglass: dispatching game-layer {} failed: {error}",
                     event.kind
                 );
@@ -630,7 +632,7 @@ impl GameLayer {
             return;
         };
         if let Err(error) = runtime.post_message(message) {
-            eprintln!("snowglass: delivering a game-layer message failed: {error}");
+            tracing::error!("snowglass: delivering a game-layer message failed: {error}");
         }
         self.apply_script_mutations();
     }
@@ -690,7 +692,7 @@ impl GameLayer {
             return;
         };
         if let Err(error) = runtime.dispatch_game_view_event(event) {
-            eprintln!("snowglass: dispatching a background GameView event failed: {error}");
+            tracing::error!("snowglass: dispatching a background GameView event failed: {error}");
         }
         self.apply_script_mutations();
     }
@@ -702,7 +704,7 @@ impl GameLayer {
             return false;
         };
         if let Err(error) = runtime.poll_event_loop() {
-            eprintln!("snowglass: polling game-layer JavaScript failed: {error}");
+            tracing::error!("snowglass: polling game-layer JavaScript failed: {error}");
         }
         self.apply_script_mutations();
         true
@@ -738,7 +740,7 @@ impl GameLayer {
                 &self.dom_to_script,
             )
         {
-            eprintln!("snowglass: synchronising the game-layer DOM failed: {error}");
+            tracing::error!("snowglass: synchronising the game-layer DOM failed: {error}");
         }
 
         let started = std::time::Instant::now();
@@ -762,7 +764,7 @@ impl GameLayer {
         };
         apply_tracked_surface_styles(self.document.as_ref(), &mut self.placements);
         if overflowed {
-            eprintln!(
+            tracing::error!(
                 "snowglass: the game layer shows more than {} views, so the ones past that \
                  cannot be stacked against the chrome between them",
                 self.bands.len() - 1
@@ -785,7 +787,9 @@ impl GameLayer {
                 slot => match SharedTexture::new(&self.gpu.device, self.width, self.height) {
                     Ok(target) => slot.insert(target),
                     Err(error) => {
-                        eprintln!("snowglass: the game layer could not make band {index}: {error}");
+                        tracing::error!(
+                            "snowglass: the game layer could not make band {index}: {error}"
+                        );
                         continue;
                     }
                 },
@@ -797,7 +801,7 @@ impl GameLayer {
                 &target.view,
                 &parameters,
             ) {
-                eprintln!("snowglass: rasterising game layer band {index} failed: {error}");
+                tracing::error!("snowglass: rasterising game layer band {index} failed: {error}");
                 continue;
             }
             drawn.push((index, target.shared));
@@ -807,13 +811,13 @@ impl GameLayer {
         // costs nothing in practice: this layer repaints on layout changes, not
         // on frames.
         if let Err(error) = self.gpu.device.poll(wgpu::PollType::Wait) {
-            eprintln!("snowglass: waiting for the game layer to finish failed: {error}");
+            tracing::error!("snowglass: waiting for the game layer to finish failed: {error}");
         }
         for (index, shared) in drawn {
             band(index, shared);
         }
         if std::env::var_os(PAINT_TIMING).is_some() {
-            eprintln!(
+            tracing::error!(
                 "snowglass: game layer painted {}x{} in {:.2}ms encode + {:.2}ms rasterise                  over {used} band(s)",
                 self.width,
                 self.height,

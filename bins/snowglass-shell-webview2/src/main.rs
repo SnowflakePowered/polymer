@@ -776,7 +776,9 @@ impl ShellState {
                                 let _ = foreground_proxy.send_event(UserEvent::Layout(layouts));
                             }
                             Err(error) => {
-                                eprintln!("snowglass: invalid WebView2 surface layout: {error}");
+                                tracing::error!(
+                                    "snowglass: invalid WebView2 surface layout: {error}"
+                                );
                             }
                         }
                     }
@@ -790,7 +792,7 @@ impl ShellState {
                                     .send_event(UserEvent::ForegroundHitRegions(regions));
                             }
                             Err(error) => {
-                                eprintln!(
+                                tracing::error!(
                                     "snowglass: invalid WebView2 foreground hit regions: {error}"
                                 );
                             }
@@ -895,7 +897,7 @@ impl ShellState {
             "type": "snowglass-cli-launch",
             "options": options,
         })) {
-            eprintln!("snowglass: CLI launch requires a linked game layer");
+            tracing::error!("snowglass: CLI launch requires a linked game layer");
             return;
         }
         let work = self.game_layer.service(&self.foreground_webview);
@@ -957,12 +959,12 @@ impl ShellState {
         background_error: Option<String>,
     ) {
         if let Some(error) = background_error {
-            eprintln!("snowglass: loading the linked game layer failed: {error}");
+            tracing::error!("snowglass: loading the linked game layer failed: {error}");
         }
         if let Some(background) = background {
             let size = self.window.inner_size();
             let Some(factory) = self.game_layer.take_factory() else {
-                eprintln!(
+                tracing::error!(
                     "snowglass: ignoring a second game layer discovered at {}",
                     background.base_url
                 );
@@ -979,7 +981,7 @@ impl ShellState {
             self.game_layer.install(layer);
             self.refresh_game_layer();
             self.game_layer.flush(&self.foreground_webview);
-            eprintln!(
+            tracing::error!(
                 "snowglass: using game layer discovered at {}",
                 background.base_url
             );
@@ -1344,7 +1346,7 @@ impl ShellState {
         }
         let script = format!("window.__snowglassGameViewNativeEvent?.({event});");
         if let Err(error) = self.foreground_webview.evaluate_script(&script) {
-            eprintln!("snowglass: publishing GameView event failed: {error}");
+            tracing::error!("snowglass: publishing GameView event failed: {error}");
         }
         self.game_layer.flush(&self.foreground_webview);
     }
@@ -1406,13 +1408,15 @@ impl ShellState {
                                 if let Some(merged) = self.presentation.merged.as_mut() {
                                     let _ = Renderer::disconnect_stream(merged, connection);
                                 }
-                                eprintln!(
+                                tracing::error!(
                                     "snowglass: capture stream {connection} disappeared while it was being imported: {error}"
                                 );
                             }
                         },
                         Err(error) => {
-                            eprintln!("snowglass: rejected capture stream {connection}: {error}");
+                            tracing::error!(
+                                "snowglass: rejected capture stream {connection}: {error}"
+                            );
                             self.streams.capture.reject(offer);
                         }
                     }
@@ -1729,7 +1733,7 @@ impl ShellState {
                 self.game_layer.clear_chrome_dirty();
                 self.presentation.overlay.record_present(carried_new_frame);
             }
-            Err(error) => eprintln!("snowglass: rendering merged surfaces failed: {error}"),
+            Err(error) => tracing::error!("snowglass: rendering merged surfaces failed: {error}"),
         }
     }
 
@@ -2536,10 +2540,10 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
                 };
                 if let Err(error) = state.foreground_webview.set_bounds(bounds) {
-                    eprintln!("snowglass: resizing foreground WebView2 failed: {error}");
+                    tracing::error!("snowglass: resizing foreground WebView2 failed: {error}");
                 }
                 if let Err(error) = state.presentation.overlay.resize(&state.window) {
-                    eprintln!("snowglass: resizing egui composition overlay failed: {error}");
+                    tracing::error!("snowglass: resizing egui composition overlay failed: {error}");
                 }
                 if let Some(layer) = state.game_layer.layer_mut() {
                     layer.resize(size.width, size.height);
@@ -2553,7 +2557,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                         Ok(true) => state.presentation.merged_dirty = true,
                         Ok(false) => {}
                         Err(error) => {
-                            eprintln!("snowglass: resizing the shared swapchain failed: {error}");
+                            tracing::error!(
+                                "snowglass: resizing the shared swapchain failed: {error}"
+                            );
                         }
                     }
                 }
@@ -2761,7 +2767,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             WindowEvent::RedrawRequested => {
                 let entered = state.presentation.profile.enter();
                 if let Err(error) = state.presentation.overlay.draw(&state.window) {
-                    eprintln!("snowglass: drawing egui composition overlay failed: {error}");
+                    tracing::error!("snowglass: drawing egui composition overlay failed: {error}");
                 }
                 state
                     .presentation
@@ -3004,6 +3010,9 @@ impl Drop for TimerResolution {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let statistics_recorder = snowglass_statistics::install()?;
     let options = cli::parse()?;
     let _timer_resolution = TimerResolution::raise();

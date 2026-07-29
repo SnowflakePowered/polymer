@@ -54,8 +54,9 @@ struct Options {
 }
 
 fn main() {
+    tracing_subscriber::fmt::init();
     if let Err(error) = run(Options::parse()) {
-        eprintln!("snowglass-injector: {error}");
+        tracing::error!("snowglass-injector: {error}");
         std::process::exit(1);
     }
 }

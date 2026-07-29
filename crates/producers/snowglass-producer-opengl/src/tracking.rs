@@ -708,10 +708,15 @@ impl Tracking {
         {
             let logs = self.quad_logs.fetch_add(1, Ordering::Relaxed);
             if logs < 32 || logs.is_multiple_of(600) {
-                crate::log(format!(
+                tracing::debug!(
                     "snowglass: present quad first={first} count={count} -> {},{} {}x{} (bottom-up, viewport {}x{})",
-                    quad.x, quad.y, quad.width, quad.height, viewport[2], viewport[3]
-                ));
+                    quad.x,
+                    quad.y,
+                    quad.width,
+                    quad.height,
+                    viewport[2],
+                    viewport[3]
+                );
             }
             present_quad = Some(quad);
         }

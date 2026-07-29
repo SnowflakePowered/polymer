@@ -8,7 +8,6 @@ license.workspace = true
 ash.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"
-log = "0.4"
 cssparser = "0.37"
 cssparser-color = "0.5"
 parking_lot.workspace = true
@@ -29,4 +28,6 @@ snowglass-ui.workspace = true
 winit = "0.30.13"
 windows.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 webrtc = "0.14.0"
