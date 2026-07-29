@@ -978,9 +978,21 @@
   let dimensions = { width: 0, height: 0 };
   const windowObject = globalThis;
 
-  class GameViewInstance {
+  const Emulator = new EventTarget();
+  let activeInstance = null;
+
+  function publishActiveInstance(instance) {
+    if (activeInstance === instance) return;
+    activeInstance = instance;
+    Emulator.dispatchEvent(
+      new CustomEvent("activeinstancechange", { detail: instance }),
+    );
+  }
+
+  class EmulatorInstance {
     #listeners = new Map();
-    #closed = false;
+    #state = "starting";
+    #error = null;
 
     constructor(id, requested) {
       this.id = id;
@@ -991,6 +1003,18 @@
         volume: 1,
         muted: false,
       });
+    }
+
+    get state() {
+      return this.#state;
+    }
+
+    get error() {
+      return this.#error;
+    }
+
+    #canControl() {
+      return this.#state !== "closing" && this.#state !== "closed";
     }
 
     on(eventName, callback) {
@@ -1007,32 +1031,46 @@
       if (listeners.size === 0) this.#listeners.delete(String(eventName));
     }
 
-    message(name, args) {
-      if (!this.#closed) ops.op_game_message(this.id, String(name), args ?? null);
+    send(name, args) {
+      if (this.#canControl()) {
+        ops.op_emulator_message(this.id, String(name), args ?? null);
+      }
     }
 
     setVolume(volume) {
       volume = Number(volume);
       if (!Number.isFinite(volume)) {
-        throw new TypeError("GameView volume must be a finite number");
+        throw new TypeError("Emulator volume must be a finite number");
       }
-      if (!this.#closed) {
-        ops.op_game_set_volume(this.id, Math.max(0, Math.min(1, volume)));
+      if (this.#canControl()) {
+        ops.op_emulator_set_volume(this.id, Math.max(0, Math.min(1, volume)));
       }
     }
 
     setMuted(muted) {
-      if (!this.#closed) ops.op_game_set_muted(this.id, Boolean(muted));
+      if (this.#canControl()) ops.op_emulator_set_muted(this.id, Boolean(muted));
+    }
+
+    activateInput() {
+      if (this.#canControl()) ops.op_emulator_input(this.id, true);
+    }
+
+    deactivateInput() {
+      if (this.#canControl()) ops.op_emulator_input(this.id, false);
     }
 
     close() {
-      if (this.#closed) return;
-      ops.op_game_close(this.id);
-      this.#closed = true;
+      if (!this.#canControl()) return;
+      this.#state = "closing";
+      ops.op_emulator_close(this.id);
     }
 
     __nativeEvent(eventName, payload) {
-      if (eventName === "surfacesChanged") {
+      if (eventName === "start") {
+        this.#state = "starting";
+      } else if (eventName === "ready") {
+        this.#state = "ready";
+      } else if (eventName === "surfacesChanged") {
         const connected = new Map(
           Array.isArray(payload) ? payload.map((surface) => [surface.index, surface]) : [],
         );
@@ -1059,103 +1097,86 @@
           volume: Math.max(0, Math.min(1, Number(payload?.volume) || 0)),
           muted: Boolean(payload?.muted),
         });
+      } else if (eventName === "error") {
+        const error = new Error(payload?.message || "Emulator instance failed");
+        this.#error = error;
+        this.#state = "error";
       } else if (eventName === "closed") {
-        this.#closed = true;
+        this.#state = "closed";
         this.surfaces = Object.freeze([]);
-        gameViewManager.__release(this);
+        if (activeInstance === this) publishActiveInstance(null);
       }
       for (const callback of this.#listeners.get(eventName) || []) {
         try {
           callback(payload);
         } catch (error) {
-          console.error(`GameView '${eventName}' handler failed`, error);
+          console.error(`EmulatorInstance '${eventName}' handler failed`, error);
         }
       }
     }
   }
 
-  class GameViewManager {
-    #active = null;
-
-    get activeInstance() {
-      return this.#active;
-    }
-
-    launch(options) {
-      if (this.#active) return null;
-      try {
-        if (!options || typeof options.command !== "string" || !options.command.trim()) {
-          throw new TypeError("GameView launch requires a command");
-        }
-        if (!Array.isArray(options.surfaces) || options.surfaces.length === 0) {
-          throw new TypeError("GameView launch requires at least one tracked surface");
-        }
-        const indices = new Set();
-        for (const surface of options.surfaces) {
-          if (!(surface.attach instanceof HTMLTrackedSurfaceElement)) {
-            throw new TypeError(
-              `surface ${surface.index} must attach to an HTMLTrackedSurfaceElement`,
-            );
-          }
-          if (!surface.attach.isConnected) {
-            throw new TypeError(`surface ${surface.index} attachment is not connected`);
-          }
-          if (!Number.isInteger(surface.index) || surface.index < 0 || surface.index >= 16) {
-            throw new RangeError(`surface index ${surface.index} is outside 0..=15`);
-          }
-          if (indices.has(surface.index)) {
-            throw new TypeError(`surface index ${surface.index} is duplicated`);
-          }
-          indices.add(surface.index);
-        }
-        const wire = {
-          command: options.command,
-          arguments: [...(options.arguments || [])],
-          isolated: Boolean(options.isolated),
-          hook: [...options.hook],
-          surfaces: options.surfaces.map((surface) => ({
-            index: surface.index,
-            rotation: surface.rotation || 0,
-            selector: surface.selector,
-            attach: surface.attach.__id,
-            webrtc: Boolean(surface.webrtc),
-          })),
-          gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
-            ...mapping,
-            mapping: { ...(mapping.mapping || {}) },
-          })),
-          webrtcBind: options.webrtcBind,
-        };
-        const id = ops.op_game_launch(wire);
-        const instance = new GameViewInstance(id, options.surfaces);
-        this.#active = instance;
-        return instance;
-      } catch (error) {
-        console.error("GameView launch failed", error);
-        return null;
+  function launchEmulator(options) {
+    if (activeInstance) return null;
+    try {
+      if (!options || !Array.isArray(options.surfaces)) {
+        throw new TypeError("Emulator launch requires tracked surfaces");
       }
-    }
-
-    activateInput() {
-      if (this.#active) ops.op_game_input(true);
-    }
-
-    deactivateInput() {
-      ops.op_game_input(false);
-    }
-
-    __release(instance) {
-      if (this.#active === instance) this.#active = null;
-    }
-
-    __nativeEvent(event) {
-      if (this.#active?.id === String(event.instanceId)) {
-        this.#active.__nativeEvent(event.eventName, event.payload);
+      for (const surface of options.surfaces) {
+        if (!(surface.attach instanceof HTMLTrackedSurfaceElement)) {
+          throw new TypeError(
+            `surface ${surface.index} must attach to an HTMLTrackedSurfaceElement`,
+          );
+        }
+        if (!surface.attach.isConnected) {
+          throw new TypeError(`surface ${surface.index} attachment is not connected`);
+        }
       }
+      const wire = {
+        command: options.command,
+        arguments: [...(options.arguments || [])],
+        isolated: Boolean(options.isolated),
+        hook: [...options.hook],
+        surfaces: options.surfaces.map((surface) => ({
+          index: surface.index,
+          rotation: surface.rotation || 0,
+          selector: surface.selector,
+          attach: surface.attach.__id,
+          webrtc: Boolean(surface.webrtc),
+        })),
+        gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
+          ...mapping,
+          mapping: { ...(mapping.mapping || {}) },
+        })),
+        webrtcBind: options.webrtcBind,
+      };
+      const id = ops.op_emulator_launch(wire);
+      const instance = new EmulatorInstance(id, options.surfaces);
+      publishActiveInstance(instance);
+      return instance;
+    } catch (error) {
+      console.error("Emulator launch failed", error);
+      return null;
     }
   }
 
-  const gameViewManager = new GameViewManager();
+  function dispatchEmulatorEvent(event) {
+    if (activeInstance?.id === Number(event.instanceId)) {
+      activeInstance.__nativeEvent(event.eventName, event.payload);
+    }
+  }
+
+  Object.defineProperties(Emulator, {
+    activeInstance: {
+      get: () => activeInstance,
+      configurable: false,
+    },
+    launch: {
+      value: launchEmulator,
+      writable: false,
+      configurable: false,
+    },
+  });
 
   function dispatch(target, event) {
     let handled = false;
@@ -1225,8 +1246,7 @@
     document: null,
     getComputedStyle: (element) => element.style,
     postMessage: foregroundChannel.port2.postMessage.bind(foregroundChannel.port2),
-    gameView: gameViewManager,
-    snowglassGameView: gameViewManager,
+    Emulator,
   });
 
   Object.defineProperties(globalThis, {
@@ -1255,8 +1275,8 @@
     dispatchMessage(data) {
       dispatch(windowObject, new MessageEvent("message", { data }));
     },
-    dispatchGameViewEvent(event) {
-      gameViewManager.__nativeEvent(event);
+    dispatchEmulatorEvent(event) {
+      dispatchEmulatorEvent(event);
     },
     proxyRequest,
   });

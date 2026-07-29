@@ -1,7 +1,7 @@
 use deno_core::{OpState, op2};
 use serde_json::Value;
 
-use super::{dom::Mutation, game::Command, input::EventResult};
+use super::{dom::Mutation, input::EventResult};
 
 #[derive(Default)]
 pub(super) struct BridgeState {
@@ -9,8 +9,6 @@ pub(super) struct BridgeState {
     pub messages: Vec<Value>,
     pub proxy_messages: Vec<Value>,
     pub event: EventResult,
-    pub commands: Vec<Command>,
-    pub next_instance: u64,
 }
 
 #[op2]

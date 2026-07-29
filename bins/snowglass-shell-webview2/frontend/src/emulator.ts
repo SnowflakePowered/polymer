@@ -34,26 +34,36 @@ export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {
   surfaces: Array<Omit<TrackedSurface, "attach">>;
 };
 
-export interface GameViewInstance {
+export type EmulatorState =
+  | "starting"
+  | "ready"
+  | "closing"
+  | "closed"
+  | "error";
+
+export interface EmulatorInstance {
+  readonly id: number;
+  readonly state: EmulatorState;
+  readonly error: Error | null;
   on(eventName: string, callback: (event: unknown) => void): void;
   off(eventName: string, callback: (event: unknown) => void): void;
-  readonly surfaces?: TrackedSurface[];
-  readonly audio?: Readonly<{
+  readonly surfaces: readonly TrackedSurface[];
+  readonly audio: Readonly<{
     available: boolean;
     volume: number;
     muted: boolean;
   }>;
-  message(messageName: string, args: unknown): void;
+  send(messageName: string, args?: unknown): void;
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
+  activateInput(): void;
+  deactivateInput(): void;
   close(): void;
 }
 
-export interface GameViewManager {
-  launch(options: LaunchOptions): GameViewInstance | null;
-  readonly activeInstance?: GameViewInstance;
-  activateInput(): void;
-  deactivateInput(): void;
+export interface EmulatorApi extends EventTarget {
+  readonly activeInstance: EmulatorInstance | null;
+  launch(options: LaunchOptions): EmulatorInstance | null;
 }
 
 /**
@@ -73,8 +83,7 @@ export type BackgroundWindowProxy = BackgroundRemoteValue & {
 
 declare global {
   interface Window {
-    readonly gameView: GameViewManager;
-    readonly snowglassGameView: GameViewManager;
+    readonly Emulator: EmulatorApi;
     readonly gameLayer: EventTarget & {
       readonly contentWindow: BackgroundWindowProxy;
       postMessage(message: unknown): void;

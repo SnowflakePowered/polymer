@@ -54,6 +54,23 @@ background realm:
 }
 ```
 
+The background realm owns the canonical emulator API. Its active instance is
+available synchronously to background scripts:
+
+```ts
+const instance = window.Emulator.activeInstance;
+instance?.setVolume(0.5);
+```
+
+The foreground's `window.Emulator` is a proxy to the same namespace, and its
+`activeInstance` is the same live object through the
+background proxy, so reads and calls are asynchronous:
+
+```ts
+const instance = await window.Emulator.activeInstance;
+if (instance) await instance.setVolume(0.5);
+```
+
 Start the development server:
 
 ```powershell

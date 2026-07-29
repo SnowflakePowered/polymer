@@ -64,6 +64,7 @@ windows-wgpu = { package = "windows", version = "0.58", features = [
     "Win32_Graphics_Dxgi_Common",
 ] }
 deno_core = "0.409.0"
+deno_error = "0.7.1"
 deno_runtime = { version = "0.264.0", features = ["transpile"] }
 deno_semver = "=0.10.1"
 node_resolver = { version = "0.94.0", features = ["sync"] }

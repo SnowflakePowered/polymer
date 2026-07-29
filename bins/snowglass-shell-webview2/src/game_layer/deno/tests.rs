@@ -1,6 +1,20 @@
 use blitz_dom::{DocumentConfig, local_name};
+use std::sync::{Arc, Mutex};
 
-use super::{Command, KeyboardEvent, MouseEvent, Mutation, Runtime};
+use super::{EmulatorCommand, EmulatorCommandSink, KeyboardEvent, MouseEvent, Mutation, Runtime};
+
+fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
+    (
+        EmulatorCommandSink::new(move |command| recorded.lock().unwrap().push(command)),
+        commands,
+    )
+}
+
+fn drain_recorded_commands(commands: &Mutex<Vec<EmulatorCommand>>) -> Vec<EmulatorCommand> {
+    std::mem::take(&mut *commands.lock().unwrap())
+}
 
 fn document(html: &str) -> blitz_html::HtmlDocument {
     let mut document = blitz_html::HtmlDocument::from_html(html, DocumentConfig::default());
@@ -50,8 +64,15 @@ fn runs_inline_modules_with_relative_imports() {
         </body></html>
     "#;
     let document = document(html);
-    let mut runtime =
-        Runtime::new(document.as_ref(), html, document_url.as_str(), 800, 600).unwrap();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        document_url.as_str(),
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .unwrap();
 
     assert_eq!(
         runtime.take_messages(),
@@ -100,6 +121,7 @@ fn queues_dynamic_dom_tree_mutations() {
         "snowglass:///dynamic.html",
         800,
         600,
+        EmulatorCommandSink::default(),
     )
     .unwrap();
     let mutations = runtime.take_mutations();
@@ -181,7 +203,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
               event.preventDefault();
             });
             const surface = document.querySelector("tracked-surface");
-            const instance = gameView.launch({
+            const instance = Emulator.launch({
               command: "game.exe",
               arguments: [],
               isolated: false,
@@ -199,6 +221,8 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             postMessage({
               type: "attached",
               launched: instance !== null,
+              active: Emulator.activeInstance === instance,
+              state: instance.state,
               tracked: surface instanceof HTMLTrackedSurfaceElement,
             });
           </script>
@@ -221,27 +245,36 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
                 .then_some(id)
         })
         .unwrap();
-    let mut runtime =
-        Runtime::new(document.as_ref(), html, "snowglass:///test.html", 800, 600).unwrap();
+    let (command_sink, commands) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///test.html",
+        800,
+        600,
+        command_sink,
+    )
+    .unwrap();
 
+    let initial_commands = drain_recorded_commands(&commands);
     assert!(matches!(
-        runtime.take_commands().as_slice(),
+        initial_commands.as_slice(),
         [
-            Command::Launch {
-                instance_id,
+            EmulatorCommand::Launch {
+                token,
                 options,
             },
-            Command::SetVolume {
-                instance_id: volume_instance,
+            EmulatorCommand::SetVolume {
+                token: volume_token,
                 volume,
             },
-            Command::SetMuted {
-                instance_id: muted_instance,
+            EmulatorCommand::SetMuted {
+                token: muted_token,
                 muted: true,
             },
-        ] if options["surfaces"][0]["attach"] == serde_json::json!(surface_node)
-            && instance_id == volume_instance
-            && instance_id == muted_instance
+        ] if options.surfaces[0].attach == Some(surface_node)
+            && token == volume_token
+            && token == muted_token
             && (*volume - 0.35).abs() < f64::EPSILON
     ));
     assert_eq!(
@@ -249,6 +282,8 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
         [serde_json::json!({
             "type": "attached",
             "launched": true,
+            "active": true,
+            "state": "starting",
             "tracked": true,
         })]
     );
@@ -343,7 +378,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "id": 0,
             "operation": "apply",
             "handle": 0,
-            "path": ["gameView", "activeInstance", "setVolume"],
+            "path": ["Emulator", "activeInstance", "setVolume"],
             "args": [{ "kind": "value", "value": 0.6 }],
         }))
         .unwrap();
@@ -356,9 +391,10 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "value": { "kind": "undefined" },
         })]
     );
+    let volume_commands = drain_recorded_commands(&commands);
     assert!(matches!(
-        runtime.take_commands().as_slice(),
-        [Command::SetVolume { volume, .. }] if (*volume - 0.6).abs() < f64::EPSILON
+        volume_commands.as_slice(),
+        [EmulatorCommand::SetVolume { volume, .. }] if (*volume - 0.6).abs() < f64::EPSILON
     ));
 
     runtime
@@ -425,7 +461,12 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             ],
         }))
         .unwrap();
-    runtime.take_proxy_messages();
+    let registration = runtime.take_proxy_messages();
+    assert_eq!(
+        registration[0]["ok"],
+        serde_json::json!(true),
+        "{registration:?}"
+    );
     runtime
         .proxy_request(&serde_json::json!({
             "id": 5,
@@ -439,4 +480,88 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
     assert_eq!(proxy_messages[0]["type"], "callback");
     assert_eq!(proxy_messages[0]["handle"], 11);
     assert_eq!(proxy_messages[1]["type"], "response");
+
+    runtime
+        .proxy_request(&serde_json::json!({
+            "id": 6,
+            "operation": "apply",
+            "handle": 0,
+            "path": ["Emulator", "addEventListener"],
+            "args": [
+                { "kind": "value", "value": "activeinstancechange" },
+                { "kind": "foregroundCallback", "handle": 12 },
+            ],
+        }))
+        .unwrap();
+    let emulator_registration = runtime.take_proxy_messages();
+    assert_eq!(
+        emulator_registration[0]["ok"],
+        serde_json::json!(true),
+        "{emulator_registration:?}"
+    );
+    runtime
+        .proxy_request(&serde_json::json!({
+            "id": 7,
+            "operation": "get",
+            "handle": 0,
+            "path": ["Emulator", "activeInstance"],
+        }))
+        .unwrap();
+    let active_response = runtime.take_proxy_messages();
+    let active_handle = active_response[0]["value"]["handle"].as_u64().unwrap();
+    runtime
+        .proxy_request(&serde_json::json!({
+            "id": 8,
+            "operation": "apply",
+            "handle": active_handle,
+            "path": ["activateInput"],
+            "args": [],
+        }))
+        .unwrap();
+    runtime.take_proxy_messages();
+    assert!(matches!(
+        drain_recorded_commands(&commands).as_slice(),
+        [EmulatorCommand::Input {
+            token,
+            active: true,
+        }] if token.0 == 1
+    ));
+    runtime
+        .dispatch_emulator_event(&serde_json::json!({
+            "instanceId": 1,
+            "eventName": "closed",
+            "payload": null,
+        }))
+        .unwrap();
+    let active_change = runtime.take_proxy_messages();
+    assert_eq!(active_change[0]["type"], "callback");
+    assert_eq!(active_change[0]["handle"], 12);
+    runtime
+        .proxy_request(&serde_json::json!({
+            "id": 9,
+            "operation": "apply",
+            "handle": active_handle,
+            "path": ["setVolume"],
+            "args": [{ "kind": "value", "value": 0.2 }],
+        }))
+        .unwrap();
+    runtime.take_proxy_messages();
+    assert!(drain_recorded_commands(&commands).is_empty());
+    runtime
+        .proxy_request(&serde_json::json!({
+            "id": 10,
+            "operation": "get",
+            "handle": 0,
+            "path": ["Emulator", "activeInstance"],
+        }))
+        .unwrap();
+    assert_eq!(
+        runtime.take_proxy_messages(),
+        [serde_json::json!({
+            "type": "response",
+            "id": 10,
+            "ok": true,
+            "value": { "kind": "value", "value": null },
+        })]
+    );
 }

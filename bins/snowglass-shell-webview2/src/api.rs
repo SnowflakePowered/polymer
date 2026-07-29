@@ -187,7 +187,7 @@ impl LaunchOptions {
                 HookBackend::Vulkan => Ok(GraphicsHook::Vulkan),
                 HookBackend::D3d11 => Ok(GraphicsHook::D3d11),
                 HookBackend::D3d12 => Ok(GraphicsHook::D3d12),
-                HookBackend::Gdi => Err("the WebView2 GameView API does not expose GDI".to_owned()),
+                HookBackend::Gdi => Err("the WebView2 emulator API does not expose GDI".to_owned()),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let tracked = options.track_render_targets.clone().unwrap_or_else(|| {

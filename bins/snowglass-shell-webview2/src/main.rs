@@ -13,8 +13,11 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
-use game_layer::{DomKeyboardEvent, DomMouseEvent, GameLayerFactory, GameViewStyle};
-use game_layer_state::{GameLayerAction, GameLayerState, GameLayerWork};
+use game_layer::{
+    DomKeyboardEvent, DomMouseEvent, EmulatorCommand, EmulatorCommandSink, GameLayerFactory,
+    GameViewStyle, InstanceToken,
+};
+use game_layer_state::GameLayerState;
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_egui::{
@@ -82,11 +85,10 @@ enum UserEvent {
         background: Option<DiscoveredGameLayer>,
         background_error: Option<String>,
     },
-    Layout(Vec<SurfaceLayout>),
     ForegroundHitRegions(Vec<ForegroundHitRegion>),
     GameLayerMessage(serde_json::Value),
     GameLayerProxy(serde_json::Value),
-    InputPriority(InputPriority),
+    EmulatorCommand(EmulatorCommand),
 }
 
 #[derive(Debug)]
@@ -284,9 +286,11 @@ struct CapturedSurface {
     opacity: f32,
 }
 
-struct ActiveGame {
-    instance_id: String,
+struct ActiveEmulator {
+    token: InstanceToken,
+    runtime: snowglass_runtime::EmulatorInstance,
     options: LaunchOptions,
+    input: Option<Sdl3Provider>,
     webrtc: Option<webrtc::Publisher>,
     audio: snowglass_runtime::AudioState,
 }
@@ -637,7 +641,7 @@ struct StreamState {
 
 struct ShellInputState {
     transport: InputTransport,
-    provider: Option<Sdl3Provider>,
+    mouse_buttons: u8,
     pointer_routing: PointerRoutingState,
     direct_input: DirectInputForwarder,
     priority: InputPriority,
@@ -651,11 +655,22 @@ struct ShellInputState {
     next_publish: Instant,
 }
 
+impl ShellInputState {
+    fn set_mouse_button(&mut self, flag: u8, pressed: bool) -> u8 {
+        let previous = self.mouse_buttons;
+        if pressed {
+            self.mouse_buttons |= flag;
+        } else {
+            self.mouse_buttons &= !flag;
+        }
+        previous
+    }
+}
+
 struct GameSessionState {
     session: String,
-    target: Option<snowglass_runtime::EmulatorInstance>,
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    active: Option<ActiveGame>,
+    active: Option<ActiveEmulator>,
     pending_cli_launch: Option<LaunchOptions>,
 }
 
@@ -727,11 +742,11 @@ impl ShellState {
         let game_layer = GameLayerState::new(game_layer_factory);
         let foreground_visual = composition.foreground_visual()?;
         let foreground_proxy = proxy.clone();
-        let gameview_script = include_str!(concat!(env!("OUT_DIR"), "/gameview.js"));
+        let bridge_script = include_str!(concat!(env!("OUT_DIR"), "/bridge.js"));
         let foreground_builder = WebViewBuilder::new()
             .with_focused(false)
             .with_transparent(true)
-            .with_initialization_script(gameview_script);
+            .with_initialization_script(bridge_script);
         let foreground_webview = foreground_builder
             .with_composition_visual_target(foreground_visual)
             .with_composition_input_enabled(false)
@@ -755,32 +770,6 @@ impl ShellState {
                             background,
                             background_error,
                         });
-                    }
-                    Some("setInputPriority") => {
-                        let priority =
-                            if message.get("priority").and_then(serde_json::Value::as_str)
-                                == Some("foreground")
-                            {
-                                InputPriority::Foreground
-                            } else {
-                                InputPriority::Game
-                            };
-                        let _ = foreground_proxy.send_event(UserEvent::InputPriority(priority));
-                    }
-                    Some("layout") => {
-                        let Some(layouts) = message.get("layouts") else {
-                            return;
-                        };
-                        match serde_json::from_value::<Vec<SurfaceLayout>>(layouts.clone()) {
-                            Ok(layouts) => {
-                                let _ = foreground_proxy.send_event(UserEvent::Layout(layouts));
-                            }
-                            Err(error) => {
-                                tracing::error!(
-                                    "snowglass: invalid WebView2 surface layout: {error}"
-                                );
-                            }
-                        }
                     }
                     Some("foregroundHitRegions") => {
                         let Some(regions) = message.get("regions") else {
@@ -826,15 +815,12 @@ impl ShellState {
         overlay.draw(&window)?;
 
         let input = InputTransport::runtime();
-        let input_provider = None;
         let control_sender = input.control_sender();
         let capture_wake_pending = Arc::new(AtomicBool::new(false));
         let capture_dirty = Arc::new(AtomicBool::new(false));
         let capture = SurfaceCapture::default();
         let pointer = capture.pointer_sender();
         let compositor_clock = CompositorClock::spawn(proxy.clone())?;
-        let target = None;
-
         // Merging composites every stream into one opaque window-covering
         // swapchain. A game layer supplies the chrome that swapchain draws
         // around the streams, which is what lets it stay opaque and so stay
@@ -863,14 +849,13 @@ impl ShellState {
             },
             game: GameSessionState {
                 session,
-                target,
                 proxy,
                 active: None,
                 pending_cli_launch,
             },
             input: ShellInputState {
                 transport: input,
-                provider: input_provider,
+                mouse_buttons: 0,
                 pointer_routing: PointerRoutingState::new(Instant::now()),
                 direct_input: DirectInputForwarder::new(control_sender),
                 priority: InputPriority::Foreground,
@@ -900,57 +885,45 @@ impl ShellState {
             tracing::error!("snowglass: CLI launch requires a linked game layer");
             return;
         }
-        let work = self.game_layer.service(&self.foreground_webview);
-        self.apply_game_layer_work(work);
+        self.service_game_layer();
     }
 
-    fn apply_game_layer_work(&mut self, work: GameLayerWork) {
-        if work.needs_refresh {
+    fn service_game_layer(&mut self) {
+        if self.game_layer.service(&self.foreground_webview) {
             self.refresh_game_layer();
         }
-        self.apply_game_layer_actions(work.actions);
     }
 
-    fn apply_game_layer_actions(&mut self, actions: Vec<GameLayerAction>) {
-        for action in actions {
-            match action {
-                GameLayerAction::Launch {
-                    instance_id,
-                    options,
-                } => self.launch_game(instance_id, options),
-                GameLayerAction::Reject {
-                    instance_id,
-                    message,
-                } => {
-                    self.emit_instance_event(
-                        &instance_id,
-                        "error",
-                        &serde_json::json!({ "message": message }),
-                    );
-                    self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
-                }
-                GameLayerAction::Close(instance_id) => self.close_game(&instance_id),
-                GameLayerAction::SetVolume {
-                    instance_id,
-                    volume,
-                } => self.set_game_volume(&instance_id, volume),
-                GameLayerAction::SetMuted { instance_id, muted } => {
-                    self.set_game_muted(&instance_id, muted)
-                }
-                GameLayerAction::Message {
-                    instance_id,
-                    name,
-                    args,
-                } => self.game_message(&instance_id, &name, args),
-                GameLayerAction::Input(active) => {
-                    self.set_input_priority(if active {
-                        InputPriority::Game
-                    } else {
-                        InputPriority::Foreground
-                    });
-                }
+    fn apply_emulator_command(&mut self, command: EmulatorCommand) {
+        match command {
+            EmulatorCommand::Launch { token, options } => self.launch_game(token, options),
+            EmulatorCommand::Close(token) => self.close_game(token),
+            EmulatorCommand::SetVolume { token, volume } => self.set_game_volume(token, volume),
+            EmulatorCommand::SetMuted { token, muted } => self.set_game_muted(token, muted),
+            EmulatorCommand::Message { token, name, args } => self.game_message(token, &name, args),
+            EmulatorCommand::Input { token, active } if self.is_active(token) => {
+                self.set_input_priority(if active {
+                    InputPriority::Game
+                } else {
+                    InputPriority::Foreground
+                });
             }
+            EmulatorCommand::Input { .. } => {}
         }
+    }
+
+    fn is_active(&self, token: InstanceToken) -> bool {
+        self.game
+            .active
+            .as_ref()
+            .is_some_and(|active| active.token == token)
+    }
+
+    fn input_provider(&self) -> Option<&Sdl3Provider> {
+        self.game
+            .active
+            .as_ref()
+            .and_then(|active| active.input.as_ref())
     }
 
     fn frontend_ready(
@@ -971,12 +944,22 @@ impl ShellState {
                 self.deliver_cli_launch();
                 return;
             };
+            let command_proxy = self.game.proxy.clone();
+            let emulator_commands = EmulatorCommandSink::new(move |command| {
+                if command_proxy
+                    .send_event(UserEvent::EmulatorCommand(command))
+                    .is_err()
+                {
+                    tracing::error!("snowglass: emulator command event loop is unavailable");
+                }
+            });
             let layer = factory.create(
                 &background.html,
                 background.base_url.clone(),
                 GAME_LAYER_VIEWS,
                 size.width,
                 size.height,
+                emulator_commands,
             );
             self.game_layer.install(layer);
             self.refresh_game_layer();
@@ -993,14 +976,14 @@ impl ShellState {
         self.deliver_cli_launch();
     }
 
-    fn launch_game(&mut self, instance_id: String, options: LaunchOptions) {
+    fn launch_game(&mut self, token: InstanceToken, options: LaunchOptions) {
         if self.game.active.is_some() {
             self.emit_instance_event(
-                &instance_id,
+                token,
                 "error",
-                &serde_json::json!({ "message": "another GameView instance is active" }),
+                &serde_json::json!({ "message": "another emulator instance is active" }),
             );
-            self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
         }
         let invalid_background_attachment = self.game_layer.layer().and_then(|layer| {
@@ -1012,7 +995,7 @@ impl ShellState {
         });
         if let Some(index) = invalid_background_attachment {
             self.emit_instance_event(
-                &instance_id,
+                token,
                 "error",
                 &serde_json::json!({
                     "message": format!(
@@ -1020,10 +1003,10 @@ impl ShellState {
                     )
                 }),
             );
-            self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
         }
-        self.emit_instance_event(&instance_id, "start", &serde_json::Value::Null);
+        self.emit_instance_event(token, "start", &serde_json::Value::Null);
         let provider_config = if options.gamepad_mapping.is_empty() {
             None
         } else {
@@ -1052,11 +1035,11 @@ impl ShellState {
                     }
                     Err(error) => {
                         self.emit_instance_event(
-                            &instance_id,
+                            token,
                             "error",
                             &serde_json::json!({ "message": error }),
                         );
-                        self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                        self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                         return;
                     }
                 }
@@ -1075,11 +1058,11 @@ impl ShellState {
                 Ok(bind) => bind,
                 Err(error) => {
                     self.emit_instance_event(
-                        &instance_id,
+                        token,
                         "error",
                         &serde_json::json!({ "message": error }),
                     );
-                    self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                    self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                     return;
                 }
             };
@@ -1087,11 +1070,11 @@ impl ShellState {
                 Ok(publisher) => Some(publisher),
                 Err(error) => {
                     self.emit_instance_event(
-                        &instance_id,
+                        token,
                         "error",
                         &serde_json::json!({ "message": error.to_string() }),
                     );
-                    self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                    self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                     return;
                 }
             }
@@ -1103,11 +1086,11 @@ impl ShellState {
             Some(path) => path,
             None => {
                 self.emit_instance_event(
-                    &instance_id,
+                    token,
                     "error",
                     &serde_json::json!({ "message": "shell executable has no parent directory" }),
                 );
-                self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                 return;
             }
         };
@@ -1164,11 +1147,11 @@ impl ShellState {
                     Err(error) => {
                         let _ = target.close();
                         self.emit_instance_event(
-                            &instance_id,
+                            token,
                             "error",
                             &serde_json::json!({ "message": error }),
                         );
-                        self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                        self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                         return;
                     }
                 };
@@ -1180,47 +1163,50 @@ impl ShellState {
                 self.streams.capture.attach(&target);
                 self.input.transport.attach(&target);
                 let audio = target.audio_state();
-                self.game.target = Some(target);
-                self.input.provider = provider;
-                self.game.active = Some(ActiveGame {
-                    instance_id: instance_id.clone(),
+                self.game.active = Some(ActiveEmulator {
+                    token,
+                    runtime: target,
                     options,
+                    input: provider,
                     webrtc: publisher,
                     audio,
                 });
                 self.set_input_priority(InputPriority::Game);
-                self.emit_instance_event(&instance_id, "ready", &serde_json::Value::Null);
+                self.emit_instance_event(token, "ready", &serde_json::Value::Null);
                 self.publish_audio_state(true);
             }
             Err(error) => {
                 self.emit_instance_event(
-                    &instance_id,
+                    token,
                     "error",
                     &serde_json::json!({ "message": error.to_string() }),
                 );
-                self.emit_instance_event(&instance_id, "closed", &serde_json::Value::Null);
+                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             }
         }
     }
 
-    fn close_game(&mut self, instance_id: &str) {
-        if self
+    fn close_game(&mut self, token: InstanceToken) {
+        let Some(active) = self
             .game
             .active
-            .as_ref()
-            .is_none_or(|active| active.instance_id != instance_id)
-        {
+            .as_mut()
+            .filter(|active| active.token == token)
+        else {
             return;
-        }
-        if let Some(mut target) = self.game.target.take() {
-            target.close();
-        }
+        };
+        active.runtime.close();
         self.streams.capture.detach();
         self.input.transport.detach();
         self.finish_active_game();
     }
 
     fn finish_active_game(&mut self) {
+        if let Some(provider) = self.input_provider() {
+            provider.clear_keys();
+            provider.set_pointer(None);
+            provider.set_enabled(false);
+        }
         let Some(active) = self.game.active.take() else {
             return;
         };
@@ -1240,82 +1226,65 @@ impl ShellState {
             }
         }
         let _ = self.presentation.composition.commit();
-        self.input.provider = None;
         self.set_input_priority(InputPriority::Foreground);
         self.input.foreground_hit_regions.clear();
-        self.publish_targets_for(&active.instance_id);
-        self.emit_instance_event(&active.instance_id, "closed", &serde_json::Value::Null);
+        self.publish_targets_for(active.token);
+        self.emit_instance_event(active.token, "closed", &serde_json::Value::Null);
     }
 
-    fn game_message(&mut self, instance_id: &str, name: &str, args: serde_json::Value) {
-        if self
-            .game
-            .active
-            .as_ref()
-            .is_some_and(|active| active.instance_id == instance_id)
-        {
+    fn game_message(&mut self, token: InstanceToken, name: &str, args: serde_json::Value) {
+        if self.is_active(token) {
             self.emit_instance_event(
-                instance_id,
+                token,
                 "message",
                 &serde_json::json!({ "name": name, "args": args }),
             );
         }
     }
 
-    fn set_game_volume(&mut self, instance_id: &str, volume: f64) {
-        if !self
-            .game
-            .active
-            .as_ref()
-            .is_some_and(|active| active.instance_id == instance_id)
-        {
-            return;
-        }
+    fn set_game_volume(&mut self, token: InstanceToken, volume: f64) {
         let Some(volume) = snowglass_runtime::NormalizedVolume::new(volume as f32) else {
             return;
         };
-        if let Some(target) = self.game.target.as_ref() {
-            target.set_volume(volume);
-            self.publish_audio_state(false);
-        }
-    }
-
-    fn set_game_muted(&mut self, instance_id: &str, muted: bool) {
-        if !self
+        let Some(active) = self
             .game
             .active
             .as_ref()
-            .is_some_and(|active| active.instance_id == instance_id)
-        {
-            return;
-        }
-        if let Some(target) = self.game.target.as_ref() {
-            target.set_muted(muted);
-            self.publish_audio_state(false);
-        }
-    }
-
-    fn publish_audio_state(&mut self, force: bool) {
-        let Some(audio) = self
-            .game
-            .target
-            .as_ref()
-            .map(snowglass_runtime::EmulatorInstance::audio_state)
+            .filter(|active| active.token == token)
         else {
             return;
         };
-        let instance_id = {
+        active.runtime.set_volume(volume);
+        self.publish_audio_state(false);
+    }
+
+    fn set_game_muted(&mut self, token: InstanceToken, muted: bool) {
+        let Some(active) = self
+            .game
+            .active
+            .as_ref()
+            .filter(|active| active.token == token)
+        else {
+            return;
+        };
+        active.runtime.set_muted(muted);
+        self.publish_audio_state(false);
+    }
+
+    fn publish_audio_state(&mut self, force: bool) {
+        let (token, audio) = {
             let Some(active) = self.game.active.as_mut() else {
                 return;
             };
+            let audio = active.runtime.audio_state();
             if !force && active.audio == audio {
                 return;
             }
             active.audio = audio;
-            active.instance_id.clone()
+            (active.token, audio)
         };
         self.emit_instance_event(
-            &instance_id,
+            token,
             "audioChanged",
             &serde_json::json!({
                 "available": audio.available,
@@ -1327,26 +1296,22 @@ impl ShellState {
 
     fn emit_instance_event(
         &mut self,
-        instance_id: &str,
+        token: InstanceToken,
         event_name: &str,
         payload: &serde_json::Value,
     ) {
         let event = serde_json::json!({
-            "instanceId": instance_id,
+            "instanceId": token,
             "eventName": event_name,
             "payload": payload,
         });
         let mut background_changed = false;
         if let Some(layer) = self.game_layer.layer_mut() {
-            layer.dispatch_game_view_event(&event);
+            layer.dispatch_emulator_event(&event);
             background_changed = layer.needs_paint();
         }
         if background_changed {
             self.refresh_game_layer();
-        }
-        let script = format!("window.__snowglassGameViewNativeEvent?.({event});");
-        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
-            tracing::error!("snowglass: publishing GameView event failed: {error}");
         }
         self.game_layer.flush(&self.foreground_webview);
     }
@@ -1462,14 +1427,8 @@ impl ShellState {
                 }
             }
         }
-        if changed
-            && let Some(instance_id) = self
-                .game
-                .active
-                .as_ref()
-                .map(|active| active.instance_id.clone())
-        {
-            self.publish_targets_for(&instance_id);
+        if changed && let Some(token) = self.game.active.as_ref().map(|active| active.token) {
+            self.publish_targets_for(token);
         }
         self.draw_unpaced_surfaces();
         self.streams.wake_pending.store(false, Ordering::Release);
@@ -1754,16 +1713,6 @@ impl ShellState {
             .map(|target| (target.index, target.quarter_turns()))
     }
 
-    fn apply_layout(&mut self, layouts: Vec<SurfaceLayout>) {
-        if self.game_layer.is_linked() {
-            // The layer decides where the views go, so the foreground's idea of
-            // their placement is ignored rather than fought with. Foreground
-            // hit regions arrive independently from the WebView DOM.
-            return;
-        }
-        self.place_surfaces(layouts);
-    }
-
     /// Re-lays out the game layer and moves the compositor to match.
     ///
     /// The chrome is uploaded band by band and the game views are placed
@@ -1913,11 +1862,11 @@ impl ShellState {
             _ => 0,
         };
         let previous_buttons = pressed
-            .map(|pressed| self.game_layer.set_mouse_button(flag, pressed))
-            .unwrap_or_else(|| self.game_layer.mouse_buttons());
-        let buttons = self.game_layer.mouse_buttons();
+            .map(|pressed| self.input.set_mouse_button(flag, pressed))
+            .unwrap_or(self.input.mouse_buttons);
+        let buttons = self.input.mouse_buttons;
         let Some(layer) = self.game_layer.layer_mut() else {
-            self.game_layer.restore_mouse_buttons(previous_buttons);
+            self.input.mouse_buttons = previous_buttons;
             return false;
         };
         let prevented = layer.mouse_event(DomMouseEvent {
@@ -1931,7 +1880,7 @@ impl ShellState {
         });
         let needs_paint = layer.needs_paint();
         if !prevented {
-            self.game_layer.restore_mouse_buttons(previous_buttons);
+            self.input.mouse_buttons = previous_buttons;
         }
         if needs_paint {
             if self.presentation.clock.is_pacing() {
@@ -1940,8 +1889,7 @@ impl ShellState {
                 self.refresh_game_layer();
             }
         }
-        let work = self.game_layer.service(&self.foreground_webview);
-        self.apply_game_layer_actions(work.actions);
+        self.service_game_layer();
         prevented
     }
 
@@ -1961,8 +1909,7 @@ impl ShellState {
         if layer.needs_paint() {
             self.refresh_game_layer();
         }
-        let work = self.game_layer.service(&self.foreground_webview);
-        self.apply_game_layer_actions(work.actions);
+        self.service_game_layer();
         prevented
     }
 
@@ -2051,7 +1998,7 @@ impl ShellState {
         ) {
             if phase == PointerPhase::Move {
                 self.input.direct_input.reset_mouse_position();
-                if let Some(provider) = &self.input.provider {
+                if let Some(provider) = self.input_provider() {
                     provider.set_pointer(None);
                 }
             }
@@ -2069,7 +2016,7 @@ impl ShellState {
                     sent.coordinate_width,
                     sent.coordinate_height,
                 );
-                if let Some(provider) = &self.input.provider {
+                if let Some(provider) = self.input_provider() {
                     provider.set_pointer(Some(pointer_axes(sent.normalized_x, sent.normalized_y)));
                 }
             }
@@ -2101,7 +2048,7 @@ impl ShellState {
             self.cancel_pointer_connection(connection);
         }
         self.input.direct_input.reset_mouse_position();
-        if let Some(provider) = &self.input.provider {
+        if let Some(provider) = self.input_provider() {
             provider.clear_keys();
             provider.set_pointer(None);
             provider.set_enabled(priority == InputPriority::Game);
@@ -2201,13 +2148,11 @@ impl ShellState {
         }
         self.input.next_publish = Instant::now() + Duration::from_millis(16);
         let states = self
-            .input
-            .provider
-            .as_ref()
+            .input_provider()
             .map(Sdl3Provider::states)
             .unwrap_or_default();
         self.presentation.overlay.diagnostics.input = InputDiagnostics {
-            active: self.input.priority == InputPriority::Game && self.game.target.is_some(),
+            active: self.input.priority == InputPriority::Game && self.game.active.is_some(),
             slots: self
                 .game
                 .active
@@ -2354,7 +2299,7 @@ impl ShellState {
         let _ = self.foreground_webview.evaluate_script(&script);
     }
 
-    fn publish_targets_for(&mut self, instance_id: &str) {
+    fn publish_targets_for(&mut self, token: InstanceToken) {
         let mut targets = self
             .streams
             .surfaces
@@ -2370,16 +2315,18 @@ impl ShellState {
         let Ok(payload) = serde_json::to_value(&targets) else {
             return;
         };
-        self.emit_instance_event(instance_id, "surfacesChanged", &payload);
+        self.emit_instance_event(token, "surfacesChanged", &payload);
     }
 
     fn poll_target(&mut self) {
-        let Some(target) = self.game.target.as_ref() else {
+        let Some(active) = self.game.active.as_ref() else {
             return;
         };
-        let finished = matches!(target.state(), snowglass_runtime::InstanceState::Exited(_));
+        let finished = matches!(
+            active.runtime.state(),
+            snowglass_runtime::InstanceState::Exited(_)
+        );
         if finished {
-            self.game.target = None;
             self.streams.capture.detach();
             self.input.transport.detach();
             self.finish_active_game();
@@ -2397,8 +2344,8 @@ impl Drop for ShellState {
                 let _ = Renderer::disconnect_stream(merged, connection);
             }
         }
-        if let Some(mut target) = self.game.target.take() {
-            target.close();
+        if let Some(active) = self.game.active.as_mut() {
+            active.runtime.close();
         }
     }
 }
@@ -2461,7 +2408,6 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 background,
                 background_error,
             } => state.frontend_ready(background, background_error),
-            UserEvent::Layout(layouts) => state.apply_layout(layouts),
             UserEvent::ForegroundHitRegions(regions) => {
                 state.input.foreground_hit_regions = regions
                     .into_iter()
@@ -2470,17 +2416,15 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             }
             UserEvent::GameLayerMessage(message) => {
                 state.game_layer.post_message(&message);
-                let work = state.game_layer.service(&state.foreground_webview);
-                state.apply_game_layer_work(work);
+                state.service_game_layer();
             }
             UserEvent::GameLayerProxy(request) => {
                 state
                     .game_layer
                     .proxy_request(&request, &state.foreground_webview);
-                let work = state.game_layer.service(&state.foreground_webview);
-                state.apply_game_layer_work(work);
+                state.service_game_layer();
             }
-            UserEvent::InputPriority(priority) => state.set_input_priority(priority),
+            UserEvent::EmulatorCommand(command) => state.apply_emulator_command(command),
         }
     }
 
@@ -2570,7 +2514,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     state.cancel_pointer_connection(connection);
                 }
                 for (button, flag) in [(0, 1), (1, 4), (2, 2), (3, 8), (4, 16)] {
-                    if state.game_layer.mouse_buttons() & flag != 0 {
+                    if state.input.mouse_buttons & flag != 0 {
                         state.game_layer_mouse(
                             "mouseup",
                             state.input.cursor.x as f32,
@@ -2580,9 +2524,9 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                         );
                     }
                 }
-                state.game_layer.clear_mouse_buttons();
+                state.input.mouse_buttons = 0;
                 state.input.dom_alt_key = false;
-                if let Some(provider) = &state.input.provider {
+                if let Some(provider) = state.input_provider() {
                     provider.clear_keys();
                     provider.set_pointer(None);
                 }
@@ -2598,7 +2542,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     let pressed = event.state == ElementState::Pressed;
                     if consumed {
                         // A background DOM shortcut claimed the event.
-                    } else if let Some(provider) = &state.input.provider
+                    } else if let Some(provider) = state.input_provider()
                         && provider.is_key_mapped(&key)
                     {
                         provider.set_key(key, pressed);
@@ -2634,7 +2578,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     || state.input.foreground_mouse_capture
                     || (!consumed
                         && state.input.pointer_routing.captured_connection().is_none()
-                        && state.game_layer.mouse_buttons() == 0
+                        && state.input.mouse_buttons == 0
                         && state.foreground_hit_test())
                 {
                     state.route_foreground_mouse(WM_MOUSEMOVE, None, 0);
@@ -2681,7 +2625,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     };
                     let foreground_hit = !consumed
                         && state.input.pointer_routing.captured_connection().is_none()
-                        && state.game_layer.mouse_buttons() == 0
+                        && state.input.mouse_buttons == 0
                         && state.foreground_hit_test();
                     if state.input.priority == InputPriority::Foreground
                         || state.input.foreground_mouse_capture
@@ -2803,8 +2747,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             state.presentation.profile.record(TurnPhase::Input, entered);
             state.poll_target();
             if state.game_layer.poll_runtime() {
-                let work = state.game_layer.service(&state.foreground_webview);
-                state.apply_game_layer_work(work);
+                state.service_game_layer();
                 // Deno owns browser timers, fetch, WebSockets, promises, and
                 // inspector traffic. Keep that event loop moving even when
                 // the native window has no other reason to wake.

@@ -6,14 +6,14 @@
 //! command-based avoids borrowing the document from inside V8 callbacks.
 
 mod dom;
-mod game;
+mod emulator;
 mod input;
 mod modules;
 mod runtime;
 mod state;
 
 pub use dom::Mutation;
-pub use game::Command;
+pub use emulator::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
 pub use input::{KeyboardEvent, MouseEvent};
 pub use runtime::Runtime;
 

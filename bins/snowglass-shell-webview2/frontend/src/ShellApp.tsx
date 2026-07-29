@@ -4,8 +4,8 @@ import type {
   GamePadMapping,
   GraphicsHook,
   LaunchRequest,
-} from "./gameview";
-import "./gameview";
+} from "./emulator";
+import "./emulator";
 import "./shell.css";
 
 type InputMapping = "none" | "controller" | "keyboard" | "keyboard-mouse";
@@ -63,8 +63,17 @@ function gamepadMapping(choice: InputMapping): GamePadMapping[] {
   ];
 }
 
-function activeGameInstance(): BackgroundRemoteValue {
-  return window.gameLayer.contentWindow.gameView.activeInstance;
+function backgroundWindow(): BackgroundRemoteValue {
+  return window.gameLayer.contentWindow;
+}
+
+function emulatorApi(): BackgroundRemoteValue {
+  return (window as unknown as { readonly Emulator: BackgroundRemoteValue })
+    .Emulator;
+}
+
+function activeEmulatorInstance(): BackgroundRemoteValue {
+  return emulatorApi().activeInstance;
 }
 
 function audioState(value: unknown): GameAudioState {
@@ -96,66 +105,125 @@ export function ShellApp() {
   const [confirmClose, setConfirmClose] = useState(false);
 
   useEffect(() => {
-    const listener = (event: Event) => {
-      const message = (event as MessageEvent).data;
-      if (
-        message?.type === "gameViewStatus" &&
-        typeof message.status === "string"
-      ) {
-        setStatus(message.status);
-      }
-      if (message?.type !== "gameViewLifecycle") return;
-      if (typeof message.status === "string") setStatus(message.status);
-      if (
-        message.phase === "launching" ||
-        message.phase === "running" ||
-        message.phase === "closing"
-      ) {
-        setPhase(message.phase);
-        setError("");
-      } else if (message.phase === "closed" || message.phase === "error") {
-        setPhase("idle");
-        setAudio(DEFAULT_AUDIO);
-        setConfirmClose(false);
-        setError(
-          message.phase === "error" && typeof message.error === "string"
-            ? message.error
-            : "",
-        );
-      }
-    };
-    window.gameLayer.addEventListener("message", listener);
-    return () => window.gameLayer.removeEventListener("message", listener);
-  }, []);
-
-  useEffect(() => {
-    if (phase !== "running") return;
     let subscribed = true;
     let instance: BackgroundRemoteValue | null = null;
+    let binding = 0;
+
     const updateAudio = (value: unknown) => {
       if (subscribed) setAudio(audioState(value));
     };
-    void (async () => {
-      const resolved = (await activeGameInstance()) as unknown;
-      if (!subscribed || !resolved) return;
-      instance = resolved as BackgroundRemoteValue;
-      await instance.on("audioChanged", updateAudio);
-      if (subscribed) {
-        const initial = (await instance.audio) as unknown;
-        updateAudio(initial);
+
+    const ready = () => {
+      if (!subscribed) return;
+      setPhase("running");
+      setStatus("Game is running");
+      setError("");
+    };
+
+    const failed = (value: unknown) => {
+      if (!subscribed) return;
+      const message =
+        value && typeof value === "object" && "message" in value
+          ? String(value.message)
+          : "Game launch failed";
+      setPhase("idle");
+      setStatus(message);
+      setError(message);
+    };
+
+    const closed = () => {
+      if (!subscribed) return;
+      setPhase("idle");
+      setStatus("Game closed");
+      setAudio(DEFAULT_AUDIO);
+      setConfirmClose(false);
+    };
+
+    const detach = (target: BackgroundRemoteValue | null) => {
+      if (!target) return;
+      void target.off("ready", ready).catch(() => {});
+      void target.off("audioChanged", updateAudio).catch(() => {});
+      void target.off("error", failed).catch(() => {});
+      void target.off("closed", closed).catch(() => {});
+    };
+
+    const bindActiveInstance = async () => {
+      const currentBinding = ++binding;
+      const resolved = (await activeEmulatorInstance()) as unknown;
+      if (!subscribed || currentBinding !== binding) return;
+
+      detach(instance);
+      instance = resolved ? (resolved as BackgroundRemoteValue) : null;
+      if (!instance) {
+        setPhase("idle");
+        setAudio(DEFAULT_AUDIO);
+        setConfirmClose(false);
+        return;
       }
-    })().catch((subscriptionError: unknown) => {
-      if (subscribed) {
-        console.error("Could not subscribe to game audio", subscriptionError);
-      }
-    });
-    return () => {
-      subscribed = false;
-      if (instance) {
-        void instance.off("audioChanged", updateAudio).catch(() => {});
+
+      setError("");
+      await Promise.all([
+        instance.on("ready", ready),
+        instance.on("audioChanged", updateAudio),
+        instance.on("error", failed),
+        instance.on("closed", closed),
+      ]);
+      if (!subscribed || currentBinding !== binding) return;
+
+      updateAudio((await instance.audio) as unknown);
+      const nativeState = String(await instance.state);
+      if (!subscribed || currentBinding !== binding) return;
+      if (nativeState === "ready") {
+        ready();
+      } else if (nativeState === "closing") {
+        setPhase("closing");
+        setStatus("Closing game");
+      } else if (nativeState === "error") {
+        const remoteError = (await instance.error) as unknown;
+        const message = remoteError
+          ? String(await (remoteError as BackgroundRemoteValue).message)
+          : "Game launch failed";
+        failed({ message });
+      } else if (nativeState === "closed") {
+        closed();
+      } else {
+        setPhase("launching");
+        setStatus("Launching game");
       }
     };
-  }, [phase]);
+
+    const activeChanged = () => {
+      void bindActiveInstance().catch((bindingError: unknown) => {
+        if (subscribed) {
+          console.error("Could not bind the active emulator", bindingError);
+        }
+      });
+    };
+
+    void (async () => {
+      await emulatorApi().addEventListener(
+        "activeinstancechange",
+        activeChanged,
+      );
+      await bindActiveInstance();
+    })().catch((subscriptionError: unknown) => {
+      if (subscribed) {
+        console.error(
+          "Could not observe the active emulator",
+          subscriptionError,
+        );
+      }
+    });
+
+    return () => {
+      subscribed = false;
+      binding += 1;
+      detach(instance);
+      void emulatorApi()
+        .removeEventListener("activeinstancechange", activeChanged)
+        .catch(() => {});
+    };
+  }, []);
 
   const toggleHook = (hook: GraphicsHook) => {
     setHooks((selected) =>
@@ -165,7 +233,7 @@ export function ShellApp() {
     );
   };
 
-  const startGame = (event: FormEvent<HTMLFormElement>) => {
+  const startGame = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
     if (!command.trim()) {
@@ -202,10 +270,34 @@ export function ShellApp() {
     };
     setPhase("launching");
     setStatus("Launching game");
-    window.gameLayer.postMessage({
-      type: "snowglass-browser-launch",
-      options,
-    });
+    try {
+      const background = backgroundWindow();
+      const surfaces = [];
+      for (const surface of options.surfaces) {
+        const attach = (await background.document.querySelector(
+          `tracked-surface[src="${surface.index}"]`,
+        )) as unknown;
+        if (!attach) {
+          throw new Error(
+            `No background tracked-surface exists for target ${surface.index}`,
+          );
+        }
+        surfaces.push({ ...surface, attach });
+      }
+      const instance = await emulatorApi().launch({
+        ...options,
+        surfaces,
+      });
+      if (!instance) {
+        throw new Error("Another emulator instance is already active");
+      }
+    } catch (launchError) {
+      const message =
+        launchError instanceof Error ? launchError.message : String(launchError);
+      setPhase("idle");
+      setStatus(message);
+      setError(message);
+    }
   };
 
   const gameActive = phase !== "idle";
@@ -214,24 +306,28 @@ export function ShellApp() {
   const setGameVolume = (volume: number) => {
     volume = Math.max(0, Math.min(1, volume));
     setAudio((state) => ({ ...state, volume }));
-    void activeGameInstance().setVolume(volume).catch((volumeError: unknown) => {
-      console.error("Could not set game volume", volumeError);
-    });
+    void activeEmulatorInstance()
+      .setVolume(volume)
+      .catch((volumeError: unknown) => {
+        console.error("Could not set game volume", volumeError);
+      });
   };
 
   const toggleGameMuted = () => {
     const muted = !audio.muted;
     setAudio((state) => ({ ...state, muted }));
-    void activeGameInstance().setMuted(muted).catch((muteError: unknown) => {
-      console.error("Could not change game mute state", muteError);
-    });
+    void activeEmulatorInstance()
+      .setMuted(muted)
+      .catch((muteError: unknown) => {
+        console.error("Could not change game mute state", muteError);
+      });
   };
 
   const closeGame = () => {
     setConfirmClose(false);
     setPhase("closing");
     setStatus("Closing game");
-    void activeGameInstance().close().catch((closeError: unknown) => {
+    void activeEmulatorInstance().close().catch((closeError: unknown) => {
       setPhase("running");
       setError(
         closeError instanceof Error ? closeError.message : String(closeError),

@@ -8,11 +8,11 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import type {
-  GameViewInstance,
+  EmulatorInstance,
   HTMLTrackedSurfaceElement,
   LaunchRequest,
-} from "./gameview";
-import "./gameview";
+} from "./emulator";
+import "./emulator";
 
 type SurfaceDimensions = {
   index: number;
@@ -63,7 +63,7 @@ type SurfaceFade = {
 
 type GameLifecycleState = {
   phase: GamePhase;
-  instance: GameViewInstance | null;
+  instance: EmulatorInstance | null;
   surfaceFade: number;
   fade: SurfaceFade | null;
 };
@@ -127,21 +127,8 @@ function trackedSurface(
   });
 }
 
-function publishLifecycle(phase: string, status: string, error?: string) {
-  postMessage({
-    type: "gameViewLifecycle",
-    phase,
-    status,
-    ...(error ? { error } : {}),
-  });
-  postMessage({ type: "gameViewStatus", status });
-}
-
-function launchGame(
-  rawOptions: LaunchRequest,
-  onSurfacesChanged: (surfaces: SurfaceDimensions[]) => void,
-) {
-  let instance: GameViewInstance | null;
+function launchGame(rawOptions: LaunchRequest) {
+  let instance: EmulatorInstance | null;
   try {
     const surfaces = rawOptions.surfaces.map((surface) => {
       const attach = document.querySelector<HTMLTrackedSurfaceElement>(
@@ -157,72 +144,20 @@ function launchGame(
         attach,
       };
     });
-    instance = window.gameView.launch({
+    instance = window.Emulator.launch({
       ...rawOptions,
       surfaces,
     });
   } catch (launchError) {
     const message =
       launchError instanceof Error ? launchError.message : String(launchError);
-    bindings.setLifecycle?.((state) => ({
-      ...state,
-      phase: "idle",
-      instance: null,
-      surfaceFade: 1,
-      fade: null,
-    }));
-    publishLifecycle("error", "Game launch failed", message);
+    console.error("Emulator launch failed", message);
     return;
   }
   if (!instance) {
-    publishLifecycle(
-      "error",
-      "Game launch was rejected",
-      "Another game may already be running",
-    );
+    console.error("Emulator launch was rejected; another instance may be active");
     return;
   }
-  bindings.setLifecycle?.((state) => ({
-    ...state,
-    phase: "launching",
-    instance,
-    surfaceFade: 1,
-    fade: null,
-  }));
-  publishLifecycle("launching", "Launching game");
-  instance.on("ready", () => {
-    bindings.setLifecycle?.((state) => ({ ...state, phase: "running" }));
-    startSurfaceFade(0);
-    publishLifecycle("running", "Game is running");
-  });
-  instance.on("surfacesChanged", (surfaces) => {
-    onSurfacesChanged(surfaces as SurfaceDimensions[]);
-  });
-  instance.on("error", (error: unknown) => {
-    const message =
-      error && typeof error === "object" && "message" in error
-        ? String(error.message)
-        : null;
-    const status = message || "Game launch failed";
-    bindings.setLifecycle?.((state) => ({
-      ...state,
-      phase: "idle",
-      instance: null,
-      surfaceFade: 1,
-      fade: null,
-    }));
-    publishLifecycle("error", status, status);
-  });
-  instance.on("closed", () => {
-    bindings.setLifecycle?.((state) => ({
-      ...state,
-      phase: "idle",
-      instance: null,
-      surfaceFade: 1,
-      fade: null,
-    }));
-    publishLifecycle("closed", "Game closed");
-  });
 }
 
 type GameLayerBindings = {
@@ -231,6 +166,7 @@ type GameLayerBindings = {
   interacting: boolean;
   animationTimer: ReturnType<typeof setInterval> | null;
   fadeTimer: ReturnType<typeof setInterval> | null;
+  activeInstance: EmulatorInstance | null;
   setGamepad: Dispatch<SetStateAction<GamepadState>> | null;
   setLifecycle: Dispatch<SetStateAction<GameLifecycleState>> | null;
   setMainSource: Dispatch<SetStateAction<{ width: number; height: number }>> | null;
@@ -243,11 +179,73 @@ const bindings: GameLayerBindings = {
   interacting: false,
   animationTimer: null,
   fadeTimer: null,
+  activeInstance: null,
   setGamepad: null,
   setLifecycle: null,
   setMainSource: null,
   setViewport: null,
 };
+
+function emulatorReady() {
+  bindings.setLifecycle?.((state) => ({ ...state, phase: "running" }));
+  startSurfaceFade(0);
+}
+
+function emulatorSurfacesChanged(value: unknown) {
+  const surfaces = Array.isArray(value) ? (value as SurfaceDimensions[]) : [];
+  const main = surfaces.find((surface) => surface.index === 0);
+  if (main && main.width > 0 && main.height > 0) {
+    bindings.setMainSource?.({ width: main.width, height: main.height });
+  }
+}
+
+function emulatorError(value: unknown) {
+  const message =
+    value && typeof value === "object" && "message" in value
+      ? String(value.message)
+      : "Game launch failed";
+  bindings.setLifecycle?.((state) => ({
+    ...state,
+    phase: "idle",
+    surfaceFade: 1,
+    fade: null,
+  }));
+  console.error(message);
+}
+
+function bindActiveEmulator() {
+  const previous = bindings.activeInstance;
+  const instance = window.Emulator.activeInstance;
+  if (previous === instance) return;
+  if (previous) {
+    previous.off("ready", emulatorReady);
+    previous.off("surfacesChanged", emulatorSurfacesChanged);
+    previous.off("error", emulatorError);
+  }
+  bindings.activeInstance = instance;
+  if (!instance) {
+    bindings.setLifecycle?.((state) => ({
+      ...state,
+      phase: "idle",
+      instance: null,
+      surfaceFade: 1,
+      fade: null,
+    }));
+    return;
+  }
+  bindings.setLifecycle?.((state) => ({
+    ...state,
+    phase: instance.state === "ready" ? "running" : "launching",
+    instance,
+    surfaceFade: 1,
+    fade: null,
+  }));
+  instance.on("ready", emulatorReady);
+  instance.on("surfacesChanged", emulatorSurfacesChanged);
+  instance.on("error", emulatorError);
+  emulatorSurfacesChanged(instance.surfaces);
+  if (instance.state === "ready") emulatorReady();
+}
 
 function startAnimationClock() {
   if (bindings.animationTimer !== null) return;
@@ -344,20 +342,12 @@ function installGameLayerBindings(
   bindings.setViewport = setViewport;
   if (bindings.installed) return true;
   bindings.installed = true;
+  window.Emulator.addEventListener("activeinstancechange", bindActiveEmulator);
+  bindActiveEmulator();
 
   addEventListener("message", (event) => {
-    if (
-      event.data?.type !== "snowglass-cli-launch" &&
-      event.data?.type !== "snowglass-browser-launch"
-    ) {
-      return;
-    }
-    launchGame(event.data.options as LaunchRequest, (surfaces) => {
-      const main = surfaces.find((surface) => surface.index === 0);
-      if (main && main.width > 0 && main.height > 0) {
-        bindings.setMainSource?.({ width: main.width, height: main.height });
-      }
-    });
+    if (event.data?.type !== "snowglass-cli-launch") return;
+    launchGame(event.data.options as LaunchRequest);
   });
 
   const handleShortcut = (event: KeyboardEvent) => {

@@ -4,6 +4,7 @@ interface Window {
     readonly contentWindow: BackgroundWindowProxy;
     postMessage(message: unknown): void;
   };
+  readonly Emulator: BackgroundWindowProxy;
   __snowglassGameLayerMessage(message: unknown): void;
   __snowglassGameLayerProxyMessage(message: ProxyMessage): void;
   __snowglassSetInputState(state: unknown[], routed?: unknown[]): void;
@@ -23,7 +24,8 @@ interface HTMLLinkElement {
 }
 
 type BackgroundWindowProxy = {
-  readonly [property: PropertyKey]: unknown;
+  (...args: unknown[]): Promise<unknown>;
+  readonly [property: string]: BackgroundWindowProxy;
 };
 
 type WireValue =
@@ -360,6 +362,10 @@ Object.defineProperty(gameLayerBridge, "contentWindow", {
 });
 Object.defineProperty(window, "gameLayer", {
   value: gameLayerBridge,
+  writable: false,
+});
+Object.defineProperty(window, "Emulator", {
+  value: backgroundWindowProxy.Emulator,
   writable: false,
 });
 window.__snowglassGameLayerMessage = (message) => {

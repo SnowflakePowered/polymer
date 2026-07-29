@@ -24,7 +24,7 @@ use blitz_dom::node::{CanvasData, Node, SpecialElementData};
 use blitz_dom::{Document as _, LocalName, QualName, local_name, ns};
 use blitz_traits::events::{BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent};
 use blitz_traits::net::{BoxedHandler, NetProvider, Request, SharedCallback};
-pub use deno::Command as GameLayerCommand;
+pub use deno::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
 pub use shared::SharedChrome;
 use shared::SharedTexture;
 use snowglass_protocol::AdapterLuid;
@@ -342,6 +342,7 @@ impl GameLayerFactory {
         views: usize,
         width: u32,
         height: u32,
+        emulator_commands: EmulatorCommandSink,
     ) -> GameLayer {
         let (sender, arrivals) = channel();
         let net = Arc::new(LocalAssets {
@@ -362,7 +363,15 @@ impl GameLayerFactory {
             },
         );
         initialise_tracked_surfaces(&mut document);
-        self.build(document, arrivals, html, &base_url, views, (width, height))
+        self.build(
+            document,
+            arrivals,
+            html,
+            &base_url,
+            views,
+            (width, height),
+            emulator_commands,
+        )
     }
 }
 
@@ -375,6 +384,7 @@ impl GameLayerFactory {
         source_name: &str,
         views: usize,
         viewport: (u32, u32),
+        emulator_commands: EmulatorCommandSink,
     ) -> GameLayer {
         let (width, height) = viewport;
         let script_to_dom = document
@@ -412,6 +422,7 @@ impl GameLayerFactory {
             source_name,
             layer.width,
             layer.height,
+            emulator_commands,
         ) {
             Ok(runtime) => layer.runtime = Some(runtime),
             Err(error) => {
@@ -680,19 +691,12 @@ impl GameLayer {
             })
     }
 
-    pub fn take_commands(&mut self) -> Vec<deno::Command> {
-        self.runtime
-            .as_mut()
-            .map(deno::Runtime::take_commands)
-            .unwrap_or_default()
-    }
-
-    pub fn dispatch_game_view_event(&mut self, event: &serde_json::Value) {
+    pub fn dispatch_emulator_event(&mut self, event: &serde_json::Value) {
         let Some(runtime) = self.runtime.as_mut() else {
             return;
         };
-        if let Err(error) = runtime.dispatch_game_view_event(event) {
-            tracing::error!("snowglass: dispatching a background GameView event failed: {error}");
+        if let Err(error) = runtime.dispatch_emulator_event(event) {
+            tracing::error!("snowglass: dispatching a background emulator event failed: {error}");
         }
         self.apply_script_mutations();
     }
@@ -1356,9 +1360,15 @@ mod tests {
             .map(|(id, _)| (id, id))
             .collect::<HashMap<_, _>>();
         let mut dom_to_script = script_to_dom.clone();
-        let mut runtime =
-            deno::Runtime::new(document.as_ref(), html, "snowglass:///test.html", 800, 600)
-                .unwrap();
+        let mut runtime = deno::Runtime::new(
+            document.as_ref(),
+            html,
+            "snowglass:///test.html",
+            800,
+            600,
+            deno::EmulatorCommandSink::default(),
+        )
+        .unwrap();
         apply_dom_mutations(
             &mut document,
             &mut script_to_dom,

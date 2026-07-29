@@ -16,9 +16,9 @@ use super::dom::{
     op_dom_create_text, op_dom_insert_before, op_dom_remove_attribute, op_dom_remove_child,
     op_dom_set_attribute, op_dom_set_text, snapshot,
 };
-use super::game::{
-    Command, op_game_close, op_game_input, op_game_launch, op_game_message, op_game_set_muted,
-    op_game_set_volume,
+use super::emulator::{
+    EmulatorBridge, EmulatorCommandSink, op_emulator_close, op_emulator_input, op_emulator_launch,
+    op_emulator_message, op_emulator_set_muted, op_emulator_set_volume,
 };
 use super::input::{EventResult, KeyboardEvent, MouseEvent, op_event_result};
 use super::modules::{BrowserModuleLoader, NoNpm, document_scripts, execute_document_script};
@@ -41,12 +41,12 @@ deno_core::extension!(
         op_post_message,
         op_proxy_message,
         op_event_result,
-        op_game_launch,
-        op_game_close,
-        op_game_set_volume,
-        op_game_set_muted,
-        op_game_message,
-        op_game_input,
+        op_emulator_launch,
+        op_emulator_close,
+        op_emulator_set_volume,
+        op_emulator_set_muted,
+        op_emulator_message,
+        op_emulator_input,
     ],
     esm_entry_point = "ext:snowglass_game_layer/bootstrap.js",
     esm = ["ext:snowglass_game_layer/bootstrap.js" = {
@@ -63,12 +63,12 @@ deno_core::extension!(
                   op_dom_set_attribute,
                   op_dom_set_text,
                   op_event_result,
-                  op_game_close,
-                  op_game_input,
-                  op_game_launch,
-                  op_game_message,
-                  op_game_set_muted,
-                  op_game_set_volume,
+                  op_emulator_close,
+                  op_emulator_input,
+                  op_emulator_launch,
+                  op_emulator_message,
+                  op_emulator_set_muted,
+                  op_emulator_set_volume,
                   op_post_message,
                   op_proxy_message,
                 } from "ext:core/ops";
@@ -86,12 +86,12 @@ deno_core::extension!(
                       op_dom_set_attribute,
                       op_dom_set_text,
                       op_event_result,
-                      op_game_close,
-                      op_game_input,
-                      op_game_launch,
-                      op_game_message,
-                      op_game_set_muted,
-                      op_game_set_volume,
+                      op_emulator_close,
+                      op_emulator_input,
+                      op_emulator_launch,
+                      op_emulator_message,
+                      op_emulator_set_muted,
+                      op_emulator_set_volume,
                       op_post_message,
                       op_proxy_message,
                     }),
@@ -103,6 +103,7 @@ deno_core::extension!(
     },],
     state = |state| {
         state.put(BridgeState::default());
+        state.put(EmulatorBridge::default());
     },
 );
 
@@ -121,6 +122,7 @@ impl Runtime {
         source_name: &str,
         width: u32,
         height: u32,
+        emulator_commands: EmulatorCommandSink,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // deno_runtime selects aws-lc-rs. With both providers compiled rustls
@@ -170,6 +172,12 @@ impl Runtime {
                 ..Default::default()
             },
         );
+        worker
+            .js_runtime
+            .op_state()
+            .borrow_mut()
+            .borrow_mut::<EmulatorBridge>()
+            .command_sink = emulator_commands;
         worker
             .js_runtime
             .execute_script("snowglass:game-layer/deno/runtime.js", BOOTSTRAP)?;
@@ -315,15 +323,15 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn dispatch_game_view_event(
+    pub fn dispatch_emulator_event(
         &mut self,
         event: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
-            "snowglass:game-layer/deno/game-view-event.js",
+            "snowglass:game-layer/deno/emulator-event.js",
             format!(
-                "__snowglassDom.dispatchGameViewEvent({});",
+                "__snowglassDom.dispatchEmulatorEvent({});",
                 serde_json::to_string(event)?
             ),
         )?;
@@ -376,18 +384,6 @@ impl Runtime {
                 .borrow_mut()
                 .borrow_mut::<BridgeState>()
                 .proxy_messages,
-        )
-    }
-
-    pub fn take_commands(&mut self) -> Vec<Command> {
-        std::mem::take(
-            &mut self
-                .worker
-                .js_runtime
-                .op_state()
-                .borrow_mut()
-                .borrow_mut::<BridgeState>()
-                .commands,
         )
     }
 }

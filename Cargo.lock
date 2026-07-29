@@ -10609,6 +10609,7 @@ dependencies = [
  "blitz-traits",
  "clap",
  "deno_core",
+ "deno_error",
  "deno_runtime",
  "deno_semver",
  "egui",
