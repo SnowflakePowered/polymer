@@ -4,7 +4,7 @@ mod api;
 mod cli;
 mod composition;
 mod game_layer;
-mod game_layer_state;
+mod game_layer_host;
 mod input;
 
 use api::{LaunchOptions, parse_input_binding};
@@ -17,7 +17,7 @@ use game_layer::{
     DomKeyboardEvent, DomMouseEvent, EmulatorCommand, EmulatorCommandSink, GameLayerFactory,
     GameViewStyle, InstanceToken,
 };
-use game_layer_state::GameLayerState;
+use game_layer_host::GameLayerHost;
 use input::InputTransport;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_egui::{
@@ -682,13 +682,16 @@ struct PresentationState {
     /// One window-spanning opaque swapchain shared by every stream.
     merged: Option<D3d12Compositor>,
     merged_dirty: bool,
+    game_layer_chrome_bands: Vec<usize>,
+    game_layer_chrome_dirty: bool,
+    game_layer_refresh_pending: bool,
 }
 
 struct ShellState {
     // Drop WebView2 and its COM host before tearing down their visual tree.
     foreground_webview: WebView,
     window: Window,
-    game_layer: GameLayerState,
+    game_layer: GameLayerHost,
     presentation: PresentationState,
     streams: StreamState,
     game: GameSessionState,
@@ -739,7 +742,7 @@ impl ShellState {
         // `<link rel="background">`. Its initialization bridge discovers and
         // fetches that document before announcing that the frontend is ready;
         // document discovery itself remains deferred to the page.
-        let game_layer = GameLayerState::new(game_layer_factory);
+        let game_layer = GameLayerHost::new(game_layer_factory);
         let foreground_visual = composition.foreground_visual()?;
         let foreground_proxy = proxy.clone();
         let bridge_script = include_str!(concat!(env!("OUT_DIR"), "/bridge.js"));
@@ -838,6 +841,9 @@ impl ShellState {
                 profile: TurnProfile::default(),
                 merged: Some(merged),
                 merged_dirty: true,
+                game_layer_chrome_bands: Vec::new(),
+                game_layer_chrome_dirty: false,
+                game_layer_refresh_pending: false,
             },
             streams: StreamState {
                 capture,
@@ -885,11 +891,16 @@ impl ShellState {
             tracing::error!("snowglass: CLI launch requires a linked game layer");
             return;
         }
-        self.service_game_layer();
+        self.flush_game_layer_bridge();
     }
 
-    fn service_game_layer(&mut self) {
-        if self.game_layer.service(&self.foreground_webview) {
+    fn flush_game_layer_bridge(&mut self) {
+        self.game_layer.flush(&self.foreground_webview);
+        if self
+            .game_layer
+            .active()
+            .is_some_and(|layer| layer.needs_paint())
+        {
             self.refresh_game_layer();
         }
     }
@@ -936,32 +947,33 @@ impl ShellState {
         }
         if let Some(background) = background {
             let size = self.window.inner_size();
-            let Some(factory) = self.game_layer.take_factory() else {
+            let command_proxy = self.game.proxy.clone();
+            let activated = self.game_layer.activate(|factory| {
+                let emulator_commands = EmulatorCommandSink::new(move |command| {
+                    if command_proxy
+                        .send_event(UserEvent::EmulatorCommand(command))
+                        .is_err()
+                    {
+                        tracing::error!("snowglass: emulator command event loop is unavailable");
+                    }
+                });
+                factory.create(
+                    &background.html,
+                    background.base_url.clone(),
+                    GAME_LAYER_VIEWS,
+                    size.width,
+                    size.height,
+                    emulator_commands,
+                )
+            });
+            if !activated {
                 tracing::error!(
                     "snowglass: ignoring a second game layer discovered at {}",
                     background.base_url
                 );
                 self.deliver_cli_launch();
                 return;
-            };
-            let command_proxy = self.game.proxy.clone();
-            let emulator_commands = EmulatorCommandSink::new(move |command| {
-                if command_proxy
-                    .send_event(UserEvent::EmulatorCommand(command))
-                    .is_err()
-                {
-                    tracing::error!("snowglass: emulator command event loop is unavailable");
-                }
-            });
-            let layer = factory.create(
-                &background.html,
-                background.base_url.clone(),
-                GAME_LAYER_VIEWS,
-                size.width,
-                size.height,
-                emulator_commands,
-            );
-            self.game_layer.install(layer);
+            }
             self.refresh_game_layer();
             self.game_layer.flush(&self.foreground_webview);
             tracing::error!(
@@ -971,7 +983,7 @@ impl ShellState {
         } else {
             // A page without the link does not use composed chrome and should
             // not retain the renderer that was prepared solely for it.
-            self.game_layer.discard_factory();
+            self.game_layer.disable();
         }
         self.deliver_cli_launch();
     }
@@ -986,7 +998,7 @@ impl ShellState {
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
         }
-        let invalid_background_attachment = self.game_layer.layer().and_then(|layer| {
+        let invalid_background_attachment = self.game_layer.active().and_then(|layer| {
             options
                 .surfaces
                 .iter()
@@ -1306,7 +1318,7 @@ impl ShellState {
             "payload": payload,
         });
         let mut background_changed = false;
-        if let Some(layer) = self.game_layer.layer_mut() {
+        if let Some(layer) = self.game_layer.active_mut() {
             layer.dispatch_emulator_event(&event);
             background_changed = layer.needs_paint();
         }
@@ -1483,7 +1495,7 @@ impl ShellState {
         self.presentation.merged.as_ref().is_some_and(|merged| {
             Renderer::has_pending_frame(merged)
                 || self.presentation.merged_dirty
-                || self.game_layer.chrome_dirty()
+                || self.presentation.game_layer_chrome_dirty
         })
     }
 
@@ -1600,7 +1612,7 @@ impl ShellState {
         self.presentation.composition.commit()?;
         self.presentation.merged = Some(replacement);
         self.presentation.merged_dirty = true;
-        if let Some(layer) = self.game_layer.layer_mut() {
+        if let Some(layer) = self.game_layer.active_mut() {
             layer.invalidate();
         }
         Ok(())
@@ -1643,8 +1655,8 @@ impl ShellState {
         // the z-order is what keeps a bezel above the view it overlaps.
         let window = self.window.inner_size();
         ordered.extend(
-            self.game_layer
-                .chrome_bands()
+            self.presentation
+                .game_layer_chrome_bands
                 .iter()
                 .map(|&band| {
                     (
@@ -1689,7 +1701,7 @@ impl ShellState {
             Ok(_) => {
                 self.presentation.merged_dirty = false;
                 // The draw is what consumed the pending chrome upload.
-                self.game_layer.clear_chrome_dirty();
+                self.presentation.game_layer_chrome_dirty = false;
                 self.presentation.overlay.record_present(carried_new_frame);
             }
             Err(error) => tracing::error!("snowglass: rendering merged surfaces failed: {error}"),
@@ -1731,13 +1743,13 @@ impl ShellState {
     }
 
     fn refresh_game_layer_inner(&mut self) {
-        self.game_layer.take_refresh_pending();
+        self.presentation.game_layer_refresh_pending = false;
         let Some(merged) = self.presentation.merged.as_mut() else {
             return;
         };
         let mut bands = 0;
         let (painted, placements) = {
-            let Some(layer) = self.game_layer.layer_mut() else {
+            let Some(layer) = self.game_layer.active_mut() else {
                 return;
             };
             let painted = layer.paint(|band, chrome| {
@@ -1747,7 +1759,8 @@ impl ShellState {
             (painted, layer.placements().to_vec())
         };
         if painted {
-            self.game_layer.set_painted_chrome(bands);
+            self.presentation.game_layer_chrome_bands = (0..bands).collect();
+            self.presentation.game_layer_chrome_dirty = true;
             for band in bands..=GAME_LAYER_VIEWS {
                 merged.drop_chrome_layer(band as u64);
             }
@@ -1865,7 +1878,7 @@ impl ShellState {
             .map(|pressed| self.input.set_mouse_button(flag, pressed))
             .unwrap_or(self.input.mouse_buttons);
         let buttons = self.input.mouse_buttons;
-        let Some(layer) = self.game_layer.layer_mut() else {
+        let Some(layer) = self.game_layer.active_mut() else {
             self.input.mouse_buttons = previous_buttons;
             return false;
         };
@@ -1884,17 +1897,17 @@ impl ShellState {
         }
         if needs_paint {
             if self.presentation.clock.is_pacing() {
-                self.game_layer.defer_refresh();
+                self.presentation.game_layer_refresh_pending = true;
             } else {
                 self.refresh_game_layer();
             }
         }
-        self.service_game_layer();
+        self.flush_game_layer_bridge();
         prevented
     }
 
     fn game_layer_keyboard(&mut self, kind: &str, key: String, code: String, repeat: bool) -> bool {
-        let Some(layer) = self.game_layer.layer_mut() else {
+        let Some(layer) = self.game_layer.active_mut() else {
             return false;
         };
         let prevented = layer.keyboard_event(DomKeyboardEvent {
@@ -1909,12 +1922,12 @@ impl ShellState {
         if layer.needs_paint() {
             self.refresh_game_layer();
         }
-        self.service_game_layer();
+        self.flush_game_layer_bridge();
         prevented
     }
 
     fn refresh_pending_game_layer(&mut self) {
-        if self.game_layer.take_refresh_pending() {
+        if std::mem::take(&mut self.presentation.game_layer_refresh_pending) {
             self.refresh_game_layer();
         }
     }
@@ -2416,13 +2429,13 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             }
             UserEvent::GameLayerMessage(message) => {
                 state.game_layer.post_message(&message);
-                state.service_game_layer();
+                state.flush_game_layer_bridge();
             }
             UserEvent::GameLayerProxy(request) => {
                 state
                     .game_layer
                     .proxy_request(&request, &state.foreground_webview);
-                state.service_game_layer();
+                state.flush_game_layer_bridge();
             }
             UserEvent::EmulatorCommand(command) => state.apply_emulator_command(command),
         }
@@ -2489,7 +2502,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 if let Err(error) = state.presentation.overlay.resize(&state.window) {
                     tracing::error!("snowglass: resizing egui composition overlay failed: {error}");
                 }
-                if let Some(layer) = state.game_layer.layer_mut() {
+                if let Some(layer) = state.game_layer.active_mut() {
                     layer.resize(size.width, size.height);
                     state.refresh_game_layer();
                 }
@@ -2747,7 +2760,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             state.presentation.profile.record(TurnPhase::Input, entered);
             state.poll_target();
             if state.game_layer.poll_runtime() {
-                state.service_game_layer();
+                state.flush_game_layer_bridge();
                 // Deno owns browser timers, fetch, WebSockets, promises, and
                 // inspector traffic. Keep that event loop moving even when
                 // the native window has no other reason to wake.

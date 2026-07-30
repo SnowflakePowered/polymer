@@ -203,6 +203,16 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
               event.preventDefault();
             });
             const surface = document.querySelector("tracked-surface");
+            Emulator.addEventListener("activeinstancechange", () => {
+              const active = Emulator.activeInstance;
+              if (!active) return;
+              active.on("ready", () => postMessage({ type: "emulator-ready" }));
+              active.on("surfacesChanged", surfaces => postMessage({
+                type: "emulator-surfaces",
+                count: surfaces.length,
+                width: surfaces[0]?.width,
+              }));
+            });
             const instance = Emulator.launch({
               command: "game.exe",
               arguments: [],
@@ -287,6 +297,38 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "tracked": true,
         })]
     );
+
+    runtime
+        .dispatch_emulator_event(&serde_json::json!({
+            "instanceId": 1,
+            "eventName": "ready",
+            "payload": null,
+        }))
+        .unwrap();
+    runtime
+        .dispatch_emulator_event(&serde_json::json!({
+            "instanceId": 1,
+            "eventName": "surfacesChanged",
+            "payload": [{
+                "connection": "7",
+                "index": 0,
+                "width": 1280,
+                "height": 720,
+            }],
+        }))
+        .unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [
+            serde_json::json!({ "type": "emulator-ready" }),
+            serde_json::json!({
+                "type": "emulator-surfaces",
+                "count": 1,
+                "width": 1280,
+            }),
+        ]
+    );
+    runtime.take_mutations();
 
     let result = runtime
         .dispatch_mouse(

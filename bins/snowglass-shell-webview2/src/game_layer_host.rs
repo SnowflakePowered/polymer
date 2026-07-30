@@ -1,7 +1,7 @@
-//! Owns the background game layer and its foreground bridge.
+//! Owns the background game layer lifecycle and its foreground bridge.
 //!
 //! `ShellState` decides what shell-wide effects a background request has, while
-//! this type manages the proxy transport and layer presentation lifecycle.
+//! this type manages the proxy transport and layer lifecycle.
 //! Emulator commands bypass it and enter the shell through the event loop.
 
 use crate::game_layer::{GameLayer, GameLayerFactory};
@@ -10,86 +10,67 @@ use snowglass_protocol::AdapterLuid;
 use std::error::Error;
 use wry::WebView;
 
-pub(crate) struct GameLayerState {
-    layer: Option<GameLayer>,
-    factory: Option<GameLayerFactory>,
-    presentation: GameLayerPresentationState,
+pub(crate) struct GameLayerHost {
+    slot: GameLayerSlot,
 }
 
-struct GameLayerPresentationState {
-    chrome_bands_drawn: Vec<usize>,
-    chrome_dirty: bool,
-    refresh_pending: bool,
+enum GameLayerSlot {
+    Awaiting(GameLayerFactory),
+    Active(GameLayer),
+    Disabled,
 }
 
-impl GameLayerState {
+impl GameLayerHost {
     pub fn new(factory: GameLayerFactory) -> Self {
         Self {
-            layer: None,
-            factory: Some(factory),
-            presentation: GameLayerPresentationState {
-                chrome_bands_drawn: Vec::new(),
-                chrome_dirty: false,
-                refresh_pending: false,
-            },
+            slot: GameLayerSlot::Awaiting(factory),
         }
     }
 
-    pub fn layer(&self) -> Option<&GameLayer> {
-        self.layer.as_ref()
+    pub fn active(&self) -> Option<&GameLayer> {
+        match &self.slot {
+            GameLayerSlot::Active(layer) => Some(layer),
+            GameLayerSlot::Awaiting(_) | GameLayerSlot::Disabled => None,
+        }
     }
 
-    pub fn layer_mut(&mut self) -> Option<&mut GameLayer> {
-        self.layer.as_mut()
+    pub fn active_mut(&mut self) -> Option<&mut GameLayer> {
+        match &mut self.slot {
+            GameLayerSlot::Active(layer) => Some(layer),
+            GameLayerSlot::Awaiting(_) | GameLayerSlot::Disabled => None,
+        }
     }
 
-    pub fn take_factory(&mut self) -> Option<GameLayerFactory> {
-        self.factory.take()
+    pub fn activate(&mut self, create: impl FnOnce(GameLayerFactory) -> GameLayer) -> bool {
+        let slot = std::mem::replace(&mut self.slot, GameLayerSlot::Disabled);
+        match slot {
+            GameLayerSlot::Awaiting(factory) => {
+                self.slot = GameLayerSlot::Active(create(factory));
+                true
+            }
+            slot => {
+                self.slot = slot;
+                false
+            }
+        }
     }
 
-    pub fn discard_factory(&mut self) {
-        self.factory = None;
-    }
-
-    pub fn install(&mut self, layer: GameLayer) {
-        self.layer = Some(layer);
+    pub fn disable(&mut self) {
+        if matches!(self.slot, GameLayerSlot::Awaiting(_)) {
+            self.slot = GameLayerSlot::Disabled;
+        }
     }
 
     pub fn switch_adapter(&mut self, adapter: AdapterLuid) -> Result<bool, Box<dyn Error>> {
-        match (&mut self.layer, &mut self.factory) {
-            (Some(layer), _) => layer.switch_adapter(adapter),
-            (None, Some(factory)) => factory.switch_adapter(adapter),
-            (None, None) => Ok(false),
+        match &mut self.slot {
+            GameLayerSlot::Active(layer) => layer.switch_adapter(adapter),
+            GameLayerSlot::Awaiting(factory) => factory.switch_adapter(adapter),
+            GameLayerSlot::Disabled => Ok(false),
         }
     }
 
-    pub fn chrome_bands(&self) -> &[usize] {
-        &self.presentation.chrome_bands_drawn
-    }
-
-    pub fn set_painted_chrome(&mut self, bands: usize) {
-        self.presentation.chrome_bands_drawn = (0..bands).collect();
-        self.presentation.chrome_dirty = true;
-    }
-
-    pub fn chrome_dirty(&self) -> bool {
-        self.presentation.chrome_dirty
-    }
-
-    pub fn clear_chrome_dirty(&mut self) {
-        self.presentation.chrome_dirty = false;
-    }
-
-    pub fn defer_refresh(&mut self) {
-        self.presentation.refresh_pending = true;
-    }
-
-    pub fn take_refresh_pending(&mut self) -> bool {
-        std::mem::take(&mut self.presentation.refresh_pending)
-    }
-
     pub fn post_message(&mut self, message: &Value) -> bool {
-        let Some(layer) = self.layer.as_mut() else {
+        let Some(layer) = self.active_mut() else {
             return false;
         };
         layer.post_message(message);
@@ -98,8 +79,7 @@ impl GameLayerState {
 
     pub fn proxy_request(&mut self, request: &Value, foreground: &WebView) -> bool {
         let result = self
-            .layer
-            .as_mut()
+            .active_mut()
             .ok_or_else(|| "the foreground has no linked background document".to_owned())
             .and_then(|layer| layer.proxy_request(request));
         if let Err(error) = result {
@@ -125,11 +105,11 @@ impl GameLayerState {
     }
 
     pub fn poll_runtime(&mut self) -> bool {
-        self.layer.as_mut().is_some_and(GameLayer::poll_runtime)
+        self.active_mut().is_some_and(GameLayer::poll_runtime)
     }
 
     pub fn flush(&mut self, foreground: &WebView) {
-        let Some(layer) = self.layer.as_mut() else {
+        let Some(layer) = self.active_mut() else {
             return;
         };
         for message in layer.take_messages() {
@@ -142,11 +122,6 @@ impl GameLayerState {
         for message in layer.take_proxy_messages() {
             Self::send_proxy_message(foreground, &message);
         }
-    }
-
-    pub fn service(&mut self, foreground: &WebView) -> bool {
-        self.flush(foreground);
-        self.layer.as_ref().is_some_and(GameLayer::needs_paint)
     }
 
     fn send_proxy_message(foreground: &WebView, message: &Value) {
