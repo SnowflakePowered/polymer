@@ -12,6 +12,10 @@ body,
     sans-serif;
 }
 
+:root {
+  view-transition-name: none;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -34,6 +38,7 @@ select {
     rgb(13 15 19 / 96%);
   opacity: 1;
   transition: opacity 320ms ease;
+  view-transition-name: snowglass-home;
 }
 
 .shell[data-game-active="true"] {
@@ -41,11 +46,15 @@ select {
   pointer-events: none;
 }
 
+.snowglass-view-transition .shell {
+  transition: none;
+}
+
 .launcher-panel {
-  width: min(42rem, 100%);
+  width: min(72rem, 100%);
   max-height: calc(100vh - 4rem);
   overflow: auto;
-  padding: 1.65rem;
+  padding: 1.5rem;
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 1.1rem;
   background: rgb(26 29 35 / 94%);
@@ -54,11 +63,11 @@ select {
     inset 0 1px rgb(255 255 255 / 5%);
 }
 
-.launcher-panel header {
+.launcher-header {
   display: flex;
   align-items: center;
   gap: 0.85rem;
-  margin-bottom: 1.35rem;
+  margin-bottom: 1.5rem;
 }
 
 .snowglass-mark {
@@ -88,7 +97,239 @@ select {
   line-height: 1.15;
 }
 
-.launcher-panel form {
+.launcher-intro {
+  margin: 0.35rem 0 0;
+  color: #8f97a4;
+  font-size: 0.78rem;
+}
+
+.launcher-grid {
+  display: grid;
+  grid-template-columns: minmax(18rem, 0.82fr) minmax(28rem, 1.18fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.recent-launches,
+.launch-setup {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid #383e48;
+  border-radius: 0.78rem;
+  background: rgb(20 23 28 / 78%);
+}
+
+.recent-launches {
+  display: flex;
+  flex-direction: column;
+  min-height: 26rem;
+}
+
+.section-heading {
+  display: flex;
+  min-height: 2.7rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.section-heading h2 {
+  margin: 0;
+  color: #f4f6f9;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.section-kicker {
+  margin: 0 0 0.16rem;
+  color: #78818f;
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.text-button {
+  padding: 0.2rem 0.3rem;
+  border: 0;
+  color: #8fb8fb;
+  background: transparent;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  color: #c1d8ff;
+}
+
+.history-list {
+  display: grid;
+  gap: 0.48rem;
+  max-height: 28rem;
+  margin: 0;
+  padding: 0 0.2rem 0 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.history-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.3rem;
+  padding: 0.32rem;
+  border: 1px solid #343a44;
+  border-radius: 0.65rem;
+  background: #1a1e24;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.history-entry:hover {
+  border-color: #4b5d76;
+  background: #1d222a;
+}
+
+.history-launch {
+  display: grid;
+  min-width: 0;
+  padding: 0.38rem;
+  grid-template-columns: 2.35rem minmax(0, 1fr);
+  gap: 0.62rem;
+  align-items: center;
+  border: 0;
+  outline: none;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.history-launch:focus-visible {
+  border-radius: 0.42rem;
+  box-shadow: 0 0 0 2px rgb(120 169 250 / 70%);
+}
+
+.history-launch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.history-icon {
+  display: grid;
+  width: 2.35rem;
+  height: 2.35rem;
+  place-items: center;
+  border: 1px solid rgb(124 169 240 / 30%);
+  border-radius: 0.56rem;
+  color: #9bc0fc;
+  background: linear-gradient(145deg, #263750, #182231);
+}
+
+.history-icon svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentcolor;
+}
+
+.history-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.13rem;
+}
+
+.history-copy strong,
+.history-command {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-copy strong {
+  color: #f0f2f5;
+  font-size: 0.8rem;
+}
+
+.history-command {
+  color: #747d8a;
+  font-size: 0.63rem;
+}
+
+.history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.18rem 0.48rem;
+  color: #98a3b2;
+  font-size: 0.61rem;
+  text-transform: capitalize;
+}
+
+.history-meta > * + *::before {
+  margin-right: 0.48rem;
+  color: #4d5663;
+  content: "•";
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.history-actions button {
+  padding: 0.32rem 0.4rem;
+  border: 0;
+  border-radius: 0.34rem;
+  color: #8e9aab;
+  background: transparent;
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+
+.history-actions button:hover,
+.history-actions button:focus-visible {
+  color: #e4e9f0;
+  background: rgb(255 255 255 / 7%);
+}
+
+.history-actions .history-remove {
+  color: #9a7777;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.history-empty {
+  display: grid;
+  flex: 1;
+  place-content: center;
+  justify-items: center;
+  padding: 2rem;
+  color: #858e9b;
+  text-align: center;
+}
+
+.history-empty-icon {
+  margin-bottom: 0.55rem;
+  color: #60718a;
+  font-size: 2rem;
+}
+
+.history-empty h3 {
+  margin: 0;
+  color: #c5cad2;
+  font-size: 0.84rem;
+}
+
+.history-empty p {
+  max-width: 15rem;
+  margin: 0.38rem 0 0;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.launcher-form {
   display: grid;
   gap: 1rem;
 }
@@ -202,13 +443,23 @@ select {
 }
 
 .start-button {
+  display: flex;
   min-height: 2.8rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.38rem;
   border: 1px solid #79aafa;
   border-radius: 0.58rem;
   color: #07101f;
   background: #89b5ff;
   font-weight: 750;
   cursor: pointer;
+}
+
+.start-button svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentcolor;
 }
 
 .start-button:hover {
@@ -219,20 +470,56 @@ select {
   transform: translateY(1px);
 }
 
+.start-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .game-controls-layer {
   position: fixed;
-  top: 0;
+  bottom: 0;
   left: 0;
   right: 0;
   z-index: 40;
   display: flex;
+  align-items: flex-end;
   justify-content: center;
   height: 4.5rem;
   pointer-events: none;
+  view-transition-name: snowglass-controls;
 }
 
 .game-controls-layer[data-visible="false"] {
   visibility: hidden;
+}
+
+::view-transition-old(snowglass-home),
+::view-transition-old(snowglass-controls) {
+  animation: snowglass-crossfade-out 360ms ease-in-out both;
+}
+
+::view-transition-new(snowglass-home),
+::view-transition-new(snowglass-controls) {
+  animation: snowglass-crossfade-in 360ms ease-in-out both;
+}
+
+@keyframes snowglass-crossfade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes snowglass-crossfade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell,
+  .game-hotbar {
+    transition: none;
+  }
 }
 
 .game-hotbar {
@@ -251,15 +538,17 @@ select {
     inset 0 1px rgb(255 255 255 / 13%);
   backdrop-filter: blur(0.75rem);
   opacity: 0;
-  transform: translateY(-0.3rem);
+  transform: translateY(0.3rem);
   transition:
     opacity 180ms ease,
     transform 180ms ease;
 }
 
 .game-hotbar-trigger {
+  display: flex;
+  align-items: flex-end;
   height: 4.5rem;
-  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
   pointer-events: auto;
 }
 
@@ -428,6 +717,20 @@ select {
   background: #a43131;
 }
 
+@media (max-width: 62rem) {
+  .launcher-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .recent-launches {
+    min-height: 0;
+  }
+
+  .history-list {
+    max-height: 14rem;
+  }
+}
+
 @media (max-width: 38rem) {
   .shell {
     padding: 0.75rem;
@@ -438,7 +741,26 @@ select {
     padding: 1.1rem;
   }
 
+  .launcher-header {
+    align-items: flex-start;
+  }
+
+  .recent-launches,
+  .launch-setup {
+    padding: 0.82rem;
+  }
+
   .form-row {
     grid-template-columns: 1fr;
+  }
+
+  .history-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .history-meta {
+    display: none;
   }
 }

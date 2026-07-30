@@ -188,7 +188,6 @@ const bindings: GameLayerBindings = {
 
 function emulatorReady() {
   bindings.setLifecycle?.((state) => ({ ...state, phase: "running" }));
-  startSurfaceFade(0);
 }
 
 function emulatorSurfacesChanged(value: unknown) {
@@ -196,6 +195,10 @@ function emulatorSurfacesChanged(value: unknown) {
   const main = surfaces.find((surface) => surface.index === 0);
   if (main && main.width > 0 && main.height > 0) {
     bindings.setMainSource?.({ width: main.width, height: main.height });
+  }
+  if (surfaces.length > 0) {
+    bindings.setLifecycle?.((state) => ({ ...state, phase: "running" }));
+    startSurfaceFade(0);
   }
 }
 

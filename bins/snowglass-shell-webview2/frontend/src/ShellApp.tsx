@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { flushSync } from "react-dom";
 import type {
   BackgroundRemoteValue,
   GamePadMapping,
@@ -15,6 +16,15 @@ type GameAudioState = {
   volume: number;
   muted: boolean;
 };
+type LaunchHistoryEntry = {
+  command: string;
+  arguments: string[];
+  isolated: boolean;
+  hooks: GraphicsHook[];
+  inputMapping: InputMapping;
+  launchedAt: number;
+};
+type LaunchConfiguration = Omit<LaunchHistoryEntry, "launchedAt">;
 
 const DEFAULT_AUDIO: GameAudioState = {
   available: false,
@@ -28,6 +38,115 @@ const HOOKS: Array<{ id: GraphicsHook; label: string }> = [
   { id: "d3d12", label: "Direct3D 12" },
   { id: "d3d11", label: "Direct3D 11" },
 ];
+const INPUT_MAPPING_LABELS: Record<InputMapping, string> = {
+  none: "No input",
+  controller: "Controller 1",
+  keyboard: "Keyboard",
+  "keyboard-mouse": "Keyboard + mouse",
+};
+const LAUNCH_HISTORY_KEY = "snowglass.launchHistory.v1";
+const LAUNCH_HISTORY_LIMIT = 10;
+
+function isGraphicsHook(value: unknown): value is GraphicsHook {
+  return HOOKS.some(({ id }) => id === value);
+}
+
+function isInputMapping(value: unknown): value is InputMapping {
+  return (
+    value === "none" ||
+    value === "controller" ||
+    value === "keyboard" ||
+    value === "keyboard-mouse"
+  );
+}
+
+function readLaunchHistory(): LaunchHistoryEntry[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LAUNCH_HISTORY_KEY) || "null");
+    if (
+      !stored ||
+      stored.version !== 1 ||
+      !Array.isArray(stored.entries)
+    ) {
+      return [];
+    }
+    return stored.entries
+      .filter(
+        (entry: unknown): entry is LaunchHistoryEntry =>
+          Boolean(entry) &&
+          typeof entry === "object" &&
+          typeof (entry as LaunchHistoryEntry).command === "string" &&
+          Boolean((entry as LaunchHistoryEntry).command.trim()) &&
+          Array.isArray((entry as LaunchHistoryEntry).arguments) &&
+          (entry as LaunchHistoryEntry).arguments.every(
+            (argument) => typeof argument === "string",
+          ) &&
+          typeof (entry as LaunchHistoryEntry).isolated === "boolean" &&
+          Array.isArray((entry as LaunchHistoryEntry).hooks) &&
+          (entry as LaunchHistoryEntry).hooks.length > 0 &&
+          (entry as LaunchHistoryEntry).hooks.every(isGraphicsHook) &&
+          isInputMapping((entry as LaunchHistoryEntry).inputMapping) &&
+          Number.isSafeInteger((entry as LaunchHistoryEntry).launchedAt) &&
+          (entry as LaunchHistoryEntry).launchedAt >= 0 &&
+          (entry as LaunchHistoryEntry).launchedAt <= 8_640_000_000_000_000,
+      )
+      .slice(0, LAUNCH_HISTORY_LIMIT);
+  } catch (historyError) {
+    console.warn("Could not read launch history", historyError);
+    return [];
+  }
+}
+
+function writeLaunchHistory(entries: LaunchHistoryEntry[]) {
+  try {
+    localStorage.setItem(
+      LAUNCH_HISTORY_KEY,
+      JSON.stringify({ version: 1, entries }),
+    );
+  } catch (historyError) {
+    console.warn("Could not save launch history", historyError);
+  }
+}
+
+function launchIdentity(entry: LaunchConfiguration) {
+  return JSON.stringify([
+    entry.command.toLowerCase(),
+    entry.arguments,
+    entry.isolated,
+    [...entry.hooks].sort(),
+    entry.inputMapping,
+  ]);
+}
+
+function commandName(command: string) {
+  return command.split(/[\\/]/).filter(Boolean).pop() || command;
+}
+
+function hooksLabel(hooks: GraphicsHook[]) {
+  return hooks
+    .map((hook) => HOOKS.find(({ id }) => id === hook)?.label || hook)
+    .join(" · ");
+}
+
+function formatArguments(arguments_: string[]) {
+  return arguments_
+    .map((argument) => (/\s/.test(argument) ? `"${argument}"` : argument))
+    .join(" ");
+}
+
+function launchedLabel(timestamp: number) {
+  const elapsed = Date.now() - timestamp;
+  if (elapsed < 60_000) return "Just now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} min ago`;
+  if (elapsed < 86_400_000) {
+    const hours = Math.floor(elapsed / 3_600_000);
+    return `${hours} hr${hours === 1 ? "" : "s"} ago`;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(timestamp);
+}
 
 function splitArguments(value: string) {
   const arguments_: string[] = [];
@@ -89,6 +208,46 @@ function audioState(value: unknown): GameAudioState {
   };
 }
 
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => {
+    finished: Promise<unknown>;
+  };
+};
+
+let activeViewTransitions = 0;
+
+function updateWithCrossfade(update: () => void) {
+  const viewDocument = document as ViewTransitionDocument;
+  if (
+    !viewDocument.startViewTransition ||
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  ) {
+    update();
+    return;
+  }
+  activeViewTransitions += 1;
+  document.documentElement.classList.add("snowglass-view-transition");
+  const finish = () => {
+    activeViewTransitions -= 1;
+    if (activeViewTransitions === 0) {
+      document.documentElement.classList.remove(
+        "snowglass-view-transition",
+      );
+    }
+  };
+  try {
+    const transition = viewDocument.startViewTransition(() => flushSync(update));
+    void transition.finished.catch(() => {}).then(finish);
+  } catch {
+    finish();
+    update();
+  }
+}
+
+function isGameView(phase: ForegroundPhase) {
+  return phase === "running" || phase === "closing";
+}
+
 export function ShellApp() {
   const [command, setCommand] = useState("");
   const [argumentsText, setArgumentsText] = useState("");
@@ -99,13 +258,35 @@ export function ShellApp() {
     HOOKS.map(({ id }) => id),
   );
   const [phase, setPhase] = useState<ForegroundPhase>("idle");
+  const phaseRef = useRef<ForegroundPhase>("idle");
   const [status, setStatus] = useState("Choose a game to start");
   const [error, setError] = useState("");
   const [audio, setAudio] = useState<GameAudioState>(DEFAULT_AUDIO);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [launchHistory, setLaunchHistory] =
+    useState<LaunchHistoryEntry[]>(readLaunchHistory);
+
+  const updatePhase = (nextPhase: ForegroundPhase) => {
+    const previousPhase = phaseRef.current;
+    if (previousPhase === nextPhase) return;
+    phaseRef.current = nextPhase;
+    const update = () => setPhase(nextPhase);
+    if (isGameView(previousPhase) !== isGameView(nextPhase)) {
+      updateWithCrossfade(update);
+    } else {
+      update();
+    }
+  };
+
+  useEffect(() => {
+    writeLaunchHistory(launchHistory);
+  }, [launchHistory]);
 
   useEffect(() => {
     let subscribed = true;
+    let observing = false;
+    let observed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let instance: BackgroundRemoteValue | null = null;
     let binding = 0;
 
@@ -115,7 +296,7 @@ export function ShellApp() {
 
     const ready = () => {
       if (!subscribed) return;
-      setPhase("running");
+      updatePhase("running");
       setStatus("Game is running");
       setError("");
     };
@@ -126,14 +307,14 @@ export function ShellApp() {
         value && typeof value === "object" && "message" in value
           ? String(value.message)
           : "Game launch failed";
-      setPhase("idle");
+      updatePhase("idle");
       setStatus(message);
       setError(message);
     };
 
     const closed = () => {
       if (!subscribed) return;
-      setPhase("idle");
+      updatePhase("idle");
       setStatus("Game closed");
       setAudio(DEFAULT_AUDIO);
       setConfirmClose(false);
@@ -155,7 +336,7 @@ export function ShellApp() {
       detach(instance);
       instance = resolved ? (resolved as BackgroundRemoteValue) : null;
       if (!instance) {
-        setPhase("idle");
+        updatePhase("idle");
         setAudio(DEFAULT_AUDIO);
         setConfirmClose(false);
         return;
@@ -176,7 +357,7 @@ export function ShellApp() {
       if (nativeState === "ready") {
         ready();
       } else if (nativeState === "closing") {
-        setPhase("closing");
+        updatePhase("closing");
         setStatus("Closing game");
       } else if (nativeState === "error") {
         const remoteError = (await instance.error) as unknown;
@@ -187,7 +368,7 @@ export function ShellApp() {
       } else if (nativeState === "closed") {
         closed();
       } else {
-        setPhase("launching");
+        updatePhase("launching");
         setStatus("Launching game");
       }
     };
@@ -200,28 +381,62 @@ export function ShellApp() {
       });
     };
 
-    void (async () => {
-      await emulatorApi().addEventListener(
-        "activeinstancechange",
-        activeChanged,
-      );
-      await bindActiveInstance();
-    })().catch((subscriptionError: unknown) => {
-      if (subscribed) {
-        console.error(
-          "Could not observe the active emulator",
-          subscriptionError,
+    const observeActiveInstance = () => {
+      if (!subscribed || observing || observed) return;
+      observing = true;
+      void (async () => {
+        await emulatorApi().addEventListener(
+          "activeinstancechange",
+          activeChanged,
         );
-      }
-    });
+        observed = true;
+        if (!subscribed) {
+          await emulatorApi().removeEventListener(
+            "activeinstancechange",
+            activeChanged,
+          );
+          return;
+        }
+        await bindActiveInstance();
+      })()
+        .catch((subscriptionError: unknown) => {
+          if (subscribed) {
+            console.error(
+              "Could not observe the active emulator",
+              subscriptionError,
+            );
+          }
+        })
+        .finally(() => {
+          observing = false;
+          if (
+            subscribed &&
+            !observed &&
+            window.gameLayer.ready &&
+            retryTimer === null
+          ) {
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              observeActiveInstance();
+            }, 100);
+          }
+        });
+    };
+
+    window.gameLayer.addEventListener("load", observeActiveInstance);
+    if (window.gameLayer.ready) observeActiveInstance();
 
     return () => {
       subscribed = false;
       binding += 1;
+      window.gameLayer.removeEventListener("load", observeActiveInstance);
+      if (retryTimer !== null) clearTimeout(retryTimer);
       detach(instance);
-      void emulatorApi()
-        .removeEventListener("activeinstancechange", activeChanged)
-        .catch(() => {});
+      if (observed) {
+        void emulatorApi()
+          .removeEventListener("activeinstancechange", activeChanged)
+          .catch(() => {});
+      }
     };
   }, []);
 
@@ -233,42 +448,51 @@ export function ShellApp() {
     );
   };
 
-  const startGame = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const rememberLaunch = (configuration: LaunchConfiguration) => {
+    const identity = launchIdentity(configuration);
+    setLaunchHistory((entries) => [
+      {
+        ...configuration,
+        arguments: [...configuration.arguments],
+        hooks: [...configuration.hooks],
+        launchedAt: Date.now(),
+      },
+      ...entries.filter(
+        (entry) =>
+          launchIdentity({
+            command: entry.command,
+            arguments: entry.arguments,
+            isolated: entry.isolated,
+            hooks: entry.hooks,
+            inputMapping: entry.inputMapping,
+          }) !== identity,
+      ),
+    ].slice(0, LAUNCH_HISTORY_LIMIT));
+  };
+
+  const launchGame = async (configuration: LaunchConfiguration) => {
     setError("");
-    if (!command.trim()) {
+    if (!configuration.command.trim()) {
       setError("Choose an executable first.");
       return;
     }
-    if (!hooks.length) {
+    if (!configuration.hooks.length) {
       setError("Select at least one graphics hook.");
       return;
     }
 
-    let arguments_: string[];
-    try {
-      arguments_ = splitArguments(argumentsText);
-    } catch (launchError) {
-      setError(
-        launchError instanceof Error
-          ? launchError.message
-          : "Could not parse the arguments.",
-      );
-      return;
-    }
-
     const options: LaunchRequest = {
-      command: command.trim(),
-      arguments: arguments_,
-      isolated,
-      hook: hooks,
+      command: configuration.command.trim(),
+      arguments: [...configuration.arguments],
+      isolated: configuration.isolated,
+      hook: [...configuration.hooks],
       surfaces: [
         { index: 0, rotation: 0, webrtc: false },
         { index: 1, rotation: 0, webrtc: false },
       ],
-      gamepadMapping: gamepadMapping(inputMapping),
+      gamepadMapping: gamepadMapping(configuration.inputMapping),
     };
-    setPhase("launching");
+    updatePhase("launching");
     setStatus("Launching game");
     try {
       const background = backgroundWindow();
@@ -291,17 +515,68 @@ export function ShellApp() {
       if (!instance) {
         throw new Error("Another emulator instance is already active");
       }
+      rememberLaunch(configuration);
     } catch (launchError) {
       const message =
         launchError instanceof Error ? launchError.message : String(launchError);
-      setPhase("idle");
+      updatePhase("idle");
       setStatus(message);
       setError(message);
     }
   };
 
-  const gameActive = phase !== "idle";
-  const hotbarVisible = phase === "running";
+  const startGame = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    let arguments_: string[];
+    try {
+      arguments_ = splitArguments(argumentsText);
+    } catch (launchError) {
+      setError(
+        launchError instanceof Error
+          ? launchError.message
+          : "Could not parse the arguments.",
+      );
+      return;
+    }
+    void launchGame({
+      command: command.trim(),
+      arguments: arguments_,
+      isolated,
+      hooks,
+      inputMapping,
+    });
+  };
+
+  const relaunch = (entry: LaunchHistoryEntry) => {
+    void launchGame({
+      command: entry.command,
+      arguments: entry.arguments,
+      isolated: entry.isolated,
+      hooks: entry.hooks,
+      inputMapping: entry.inputMapping,
+    });
+  };
+
+  const editLaunch = (entry: LaunchHistoryEntry) => {
+    setCommand(entry.command);
+    setArgumentsText(formatArguments(entry.arguments));
+    setIsolated(entry.isolated);
+    setHooks([...entry.hooks]);
+    setInputMapping(entry.inputMapping);
+    setError("");
+    setStatus(`Loaded ${commandName(entry.command)}`);
+  };
+
+  const removeLaunch = (entry: LaunchHistoryEntry) => {
+    const identity = launchIdentity(entry);
+    setLaunchHistory((entries) =>
+      entries.filter((candidate) => launchIdentity(candidate) !== identity),
+    );
+  };
+
+  const gameActive = isGameView(phase);
+  const launchBusy = phase !== "idle";
+  const hotbarVisible = gameActive;
 
   const setGameVolume = (volume: number) => {
     volume = Math.max(0, Math.min(1, volume));
@@ -325,10 +600,10 @@ export function ShellApp() {
 
   const closeGame = () => {
     setConfirmClose(false);
-    setPhase("closing");
+    updatePhase("closing");
     setStatus("Closing game");
     void activeEmulatorInstance().close().catch((closeError: unknown) => {
-      setPhase("running");
+      updatePhase("running");
       setError(
         closeError instanceof Error ? closeError.message : String(closeError),
       );
@@ -338,98 +613,205 @@ export function ShellApp() {
   return (
     <>
       <main className="shell" data-game-active={gameActive ? "true" : "false"}>
-        <section className="launcher-panel" aria-label="Start a game">
-        <header>
-          <span className="snowglass-mark" aria-hidden="true">
-            ◈
-          </span>
-          <div>
-            <p className="eyebrow">Snowglass</p>
-            <h1>Start a game</h1>
-          </div>
-        </header>
-
-        <form onSubmit={startGame}>
-          <label className="field">
-            <span>Command</span>
-            <input
-              type="text"
-              value={command}
-              onChange={(event) => setCommand(event.target.value)}
-              placeholder="C:\Games\Game\game.exe"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-
-          <label className="field">
-            <span>Arguments</span>
-            <input
-              type="text"
-              value={argumentsText}
-              onChange={(event) => setArgumentsText(event.target.value)}
-              placeholder='--fullscreen --profile "Player One"'
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-
-          <fieldset className="hooks">
-            <legend>Graphics hooks</legend>
-            <div className="hook-options">
-              {HOOKS.map((hook) => (
-                <label key={hook.id} className="check-option">
-                  <input
-                    type="checkbox"
-                    checked={hooks.includes(hook.id)}
-                    onChange={() => toggleHook(hook.id)}
-                  />
-                  <span>{hook.label}</span>
-                </label>
-              ))}
+        <section className="launcher-panel" aria-label="Game launcher">
+          <header className="launcher-header">
+            <span className="snowglass-mark" aria-hidden="true">
+              ◈
+            </span>
+            <div>
+              <p className="eyebrow">Snowglass</p>
+              <h1>Game launcher</h1>
+              <p className="launcher-intro">
+                Resume a recent setup or configure a new launch.
+              </p>
             </div>
-          </fieldset>
+          </header>
 
-          <div className="form-row">
-            <label className="field mapping-field">
-              <span>Input mapping</span>
-              <select
-                value={inputMapping}
-                onChange={(event) =>
-                  setInputMapping(event.target.value as InputMapping)
-                }
-              >
-                <option value="controller">Controller 1</option>
-                <option value="keyboard">Keyboard</option>
-                <option value="keyboard-mouse">Keyboard + mouse</option>
-                <option value="none">None</option>
-              </select>
-            </label>
+          <div className="launcher-grid">
+            <section className="recent-launches" aria-labelledby="recent-title">
+              <div className="section-heading">
+                <div>
+                  <p className="section-kicker">Library</p>
+                  <h2 id="recent-title">Recent launches</h2>
+                </div>
+                {launchHistory.length > 0 && (
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => setLaunchHistory([])}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
 
-            <label className="isolate-option">
-              <input
-                type="checkbox"
-                checked={isolated}
-                onChange={(event) => setIsolated(event.target.checked)}
-              />
-              <span>
-                <strong>Isolated desktop</strong>
-                <small>Keep the game separate from your desktop</small>
-              </span>
-            </label>
+              {launchHistory.length > 0 ? (
+                <ul className="history-list">
+                  {launchHistory.map((entry) => {
+                    const identity = launchIdentity(entry);
+                    return (
+                      <li className="history-entry" key={identity}>
+                        <button
+                          className="history-launch"
+                          type="button"
+                          disabled={launchBusy}
+                          onClick={() => relaunch(entry)}
+                          title={`Launch ${commandName(entry.command)}`}
+                        >
+                          <span className="history-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                              <path d="m9 7 8 5-8 5V7z" />
+                            </svg>
+                          </span>
+                          <span className="history-copy">
+                            <strong>{commandName(entry.command)}</strong>
+                            <small className="history-command">
+                              {entry.command}
+                              {entry.arguments.length > 0
+                                ? ` ${formatArguments(entry.arguments)}`
+                                : ""}
+                            </small>
+                            <span className="history-meta">
+                              <span>{hooksLabel(entry.hooks)}</span>
+                              <span>{INPUT_MAPPING_LABELS[entry.inputMapping]}</span>
+                              {entry.isolated && <span>Isolated</span>}
+                              <time dateTime={new Date(entry.launchedAt).toISOString()}>
+                                {launchedLabel(entry.launchedAt)}
+                              </time>
+                            </span>
+                          </span>
+                        </button>
+                        <div className="history-actions">
+                          <button
+                            type="button"
+                            onClick={() => editLaunch(entry)}
+                            title="Load this setup into the form"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="history-remove"
+                            type="button"
+                            onClick={() => removeLaunch(entry)}
+                            aria-label={`Remove ${commandName(entry.command)} from history`}
+                            title="Remove from history"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="history-empty">
+                  <span className="history-empty-icon" aria-hidden="true">
+                    ◷
+                  </span>
+                  <h3>No recent games yet</h3>
+                  <p>Your successful launches will appear here for one-click replay.</p>
+                </div>
+              )}
+            </section>
+
+            <section className="launch-setup" aria-labelledby="setup-title">
+              <div className="section-heading">
+                <div>
+                  <p className="section-kicker">Configuration</p>
+                  <h2 id="setup-title">New launch</h2>
+                </div>
+              </div>
+
+              <form className="launcher-form" onSubmit={startGame}>
+                <label className="field">
+                  <span>Command</span>
+                  <input
+                    type="text"
+                    value={command}
+                    onChange={(event) => setCommand(event.target.value)}
+                    placeholder="C:\Games\Game\game.exe"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Arguments</span>
+                  <input
+                    type="text"
+                    value={argumentsText}
+                    onChange={(event) => setArgumentsText(event.target.value)}
+                    placeholder='--fullscreen --profile "Player One"'
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+
+                <fieldset className="hooks">
+                  <legend>Graphics hooks</legend>
+                  <div className="hook-options">
+                    {HOOKS.map((hook) => (
+                      <label key={hook.id} className="check-option">
+                        <input
+                          type="checkbox"
+                          checked={hooks.includes(hook.id)}
+                          onChange={() => toggleHook(hook.id)}
+                        />
+                        <span>{hook.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <div className="form-row">
+                  <label className="field mapping-field">
+                    <span>Input mapping</span>
+                    <select
+                      value={inputMapping}
+                      onChange={(event) =>
+                        setInputMapping(event.target.value as InputMapping)
+                      }
+                    >
+                      <option value="controller">Controller 1</option>
+                      <option value="keyboard">Keyboard</option>
+                      <option value="keyboard-mouse">Keyboard + mouse</option>
+                      <option value="none">None</option>
+                    </select>
+                  </label>
+
+                  <label className="isolate-option">
+                    <input
+                      type="checkbox"
+                      checked={isolated}
+                      onChange={(event) => setIsolated(event.target.checked)}
+                    />
+                    <span>
+                      <strong>Isolated desktop</strong>
+                      <small>Keep the game separate from your desktop</small>
+                    </span>
+                  </label>
+                </div>
+
+                <output
+                  className="launcher-message"
+                  data-error={error ? "true" : "false"}
+                >
+                  {error || status}
+                </output>
+
+                <button
+                  className="start-button"
+                  type="submit"
+                  disabled={launchBusy}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m9 7 8 5-8 5V7z" />
+                  </svg>
+                  Start game
+                </button>
+              </form>
+            </section>
           </div>
-
-          <output
-            className="launcher-message"
-            data-error={error ? "true" : "false"}
-          >
-            {error || status}
-          </output>
-
-          <button className="start-button" type="submit">
-            Start game
-          </button>
-        </form>
         </section>
       </main>
 

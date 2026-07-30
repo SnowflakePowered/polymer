@@ -86,6 +86,7 @@ declare global {
     readonly Emulator: EmulatorApi;
     readonly gameLayer: EventTarget & {
       readonly contentWindow: BackgroundWindowProxy;
+      readonly ready: boolean;
       postMessage(message: unknown): void;
     };
   }

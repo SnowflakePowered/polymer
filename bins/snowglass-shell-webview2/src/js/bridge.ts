@@ -2,11 +2,13 @@ interface Window {
   ipc: { postMessage(message: string): void };
   readonly gameLayer: EventTarget & {
     readonly contentWindow: BackgroundWindowProxy;
+    readonly ready: boolean;
     postMessage(message: unknown): void;
   };
   readonly Emulator: BackgroundWindowProxy;
   __snowglassGameLayerMessage(message: unknown): void;
   __snowglassGameLayerProxyMessage(message: ProxyMessage): void;
+  __snowglassGameLayerReady(): void;
   __snowglassSetInputState(state: unknown[], routed?: unknown[]): void;
   __snowglassSetInputPriority(priority: "game" | "foreground"): void;
   __snowglassKeyboardInput(event: unknown): void;
@@ -353,12 +355,17 @@ const backgroundWindowProxy = createBackgroundProxy(0);
 // same-document proxy for accessing the Blitz/Deno background realm.
 const gameLayerBridge = new EventTarget() as EventTarget & {
   readonly contentWindow: BackgroundWindowProxy;
+  readonly ready: boolean;
   postMessage(message: unknown): void;
 };
+let gameLayerReady = false;
 gameLayerBridge.postMessage = postToBackground;
 Object.defineProperty(gameLayerBridge, "contentWindow", {
   value: backgroundWindowProxy,
   writable: false,
+});
+Object.defineProperty(gameLayerBridge, "ready", {
+  get: () => gameLayerReady,
 });
 Object.defineProperty(window, "gameLayer", {
   value: gameLayerBridge,
@@ -370,6 +377,11 @@ Object.defineProperty(window, "Emulator", {
 });
 window.__snowglassGameLayerMessage = (message) => {
   gameLayerBridge.dispatchEvent(new MessageEvent("message", { data: message }));
+};
+window.__snowglassGameLayerReady = () => {
+  if (gameLayerReady) return;
+  gameLayerReady = true;
+  gameLayerBridge.dispatchEvent(new Event("load"));
 };
 window.__snowglassGameLayerProxyMessage = (message) => {
   if (message.type === "callback") {

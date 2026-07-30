@@ -976,6 +976,14 @@ impl ShellState {
             }
             self.refresh_game_layer();
             self.game_layer.flush(&self.foreground_webview);
+            if let Err(error) = self
+                .foreground_webview
+                .evaluate_script("window.__snowglassGameLayerReady?.();")
+            {
+                tracing::error!(
+                    "snowglass: could not announce game layer readiness: {error}"
+                );
+            }
             tracing::error!(
                 "snowglass: using game layer discovered at {}",
                 background.base_url
