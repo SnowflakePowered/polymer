@@ -6,6 +6,7 @@ import type {
   GraphicsHook,
   LaunchRequest,
 } from "./emulator";
+import { InputRemapping } from "./InputRemapping";
 import "./emulator";
 import "./shell.css";
 
@@ -263,6 +264,7 @@ export function ShellApp() {
   const [error, setError] = useState("");
   const [audio, setAudio] = useState<GameAudioState>(DEFAULT_AUDIO);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [remappingOpen, setRemappingOpen] = useState(false);
   const [launchHistory, setLaunchHistory] =
     useState<LaunchHistoryEntry[]>(readLaunchHistory);
 
@@ -281,6 +283,14 @@ export function ShellApp() {
   useEffect(() => {
     writeLaunchHistory(launchHistory);
   }, [launchHistory]);
+
+  useEffect(() => {
+    if (!remappingOpen) return;
+    void activeEmulatorInstance().deactivateInput().catch(() => {});
+    return () => {
+      void activeEmulatorInstance().activateInput().catch(() => {});
+    };
+  }, [remappingOpen]);
 
   useEffect(() => {
     let subscribed = true;
@@ -318,6 +328,7 @@ export function ShellApp() {
       setStatus("Game closed");
       setAudio(DEFAULT_AUDIO);
       setConfirmClose(false);
+      setRemappingOpen(false);
     };
 
     const detach = (target: BackgroundRemoteValue | null) => {
@@ -339,6 +350,7 @@ export function ShellApp() {
         updatePhase("idle");
         setAudio(DEFAULT_AUDIO);
         setConfirmClose(false);
+        setRemappingOpen(false);
         return;
       }
 
@@ -842,6 +854,21 @@ export function ShellApp() {
             </button>
             <span className="hotbar-divider" />
             <button
+              className="hotbar-button hotbar-remapping"
+              type="button"
+              aria-label="Controller mapping"
+              aria-pressed={remappingOpen}
+              title="Controller mapping"
+              onClick={() => setRemappingOpen(true)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7.5 8h9a4.5 4.5 0 0 1 4.2 6.1l-1.1 2.8a2 2 0 0 1-3.2.8L14.7 16H9.3l-1.7 1.7a2 2 0 0 1-3.2-.8l-1.1-2.8A4.5 4.5 0 0 1 7.5 8Z" />
+                <path d="M7 11v4M5 13h4" />
+                <circle cx="16.5" cy="12" r=".7" />
+                <circle cx="18.5" cy="14" r=".7" />
+              </svg>
+            </button>
+            <button
               className="hotbar-button hotbar-audio"
               type="button"
               aria-label={audio.muted ? "Unmute game" : "Mute game"}
@@ -880,6 +907,10 @@ export function ShellApp() {
           </div>
         </div>
       </div>
+
+      {remappingOpen && (
+        <InputRemapping onClose={() => setRemappingOpen(false)} />
+      )}
 
       {confirmClose && (
         <div

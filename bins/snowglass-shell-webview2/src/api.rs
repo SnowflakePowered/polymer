@@ -233,6 +233,8 @@ impl From<&GamepadArgument> for GamepadMapping {
             DeviceSelector::Name(name) | DeviceSelector::Guid(name) => {
                 GamepadId::Name(name.clone())
             }
+            DeviceSelector::GuidOrdinal { guid, .. } => GamepadId::Name(guid.clone()),
+            DeviceSelector::DeviceId(device_id) => GamepadId::Name(device_id.clone()),
         };
         Self {
             gamepad_id,

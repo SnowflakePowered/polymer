@@ -25,8 +25,13 @@ use snowglass_egui::{
     InputSlotDiagnostics, draw_debug_overlay,
 };
 use snowglass_input::{
+    hub::{
+        BindingOverride, InputOperation, InputTransaction, PortConfiguration, SourceControl,
+        SourceSelector, VirtualPort,
+    },
     mouse::{PointerPhase, layout::Rect},
     provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
+    stone::SdlButton,
 };
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{performance_counter, performance_frequency};
@@ -70,7 +75,7 @@ use windows::{
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::Key,
     window::{Window, WindowId},
@@ -88,6 +93,10 @@ enum UserEvent {
     ForegroundHitRegions(Vec<ForegroundHitRegion>),
     GameLayerMessage(serde_json::Value),
     GameLayerProxy(serde_json::Value),
+    InputConfigure {
+        request_id: u64,
+        transaction: InputTransaction,
+    },
     EmulatorCommand(EmulatorCommand),
 }
 
@@ -290,7 +299,6 @@ struct ActiveEmulator {
     token: InstanceToken,
     runtime: snowglass_runtime::EmulatorInstance,
     options: LaunchOptions,
-    input: Option<Sdl3Provider>,
     webrtc: Option<webrtc::Publisher>,
     audio: snowglass_runtime::AudioState,
 }
@@ -653,6 +661,7 @@ struct ShellInputState {
     last_published_state: String,
     ui_controls: HashMap<String, i32>,
     next_publish: Instant,
+    guide_chord_held: bool,
 }
 
 impl ShellInputState {
@@ -803,6 +812,29 @@ impl ShellState {
                         };
                         let _ = foreground_proxy.send_event(UserEvent::GameLayerProxy(request));
                     }
+                    Some("inputConfigure") => {
+                        let Some(request_id) =
+                            message.get("id").and_then(serde_json::Value::as_u64)
+                        else {
+                            return;
+                        };
+                        let Some(transaction) = message.get("transaction").cloned() else {
+                            return;
+                        };
+                        match serde_json::from_value::<InputTransaction>(transaction) {
+                            Ok(transaction) => {
+                                let _ = foreground_proxy.send_event(UserEvent::InputConfigure {
+                                    request_id,
+                                    transaction,
+                                });
+                            }
+                            Err(error) => {
+                                tracing::error!(
+                                    "snowglass: invalid input configuration transaction: {error}"
+                                );
+                            }
+                        }
+                    }
                     _ => {}
                 }
             })
@@ -817,7 +849,7 @@ impl ShellState {
         composition.set_egui_overlay_content(&overlay.content()?)?;
         overlay.draw(&window)?;
 
-        let input = InputTransport::runtime();
+        let input = InputTransport::runtime().map_err(std::io::Error::other)?;
         let control_sender = input.control_sender();
         let capture_wake_pending = Arc::new(AtomicBool::new(false));
         let capture_dirty = Arc::new(AtomicBool::new(false));
@@ -873,6 +905,7 @@ impl ShellState {
                 last_published_state: String::new(),
                 ui_controls: HashMap::new(),
                 next_publish: Instant::now(),
+                guide_chord_held: false,
             },
         })
     }
@@ -920,6 +953,10 @@ impl ShellState {
                 });
             }
             EmulatorCommand::Input { .. } => {}
+            EmulatorCommand::ConfigureInput {
+                request_id,
+                transaction,
+            } => self.configure_input(u64::from(request_id), transaction, true),
         }
     }
 
@@ -931,10 +968,168 @@ impl ShellState {
     }
 
     fn input_provider(&self) -> Option<&Sdl3Provider> {
-        self.game
-            .active
-            .as_ref()
-            .and_then(|active| active.input.as_ref())
+        self.input.transport.provider()
+    }
+
+    fn configure_input(
+        &mut self,
+        request_id: u64,
+        transaction: InputTransaction,
+        background: bool,
+    ) {
+        let active = self.game.active.is_some();
+        let topology_change = transaction.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                InputOperation::ReplacePorts { .. }
+                    | InputOperation::ConfigurePort { .. }
+                    | InputOperation::SetSource { .. }
+                    | InputOperation::SetLayout { .. }
+                    | InputOperation::RemovePort { .. }
+            )
+        });
+        if active && topology_change {
+            self.send_input_configuration_result(
+                request_id,
+                Err(
+                    "changing controller topology while an emulator is attached is not supported by the current SDL hook"
+                        .to_owned(),
+                ),
+                background,
+            );
+            return;
+        }
+        let current_configuration = self.input.transport.hub().snapshot();
+        if active
+            && let Some(binding) = transaction.operations.iter().find_map(|operation| {
+                let InputOperation::SetOverride { port, binding, .. } = operation else {
+                    return None;
+                };
+                let source = current_configuration
+                    .ports
+                    .iter()
+                    .find(|configured| configured.port == *port)
+                    .and_then(|configured| configured.source.as_ref());
+                (!binding_supported_by_attached_provider(binding, source)).then_some(binding)
+            })
+        {
+            self.send_input_configuration_result(
+                request_id,
+                Err(format!(
+                    "binding {binding:?} cannot yet be projected by the SDL data plane"
+                )),
+                background,
+            );
+            return;
+        }
+
+        match self.input.transport.hub().apply(transaction) {
+            Ok(configuration) => {
+                if topology_change
+                    && let Err(error) = self
+                        .input
+                        .transport
+                        .restart_from_configuration(&configuration)
+                {
+                    self.send_input_configuration_result(request_id, Err(error), background);
+                    return;
+                }
+                if let Some(provider) = self.input_provider() {
+                    for port in &configuration.ports {
+                        provider.reset_bindings(port.port.0 as usize);
+                        for (target, binding) in &port.overrides {
+                            if let BindingOverride::Axis {
+                                source:
+                                    source @ (SourceControl::MouseDelta { .. }
+                                    | SourceControl::MousePosition { .. }),
+                                transform,
+                            } = binding
+                            {
+                                provider.set_mouse_axis_binding(
+                                    port.port.0 as usize,
+                                    target.clone(),
+                                    source.clone(),
+                                    *transform,
+                                );
+                            } else if matches!(port.source, Some(SourceSelector::KeyboardMouse)) {
+                                let key = match binding {
+                                    BindingOverride::Button {
+                                        source: SourceControl::Key { code },
+                                    }
+                                    | BindingOverride::Axis {
+                                        source: SourceControl::Key { code },
+                                        ..
+                                    } => Some(code.clone()),
+                                    BindingOverride::Disabled => None,
+                                    _ => continue,
+                                };
+                                provider.set_key_binding(port.port.0 as usize, target.clone(), key);
+                            } else if let Some(binding) = binding.sdl_binding() {
+                                provider.set_binding(port.port.0 as usize, target.clone(), binding);
+                            }
+                        }
+                    }
+                }
+                self.publish_input_configuration();
+                self.send_input_configuration_result(request_id, Ok(configuration), background);
+            }
+            Err(error) => {
+                self.send_input_configuration_result(
+                    request_id,
+                    Err(error.to_string()),
+                    background,
+                );
+            }
+        }
+    }
+
+    fn publish_input_configuration(&mut self) {
+        let configuration = self.input.transport.hub().snapshot();
+        let layouts = self.input.transport.hub().layouts();
+        let configuration_value =
+            serde_json::to_value(&configuration).unwrap_or(serde_json::Value::Null);
+        let layouts_value = serde_json::to_value(&layouts).unwrap_or(serde_json::Value::Null);
+        self.game_layer
+            .set_input_configuration(&configuration_value, &layouts_value);
+        let Ok(configuration) = serde_json::to_string(&configuration) else {
+            return;
+        };
+        let Ok(layouts) = serde_json::to_string(&layouts) else {
+            return;
+        };
+        let script =
+            format!("window.__snowglassSetInputConfiguration?.({configuration}, {layouts});");
+        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+            tracing::error!("snowglass: publishing input configuration failed: {error}");
+        }
+    }
+
+    fn send_input_configuration_result(
+        &mut self,
+        request_id: u64,
+        result: Result<snowglass_input::hub::InputConfiguration, String>,
+        background: bool,
+    ) {
+        let result = match result {
+            Ok(configuration) => serde_json::json!({
+                "ok": true,
+                "configuration": configuration,
+            }),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "error": error,
+            }),
+        };
+        if background {
+            self.game_layer
+                .input_configuration_result(request_id, &result);
+            return;
+        }
+        let script =
+            format!("window.__snowglassInputConfigurationResult?.({request_id}, {result});");
+        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+            tracing::error!("snowglass: returning input configuration result failed: {error}");
+        }
     }
 
     fn frontend_ready(
@@ -980,9 +1175,7 @@ impl ShellState {
                 .foreground_webview
                 .evaluate_script("window.__snowglassGameLayerReady?.();")
             {
-                tracing::error!(
-                    "snowglass: could not announce game layer readiness: {error}"
-                );
+                tracing::error!("snowglass: could not announce game layer readiness: {error}");
             }
             tracing::error!(
                 "snowglass: using game layer discovered at {}",
@@ -993,6 +1186,7 @@ impl ShellState {
             // not retain the renderer that was prepared solely for it.
             self.game_layer.disable();
         }
+        self.publish_input_configuration();
         self.deliver_cli_launch();
     }
 
@@ -1027,30 +1221,23 @@ impl ShellState {
             return;
         }
         self.emit_instance_event(token, "start", &serde_json::Value::Null);
-        let provider_config = if options.gamepad_mapping.is_empty() {
-            None
-        } else {
-            let mut mappings = options.gamepad_mapping.iter().collect::<Vec<_>>();
-            mappings.sort_by_key(|mapping| mapping.slot);
-            Some(Sdl3ProviderConfig {
-                slots: mappings
-                    .into_iter()
-                    .map(|mapping| SlotConfig {
-                        selector: mapping.selector(),
-                        layout_id: mapping.layout.clone(),
-                        force_mouse: mapping.mouse,
-                    })
-                    .collect(),
-                stone_database: None,
-                gamecontroller_database: None,
-                keyboard_mapping_directory: None,
-            })
-        };
         let mut gamepad_bindings = Vec::new();
+        let mut hub_ports = Vec::new();
         for mapping in &options.gamepad_mapping {
+            let Ok(port) = u8::try_from(mapping.slot) else {
+                self.emit_instance_event(
+                    token,
+                    "error",
+                    &serde_json::json!({ "message": "virtual controller port exceeds 255" }),
+                );
+                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                return;
+            };
+            let mut overrides = HashMap::new();
             for (target, source) in &mapping.mapping {
                 match parse_input_binding(source) {
                     Ok(binding) => {
+                        overrides.insert(target.clone(), hub_binding(&binding));
                         gamepad_bindings.push((mapping.slot, target.clone(), binding));
                     }
                     Err(error) => {
@@ -1063,6 +1250,67 @@ impl ShellState {
                         return;
                     }
                 }
+            }
+            hub_ports.push(PortConfiguration {
+                port: VirtualPort(port),
+                layout: mapping.layout.clone(),
+                source: Some(hub_source(mapping.selector())),
+                overrides,
+            });
+        }
+        let hub = self.input.transport.hub();
+        if let Err(error) = hub.apply(InputTransaction {
+            expected_revision: hub.snapshot().revision,
+            operations: vec![InputOperation::ReplacePorts { ports: hub_ports }],
+        }) {
+            self.emit_instance_event(
+                token,
+                "error",
+                &serde_json::json!({ "message": error.to_string() }),
+            );
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+            return;
+        }
+        self.publish_input_configuration();
+        let mut slots = options
+            .gamepad_mapping
+            .iter()
+            .map(|mapping| mapping.slot)
+            .max()
+            .map(|slot| {
+                vec![
+                    SlotConfig {
+                        selector: snowglass_input::provider::sdl3::DeviceSelector::Index(
+                            usize::MAX
+                        ),
+                        layout_id: "XBOX_CONTROLLER".to_owned(),
+                        force_mouse: false,
+                    };
+                    slot + 1
+                ]
+            })
+            .unwrap_or_default();
+        for mapping in &options.gamepad_mapping {
+            slots[mapping.slot] = SlotConfig {
+                selector: mapping.selector(),
+                layout_id: mapping.layout.clone(),
+                force_mouse: mapping.mouse,
+            };
+        }
+        let provider_config = Sdl3ProviderConfig {
+            slots,
+            stone_database: None,
+            gamecontroller_database: None,
+            keyboard_mapping_directory: None,
+        };
+        if let Err(error) = self.input.transport.restart_provider(provider_config) {
+            self.emit_instance_event(token, "error", &serde_json::json!({ "message": error }));
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+            return;
+        }
+        if let Some(provider) = self.input_provider() {
+            for (slot, binding_target, binding) in gamepad_bindings {
+                provider.set_binding(slot, binding_target, binding);
             }
         }
         let webrtc_targets = options
@@ -1158,28 +1406,7 @@ impl ShellState {
                 capture_wake_pending.store(false, Ordering::Release);
             }
         }) {
-            Ok(mut target) => {
-                let provider = match provider_config
-                    .map(|config| self.input.transport.start_provider(config, &target))
-                    .transpose()
-                {
-                    Ok(provider) => provider,
-                    Err(error) => {
-                        let _ = target.close();
-                        self.emit_instance_event(
-                            token,
-                            "error",
-                            &serde_json::json!({ "message": error }),
-                        );
-                        self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-                        return;
-                    }
-                };
-                if let Some(provider) = &provider {
-                    for (slot, binding_target, binding) in gamepad_bindings {
-                        provider.set_binding(slot, binding_target, binding);
-                    }
-                }
+            Ok(target) => {
                 self.streams.capture.attach(&target);
                 self.input.transport.attach(&target);
                 let audio = target.audio_state();
@@ -1187,7 +1414,6 @@ impl ShellState {
                     token,
                     runtime: target,
                     options,
-                    input: provider,
                     webrtc: publisher,
                     audio,
                 });
@@ -2172,6 +2398,17 @@ impl ShellState {
             .input_provider()
             .map(Sdl3Provider::states)
             .unwrap_or_default();
+        let physical_devices = self.input.transport.devices();
+        let guide_pressed = physical_devices
+            .iter()
+            .any(|device| device.buttons.contains(&(SdlButton::Guide, true)));
+        if guide_pressed
+            && !self.input.guide_chord_held
+            && self.input.priority == InputPriority::Game
+        {
+            self.set_input_priority(InputPriority::Foreground);
+        }
+        self.input.guide_chord_held = guide_pressed;
         self.presentation.overlay.diagnostics.input = InputDiagnostics {
             active: self.input.priority == InputPriority::Game && self.game.active.is_some(),
             slots: self
@@ -2224,18 +2461,39 @@ impl ShellState {
         let mut devices = Vec::new();
         let mut next_controls = HashMap::new();
         let foreground_priority = self.input.priority == InputPriority::Foreground;
-        for (slot, state) in states.into_iter().enumerate() {
-            let Some(state) = state else {
-                continue;
-            };
-            let buttons = state
+        for device in physical_devices {
+            let assigned = states
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, state)| {
+                    state
+                        .as_ref()
+                        .is_some_and(|state| state.device_id == device.device_id)
+                        .then_some(slot)
+                })
+                .collect::<Vec<_>>();
+            let mapped_states = assigned
+                .iter()
+                .filter_map(|&slot| states.get(slot).and_then(Option::as_ref))
+                .collect::<Vec<_>>();
+            let primary = mapped_states.first().copied();
+            let buttons = device
                 .buttons
                 .iter()
                 .map(|&(button, pressed)| {
                     let name = format!("{button:?}");
-                    let consumed = state.mapped_buttons.contains(&button);
+                    let global = button == SdlButton::Guide;
+                    let consumed = global
+                        || mapped_states
+                            .iter()
+                            .any(|state| state.mapped_buttons.contains(&button));
                     if foreground_priority || !consumed {
-                        next_controls.insert(format!("{slot}:button:{name}"), i32::from(pressed));
+                        if !global {
+                            next_controls.insert(
+                                format!("{}:button:{name}", device.device_id),
+                                i32::from(pressed),
+                            );
+                        }
                     }
                     serde_json::json!({
                         "button": name,
@@ -2244,14 +2502,19 @@ impl ShellState {
                     })
                 })
                 .collect::<Vec<_>>();
-            let axes = state
+            let axes = device
                 .axes
                 .iter()
                 .map(|&(axis, value)| {
                     let name = format!("{axis:?}");
-                    let consumed = state.mapped_axes.contains(&axis);
+                    let consumed = mapped_states
+                        .iter()
+                        .any(|state| state.mapped_axes.contains(&axis));
                     if foreground_priority || !consumed {
-                        next_controls.insert(format!("{slot}:axis:{name}"), i32::from(value));
+                        next_controls.insert(
+                            format!("{}:axis:{name}", device.device_id),
+                            i32::from(value),
+                        );
                     }
                     serde_json::json!({
                         "axis": name,
@@ -2261,12 +2524,55 @@ impl ShellState {
                 })
                 .collect::<Vec<_>>();
             devices.push(serde_json::json!({
-                "slot": slot,
-                "name": state.name,
-                "guid": state.guid,
-                "layout": state.layout_id,
+                "index": device.enumeration_index,
+                "slot": device.enumeration_index,
+                "deviceId": device.device_id,
+                "name": device.name,
+                "guid": device.guid,
+                "vendor": device.vendor,
+                "product": device.product,
+                "assignedPorts": assigned,
+                "layout": primary.map(|state| state.layout_id.as_str()),
                 "buttons": buttons,
                 "axes": axes,
+                "mapped": {
+                    "buttons": primary.map_or(0, |state| state.mapped.buttons),
+                    "leftStick": primary.map_or([0; 2], |state| state.mapped.left_stick),
+                    "rightStick": primary.map_or([0; 2], |state| state.mapped.right_stick),
+                    "leftTrigger": primary.map_or(0, |state| state.mapped.left_trigger),
+                    "rightTrigger": primary.map_or(0, |state| state.mapped.right_trigger),
+                    "pointer": primary.map_or([0; 2], |state| state.mapped.pointer),
+                    "accelerometer": primary.map_or([0.0; 3], |state| state.mapped.accelerometer),
+                    "gyroscope": primary.map_or([0.0; 3], |state| state.mapped.gyroscope),
+                }
+            }));
+        }
+        for (slot, state) in states.iter().enumerate().filter_map(|(slot, state)| {
+            state
+                .as_ref()
+                .filter(|state| state.device_id == "keyboard-mouse")
+                .map(|state| (slot, state))
+        }) {
+            devices.push(serde_json::json!({
+                "index": devices.len(),
+                "slot": devices.len(),
+                "deviceId": state.device_id,
+                "name": state.name,
+                "guid": state.guid,
+                "vendor": state.vendor,
+                "product": state.product,
+                "assignedPorts": [slot],
+                "layout": state.layout_id,
+                "buttons": state.buttons.iter().map(|(button, pressed)| serde_json::json!({
+                    "button": format!("{button:?}"),
+                    "pressed": pressed,
+                    "mapped": true,
+                })).collect::<Vec<_>>(),
+                "axes": state.axes.iter().map(|(axis, value)| serde_json::json!({
+                    "axis": format!("{axis:?}"),
+                    "value": value,
+                    "mapped": true,
+                })).collect::<Vec<_>>(),
                 "mapped": {
                     "buttons": state.mapped.buttons,
                     "leftStick": state.mapped.left_stick,
@@ -2291,6 +2597,15 @@ impl ShellState {
             }
         }
         self.input.ui_controls = next_controls;
+        let controllers = serde_json::Value::Array(devices.clone());
+        self.game_layer.set_input_state(
+            &controllers,
+            if foreground_priority {
+                "foreground"
+            } else {
+                "game"
+            },
+        );
         let Ok(json) = serde_json::to_string(&devices) else {
             return;
         };
@@ -2445,7 +2760,30 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     .proxy_request(&request, &state.foreground_webview);
                 state.flush_game_layer_bridge();
             }
+            UserEvent::InputConfigure {
+                request_id,
+                transaction,
+            } => state.configure_input(request_id, transaction, false),
             UserEvent::EmulatorCommand(command) => state.apply_emulator_command(command),
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        if state.input.priority != InputPriority::Game {
+            return;
+        }
+        if let DeviceEvent::MouseMotion { delta } = event
+            && let Some(provider) = state.input_provider()
+        {
+            provider.add_mouse_delta([delta.0, delta.1]);
         }
     }
 
@@ -2948,6 +3286,71 @@ const fn rotated_extent(width: u32, height: u32, quarter_turns: u8) -> (u32, u32
     }
 }
 
+fn hub_source(selector: snowglass_input::provider::sdl3::DeviceSelector) -> SourceSelector {
+    use snowglass_input::provider::sdl3::DeviceSelector;
+    match selector {
+        DeviceSelector::Keyboard => SourceSelector::KeyboardMouse,
+        DeviceSelector::Index(index) => SourceSelector::SdlIndex { index },
+        DeviceSelector::Name(name) => SourceSelector::SdlName { name },
+        DeviceSelector::Guid(guid) => SourceSelector::SdlGuid {
+            guid,
+            duplicate_ordinal: 0,
+        },
+        DeviceSelector::GuidOrdinal {
+            guid,
+            duplicate_ordinal,
+        } => SourceSelector::SdlGuid {
+            guid,
+            duplicate_ordinal,
+        },
+        DeviceSelector::DeviceId(device_id) => SourceSelector::Device { device_id },
+    }
+}
+
+fn hub_binding(binding: &snowglass_input::stone::InputBinding) -> BindingOverride {
+    use snowglass_input::stone::InputBinding;
+    match binding {
+        InputBinding::Button { button } => BindingOverride::Button {
+            source: SourceControl::GamepadButton { button: *button },
+        },
+        InputBinding::Axis { axis, invert } => BindingOverride::Axis {
+            source: SourceControl::GamepadAxis { axis: *axis },
+            transform: snowglass_input::hub::AxisTransform {
+                invert: *invert,
+                ..Default::default()
+            },
+        },
+        InputBinding::Disabled { .. } => BindingOverride::Disabled,
+    }
+}
+
+fn binding_supported_by_attached_provider(
+    binding: &BindingOverride,
+    source: Option<&SourceSelector>,
+) -> bool {
+    if matches!(
+        binding,
+        BindingOverride::Axis {
+            source: SourceControl::MouseDelta { .. } | SourceControl::MousePosition { .. },
+            ..
+        }
+    ) {
+        return true;
+    }
+    if matches!(source, Some(SourceSelector::KeyboardMouse)) {
+        return matches!(
+            binding,
+            BindingOverride::Button {
+                source: SourceControl::Key { .. }
+            } | BindingOverride::Axis {
+                source: SourceControl::Key { .. },
+                ..
+            } | BindingOverride::Disabled
+        );
+    }
+    binding.sdl_binding().is_some()
+}
+
 /// Holds the process timer resolution at 1ms for the lifetime of the shell.
 ///
 /// `ControlFlow::WaitUntil` bottoms out in `MsgWaitForMultipleObjectsEx`, whose
@@ -3073,5 +3476,27 @@ mod tests {
 
         assert_eq!(content.destination, [0.0, 0.0, 200.0, 100.0]);
         assert_eq!(content.source, [0.5, 0.5, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn attached_provider_accepts_mouse_axis_but_not_mouse_button_expressions() {
+        let mouse_axis = BindingOverride::Axis {
+            source: SourceControl::MouseDelta {
+                axis: snowglass_input::hub::PointerAxis::X,
+            },
+            transform: Default::default(),
+        };
+        assert!(binding_supported_by_attached_provider(
+            &mouse_axis,
+            Some(&SourceSelector::SdlIndex { index: 0 })
+        ));
+
+        let mouse_button = BindingOverride::Button {
+            source: SourceControl::MouseButton { button: 1 },
+        };
+        assert!(!binding_supported_by_attached_provider(
+            &mouse_button,
+            Some(&SourceSelector::KeyboardMouse)
+        ));
     }
 }

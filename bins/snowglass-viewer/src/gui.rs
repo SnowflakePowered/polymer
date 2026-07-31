@@ -89,6 +89,11 @@ impl LauncherState {
                         DeviceSelector::Keyboard => "K".to_owned(),
                         DeviceSelector::Index(value) => value.to_string(),
                         DeviceSelector::Name(value) | DeviceSelector::Guid(value) => value.clone(),
+                        DeviceSelector::GuidOrdinal {
+                            guid,
+                            duplicate_ordinal,
+                        } => format!("{guid}#{duplicate_ordinal}"),
+                        DeviceSelector::DeviceId(value) => value.clone(),
                     },
                     layout: pad.layout.clone(),
                     force_mouse: pad.force_mouse,

@@ -31,6 +31,69 @@ fn document(html: &str) -> blitz_html::HtmlDocument {
 }
 
 #[test]
+fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
+    let html = r#"
+        <html><body>
+          <script>
+            snowglassInput.configure({
+              operations: [{ type: "resetPortOverrides", port: 0 }]
+            }).then((configuration) => {
+              postMessage({
+                type: "input-configured",
+                revision: configuration.revision
+              });
+            });
+          </script>
+        </body></html>
+    "#;
+    let document = document(html);
+    let (command_sink, commands) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///input-test.html",
+        800,
+        600,
+        command_sink,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        drain_recorded_commands(&commands).as_slice(),
+        [EmulatorCommand::ConfigureInput {
+            request_id: 1,
+            transaction,
+        }] if transaction.expected_revision == 0
+            && matches!(
+                transaction.operations.as_slice(),
+                [snowglass_input::hub::InputOperation::ResetPortOverrides { port }]
+                    if port.0 == 0
+            )
+    ));
+
+    runtime
+        .input_configuration_result(
+            1,
+            &serde_json::json!({
+                "ok": true,
+                "configuration": {
+                    "revision": 1,
+                    "stoneVersion": "12.0.0",
+                    "ports": []
+                }
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "input-configured",
+            "revision": 1,
+        })]
+    );
+}
+
+#[test]
 fn runs_inline_modules_with_relative_imports() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(

@@ -71,6 +71,72 @@ const instance = await window.Emulator.activeInstance;
 if (instance) await instance.setVolume(0.5);
 ```
 
+## Input API
+
+`snowglassInput` is installed independently in the foreground and background
+realms. Both objects reflect the same shell-owned, revisioned configuration:
+
+```ts
+snowglassInput.layouts;       // Stone controller layouts
+snowglassInput.ports;         // physical source -> Stone virtual-port assignments
+snowglassInput.getGamepads(); // Web Gamepad-shaped, layer-routed SDL snapshots
+
+const updated = await snowglassInput.configure({
+  // Omit this to use the revision currently cached by this realm.
+  expectedRevision: snowglassInput.revision,
+  operations: [{
+    type: "setOverride",
+    port: 0,
+    target: "ButtonA",
+    binding: {
+      kind: "button",
+      source: { kind: "gamepadButton", button: "east" },
+    },
+  }],
+});
+```
+
+SDL discovery starts with the shell, so `getGamepads()` includes connected,
+unassigned physical controllers before an emulator is launched. Each snapshot
+has a connection-scoped `deviceId`, an SDL enumeration `index`, and an
+`assignedPorts` array. Replacing the virtual-port topology does not restart
+physical discovery.
+
+While a game is running, the controller button in the bottom hotbar opens the
+live remapping screen. Opening it transfers input priority to the foreground;
+selecting a Stone control and pressing or moving a physical control applies a
+revisioned override immediately. Defaults can be restored or targets disabled
+from the same screen.
+
+Transactions are atomic and stale revisions reject rather than overwriting a
+newer foreground/background edit. `resetTarget` removes a user override and
+restores the inherited mapping; a `{ kind: "disabled" }` override explicitly
+leaves the Stone target unmapped.
+
+The current SDL hook can apply SDL button/axis overrides while a game is
+running. Source, port, or Stone-layout topology changes require the virtual
+device to be recreated and are therefore rejected while an emulator is
+attached. Keyboard and mouse-axis expressions are also compiled live:
+
+```ts
+{
+  type: "setOverride",
+  port: 0,
+  target: "AxisRightAnalogPositiveX",
+  binding: {
+    kind: "axis",
+    source: { kind: "mouseDelta", axis: "x" },
+    transform: { scale: 1.5, deadZone: 0.02, invert: false },
+  },
+}
+```
+
+`mousePosition` uses the tracked surface's absolute `-1..1` coordinate.
+`mouseDelta` uses raw device motion, treats 100 counts as full scale before the
+binding transform, holds the latest sample for 16 ms, and decays it to neutral
+by 50 ms. Direct pointer/touch delivery continues in parallel. Mouse-button
+expressions remain represented but are not yet connected to the data plane.
+
 Start the development server:
 
 ```powershell

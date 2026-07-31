@@ -1,6 +1,6 @@
 //! Runtime Stone controller registry and user-remapping documents.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 pub const EMBEDDED_STONE_JSON: &str = include_str!("../stone/dist/stone.json");
@@ -33,18 +33,21 @@ struct ElementDocument {
     kind: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoneElement {
     pub id: String,
     pub label: String,
     pub kind: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoneLayout {
     pub id: String,
     pub friendly_name: String,
     pub elements: Vec<StoneElement>,
+    #[serde(skip)]
     element_ids: HashSet<String>,
 }
 
@@ -208,8 +211,8 @@ pub struct RemapProfile {
     pub bindings: HashMap<String, InputBinding>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", untagged)]
 pub enum InputBinding {
     Button {
         button: SdlButton,
@@ -224,7 +227,7 @@ pub enum InputBinding {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SdlButton {
     South,
@@ -250,7 +253,7 @@ pub enum SdlButton {
     Touchpad,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SdlAxis {
     LeftX,

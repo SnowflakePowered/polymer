@@ -675,6 +675,39 @@ impl GameLayer {
             .unwrap_or_default()
     }
 
+    pub fn set_input_configuration(
+        &mut self,
+        configuration: &serde_json::Value,
+        layouts: &serde_json::Value,
+    ) {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        if let Err(error) = runtime.set_input_configuration(configuration, layouts) {
+            tracing::error!("snowglass: publishing background input configuration failed: {error}");
+        }
+    }
+
+    pub fn input_configuration_result(&mut self, request_id: u64, result: &serde_json::Value) {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        if let Err(error) = runtime.input_configuration_result(request_id, result) {
+            tracing::error!(
+                "snowglass: returning background input configuration result failed: {error}"
+            );
+        }
+    }
+
+    pub fn set_input_state(&mut self, controllers: &serde_json::Value, priority: &str) {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return;
+        };
+        if let Err(error) = runtime.set_input_state(controllers, priority) {
+            tracing::error!("snowglass: publishing background input state failed: {error}");
+        }
+    }
+
     /// Verifies that the attachment is the background tracked-surface element
     /// whose `src` names this tracked render-target index.
     pub fn validates_attachment(&self, attachment: Option<usize>, index: u32) -> bool {

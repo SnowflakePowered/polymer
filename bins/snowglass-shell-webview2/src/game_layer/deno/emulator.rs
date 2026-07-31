@@ -5,6 +5,7 @@ use deno_error::JsErrorBox;
 use serde_json::Value;
 
 use crate::api::LaunchOptions;
+use snowglass_input::hub::InputTransaction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
@@ -33,6 +34,10 @@ pub enum EmulatorCommand {
     Input {
         token: InstanceToken,
         active: bool,
+    },
+    ConfigureInput {
+        request_id: u32,
+        transaction: InputTransaction,
     },
 }
 
@@ -139,5 +144,20 @@ pub(super) fn op_emulator_input(state: &mut OpState, token: u32, active: bool) {
         .send(EmulatorCommand::Input {
             token: InstanceToken(token),
             active,
+        });
+}
+
+#[op2]
+pub(super) fn op_input_configure(
+    state: &mut OpState,
+    request_id: u32,
+    #[serde] transaction: InputTransaction,
+) {
+    state
+        .borrow::<EmulatorBridge>()
+        .command_sink
+        .send(EmulatorCommand::ConfigureInput {
+            request_id,
+            transaction,
         });
 }

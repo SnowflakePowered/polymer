@@ -12,6 +12,18 @@ interface Window {
   __snowglassSetInputState(state: unknown[], routed?: unknown[]): void;
   __snowglassSetInputPriority(priority: "game" | "foreground"): void;
   __snowglassKeyboardInput(event: unknown): void;
+  __snowglassSetInputConfiguration(
+    configuration: Record<string, unknown>,
+    layouts: unknown[],
+  ): void;
+  __snowglassInputConfigurationResult(
+    id: number,
+    result: {
+      ok: boolean;
+      configuration?: Record<string, unknown>;
+      error?: string;
+    },
+  ): void;
 }
 
 type ForegroundHitRegion = {
@@ -60,22 +72,125 @@ type ProxyMessage =
 
 let inputState: readonly unknown[] = Object.freeze([]);
 let inputPriority: "game" | "foreground" = "foreground";
+let inputTimestamp = 0;
+let inputConfiguration: Readonly<Record<string, unknown>> = Object.freeze({
+  revision: 0,
+  stoneVersion: "",
+  ports: Object.freeze([]),
+});
+let inputLayouts: readonly unknown[] = Object.freeze([]);
+let nextInputRequest = 1;
+const snowglassInputTarget = new EventTarget();
+const pendingInputRequests = new Map<
+  number,
+  {
+    resolve(value: Readonly<Record<string, unknown>>): void;
+    reject(error: Error): void;
+  }
+>();
 
 window.__snowglassSetInputState = (state, routed = []) => {
   inputState = Object.freeze([...state]);
+  inputTimestamp = performance.now();
   dispatchEvent(new CustomEvent("snowglassinputstate", { detail: inputState }));
+  snowglassInputTarget.dispatchEvent(
+    new CustomEvent("inputstatechange", { detail: inputState }),
+  );
   for (const event of routed) {
     dispatchEvent(new CustomEvent("snowglassinput", { detail: event }));
   }
 };
 
+function webGamepads(): readonly unknown[] {
+  const devices = inputState.filter(
+    (device): device is {
+      index: number;
+      deviceId: string;
+      name: string;
+      guid: string;
+      vendor?: number;
+      product?: number;
+      assignedPorts: number[];
+      buttons: { pressed: boolean; mapped: boolean }[];
+      axes: { value: number; mapped: boolean }[];
+    } => typeof device === "object" && device !== null,
+  );
+  const result = Array.from<unknown>({
+    length: devices.reduce((length, device) => Math.max(length, device.index + 1), 0),
+  }).fill(null);
+  for (const device of devices) {
+    const visible = (mapped: boolean) =>
+      inputPriority === "foreground" || !mapped;
+    result[device.index] = Object.freeze({
+      index: device.index,
+      deviceId: device.deviceId,
+      id: `${device.name} (${device.guid})`,
+      connected: true,
+      mapping: "standard",
+      timestamp: inputTimestamp,
+      assignedPorts: Object.freeze([...device.assignedPorts]),
+      buttons: Object.freeze(
+        device.buttons.map((button) => {
+          const pressed = visible(button.mapped) && button.pressed;
+          return Object.freeze({
+            pressed,
+            touched: pressed,
+            value: pressed ? 1 : 0,
+          });
+        }),
+      ),
+      axes: Object.freeze(
+        device.axes.map((axis) =>
+          visible(axis.mapped)
+            ? Math.max(-1, Math.min(1, axis.value / 32767))
+            : 0,
+        ),
+      ),
+      metadata: Object.freeze({
+        guid: device.guid,
+        vendor: device.vendor,
+        product: device.product,
+      }),
+    });
+  }
+  return Object.freeze(result);
+}
+
 window.__snowglassSetInputPriority = (priority) => {
   inputPriority = priority;
   dispatchEvent(new CustomEvent("snowglassinputpriority", { detail: priority }));
+  snowglassInputTarget.dispatchEvent(
+    new CustomEvent("inputlayerchange", { detail: priority }),
+  );
 };
 
 window.__snowglassKeyboardInput = (event) => {
   dispatchEvent(new CustomEvent("snowglassinput", { detail: event }));
+};
+
+window.__snowglassSetInputConfiguration = (configuration, layouts) => {
+  inputConfiguration = Object.freeze({ ...configuration });
+  inputLayouts = Object.freeze([...layouts]);
+  dispatchEvent(
+    new CustomEvent("snowglassinputconfigurationchange", {
+      detail: inputConfiguration,
+    }),
+  );
+  snowglassInputTarget.dispatchEvent(
+    new CustomEvent("configurationchange", { detail: inputConfiguration }),
+  );
+};
+
+window.__snowglassInputConfigurationResult = (id, result) => {
+  const pending = pendingInputRequests.get(id);
+  if (!pending) return;
+  pendingInputRequests.delete(id);
+  if (!result.ok || !result.configuration) {
+    pending.reject(new Error(result.error || "Input configuration failed"));
+    return;
+  }
+  inputConfiguration = Object.freeze({ ...result.configuration });
+  pending.resolve(inputConfiguration);
 };
 
 let publishedForegroundHitRegions = "";
@@ -160,15 +275,58 @@ addEventListener("resize", scheduleForegroundHitRegions);
 addEventListener("transitionrun", scheduleForegroundHitRegions, true);
 addEventListener("transitionend", scheduleForegroundHitRegions, true);
 
+Object.defineProperties(snowglassInputTarget, {
+  controllers: {
+    get: () => inputState,
+  },
+  getGamepads: {
+    value: () => webGamepads(),
+  },
+  priority: {
+    get: () => inputPriority,
+  },
+  configuration: {
+    get: () => inputConfiguration,
+  },
+  revision: {
+    get: () => Number(inputConfiguration.revision) || 0,
+  },
+  ports: {
+    get: () =>
+      (inputConfiguration.ports as readonly unknown[]) || Object.freeze([]),
+  },
+  layouts: {
+    get: () => inputLayouts,
+  },
+  getControllerLayout: {
+    value: (id: string) =>
+      inputLayouts.find(
+        (layout) =>
+          typeof layout === "object" &&
+          layout !== null &&
+          (layout as { id?: unknown }).id === id,
+      ) || null,
+  },
+  configure: {
+    value: (transaction: Record<string, unknown>) => {
+      const id = nextInputRequest++;
+      const wire = {
+        ...transaction,
+        expectedRevision:
+          transaction.expectedRevision ?? inputConfiguration.revision ?? 0,
+      };
+      return new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
+        pendingInputRequests.set(id, { resolve, reject });
+        window.ipc.postMessage(
+          JSON.stringify({ type: "inputConfigure", id, transaction: wire }),
+        );
+      });
+    },
+  },
+});
+Object.freeze(snowglassInputTarget);
 Object.defineProperty(window, "snowglassInput", {
-  value: Object.freeze({
-    get controllers() {
-      return inputState;
-    },
-    get priority() {
-      return inputPriority;
-    },
-  }),
+  value: snowglassInputTarget,
   writable: false,
 });
 

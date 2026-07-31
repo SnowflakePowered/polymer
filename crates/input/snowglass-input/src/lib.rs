@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gamepad;
+pub mod hub;
 pub mod mouse;
 pub mod provider;
 pub mod stone;

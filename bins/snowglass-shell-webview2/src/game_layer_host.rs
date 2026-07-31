@@ -108,6 +108,24 @@ impl GameLayerHost {
         self.active_mut().is_some_and(GameLayer::poll_runtime)
     }
 
+    pub fn set_input_configuration(&mut self, configuration: &Value, layouts: &Value) {
+        if let Some(layer) = self.active_mut() {
+            layer.set_input_configuration(configuration, layouts);
+        }
+    }
+
+    pub fn input_configuration_result(&mut self, request_id: u64, result: &Value) {
+        if let Some(layer) = self.active_mut() {
+            layer.input_configuration_result(request_id, result);
+        }
+    }
+
+    pub fn set_input_state(&mut self, controllers: &Value, priority: &str) {
+        if let Some(layer) = self.active_mut() {
+            layer.set_input_state(controllers, priority);
+        }
+    }
+
     pub fn flush(&mut self, foreground: &WebView) {
         let Some(layer) = self.active_mut() else {
             return;

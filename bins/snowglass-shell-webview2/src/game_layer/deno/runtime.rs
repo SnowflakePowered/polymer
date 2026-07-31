@@ -18,7 +18,7 @@ use super::dom::{
 };
 use super::emulator::{
     EmulatorBridge, EmulatorCommandSink, op_emulator_close, op_emulator_input, op_emulator_launch,
-    op_emulator_message, op_emulator_set_muted, op_emulator_set_volume,
+    op_emulator_message, op_emulator_set_muted, op_emulator_set_volume, op_input_configure,
 };
 use super::input::{EventResult, KeyboardEvent, MouseEvent, op_event_result};
 use super::modules::{BrowserModuleLoader, NoNpm, document_scripts, execute_document_script};
@@ -47,6 +47,7 @@ deno_core::extension!(
         op_emulator_set_muted,
         op_emulator_message,
         op_emulator_input,
+        op_input_configure,
     ],
     esm_entry_point = "ext:snowglass_game_layer/bootstrap.js",
     esm = ["ext:snowglass_game_layer/bootstrap.js" = {
@@ -65,6 +66,7 @@ deno_core::extension!(
                   op_event_result,
                   op_emulator_close,
                   op_emulator_input,
+                  op_input_configure,
                   op_emulator_launch,
                   op_emulator_message,
                   op_emulator_set_muted,
@@ -88,6 +90,7 @@ deno_core::extension!(
                       op_event_result,
                       op_emulator_close,
                       op_emulator_input,
+                      op_input_configure,
                       op_emulator_launch,
                       op_emulator_message,
                       op_emulator_set_muted,
@@ -338,6 +341,59 @@ impl Runtime {
         drop(tokio_context);
         self.poll_event_loop()?;
         Ok(())
+    }
+
+    pub fn set_input_configuration(
+        &mut self,
+        configuration: &Value,
+        layouts: &Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tokio_context = self.tokio.enter();
+        self.worker.js_runtime.execute_script(
+            "snowglass:game-layer/deno/input-configuration.js",
+            format!(
+                "__snowglassDom.setInputConfiguration({}, {});",
+                serde_json::to_string(configuration)?,
+                serde_json::to_string(layouts)?
+            ),
+        )?;
+        drop(tokio_context);
+        self.poll_event_loop()
+    }
+
+    pub fn set_input_state(
+        &mut self,
+        controllers: &Value,
+        priority: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tokio_context = self.tokio.enter();
+        self.worker.js_runtime.execute_script(
+            "snowglass:game-layer/deno/input-state.js",
+            format!(
+                "__snowglassDom.setInputState({}, {});",
+                serde_json::to_string(controllers)?,
+                serde_json::to_string(priority)?
+            ),
+        )?;
+        drop(tokio_context);
+        self.poll_event_loop()
+    }
+
+    pub fn input_configuration_result(
+        &mut self,
+        request_id: u64,
+        result: &Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tokio_context = self.tokio.enter();
+        self.worker.js_runtime.execute_script(
+            "snowglass:game-layer/deno/input-configuration-result.js",
+            format!(
+                "__snowglassDom.inputConfigurationResult({request_id}, {});",
+                serde_json::to_string(result)?
+            ),
+        )?;
+        drop(tokio_context);
+        self.poll_event_loop()
     }
 
     /// Polls Deno once without waiting for the realm to become idle.
