@@ -1,20 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/snowglass-api",
-    "crates/snowglass-protocol",
-    "crates/snowglass-ipc",
-    "crates/snowglass-platform-windows",
-    "crates/snowglass-runtime",
-    "crates/snowglass-statistics",
+    "crates/snowglass-config",
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
     "crates/input/*",
+    "crates/runtime/*",
     "bins/*",
-]
-exclude = [
-    "crates/hooks/snowglass-hook-input",
 ]
 
 [workspace.package]
@@ -94,16 +87,18 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 zerocopy = { version = "0.8.52", features = ["derive"] }
 snowglass-api = { path = "crates/snowglass-api" }
-snowglass-protocol = { path = "crates/snowglass-protocol" }
-snowglass-ipc = { path = "crates/snowglass-ipc" }
+snowglass-protocol = { path = "crates/runtime/snowglass-protocol" }
+snowglass-ipc = { path = "crates/runtime/snowglass-ipc" }
 snowglass-egui = { path = "crates/consumer/snowglass-egui" }
-snowglass-statistics = { path = "crates/snowglass-statistics" }
-snowglass-ui = { path = "crates/snowglass-ui" }
-snowglass-platform-windows = { path = "crates/snowglass-platform-windows" }
+snowglass-statistics = { path = "crates/runtime/snowglass-statistics" }
+snowglass-ui = { path = "crates/runtime/snowglass-ui" }
+snowglass-platform-windows = { path = "crates/runtime/snowglass-platform-windows" }
 snowglass-input = { path = "crates/input/snowglass-input" }
 snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
 snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
 snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }
+snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
+
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
 [workspace.lints.rust]

@@ -23,7 +23,7 @@ snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
-snowglass-runtime = { path = "../../crates/snowglass-runtime" }
+snowglass-runtime.workspace = true
 snowglass-ui.workspace = true
 winit = "0.30.13"
 windows.workspace = true

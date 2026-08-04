@@ -10178,6 +10178,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-config"
+version = "0.1.0"
+
+[[package]]
 name = "snowglass-consumer-core"
 version = "0.1.0"
 dependencies = [

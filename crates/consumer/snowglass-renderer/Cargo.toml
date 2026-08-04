@@ -20,7 +20,7 @@ snowglass-consumer-vulkan = { path = "../snowglass-consumer-vulkan" }
 snowglass-input.workspace = true
 snowglass-ipc.workspace = true
 snowglass-protocol.workspace = true
-snowglass-runtime = { path = "../../snowglass-runtime" }
+snowglass-runtime.workspace = true
 snowglass-statistics.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
