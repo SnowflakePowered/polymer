@@ -71,3 +71,11 @@ digital = true
 label = "ZR"
 alignment = "right"
 digital = true
+
+[[input.rumble]]
+label = "HD Rumble (Left)"
+size = "small"
+
+[[input.rumble]]
+label = "HD Rumble (Right)"
+size = "small"

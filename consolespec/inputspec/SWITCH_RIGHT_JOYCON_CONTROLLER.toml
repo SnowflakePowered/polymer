@@ -62,3 +62,6 @@ digital = true
 [[input.rumble]]
 label = "HD Rumble"
 size = "small"
+
+[[input.camera]]
+label = "IR Camera"

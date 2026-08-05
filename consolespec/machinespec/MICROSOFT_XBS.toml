@@ -1,0 +1,41 @@
+[machine]
+name = "Xbox Series X|S"
+id = "MICROSOFT_XBS"
+
+[meta]
+short-name = "XBS"
+licensor = "Microsoft"
+manufacturer = "Microsoft"
+type = "console"
+
+[meta.na]
+release-date = "2020-11-10"
+
+[meta.eu]
+release-date = "2020-11-10"
+
+[meta.jp]
+release-date = "2020-11-10"
+
+[input]
+groups = ["controller", "usb"]
+
+[input.controller]
+inputs = ["XBOX_CONTROLLER"]
+ports = 4
+
+[input.usb]
+accessories = true
+
+[accessories]
+class = [
+    "disney_infinity",
+    "skylander",
+    "lego_dimensions",
+    "guitar",
+    "drums",
+    "keyboard",
+    "mouse",
+    "microphone",
+    "storage"
+]

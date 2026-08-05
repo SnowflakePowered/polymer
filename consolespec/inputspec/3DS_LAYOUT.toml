@@ -50,3 +50,15 @@ alignment = "accelerometer"
 [[input.touchscreen]]
 width = 320
 height = 240
+
+[[input.microphone]]
+label = "Microphone"
+
+[[input.camera]]
+label = "Inner Camera"
+
+[[input.camera]]
+label = "Outer Camera (Left)"
+
+[[input.camera]]
+label = "Outer Camera (Right)"
