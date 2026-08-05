@@ -1,0 +1,12 @@
+[plugin]
+id = "dolphin"
+version = "0.0.1"
+class = "emulator"
+
+[emulator]
+platforms = ["NINTENDO_GC", "NINTENDO_WII"]
+
+
+[emulator.configuration]
+definition = "config/dolphin.toml"
+resolver = "config/resolvers.ts"

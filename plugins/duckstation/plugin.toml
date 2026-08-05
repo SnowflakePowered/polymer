@@ -1,0 +1,12 @@
+[plugin]
+id = "duckstation"
+version = "0.0.1"
+class = "emulator"
+
+[emulator]
+platforms = ["SONY_PSX"]
+
+
+[emulator.configuration]
+definition = "config/duckstation.toml"
+resolver = "config/resolvers.ts"

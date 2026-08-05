@@ -1,0 +1,12 @@
+[plugin]
+id = "cemu"
+version = "0.0.1"
+class = "emulator"
+
+[emulator]
+platforms = ["NINTENDO_WIIU"]
+
+
+[emulator.configuration]
+definition = "config/cemu.toml"
+resolver = "config/resolvers.ts"
