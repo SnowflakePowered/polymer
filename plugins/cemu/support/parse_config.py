@@ -14,7 +14,7 @@ table per layout and the enums are parsed from one header each.
 Outputs, into --out (default ../config):
 
     cemu.toml      targets + section imports      (config/CemuConfig.{h,cpp})
-    <section>.toml one rooted document per section (config/CemuConfig.{h,cpp})
+    sections/*.toml one rooted document per section (config/CemuConfig.{h,cpp})
     actions.toml   action map                     (gui/wxgui/wxCemuConfig.{h,cpp})
     input.toml     ports + per-layout bindings    (input/emulated/*.h)
 
@@ -359,10 +359,10 @@ def build_definition(values: dict[str, dict], entries: list[dict],
     emitted = 0
     for path in sorted(grouped):
         slug = slugify("-".join(path) or "general")
-        filename = f"{slug}.toml"
-        if filename in documents or filename in {"cemu.toml", "actions.toml", "input.toml"}:
+        filename = f"sections/{slug}.toml"
+        if filename in documents:
             raise Bail(f"definition: section path {' / '.join(path)!r} produces "
-                       f"duplicate or reserved output name {filename!r}")
+                       f"duplicate output name {filename!r}")
         main_lines += [f"[sections.{toml_key(slug)}]",
                        f"import = {toml_string(filename)}", ""]
         section_lines = [
@@ -594,7 +594,9 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.dry_run:
         arguments.out.mkdir(parents=True, exist_ok=True)
         for name, text in documents.items():
-            (arguments.out / name).write_text(text, encoding="utf-8", newline="\n")
+            path = arguments.out / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="\n")
     report.emit()
     print(f"wrote {', '.join(sorted(documents))} to "
           f"{'(dry run)' if arguments.dry_run else arguments.out}")
