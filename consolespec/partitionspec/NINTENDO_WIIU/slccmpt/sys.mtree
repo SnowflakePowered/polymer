@@ -1,0 +1,9 @@
+#mtree
+# Nintendo Wii U vWii SLCCMPT sys partition skeleton
+# IOS storage; uid.sys tracks this console's own install history
+# console state, not update content: paths only, never a digest,
+# and sizes only where a source fixes them
+. type=dir
+./cert.sys type=file size=2560
+./space.sys type=file size=19140
+./uid.sys type=file

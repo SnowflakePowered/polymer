@@ -9,5 +9,5 @@
 ./cert.sys type=file size=2560
 ./disc.sys type=file
 ./launch.sys type=file
-./space.sys type=file
+./space.sys type=file size=19140
 ./uid.sys type=file
