@@ -29,7 +29,7 @@ impl GamepadSlot {
     }
 }
 
-/// Stone-labelled controls carried on the wire. Output providers, rather than
+/// Element-labelled controls carried on the wire. Output providers, rather than
 /// producers, decide where these labels live in their native layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -63,7 +63,7 @@ impl GamepadButton {
     }
 }
 
-/// Complete Stone-semantic state for one virtual gamepad. Button bits use
+/// Complete element-semantic state for one virtual gamepad. Button bits use
 /// [`GamepadButton`] labels; they are not physical or SDL positions.
 ///
 /// Sticks use SDL's signed 16-bit range. Triggers use an unsigned range so

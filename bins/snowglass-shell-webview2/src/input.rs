@@ -8,7 +8,7 @@ use snowglass_input::provider::sdl3::{DeviceSelector, ProviderConfig, Sdl3Provid
 use snowglass_input::{
     gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{InputConfiguration, InputHub, SourceSelector},
-    stone::{EMBEDDED_STONE_JSON, StoneRegistry},
+    layout::LayoutRegistry,
 };
 use snowglass_ipc::{Message, MessageSink};
 use std::{collections::BTreeMap, sync::Arc};
@@ -105,8 +105,8 @@ impl InputTransport {
     pub fn runtime() -> Result<Self, String> {
         let control = RoutedInputSender::default();
         let gamepad = RoutedGamepadSink::default();
-        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON)
-            .expect("the embedded Stone controller database is valid");
+        let registry =
+            LayoutRegistry::embedded().expect("the embedded inputspec documents are valid");
         let hub = InputHub::new(registry, []).expect("an empty input topology is valid");
         let provider = Sdl3Provider::start_disabled(
             ProviderConfig {
@@ -257,7 +257,6 @@ mod tests {
     fn provider_topology_preserves_ports_and_stable_selectors() {
         let configuration = InputConfiguration {
             revision: 1,
-            stone_version: "test".to_owned(),
             ports: vec![PortConfiguration {
                 port: VirtualPort(2),
                 layout: "GAMECUBE_CONTROLLER".to_owned(),

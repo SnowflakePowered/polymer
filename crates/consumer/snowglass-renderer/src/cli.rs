@@ -94,7 +94,7 @@ pub struct ViewerOptions {
     pub webrtc: Option<Vec<u32>>,
     pub bind_webrtc: SocketAddr,
     pub gamepads: Vec<GamepadArgument>,
-    pub stone_db: Option<PathBuf>,
+    pub inputspec: Option<PathBuf>,
     pub gamecontroller_db: Option<PathBuf>,
 }
 
@@ -113,14 +113,15 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Map an SDL device index, exact name, GUID, or K (keyboard) to a virtual slot and Stone layout.
+    /// Map an SDL device index, exact name, GUID, or K (keyboard) to a virtual slot and input layout.
     /// Append +M to the selector to force mouse pointer axes instead of its touchpad.
     #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
     pub(crate) gamepads: Vec<GamepadArgument>,
 
-    /// Updated Stone JSON database. The embedded database is used by default.
-    #[arg(long, value_name = "FILE")]
-    pub(crate) stone_db: Option<PathBuf>,
+    /// A consolespec `inputspec` directory. The embedded documents are used by
+    /// default.
+    #[arg(long = "inputspec", value_name = "DIR")]
+    pub(crate) inputspec: Option<PathBuf>,
 
     /// Updated SDL gamecontrollerdb.txt. The embedded database is used by default.
     #[arg(long, value_name = "FILE")]
@@ -277,7 +278,7 @@ impl ViewerArguments {
             webrtc: self.webrtc,
             bind_webrtc: self.bind_webrtc,
             gamepads,
-            stone_db: self.stone_db,
+            inputspec: self.inputspec,
             gamecontroller_db: self.gamecontroller_db,
         })
     }

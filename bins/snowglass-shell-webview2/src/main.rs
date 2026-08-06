@@ -31,7 +31,7 @@ use snowglass_input::{
     },
     mouse::{PointerPhase, layout::Rect},
     provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
-    stone::SdlButton,
+    layout::SdlButton,
 };
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{performance_counter, performance_frequency};
@@ -1299,7 +1299,7 @@ impl ShellState {
         }
         let provider_config = Sdl3ProviderConfig {
             slots,
-            stone_database: None,
+            inputspec_directory: None,
             gamecontroller_database: None,
             keyboard_mapping_directory: None,
         };
@@ -1393,7 +1393,7 @@ impl ShellState {
                 .into_iter()
                 .map(|mapping| mapping.layout.clone())
                 .collect(),
-            stone_database: None,
+            inputspec_directory: None,
         };
         let wake_proxy = self.game.proxy.clone();
         let capture_dirty = self.streams.dirty.clone();
@@ -3307,8 +3307,8 @@ fn hub_source(selector: snowglass_input::provider::sdl3::DeviceSelector) -> Sour
     }
 }
 
-fn hub_binding(binding: &snowglass_input::stone::InputBinding) -> BindingOverride {
-    use snowglass_input::stone::InputBinding;
+fn hub_binding(binding: &snowglass_input::layout::InputBinding) -> BindingOverride {
+    use snowglass_input::layout::InputBinding;
     match binding {
         InputBinding::Button { button } => BindingOverride::Button {
             source: SourceControl::GamepadButton { button: *button },

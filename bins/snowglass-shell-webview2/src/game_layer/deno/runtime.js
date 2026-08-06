@@ -983,7 +983,6 @@
   const snowglassInput = new EventTarget();
   let inputConfiguration = Object.freeze({
     revision: 0,
-    stoneVersion: "",
     ports: Object.freeze([]),
   });
   let inputLayouts = Object.freeze([]);

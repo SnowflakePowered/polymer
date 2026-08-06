@@ -1,10 +1,10 @@
-//! Revisioned, API-neutral configuration for physical sources and Stone ports.
+//! Revisioned, API-neutral configuration for physical sources and virtual ports.
 //!
 //! This is the control plane for input. Capture providers and virtual-device
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::stone::{SdlAxis, SdlButton, StoneLayout, StoneRegistry};
+use crate::layout::{SdlAxis, SdlButton, InputLayout, LayoutRegistry};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,7 +43,7 @@ pub enum SourceSelector {
     },
 }
 
-/// A physical control which can feed a Stone target.
+/// A physical control which can feed an element target.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SourceControl {
@@ -87,9 +87,9 @@ const fn one() -> f32 {
     1.0
 }
 
-/// A user override for one Stone element.
+/// A user override for one input element.
 ///
-/// The map key is always a Stone element ID. `Disabled` is deliberately
+/// The map key is always an input element id. `Disabled` is deliberately
 /// distinct from removing the entry, which restores the inherited mapping.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -107,19 +107,19 @@ pub enum BindingOverride {
 
 impl BindingOverride {
     /// Projects the subset supported by today's SDL-to-SDL data plane.
-    pub fn sdl_binding(&self) -> Option<crate::stone::InputBinding> {
+    pub fn sdl_binding(&self) -> Option<crate::layout::InputBinding> {
         match self {
             Self::Button {
                 source: SourceControl::GamepadButton { button },
-            } => Some(crate::stone::InputBinding::Button { button: *button }),
+            } => Some(crate::layout::InputBinding::Button { button: *button }),
             Self::Axis {
                 source: SourceControl::GamepadAxis { axis },
                 transform,
-            } => Some(crate::stone::InputBinding::Axis {
+            } => Some(crate::layout::InputBinding::Axis {
                 axis: *axis,
                 invert: transform.invert,
             }),
-            Self::Disabled => Some(crate::stone::InputBinding::Disabled { disabled: true }),
+            Self::Disabled => Some(crate::layout::InputBinding::Disabled { disabled: true }),
             _ => None,
         }
     }
@@ -139,7 +139,6 @@ pub struct PortConfiguration {
 #[serde(rename_all = "camelCase")]
 pub struct InputConfiguration {
     pub revision: u64,
-    pub stone_version: String,
     pub ports: Vec<PortConfiguration>,
 }
 
@@ -194,7 +193,7 @@ pub struct InputHub {
 }
 
 struct HubInner {
-    registry: StoneRegistry,
+    registry: LayoutRegistry,
     state: RwLock<HubState>,
 }
 
@@ -222,10 +221,10 @@ impl fmt::Display for InputConfigurationError {
                 "input configuration revision conflict: expected {expected}, actual {actual}"
             ),
             Self::DuplicatePort(port) => write!(formatter, "duplicate virtual port {}", port.0),
-            Self::UnknownLayout(layout) => write!(formatter, "unknown Stone layout {layout}"),
+            Self::UnknownLayout(layout) => write!(formatter, "unknown input layout {layout}"),
             Self::UnknownPort(port) => write!(formatter, "unknown virtual port {}", port.0),
             Self::UnknownTarget { layout, target } => {
-                write!(formatter, "Stone layout {layout} has no element {target}")
+                write!(formatter, "input layout {layout} has no element {target}")
             }
             Self::InvalidBinding(message) => formatter.write_str(message),
         }
@@ -236,7 +235,7 @@ impl std::error::Error for InputConfigurationError {}
 
 impl InputHub {
     pub fn new(
-        registry: StoneRegistry,
+        registry: LayoutRegistry,
         ports: impl IntoIterator<Item = PortConfiguration>,
     ) -> Result<Self, InputConfigurationError> {
         let ports = collect_ports(ports)?;
@@ -253,12 +252,11 @@ impl InputHub {
         let state = self.inner.state.read();
         InputConfiguration {
             revision: state.revision,
-            stone_version: self.inner.registry.version.clone(),
             ports: state.ports.values().cloned().collect(),
         }
     }
 
-    pub fn layouts(&self) -> Vec<StoneLayout> {
+    pub fn layouts(&self) -> Vec<InputLayout> {
         let mut layouts = self.inner.registry.layouts().cloned().collect::<Vec<_>>();
         layouts.sort_by(|left, right| left.id.cmp(&right.id));
         layouts
@@ -368,7 +366,7 @@ fn port_mut(
 }
 
 fn validate_ports(
-    registry: &StoneRegistry,
+    registry: &LayoutRegistry,
     ports: &BTreeMap<VirtualPort, PortConfiguration>,
 ) -> Result<(), InputConfigurationError> {
     for port in ports.values() {
@@ -384,7 +382,7 @@ fn validate_ports(
             }
             if matches!(binding, BindingOverride::Axis { .. }) && !is_axis_target(target) {
                 return Err(InputConfigurationError::InvalidBinding(format!(
-                    "Stone target {target} does not accept an axis binding"
+                    "element {target} does not accept an axis binding"
                 )));
             }
             validate_binding(binding)?;
@@ -427,11 +425,11 @@ fn validate_binding(binding: &BindingOverride) -> Result<(), InputConfigurationE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stone::{EMBEDDED_STONE_JSON, StoneRegistry};
+    use crate::layout::LayoutRegistry;
 
     fn hub() -> InputHub {
         InputHub::new(
-            StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap(),
+            LayoutRegistry::embedded().unwrap(),
             [PortConfiguration {
                 port: VirtualPort(0),
                 layout: "XBOX_CONTROLLER".to_owned(),
@@ -547,7 +545,7 @@ mod tests {
         };
         assert!(matches!(
             axis.sdl_binding(),
-            Some(crate::stone::InputBinding::Axis {
+            Some(crate::layout::InputBinding::Axis {
                 axis: SdlAxis::RightX,
                 invert: true
             })
@@ -568,7 +566,7 @@ mod tests {
 
     #[test]
     fn duplicate_ports_are_rejected_instead_of_silently_overwriting() {
-        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap();
+        let registry = LayoutRegistry::embedded().unwrap();
         let port = PortConfiguration {
             port: VirtualPort(0),
             layout: "XBOX_CONTROLLER".to_owned(),

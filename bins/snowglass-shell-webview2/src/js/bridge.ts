@@ -75,7 +75,6 @@ let inputPriority: "game" | "foreground" = "foreground";
 let inputTimestamp = 0;
 let inputConfiguration: Readonly<Record<string, unknown>> = Object.freeze({
   revision: 0,
-  stoneVersion: "",
   ports: Object.freeze([]),
 });
 let inputLayouts: readonly unknown[] = Object.freeze([]);

@@ -3,7 +3,7 @@
 use crate::api;
 use parking_lot::Mutex;
 use snowglass_hook::config;
-use snowglass_input::stone::{EMBEDDED_STONE_JSON, StoneRegistry};
+use snowglass_input::layout::LayoutRegistry;
 use snowglass_input_sdl::Runtime;
 use std::{
     ffi::c_void,
@@ -79,23 +79,22 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     let module = Sdl3EntryInstallation::with_state(|state| state.module)
         .ok_or("SDL3 entry-hook state is not installed")?
         .as_ptr();
-    let stone_json = config::stone_database()
-        .map(|path| std::fs::read_to_string(path).map_err(|_| "Stone database is unreadable"))
-        .transpose()?
-        .unwrap_or_else(|| EMBEDDED_STONE_JSON.to_owned());
-    let registry =
-        StoneRegistry::from_json(&stone_json).map_err(|_| "Stone database is invalid")?;
-    let layouts = config::stone_layouts()
+    let registry = match config::inputspec_directory() {
+        Some(directory) => LayoutRegistry::from_directory(&directory)
+            .map_err(|_| "the inputspec directory is unreadable or invalid")?,
+        None => LayoutRegistry::embedded().map_err(|_| "the embedded inputspec is invalid")?,
+    };
+    let layouts = config::layouts()
         .into_iter()
         .map(|layout_id| {
             registry
                 .layout(&layout_id)
-                .ok_or("Stone layout is unavailable")
+                .ok_or("the requested input layout is unavailable")
                 .map(|layout| (layout.sdl_output(), "Snowglass Virtual Gamepad".to_owned()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     if layouts.len() != config::sdl_gamepad_count() {
-        return Err("Stone layout count disagrees with virtual gamepad count");
+        return Err("input layout count disagrees with virtual gamepad count");
     }
     let backend = unsafe { api::Api::load(module, layouts) }
         .ok_or("SDL3 virtual joystick exports are unavailable")?;

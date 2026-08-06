@@ -13,9 +13,9 @@ pub const DINPUT_LOG_FILE: &str = "SNOWGLASS_DINPUT_LOG_FILE";
 pub const WIN32_LOG_FILE: &str = "SNOWGLASS_WIN32_LOG_FILE";
 pub const SDL_LOG_FILE: &str = "SNOWGLASS_SDL_LOG_FILE";
 pub const SDL_GAMEPADS: &str = "SNOWGLASS_SDL_GAMEPADS";
-pub const STONE_LAYOUT: &str = "SNOWGLASS_STONE_LAYOUT";
-pub const STONE_LAYOUTS: &str = "SNOWGLASS_STONE_LAYOUTS";
-pub const STONE_DATABASE: &str = "SNOWGLASS_STONE_DATABASE";
+pub const LAYOUT: &str = "SNOWGLASS_LAYOUT";
+pub const LAYOUTS: &str = "SNOWGLASS_LAYOUTS";
+pub const INPUTSPEC_DIRECTORY: &str = "SNOWGLASS_INPUTSPEC";
 pub const DXGI_LOG_FILE: &str = "SNOWGLASS_DXGI_LOG_FILE";
 pub const D3D11_LOG_FILE: &str = "SNOWGLASS_D3D11_LOG_FILE";
 pub const D3D12_LOG_FILE: &str = "SNOWGLASS_D3D12_LOG_FILE";
@@ -61,20 +61,20 @@ pub fn sdl_gamepad_count() -> usize {
         .clamp(1, u8::MAX as usize + 1)
 }
 
-pub fn stone_layout() -> String {
-    std::env::var(STONE_LAYOUT).unwrap_or_else(|_| "XBOX_CONTROLLER".to_owned())
+pub fn layout() -> String {
+    std::env::var(LAYOUT).unwrap_or_else(|_| "XBOX_CONTROLLER".to_owned())
 }
 
-pub fn stone_layouts() -> Vec<String> {
-    std::env::var(STONE_LAYOUTS)
+pub fn layouts() -> Vec<String> {
+    std::env::var(LAYOUTS)
         .ok()
         .map(|layouts| layouts.split(',').map(str::to_owned).collect())
         .filter(|layouts: &Vec<_>| !layouts.is_empty() && layouts.iter().all(|id| !id.is_empty()))
-        .unwrap_or_else(|| vec![stone_layout()])
+        .unwrap_or_else(|| vec![layout()])
 }
 
-pub fn stone_database() -> Option<PathBuf> {
-    path(STONE_DATABASE)
+pub fn inputspec_directory() -> Option<PathBuf> {
+    path(INPUTSPEC_DIRECTORY)
 }
 
 pub fn dxgi_log_file() -> Option<PathBuf> {

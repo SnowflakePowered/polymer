@@ -3,7 +3,7 @@ use snowglass_input::{
     provider::sdl3::{
         DeviceSelector, ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig,
     },
-    stone::{EMBEDDED_STONE_JSON, InputBinding, SdlAxis, SdlButton, StoneLayout, StoneRegistry},
+    layout::{InputBinding, SdlAxis, SdlButton, InputLayout, LayoutRegistry},
 };
 use snowglass_ipc::StreamReady;
 use snowglass_platform_windows::{
@@ -524,13 +524,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut capture = SurfaceCapture::default();
     let pointer_tx = capture.pointer_sender();
     let input_tx = RoutedInputSender::default();
-    let stone_json = options
-        .stone_db
-        .as_ref()
-        .map(std::fs::read_to_string)
-        .transpose()?
-        .unwrap_or_else(|| EMBEDDED_STONE_JSON.to_owned());
-    let gamepad_registry = StoneRegistry::from_json(&stone_json).map_err(std::io::Error::other)?;
+    let gamepad_registry = match options.inputspec.as_deref() {
+        Some(directory) => LayoutRegistry::from_directory(directory),
+        None => LayoutRegistry::embedded(),
+    }
+    .map_err(std::io::Error::other)?;
     let mut gamepad_provider = None;
     let mut gamepad_layouts = Vec::new();
     let mut gamepad_remap_drafts = Vec::new();
@@ -549,7 +547,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             launcher.render_target_surface_patterns(),
             launcher.graph_tracking,
             options.force_keyed_mutex,
-            options.stone_db.as_deref(),
+            options.inputspec.as_deref(),
             options.gamecontroller_db.clone(),
         ) {
             Ok(started) => {
@@ -1335,7 +1333,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             launcher.render_target_surface_patterns(),
                             launcher.graph_tracking,
                             options.force_keyed_mutex,
-                            options.stone_db.as_deref(),
+                            options.inputspec.as_deref(),
                             options.gamecontroller_db.clone(),
                         ) {
                             Ok(started) => {
@@ -1411,13 +1409,13 @@ struct ActiveTarget {
 struct StartedTarget {
     target: ActiveTarget,
     provider: Sdl3Provider,
-    layouts: Vec<StoneLayout>,
+    layouts: Vec<InputLayout>,
 }
 
 #[expect(clippy::too_many_arguments)]
 fn start_target_session(
     launcher: &LauncherState,
-    registry: &StoneRegistry,
+    registry: &LayoutRegistry,
     executable_dir: &Path,
     session: &str,
     surface_limit: u32,
@@ -1427,7 +1425,7 @@ fn start_target_session(
     tracked_surface_patterns: Vec<Option<String>>,
     graph_tracking: bool,
     force_keyed_mutex: bool,
-    stone_database: Option<&Path>,
+    inputspec_directory: Option<&Path>,
     gamecontroller_database: Option<PathBuf>,
 ) -> Result<StartedTarget, Box<dyn Error>> {
     let target = launcher.target().map_err(std::io::Error::other)?;
@@ -1444,7 +1442,7 @@ fn start_target_session(
         .iter()
         .map(|pad| {
             registry.layout(&pad.layout).cloned().ok_or_else(|| {
-                std::io::Error::other(format!("Unknown Stone layout {}", pad.layout))
+                std::io::Error::other(format!("unknown input layout {}", pad.layout))
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1487,7 +1485,7 @@ fn start_target_session(
             graph_tracking,
             force_keyed_mutex,
             gamepad_layouts: layouts.iter().map(|layout| layout.id.clone()).collect(),
-            stone_database: stone_database.map(Path::to_path_buf),
+            inputspec_directory: inputspec_directory.map(Path::to_path_buf),
         })?;
     let provider = Sdl3Provider::start(
         Sdl3ProviderConfig {
@@ -1499,7 +1497,7 @@ fn start_target_session(
                     force_mouse: pad.force_mouse,
                 })
                 .collect(),
-            stone_database: stone_database.map(Path::to_path_buf),
+            inputspec_directory: inputspec_directory.map(Path::to_path_buf),
             gamecontroller_database,
             keyboard_mapping_directory: None,
         },

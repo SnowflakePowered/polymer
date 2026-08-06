@@ -1,6 +1,6 @@
 use snowglass_input::{
     provider::sdl3::DeviceSelector,
-    stone::{InputBinding, SdlAxis, SdlButton},
+    layout::{InputBinding, SdlAxis, SdlButton},
 };
 use snowglass_renderer::cli::{GamepadArgument, HookBackend, ViewerOptions};
 use std::{

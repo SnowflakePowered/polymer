@@ -35,7 +35,7 @@ fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
             force_mouse: false,
         }]
     );
-    assert_eq!(options.stone_db, None);
+    assert_eq!(options.inputspec, None);
     assert_eq!(options.gamecontroller_db, None);
     Ok(())
 }
@@ -125,14 +125,14 @@ fn launcher_preserves_render_target_order_and_rotation() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn accepts_stone_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
+fn accepts_inputspec_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
     let options = arguments(&[
         "--gamepad",
         "Nintendo Switch Controller:0:SWITCH_PRO_CONTROLLER",
         "--gamepad",
         "030000005e0400008e02000000000000:1:XBOX_CONTROLLER",
-        "--stone-db",
-        "stone.json",
+        "--inputspec",
+        "consolespec/inputspec",
         "--gamecontroller-db",
         "controllers.txt",
         "--",
@@ -151,7 +151,10 @@ fn accepts_stone_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
         options.gamepads[1].selector,
         DeviceSelector::Guid(_)
     ));
-    assert_eq!(options.stone_db, Some(PathBuf::from("stone.json")));
+    assert_eq!(
+        options.inputspec,
+        Some(PathBuf::from("consolespec/inputspec"))
+    );
     assert_eq!(
         options.gamecontroller_db,
         Some(PathBuf::from("controllers.txt"))

@@ -28,20 +28,22 @@ type InputPort = {
 
 type InputConfiguration = {
   revision: number;
-  stoneVersion: string;
   ports: InputPort[];
 };
 
-type StoneElement = {
+type InputElement = {
   id: string;
   label: string;
   kind: string;
 };
 
-type StoneLayout = {
+// A consolespec inputspec, with its clusters already expanded into elements by
+// the host. `name` is the product's name from the document's [meta], falling
+// back to the id for handhelds, whose built-in controls are not a product.
+type InputLayout = {
   id: string;
-  friendlyName: string;
-  elements: StoneElement[];
+  name: string;
+  elements: InputElement[];
 };
 
 type PhysicalController = {
@@ -56,7 +58,7 @@ type PhysicalController = {
 
 type InputApi = EventTarget & {
   readonly configuration: InputConfiguration;
-  readonly layouts: StoneLayout[];
+  readonly layouts: InputLayout[];
   readonly controllers: PhysicalController[];
   configure(transaction: {
     expectedRevision?: number;
@@ -114,7 +116,7 @@ function sourceLabel(source: SourceSelector | null) {
   }
 }
 
-function controlGroups(layout?: StoneLayout) {
+function controlGroups(layout?: InputLayout) {
   if (!layout) return [];
   const groups = new Map<string, ControlGroup>();
   for (const element of layout.elements) {
@@ -175,7 +177,6 @@ function currentConfiguration(api: InputApi): InputConfiguration {
   const configuration = api.configuration;
   return {
     revision: Number(configuration?.revision) || 0,
-    stoneVersion: String(configuration?.stoneVersion || ""),
     ports: Array.isArray(configuration?.ports) ? configuration.ports : [],
   };
 }
@@ -442,7 +443,7 @@ export function InputRemapping({ onClose }: { onClose(): void }) {
                 </small>
               </div>
               <span className="layout-badge">
-                {layout?.friendlyName || port?.layout}
+                {layout?.name || port?.layout?.replaceAll("_", " ")}
               </span>
             </div>
 
@@ -547,10 +548,7 @@ export function InputRemapping({ onClose }: { onClose(): void }) {
         )}
 
         <footer className="remapping-footer">
-          <span>
-            Stone {configuration.stoneVersion || "layout"} · revision{" "}
-            {configuration.revision}
-          </span>
+          <span>Revision {configuration.revision}</span>
           <output data-error={message ? "true" : "false"}>
             {message || "Changes apply immediately"}
           </output>

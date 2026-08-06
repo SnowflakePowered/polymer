@@ -1,14 +1,14 @@
-//! SDL3 physical-gamepad capture normalized into Stone-labelled snapshots.
+//! SDL3 physical-gamepad capture normalized into element-labelled snapshots.
 
 #[cfg(test)]
 use crate::gamepad::LatestGamepadMailbox;
 use crate::{
     gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{AxisTransform, PointerAxis, SourceControl},
-    stone::{
-        EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, EMBEDDED_STONE_JSON,
+    layout::{
+        EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB,
         InputBinding, KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
-        StoneLayout, StoneRegistry,
+        InputLayout, LayoutRegistry,
     },
 };
 use parking_lot::Mutex;
@@ -31,7 +31,7 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
     pub slots: Vec<SlotConfig>,
-    pub stone_database: Option<PathBuf>,
+    pub inputspec_directory: Option<PathBuf>,
     pub gamecontroller_database: Option<PathBuf>,
     pub keyboard_mapping_directory: Option<PathBuf>,
 }
@@ -44,7 +44,7 @@ impl Default for ProviderConfig {
                 layout_id: "XBOX_CONTROLLER".to_owned(),
                 force_mouse: false,
             }],
-            stone_database: None,
+            inputspec_directory: None,
             gamecontroller_database: None,
             keyboard_mapping_directory: None,
         }
@@ -100,7 +100,7 @@ pub struct PhysicalGamepadState {
     pub layout_id: String,
     pub buttons: Vec<(SdlButton, bool)>,
     pub axes: Vec<(SdlAxis, i16)>,
-    /// Physical controls consumed by the active Stone mapping.
+    /// Physical controls consumed by the active layout mapping.
     pub mapped_buttons: Vec<SdlButton>,
     pub mapped_axes: Vec<SdlAxis>,
     pub mapped: GamepadState,
@@ -336,11 +336,11 @@ fn validate_config(config: &ProviderConfig) -> Result<(), String> {
     if config.slots.len() > u8::MAX as usize + 1 {
         return Err("gamepad slot count must be 0..=256".to_owned());
     }
-    let registry = load_stone_registry(config.stone_database.as_deref())?;
+    let registry = load_layout_registry(config.inputspec_directory.as_deref())?;
     for slot in &config.slots {
         if registry.layout(&slot.layout_id).is_none() {
             return Err(format!(
-                "unknown Stone controller layout {}",
+                "unknown input layout {}",
                 slot.layout_id
             ));
         }
@@ -474,7 +474,7 @@ enum KeyboardTarget {
 }
 
 impl CompiledKeyboardMapping {
-    fn new(mapping: KeyboardMapping, layout: &StoneLayout) -> Result<Self, String> {
+    fn new(mapping: KeyboardMapping, layout: &InputLayout) -> Result<Self, String> {
         let mut bindings = Vec::new();
         for (element, key) in mapping.bindings {
             if !layout.has(&element) {
@@ -541,10 +541,10 @@ impl CompiledKeyboardMapping {
 }
 
 fn keyboard_target(element: &str) -> Option<KeyboardTarget> {
-    if let Some(button) = stone_button(element) {
+    if let Some(button) = element_button(element) {
         return Some(KeyboardTarget::Button(button));
     }
-    let index = stone_axis_index(element)?;
+    let index = element_axis_index(element)?;
     if index >= 4 {
         return Some(KeyboardTarget::Trigger { index });
     }
@@ -567,7 +567,7 @@ fn apply_mouse_axes(
     let mut values = [0.0f32; 6];
     let mut assigned = [false; 6];
     for (target, mapping) in mappings {
-        let Some(index) = stone_axis_index(target) else {
+        let Some(index) = element_axis_index(target) else {
             continue;
         };
         let value = match &mapping.source {
@@ -697,14 +697,14 @@ fn run(
                         .find(|slot| registry.layout(&slot.layout_id).is_none());
                     if let Some(slot) = invalid_layout {
                         let _ = response.send(Err(format!(
-                            "unknown Stone controller layout {}",
+                            "unknown input layout {}",
                             slot.layout_id
                         )));
                         continue;
                     }
                     let candidate = ProviderConfig {
                         slots: slots.clone(),
-                        stone_database: config.stone_database.clone(),
+                        inputspec_directory: config.inputspec_directory.clone(),
                         gamecontroller_database: config.gamecontroller_database.clone(),
                         keyboard_mapping_directory: config.keyboard_mapping_directory.clone(),
                     };
@@ -918,12 +918,12 @@ type Initialized = (
     sdl3::Sdl,
     sdl3::GamepadSubsystem,
     sdl3::EventPump,
-    StoneRegistry,
+    LayoutRegistry,
     RemapDatabase,
 );
 
 fn initialize(config: &ProviderConfig) -> Result<Initialized, String> {
-    let registry = load_stone_registry(config.stone_database.as_deref())?;
+    let registry = load_layout_registry(config.inputspec_directory.as_deref())?;
     let remappings = RemapDatabase::default();
     let sdl = sdl3::init().map_err(|error| format!("failed to initialize SDL3: {error}"))?;
     let subsystem = sdl
@@ -1001,7 +1001,7 @@ fn refresh_devices(
     subsystem: &sdl3::GamepadSubsystem,
     pads: &mut [Option<Pad>],
     slots: &[SlotConfig],
-    registry: &StoneRegistry,
+    registry: &LayoutRegistry,
     remappings: &RemapDatabase,
     interactive_remappings: &[HashMap<String, InputBinding>],
 ) {
@@ -1164,7 +1164,7 @@ fn select_device(
 fn recompile_pad(
     slot: usize,
     pads: &mut [Option<Pad>],
-    registry: &StoneRegistry,
+    registry: &LayoutRegistry,
     remappings: &RemapDatabase,
     overrides: &HashMap<String, InputBinding>,
 ) {
@@ -1182,7 +1182,7 @@ fn recompile_pad(
 fn compiled_with_overrides(
     gamepad: &Gamepad,
     identity: &DeviceIdentity,
-    layout: &StoneLayout,
+    layout: &InputLayout,
     remappings: &RemapDatabase,
     overrides: &HashMap<String, InputBinding>,
 ) -> CompiledMapping {
@@ -1271,7 +1271,7 @@ impl CompiledMapping {
     fn new(
         gamepad: &Gamepad,
         identity: &DeviceIdentity,
-        layout: &StoneLayout,
+        layout: &InputLayout,
         database: &RemapDatabase,
     ) -> Self {
         let mut targets = HashMap::<String, InputBinding>::new();
@@ -1295,14 +1295,14 @@ impl CompiledMapping {
             if !layout.has(&element) {
                 continue;
             }
-            if let Some(target) = stone_button(&element) {
+            if let Some(target) = element_button(&element) {
                 if let InputBinding::Button { button } = binding {
                     buttons.retain(|(_, existing)| *existing != target);
                     buttons.push((button, target));
                 }
                 continue;
             }
-            let Some(index) = stone_axis_index(&element) else {
+            let Some(index) = element_axis_index(&element) else {
                 continue;
             };
             match binding {
@@ -1373,7 +1373,7 @@ impl CompiledMapping {
     }
 }
 
-fn enable_layout_sensors(gamepad: &Gamepad, layout: &StoneLayout) {
+fn enable_layout_sensors(gamepad: &Gamepad, layout: &InputLayout) {
     for (enabled, sensor) in [
         (
             layout.has("AccelerometerAxisPositiveX") || layout.has("AccelerometerAxisNegativeX"),
@@ -1453,7 +1453,7 @@ const ALL_AXES: [SdlAxis; 6] = [
 fn default_button_target<'a>(
     gamepad: &Gamepad,
     source: SdlButton,
-    layout: &'a StoneLayout,
+    layout: &'a InputLayout,
 ) -> Option<&'a str> {
     let fixed = match source {
         SdlButton::Back => Some("ButtonSelect"),
@@ -1493,7 +1493,7 @@ fn default_button_target<'a>(
         .or_else(|| positional_face_target(source, layout))
 }
 
-fn positional_face_target(source: SdlButton, layout: &StoneLayout) -> Option<&str> {
+fn positional_face_target(source: SdlButton, layout: &InputLayout) -> Option<&str> {
     let target = match source {
         SdlButton::South => "ButtonA",
         SdlButton::East => "ButtonB",
@@ -1504,7 +1504,7 @@ fn positional_face_target(source: SdlButton, layout: &StoneLayout) -> Option<&st
     layout.has(target).then_some(target)
 }
 
-fn apply_default_axes(targets: &mut HashMap<String, InputBinding>, layout: &StoneLayout) {
+fn apply_default_axes(targets: &mut HashMap<String, InputBinding>, layout: &InputLayout) {
     for (element, axis) in [
         ("AxisLeftAnalogPositiveX", SdlAxis::LeftX),
         ("AxisLeftAnalogNegativeX", SdlAxis::LeftX),
@@ -1532,7 +1532,7 @@ fn apply_default_axes(targets: &mut HashMap<String, InputBinding>, layout: &Ston
 fn profile_matches(
     profile: &RemapProfile,
     identity: &DeviceIdentity,
-    layout: &StoneLayout,
+    layout: &InputLayout,
 ) -> bool {
     profile
         .guid
@@ -1547,7 +1547,7 @@ fn profile_matches(
         && profile.layout.as_ref().is_none_or(|id| id == &layout.id)
 }
 
-fn stone_button(element: &str) -> Option<GamepadButton> {
+fn element_button(element: &str) -> Option<GamepadButton> {
     Some(match element {
         "ButtonA" => GamepadButton::A,
         "ButtonB" => GamepadButton::B,
@@ -1569,7 +1569,7 @@ fn stone_button(element: &str) -> Option<GamepadButton> {
     })
 }
 
-fn stone_axis_index(element: &str) -> Option<usize> {
+fn element_axis_index(element: &str) -> Option<usize> {
     match element {
         "AxisLeftAnalogPositiveX" | "AxisLeftAnalogNegativeX" => Some(0),
         "AxisLeftAnalogPositiveY" | "AxisLeftAnalogNegativeY" => Some(1),
@@ -1623,18 +1623,16 @@ fn to_sdl_axis(axis: SdlAxis) -> Axis {
     }
 }
 
-fn load_stone_registry(path: Option<&Path>) -> Result<StoneRegistry, String> {
-    let json = match path {
-        Some(path) => fs::read_to_string(path)
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?,
-        None => EMBEDDED_STONE_JSON.to_owned(),
-    };
-    StoneRegistry::from_json(&json)
+fn load_layout_registry(directory: Option<&Path>) -> Result<LayoutRegistry, String> {
+    match directory {
+        Some(directory) => LayoutRegistry::from_directory(directory),
+        None => LayoutRegistry::embedded(),
+    }
 }
 
 fn load_keyboard_mappings(
     config: &ProviderConfig,
-    registry: &StoneRegistry,
+    registry: &LayoutRegistry,
 ) -> Result<Vec<Option<CompiledKeyboardMapping>>, String> {
     let directory = config
         .keyboard_mapping_directory
@@ -1674,7 +1672,7 @@ fn load_keyboard_mappings(
 }
 
 #[cfg(test)]
-fn validate_remappings(database: &RemapDatabase, layouts: &[&StoneLayout]) -> Result<(), String> {
+fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Result<(), String> {
     for target in database.bindings.keys() {
         if !layouts.iter().any(|layout| layout.has(target)) {
             return Err(format!(
@@ -1722,13 +1720,13 @@ mod tests {
 
     #[test]
     fn switch_face_labels_are_not_positional() {
-        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap();
+        let registry = LayoutRegistry::embedded().unwrap();
         let layout = registry.layout("SWITCH_PRO_CONTROLLER").unwrap();
         assert_eq!(
             layout.elements.iter().find(|e| e.label == "B").unwrap().id,
             "ButtonB"
         );
-        assert_eq!(stone_button("ButtonB"), Some(GamepadButton::B));
+        assert_eq!(element_button("ButtonB"), Some(GamepadButton::B));
     }
 
     #[test]
@@ -1753,7 +1751,7 @@ mod tests {
 
     #[test]
     fn embedded_keyboard_mapping_drives_wii_remote_buttons() {
-        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap();
+        let registry = LayoutRegistry::embedded().unwrap();
         let layout = registry.layout("WII_REMOTE_CONTROLLER").unwrap();
         let mapping = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
         let mapping = CompiledKeyboardMapping::new(mapping, layout).unwrap();
@@ -1769,7 +1767,7 @@ mod tests {
 
     #[test]
     fn keyboard_targets_can_be_overridden_and_restored_live() {
-        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap();
+        let registry = LayoutRegistry::embedded().unwrap();
         let layout = registry.layout("XBOX_CONTROLLER").unwrap();
         let source = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
         let defaults = CompiledKeyboardMapping::new(source, layout).unwrap();
@@ -1843,9 +1841,9 @@ mod tests {
 
     #[test]
     fn rejects_user_targets_outside_the_selected_layout() {
-        let registry = StoneRegistry::from_json(EMBEDDED_STONE_JSON).unwrap();
+        let registry = LayoutRegistry::embedded().unwrap();
         let remap = RemapDatabase::from_json(
-            r#"{"bindings":{"DefinitelyNotAStoneElement":{"button":"south"}}}"#,
+            r#"{"bindings":{"DefinitelyNotAInputElement":{"button":"south"}}}"#,
         )
         .unwrap();
         assert!(

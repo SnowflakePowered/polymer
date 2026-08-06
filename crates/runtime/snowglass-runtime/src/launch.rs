@@ -65,7 +65,7 @@ fn hook_environment(runtime: &EmulatorConfig) -> Vec<(OsString, OsString)> {
             OsString::from(&runtime.session),
         ),
         (
-            OsString::from(config::STONE_LAYOUTS),
+            OsString::from(config::LAYOUTS),
             OsString::from(runtime.gamepad_layouts.join(",")),
         ),
         (
@@ -148,9 +148,9 @@ fn hook_environment(runtime: &EmulatorConfig) -> Vec<(OsString, OsString)> {
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if let Some(database) = &runtime.stone_database {
+    if let Some(database) = &runtime.inputspec_directory {
         environment.push((
-            OsString::from(config::STONE_DATABASE),
+            OsString::from(config::INPUTSPEC_DIRECTORY),
             database.as_os_str().to_owned(),
         ));
     }

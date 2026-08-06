@@ -78,7 +78,6 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
                 "ok": true,
                 "configuration": {
                     "revision": 1,
-                    "stoneVersion": "12.0.0",
                     "ports": []
                 }
             }),

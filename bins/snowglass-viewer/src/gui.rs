@@ -198,7 +198,7 @@ impl LauncherState {
 pub(crate) fn draw_gamepad_window(
     context: &egui::Context,
     provider: &Sdl3Provider,
-    layouts: &[StoneLayout],
+    layouts: &[InputLayout],
     drafts: &mut [HashMap<String, String>],
     latency: &snowglass_statistics::DistributionStatistics,
 ) {
@@ -252,7 +252,7 @@ pub(crate) fn draw_gamepad_window(
             }
             ui.separator();
             for (slot, layout) in layouts.iter().enumerate() {
-                egui::CollapsingHeader::new(format!("Slot {slot}: {}", layout.friendly_name))
+                egui::CollapsingHeader::new(format!("Slot {slot}: {}", layout.name))
                     .default_open(slot == 0)
                     .show(ui, |ui| {
                         let Some(state) = states.get(slot).and_then(Option::as_ref) else {
@@ -297,7 +297,7 @@ pub(crate) fn draw_gamepad_window(
                         }
                         ui.separator();
                         ui.horizontal(|ui| {
-                            ui.strong("Real SDL input → Stone control");
+                            ui.strong("Real SDL input → element");
                             if ui.small_button("Reset").clicked() {
                                 drafts[slot].clear();
                                 provider.reset_bindings(slot);
@@ -307,7 +307,7 @@ pub(crate) fn draw_gamepad_window(
                             .max_height(300.0)
                             .show(ui, |ui| {
                                 for element in &layout.elements {
-                                    if !is_remappable_stone_element(&element.id) {
+                                    if !is_remappable_element(&element.id) {
                                         continue;
                                     }
                                     let selected = drafts[slot]
@@ -344,7 +344,7 @@ pub(crate) fn draw_gamepad_window(
                                                         value,
                                                     );
                                                 }
-                                                if stone_element_accepts_axis(&element.id) {
+                                                if element_accepts_axis(&element.id) {
                                                     for axis in AXES {
                                                         let value = format!("Axis:{axis:?}");
                                                         ui.selectable_value(
@@ -374,7 +374,7 @@ pub(crate) fn draw_gamepad_window(
 pub(crate) fn draw_launcher_window(
     context: &egui::Context,
     launcher: &mut LauncherState,
-    registry: &StoneRegistry,
+    registry: &LayoutRegistry,
     error: &mut Option<String>,
 ) -> bool {
     let mut start = false;
@@ -524,11 +524,11 @@ pub(crate) fn draw_launcher_window(
     start
 }
 
-fn is_remappable_stone_element(id: &str) -> bool {
-    id.starts_with("Button") || id.starts_with("Directional") || stone_element_accepts_axis(id)
+fn is_remappable_element(id: &str) -> bool {
+    id.starts_with("Button") || id.starts_with("Directional") || element_accepts_axis(id)
 }
 
-fn stone_element_accepts_axis(id: &str) -> bool {
+fn element_accepts_axis(id: &str) -> bool {
     id.starts_with("Axis") || id.starts_with("Trigger")
 }
 

@@ -20,6 +20,14 @@ pub const EMBEDDED_DEFAULT_KEYBOARD_MAPPING: &str = include_str!("../keyboard/DE
 #[derive(Debug, Deserialize)]
 struct Document {
     input: InputDocument,
+    meta: Option<MetaDocument>,
+}
+
+/// Identity of the physical product. Absent on `*_LAYOUT` documents, whose
+/// controls are built into a handheld and are not a separately named product.
+#[derive(Debug, Deserialize)]
+struct MetaDocument {
+    name: Option<String>,
 }
 
 /// The `[input]` table of an inputspec, in the schema's own shape.
@@ -70,10 +78,11 @@ struct DirectionalDocument {
 struct AnalogDocument {
     label: Option<String>,
     axes: u8,
-    /// `inputspec.tosd` marks this required, but two 1-axis clusters omit it —
-    /// the 3DS depth slider and the Famicom microphone's volume knob, neither
-    /// of which is left, right, or a motion sensor. Optional here so those
-    /// documents load; they are identified by label instead.
+    /// What the cluster is: a stick (the default), a slider, or a motion
+    /// sensor. Never a position — that is `alignment`.
+    class: Option<String>,
+    /// Where the cluster sits, present only to tell two of the same class
+    /// apart: the Wii Remote's own accelerometer from the Nunchuk's.
     alignment: Option<String>,
 }
 
@@ -162,10 +171,10 @@ fn direction_label(direction: &str) -> &'static str {
 }
 
 /// The word an inputspec would have used for one signed axis of a cluster.
-/// Sticks and pointers are named for the screen direction they push toward;
-/// motion sensors for the rotation or acceleration they measure.
-fn axis_label(alignment: &str, axis: &str, positive: bool) -> &'static str {
-    match (alignment, axis, positive) {
+/// Sticks, sliders and pointers are named for the screen direction they push
+/// toward; motion sensors for the rotation or acceleration they measure.
+fn axis_label(class: &str, axis: &str, positive: bool) -> &'static str {
+    match (class, axis, positive) {
         ("gyroscope", "X", true) => "Roll Right",
         ("gyroscope", "X", false) => "Roll Left",
         ("gyroscope", "Y", true) => "Pitch Up",
@@ -199,6 +208,9 @@ pub struct InputElement {
 #[serde(rename_all = "camelCase")]
 pub struct InputLayout {
     pub id: String,
+    /// The product's name, e.g. "Nintendo GameCube Controller". Falls back to
+    /// the id for the handhelds, which carry no `[meta]`.
+    pub name: String,
     pub elements: Vec<InputElement>,
     #[serde(skip)]
     element_ids: HashSet<String>,
@@ -257,40 +269,50 @@ fn expand(document: &InputDocument) -> Result<Vec<InputElement>, String> {
         }
     }
     for analog in &document.analog {
-        let alignment = analog.alignment.as_deref().unwrap_or_default();
-        // An unaligned cluster has no place in this element vocabulary — there
-        // is no id for "the 3DS depth slider". Naming it after its label keeps
-        // the document loadable and the id unique; nothing binds these until
-        // binding keys move to cluster paths.
-        let prefix = match alignment {
-            "left" => "AxisLeftAnalog".to_owned(),
-            "right" => "AxisRightAnalog".to_owned(),
-            "gyroscope" => "GyroscopeAxis".to_owned(),
-            "accelerometer" => "AccelerometerAxis".to_owned(),
-            "" => match analog.label.as_deref() {
-                Some(label) => format!("Axis{}Analog", pascal_case(label)),
-                None => return Err("analog cluster with no alignment or label".to_owned()),
+        // `class` says what the cluster is, `alignment` says where it sits.
+        // Both are optional: class defaults to a stick, and alignment appears
+        // only where a device has two clusters of the same class to tell apart.
+        let class = analog.class.as_deref().unwrap_or("stick");
+        let alignment = analog.alignment.as_deref();
+        let prefix = match (class, alignment) {
+            // A device with one stick need not say which side it is on; the
+            // sole stick is the primary one. A rotary dial has no side at all
+            // and reads as the primary analog axis, as an SDL paddle does.
+            ("stick" | "rotary", Some("left") | None) => "AxisLeftAnalog".to_owned(),
+            ("stick" | "rotary", Some("right")) => "AxisRightAnalog".to_owned(),
+            ("gyroscope", None) => "GyroscopeAxis".to_owned(),
+            ("accelerometer", None) => "AccelerometerAxis".to_owned(),
+            // A cluster that shares its class with another on the same device,
+            // or a slider, has no id in this vocabulary — there is no element
+            // for "the Nunchuk's accelerometer" or "the 3DS depth slider".
+            // Qualifying by position or label keeps the id unique; nothing
+            // binds these until binding keys move to cluster paths.
+            (class, Some(side)) => format!(
+                "{}{}Axis",
+                pascal_case(side),
+                pascal_case(class)
+            ),
+            (class, None) => match analog.label.as_deref() {
+                Some(label) => format!("{}{}Axis", pascal_case(label), pascal_case(class)),
+                None => return Err(format!("`{class}` cluster with no alignment or label")),
             },
-            other => return Err(format!("analog alignment `{other}`")),
         };
         if !(1..=3).contains(&analog.axes) {
             return Err(format!("analog cluster with {} axes", analog.axes));
         }
-        let cluster = analog.label.clone().unwrap_or_else(|| match alignment {
-            "left" => "Left Stick".to_owned(),
-            "right" => "Right Stick".to_owned(),
-            other => {
-                let mut name = other.to_owned();
-                name[..1].make_ascii_uppercase();
-                name
-            }
+        let cluster = analog.label.clone().unwrap_or_else(|| match (class, alignment) {
+            ("stick", None) => "Stick".to_owned(),
+            ("stick", Some("left")) => "Left Stick".to_owned(),
+            ("stick", Some("right")) => "Right Stick".to_owned(),
+            ("rotary", _) => "Dial".to_owned(),
+            (class, _) => pascal_case(class),
         });
         for axis in &AXES[..usize::from(analog.axes)] {
             for positive in [true, false] {
                 let sign = if positive { "Positive" } else { "Negative" };
                 push(
                     format!("{prefix}{sign}{axis}"),
-                    format!("{cluster} {}", axis_label(alignment, axis, positive)),
+                    format!("{cluster} {}", axis_label(class, axis, positive)),
                     if positive { "AxisPositive" } else { "AxisNegative" },
                 );
             }
@@ -375,8 +397,13 @@ impl InputLayout {
         let elements = expand(&document.input)
             .map_err(|error| format!("inputspec {}: {error}", document.input.id))?;
         let element_ids = elements.iter().map(|element| element.id.clone()).collect();
+        let name = document
+            .meta
+            .and_then(|meta| meta.name)
+            .unwrap_or_else(|| document.input.id.clone());
         Ok(Self {
             id: document.input.id,
+            name,
             elements,
             element_ids,
         })
@@ -637,6 +664,13 @@ mod tests {
         let registry = LayoutRegistry::embedded().unwrap();
         let xbox = registry.layout("XBOX_CONTROLLER").unwrap();
         assert!(xbox.has("ButtonA"));
+        assert_eq!(
+            registry.layout("GAMECUBE_CONTROLLER").unwrap().name,
+            "Nintendo GameCube Controller"
+        );
+        // A handheld's built-in controls are not a named product.
+        let vita = registry.layout("PSV_LAYOUT").unwrap();
+        assert_eq!(vita.name, "PSV_LAYOUT");
         assert!(xbox.has("AxisLeftAnalogPositiveX"));
         assert!(registry.layouts().count() > 1);
     }

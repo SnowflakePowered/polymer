@@ -1,7 +1,7 @@
 //! SDL3-only ABI and virtual joystick adapter.
 
 use snowglass_input::gamepad::{GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate};
-use snowglass_input::stone::SdlOutputLayout;
+use snowglass_input::layout::SdlOutputLayout;
 use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{
     ffi::{CString, c_char, c_void},
