@@ -19,98 +19,98 @@ dialect = "duckstation"
 device = "SDL-{index}"
 
 [input.layouts.PSX_CONTROLLER]
-ButtonA = "Cross"
-ButtonB = "Circle"
-ButtonL = "L1"
-ButtonR = "R1"
-ButtonSelect = "Select"
-ButtonStart = "Start"
-ButtonX = "Square"
-ButtonY = "Triangle"
-DirectionalE = "Right"
-DirectionalN = "Up"
-DirectionalS = "Down"
-DirectionalW = "Left"
-TriggerLeft = "L2"
-TriggerRight = "R2"
+"button.a" = "Cross"
+"button.b" = "Circle"
+"button.l" = "L1"
+"button.r" = "R1"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.x" = "Square"
+"button.y" = "Triangle"
+"directional.e" = "Right"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"trigger.left" = "L2"
+"trigger.right" = "R2"
 
 [input.layouts.DUALSHOCK_CONTROLLER]
-AxisLeftAnalogNegativeX = "LLeft"
-AxisLeftAnalogNegativeY = "LDown"
-AxisLeftAnalogPositiveX = "LRight"
-AxisLeftAnalogPositiveY = "LUp"
-AxisRightAnalogNegativeX = "RLeft"
-AxisRightAnalogNegativeY = "RDown"
-AxisRightAnalogPositiveX = "RRight"
-AxisRightAnalogPositiveY = "RUp"
-ButtonA = "Cross"
-ButtonB = "Circle"
-ButtonClickL = "L3"
-ButtonClickR = "R3"
-ButtonGuide = "Analog"
-ButtonL = "L1"
-ButtonR = "R1"
-ButtonSelect = "Select"
-ButtonStart = "Start"
-ButtonX = "Square"
-ButtonY = "Triangle"
-DirectionalE = "Right"
-DirectionalN = "Up"
-DirectionalS = "Down"
-DirectionalW = "Left"
-TriggerLeft = "L2"
-TriggerRight = "R2"
+"analog.stick.left.x-" = "LLeft"
+"analog.stick.left.y-" = "LDown"
+"analog.stick.left.x+" = "LRight"
+"analog.stick.left.y+" = "LUp"
+"analog.stick.right.x-" = "RLeft"
+"analog.stick.right.y-" = "RDown"
+"analog.stick.right.x+" = "RRight"
+"analog.stick.right.y+" = "RUp"
+"button.a" = "Cross"
+"button.b" = "Circle"
+"button.clickl" = "L3"
+"button.clickr" = "R3"
+"button.guide" = "Analog"
+"button.l" = "L1"
+"button.r" = "R1"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.x" = "Square"
+"button.y" = "Triangle"
+"directional.e" = "Right"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"trigger.left" = "L2"
+"trigger.right" = "R2"
 
-[platforms.SONY_PLAYSTATION.ports.0]
+[platforms.SONY_PSX.ports.controller.0]
 target = "settings.Pad1"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.1]
+[platforms.SONY_PSX.ports.controller.1]
 target = "settings.Pad2"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.2]
+[platforms.SONY_PSX.ports.controller.2]
 target = "settings.Pad3"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.3]
+[platforms.SONY_PSX.ports.controller.3]
 target = "settings.Pad4"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.4]
+[platforms.SONY_PSX.ports.controller.4]
 target = "settings.Pad5"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.5]
+[platforms.SONY_PSX.ports.controller.5]
 target = "settings.Pad6"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.6]
+[platforms.SONY_PSX.ports.controller.6]
 target = "settings.Pad7"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.PSX_CONTROLLER = [{ key = "Type", value = "DigitalController" }]
 emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "AnalogController" }]
 
-[platforms.SONY_PLAYSTATION.ports.7]
+[platforms.SONY_PSX.ports.controller.7]
 target = "settings.Pad8"
 layouts = ["PSX_CONTROLLER", "DUALSHOCK_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]

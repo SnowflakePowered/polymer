@@ -33,6 +33,9 @@ type InputConfiguration = {
 
 type InputElement = {
   id: string;
+  // The binding key — `button.a`, `analog.stick.left.x+` — and what an override
+  // is keyed on. The id is a display handle only.
+  key: string;
   label: string;
   kind: string;
 };
@@ -116,6 +119,15 @@ function sourceLabel(source: SourceSelector | null) {
   }
 }
 
+// `analog.stick.left.x` -> "Stick Left X", `trigger.left` -> "Trigger Left".
+// The kind leads every analog key and says nothing a user needs, so it goes.
+function friendlyKey(path: string) {
+  const parts = path.split(".");
+  return (parts[0] === "analog" ? parts.slice(1) : parts)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function controlGroups(layout?: InputLayout) {
   if (!layout) return [];
   const groups = new Map<string, ControlGroup>();
@@ -124,20 +136,19 @@ function controlGroups(layout?: InputLayout) {
     if (!supported.includes(element.kind)) continue;
     const isAxis =
       element.kind.startsWith("Axis") || element.kind === "Trigger";
-    const axisKey = element.id.replace(/(Positive|Negative)/, "");
-    const key = isAxis ? axisKey : element.id;
-    const existing = groups.get(key);
+    // The two halves of one degree of freedom differ only by their sign, so
+    // dropping it leaves the cluster path they share: `analog.stick.left.x`.
+    const group = isAxis ? element.key.replace(/[+-]$/, "") : element.key;
+    const existing = groups.get(group);
     if (existing) {
-      existing.targets.push(element.id);
+      existing.targets.push(element.key);
       continue;
     }
-    groups.set(key, {
-      key,
-      label: isAxis
-        ? friendlyControl(axisKey.replace(/^Axis/, ""))
-        : element.label,
+    groups.set(group, {
+      key: group,
+      label: isAxis ? friendlyKey(group) : element.label,
       category: isAxis ? "axis" : "button",
-      targets: [element.id],
+      targets: [element.key],
     });
   }
   return [...groups.values()].sort((left, right) => {

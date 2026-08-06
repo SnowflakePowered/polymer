@@ -4,7 +4,7 @@
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::layout::{SdlAxis, SdlButton, InputLayout, LayoutRegistry};
+use crate::layout::{BindingKey, InputLayout, LayoutRegistry, SdlAxis, SdlButton};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -89,7 +89,8 @@ const fn one() -> f32 {
 
 /// A user override for one input element.
 ///
-/// The map key is always an input element id. `Disabled` is deliberately
+/// The map key is always a binding key — `button.a`, `analog.stick.left.x+` —
+/// as the layout spells it, not the element id. `Disabled` is deliberately
 /// distinct from removing the entry, which restores the inherited mapping.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -132,7 +133,7 @@ pub struct PortConfiguration {
     pub layout: String,
     pub source: Option<SourceSelector>,
     #[serde(default)]
-    pub overrides: HashMap<String, BindingOverride>,
+    pub overrides: HashMap<BindingKey, BindingOverride>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -165,12 +166,12 @@ pub enum InputOperation {
     },
     SetOverride {
         port: VirtualPort,
-        target: String,
+        target: BindingKey,
         binding: BindingOverride,
     },
     ResetTarget {
         port: VirtualPort,
-        target: String,
+        target: BindingKey,
     },
     ResetPortOverrides {
         port: VirtualPort,
@@ -209,7 +210,7 @@ pub enum InputConfigurationError {
     DuplicatePort(VirtualPort),
     UnknownLayout(String),
     UnknownPort(VirtualPort),
-    UnknownTarget { layout: String, target: String },
+    UnknownTarget { layout: String, target: BindingKey },
     InvalidBinding(String),
 }
 
@@ -373,14 +374,14 @@ fn validate_ports(
         let layout = registry
             .layout(&port.layout)
             .ok_or_else(|| InputConfigurationError::UnknownLayout(port.layout.clone()))?;
-        for (target, binding) in &port.overrides {
+        for (&target, binding) in &port.overrides {
             if !layout.has(target) {
                 return Err(InputConfigurationError::UnknownTarget {
                     layout: layout.id.clone(),
-                    target: target.clone(),
+                    target,
                 });
             }
-            if matches!(binding, BindingOverride::Axis { .. }) && !is_axis_target(target) {
+            if matches!(binding, BindingOverride::Axis { .. }) && !target.is_analog() {
                 return Err(InputConfigurationError::InvalidBinding(format!(
                     "element {target} does not accept an axis binding"
                 )));
@@ -389,10 +390,6 @@ fn validate_ports(
         }
     }
     Ok(())
-}
-
-fn is_axis_target(target: &str) -> bool {
-    target.starts_with("Axis") || matches!(target, "TriggerLeft" | "TriggerRight")
 }
 
 fn validate_binding(binding: &BindingOverride) -> Result<(), InputConfigurationError> {
@@ -425,6 +422,10 @@ fn validate_binding(binding: &BindingOverride) -> Result<(), InputConfigurationE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(text: &str) -> BindingKey {
+        text.parse().expect("test binding key")
+    }
     use crate::layout::LayoutRegistry;
 
     fn hub() -> InputHub {
@@ -449,7 +450,7 @@ mod tests {
                 operations: vec![
                     InputOperation::SetOverride {
                         port: VirtualPort(0),
-                        target: "ButtonA".to_owned(),
+                        target: key("button.a"),
                         binding: BindingOverride::Button {
                             source: SourceControl::GamepadButton {
                                 button: SdlButton::East,
@@ -468,7 +469,7 @@ mod tests {
             snapshot.ports[0].source,
             Some(SourceSelector::KeyboardMouse)
         );
-        assert!(snapshot.ports[0].overrides.contains_key("ButtonA"));
+        assert!(snapshot.ports[0].overrides.contains_key(&key("button.a")));
     }
 
     #[test]
@@ -512,7 +513,7 @@ mod tests {
                     },
                     InputOperation::SetOverride {
                         port: VirtualPort(0),
-                        target: "DefinitelyNotAControl".to_owned(),
+                        target: key("button.z"),
                         binding: BindingOverride::Disabled,
                     },
                 ],

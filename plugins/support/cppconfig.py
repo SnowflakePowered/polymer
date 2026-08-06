@@ -56,36 +56,6 @@ ACRONYMS = {
     "hdr", "sdr", "efb2ram", "dsp", "aram", "gci", "nand", "vbi", "fifo",
 }
 
-# Elements `StoneLayout::sdl_output` can project onto the virtual pad
-# (crates/input/snowglass-input/src/stone.rs), by the mechanism it uses for each.
-# A binding for anything outside this set has no SDL representation and would
-# never fire.
-SDL_PROJECTABLE = {
-    # button_mask, stone.rs:73-89
-    "ButtonA", "ButtonB", "ButtonX", "ButtonY", "ButtonSelect", "ButtonGuide",
-    "ButtonStart", "ButtonClickL", "ButtonClickR", "ButtonL", "ButtonR",
-    "DirectionalN", "DirectionalS", "DirectionalW", "DirectionalE", "Button0",
-    # axis_mask, stone.rs:92-110
-    "AxisLeftAnalogPositiveX", "AxisLeftAnalogNegativeX",
-    "AxisLeftAnalogPositiveY", "AxisLeftAnalogNegativeY",
-    "AxisRightAnalogPositiveX", "AxisRightAnalogNegativeX",
-    "AxisRightAnalogPositiveY", "AxisRightAnalogNegativeY",
-    "TriggerLeft", "TriggerRight",
-    # Raw joystick axes 6 and 7, always present regardless of topology
-    # (stone.rs:112). Outside the gamepad mapping, so only emulators that read
-    # raw axes see them.
-    "PointerAxisPositiveX", "PointerAxisNegativeX",
-    "PointerAxisPositiveY", "PointerAxisNegativeY",
-    # SDL sensors, gated on the X axis being present (stone.rs:118-121) and
-    # SDL3-only: the SDL2 virtual joystick descriptor has no sensor array.
-    "AccelerometerAxisPositiveX", "AccelerometerAxisNegativeX",
-    "AccelerometerAxisPositiveY", "AccelerometerAxisNegativeY",
-    "AccelerometerAxisPositiveZ", "AccelerometerAxisNegativeZ",
-    "GyroscopeAxisPositiveX", "GyroscopeAxisNegativeX",
-    "GyroscopeAxisPositiveY", "GyroscopeAxisNegativeY",
-    "GyroscopeAxisPositiveZ", "GyroscopeAxisNegativeZ",
-}
-
 INT_TYPES = {
     "int": ("dec", None), "s8": ("dec", None), "s16": ("dec", None),
     "s32": ("dec", None), "s64": ("dec", None), "long": ("dec", None),

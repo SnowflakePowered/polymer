@@ -23,30 +23,31 @@ path = "Config/WiimoteNew.ini"
 dialect = "dolphin"
 device = "SDL/{index}/{name}"
 
-[input.layouts.GCN_CONTROLLER]
-AxisLeftAnalogNegativeX = "Main Stick/Left"
-AxisLeftAnalogNegativeY = "Main Stick/Down"
-AxisLeftAnalogPositiveX = "Main Stick/Right"
-AxisLeftAnalogPositiveY = "Main Stick/Up"
-AxisRightAnalogNegativeX = "C-Stick/Left"
-AxisRightAnalogNegativeY = "C-Stick/Down"
-AxisRightAnalogPositiveX = "C-Stick/Right"
-AxisRightAnalogPositiveY = "C-Stick/Up"
-ButtonA = "Buttons/A"
-ButtonB = "Buttons/B"
-ButtonL = "Triggers/L"
-ButtonR = "Triggers/R"
-ButtonStart = "Buttons/Start"
-ButtonX = "Buttons/X"
-ButtonY = "Buttons/Y"
-DirectionalE = "D-Pad/Right"
-DirectionalN = "D-Pad/Up"
-DirectionalS = "D-Pad/Down"
-DirectionalW = "D-Pad/Left"
-TriggerLeft = "Triggers/L-Analog"
-TriggerRight = "Triggers/R-Analog"
+[input.layouts.GAMECUBE_CONTROLLER]
+"analog.stick.left.x-" = "Main Stick/Left"
+"analog.stick.left.y-" = "Main Stick/Down"
+"analog.stick.left.x+" = "Main Stick/Right"
+"analog.stick.left.y+" = "Main Stick/Up"
+"analog.stick.right.x-" = "C-Stick/Left"
+"analog.stick.right.y-" = "C-Stick/Down"
+"analog.stick.right.x+" = "C-Stick/Right"
+"analog.stick.right.y+" = "C-Stick/Up"
+"button.a" = "Buttons/A"
+"button.b" = "Buttons/B"
+"button.l" = "Triggers/L"
+"button.r" = "Triggers/R"
+"button.start" = "Buttons/Start"
+"button.x" = "Buttons/X"
+"button.y" = "Buttons/Y"
+"button.z" = "Buttons/Z"
+"directional.e" = "D-Pad/Right"
+"directional.n" = "D-Pad/Up"
+"directional.s" = "D-Pad/Down"
+"directional.w" = "D-Pad/Left"
+"trigger.left" = "Triggers/L-Analog"
+"trigger.right" = "Triggers/R-Analog"
 
-[[input.layouts.GCN_CONTROLLER.options]]
+[[input.layouts.GAMECUBE_CONTROLLER.options]]
 key = "always_connected"
 title = "Always Connected"
 type = "bool"
@@ -54,31 +55,33 @@ default = false
 emit = { key = "Options/Always Connected", bool_style = "upper" }
 
 [input.layouts.WII_REMOTE_CONTROLLER]
-AccelerometerAxisNegativeX = "IMUAccelerometer/Left"
-AccelerometerAxisNegativeY = "IMUAccelerometer/Backward"
-AccelerometerAxisNegativeZ = "IMUAccelerometer/Down"
-AccelerometerAxisPositiveX = "IMUAccelerometer/Right"
-AccelerometerAxisPositiveY = "IMUAccelerometer/Forward"
-AccelerometerAxisPositiveZ = "IMUAccelerometer/Up"
-ButtonA = "Buttons/A"
-ButtonB = "Buttons/B"
-ButtonGuide = "Buttons/Home"
-ButtonSelect = "Buttons/-"
-ButtonStart = "Buttons/+"
-DirectionalE = "D-Pad/Right"
-DirectionalN = "D-Pad/Up"
-DirectionalS = "D-Pad/Down"
-DirectionalW = "D-Pad/Left"
-GyroscopeAxisNegativeX = "IMUGyroscope/Roll Left"
-GyroscopeAxisNegativeY = "IMUGyroscope/Pitch Down"
-GyroscopeAxisNegativeZ = "IMUGyroscope/Yaw Left"
-GyroscopeAxisPositiveX = "IMUGyroscope/Roll Right"
-GyroscopeAxisPositiveY = "IMUGyroscope/Pitch Up"
-GyroscopeAxisPositiveZ = "IMUGyroscope/Yaw Right"
-PointerAxisNegativeX = "IR/Left"
-PointerAxisNegativeY = "IR/Down"
-PointerAxisPositiveX = "IR/Right"
-PointerAxisPositiveY = "IR/Up"
+"analog.accelerometer.x-" = "IMUAccelerometer/Left"
+"analog.accelerometer.y-" = "IMUAccelerometer/Backward"
+"analog.accelerometer.z-" = "IMUAccelerometer/Down"
+"analog.accelerometer.x+" = "IMUAccelerometer/Right"
+"analog.accelerometer.y+" = "IMUAccelerometer/Forward"
+"analog.accelerometer.z+" = "IMUAccelerometer/Up"
+"button.0" = "Buttons/1"
+"button.1" = "Buttons/2"
+"button.a" = "Buttons/A"
+"button.b" = "Buttons/B"
+"button.guide" = "Buttons/Home"
+"button.select" = "Buttons/-"
+"button.start" = "Buttons/+"
+"directional.e" = "D-Pad/Right"
+"directional.n" = "D-Pad/Up"
+"directional.s" = "D-Pad/Down"
+"directional.w" = "D-Pad/Left"
+"analog.gyroscope.x-" = "IMUGyroscope/Roll Left"
+"analog.gyroscope.y-" = "IMUGyroscope/Pitch Down"
+"analog.gyroscope.z-" = "IMUGyroscope/Yaw Left"
+"analog.gyroscope.x+" = "IMUGyroscope/Roll Right"
+"analog.gyroscope.y+" = "IMUGyroscope/Pitch Up"
+"analog.gyroscope.z+" = "IMUGyroscope/Yaw Right"
+"pointer.x-" = "IR/Left"
+"pointer.y-" = "IR/Down"
+"pointer.x+" = "IR/Right"
+"pointer.y+" = "IR/Up"
 
 [[input.layouts.WII_REMOTE_CONTROLLER.options]]
 key = "attach_motion_plus"
@@ -118,37 +121,108 @@ default = false
 emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
 
 [input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER]
-extends = "WII_REMOTE_CONTROLLER"
-AxisLeftAnalogNegativeX = "Nunchuk/Stick/Left"
-AxisLeftAnalogNegativeY = "Nunchuk/Stick/Down"
-AxisLeftAnalogPositiveX = "Nunchuk/Stick/Right"
-AxisLeftAnalogPositiveY = "Nunchuk/Stick/Up"
+"analog.stick.left.x-" = "Nunchuk/Stick/Left"
+"analog.stick.left.y-" = "Nunchuk/Stick/Down"
+"analog.stick.left.x+" = "Nunchuk/Stick/Right"
+"analog.stick.left.y+" = "Nunchuk/Stick/Up"
+"button.0" = "Buttons/1"
+"button.1" = "Buttons/2"
+"button.a" = "Buttons/A"
+"button.b" = "Buttons/B"
+"button.c" = "Nunchuk/Buttons/C"
+"button.guide" = "Buttons/Home"
+"button.select" = "Buttons/-"
+"button.start" = "Buttons/+"
+"button.z" = "Nunchuk/Buttons/Z"
+"directional.e" = "D-Pad/Right"
+"directional.n" = "D-Pad/Up"
+"directional.s" = "D-Pad/Down"
+"directional.w" = "D-Pad/Left"
+"analog.gyroscope.x-" = "IMUGyroscope/Roll Left"
+"analog.gyroscope.y-" = "IMUGyroscope/Pitch Down"
+"analog.gyroscope.z-" = "IMUGyroscope/Yaw Left"
+"analog.gyroscope.x+" = "IMUGyroscope/Roll Right"
+"analog.gyroscope.y+" = "IMUGyroscope/Pitch Up"
+"analog.gyroscope.z+" = "IMUGyroscope/Yaw Right"
+"analog.accelerometer.left.x-" = "Nunchuk/IMUAccelerometer/Left"
+"analog.accelerometer.left.y-" = "Nunchuk/IMUAccelerometer/Backward"
+"analog.accelerometer.left.z-" = "Nunchuk/IMUAccelerometer/Down"
+"analog.accelerometer.left.x+" = "Nunchuk/IMUAccelerometer/Right"
+"analog.accelerometer.left.y+" = "Nunchuk/IMUAccelerometer/Forward"
+"analog.accelerometer.left.z+" = "Nunchuk/IMUAccelerometer/Up"
+"pointer.x-" = "IR/Left"
+"pointer.y-" = "IR/Down"
+"pointer.x+" = "IR/Right"
+"pointer.y+" = "IR/Up"
+"analog.accelerometer.right.x-" = "IMUAccelerometer/Left"
+"analog.accelerometer.right.y-" = "IMUAccelerometer/Backward"
+"analog.accelerometer.right.z-" = "IMUAccelerometer/Down"
+"analog.accelerometer.right.x+" = "IMUAccelerometer/Right"
+"analog.accelerometer.right.y+" = "IMUAccelerometer/Forward"
+"analog.accelerometer.right.z+" = "IMUAccelerometer/Up"
 
-[platforms.NINTENDO_GC.ports.0]
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "attach_motion_plus"
+title = "Attach MotionPlus"
+type = "bool"
+default = true
+emit = { key = "Extension/Attach MotionPlus", bool_style = "upper" }
+
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "speaker_pan"
+title = "Speaker Pan"
+type = "int"
+range = { min = -100, max = 100 }
+default = 0
+emit = { key = "Options/Speaker Pan" }
+
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "battery"
+title = "Battery"
+type = "int"
+range = { min = 0, max = 100 }
+default = 95
+emit = { key = "Options/Battery" }
+
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "upright_wiimote"
+title = "Upright Wii Remote"
+type = "bool"
+default = false
+emit = { key = "Options/Upright Wiimote", bool_style = "upper" }
+
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "sideways_wiimote"
+title = "Sideways Wii Remote"
+type = "bool"
+default = false
+emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
+
+[platforms.NINTENDO_GCN.ports.controller.0]
 target = "gcpad.GCPad1"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice0", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
 
-[platforms.NINTENDO_GC.ports.1]
+[platforms.NINTENDO_GCN.ports.controller.1]
 target = "gcpad.GCPad2"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice1", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }]
 
-[platforms.NINTENDO_GC.ports.2]
+[platforms.NINTENDO_GCN.ports.controller.2]
 target = "gcpad.GCPad3"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice2", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }]
 
-[platforms.NINTENDO_GC.ports.3]
+[platforms.NINTENDO_GCN.ports.controller.3]
 target = "gcpad.GCPad4"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice3", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
 
-[platforms.NINTENDO_WII.ports.0]
+[platforms.NINTENDO_WII.ports.wii.0]
 target = "wiipad.Wiimote1"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
@@ -157,7 +231,7 @@ emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
 emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
 
-[platforms.NINTENDO_WII.ports.1]
+[platforms.NINTENDO_WII.ports.wii.1]
 target = "wiipad.Wiimote2"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
@@ -166,7 +240,7 @@ emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
 emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
 
-[platforms.NINTENDO_WII.ports.2]
+[platforms.NINTENDO_WII.ports.wii.2]
 target = "wiipad.Wiimote3"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
@@ -175,7 +249,7 @@ emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
 emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
 
-[platforms.NINTENDO_WII.ports.3]
+[platforms.NINTENDO_WII.ports.wii.3]
 target = "wiipad.Wiimote4"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
@@ -184,32 +258,32 @@ emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
 emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
 
-[platforms.NINTENDO_WII.ports.4]
+[platforms.NINTENDO_WII.ports.gamecube.0]
 target = "gcpad.GCPad1"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice0", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
 
-[platforms.NINTENDO_WII.ports.5]
+[platforms.NINTENDO_WII.ports.gamecube.1]
 target = "gcpad.GCPad2"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice1", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }]
 
-[platforms.NINTENDO_WII.ports.6]
+[platforms.NINTENDO_WII.ports.gamecube.2]
 target = "gcpad.GCPad3"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice2", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }]
 
-[platforms.NINTENDO_WII.ports.7]
+[platforms.NINTENDO_WII.ports.gamecube.3]
 target = "gcpad.GCPad4"
-layouts = ["GCN_CONTROLLER"]
+layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice3", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
 
-# Dolphin controls with no Stone element bound to them:
-#   GCN_CONTROLLER:
+# Dolphin controls with no consolespec element bound to them:
+#   GAMECUBE_CONTROLLER:
 #     C-Stick/Modifier
 #     Main Stick/Modifier
 #     Microphone/Button
@@ -217,8 +291,6 @@ emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
 #     Triforce/Service
 #     Triforce/Test
 #   WII_REMOTE_CONTROLLER:
-#     Buttons/1
-#     Buttons/2
 #     Hotkeys/Sideways Hold
 #     Hotkeys/Sideways Toggle
 #     Hotkeys/Upright Hold
@@ -254,8 +326,6 @@ emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
 #     Tilt/Modifier
 #     Tilt/Right
 #   WII_REMOTE_NUNCHUCK_CONTROLLER:
-#     Buttons/1
-#     Buttons/2
 #     Hotkeys/Sideways Hold
 #     Hotkeys/Sideways Toggle
 #     Hotkeys/Upright Hold
@@ -276,12 +346,6 @@ emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
 #     IRPassthrough/Object 4 Size
 #     IRPassthrough/Object 4 X
 #     IRPassthrough/Object 4 Y
-#     Nunchuk/IMUAccelerometer/Backward
-#     Nunchuk/IMUAccelerometer/Down
-#     Nunchuk/IMUAccelerometer/Forward
-#     Nunchuk/IMUAccelerometer/Left
-#     Nunchuk/IMUAccelerometer/Right
-#     Nunchuk/IMUAccelerometer/Up
 #     Nunchuk/Shake/X
 #     Nunchuk/Shake/Y
 #     Nunchuk/Shake/Z

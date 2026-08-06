@@ -9,7 +9,8 @@ and an upstream rename fails here instead of silently emitting dead keys.
 
 Outputs, into --out (default ../config):
 
-    dolphin.toml    targets + sections + options   (Core/Config/*.cpp)
+    dolphin.toml    targets + section imports      (Core/Config/*.cpp)
+    sections/*.toml one rooted document per config system (Core/Config/*.cpp)
     actions.toml    action map                     (Core/HotkeyManager.{h,cpp})
     input.toml      port modes + binding keys      (Core/HW/GCPadEmu.{h,cpp})
 
@@ -30,6 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "support"))
+import consolespec
 import cppconfig
 from cppconfig import *  # noqa: F403 — shared C++/TOML machinery
 
@@ -52,15 +54,23 @@ ACTION_VOCABULARY = {
     "exit": {"hotkey": "HK_STOP"},
 }
 
-# Stone element → the Dolphin control it drives, per Stone layout. Every entry is
-# validated against the group/input tables parsed out of Dolphin's controller
-# sources, so an upstream rename is an error rather than a binding that writes to
-# nothing. `extends` mirrors the document's own inheritance: Stone models a Wii
-# Remote and a Wii Remote with a nunchuk as two layouts, while Dolphin models one
-# controller with a swappable extension.
+# consolespec element → the Dolphin control it drives, per inputspec layout. Each
+# entry is validated twice: against the group/input tables parsed out of Dolphin's
+# controller sources, so an upstream rename is an error rather than a binding that
+# writes to nothing, and against the element vocabulary consolespec expands for
+# the layout, so a binding for something the device does not have is an error too.
+# consolespec models a Wii Remote and a Wii Remote with a nunchuk as two
+# layouts, while Dolphin models one controller with a swappable extension. Each
+# layout still declares its bindings in full: attaching the nunchuk adds a
+# second accelerometer, which forces the remote's own to say which side it is
+# on, so the two layouts do not agree on what to call it. Inheriting the first
+# table into the second would carry keys the second device does not have.
 WII_REMOTE_BINDINGS = {
     "ButtonA": "Buttons/A",
     "ButtonB": "Buttons/B",
+    # The remote's numbered buttons: consolespec's `0` is the one printed "1".
+    "Button0": "Buttons/1",
+    "Button1": "Buttons/2",
     "ButtonSelect": "Buttons/-",
     "ButtonStart": "Buttons/+",
     "ButtonGuide": "Buttons/Home",
@@ -89,16 +99,39 @@ WII_REMOTE_BINDINGS = {
     "GyroscopeAxisNegativeZ": "IMUGyroscope/Yaw Left",
 }
 
+# The remote's own accelerometer, once a nunchuk gives the device a second one.
+# consolespec aligns the remote's `right` and the nunchuk's `left`, and the ids
+# follow, so neither layout's key works in the other's table.
+WII_REMOTE_ACCELEROMETER_ALIGNED = {
+    f"Right{element}": control
+    for element, control in WII_REMOTE_BINDINGS.items()
+    if element.startswith("AccelerometerAxis")
+}
+
 WII_NUNCHUK_BINDINGS = {
+    **{
+        element: control
+        for element, control in WII_REMOTE_BINDINGS.items()
+        if not element.startswith("AccelerometerAxis")
+    },
+    **WII_REMOTE_ACCELEROMETER_ALIGNED,
     "ButtonC": "Nunchuk/Buttons/C",
     "ButtonZ": "Nunchuk/Buttons/Z",
     "AxisLeftAnalogPositiveY": "Nunchuk/Stick/Up",
     "AxisLeftAnalogNegativeY": "Nunchuk/Stick/Down",
     "AxisLeftAnalogNegativeX": "Nunchuk/Stick/Left",
     "AxisLeftAnalogPositiveX": "Nunchuk/Stick/Right",
+    # The nunchuk carries an accelerometer of its own, which the Wii Remote
+    # layout has no element for at all.
+    "LeftAccelerometerAxisPositiveX": "Nunchuk/IMUAccelerometer/Right",
+    "LeftAccelerometerAxisNegativeX": "Nunchuk/IMUAccelerometer/Left",
+    "LeftAccelerometerAxisPositiveY": "Nunchuk/IMUAccelerometer/Forward",
+    "LeftAccelerometerAxisNegativeY": "Nunchuk/IMUAccelerometer/Backward",
+    "LeftAccelerometerAxisPositiveZ": "Nunchuk/IMUAccelerometer/Up",
+    "LeftAccelerometerAxisNegativeZ": "Nunchuk/IMUAccelerometer/Down",
 }
 
-GCN_BINDINGS = {
+GAMECUBE_BINDINGS = {
     "ButtonA": "Buttons/A",
     "ButtonB": "Buttons/B",
     "ButtonX": "Buttons/X",
@@ -482,7 +515,8 @@ def check_resolver_export(name: str, report: Report) -> None:
 def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict[str, str],
                      enums: dict[str, list[EnumDef]], scope: Scope, backends: list[str],
                      bool_style: tuple[str, str], claimed: set[tuple[str, str]],
-                     wanted: set[str], revision: str | None, report: Report) -> str:
+                     wanted: set[str], revision: str | None,
+                     report: Report) -> dict[str, str]:
     grouped: dict[tuple[str, str], list[InfoDef]] = {}
     skipped = 0
     for info in infos:
@@ -499,7 +533,7 @@ def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict
         report.note(f"definition: {skipped} settings omitted because a port owns them "
                     "(input.toml writes them per port)")
 
-    lines = [
+    main_lines = [
         "# Generated by support/parse_config.py. Do not edit by hand.",
         f"# Dolphin revision: {revision or 'unknown'}",
         "",
@@ -516,18 +550,18 @@ def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict
     # One root per file, with each INI section nested inside it. The node name is
     # the table key, so a section needs no body at all.
     for system in sorted({system for system, _ in grouped}):
-        lines.append(target_header(slugify(system)))
-        lines.append('format = "ini"')
-        lines.append(f'path = {toml_string(systems[system])}')
-        lines.append("")
+        main_lines.append(target_header(slugify(system)))
+        main_lines.append('format = "ini"')
+        main_lines.append(f'path = {toml_string(systems[system])}')
+        main_lines.append("")
         for other, section in sorted(grouped):
             if other == system:
-                lines.append(target_header(slugify(system), section))
-        lines.append("")
+                main_lines.append(target_header(slugify(system), section))
+        main_lines.append("")
 
     emitted = 0
     backend_path: str | None = None
-    emitted_systems: set[str] = set()
+    section_lines: dict[str, list[str]] = {}
     for (system, section), members in sorted(grouped.items()):
         # Sections nest by config system, so an option's stored path reads
         # `graphics.hardware.vsync`. The key stays a slug because it is the
@@ -555,12 +589,16 @@ def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict
             options.append(option)
         if not options:
             continue
-        if system not in emitted_systems:
-            emitted_systems.add(system)
-            lines.append(f"[sections.{toml_key(slugify(system))}]")
-            lines.append(f"title = {toml_string(titles.get(system, humanize(system)))}")
-            lines.append("")
-        lines.append(f"[sections.{toml_key(slugify(system))}.{toml_key(slugify(section))}]")
+        system_slug = slugify(system)
+        lines = section_lines.setdefault(system, [
+            "# Generated by support/parse_config.py. Do not edit by hand.",
+            f"# Dolphin revision: {revision or 'unknown'}",
+            "",
+            f"[sections.{toml_key(system_slug)}]",
+            f"title = {toml_string(titles.get(system, humanize(system)))}",
+            "",
+        ])
+        lines.append(f"[sections.{toml_key(system_slug)}.{toml_key(slugify(section))}]")
         lines.append(f"title = {toml_string(section)}")
         lines.append(f"target = {toml_string(target)}")
         lines.append("")
@@ -585,7 +623,16 @@ def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict
         report.warn("no GFXBackend option found; the TS module has nothing to map onto hooks")
 
     report.note(f"definition: {emitted} options across {len(grouped)} sections")
-    return "\n".join(lines).rstrip() + "\n"
+    documents = {
+        f"sections/{slugify(system)}.toml": "\n".join(lines).rstrip() + "\n"
+        for system, lines in section_lines.items()
+    }
+    for system in sorted(section_lines):
+        slug = slugify(system)
+        main_lines += [f"[sections.{toml_key(slug)}]",
+                       f"import = {toml_string(f'sections/{slug}.toml')}", ""]
+    documents["dolphin.toml"] = "\n".join(main_lines).rstrip() + "\n"
+    return documents
 
 
 # --------------------------------------------------------------------------
@@ -1080,7 +1127,15 @@ def build_setting_option(setting: dict, bool_style: tuple[str, str], scope: Scop
 
 
 def dolphin_ports(enums: dict[str, list[EnumDef]], report: Report):
-    """Port declarations per platform, and the option keys they claim.
+    """Port declarations per machine and input group, and the keys they claim.
+
+    Ports are grouped the way the machinespec groups them. A Wii has four Wii
+    Remote ports *and* four GameCube ports, which are different families of
+    device on different buses; the old flat numbering could only express that
+    by interleaving them arbitrarily, so the four SI ports landed at indices
+    4-7 with nothing saying why. Now the same four GameCube ports appear under
+    `gamecube` on the Wii and under `controller` on the GameCube, which is
+    where the machines themselves put them.
 
     A port's `emit` writes the emulator's own device-type keys, which are also
     `Config::Info` settings. The definition document must not offer them as
@@ -1097,11 +1152,11 @@ def dolphin_ports(enums: dict[str, list[EnumDef]], report: Report):
         key = f"SIDevice{index}"
         gc_ports.append({
             "target": target_id("gcpad", f"GCPad{index + 1}"),
-            "layouts": ["GCN_CONTROLLER"],
+            "layouts": ["GAMECUBE_CONTROLLER"],
             "passthrough": None,
             "emit": {
                 "unplugged": [{"target": "main.Core", "key": key, "value": si_none}],
-                "GCN_CONTROLLER": [{"target": "main.Core", "key": key, "value": si_pad}],
+                "GAMECUBE_CONTROLLER": [{"target": "main.Core", "key": key, "value": si_pad}],
             },
         })
     wii_ports = []
@@ -1131,12 +1186,18 @@ def dolphin_ports(enums: dict[str, list[EnumDef]], report: Report):
         for entries in port["emit"].values()
         for entry in entries
     }
-    return {"NINTENDO_GC": gc_ports, "NINTENDO_WII": wii_ports + gc_ports}, claimed
+    platforms = {
+        "NINTENDO_GCN": {"controller": gc_ports},
+        "NINTENDO_WII": {"wii": wii_ports, "gamecube": gc_ports},
+    }
+    return platforms, claimed
 
 
-def build_input(root: Path, systems: dict[str, str], enums: dict[str, list[EnumDef]],
-                scope: Scope, bool_style: tuple[str, str], revision: str | None,
+def build_input(root: Path, spec_root: Path, systems: dict[str, str],
+                enums: dict[str, list[EnumDef]], scope: Scope,
+                bool_style: tuple[str, str], revision: str | None,
                 report: Report) -> str:
+    projection = consolespec.load_projection()
     group_classes = parse_group_classes(root, report)
     core = root / "Source/Core/Core"
     gcpad_controls, gcpad_settings = parse_controller(
@@ -1158,17 +1219,18 @@ def build_input(root: Path, systems: dict[str, str], enums: dict[str, list[EnumD
     nunchuk = {f"Nunchuk/{control}" for control in nunchuk_controls}
 
     vocabulary = {
-        "GCN_CONTROLLER": gcpad,
+        "GAMECUBE_CONTROLLER": gcpad,
         "WII_REMOTE_CONTROLLER": wiimote,
         "WII_REMOTE_NUNCHUCK_CONTROLLER": wiimote | nunchuk,
     }
     layouts = {
-        "GCN_CONTROLLER": (None, GCN_BINDINGS, gcpad_settings),
-        "WII_REMOTE_CONTROLLER": (None, WII_REMOTE_BINDINGS, wiimote_settings),
-        # Options inherit with the key table, so only what a nunchuk adds.
-        "WII_REMOTE_NUNCHUCK_CONTROLLER": ("WII_REMOTE_CONTROLLER", WII_NUNCHUK_BINDINGS,
-                                           [{**setting, "key": f"Nunchuk/{setting['key']}"}
-                                            for setting in nunchuk_settings]),
+        "GAMECUBE_CONTROLLER": (GAMECUBE_BINDINGS, gcpad_settings),
+        "WII_REMOTE_CONTROLLER": (WII_REMOTE_BINDINGS, wiimote_settings),
+        "WII_REMOTE_NUNCHUCK_CONTROLLER": (
+            WII_NUNCHUK_BINDINGS,
+            wiimote_settings + [{**setting, "key": f"Nunchuk/{setting['key']}"}
+                                for setting in nunchuk_settings],
+        ),
     }
 
     platforms, _ = dolphin_ports(enums, report)
@@ -1194,21 +1256,23 @@ def build_input(root: Path, systems: dict[str, str], enums: dict[str, list[EnumD
 
     bound = 0
     exposed = 0
-    for layout, (extends, bindings, settings) in layouts.items():
+    for layout, (bindings, settings) in layouts.items():
         lines.append(f"[input.layouts.{toml_key(layout)}]")
-        if extends:
-            lines.append(f"extends = {toml_string(extends)}")
         known = vocabulary[layout]
+        device = consolespec.load_inputspec(spec_root, layout)
         for element, control in sorted(bindings.items()):
             if control not in known:
                 report.error(f"input: Dolphin has no control `{control}` for `{element}` "
                              f"in {layout}")
                 continue
-            if element not in SDL_PROJECTABLE:
-                report.warn(f"input: `{element}` has no SDL projection in stone.rs; "
+            if not consolespec.check_binding(device, element, report, "input"):
+                continue
+            entry = device.elements[element]
+            if projection.slot(layout, entry) is None:
+                report.warn(f"input: `{entry.path}` reaches no SDL slot; "
                             f"omitted from {layout}")
                 continue
-            lines.append(f"{toml_key(element)} = {toml_string(control)}")
+            lines.append(f"{toml_key(entry.path)} = {toml_string(control)}")
             bound += 1
         lines.append("")
         # The emulator's own per-device settings, expanded per port at lowering.
@@ -1226,29 +1290,38 @@ def build_input(root: Path, systems: dict[str, str], enums: dict[str, list[EnumD
             lines.append("")
             exposed += 1
 
-    # Ports are per platform: a GameCube title has four SI ports, a Wii title has
-    # four remote slots and the same four SI ports.
-    for platform, ports in platforms.items():
-        for index, port in enumerate(ports):
-            lines.append(f"[platforms.{toml_key(platform)}.ports.{index}]")
-            lines.append(f"target = {toml_string(port['target'])}")
-            lines.append(f"layouts = {toml_value(port['layouts'])}")
-            if port["passthrough"]:
-                lines.append(f"passthrough = {toml_value(port['passthrough'])}")
-            for choice, entries in port["emit"].items():
-                lines.append(f"emit.{toml_key(choice)} = {toml_value(entries)}")
-            lines.append("")
+    # Ports are per machine and per input group: a GameCube title has four
+    # controller ports, a Wii title has four Wii Remote ports and the same four
+    # GameCube ports on a separate bus.
+    total = 0
+    for platform, groups in platforms.items():
+        machine = consolespec.load_machinespec(spec_root, platform)
+        for group, ports in groups.items():
+            offered = {layout for port in ports for layout in port["layouts"]}
+            consolespec.check_group(machine, group, sorted(offered), len(ports),
+                                    report, "input")
+            for index, port in enumerate(ports):
+                lines.append(
+                    f"[platforms.{toml_key(platform)}.ports.{toml_key(group)}.{index}]")
+                lines.append(f"target = {toml_string(port['target'])}")
+                lines.append(f"layouts = {toml_value(port['layouts'])}")
+                if port["passthrough"]:
+                    lines.append(f"passthrough = {toml_value(port['passthrough'])}")
+                for choice, entries in port["emit"].items():
+                    lines.append(f"emit.{toml_key(choice)} = {toml_value(entries)}")
+                lines.append("")
+                total += 1
 
-    unbound = {name: sorted(known - {control for _, table, _ in layouts.values()
-                                     for control in table.values()})
+    # Each layout now declares its bindings in full, so what it leaves unbound is
+    # its own vocabulary minus its own table — not minus every layout's.
+    unbound = {name: sorted(known - set(layouts[name][0].values()))
                for name, known in vocabulary.items()}
     report.note(f"input: {bound} bindings across {len(layouts)} layouts, "
-                f"{exposed} exposed options, "
-                f"{sum(len(p) for p in platforms.values())} ports across "
-                f"{len(platforms)} platforms")
+                f"{exposed} exposed options, {total} ports across "
+                f"{len(platforms)} machines")
     for layout, controls in unbound.items():
         report.note(f"input: {layout} leaves {len(controls)} Dolphin controls unbound")
-    lines += ["# Dolphin controls with no Stone element bound to them:"]
+    lines += ["# Dolphin controls with no consolespec element bound to them:"]
     for layout, controls in unbound.items():
         lines += [f"#   {layout}:"] + [f"#     {control}" for control in controls]
     return "\n".join(lines).rstrip() + "\n"
@@ -1277,6 +1350,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="path to a Dolphin source checkout")
     parser.add_argument("--out", type=Path, default=Path(__file__).parent.parent / "config",
                         help="directory to write the documents into")
+    parser.add_argument("--consolespec", type=Path,
+                        help="path to the consolespec directory "
+                             "(default: found by walking up from this script)")
     parser.add_argument("--systems", default="Main,GFX",
                         help="comma-separated Config::System names, or `all`")
     parser.add_argument("--only", choices=["definition", "actions", "input"], action="append",
@@ -1290,6 +1366,12 @@ def main(argv: list[str] | None = None) -> int:
     root = arguments.dolphin.expanduser().resolve()
     if not (root / "Source/Core").is_dir():
         print(f"error: {root} does not look like a Dolphin checkout", file=sys.stderr)
+        return 2
+    try:
+        spec_root = (arguments.consolespec.expanduser().resolve()
+                     if arguments.consolespec else consolespec.find_root())
+    except consolespec.SpecError as error:
+        print(f"error: {error}", file=sys.stderr)
         return 2
 
     report = Report()
@@ -1318,15 +1400,16 @@ def main(argv: list[str] | None = None) -> int:
             infos = parse_infos(root, report)
             backends = parse_video_backends(root, report)
             titles = parse_system_titles(root, report)
-            documents["dolphin.toml"] = build_definition(
+            documents.update(build_definition(
                 infos, systems, titles, enums, scope, backends, bool_style,
                 claimed, selected, revision, report
-            )
+            ))
         if "actions" in wanted:
             documents["actions.toml"] = build_actions(root, revision, report)
         if "input" in wanted:
-            documents["input.toml"] = build_input(root, systems, enums, scope, bool_style, revision, report)
-    except Bail as error:
+            documents["input.toml"] = build_input(root, spec_root, systems, enums,
+                                                  scope, bool_style, revision, report)
+    except (Bail, consolespec.SpecError) as error:
         print(f"error: {error}", file=sys.stderr)
         report.emit()
         return 1
@@ -1334,7 +1417,9 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.dry_run:
         arguments.out.mkdir(parents=True, exist_ok=True)
         for name, text in documents.items():
-            (arguments.out / name).write_text(text, encoding="utf-8", newline="\n")
+            path = arguments.out / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="\n")
 
     report.emit()
     destination = "(dry run)" if arguments.dry_run else str(arguments.out)

@@ -18,77 +18,77 @@ path = "inis/PCSX2.ini"
 dialect = "pcsx2"
 device = "SDL-{index}"
 
-[input.layouts.DUALSHOCK_CONTROLLER]
-AxisLeftAnalogNegativeX = "LLeft"
-AxisLeftAnalogNegativeY = "LDown"
-AxisLeftAnalogPositiveX = "LRight"
-AxisLeftAnalogPositiveY = "LUp"
-AxisRightAnalogNegativeX = "RLeft"
-AxisRightAnalogNegativeY = "RDown"
-AxisRightAnalogPositiveX = "RRight"
-AxisRightAnalogPositiveY = "RUp"
-ButtonA = "Cross"
-ButtonB = "Circle"
-ButtonClickL = "L3"
-ButtonClickR = "R3"
-ButtonGuide = "Analog"
-ButtonL = "L1"
-ButtonR = "R1"
-ButtonSelect = "Select"
-ButtonStart = "Start"
-ButtonX = "Square"
-ButtonY = "Triangle"
-DirectionalE = "Right"
-DirectionalN = "Up"
-DirectionalS = "Down"
-DirectionalW = "Left"
-TriggerLeft = "L2"
-TriggerRight = "R2"
+[input.layouts.DUALSHOCK_2_CONTROLLER]
+"analog.stick.left.x-" = "LLeft"
+"analog.stick.left.y-" = "LDown"
+"analog.stick.left.x+" = "LRight"
+"analog.stick.left.y+" = "LUp"
+"analog.stick.right.x-" = "RLeft"
+"analog.stick.right.y-" = "RDown"
+"analog.stick.right.x+" = "RRight"
+"analog.stick.right.y+" = "RUp"
+"button.a" = "Cross"
+"button.b" = "Circle"
+"button.clickl" = "L3"
+"button.clickr" = "R3"
+"button.guide" = "Analog"
+"button.l" = "L1"
+"button.r" = "R1"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.x" = "Square"
+"button.y" = "Triangle"
+"directional.e" = "Right"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"trigger.left" = "L2"
+"trigger.right" = "R2"
 
-[platforms.SONY_PLAYSTATION_2.ports.0]
+[platforms.SONY_PS2.ports.controller.0]
 target = "ini.Pad1"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.1]
+[platforms.SONY_PS2.ports.controller.1]
 target = "ini.Pad2"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.2]
+[platforms.SONY_PS2.ports.controller.2]
 target = "ini.Pad3"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.3]
+[platforms.SONY_PS2.ports.controller.3]
 target = "ini.Pad4"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.4]
+[platforms.SONY_PS2.ports.controller.4]
 target = "ini.Pad5"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.5]
+[platforms.SONY_PS2.ports.controller.5]
 target = "ini.Pad6"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.6]
+[platforms.SONY_PS2.ports.controller.6]
 target = "ini.Pad7"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
-[platforms.SONY_PLAYSTATION_2.ports.7]
+[platforms.SONY_PS2.ports.controller.7]
 target = "ini.Pad8"
-layouts = ["DUALSHOCK_CONTROLLER"]
+layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]

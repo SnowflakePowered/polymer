@@ -6,12 +6,15 @@ INI, so the definition document's targets nest to arbitrary depth. Its hotkeys
 are stored as *two space-separated integers in one element* — a wxWidgets
 keycode and a controller button index — which is a fifth binding encoding beyond
 the four the design's survey lists. And its controller bindings are keyed by
-number rather than name: `<mapping>7</mapping>` is `VPADController::ButtonId`
-seven, so the binding table is an integer mapping on both sides.
+number rather than name: `<mapping>7</mapping>` is a `ButtonId` ordinal, so the
+binding table is an integer mapping on both sides. Each emulated controller
+class declares its *own* `ButtonId` enum with its own ordering, so there is one
+table per layout and the enums are parsed from one header each.
 
 Outputs, into --out (default ../config):
 
-    cemu.toml      targets + sections + options   (config/CemuConfig.{h,cpp})
+    cemu.toml      targets + section imports      (config/CemuConfig.{h,cpp})
+    <section>.toml one rooted document per section (config/CemuConfig.{h,cpp})
     actions.toml   action map                     (gui/wxgui/wxCemuConfig.{h,cpp})
     input.toml     ports + per-layout bindings    (input/emulated/*.h)
 
@@ -29,6 +32,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "support"))
+import consolespec
 import cppconfig
 from cppconfig import *  # noqa: F403 — shared C++/TOML machinery
 
@@ -40,17 +44,24 @@ cppconfig.UNDEFINES = {
 SETTINGS_FILE = "settings.xml"
 BOOL_STYLE = "lower"
 
-# Cemu's emulated controller types, by the string its profile writes into
-# `<emulated_controller><type>`, paired with the Stone layout each realizes.
-LAYOUTS = {
-    "WIIU_PRO_CONTROLLER": "Wii U Pro Controller",
-    "WIIU_DRC_CONTROLLER": "Wii U GamePad",
-    "WII_REMOTE_CONTROLLER": "Wiimote",
-}
+# The machine these ports belong to, and how its machinespec groups them. A Wii
+# U has one GamePad port and eight controller ports; Cemu has eight profile
+# slots total, of which at most two can hold a GamePad
+# (`InputManager::kMaxVPADControllers`) and at most seven anything else
+# (`kMaxWPADControllers`). Intersecting the two gives one GamePad port and seven
+# controller ports, which is the partition below — profile 0 is the GamePad, 1
+# through 7 the rest. Cemu itself assigns channels by scanning the slots in
+# order, so a vacant slot 0 does not shift the others.
+MACHINE = "NINTENDO_WIIU"
+GAMEPAD_PORTS = 1
+CONTROLLER_PORTS = 7
 
-# Stone element → the `ButtonId` enumerator Cemu's profile stores as a number.
-# Cemu's own names are the vocabulary; the parser turns them into the integers
-# the file actually holds, so a reordered enum changes the emitted numbers.
+# consolespec element → the `ButtonId` enumerator Cemu's profile stores as a
+# number. Cemu's own names are the vocabulary; the parser turns them into the
+# integers the file actually holds, so a reordered enum changes the emitted
+# numbers. Every class declares its own enum: `kButtonId_Home` is 27 on a
+# GamePad, 11 on a Pro Controller and 17 on a Wiimote, so the tables cannot be
+# shared even where the element names coincide.
 VPAD_BINDINGS = {
     "ButtonA": "kButtonId_A",
     "ButtonB": "kButtonId_B",
@@ -77,6 +88,102 @@ VPAD_BINDINGS = {
     "AxisRightAnalogNegativeX": "kButtonId_StickR_Left",
     "AxisRightAnalogPositiveX": "kButtonId_StickR_Right",
     "ButtonGuide": "kButtonId_Home",
+}
+
+# ProController::ButtonId. Mostly the same element names as the GamePad but
+# different ordinals: the Pro enum puts Home before the D-pad where the GamePad
+# puts it last. The stick clicks are absent because the inputspec does not
+# declare them (see UNDECLARED).
+PRO_BINDINGS = {element: enumerator for element, enumerator in VPAD_BINDINGS.items()
+                if element not in ("ButtonClickL", "ButtonClickR")}
+
+# WiimoteController::ButtonId, which shares almost nothing with the other two.
+# A Wii Remote has no second stick, no shoulder buttons and no stick clicks; its
+# numbered buttons are the ones printed "1" and "2", which consolespec spells as
+# the numbered elements 0 and 1.
+WIIMOTE_BINDINGS = {
+    "ButtonA": "kButtonId_A",
+    "ButtonB": "kButtonId_B",
+    "Button0": "kButtonId_1",
+    "Button1": "kButtonId_2",
+    "ButtonStart": "kButtonId_Plus",
+    "ButtonSelect": "kButtonId_Minus",
+    "ButtonGuide": "kButtonId_Home",
+    "DirectionalN": "kButtonId_Up",
+    "DirectionalS": "kButtonId_Down",
+    "DirectionalW": "kButtonId_Left",
+    "DirectionalE": "kButtonId_Right",
+}
+
+# Cemu models the extension as part of the Wiimote's own enum rather than a
+# separate device, but consolespec models a remote with a nunchuk as its own
+# layout, and a layout declares its bindings in full. What a device calls a
+# control can change when it gains another — attaching a nunchuk gives the Wii
+# Remote a second accelerometer, which forces the first to say which side it is
+# on — so no table may be inherited into a layout it was not written for.
+WII_NUNCHUK_BINDINGS = {
+    **WIIMOTE_BINDINGS,
+    "ButtonZ": "kButtonId_Nunchuck_Z",
+    "ButtonC": "kButtonId_Nunchuck_C",
+    "AxisLeftAnalogPositiveY": "kButtonId_Nunchuck_Up",
+    "AxisLeftAnalogNegativeY": "kButtonId_Nunchuck_Down",
+    "AxisLeftAnalogNegativeX": "kButtonId_Nunchuck_Left",
+    "AxisLeftAnalogPositiveX": "kButtonId_Nunchuck_Right",
+}
+
+# `WPADDeviceType`, which `WiimoteController::save` writes into `<device_type>`
+# alongside `<type>`. One Cemu type string covers both remote layouts; this is
+# what distinguishes them.
+WPAD_CORE = "0"        # kWAPDevCore — bare remote
+WPAD_FREESTYLE = "1"   # kWAPDevFreestyle — remote with nunchuk
+
+# Elements Cemu binds that the inputspec does not declare, so there is nothing to
+# bind them to. Reported on every run; move an entry into the table above once
+# the inputspec gains the button. The Wii U Pro Controller's sticks click on real
+# hardware and Cemu maps them, but WIIU_PRO_CONTROLLER declares no `clickl` /
+# `clickr` button, unlike WIIU_DRC_CONTROLLER.
+UNDECLARED = {
+    ("WIIU_PRO_CONTROLLER", "ButtonClickL"): "kButtonId_StickL",
+    ("WIIU_PRO_CONTROLLER", "ButtonClickR"): "kButtonId_StickR",
+}
+
+# inputspec layout → the Cemu emulated controller that realizes it: the header
+# its `ButtonId` enum lives in, the string the profile writes into
+# `<emulated_controller><type>`, the binding table, and any further keys the
+# type alone does not pin down.
+LAYOUTS = {
+    "WIIU_DRC_CONTROLLER": {
+        "header": "VPADController.h",
+        "type": "Wii U GamePad",
+        "bindings": VPAD_BINDINGS,
+        "emit": {},
+    },
+    "WIIU_PRO_CONTROLLER": {
+        "header": "ProController.h",
+        "type": "Wii U Pro Controller",
+        "bindings": PRO_BINDINGS,
+        "emit": {},
+    },
+    "WII_REMOTE_CONTROLLER": {
+        "header": "WiimoteController.h",
+        "type": "Wiimote",
+        "bindings": WIIMOTE_BINDINGS,
+        "emit": {"device_type": WPAD_CORE},
+    },
+    "WII_REMOTE_NUNCHUCK_CONTROLLER": {
+        "header": "WiimoteController.h",
+        "type": "Wiimote",
+        "bindings": WII_NUNCHUK_BINDINGS,
+        "emit": {"device_type": WPAD_FREESTYLE},
+    },
+}
+
+# Which layouts each port group offers. Cemu's Wii U Classic Controller has no
+# inputspec layout, so it is not offered.
+GROUP_LAYOUTS = {
+    "gamepad": ["WIIU_DRC_CONTROLLER"],
+    "controller": ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER",
+                   "WII_REMOTE_NUNCHUCK_CONTROLLER"],
 }
 
 # Snowglass's global action vocabulary → Cemu's hotkey element name. Cemu has
@@ -184,12 +291,12 @@ def parse_hotkeys(root: Path, report: Report) -> dict[str, str | None]:
     return hotkeys
 
 
-def parse_button_ids(root: Path, report: Report) -> dict[str, int]:
-    """`VPADController::ButtonId`, whose ordinals are what a profile stores."""
-    text = load_source(root / "src/input/emulated/VPADController.h", report)
+def parse_button_ids(root: Path, header: str, report: Report) -> dict[str, int]:
+    """One class's `ButtonId`, whose ordinals are what a profile stores."""
+    text = load_source(root / "src/input/emulated" / header, report)
     found = re.search(r"\benum\s+ButtonId\s*\{", text)
     if not found:
-        raise Bail("VPADController.h no longer declares `enum ButtonId`")
+        raise Bail(f"{header} no longer declares `enum ButtonId`")
     body = text[found.end(): match_braces(text, found.end() - 1) - 1]
     ids: dict[str, int] = {}
     following = 0
@@ -205,12 +312,12 @@ def parse_button_ids(root: Path, report: Report) -> dict[str, int]:
         ids[member.group(1)] = following
         following += 1
     if "kButtonId_A" not in ids:
-        raise Bail("`enum ButtonId` parsed without kButtonId_A")
+        raise Bail(f"{header}: `enum ButtonId` parsed without kButtonId_A")
     return ids
 
 
 def build_definition(values: dict[str, dict], entries: list[dict],
-                     revision: str | None, report: Report) -> str:
+                     revision: str | None, report: Report) -> dict[str, str]:
     grouped: dict[tuple[str, ...], list[dict]] = {}
     unresolved = 0
     for entry in entries:
@@ -223,7 +330,7 @@ def build_definition(values: dict[str, dict], entries: list[dict],
         report.note(f"definition: {unresolved} XML entries have no ConfigValue "
                     "declaration (computed or container members)")
 
-    lines = [
+    main_lines = [
         "# Generated by support/parse_config.py. Do not edit by hand.",
         f"# Cemu revision: {revision or 'unknown'}",
         "",
@@ -244,16 +351,29 @@ def build_definition(values: dict[str, dict], entries: list[dict],
     for path in sorted(grouped):
         for depth in range(1, len(path) + 1):
             header = target_header("settings", *path[:depth])
-            if header not in lines:
-                lines.append(header)
-    lines.append("")
+            if header not in main_lines:
+                main_lines.append(header)
+    main_lines.append("")
 
+    documents: dict[str, str] = {}
     emitted = 0
     for path in sorted(grouped):
         slug = slugify("-".join(path) or "general")
-        lines += [f"[sections.{toml_key(slug)}]",
-                  f"title = {toml_string(' / '.join(path) or 'General')}",
-                  f"target = {toml_string(target_id('settings', *path))}", ""]
+        filename = f"{slug}.toml"
+        if filename in documents or filename in {"cemu.toml", "actions.toml", "input.toml"}:
+            raise Bail(f"definition: section path {' / '.join(path)!r} produces "
+                       f"duplicate or reserved output name {filename!r}")
+        main_lines += [f"[sections.{toml_key(slug)}]",
+                       f"import = {toml_string(filename)}", ""]
+        section_lines = [
+            "# Generated by support/parse_config.py. Do not edit by hand.",
+            f"# Cemu revision: {revision or 'unknown'}",
+            "",
+            f"[sections.{toml_key(slug)}]",
+            f"title = {toml_string(' / '.join(path) or 'General')}",
+            f"target = {toml_string(target_id('settings', *path))}",
+            "",
+        ]
         used: set[str] = set()
         for entry in sorted(grouped[path], key=lambda e: e["name"].lower()):
             key = snake_case(entry["name"])
@@ -264,17 +384,19 @@ def build_definition(values: dict[str, dict], entries: list[dict],
             emit = {"key": entry["name"]}
             if kind == "bool":
                 emit["bool_style"] = BOOL_STYLE
-            lines.append(f"[[sections.{toml_key(slug)}.options]]")
-            lines.append(f"key = {toml_string(key)}")
-            lines.append(f"title = {toml_string(humanize(entry['name']))}")
-            lines.append(f"type = {toml_string(kind)}")
+            section_lines.append(f"[[sections.{toml_key(slug)}.options]]")
+            section_lines.append(f"key = {toml_string(key)}")
+            section_lines.append(f"title = {toml_string(humanize(entry['name']))}")
+            section_lines.append(f"type = {toml_string(kind)}")
             if isinstance(entry["default"], (bool, int, float, str)):
-                lines.append(f"default = {toml_value(entry['default'])}")
-            lines.append(f"emit = {toml_value(emit)}")
-            lines.append("")
+                section_lines.append(f"default = {toml_value(entry['default'])}")
+            section_lines.append(f"emit = {toml_value(emit)}")
+            section_lines.append("")
             emitted += 1
+        documents[filename] = "\n".join(section_lines).rstrip() + "\n"
     report.note(f"definition: {emitted} options across {len(grouped)} sections")
-    return "\n".join(lines).rstrip() + "\n"
+    documents["cemu.toml"] = "\n".join(main_lines).rstrip() + "\n"
+    return documents
 
 
 def cemu_type(ctype: str) -> str:
@@ -334,16 +456,20 @@ def build_actions(hotkeys: dict[str, str | None], revision: str | None,
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_input(ids: dict[str, int], revision: str | None, report: Report) -> str:
+def build_input(ids: dict[str, dict[str, int]], spec_root: Path,
+                revision: str | None, report: Report) -> str:
+    projection = consolespec.load_projection()
+    slots = GAMEPAD_PORTS + CONTROLLER_PORTS
     lines = [
         "# Generated by support/parse_config.py. Do not edit by hand.",
         f"# Cemu revision: {revision or 'unknown'}",
         "#",
-        "# Cemu keeps one profile file per port, and its binding keys are the",
-        "# ordinals of VPADController::ButtonId rather than names.",
+        "# Cemu keeps one profile file per slot, and its binding keys are ButtonId",
+        "# ordinals rather than names. Each emulated controller class declares its",
+        "# own ButtonId enum, so the same element is a different number per layout.",
         "",
     ]
-    for port in range(8):
+    for port in range(slots):
         lines += [target_header(f"profile-{port}"),
                   'format = "xml"',
                   f'path = {toml_string(f"controllerProfiles/controller{port}.xml")}',
@@ -357,34 +483,63 @@ def build_input(ids: dict[str, int], revision: str | None, report: Report) -> st
     lines += ["[input]", 'dialect = "cemu"', 'device = "SDL/{index}"', ""]
 
     bound = 0
-    for layout in LAYOUTS:
+    for layout, definition in LAYOUTS.items():
         lines.append(f"[input.layouts.{toml_key(layout)}]")
-        for element, enumerator in sorted(VPAD_BINDINGS.items()):
-            ordinal = ids.get(enumerator)
+        device = consolespec.load_inputspec(spec_root, layout)
+        enumerators = ids[definition["header"]]
+        for element, enumerator in sorted(definition["bindings"].items()):
+            ordinal = enumerators.get(enumerator)
             if ordinal is None:
-                report.error(f"input: `{enumerator}` is not in VPADController::ButtonId")
+                report.error(f"input: `{enumerator}` is not in "
+                             f"{definition['header']}'s ButtonId")
                 continue
-            if element not in SDL_PROJECTABLE:
-                report.warn(f"input: `{element}` has no SDL projection in stone.rs; "
+            if not consolespec.check_binding(device, element, report, "input"):
+                continue
+            entry = device.elements[element]
+            if projection.slot(layout, entry) is None:
+                report.warn(f"input: `{entry.path}` reaches no SDL slot; "
                             f"omitted from {layout}")
                 continue
-            lines.append(f"{toml_key(element)} = {toml_string(str(ordinal))}")
+            lines.append(f"{toml_key(entry.path)} = {toml_string(str(ordinal))}")
             bound += 1
         lines.append("")
 
-    for port in range(8):
-        lines.append(f"[platforms.NINTENDO_WIIU.ports.{port}]")
-        lines.append(f"target = {toml_string(target_id(f'profile-{port}', 'emulated_controller', 'controller', 'mappings'))}")
-        lines.append(f"layouts = {toml_value(list(LAYOUTS))}")
-        for layout, kind in LAYOUTS.items():
-            lines.append(f"emit.{toml_key(layout)} = " + toml_value([
-                {"target": target_id(f"profile-{port}", "emulated_controller"),
-                 "key": "type", "value": kind}
-            ]))
-        lines.append("")
-    report.note(f"input: {bound} bindings across {len(LAYOUTS)} layouts, 8 ports")
+    # Ports are grouped as the machinespec groups them: the single GamePad port,
+    # then the controller ports. Slot 0 holds the GamePad.
+    machine = consolespec.load_machinespec(spec_root, MACHINE)
+    slot = 0
+    for group, count in (("gamepad", GAMEPAD_PORTS),
+                         ("controller", CONTROLLER_PORTS)):
+        offered = GROUP_LAYOUTS[group]
+        consolespec.check_group(machine, group, offered, count, report, "input")
+        for index in range(count):
+            profile = f"profile-{slot}"
+            lines.append(f"[platforms.{toml_key(MACHINE)}.ports."
+                         f"{toml_key(group)}.{index}]")
+            lines.append("target = " + toml_string(target_id(
+                profile, "emulated_controller", "controller", "mappings")))
+            lines.append(f"layouts = {toml_value(offered)}")
+            for layout in offered:
+                definition = LAYOUTS[layout]
+                entries = [{"target": target_id(profile, "emulated_controller"),
+                            "key": "type", "value": definition["type"]}]
+                entries += [{"target": target_id(profile, "emulated_controller"),
+                             "key": key, "value": value}
+                            for key, value in definition["emit"].items()]
+                lines.append(f"emit.{toml_key(layout)} = {toml_value(entries)}")
+            lines.append("")
+            slot += 1
+
+    report.note(f"input: {bound} bindings across {len(LAYOUTS)} layouts, "
+                f"{GAMEPAD_PORTS} {MACHINE}/gamepad and {CONTROLLER_PORTS} "
+                f"{MACHINE}/controller ports over {slots} profile slots")
     report.note("input: bindings are ButtonId ordinals; a reordered enum upstream "
                 "silently changes every emitted number, so regenerate on version bumps")
+    report.note("input: Cemu's Wii U Classic Controller has no inputspec layout "
+                "and is not offered")
+    for (layout, element), enumerator in sorted(UNDECLARED.items()):
+        report.warn(f"input: {layout} declares no `{element}`, so Cemu's "
+                    f"`{enumerator}` is left unbound")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -402,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cemu", required=True, type=Path)
     parser.add_argument("--out", type=Path, default=Path(__file__).parent.parent / "config")
+    parser.add_argument("--consolespec", type=Path)
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args(argv)
@@ -410,6 +566,12 @@ def main(argv: list[str] | None = None) -> int:
     if not (root / "src/config").is_dir():
         print(f"error: {root} does not look like a Cemu checkout", file=sys.stderr)
         return 2
+    try:
+        spec_root = (arguments.consolespec.expanduser().resolve()
+                     if arguments.consolespec else consolespec.find_root())
+    except consolespec.SpecError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
     report = Report()
     revision = revision_of(root)
@@ -417,13 +579,14 @@ def main(argv: list[str] | None = None) -> int:
         values = parse_config_values(root, report)
         entries = parse_xml_layout(root, report)
         hotkeys = parse_hotkeys(root, report)
-        ids = parse_button_ids(root, report)
+        ids = {header: parse_button_ids(root, header, report)
+               for header in {entry["header"] for entry in LAYOUTS.values()}}
         documents = {
-            "cemu.toml": build_definition(values, entries, revision, report),
             "actions.toml": build_actions(hotkeys, revision, report),
-            "input.toml": build_input(ids, revision, report),
+            "input.toml": build_input(ids, spec_root, revision, report),
         }
-    except Bail as error:
+        documents.update(build_definition(values, entries, revision, report))
+    except (Bail, consolespec.SpecError) as error:
         print(f"error: {error}", file=sys.stderr)
         report.emit()
         return 1

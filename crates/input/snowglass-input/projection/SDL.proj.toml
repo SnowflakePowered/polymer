@@ -1,0 +1,210 @@
+# Projects consolespec clusters onto SDL's virtual gamepad.
+#
+# Mapping, not description: consolespec says a cluster has two degrees of
+# freedom, and this file decides which SDL axes carry them. Shared, so
+# "which physical button is C-Up" is the same in every emulator.
+#
+# Allocation follows SDL's gamecontrollerdb: unused standard slots first,
+# spares only when none are left. A layout appears below only when the
+# defaults do not already cover it.
+
+[defaults.button]
+a = "south"
+b = "east"
+x = "west"
+y = "north"
+select = "back"
+guide = "guide"
+start = "start"
+clickl = "left-stick-click"
+clickr = "right-stick-click"
+l = "left-shoulder"
+r = "right-shoulder"
+
+# A sole cluster of these kinds takes the standard slot. A second one is an
+# error unless the layout below says where it goes.
+[defaults.directional]
+"" = "hat"
+
+[defaults.analog]
+# Keys are quoted so a dot reads as part of the cluster path rather than
+# as TOML nesting: `gyroscope` and `gyroscope.left` are siblings, and a
+# bare dotted key cannot extend a string.
+"stick.left" = "left-stick"
+"stick.right" = "right-stick"
+"rotary" = "left-stick.x"
+"slider" = "left-stick.x"
+"gyroscope" = "gyroscope"
+"gyroscope.left" = "gyroscope-left"
+"gyroscope.right" = "gyroscope-right"
+"accelerometer" = "accelerometer"
+"accelerometer.left" = "accelerometer-left"
+"accelerometer.right" = "accelerometer-right"
+
+[defaults.trigger]
+left = "left-trigger"
+right = "right-trigger"
+
+[defaults.pointer]
+"" = "pointer"
+
+[layouts.3DO_CONTROLLER]
+"button.c" = "west"   # C
+
+[layouts.3DS_LAYOUT]
+"analog.slider" = "left-trigger"   # 3D Slider
+
+[layouts.A5200_CONTROLLER]
+"button.0"  = "keyboard"   # 0
+"button.1"  = "keyboard"   # 1
+"button.10" = "keyboard"   # *
+"button.11" = "keyboard"   # #
+"button.2"  = "keyboard"   # 2
+"button.3"  = "keyboard"   # 3
+"button.4"  = "keyboard"   # 4
+"button.5"  = "keyboard"   # 5
+"button.6"  = "keyboard"   # 6
+"button.7"  = "keyboard"   # 7
+"button.8"  = "keyboard"   # 8
+"button.9"  = "keyboard"   # 9
+
+[layouts.COLECOVISION_CONTROLLER]
+"button.0"  = "keyboard"   # 0
+"button.1"  = "keyboard"   # 1
+"button.10" = "keyboard"   # *
+"button.11" = "keyboard"   # #
+"button.2"  = "keyboard"   # 2
+"button.3"  = "keyboard"   # 3
+"button.4"  = "keyboard"   # 4
+"button.5"  = "keyboard"   # 5
+"button.6"  = "keyboard"   # 6
+"button.7"  = "keyboard"   # 7
+"button.8"  = "keyboard"   # 8
+"button.9"  = "keyboard"   # 9
+
+[layouts.DUALSENSE_CONTROLLER]
+"button.0" = "touchpad"   # Touchpad Click
+"button.1" = "misc1"   # Mute
+
+[layouts.DUALSHOCK_4_CONTROLLER]
+"button.0" = "touchpad"   # Touchpad Click
+
+[layouts.GAMECUBE_CONTROLLER]
+"button.z" = "right-shoulder"   # Z
+"button.l" = "left-trigger"   # Digital L
+"button.r" = "right-trigger"   # Digital R
+
+[layouts.GEN6_CONTROLLER]
+"button.c" = "left-shoulder"   # C
+"button.z" = "right-shoulder"   # Z
+
+[layouts.INTELLIVISION_CONTROLLER]
+"button.0"  = "keyboard"   # 0
+"button.1"  = "keyboard"   # 1
+"button.10" = "keyboard"   # *
+"button.11" = "keyboard"   # #
+"button.2"  = "keyboard"   # 2
+"button.3"  = "keyboard"   # 3
+"button.4"  = "keyboard"   # 4
+"button.5"  = "keyboard"   # 5
+"button.6"  = "keyboard"   # 6
+"button.7"  = "keyboard"   # 7
+"button.8"  = "keyboard"   # 8
+"button.9"  = "keyboard"   # 9
+
+[layouts.JAGUAR_CONTROLLER]
+"button.0"  = "keyboard"   # 0
+"button.1"  = "keyboard"   # 1
+"button.10" = "keyboard"   # *
+"button.11" = "keyboard"   # #
+"button.2"  = "keyboard"   # 2
+"button.3"  = "keyboard"   # 3
+"button.4"  = "keyboard"   # 4
+"button.5"  = "keyboard"   # 5
+"button.6"  = "keyboard"   # 6
+"button.7"  = "keyboard"   # 7
+"button.8"  = "keyboard"   # 8
+"button.9"  = "keyboard"   # 9
+
+[layouts.LYNX_LAYOUT]
+"button.0" = "west"   # Flip
+
+[layouts.N64_CONTROLLER]
+"button.z"            = "right-trigger"   # Z
+"directional.right.n" = "right-stick.y-"   # C-Button N
+"directional.right.e" = "right-stick.x+"   # C-Button E
+"directional.right.s" = "right-stick.y+"   # C-Button S
+"directional.right.w" = "right-stick.x-"   # C-Button W
+
+[layouts.PCFX_CONTROLLER]
+"button.c" = "left-shoulder"   # III
+"button.z" = "right-shoulder"   # VI
+"button.0" = "left-trigger"   # MODE 1
+"button.1" = "right-trigger"   # MODE 2
+
+[layouts.SAT_3D_CONTROLLER]
+"button.c" = "left-shoulder"   # C
+"button.z" = "right-shoulder"   # Z
+
+[layouts.SAT_CONTROLLER]
+"button.c" = "left-trigger"   # C
+"button.z" = "right-trigger"   # Z
+
+[layouts.SWITCH_2_JOYCONS_CONTROLLER]
+"button.0" = "misc1"   # Capture
+"button.1" = "right-paddle1"   # C
+
+[layouts.SWITCH_2_LEFT_JOYCON_CONTROLLER]
+"button.0" = "west"   # SL
+"button.1" = "north"   # SR
+
+[layouts.SWITCH_2_PRO_CONTROLLER]
+"button.0" = "misc1"   # Capture
+"button.1" = "right-paddle1"   # C
+"button.2" = "left-paddle1"   # GL
+"button.3" = "right-paddle2"   # GR
+
+[layouts.SWITCH_2_RIGHT_JOYCON_CONTROLLER]
+"button.0" = "left-shoulder"   # SL
+"button.1" = "left-trigger"   # SR
+"button.2" = "misc1"   # C
+
+[layouts.SWITCH_JOYCONS_CONTROLLER]
+"button.0" = "misc1"   # Capture
+
+[layouts.SWITCH_LEFT_JOYCON_CONTROLLER]
+"button.0" = "west"   # SL
+"button.1" = "north"   # SR
+
+[layouts.SWITCH_PRO_CONTROLLER]
+"button.0" = "misc1"   # Capture
+
+[layouts.SWITCH_RIGHT_JOYCON_CONTROLLER]
+"button.0" = "left-shoulder"   # SL
+"button.1" = "left-trigger"   # SR
+
+[layouts.VB_CONTROLLER]
+"directional.right.n" = "right-stick.y-"   # Right D-Pad N
+"directional.right.e" = "right-stick.x+"   # Right D-Pad E
+"directional.right.s" = "right-stick.y+"   # Right D-Pad S
+"directional.right.w" = "right-stick.x-"   # Right D-Pad W
+
+[layouts.WII_REMOTE_CONTROLLER]
+"button.0" = "west"   # 1
+"button.1" = "north"   # 2
+
+[layouts.WII_REMOTE_NUNCHUCK_CONTROLLER]
+"button.c" = "west"   # C
+"button.z" = "north"   # Z
+"button.0" = "left-shoulder"   # 1
+"button.1" = "right-shoulder"   # 2
+
+[layouts.WS_LAYOUT]
+"button.0" = "west"   # X1
+"button.1" = "north"   # X2
+"button.2" = "left-shoulder"   # X3
+"button.3" = "right-shoulder"   # X4
+"button.4" = "left-trigger"   # Y1
+"button.5" = "right-trigger"   # Y2
+"button.6" = "misc1"   # Y3
+"button.7" = "right-paddle1"   # Y4

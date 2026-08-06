@@ -1,4 +1,5 @@
 use super::*;
+use snowglass_input::key::BindingKey;
 
 #[derive(Clone)]
 pub(crate) struct LauncherGamepad {
@@ -199,7 +200,7 @@ pub(crate) fn draw_gamepad_window(
     context: &egui::Context,
     provider: &Sdl3Provider,
     layouts: &[InputLayout],
-    drafts: &mut [HashMap<String, String>],
+    drafts: &mut [HashMap<BindingKey, String>],
     latency: &snowglass_statistics::DistributionStatistics,
 ) {
     const BUTTONS: [SdlButton; 21] = [
@@ -307,15 +308,15 @@ pub(crate) fn draw_gamepad_window(
                             .max_height(300.0)
                             .show(ui, |ui| {
                                 for element in &layout.elements {
-                                    if !is_remappable_element(&element.id) {
+                                    if !is_remappable_element(element.key) {
                                         continue;
                                     }
                                     let selected = drafts[slot]
-                                        .entry(element.id.clone())
+                                        .entry(element.key)
                                         .or_insert_with(|| "Default".to_owned());
                                     let previous = selected.clone();
                                     ui.horizontal(|ui| {
-                                        ui.label(&element.label).on_hover_text(&element.id);
+                                        ui.label(&element.label).on_hover_text(element.key.to_string());
                                         egui::ComboBox::from_id_salt((
                                             "gamepad-remap",
                                             slot,
@@ -344,7 +345,7 @@ pub(crate) fn draw_gamepad_window(
                                                         value,
                                                     );
                                                 }
-                                                if element_accepts_axis(&element.id) {
+                                                if element_accepts_axis(element.key) {
                                                     for axis in AXES {
                                                         let value = format!("Axis:{axis:?}");
                                                         ui.selectable_value(
@@ -359,9 +360,9 @@ pub(crate) fn draw_gamepad_window(
                                     });
                                     if *selected != previous {
                                         if let Some(binding) = ui_binding(selected) {
-                                            provider.set_binding(slot, element.id.clone(), binding);
+                                            provider.set_binding(slot, element.key, binding);
                                         } else {
-                                            provider.clear_binding(slot, element.id.clone());
+                                            provider.clear_binding(slot, element.key);
                                         }
                                     }
                                 }
@@ -524,12 +525,13 @@ pub(crate) fn draw_launcher_window(
     start
 }
 
-fn is_remappable_element(id: &str) -> bool {
-    id.starts_with("Button") || id.starts_with("Directional") || element_accepts_axis(id)
+fn is_remappable_element(key: BindingKey) -> bool {
+    matches!(key, BindingKey::Button(_) | BindingKey::Directional { .. })
+        || element_accepts_axis(key)
 }
 
-fn element_accepts_axis(id: &str) -> bool {
-    id.starts_with("Axis") || id.starts_with("Trigger")
+fn element_accepts_axis(key: BindingKey) -> bool {
+    key.is_analog()
 }
 
 fn ui_binding(value: &str) -> Option<InputBinding> {

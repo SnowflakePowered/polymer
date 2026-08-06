@@ -5,15 +5,17 @@ use crate::gamepad::LatestGamepadMailbox;
 use crate::{
     gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{AxisTransform, PointerAxis, SourceControl},
+    key::{Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Direction, Sign},
     layout::{
-        EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB,
-        InputBinding, KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
-        InputLayout, LayoutRegistry,
+        EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, InputBinding, InputLayout,
+        KeyboardMapping, LayoutRegistry, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
     },
 };
 use parking_lot::Mutex;
 use sdl3::event::Event;
-use sdl3::gamepad::{Axis, Button, ButtonLabel, Gamepad};
+// SDL's own axis enum names the six gamepad axes; `key::Axis` names a degree
+// of freedom of a cluster. Both appear here, so SDL's takes the qualified name.
+use sdl3::gamepad::{Axis as SdlNativeAxis, Button, ButtonLabel, Gamepad};
 use sdl3::sensor::SensorType;
 use std::{
     collections::{HashMap, HashSet},
@@ -126,23 +128,23 @@ enum ProviderCommand {
     },
     SetBinding {
         slot: usize,
-        target: String,
+        target: BindingKey,
         binding: InputBinding,
     },
     SetKeyBinding {
         slot: usize,
-        target: String,
+        target: BindingKey,
         key: Option<String>,
     },
     SetMouseAxisBinding {
         slot: usize,
-        target: String,
+        target: BindingKey,
         source: SourceControl,
         transform: AxisTransform,
     },
     ClearBinding {
         slot: usize,
-        target: String,
+        target: BindingKey,
     },
     ResetBindings {
         slot: usize,
@@ -259,7 +261,7 @@ impl Sdl3Provider {
         self.devices.lock().clone()
     }
 
-    pub fn set_binding(&self, slot: usize, target: String, binding: InputBinding) {
+    pub fn set_binding(&self, slot: usize, target: BindingKey, binding: InputBinding) {
         let _ = self.commands.send(ProviderCommand::SetBinding {
             slot,
             target,
@@ -267,7 +269,7 @@ impl Sdl3Provider {
         });
     }
 
-    pub fn set_key_binding(&self, slot: usize, target: String, key: Option<String>) {
+    pub fn set_key_binding(&self, slot: usize, target: BindingKey, key: Option<String>) {
         let _ = self
             .commands
             .send(ProviderCommand::SetKeyBinding { slot, target, key });
@@ -276,7 +278,7 @@ impl Sdl3Provider {
     pub fn set_mouse_axis_binding(
         &self,
         slot: usize,
-        target: String,
+        target: BindingKey,
         source: SourceControl,
         transform: AxisTransform,
     ) {
@@ -292,7 +294,7 @@ impl Sdl3Provider {
         let _ = self.commands.send(ProviderCommand::ResetBindings { slot });
     }
 
-    pub fn clear_binding(&self, slot: usize, target: String) {
+    pub fn clear_binding(&self, slot: usize, target: BindingKey) {
         let _ = self
             .commands
             .send(ProviderCommand::ClearBinding { slot, target });
@@ -339,10 +341,7 @@ fn validate_config(config: &ProviderConfig) -> Result<(), String> {
     let registry = load_layout_registry(config.inputspec_directory.as_deref())?;
     for slot in &config.slots {
         if registry.layout(&slot.layout_id).is_none() {
-            return Err(format!(
-                "unknown input layout {}",
-                slot.layout_id
-            ));
+            return Err(format!("unknown input layout {}", slot.layout_id));
         }
     }
     Ok(())
@@ -463,7 +462,7 @@ struct CompiledMapping {
 
 #[derive(Clone)]
 struct CompiledKeyboardMapping {
-    bindings: Vec<(String, String, KeyboardTarget)>,
+    bindings: Vec<(BindingKey, String, KeyboardTarget)>,
 }
 
 #[derive(Clone, Copy)]
@@ -477,13 +476,15 @@ impl CompiledKeyboardMapping {
     fn new(mapping: KeyboardMapping, layout: &InputLayout) -> Result<Self, String> {
         let mut bindings = Vec::new();
         for (element, key) in mapping.bindings {
-            if !layout.has(&element) {
+            // The document writes canonical keys, so one default mapping serves
+            // every device; what it binds to is this device's own key.
+            let Some(element) = layout.resolve(element) else {
                 continue;
-            }
+            };
             if key.trim().is_empty() {
                 return Err(format!("keyboard binding {element} has an empty key"));
             }
-            let Some(target) = keyboard_target(&element) else {
+            let Some(target) = keyboard_target(element) else {
                 continue;
             };
             bindings.push((element, key, target));
@@ -491,22 +492,24 @@ impl CompiledKeyboardMapping {
         Ok(Self { bindings })
     }
 
-    fn set(&mut self, element: &str, key: Option<String>) {
-        self.bindings.retain(|(existing, _, _)| existing != element);
+    fn set(&mut self, element: BindingKey, key: Option<String>) {
+        self.bindings
+            .retain(|(existing, _, _)| *existing != element);
         if let (Some(key), Some(target)) = (key, keyboard_target(element)) {
-            self.bindings.push((element.to_owned(), key, target));
+            self.bindings.push((element, key, target));
         }
     }
 
-    fn restore(&mut self, element: &str, defaults: Option<&Self>) {
+    fn restore(&mut self, element: BindingKey, defaults: Option<&Self>) {
         let binding = defaults.and_then(|defaults| {
             defaults
                 .bindings
                 .iter()
-                .find(|(existing, _, _)| existing == element)
+                .find(|(existing, _, _)| *existing == element)
                 .cloned()
         });
-        self.bindings.retain(|(existing, _, _)| existing != element);
+        self.bindings
+            .retain(|(existing, _, _)| *existing != element);
         if let Some(binding) = binding {
             self.bindings.push(binding);
         }
@@ -540,7 +543,7 @@ impl CompiledKeyboardMapping {
     }
 }
 
-fn keyboard_target(element: &str) -> Option<KeyboardTarget> {
+fn keyboard_target(element: BindingKey) -> Option<KeyboardTarget> {
     if let Some(button) = element_button(element) {
         return Some(KeyboardTarget::Button(button));
     }
@@ -548,7 +551,16 @@ fn keyboard_target(element: &str) -> Option<KeyboardTarget> {
     if index >= 4 {
         return Some(KeyboardTarget::Trigger { index });
     }
-    let positive = element.contains("Positive");
+    let positive = matches!(
+        element,
+        BindingKey::Analog {
+            component: Component {
+                sign: Sign::Positive,
+                ..
+            },
+            ..
+        }
+    );
     let direction = match (index % 2, positive) {
         (1, true) => -1,
         (1, false) => 1,
@@ -560,13 +572,13 @@ fn keyboard_target(element: &str) -> Option<KeyboardTarget> {
 
 fn apply_mouse_axes(
     state: &mut GamepadState,
-    mappings: &HashMap<String, MouseAxisMap>,
+    mappings: &HashMap<BindingKey, MouseAxisMap>,
     pointer: PointerSample,
     now: Instant,
 ) {
     let mut values = [0.0f32; 6];
     let mut assigned = [false; 6];
-    for (target, mapping) in mappings {
+    for (&target, mapping) in mappings {
         let Some(index) = element_axis_index(target) else {
             continue;
         };
@@ -655,9 +667,9 @@ fn run(
     let mut next_device_snapshot = Instant::now();
     let mut observed = Vec::<ObservedPad>::new();
     let mut interactive_remappings =
-        vec![HashMap::<String, InputBinding>::new(); config.slots.len()];
+        vec![HashMap::<BindingKey, InputBinding>::new(); config.slots.len()];
     let mut interactive_mouse_mappings =
-        vec![HashMap::<String, MouseAxisMap>::new(); config.slots.len()];
+        vec![HashMap::<BindingKey, MouseAxisMap>::new(); config.slots.len()];
     let mut config = config;
     let mut keyboard_mappings = match load_keyboard_mappings(&config, &registry) {
         Ok(mappings) => mappings,
@@ -696,10 +708,8 @@ fn run(
                         .iter()
                         .find(|slot| registry.layout(&slot.layout_id).is_none());
                     if let Some(slot) = invalid_layout {
-                        let _ = response.send(Err(format!(
-                            "unknown input layout {}",
-                            slot.layout_id
-                        )));
+                        let _ =
+                            response.send(Err(format!("unknown input layout {}", slot.layout_id)));
                         continue;
                     }
                     let candidate = ProviderConfig {
@@ -757,7 +767,7 @@ fn run(
                 }
                 ProviderCommand::SetKeyBinding { slot, target, key } => {
                     if let Some(Some(mapping)) = keyboard_mappings.get_mut(slot) {
-                        mapping.set(&target, key);
+                        mapping.set(target, key);
                         keyboard_bindings_changed = true;
                     }
                 }
@@ -768,7 +778,7 @@ fn run(
                     transform,
                 } => {
                     if let Some(bindings) = interactive_mouse_mappings.get_mut(slot) {
-                        bindings.insert(target.clone(), MouseAxisMap { source, transform });
+                        bindings.insert(target, MouseAxisMap { source, transform });
                     }
                     if let Some(bindings) = interactive_remappings.get_mut(slot) {
                         bindings.insert(target, InputBinding::Disabled { disabled: true });
@@ -799,7 +809,7 @@ fn run(
                     }
                     let defaults = default_keyboard_mappings.get(slot).and_then(Option::as_ref);
                     if let Some(Some(mapping)) = keyboard_mappings.get_mut(slot) {
-                        mapping.restore(&target, defaults);
+                        mapping.restore(target, defaults);
                         keyboard_bindings_changed = true;
                     }
                     if let Some(bindings) = interactive_mouse_mappings.get_mut(slot) {
@@ -1003,7 +1013,7 @@ fn refresh_devices(
     slots: &[SlotConfig],
     registry: &LayoutRegistry,
     remappings: &RemapDatabase,
-    interactive_remappings: &[HashMap<String, InputBinding>],
+    interactive_remappings: &[HashMap<BindingKey, InputBinding>],
 ) {
     for entry in pads.iter_mut() {
         let disconnected = entry.as_ref().is_some_and(|pad| !pad.gamepad.connected());
@@ -1166,7 +1176,7 @@ fn recompile_pad(
     pads: &mut [Option<Pad>],
     registry: &LayoutRegistry,
     remappings: &RemapDatabase,
-    overrides: &HashMap<String, InputBinding>,
+    overrides: &HashMap<BindingKey, InputBinding>,
 ) {
     let Some(pad) = pads.get_mut(slot).and_then(Option::as_mut) else {
         return;
@@ -1184,7 +1194,7 @@ fn compiled_with_overrides(
     identity: &DeviceIdentity,
     layout: &InputLayout,
     remappings: &RemapDatabase,
-    overrides: &HashMap<String, InputBinding>,
+    overrides: &HashMap<BindingKey, InputBinding>,
 ) -> CompiledMapping {
     let mut effective = remappings.clone();
     effective.bindings.extend(overrides.clone());
@@ -1274,10 +1284,10 @@ impl CompiledMapping {
         layout: &InputLayout,
         database: &RemapDatabase,
     ) -> Self {
-        let mut targets = HashMap::<String, InputBinding>::new();
+        let mut targets = HashMap::<BindingKey, InputBinding>::new();
         for button in ALL_BUTTONS {
             if let Some(target) = default_button_target(gamepad, button, layout) {
-                targets.insert(target.to_owned(), InputBinding::Button { button });
+                targets.insert(target, InputBinding::Button { button });
             }
         }
         apply_default_axes(&mut targets, layout);
@@ -1292,17 +1302,17 @@ impl CompiledMapping {
         let mut axes = DEFAULT_AXES;
         let mut digital_triggers = Vec::new();
         for (element, binding) in targets {
-            if !layout.has(&element) {
+            if !layout.has(element) {
                 continue;
             }
-            if let Some(target) = element_button(&element) {
+            if let Some(target) = element_button(element) {
                 if let InputBinding::Button { button } = binding {
                     buttons.retain(|(_, existing)| *existing != target);
                     buttons.push((button, target));
                 }
                 continue;
             }
-            let Some(index) = element_axis_index(&element) else {
+            let Some(index) = element_axis_index(element) else {
                 continue;
             };
             match binding {
@@ -1327,9 +1337,8 @@ impl CompiledMapping {
             buttons,
             axes,
             digital_triggers,
-            accelerometer: layout.has("AccelerometerAxisPositiveX")
-                || layout.has("AccelerometerAxisNegativeX"),
-            gyroscope: layout.has("GyroscopeAxisPositiveX") || layout.has("GyroscopeAxisNegativeX"),
+            accelerometer: layout.has_analog(AnalogClass::Accelerometer),
+            gyroscope: layout.has_analog(AnalogClass::Gyroscope),
         }
     }
 
@@ -1376,11 +1385,11 @@ impl CompiledMapping {
 fn enable_layout_sensors(gamepad: &Gamepad, layout: &InputLayout) {
     for (enabled, sensor) in [
         (
-            layout.has("AccelerometerAxisPositiveX") || layout.has("AccelerometerAxisNegativeX"),
+            layout.has_analog(AnalogClass::Accelerometer),
             SensorType::Accelerometer,
         ),
         (
-            layout.has("GyroscopeAxisPositiveX") || layout.has("GyroscopeAxisNegativeX"),
+            layout.has_analog(AnalogClass::Gyroscope),
             SensorType::Gyroscope,
         ),
     ] {
@@ -1450,28 +1459,35 @@ const ALL_AXES: [SdlAxis; 6] = [
     SdlAxis::RightTrigger,
 ];
 
-fn default_button_target<'a>(
+fn default_button_target(
     gamepad: &Gamepad,
     source: SdlButton,
-    layout: &'a InputLayout,
-) -> Option<&'a str> {
+    layout: &InputLayout,
+) -> Option<BindingKey> {
+    let dpad = |direction| {
+        Some(BindingKey::Directional {
+            alignment: None,
+            direction,
+        })
+    };
     let fixed = match source {
-        SdlButton::Back => Some("ButtonSelect"),
-        SdlButton::Guide => Some("ButtonGuide"),
-        SdlButton::Start => Some("ButtonStart"),
-        SdlButton::LeftStick => Some("ButtonClickL"),
-        SdlButton::RightStick => Some("ButtonClickR"),
-        SdlButton::LeftShoulder => Some("ButtonL"),
-        SdlButton::RightShoulder => Some("ButtonR"),
-        SdlButton::DpadUp => Some("DirectionalN"),
-        SdlButton::DpadDown => Some("DirectionalS"),
-        SdlButton::DpadLeft => Some("DirectionalW"),
-        SdlButton::DpadRight => Some("DirectionalE"),
-        SdlButton::Misc1 => Some("Button0"),
-        SdlButton::Touchpad => Some("Button0"),
+        SdlButton::Back => Some(BindingKey::Button(ButtonElement::Select)),
+        SdlButton::Guide => Some(BindingKey::Button(ButtonElement::Guide)),
+        SdlButton::Start => Some(BindingKey::Button(ButtonElement::Start)),
+        SdlButton::LeftStick => Some(BindingKey::Button(ButtonElement::ClickL)),
+        SdlButton::RightStick => Some(BindingKey::Button(ButtonElement::ClickR)),
+        SdlButton::LeftShoulder => Some(BindingKey::Button(ButtonElement::L)),
+        SdlButton::RightShoulder => Some(BindingKey::Button(ButtonElement::R)),
+        SdlButton::DpadUp => dpad(Direction::N),
+        SdlButton::DpadDown => dpad(Direction::S),
+        SdlButton::DpadLeft => dpad(Direction::W),
+        SdlButton::DpadRight => dpad(Direction::E),
+        SdlButton::Misc1 | SdlButton::Touchpad => {
+            Some(BindingKey::Button(ButtonElement::Numbered(0)))
+        }
         _ => None,
     };
-    if let Some(target) = fixed.filter(|target| layout.has(target)) {
+    if let Some(target) = fixed.and_then(|target| layout.resolve(target)) {
         return Some(target);
     }
     let label = match gamepad.button_label_for_gamepad_type(to_sdl_button(source)) {
@@ -1489,43 +1505,69 @@ fn default_button_target<'a>(
         .elements
         .iter()
         .find(|element| element.label.eq_ignore_ascii_case(label))
-        .map(|element| element.id.as_str())
+        .map(|element| element.key)
         .or_else(|| positional_face_target(source, layout))
 }
 
-fn positional_face_target(source: SdlButton, layout: &InputLayout) -> Option<&str> {
-    let target = match source {
-        SdlButton::South => "ButtonA",
-        SdlButton::East => "ButtonB",
-        SdlButton::West => "ButtonX",
-        SdlButton::North => "ButtonY",
+fn positional_face_target(source: SdlButton, layout: &InputLayout) -> Option<BindingKey> {
+    let element = match source {
+        SdlButton::South => ButtonElement::A,
+        SdlButton::East => ButtonElement::B,
+        SdlButton::West => ButtonElement::X,
+        SdlButton::North => ButtonElement::Y,
         _ => return None,
     };
-    layout.has(target).then_some(target)
+    layout.resolve(BindingKey::Button(element))
 }
 
-fn apply_default_axes(targets: &mut HashMap<String, InputBinding>, layout: &InputLayout) {
-    for (element, axis) in [
-        ("AxisLeftAnalogPositiveX", SdlAxis::LeftX),
-        ("AxisLeftAnalogNegativeX", SdlAxis::LeftX),
-        ("AxisLeftAnalogPositiveY", SdlAxis::LeftY),
-        ("AxisLeftAnalogNegativeY", SdlAxis::LeftY),
-        ("AxisRightAnalogPositiveX", SdlAxis::RightX),
-        ("AxisRightAnalogNegativeX", SdlAxis::RightX),
-        ("AxisRightAnalogPositiveY", SdlAxis::RightY),
-        ("AxisRightAnalogNegativeY", SdlAxis::RightY),
-        ("TriggerLeft", SdlAxis::LeftTrigger),
-        ("TriggerRight", SdlAxis::RightTrigger),
-    ] {
-        if layout.has(element) {
+fn apply_default_axes(targets: &mut HashMap<BindingKey, InputBinding>, layout: &InputLayout) {
+    // A dial declares no side, so it answers to neither stick's key; it is left
+    // unaligned and reads as the primary analog axis, as an SDL paddle does.
+    let sticks = [
+        (
+            AnalogClass::Stick,
+            Some(Alignment::Left),
+            SdlAxis::LeftX,
+            SdlAxis::LeftY,
+        ),
+        (
+            AnalogClass::Stick,
+            Some(Alignment::Right),
+            SdlAxis::RightX,
+            SdlAxis::RightY,
+        ),
+        (AnalogClass::Rotary, None, SdlAxis::LeftX, SdlAxis::LeftY),
+    ];
+    let mut bind = |key, axis| {
+        if layout.has(key) {
             targets.insert(
-                element.to_owned(),
+                key,
                 InputBinding::Axis {
                     axis,
                     invert: false,
                 },
             );
         }
+    };
+    for (class, alignment, x, y) in sticks {
+        for (axis, source) in [(Axis::X, x), (Axis::Y, y)] {
+            for sign in [Sign::Positive, Sign::Negative] {
+                bind(
+                    BindingKey::Analog {
+                        class,
+                        alignment,
+                        component: Component::new(axis, sign),
+                    },
+                    source,
+                );
+            }
+        }
+    }
+    for (alignment, source) in [
+        (Alignment::Left, SdlAxis::LeftTrigger),
+        (Alignment::Right, SdlAxis::RightTrigger),
+    ] {
+        bind(BindingKey::Trigger { alignment }, source);
     }
 }
 
@@ -1547,36 +1589,66 @@ fn profile_matches(
         && profile.layout.as_ref().is_none_or(|id| id == &layout.id)
 }
 
-fn element_button(element: &str) -> Option<GamepadButton> {
-    Some(match element {
-        "ButtonA" => GamepadButton::A,
-        "ButtonB" => GamepadButton::B,
-        "ButtonX" => GamepadButton::X,
-        "ButtonY" => GamepadButton::Y,
-        "ButtonSelect" => GamepadButton::Select,
-        "ButtonGuide" => GamepadButton::Guide,
-        "ButtonStart" => GamepadButton::Start,
-        "ButtonClickL" => GamepadButton::LeftStick,
-        "ButtonClickR" => GamepadButton::RightStick,
-        "ButtonL" => GamepadButton::L,
-        "ButtonR" => GamepadButton::R,
-        "DirectionalN" => GamepadButton::DpadUp,
-        "DirectionalS" => GamepadButton::DpadDown,
-        "DirectionalW" => GamepadButton::DpadLeft,
-        "DirectionalE" => GamepadButton::DpadRight,
-        "Button0" => GamepadButton::Misc1,
+fn element_button(key: BindingKey) -> Option<GamepadButton> {
+    Some(match key {
+        BindingKey::Button(element) => match element {
+            ButtonElement::A => GamepadButton::A,
+            ButtonElement::B => GamepadButton::B,
+            ButtonElement::X => GamepadButton::X,
+            ButtonElement::Y => GamepadButton::Y,
+            ButtonElement::Select => GamepadButton::Select,
+            ButtonElement::Guide => GamepadButton::Guide,
+            ButtonElement::Start => GamepadButton::Start,
+            ButtonElement::ClickL => GamepadButton::LeftStick,
+            ButtonElement::ClickR => GamepadButton::RightStick,
+            ButtonElement::L => GamepadButton::L,
+            ButtonElement::R => GamepadButton::R,
+            ButtonElement::Numbered(0) => GamepadButton::Misc1,
+            _ => return None,
+        },
+        // Only the primary directional reaches the hat. A device's second one
+        // — the N64's C-buttons — is placed elsewhere by the projection and has
+        // no D-pad button to land on.
+        BindingKey::Directional {
+            alignment: None | Some(Alignment::Left),
+            direction,
+        } => match direction {
+            Direction::N => GamepadButton::DpadUp,
+            Direction::S => GamepadButton::DpadDown,
+            Direction::W => GamepadButton::DpadLeft,
+            Direction::E => GamepadButton::DpadRight,
+            _ => return None,
+        },
         _ => return None,
     })
 }
 
-fn element_axis_index(element: &str) -> Option<usize> {
-    match element {
-        "AxisLeftAnalogPositiveX" | "AxisLeftAnalogNegativeX" => Some(0),
-        "AxisLeftAnalogPositiveY" | "AxisLeftAnalogNegativeY" => Some(1),
-        "AxisRightAnalogPositiveX" | "AxisRightAnalogNegativeX" => Some(2),
-        "AxisRightAnalogPositiveY" | "AxisRightAnalogNegativeY" => Some(3),
-        "TriggerLeft" => Some(4),
-        "TriggerRight" => Some(5),
+/// Which of the six gamepad axes a key drives: 0/1 the left stick, 2/3 the
+/// right, 4/5 the triggers.
+fn element_axis_index(key: BindingKey) -> Option<usize> {
+    let (side, axis) = match key {
+        BindingKey::Trigger { alignment } => {
+            return Some(match alignment {
+                Alignment::Left => 4,
+                Alignment::Right => 5,
+                _ => return None,
+            });
+        }
+        BindingKey::Analog {
+            class: AnalogClass::Stick | AnalogClass::Rotary,
+            alignment,
+            component,
+        } => match alignment {
+            // A dial declares no side and reads as the primary analog axis.
+            None | Some(Alignment::Left) => (0, component.axis),
+            Some(Alignment::Right) => (2, component.axis),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    match axis {
+        Axis::X => Some(side),
+        Axis::Y => Some(side + 1),
         _ => None,
     }
 }
@@ -1612,14 +1684,14 @@ fn to_sdl_button(button: SdlButton) -> Button {
     }
 }
 
-fn to_sdl_axis(axis: SdlAxis) -> Axis {
+fn to_sdl_axis(axis: SdlAxis) -> SdlNativeAxis {
     match axis {
-        SdlAxis::LeftX => Axis::LeftX,
-        SdlAxis::LeftY => Axis::LeftY,
-        SdlAxis::RightX => Axis::RightX,
-        SdlAxis::RightY => Axis::RightY,
-        SdlAxis::LeftTrigger => Axis::TriggerLeft,
-        SdlAxis::RightTrigger => Axis::TriggerRight,
+        SdlAxis::LeftX => SdlNativeAxis::LeftX,
+        SdlAxis::LeftY => SdlNativeAxis::LeftY,
+        SdlAxis::RightX => SdlNativeAxis::RightX,
+        SdlAxis::RightY => SdlNativeAxis::RightY,
+        SdlAxis::LeftTrigger => SdlNativeAxis::TriggerLeft,
+        SdlAxis::RightTrigger => SdlNativeAxis::TriggerRight,
     }
 }
 
@@ -1673,7 +1745,7 @@ fn load_keyboard_mappings(
 
 #[cfg(test)]
 fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Result<(), String> {
-    for target in database.bindings.keys() {
+    for &target in database.bindings.keys() {
         if !layouts.iter().any(|layout| layout.has(target)) {
             return Err(format!(
                 "remapping target {target} is absent from every configured layout"
@@ -1696,7 +1768,7 @@ fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Re
         if matching.is_empty() {
             continue;
         }
-        for target in profile.bindings.keys() {
+        for &target in profile.bindings.keys() {
             if !matching.iter().any(|layout| layout.has(target)) {
                 return Err(format!(
                     "remapping target {target} is absent from matching configured layouts"
@@ -1718,15 +1790,19 @@ fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Re
 mod tests {
     use super::*;
 
+    fn key(text: &str) -> BindingKey {
+        text.parse().expect("test binding key")
+    }
+
     #[test]
     fn switch_face_labels_are_not_positional() {
         let registry = LayoutRegistry::embedded().unwrap();
         let layout = registry.layout("SWITCH_PRO_CONTROLLER").unwrap();
         assert_eq!(
-            layout.elements.iter().find(|e| e.label == "B").unwrap().id,
-            "ButtonB"
+            layout.elements.iter().find(|e| e.label == "B").unwrap().key,
+            key("button.b")
         );
-        assert_eq!(element_button("ButtonB"), Some(GamepadButton::B));
+        assert_eq!(element_button(key("button.b")), Some(GamepadButton::B));
     }
 
     #[test]
@@ -1773,7 +1849,7 @@ mod tests {
         let defaults = CompiledKeyboardMapping::new(source, layout).unwrap();
         let mut mapping = defaults.clone();
 
-        mapping.set("ButtonA", Some("KeyZ".to_owned()));
+        mapping.set(key("button.a"), Some("KeyZ".to_owned()));
         assert_eq!(
             mapping.state(&HashSet::from(["KeyX".to_owned()])).buttons & GamepadButton::A.mask(),
             0
@@ -1783,7 +1859,7 @@ mod tests {
             0
         );
 
-        mapping.restore("ButtonA", Some(&defaults));
+        mapping.restore(key("button.a"), Some(&defaults));
         assert_ne!(
             mapping.state(&HashSet::from(["KeyX".to_owned()])).buttons & GamepadButton::A.mask(),
             0
@@ -1796,7 +1872,7 @@ mod tests {
         let mut pointer = PointerSample::default();
         pointer.set_relative([50.0, 0.0], now);
         let mappings = HashMap::from([(
-            "AxisRightAnalogPositiveX".to_owned(),
+            key("analog.stick.right.x+"),
             MouseAxisMap {
                 source: SourceControl::MouseDelta {
                     axis: PointerAxis::X,
@@ -1822,7 +1898,7 @@ mod tests {
         let mut pointer = PointerSample::default();
         pointer.set_position(Some([i16::MAX, 0]));
         let mappings = HashMap::from([(
-            "AxisLeftAnalogPositiveX".to_owned(),
+            key("analog.stick.left.x+"),
             MouseAxisMap {
                 source: SourceControl::MousePosition {
                     axis: PointerAxis::X,
@@ -1842,13 +1918,23 @@ mod tests {
     #[test]
     fn rejects_user_targets_outside_the_selected_layout() {
         let registry = LayoutRegistry::embedded().unwrap();
-        let remap = RemapDatabase::from_json(
-            r#"{"bindings":{"DefinitelyNotAInputElement":{"button":"south"}}}"#,
-        )
-        .unwrap();
+        // Well-formed, but an Xbox pad has no Z button.
+        let remap =
+            RemapDatabase::from_json(r#"{"bindings":{"button.z":{"button":"south"}}}"#).unwrap();
         assert!(
             validate_remappings(&remap, &[registry.layout("XBOX_CONTROLLER").unwrap()]).is_err()
         );
+    }
+
+    #[test]
+    fn a_target_the_grammar_does_not_admit_fails_the_document() {
+        // Not a layout question but a syntax one, so it is caught at parse and
+        // names the offending key rather than being dropped silently later.
+        let error = RemapDatabase::from_json(
+            r#"{"bindings":{"DefinitelyNotAInputElement":{"button":"south"}}}"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("DefinitelyNotAInputElement"), "{error}");
     }
 
     #[test]

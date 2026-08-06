@@ -3,13 +3,26 @@
 //! Layouts come from consolespec's `inputspec` documents, embedded at build
 //! time by `build.rs`. An inputspec does not spell its elements out: it declares
 //! *clusters* — `axes = 2, alignment = "left"` for a stick, `directions = 4`
-//! D-pad — and the element ids expand from them by the rules in [`expand`]. The
-//! element vocabulary is the same one the SDL hooks, the hub, and the plugin
-//! configuration documents use; it is now derived rather than transcribed.
+//! D-pad — and the elements expand from them by the rules in [`expand`].
+//!
+//! Each element carries two names. The id (`ButtonA`) is a display handle and
+//! depends on what else the device declares. The [`BindingKey`] (`button.a`) is
+//! what a binding names: it is built from the cluster's own fields, so it is
+//! stable against a device gaining a cluster, and it is the vocabulary the SDL
+//! hooks, the hub, the keyboard defaults and the plugin configuration documents
+//! share. See [`crate::key`] for the grammar.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::str::FromStr;
+
+pub use crate::key::{
+    Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Direction, Peripheral,
+    RumbleMotor, RumbleSize, Sign,
+};
+
+use crate::projection::{Projection, SdlSensor, Slot};
 
 include!(concat!(env!("OUT_DIR"), "/inputspec.rs"));
 
@@ -49,8 +62,6 @@ struct InputDocument {
     #[serde(default)]
     touchscreen: Vec<PlainDocument>,
     #[serde(default)]
-    keyboard: Vec<PlainDocument>,
-    #[serde(default)]
     microphone: Vec<PlainDocument>,
     #[serde(default)]
     camera: Vec<PlainDocument>,
@@ -69,8 +80,7 @@ struct DirectionalDocument {
     /// Present only where a device has more than one directional cluster, and
     /// then on every one of them: the N64's D-pad and C-buttons, the Virtual
     /// Boy's two D-pads. It is the description's own way of telling them
-    /// apart, and it is what the binding key will be keyed on.
-    #[allow(dead_code)]
+    /// apart, and it is what the binding key is keyed on.
     alignment: Option<String>,
 }
 
@@ -96,46 +106,33 @@ struct TriggerDocument {
 struct RumbleDocument {
     label: Option<String>,
     size: String,
+    alignment: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PointerDocument {
     label: Option<String>,
     dimensions: u8,
+    alignment: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PlainDocument {
     label: Option<String>,
+    alignment: Option<String>,
 }
 
-/// A button's semantic element name, capitalized into the element id it forms.
-/// Anything else is a numbered button, `"0"` through `"31"`.
-fn button_suffix(element: &str) -> Option<String> {
-    let named = match element {
-        "a" => "A",
-        "b" => "B",
-        "c" => "C",
-        "x" => "X",
-        "y" => "Y",
-        "z" => "Z",
-        "l" => "L",
-        "r" => "R",
-        "start" => "Start",
-        "select" => "Select",
-        "guide" => "Guide",
-        "clickl" => "ClickL",
-        "clickr" => "ClickR",
-        digits => {
-            return digits
-                .parse::<u8>()
-                .ok()
-                .filter(|index| *index <= 31)
-                .filter(|_| digits.chars().all(|character| character.is_ascii_digit()))
-                .map(|_| digits.to_owned());
-        }
-    };
-    Some(named.to_owned())
+/// A button's element name, capitalized into the element id it forms.
+fn button_suffix(element: ButtonElement) -> String {
+    match element {
+        ButtonElement::Start => "Start".to_owned(),
+        ButtonElement::Select => "Select".to_owned(),
+        ButtonElement::Guide => "Guide".to_owned(),
+        ButtonElement::ClickL => "ClickL".to_owned(),
+        ButtonElement::ClickR => "ClickR".to_owned(),
+        ButtonElement::Numbered(index) => index.to_string(),
+        lettered => lettered.to_string().to_ascii_uppercase(),
+    }
 }
 
 /// `"3D Slider"` -> `"3DSlider"`, for ids derived from a cluster label.
@@ -152,47 +149,75 @@ fn pascal_case(label: &str) -> String {
 }
 
 /// The cardinals, then the intercardinals, as the schema orders them.
-const HAT4: [&str; 4] = ["N", "E", "S", "W"];
-const HAT8: [&str; 8] = ["N", "E", "S", "W", "NE", "SE", "SW", "NW"];
+const HAT4: [Direction; 4] = [Direction::N, Direction::E, Direction::S, Direction::W];
+const HAT8: [Direction; 8] = [
+    Direction::N,
+    Direction::E,
+    Direction::S,
+    Direction::W,
+    Direction::Ne,
+    Direction::Se,
+    Direction::Sw,
+    Direction::Nw,
+];
 
-const AXES: [&str; 3] = ["X", "Y", "Z"];
+const AXES: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
 
-fn direction_label(direction: &str) -> &'static str {
-    match direction {
-        "N" => "Up",
-        "E" => "Right",
-        "S" => "Down",
-        "W" => "Left",
-        "NE" => "Up Right",
-        "SE" => "Down Right",
-        "SW" => "Down Left",
-        _ => "Up Left",
+/// `N` -> `"N"`, `Ne` -> `"NE"`, for the element id a direction forms.
+fn direction_suffix(direction: Direction) -> String {
+    direction.to_string().to_ascii_uppercase()
+}
+
+/// `X` -> `"X"`, for the element id an axis forms.
+fn axis_suffix(axis: Axis) -> String {
+    axis.to_string().to_ascii_uppercase()
+}
+
+/// The word an inputspec would have used for one signed half of an axis.
+/// Sticks, sliders and pointers are named for the screen direction they push
+/// toward; motion sensors for the rotation or acceleration they measure. `None`
+/// is a pointer, which has a screen direction but no class of its own.
+fn axis_label(class: Option<AnalogClass>, component: Component) -> &'static str {
+    let positive = component.is_positive();
+    match (class, component.axis, positive) {
+        (Some(AnalogClass::Gyroscope), Axis::X, true) => "Roll Right",
+        (Some(AnalogClass::Gyroscope), Axis::X, false) => "Roll Left",
+        (Some(AnalogClass::Gyroscope), Axis::Y, true) => "Pitch Up",
+        (Some(AnalogClass::Gyroscope), Axis::Y, false) => "Pitch Down",
+        (Some(AnalogClass::Gyroscope), _, true) => "Yaw Right",
+        (Some(AnalogClass::Gyroscope), _, false) => "Yaw Left",
+        (Some(AnalogClass::Accelerometer), Axis::X, true) => "Right",
+        (Some(AnalogClass::Accelerometer), Axis::X, false) => "Left",
+        (Some(AnalogClass::Accelerometer), Axis::Y, true) => "Forward",
+        (Some(AnalogClass::Accelerometer), Axis::Y, false) => "Backward",
+        (Some(AnalogClass::Accelerometer), _, true) => "Up",
+        (Some(AnalogClass::Accelerometer), _, false) => "Down",
+        (_, Axis::X, true) => "Right",
+        (_, Axis::X, false) => "Left",
+        (_, Axis::Y, true) => "Up",
+        (_, Axis::Y, false) => "Down",
+        (_, _, true) => "Forward",
+        (_, _, false) => "Backward",
     }
 }
 
-/// The word an inputspec would have used for one signed axis of a cluster.
-/// Sticks, sliders and pointers are named for the screen direction they push
-/// toward; motion sensors for the rotation or acceleration they measure.
-fn axis_label(class: &str, axis: &str, positive: bool) -> &'static str {
-    match (class, axis, positive) {
-        ("gyroscope", "X", true) => "Roll Right",
-        ("gyroscope", "X", false) => "Roll Left",
-        ("gyroscope", "Y", true) => "Pitch Up",
-        ("gyroscope", "Y", false) => "Pitch Down",
-        ("gyroscope", _, true) => "Yaw Right",
-        ("gyroscope", _, false) => "Yaw Left",
-        ("accelerometer", "X", true) => "Right",
-        ("accelerometer", "X", false) => "Left",
-        ("accelerometer", "Y", true) => "Forward",
-        ("accelerometer", "Y", false) => "Backward",
-        ("accelerometer", _, true) => "Up",
-        ("accelerometer", _, false) => "Down",
-        (_, "X", true) => "Right",
-        (_, "X", false) => "Left",
-        (_, "Y", true) => "Up",
-        (_, "Y", false) => "Down",
-        (_, _, true) => "Forward",
-        (_, _, false) => "Backward",
+/// The two signed halves of one degree of freedom, positive first, as the
+/// element ids and the binding keys both order them.
+fn halves(axis: Axis) -> [(Component, &'static str); 2] {
+    [
+        (Component::new(axis, Sign::Positive), "Positive"),
+        (Component::new(axis, Sign::Negative), "Negative"),
+    ]
+}
+
+/// Reads an optional schema `alignment` field, rejecting a value the schema
+/// does not allow rather than letting it through into a key nothing matches.
+fn alignment_of(value: Option<&str>) -> Result<Option<Alignment>, String> {
+    match value {
+        None => Ok(None),
+        Some(text) => Alignment::from_str(text)
+            .map(Some)
+            .map_err(|_| format!("alignment `{text}`")),
     }
 }
 
@@ -200,8 +225,54 @@ fn axis_label(class: &str, axis: &str, positive: bool) -> &'static str {
 #[serde(rename_all = "camelCase")]
 pub struct InputElement {
     pub id: String,
+    /// What a binding names. Unlike the id, it is context-free — built from the
+    /// cluster's own fields — so adding a cluster to a device never renames an
+    /// existing key. Serializes as its dotted string.
+    pub key: BindingKey,
     pub label: String,
     pub kind: String,
+}
+
+/// One cluster of an inputspec, before expansion.
+///
+/// The elements are what a binding names; the cluster is what the SDL
+/// projection allocates. A cluster is addressed as `<kind>[.<discriminator>]`,
+/// which is the key the projection table uses.
+#[derive(Clone, Debug)]
+pub struct Cluster {
+    /// `button`, `directional`, `analog`, `trigger`, `rumble`, `pointer`, …
+    pub kind: &'static str,
+    /// `analog` only: `stick`, `slider`, `rotary`, `gyroscope`, `accelerometer`.
+    pub class: Option<AnalogClass>,
+    /// Where this cluster sits, for the kinds whose keys carry an alignment
+    /// *and* a component after it. It is what an unqualified key resolves to.
+    pub alignment: Option<Alignment>,
+    /// The token [`path`](Self::path) appends: the alignment for most kinds, the
+    /// element for a `button`, the size-or-side for a `rumble`.
+    pub discriminator: Option<String>,
+    /// Degrees of freedom for `analog`/`pointer`, directions for
+    /// `directional`, and 1 for everything else.
+    pub arity: u8,
+    /// Ids this cluster expanded into, in component order.
+    pub elements: Vec<String>,
+}
+
+impl Cluster {
+    /// The projection key: `button.z`, `directional.right`, `analog.stick.left`.
+    pub fn path(&self) -> String {
+        let mut path = self.kind.to_owned();
+        for part in [
+            self.class.map(AnalogClass::as_str),
+            self.discriminator.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            path.push('.');
+            path.push_str(part);
+        }
+        path
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -213,7 +284,10 @@ pub struct InputLayout {
     pub name: String,
     pub elements: Vec<InputElement>,
     #[serde(skip)]
-    element_ids: HashSet<String>,
+    pub clusters: Vec<Cluster>,
+    /// Every element's binding key, for the membership test bindings do.
+    #[serde(skip)]
+    keys: HashSet<BindingKey>,
 }
 
 /// Expands an inputspec's clusters into the element vocabulary.
@@ -221,10 +295,11 @@ pub struct InputLayout {
 /// Two clusters can expand onto the same id — the N64 pad declares two
 /// directionals, the DualSense two small rumble motors — so a repeat takes an
 /// ordinal suffix (`DirectionalN2`) in declaration order.
-fn expand(document: &InputDocument) -> Result<Vec<InputElement>, String> {
+fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>), String> {
     let mut elements: Vec<InputElement> = Vec::new();
+    let mut clusters: Vec<Cluster> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut push = |id: String, label: String, kind: &str| {
+    let mut push = |id: String, key: BindingKey, label: String, kind: &str| -> String {
         let id = if seen.insert(id.clone()) {
             id
         } else {
@@ -238,147 +313,261 @@ fn expand(document: &InputDocument) -> Result<Vec<InputElement>, String> {
             }
         };
         elements.push(InputElement {
-            id,
+            id: id.clone(),
+            key,
             label,
             kind: kind.to_owned(),
         });
+        id
     };
 
     for button in &document.button {
-        let suffix = button_suffix(&button.element)
-            .ok_or_else(|| format!("unknown button element `{}`", button.element))?;
-        push(
-            format!("Button{suffix}"),
+        let element = ButtonElement::from_str(&button.element)
+            .map_err(|_| format!("unknown button element `{}`", button.element))?;
+        let id = push(
+            format!("Button{}", button_suffix(element)),
+            BindingKey::Button(element),
             button.label.clone(),
             "Button",
         );
+        clusters.push(Cluster {
+            kind: "button",
+            class: None,
+            alignment: None,
+            discriminator: Some(element.to_string()),
+            arity: 1,
+            elements: vec![id],
+        });
     }
     for directional in &document.directional {
-        let directions: &[&str] = match directional.directions {
+        let directions: &[Direction] = match directional.directions {
             4 => &HAT4,
             8 => &HAT8,
             hats => return Err(format!("directional cluster with {hats} directions")),
         };
         let cluster = directional.label.as_deref().unwrap_or("D-Pad");
-        for direction in directions {
-            push(
-                format!("Directional{direction}"),
-                format!("{cluster} {}", direction_label(direction)),
-                "Directional",
-            );
-        }
+        let alignment = alignment_of(directional.alignment.as_deref())?;
+        let ids = directions
+            .iter()
+            .map(|direction| {
+                push(
+                    format!("Directional{}", direction_suffix(*direction)),
+                    BindingKey::Directional {
+                        alignment,
+                        direction: *direction,
+                    },
+                    format!("{cluster} {}", direction.label()),
+                    "Directional",
+                )
+            })
+            .collect();
+        clusters.push(Cluster {
+            kind: "directional",
+            class: None,
+            alignment,
+            discriminator: alignment.map(|alignment| alignment.to_string()),
+            arity: directional.directions,
+            elements: ids,
+        });
     }
     for analog in &document.analog {
         // `class` says what the cluster is, `alignment` says where it sits.
         // Both are optional: class defaults to a stick, and alignment appears
         // only where a device has two clusters of the same class to tell apart.
-        let class = analog.class.as_deref().unwrap_or("stick");
-        let alignment = analog.alignment.as_deref();
+        let class = match analog.class.as_deref() {
+            None => AnalogClass::Stick,
+            Some(text) => {
+                AnalogClass::from_str(text).map_err(|_| format!("analog class `{text}`"))?
+            }
+        };
+        let alignment = alignment_of(analog.alignment.as_deref())?;
         let prefix = match (class, alignment) {
             // A device with one stick need not say which side it is on; the
             // sole stick is the primary one. A rotary dial has no side at all
             // and reads as the primary analog axis, as an SDL paddle does.
-            ("stick" | "rotary", Some("left") | None) => "AxisLeftAnalog".to_owned(),
-            ("stick" | "rotary", Some("right")) => "AxisRightAnalog".to_owned(),
-            ("gyroscope", None) => "GyroscopeAxis".to_owned(),
-            ("accelerometer", None) => "AccelerometerAxis".to_owned(),
-            // A cluster that shares its class with another on the same device,
-            // or a slider, has no id in this vocabulary — there is no element
-            // for "the Nunchuk's accelerometer" or "the 3DS depth slider".
-            // Qualifying by position or label keeps the id unique; nothing
-            // binds these until binding keys move to cluster paths.
+            (AnalogClass::Stick | AnalogClass::Rotary, Some(Alignment::Left) | None) => {
+                "AxisLeftAnalog".to_owned()
+            }
+            (AnalogClass::Stick | AnalogClass::Rotary, Some(Alignment::Right)) => {
+                "AxisRightAnalog".to_owned()
+            }
+            (AnalogClass::Gyroscope, None) => "GyroscopeAxis".to_owned(),
+            (AnalogClass::Accelerometer, None) => "AccelerometerAxis".to_owned(),
+            // A cluster sharing its class with another on the same device, or a
+            // slider, has no name of its own in the *id* vocabulary — there is
+            // no id for "the Nunchuk's accelerometer" or "the 3DS depth slider".
+            // Qualifying by position or label keeps the id unique. Binding keys
+            // have no such trouble; only the display handle does.
             (class, Some(side)) => format!(
                 "{}{}Axis",
-                pascal_case(side),
-                pascal_case(class)
+                pascal_case(side.as_str()),
+                pascal_case(class.as_str())
             ),
             (class, None) => match analog.label.as_deref() {
-                Some(label) => format!("{}{}Axis", pascal_case(label), pascal_case(class)),
+                Some(label) => format!("{}{}Axis", pascal_case(label), pascal_case(class.as_str())),
                 None => return Err(format!("`{class}` cluster with no alignment or label")),
             },
         };
         if !(1..=3).contains(&analog.axes) {
             return Err(format!("analog cluster with {} axes", analog.axes));
         }
-        let cluster = analog.label.clone().unwrap_or_else(|| match (class, alignment) {
-            ("stick", None) => "Stick".to_owned(),
-            ("stick", Some("left")) => "Left Stick".to_owned(),
-            ("stick", Some("right")) => "Right Stick".to_owned(),
-            ("rotary", _) => "Dial".to_owned(),
-            (class, _) => pascal_case(class),
-        });
+        let cluster = analog
+            .label
+            .clone()
+            .unwrap_or_else(|| match (class, alignment) {
+                (AnalogClass::Stick, None) => "Stick".to_owned(),
+                (AnalogClass::Stick, Some(Alignment::Left)) => "Left Stick".to_owned(),
+                (AnalogClass::Stick, Some(Alignment::Right)) => "Right Stick".to_owned(),
+                (AnalogClass::Rotary, _) => "Dial".to_owned(),
+                (class, _) => pascal_case(class.as_str()),
+            });
+        let mut ids = Vec::new();
         for axis in &AXES[..usize::from(analog.axes)] {
-            for positive in [true, false] {
-                let sign = if positive { "Positive" } else { "Negative" };
-                push(
-                    format!("{prefix}{sign}{axis}"),
-                    format!("{cluster} {}", axis_label(class, axis, positive)),
-                    if positive { "AxisPositive" } else { "AxisNegative" },
-                );
+            for (component, sign) in halves(*axis) {
+                ids.push(push(
+                    format!("{prefix}{sign}{}", axis_suffix(*axis)),
+                    BindingKey::Analog {
+                        class,
+                        alignment,
+                        component,
+                    },
+                    format!("{cluster} {}", axis_label(Some(class), component)),
+                    if component.is_positive() {
+                        "AxisPositive"
+                    } else {
+                        "AxisNegative"
+                    },
+                ));
             }
         }
+        clusters.push(Cluster {
+            kind: "analog",
+            class: Some(class),
+            alignment,
+            discriminator: alignment.map(|alignment| alignment.to_string()),
+            arity: analog.axes,
+            elements: ids,
+        });
     }
     for trigger in &document.trigger {
-        let side = match trigger.alignment.as_str() {
-            "left" => "Left",
-            "right" => "Right",
-            other => return Err(format!("trigger alignment `{other}`")),
+        let alignment = match Alignment::from_str(&trigger.alignment) {
+            Ok(side @ (Alignment::Left | Alignment::Right)) => side,
+            _ => return Err(format!("trigger alignment `{}`", trigger.alignment)),
         };
-        push(
+        let side = pascal_case(alignment.as_str());
+        let id = push(
             format!("Trigger{side}"),
+            BindingKey::Trigger { alignment },
             trigger
                 .label
                 .clone()
                 .unwrap_or_else(|| format!("{side} Trigger")),
             "Trigger",
         );
+        clusters.push(Cluster {
+            kind: "trigger",
+            class: None,
+            alignment: Some(alignment),
+            discriminator: Some(alignment.to_string()),
+            arity: 1,
+            elements: vec![id],
+        });
     }
     for rumble in &document.rumble {
-        let (size, fallback) = match rumble.size.as_str() {
-            "big" => ("Big", "Strong Rumble"),
-            "small" => ("Small", "Weak Rumble"),
-            other => return Err(format!("rumble size `{other}`")),
+        let size = RumbleSize::from_str(&rumble.size)
+            .map_err(|_| format!("rumble size `{}`", rumble.size))?;
+        let (suffix, fallback) = match size {
+            RumbleSize::Big => ("Big", "Strong Rumble"),
+            RumbleSize::Small => ("Small", "Weak Rumble"),
         };
-        push(
-            format!("Rumble{size}"),
+        // A device with two motors of one size tells them apart by side.
+        let motor = match alignment_of(rumble.alignment.as_deref())? {
+            Some(alignment) => RumbleMotor::Aligned(alignment),
+            None => RumbleMotor::Size(size),
+        };
+        let id = push(
+            format!("Rumble{suffix}"),
+            BindingKey::Rumble(motor),
             rumble.label.clone().unwrap_or_else(|| fallback.to_owned()),
             "Rumble",
         );
+        clusters.push(Cluster {
+            kind: "rumble",
+            class: None,
+            alignment: None,
+            discriminator: Some(motor.to_string()),
+            arity: 1,
+            elements: vec![id],
+        });
     }
     for pointer in &document.pointer {
         if !(2..=3).contains(&pointer.dimensions) {
             return Err(format!("pointer with {} dimensions", pointer.dimensions));
         }
         let cluster = pointer.label.as_deref().unwrap_or("Pointer");
+        let alignment = alignment_of(pointer.alignment.as_deref())?;
         // The absolute position, then the relative axis each dimension carries.
         push(
             format!("Pointer{}D", pointer.dimensions),
+            BindingKey::Pointer {
+                alignment,
+                component: None,
+            },
             cluster.to_owned(),
             "Pointer",
         );
+        let mut ids = Vec::new();
         for axis in &AXES[..usize::from(pointer.dimensions)] {
-            for positive in [true, false] {
-                let sign = if positive { "Positive" } else { "Negative" };
-                push(
-                    format!("PointerAxis{sign}{axis}"),
-                    format!("{cluster} {}", axis_label("pointer", axis, positive)),
-                    if positive { "AxisPositive" } else { "AxisNegative" },
-                );
+            for (component, sign) in halves(*axis) {
+                ids.push(push(
+                    format!("PointerAxis{sign}{}", axis_suffix(*axis)),
+                    BindingKey::Pointer {
+                        alignment,
+                        component: Some(component),
+                    },
+                    format!("{cluster} {}", axis_label(None, component)),
+                    if component.is_positive() {
+                        "AxisPositive"
+                    } else {
+                        "AxisNegative"
+                    },
+                ));
             }
         }
+        clusters.push(Cluster {
+            kind: "pointer",
+            class: None,
+            alignment,
+            discriminator: alignment.map(|alignment| alignment.to_string()),
+            arity: pointer.dimensions,
+            elements: ids,
+        });
     }
-    for (entries, name) in [
-        (&document.touchscreen, "Touchscreen"),
-        (&document.keyboard, "Keyboard"),
-        (&document.microphone, "Microphone"),
-        (&document.camera, "Camera"),
+    for (entries, name, kind) in [
+        (
+            &document.touchscreen,
+            "Touchscreen",
+            Peripheral::Touchscreen,
+        ),
+        (&document.microphone, "Microphone", Peripheral::Microphone),
+        (&document.camera, "Camera", Peripheral::Camera),
     ] {
         for entry in entries {
-            push(
+            let alignment = alignment_of(entry.alignment.as_deref())?;
+            let id = push(
                 name.to_owned(),
+                BindingKey::Peripheral { kind, alignment },
                 entry.label.clone().unwrap_or_else(|| name.to_owned()),
                 name,
             );
+            clusters.push(Cluster {
+                kind: kind.as_str(),
+                class: None,
+                alignment,
+                discriminator: alignment.map(|alignment| alignment.to_string()),
+                arity: 1,
+                elements: vec![id],
+            });
         }
     }
 
@@ -386,7 +575,7 @@ fn expand(document: &InputDocument) -> Result<Vec<InputElement>, String> {
         return Err("no elements".to_owned());
     }
     elements.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(elements)
+    Ok((elements, clusters))
 }
 
 impl InputLayout {
@@ -394,9 +583,9 @@ impl InputLayout {
     pub fn from_toml(source: &str) -> Result<Self, String> {
         let document: Document =
             toml::from_str(source).map_err(|error| format!("invalid inputspec: {error}"))?;
-        let elements = expand(&document.input)
+        let (elements, clusters) = expand(&document.input)
             .map_err(|error| format!("inputspec {}: {error}", document.input.id))?;
-        let element_ids = elements.iter().map(|element| element.id.clone()).collect();
+        let keys = elements.iter().map(|element| element.key).collect();
         let name = document
             .meta
             .and_then(|meta| meta.name)
@@ -405,12 +594,61 @@ impl InputLayout {
             id: document.input.id,
             name,
             elements,
-            element_ids,
+            clusters,
+            keys,
         })
     }
 
-    pub fn has(&self, element: &str) -> bool {
-        self.element_ids.contains(element)
+    /// Whether this device has the control a binding key names.
+    pub fn has(&self, key: BindingKey) -> bool {
+        self.keys.contains(&key)
+    }
+
+    /// Resolves a canonical binding key against this device.
+    ///
+    /// A key that names no alignment means "the primary one". Most pads have a
+    /// single D-pad and write `directional.n`; the N64's must say
+    /// `directional.left.n`, because the C-buttons are a second directional and
+    /// force both to declare where they sit. The unqualified key still has to
+    /// reach it, so it falls back to the first cluster of that kind, in
+    /// declaration order. Only that one answers to it — the C-buttons must be
+    /// named.
+    pub fn resolve(&self, key: BindingKey) -> Option<BindingKey> {
+        if self.has(key) {
+            return Some(key);
+        }
+        // Only a key with a component after the alignment has a cluster to fall
+        // back to: `trigger.left` and `rumble.big` end at theirs, and an already
+        // aligned key asked for one particular cluster and must not get another.
+        let (kind, class) = match key {
+            BindingKey::Directional {
+                alignment: None, ..
+            } => ("directional", None),
+            BindingKey::Analog {
+                class,
+                alignment: None,
+                ..
+            } => ("analog", Some(class)),
+            BindingKey::Pointer {
+                alignment: None,
+                component: Some(_),
+            } => ("pointer", None),
+            _ => return None,
+        };
+        let cluster = self
+            .clusters
+            .iter()
+            .find(|cluster| cluster.kind == kind && cluster.class == class)?;
+        let candidate = key.with_alignment(cluster.alignment);
+        self.has(candidate).then_some(candidate)
+    }
+
+    /// Whether the device declares an analog cluster of the given class —
+    /// `gyroscope`, `accelerometer` — wherever on the device it sits.
+    pub fn has_analog(&self, class: AnalogClass) -> bool {
+        self.clusters
+            .iter()
+            .any(|cluster| cluster.kind == "analog" && cluster.class == Some(class))
     }
 
     pub fn same_topology(&self, other: &Self) -> bool {
@@ -422,71 +660,71 @@ impl InputLayout {
                 .all(|(left, right)| left.id == right.id && left.kind == right.kind)
     }
 
-    /// Capabilities for a standard SDL virtual gamepad projection. Elements
-    /// without an SDL gamepad equivalent remain unavailable through this output
-    /// target.
-    pub fn sdl_output(&self) -> SdlOutputLayout {
-        let mut button_mask = 0u32;
-        for (element, index) in [
-            ("ButtonA", 0),
-            ("ButtonB", 1),
-            ("ButtonX", 2),
-            ("ButtonY", 3),
-            ("ButtonSelect", 4),
-            ("ButtonGuide", 5),
-            ("ButtonStart", 6),
-            ("ButtonClickL", 7),
-            ("ButtonClickR", 8),
-            ("ButtonL", 9),
-            ("ButtonR", 10),
-            ("DirectionalN", 11),
-            ("DirectionalS", 12),
-            ("DirectionalW", 13),
-            ("DirectionalE", 14),
-            ("Button0", 15),
-        ] {
-            if self.has(element) {
-                button_mask |= 1 << index;
+    /// Capabilities of this layout's SDL virtual gamepad.
+    ///
+    /// Which slot each cluster occupies is a mapping decision and lives in the
+    /// shared projection table, not here — see [`crate::projection`]. A cluster
+    /// the projection does not place has no SDL representation and is simply
+    /// absent from the pad.
+    pub fn sdl_output(&self, projection: &Projection) -> SdlOutputLayout {
+        let mut output = SdlOutputLayout::default();
+        for cluster in &self.clusters {
+            // Components are checked first, and win. A device's *second*
+            // directional is placed direction by direction — the N64's
+            // C-buttons onto the right stick — and must not fall back to the
+            // hat, which its first directional already holds.
+            if let Some(slots) = projection.component_slots(&self.id, cluster) {
+                for slot in slots {
+                    output.claim(slot);
+                }
+                continue;
+            }
+            if let Some(slot) = projection.resolve(&self.id, cluster) {
+                output.claim(slot);
             }
         }
-        let mut axis_mask = 0u32;
-        if self.has("AxisLeftAnalogPositiveX") || self.has("AxisLeftAnalogNegativeX") {
-            axis_mask |= 1 << 0;
-        }
-        if self.has("AxisLeftAnalogPositiveY") || self.has("AxisLeftAnalogNegativeY") {
-            axis_mask |= 1 << 1;
-        }
-        if self.has("AxisRightAnalogPositiveX") || self.has("AxisRightAnalogNegativeX") {
-            axis_mask |= 1 << 2;
-        }
-        if self.has("AxisRightAnalogPositiveY") || self.has("AxisRightAnalogNegativeY") {
-            axis_mask |= 1 << 3;
-        }
-        if self.has("TriggerLeft") {
-            axis_mask |= 1 << 4;
-        }
-        if self.has("TriggerRight") {
-            axis_mask |= 1 << 5;
-        }
-        // Pointer X/Y are Snowglass-specific raw joystick axes and are always
-        // present, independently of the selected controller topology.
-        axis_mask |= (1 << 6) | (1 << 7);
-        SdlOutputLayout {
-            button_mask,
-            axis_mask,
-            accelerometer: self.has("AccelerometerAxisPositiveX")
-                || self.has("AccelerometerAxisNegativeX"),
-            gyroscope: self.has("GyroscopeAxisPositiveX") || self.has("GyroscopeAxisNegativeX"),
-        }
+        // Pointer X/Y are Snowglass-specific raw joystick axes, outside the
+        // gamepad mapping and present regardless of the selected topology.
+        output.axis_mask |= (1 << 6) | (1 << 7);
+        output
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SdlOutputLayout {
     pub button_mask: u32,
     pub axis_mask: u32,
-    pub accelerometer: bool,
-    pub gyroscope: bool,
+    /// One bit per [`SdlSensor`], so a device with a left *and* a right
+    /// accelerometer — a Wii Remote with a Nunchuk, or a pair of Joy-Cons —
+    /// can declare both. `Copy` is worth keeping; a `Vec` here is not.
+    pub sensor_mask: u8,
+}
+
+impl SdlOutputLayout {
+    fn claim(&mut self, slot: Slot) {
+        match slot {
+            Slot::Button(index) => self.button_mask |= 1 << index,
+            Slot::Hat => self.button_mask |= 0b1111 << 11,
+            Slot::Stick(axis) => self.axis_mask |= 0b11 << axis,
+            Slot::Axis(axis) | Slot::HalfAxis { axis, .. } => self.axis_mask |= 1 << axis,
+            Slot::Pointer => self.axis_mask |= (1 << 6) | (1 << 7),
+            Slot::Sensor(sensor) => self.sensor_mask |= 1 << sensor as u8,
+            Slot::Keyboard => {}
+        }
+    }
+
+    pub fn sensors(&self) -> impl Iterator<Item = SdlSensor> + '_ {
+        [
+            SdlSensor::Accelerometer,
+            SdlSensor::Gyroscope,
+            SdlSensor::AccelerometerLeft,
+            SdlSensor::GyroscopeLeft,
+            SdlSensor::AccelerometerRight,
+            SdlSensor::GyroscopeRight,
+        ]
+        .into_iter()
+        .filter(move |sensor| self.sensor_mask & (1 << *sensor as u8) != 0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -497,11 +735,7 @@ pub struct LayoutRegistry {
 impl LayoutRegistry {
     /// The inputspec documents embedded at build time.
     pub fn embedded() -> Result<Self, String> {
-        Self::from_documents(
-            EMBEDDED_INPUTSPEC
-                .iter()
-                .map(|(id, source)| (*id, *source)),
-        )
+        Self::from_documents(EMBEDDED_INPUTSPEC.iter().map(|(id, source)| (*id, *source)))
     }
 
     /// Reads a `consolespec/inputspec` directory, for overriding the embedded
@@ -546,10 +780,7 @@ impl LayoutRegistry {
             // document whose own id disagrees would be unreachable by one name
             // and shadow another by the other.
             if layout.id != id {
-                return Err(format!(
-                    "inputspec {id} declares id {}",
-                    layout.id
-                ));
+                return Err(format!("inputspec {id} declares id {}", layout.id));
             }
             layouts.insert(layout.id.clone(), layout);
         }
@@ -571,7 +802,7 @@ pub struct RemapDatabase {
     pub profiles: Vec<RemapProfile>,
     /// Convenience bindings applied to every matching controller.
     #[serde(default)]
-    pub bindings: HashMap<String, InputBinding>,
+    pub bindings: HashMap<BindingKey, InputBinding>,
 }
 
 impl RemapDatabase {
@@ -587,7 +818,7 @@ pub struct RemapProfile {
     pub product: Option<u16>,
     pub layout: Option<String>,
     #[serde(default)]
-    pub bindings: HashMap<String, InputBinding>,
+    pub bindings: HashMap<BindingKey, InputBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -645,8 +876,11 @@ pub enum SdlAxis {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct KeyboardMapping {
+    /// Keyed canonically — `directional.n`, not `directional.left.n` — so one
+    /// document serves every layout. A key the grammar does not admit fails the
+    /// whole document rather than being dropped where nobody would notice.
     #[serde(default)]
-    pub bindings: HashMap<String, String>,
+    pub bindings: HashMap<BindingKey, String>,
 }
 
 impl KeyboardMapping {
@@ -659,11 +893,15 @@ impl KeyboardMapping {
 mod tests {
     use super::*;
 
+    fn key(text: &str) -> BindingKey {
+        text.parse().expect("test binding key")
+    }
+
     #[test]
     fn parses_embedded_registry() {
         let registry = LayoutRegistry::embedded().unwrap();
         let xbox = registry.layout("XBOX_CONTROLLER").unwrap();
-        assert!(xbox.has("ButtonA"));
+        assert!(xbox.has(key("button.a")));
         assert_eq!(
             registry.layout("GAMECUBE_CONTROLLER").unwrap().name,
             "Nintendo GameCube Controller"
@@ -671,7 +909,7 @@ mod tests {
         // A handheld's built-in controls are not a named product.
         let vita = registry.layout("PSV_LAYOUT").unwrap();
         assert_eq!(vita.name, "PSV_LAYOUT");
-        assert!(xbox.has("AxisLeftAnalogPositiveX"));
+        assert!(xbox.has(key("analog.stick.left.x+")));
         assert!(registry.layouts().count() > 1);
     }
 
@@ -680,30 +918,33 @@ mod tests {
         let registry = LayoutRegistry::embedded().unwrap();
         let pad = registry.layout("GAMECUBE_CONTROLLER").unwrap();
         // `directions = 4` becomes four directionals, `axes = 2` two signed pairs.
-        for element in [
-            "DirectionalN",
-            "DirectionalE",
-            "DirectionalS",
-            "DirectionalW",
-            "AxisLeftAnalogPositiveX",
-            "AxisLeftAnalogNegativeY",
-            "AxisRightAnalogPositiveX",
-            "TriggerLeft",
-            "TriggerRight",
-            "RumbleBig",
-            "RumbleSmall",
+        for text in [
+            "directional.n",
+            "directional.e",
+            "directional.s",
+            "directional.w",
+            "analog.stick.left.x+",
+            "analog.stick.left.y-",
+            "analog.stick.right.x+",
+            "trigger.left",
+            "trigger.right",
+            "rumble.big",
+            "rumble.small",
         ] {
-            assert!(pad.has(element), "{element} missing from GAMECUBE_CONTROLLER");
+            assert!(
+                pad.has(key(text)),
+                "{text} missing from GAMECUBE_CONTROLLER"
+            );
         }
-        assert!(!pad.has("ButtonClickL"));
+        assert!(!pad.has(key("button.clickl")));
 
         // A pointer contributes an absolute element and its relative axes.
         let remote = registry.layout("WII_REMOTE_CONTROLLER").unwrap();
-        assert!(remote.has("Pointer2D"));
-        assert!(remote.has("PointerAxisPositiveX"));
-        assert!(remote.has("AccelerometerAxisNegativeZ"));
+        assert!(remote.has(key("pointer")));
+        assert!(remote.has(key("pointer.x+")));
+        assert!(remote.has(key("analog.accelerometer.z-")));
         // `element = "0"` is the button printed "1" on the shell.
-        assert!(remote.has("Button0"));
+        assert!(remote.has(key("button.0")));
         assert_eq!(
             remote
                 .elements
@@ -719,18 +960,30 @@ mod tests {
         // The N64 pad declares two directionals: the D-pad and the C-buttons.
         let registry = LayoutRegistry::embedded().unwrap();
         let pad = registry.layout("N64_CONTROLLER").unwrap();
-        assert!(pad.has("DirectionalN"));
-        assert!(pad.has("DirectionalN2"));
+        assert!(pad.has(key("directional.left.n")));
+        assert!(pad.has(key("directional.right.n")));
+        assert_eq!(
+            pad.elements
+                .iter()
+                .filter(|element| element.id.starts_with("DirectionalN"))
+                .count(),
+            2
+        );
+        // An unaligned key still reaches the D-pad, never the C-buttons.
+        assert_eq!(
+            pad.resolve(key("directional.n")),
+            Some(key("directional.left.n"))
+        );
     }
 
     #[test]
     fn parses_target_oriented_remap() {
         let remap = RemapDatabase::from_json(
-            r#"{"bindings":{"ButtonA":{"button":"east"},"TriggerLeft":{"axis":"right_trigger","invert":false}}}"#,
+            r#"{"bindings":{"button.a":{"button":"east"},"trigger.left":{"axis":"right_trigger","invert":false}}}"#,
         )
         .unwrap();
         assert!(matches!(
-            remap.bindings["ButtonA"],
+            remap.bindings[&key("button.a")],
             InputBinding::Button {
                 button: SdlButton::East
             }
@@ -740,27 +993,32 @@ mod tests {
     #[test]
     fn compiles_sdl_capabilities_from_layout_elements() {
         let registry = LayoutRegistry::embedded().unwrap();
+        let projection = crate::projection::Projection::embedded().unwrap();
         let switch = registry
             .layout("SWITCH_PRO_CONTROLLER")
             .unwrap()
-            .sdl_output();
+            .sdl_output(&projection);
         assert_ne!(switch.button_mask & (1 << 0), 0); // A / south projection
         assert_ne!(switch.button_mask & (1 << 1), 0); // B / east projection
         assert_ne!(switch.axis_mask & (1 << 0), 0); // left X
         assert_ne!(switch.axis_mask & (1 << 5), 0); // right trigger
-        assert!(switch.accelerometer);
-        assert!(switch.gyroscope);
+        let sensors: Vec<_> = switch.sensors().collect();
+        assert!(sensors.contains(&SdlSensor::Accelerometer));
+        assert!(sensors.contains(&SdlSensor::Gyroscope));
     }
 
     #[test]
     fn parses_embedded_keyboard_mapping() {
         let mapping = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
         assert_eq!(
-            mapping.bindings.get("ButtonA").map(String::as_str),
+            mapping.bindings.get(&key("button.a")).map(String::as_str),
             Some("KeyX")
         );
         assert_eq!(
-            mapping.bindings.get("DirectionalN").map(String::as_str),
+            mapping
+                .bindings
+                .get(&key("directional.n"))
+                .map(String::as_str),
             Some("ArrowUp")
         );
     }

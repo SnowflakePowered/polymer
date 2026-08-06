@@ -2,6 +2,7 @@
 
 use snowglass_input::gamepad::{GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate};
 use snowglass_input::layout::SdlOutputLayout;
+use snowglass_input::projection::SdlSensor;
 use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{
     ffi::{CString, c_char, c_void},
@@ -20,8 +21,26 @@ type UpdateJoysticksFn = unsafe extern "C" fn();
 type MallocFn = unsafe extern "C" fn(usize) -> *mut c_void;
 
 const SDL_JOYSTICK_TYPE_GAMEPAD: u16 = 1;
+// SDL_SensorType. The `_L`/`_R` variants exist for devices carrying two of one
+// sensor: a pair of Joy-Cons, or a Wii Remote with a Nunchuk attached.
 const SDL_SENSOR_ACCEL: i32 = 1;
 const SDL_SENSOR_GYRO: i32 = 2;
+const SDL_SENSOR_ACCEL_L: i32 = 3;
+const SDL_SENSOR_GYRO_L: i32 = 4;
+const SDL_SENSOR_ACCEL_R: i32 = 5;
+const SDL_SENSOR_GYRO_R: i32 = 6;
+
+/// Snowglass names a sensor by where it sits; SDL names it by number.
+fn sdl_sensor_type(sensor: SdlSensor) -> i32 {
+    match sensor {
+        SdlSensor::Accelerometer => SDL_SENSOR_ACCEL,
+        SdlSensor::Gyroscope => SDL_SENSOR_GYRO,
+        SdlSensor::AccelerometerLeft => SDL_SENSOR_ACCEL_L,
+        SdlSensor::GyroscopeLeft => SDL_SENSOR_GYRO_L,
+        SdlSensor::AccelerometerRight => SDL_SENSOR_ACCEL_R,
+        SdlSensor::GyroscopeRight => SDL_SENSOR_GYRO_R,
+    }
+}
 const SDL_GAMEPAD_AXIS_COUNT: usize = 6;
 
 fn dense_mask_index(mask: u32, semantic_index: usize) -> Option<i32> {
@@ -131,20 +150,14 @@ impl Api {
         let sensors = layouts
             .iter()
             .map(|layout| {
-                let mut sensors = Vec::with_capacity(2);
-                if layout.accelerometer {
-                    sensors.push(VirtualJoystickSensorDesc {
-                        sensor_type: SDL_SENSOR_ACCEL,
+                layout
+                    .sensors()
+                    .map(|sensor| VirtualJoystickSensorDesc {
+                        sensor_type: sdl_sensor_type(sensor),
                         rate: 0.0,
-                    });
-                }
-                if layout.gyroscope {
-                    sensors.push(VirtualJoystickSensorDesc {
-                        sensor_type: SDL_SENSOR_GYRO,
-                        rate: 0.0,
-                    });
-                }
-                sensors.into_boxed_slice()
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
             })
             .collect();
         Some(Self {
@@ -250,15 +263,27 @@ impl SdlBackend for Api {
                 return Err(BackendError("SDL3 rejected a virtual button update"));
             }
         }
-        for (enabled, sensor_type, values) in [
-            (layout.accelerometer, SDL_SENSOR_ACCEL, state.accelerometer),
-            (layout.gyroscope, SDL_SENSOR_GYRO, state.gyroscope),
-        ] {
-            if enabled
-                && !unsafe {
-                    (self.send_sensor)(handle, sensor_type, 0, values.as_ptr(), values.len() as i32)
+        for sensor in layout.sensors() {
+            // The wire carries one accelerometer and one gyroscope; a device
+            // with a left and a right instance drives both from the same
+            // sample until the transport grows a second set.
+            let values = match sensor {
+                SdlSensor::Accelerometer
+                | SdlSensor::AccelerometerLeft
+                | SdlSensor::AccelerometerRight => state.accelerometer,
+                SdlSensor::Gyroscope | SdlSensor::GyroscopeLeft | SdlSensor::GyroscopeRight => {
+                    state.gyroscope
                 }
-            {
+            };
+            if !unsafe {
+                (self.send_sensor)(
+                    handle,
+                    sdl_sensor_type(sensor),
+                    0,
+                    values.as_ptr(),
+                    values.len() as i32,
+                )
+            } {
                 return Err(BackendError("SDL3 rejected a virtual sensor update"));
             }
         }

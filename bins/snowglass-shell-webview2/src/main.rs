@@ -29,9 +29,10 @@ use snowglass_input::{
         BindingOverride, InputOperation, InputTransaction, PortConfiguration, SourceControl,
         SourceSelector, VirtualPort,
     },
+    key::BindingKey,
+    layout::SdlButton,
     mouse::{PointerPhase, layout::Rect},
     provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
-    layout::SdlButton,
 };
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_platform_windows::{performance_counter, performance_frequency};
@@ -1235,10 +1236,25 @@ impl ShellState {
             };
             let mut overrides = HashMap::new();
             for (target, source) in &mapping.mapping {
+                // The descriptor arrives as JSON, so the key is a string here
+                // and nowhere past here: a target the grammar does not admit is
+                // reported like any other malformed launch option.
+                let target = match target.parse::<BindingKey>() {
+                    Ok(target) => target,
+                    Err(error) => {
+                        self.emit_instance_event(
+                            token,
+                            "error",
+                            &serde_json::json!({ "message": error.to_string() }),
+                        );
+                        self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                        return;
+                    }
+                };
                 match parse_input_binding(source) {
                     Ok(binding) => {
-                        overrides.insert(target.clone(), hub_binding(&binding));
-                        gamepad_bindings.push((mapping.slot, target.clone(), binding));
+                        overrides.insert(target, hub_binding(&binding));
+                        gamepad_bindings.push((mapping.slot, target, binding));
                     }
                     Err(error) => {
                         self.emit_instance_event(

@@ -4,6 +4,7 @@ use crate::api;
 use parking_lot::Mutex;
 use snowglass_hook::config;
 use snowglass_input::layout::LayoutRegistry;
+use snowglass_input::projection::Projection;
 use snowglass_input_sdl::Runtime;
 use std::{
     ffi::c_void,
@@ -84,13 +85,19 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
             .map_err(|_| "the inputspec directory is unreadable or invalid")?,
         None => LayoutRegistry::embedded().map_err(|_| "the embedded inputspec is invalid")?,
     };
+    let projection = Projection::embedded().map_err(|_| "the SDL projection is invalid")?;
     let layouts = config::layouts()
         .into_iter()
         .map(|layout_id| {
             registry
                 .layout(&layout_id)
                 .ok_or("the requested input layout is unavailable")
-                .map(|layout| (layout.sdl_output(), "Snowglass Virtual Gamepad".to_owned()))
+                .map(|layout| {
+                    (
+                        layout.sdl_output(&projection),
+                        "Snowglass Virtual Gamepad".to_owned(),
+                    )
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     if layouts.len() != config::sdl_gamepad_count() {
