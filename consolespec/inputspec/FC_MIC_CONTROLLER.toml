@@ -1,0 +1,37 @@
+[input]
+id = "FC_MIC_CONTROLLER"
+type = "controller"
+
+[meta]
+name = "Famicon Controller (Player 2)"
+
+[meta.jp]
+name = "Famicom Controller"
+model-number = ["HVC-102"]
+
+[[input.button]]
+label = "A"
+element = "a"
+
+[[input.button]]
+label = "B"
+element = "b"
+
+[[input.button]]
+label = "Start"
+element = "start"
+
+[[input.button]]
+label = "Select"
+element = "select"
+
+[[input.directional]]
+label = "D-Pad"
+directions = 4
+
+[[input.microphone]]
+label = "MIC"
+
+[[input.analog]]
+label = "Volume"
+axes = 1
