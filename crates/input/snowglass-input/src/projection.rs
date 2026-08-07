@@ -185,6 +185,7 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{SdlAxis, SdlButton};
     use crate::sdl::{SdlSensor, Wire};
     use consolespec::key;
 
@@ -224,11 +225,11 @@ mod tests {
         // Nothing in the table says so; both sides simply agree.
         assert_eq!(
             placed("XBOX_CONTROLLER", key!(button.a)),
-            Some(Wire::Button(0))
+            Some(Wire::Button(SdlButton::South))
         );
         assert_eq!(
             placed("XBOX_CONTROLLER", key!(analog.stick.right.y-)),
-            Some(Wire::Axis(3))
+            Some(Wire::Axis(SdlAxis::RightY))
         );
     }
 
@@ -239,11 +240,11 @@ mod tests {
         // C-buttons are placed by name.
         assert_eq!(
             placed("N64_CONTROLLER", key!(directional.left.n)),
-            Some(Wire::Button(11))
+            Some(Wire::Button(SdlButton::DpadUp))
         );
         assert_eq!(
             placed("N64_CONTROLLER", key!(directional.right.n)),
-            Some(Wire::Axis(3))
+            Some(Wire::Axis(SdlAxis::RightY))
         );
     }
 
@@ -252,15 +253,15 @@ mod tests {
         // The standard pad's L/R are digital shoulders, so C and Z spill to the
         // triggers. The 3D pad's L/R are analog triggers, so C and Z take the
         // shoulders instead. Same buttons, opposite slots, no hand-written rule.
-        assert_eq!(placed("SAT_CONTROLLER", key!(button.c)), Some(Wire::Axis(4)));
-        assert_eq!(placed("SAT_CONTROLLER", key!(button.z)), Some(Wire::Axis(5)));
+        assert_eq!(placed("SAT_CONTROLLER", key!(button.c)), Some(Wire::Axis(SdlAxis::LeftTrigger)));
+        assert_eq!(placed("SAT_CONTROLLER", key!(button.z)), Some(Wire::Axis(SdlAxis::RightTrigger)));
         assert_eq!(
             placed("SAT_3D_CONTROLLER", key!(button.c)),
-            Some(Wire::Button(9))
+            Some(Wire::Button(SdlButton::LeftShoulder))
         );
         assert_eq!(
             placed("SAT_3D_CONTROLLER", key!(button.z)),
-            Some(Wire::Button(10))
+            Some(Wire::Button(SdlButton::RightShoulder))
         );
     }
 
@@ -294,7 +295,7 @@ mod tests {
         // The 5200's stick and its Fire/Start/Pause/Reset are pad controls.
         assert_eq!(
             placed("A5200_CONTROLLER", key!(button.start)),
-            Some(Wire::Button(6))
+            Some(Wire::Button(SdlButton::Start))
         );
     }
 

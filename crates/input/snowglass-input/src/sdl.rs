@@ -14,16 +14,30 @@
 
 use consolespec::{Alignment, AnalogClass, BindingKey, Component, Direction, Sign, key};
 
+use crate::layout::{SdlAxis, SdlButton};
+
 /// Where one key of the virtual gamepad lives on the wire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Wire {
-    /// Index into [`BUTTONS`], which is `SDL_GAMEPAD_BUTTON_*`.
-    Button(u8),
-    /// Index into [`AXES`], which is `SDL_GAMEPAD_AXIS_*` and then the two raw
-    /// axes snowglass adds for an absolute pointer.
-    Axis(u8),
-    /// Sensors are enabled by type rather than occupying an index.
+    Button(SdlButton),
+    Axis(SdlAxis),
+    /// A raw joystick axis past the gamepad mapping, by its index.
+    RawAxis(u8),
+    /// Sensors are enabled by type rather than occupying a position.
     Sensor(SdlSensor),
+}
+
+impl Wire {
+    /// The position this occupies among buttons, or among axes. Sensors have
+    /// none — they are enabled by type.
+    pub const fn index(self) -> Option<u8> {
+        match self {
+            Self::Button(button) => Some(button.index()),
+            Self::Axis(axis) => Some(axis.index()),
+            Self::RawAxis(index) => Some(index),
+            Self::Sensor(_) => None,
+        }
+    }
 }
 
 /// SDL models a device with two of one sensor — the Joy-Cons, or a Wii Remote
@@ -39,51 +53,57 @@ pub enum SdlSensor {
     GyroscopeRight,
 }
 
-/// `SDL_GAMEPAD_BUTTON_*`, in value order. The hat sits at 11-14, between the
-/// standard buttons and the spares, which is the interleaving no expansion of a
-/// description reproduces.
-pub static BUTTONS: [BindingKey; 21] = [
-    key!(button.a),      // south
-    key!(button.b),      // east
-    key!(button.x),      // west
-    key!(button.y),      // north
-    key!(button.select), // back
-    key!(button.guide),
-    key!(button.start),
-    key!(button.clickl), // left stick click
-    key!(button.clickr), // right stick click
-    key!(button.l),      // left shoulder
-    key!(button.r),      // right shoulder
-    key!(directional.n), // dpad up
-    key!(directional.s), // dpad down
-    key!(directional.w), // dpad left
-    key!(directional.e), // dpad right
-    key!(button.0),      // misc1
-    key!(button.1),      // right paddle 1
-    key!(button.2),      // left paddle 1
-    key!(button.3),      // right paddle 2
-    key!(button.4),      // left paddle 2
-    key!(button.5),      // touchpad click
+/// Our name for each control of the SDL gamepad.
+///
+/// The pairing is the content. Which of our controls is SDL's south is a choice
+/// — the only one here that is ours — and SDL's numbering is a consequence of
+/// it, not the other way round. Writing it as pairs is what lets a consumer join
+/// on the control rather than count, which matters because SDL appends to its
+/// enum: `MISC2`..`MISC6` already exist in newer headers than some of the
+/// emulators we generate for.
+pub static BUTTONS: [(SdlButton, BindingKey); 21] = [
+    (SdlButton::South, key!(button.a)),
+    (SdlButton::East, key!(button.b)),
+    (SdlButton::West, key!(button.x)),
+    (SdlButton::North, key!(button.y)),
+    (SdlButton::Back, key!(button.select)),
+    (SdlButton::Guide, key!(button.guide)),
+    (SdlButton::Start, key!(button.start)),
+    (SdlButton::LeftStick, key!(button.clickl)),
+    (SdlButton::RightStick, key!(button.clickr)),
+    (SdlButton::LeftShoulder, key!(button.l)),
+    (SdlButton::RightShoulder, key!(button.r)),
+    (SdlButton::DpadUp, key!(directional.n)),
+    (SdlButton::DpadDown, key!(directional.s)),
+    (SdlButton::DpadLeft, key!(directional.w)),
+    (SdlButton::DpadRight, key!(directional.e)),
+    (SdlButton::Misc1, key!(button.0)),
+    (SdlButton::RightPaddle1, key!(button.1)),
+    (SdlButton::LeftPaddle1, key!(button.2)),
+    (SdlButton::RightPaddle2, key!(button.3)),
+    (SdlButton::LeftPaddle2, key!(button.4)),
+    (SdlButton::Touchpad, key!(button.5)),
 ];
 
-/// `SDL_GAMEPAD_AXIS_*`, then the two raw joystick axes snowglass presents for
-/// an absolute pointer. Each entry names its positive half because a
-/// [`BindingKey`] addresses a signed component; the negative half is the same
-/// axis, so [`wire`] matches either.
-pub static AXES: [BindingKey; 8] = [
-    key!(analog.stick.left.x+),
-    key!(analog.stick.left.y+),
-    key!(analog.stick.right.x+),
-    key!(analog.stick.right.y+),
-    key!(trigger.left),
-    key!(trigger.right),
-    key!(pointer.x+),
-    key!(pointer.y+),
+/// Our name for each `SDL_GAMEPAD_AXIS_*`.
+///
+/// Each names its positive half, because a [`BindingKey`] addresses a signed
+/// component and an SDL axis is one degree of freedom; the negative half is the
+/// same axis, so [`wire`] matches either. A stick's `y+` is *up*, which is SDL's
+/// negative Y — the two conventions meet here and nowhere else.
+pub static AXES: [(SdlAxis, BindingKey); 6] = [
+    (SdlAxis::LeftX, key!(analog.stick.left.x+)),
+    (SdlAxis::LeftY, key!(analog.stick.left.y+)),
+    (SdlAxis::RightX, key!(analog.stick.right.x+)),
+    (SdlAxis::RightY, key!(analog.stick.right.y+)),
+    (SdlAxis::LeftTrigger, key!(trigger.left)),
+    (SdlAxis::RightTrigger, key!(trigger.right)),
 ];
 
-/// The two raw axes outside `SDL_GAMEPAD_AXIS_COUNT`. Only an emulator reading
-/// raw joystick axes sees them, and they are present on every pad.
-pub const POINTER_AXES: [u8; 2] = [6, 7];
+/// The raw joystick axes snowglass adds past `SDL_GAMEPAD_AXIS_COUNT` for an
+/// absolute pointer. They are not gamepad axes, so they have no `SdlAxis` and no
+/// emulator names them; only one reading raw axes sees them.
+pub static POINTER: [(u8, BindingKey); 2] = [(6, key!(pointer.x+)), (7, key!(pointer.y+))];
 
 /// One signed half of an axis normalized to its positive twin, so that
 /// `analog.stick.right.y-` and `analog.stick.right.y+` find the same axis.
@@ -187,12 +207,15 @@ pub fn has(key: BindingKey) -> bool {
 /// wire location — either the pad does not have it, or it is a composite that
 /// [`decompose`] splits.
 pub fn wire(key: BindingKey) -> Option<Wire> {
-    if let Some(index) = BUTTONS.iter().position(|candidate| *candidate == key) {
-        return Some(Wire::Button(index as u8));
+    if let Some((button, _)) = BUTTONS.iter().find(|(_, candidate)| *candidate == key) {
+        return Some(Wire::Button(*button));
     }
     let axis = positive(key);
-    if let Some(index) = AXES.iter().position(|candidate| *candidate == axis) {
-        return Some(Wire::Axis(index as u8));
+    if let Some((sdl, _)) = AXES.iter().find(|(_, candidate)| *candidate == axis) {
+        return Some(Wire::Axis(*sdl));
+    }
+    if let Some((index, _)) = POINTER.iter().find(|(_, candidate)| *candidate == axis) {
+        return Some(Wire::RawAxis(*index));
     }
     sensor(key).map(Wire::Sensor)
 }
@@ -200,30 +223,31 @@ pub fn wire(key: BindingKey) -> Option<Wire> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{SdlAxis, SdlButton};
 
     #[test]
     fn the_wire_order_is_sdls_own() {
         // The three places SDL's numbering and consolespec's expansion disagree,
         // pinned so a reordering of either is caught here rather than by an
         // emulator reading the wrong button.
-        assert_eq!(wire(key!(button.a)), Some(Wire::Button(0)));
-        assert_eq!(wire(key!(button.r)), Some(Wire::Button(10)));
+        assert_eq!(wire(key!(button.a)), Some(Wire::Button(SdlButton::South)));
+        assert_eq!(wire(key!(button.r)), Some(Wire::Button(SdlButton::RightShoulder)));
         // The hat interrupts the buttons, and runs up/down/left/right.
-        assert_eq!(wire(key!(directional.n)), Some(Wire::Button(11)));
-        assert_eq!(wire(key!(directional.s)), Some(Wire::Button(12)));
-        assert_eq!(wire(key!(directional.w)), Some(Wire::Button(13)));
-        assert_eq!(wire(key!(directional.e)), Some(Wire::Button(14)));
-        assert_eq!(wire(key!(button.0)), Some(Wire::Button(15)));
-        assert_eq!(wire(key!(button.5)), Some(Wire::Button(20)));
+        assert_eq!(wire(key!(directional.n)), Some(Wire::Button(SdlButton::DpadUp)));
+        assert_eq!(wire(key!(directional.s)), Some(Wire::Button(SdlButton::DpadDown)));
+        assert_eq!(wire(key!(directional.w)), Some(Wire::Button(SdlButton::DpadLeft)));
+        assert_eq!(wire(key!(directional.e)), Some(Wire::Button(SdlButton::DpadRight)));
+        assert_eq!(wire(key!(button.0)), Some(Wire::Button(SdlButton::Misc1)));
+        assert_eq!(wire(key!(button.5)), Some(Wire::Button(SdlButton::Touchpad)));
     }
 
     #[test]
     fn both_halves_of_an_axis_find_it() {
-        assert_eq!(wire(key!(analog.stick.left.x+)), Some(Wire::Axis(0)));
-        assert_eq!(wire(key!(analog.stick.left.x-)), Some(Wire::Axis(0)));
-        assert_eq!(wire(key!(analog.stick.right.y-)), Some(Wire::Axis(3)));
-        assert_eq!(wire(key!(trigger.right)), Some(Wire::Axis(5)));
-        assert_eq!(wire(key!(pointer.y-)), Some(Wire::Axis(7)));
+        assert_eq!(wire(key!(analog.stick.left.x+)), Some(Wire::Axis(SdlAxis::LeftX)));
+        assert_eq!(wire(key!(analog.stick.left.x-)), Some(Wire::Axis(SdlAxis::LeftX)));
+        assert_eq!(wire(key!(analog.stick.right.y-)), Some(Wire::Axis(SdlAxis::RightY)));
+        assert_eq!(wire(key!(trigger.right)), Some(Wire::Axis(SdlAxis::RightTrigger)));
+        assert_eq!(wire(key!(pointer.y-)), Some(Wire::RawAxis(7)));
     }
 
     #[test]
@@ -279,31 +303,42 @@ mod tests {
         }
     }
 
-    /// The wire enum and this list are two spellings of one ABI. Nothing else
-    /// checks that they agree, and if they ever did not the hook would advertise
-    /// one button in its mask and the data plane would send another.
+    /// `GamepadButton` — what the data plane sends — and SDL's own numbering
+    /// are two spellings of one ABI. Nothing else checks that they agree, and if
+    /// they ever did not the hook would advertise one button in its mask and the
+    /// data plane would send another.
     #[test]
-    fn wire_order_matches_the_pad() {
+    fn the_wire_enum_agrees_with_sdls_numbering() {
         use crate::gamepad::GamepadButton;
         assert_eq!(GamepadButton::ALL.len(), BUTTONS.len());
         for (index, button) in GamepadButton::ALL.iter().enumerate() {
-            assert_eq!(
-                wire(BUTTONS[index]),
-                Some(Wire::Button(index as u8)),
-                "{button:?}"
-            );
+            let (sdl, _) = BUTTONS[index];
+            assert_eq!(usize::from(sdl.index()), index, "{button:?} vs {sdl:?}");
             assert_eq!(*button as usize, index, "{button:?}");
         }
     }
 
     #[test]
-    fn every_key_is_placed_exactly_once() {
-        // A duplicate would silently shadow, since `wire` takes the first hit.
-        for (index, key) in BUTTONS.iter().enumerate() {
-            assert_eq!(wire(*key), Some(Wire::Button(index as u8)), "{key}");
+    fn every_control_is_paired_exactly_once() {
+        // A duplicate on either side would silently shadow, since `wire` and
+        // the projection's identity default both take the first hit.
+        for (sdl, key) in BUTTONS {
+            assert_eq!(wire(key), Some(Wire::Button(sdl)), "{key}");
         }
-        for (index, key) in AXES.iter().enumerate() {
-            assert_eq!(wire(*key), Some(Wire::Axis(index as u8)), "{key}");
+        for (sdl, key) in AXES {
+            assert_eq!(wire(key), Some(Wire::Axis(sdl)), "{key}");
         }
+        for (index, key) in POINTER {
+            assert_eq!(wire(key), Some(Wire::RawAxis(index)), "{key}");
+        }
+        let mut keys: Vec<_> = BUTTONS
+            .iter()
+            .map(|(_, key)| *key)
+            .chain(AXES.iter().map(|(_, key)| *key))
+            .collect();
+        keys.sort();
+        let count = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "a control is named twice");
     }
 }

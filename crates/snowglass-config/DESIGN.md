@@ -570,7 +570,6 @@ supplies it; the crate never discovers it.
 
 ```rust
 pub struct HostFacts<'a> {
-    pub layouts: &'a LayoutRegistry,       // snowglass_input::layout
     pub ports: &'a [PortFact],             // resolved topology for this launch
     pub emulator: EmulatorBuild,           // version + sdl_major, for applies_to
     pub capabilities: &'a dyn CapabilityRegistry,   // gpu.adapters, display.modes, …
@@ -592,45 +591,51 @@ support (§6.2). The host detects it from the target's import table; a plugin ma
 pin it.
 
 **consolespec is the only input vocabulary.** Plugin documents name inputspec
-layouts and consolespec elements and machinespec input groups, and so does the
-runtime: `LayoutRegistry` (`crates/input/snowglass-input/src/layout.rs`) reads
-the inputspec documents that `build.rs` embeds, expanding each document's
-clusters into elements by the rules in §6.5.1. There is no translation step and
-no second layout set — the ids in a plugin document are the ids the hub, the SDL
+layouts, consolespec binding keys and machinespec input groups, and so does the
+runtime. The `consolespec` crate parses and cross-checks the documents in its
+build script and exposes the result as compile-time tables;
+`InputLayout::all()` (`snowglass-input/src/layout.rs`) expands them once into the
+controls of §6.5.1. There is no registry to pass, no translation step and no
+second layout set — the ids in a plugin document are the ids the hub, the SDL
 hooks, and `SdlOutputLayout` use. A layout id that consolespec does not declare
-fails at load rather than binding to nothing.
+fails to resolve rather than binding to nothing, and a machine id likewise
+(§6.5).
 
-`LayoutRegistry::from_directory` overrides the embedded set from
-`SNOWGLASS_INPUTSPEC`, which is how a newer consolespec reaches an already-built
-hook.
+Because the data is compiled in, there is no directory to point at: a newer
+consolespec reaches a binary by rebuilding it.
 
 ### 6.1 Input is not a static document — it is parameterized by layout
 
 **[V]** The SDL3 hook builds each virtual pad from the port's layout:
-`SdlOutputLayout` is computed by `InputLayout::sdl_output()`
-(`crates/input/snowglass-input/src/layout.rs`) over the shared projection table
-(`crates/input/snowglass-input/projection/SDL.proj.toml`), and the hook maps semantic index
-→ device index through `dense_mask_index`
-(`crates/hooks/snowglass-hook-sdl3/src/api.rs:27`). A GameCube layout and a Switch
-Pro layout therefore produce **different raw joystick indices for the same
-element**.
+`InputLayout::sdl_output()` (`snowglass-input/src/layout.rs`) folds the port's
+controls through the shared projection, and the hook maps semantic index → device
+index through `dense_mask_index` (`snowglass-hook-sdl3/src/api.rs:46`). A
+GameCube layout and a Switch Pro layout therefore produce **different raw
+joystick indices for the same control**.
 
 Consequences, which replace §7.3 and §10 of the previous design:
 
 - **Raw-index binding is unsound.** Mapped presentation is not the safer of two
   options; it is the only correct one.
-- **There is no `profiles/sdl.gamepad.toml`.** The element set is
-  `LayoutRegistry` + `sdl_output()` at realize time. Nothing is generated from a
-  distribution file, and there is no version field to drift.
-- **Fragments are filtered per port.** A binding for an element absent from that
+- **There is no `profiles/sdl.gamepad.toml`.** The control set is
+  `InputLayout::all()` + `sdl_output()` at realize time — compile-time consolespec
+  data, expanded once. Nothing is generated from a distribution file, and there is
+  no version field to drift.
+- **Fragments are filtered per port.** A binding for a control absent from that
   port's layout is silently suppressed, not emitted as a dead key. Lowering warns
-  only if an element appears in no layout reachable from any declared port mode.
+  only if a control appears in no layout reachable from any declared port mode.
+- **Reachability is not the plugin's business.** Whether SDL can carry a control
+  is the projection's answer and changes with it, so a generated plugin document
+  states every binding its emulator has and lets the runtime drop what cannot
+  fire. Baking the answer in would mean regenerating every plugin whenever the
+  projection moved a control.
 
-**[V]** Identity *is* stable: name is the constant `"Snowglass Virtual Gamepad"`
-(`snowglass-hook-sdl3/src/install.rs:94`, `snowglass-hook-sdl2/src/api.rs:55`),
-vendor/product are `0/0`, and `GamepadButton` is a fixed 0–20 enum
-(`snowglass-input/src/gamepad.rs:36`). So the SDL GUID is stable — which is what
-makes pinning a mapping possible at all.
+**[V]** Identity *is* stable: the name is the constant `"Snowglass Virtual
+Gamepad"` (`snowglass-hook-sdl3/src/install.rs:92`,
+`snowglass-hook-sdl2/src/api.rs:55`), vendor/product are `0/0`, and
+`GamepadButton` is a fixed 0–20 enum (`snowglass-input/src/gamepad.rs`) pinned to
+`sdl::BUTTONS` by `wire_order_matches_the_pad`. So the SDL GUID is stable — which
+is what makes pinning a mapping possible at all.
 
 ### 6.2 Two prerequisites in snowglass proper
 
@@ -666,27 +671,108 @@ wrong binds player 3's config to player 2's pad, silently.
 
 ### 6.4 Emitted bindings
 
-The plugin owns *syntax*; snowglass owns *identity and control naming*.
+**The definition document is complete.** Everything needed to write an emulator's
+input configuration is either in that emulator's own definition or in snowglass's
+shared tables. There is no second document beside it and no per-emulator dialect
+to select: a plugin states its emulator's vocabulary, and snowglass states where
+each control lives.
+
+**An input port is an ordinary section.** It is not a separate `input.toml`
+grammar — it is a section like any other, in the emulator's configuration path,
+carrying `input = true`:
 
 ```toml
-[input]
-target  = "controls-{n}"
-device  = "SDL/{index}/{name}"     # emulator-specific device-string syntax
-dialect = "dolphin"                # control-name dialect, shipped with the plugin
-
-[input.keys]
-"button.a"               = { key = "Buttons/A" }
-"analog.stick.left.x+"   = { key = "Main Stick/Right" }
-"analog.gyroscope.x+"    = { key = "IMUGyroscope/Pitch Up" }
-"trigger.left"           = { key = "Triggers/L", control = "Full Axis 4+" }  # override
+[sections.gcpad.pad1]
+title   = "GameCube Controller 1"
+target  = "gcpad.GCPad1"
+input   = true                        # see below
+layouts = ["GAMECUBE_CONTROLLER"]
 ```
 
-- key side: the emulator's config key, from the plugin.
-- value side: `{device}:{control}`, where `control` comes from the dialect table
-  (consolespec binding key → that emulator's SDL control name) unless overridden
-  inline.
-- `{name}` expands to the virtual pad name for that port's layout, so P2's change
-  propagates automatically.
+`input = true` is what turns a section into a port. It means three things and
+nothing else:
+
+1. **`{index}` and `{name}` expand** in the values this section emits. `{index}`
+   is the virtual pad slot — §6.3, *not* the port number — and `{name}` the pad's
+   name for that port's layout, so P2's rename propagates without touching a
+   plugin.
+2. The section's emissions are **filtered by the port's selected layout**, so a
+   control the chosen device does not have is never written.
+3. The section gains the implicit `layout` option of §6.5.2, whose domain is
+   `layouts` plus `unplugged` and, where declared, `passthrough`.
+
+Everything else about it is a section: `target` says where it writes, `emit`
+entries and options behave exactly as elsewhere, and it nests in the same tree.
+That is the point — an input port was never a different kind of thing, and giving
+it its own document made it look like one.
+
+**What a plugin still declares per layout** is the emulator's own configuration
+key for each control (§6.5.1). The left side is a consolespec binding key, the
+right is the emulator's vocabulary and is the plugin's business alone:
+
+```toml
+[input.layouts.GAMECUBE_CONTROLLER]
+"button.a"             = "Buttons/A"
+"button.z"             = "Buttons/Z"
+"analog.stick.left.x+" = "Main Stick/Right"
+```
+
+**What snowglass supplies is where the control *is*.** Which SDL control carries
+a device control is the projection's answer — `snowglass-input`'s
+`projection/SDL.proj.toml` — and it is shared, so "which physical button is C-Up"
+is the same in every emulator. Both sides of it are binding keys: the left of the
+device, the right of the SDL virtual gamepad, which `snowglass-input::sdl`
+describes as a device in the same vocabulary. `sdl::wire` then places an SDL
+control at its `SDL_GAMEPAD_BUTTON_*` position.
+
+**The emulator's configuration is static.** Once a port's layout is chosen the
+whole of it is determined, written once, and never touched again:
+
+```
+"button.z"  --plugin-->     "Buttons/Z"        the emulator's config key
+"button.z"  --projection--> the pad's button.r
+            --sdl::wire-->  button 10
+            --plugin-->     "Shoulder R"       the emulator's name for that control
+```
+
+`GCPad1: Buttons/Z = ``SDL/0/Snowglass Virtual Gamepad:Shoulder R``` — and that
+line is the same for every user, every session, and every remapping.
+
+**Dolphin never sees an override.** All user remapping is absorbed on the virtual
+gamepad side: an override changes what the pad *reports* for a control (§7), not
+what the emulator's file says. That is the whole reason the file can be static,
+and it is why there is no live config rewriting, no per-user fragment, and no
+reason for an emulator to reload its input configuration mid-session.
+
+**Both halves of a binding come from the plugin's own emulator.** The key side is
+that emulator's control name (`Buttons/Z`); the value side is that emulator's
+name for an *SDL* control — and those are a fixed vocabulary of 21 buttons and 6
+axes, indexed by SDL's own position, which every generator can extract from its
+emulator's source the way it extracts everything else. Dolphin's live in
+`InputCommon/ControllerInterface/SDL/SDLGamepad.h`:
+
+```cpp
+static constexpr std::array<const char*, 21> s_sdl_button_names = {
+    "Button S",  // SDL_GAMEPAD_BUTTON_SOUTH
+    ...
+    "Shoulder R",  // SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER
+    "Pad N",       // SDL_GAMEPAD_BUTTON_DPAD_UP
+```
+
+So the value side is **not** a grammar over indices — Dolphin spells button 10
+`Shoulder R`, not `Button 10` — and it is **not** per layout. It is one table per
+emulator, over a vocabulary SDL fixes, and it belongs in that emulator's own
+definition:
+
+```toml
+[input.sdl]                        # not yet emitted; extracted like any other table
+buttons = ["Button S", "Button E", …, "Shoulder R", "Pad N", …]
+axes    = ["Left X", "Left Y", "Right X", "Right Y", "Trigger L", "Trigger R"]
+```
+
+With that, realize composes the value from three things it already has — the
+plugin's key table, the shared projection, and the plugin's SDL names — and
+nothing lives outside the document.
 
 Static bindings are **not options** — no user ever sets `Buttons/A`. They lower to
 `Node::Entry` with `origin.layer = Fragment(id)` and are always snowglass-owned on
@@ -735,6 +821,10 @@ machine's base port count; a plugin may declare **fewer** (an emulator need not
 implement every port) and may declare **more** only where a multitap accounts
 for the difference — DuckStation exposes eight pad slots on a two-port
 PlayStation. Exceeding the count is a warning, never silent.
+
+A port declaration is the section of §6.4 — `input = true` is what makes it one
+— and the `[platforms.…]` spelling below is how the generators emit it today.
+Reconciling the two is the open work of §6.4; nothing else about a port changes.
 
 ```toml
 [platforms.NINTENDO_GCN.ports.controller.0]
@@ -1385,10 +1475,9 @@ itself.
 | --- | --- | --- |
 | `*.gen.d.ts` | definition TOML | tsc |
 | keyname tables | per-emulator source audit | `applies_to` + build detection |
-| dialect tables | per-emulator source audit | lowering, against `LayoutRegistry` |
 
 The previous design's `profiles/sdl.gamepad.toml` and `layouts/*.toml` are gone:
-this crate depends on `snowglass-input` and reads `LayoutRegistry` and
+this crate depends on `snowglass-input` and reads `InputLayout` and
 `SdlOutputLayout` directly, so there is no constant to hand-copy and no version
 field to drift.
 
@@ -1445,8 +1534,8 @@ Closed by source inspection:
 - ~~pointer reachability~~ — three transports, `dinput-mouse` reaches Dolphin
   (§6.6).
 - ~~Stone layout codegen~~ — replaced by a direct `snowglass-input` dependency.
-- ~~the runtime reading Stone~~ — `LayoutRegistry` reads inputspec directly;
-  there is one vocabulary end to end (§6).
+- ~~the runtime reading Stone~~ — the `consolespec` crate is the vocabulary,
+  compiled in and read directly; there is one end to end (§6).
 - ~~unvalidated platform ids~~ — machinespec is the source of truth, and the
   generators check against it (§6.5).
 

@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "support"))
 import consolespec
+import sdlpad
 import cppconfig
 from cppconfig import *  # noqa: F403 — shared C++/TOML machinery
 
@@ -1221,7 +1222,6 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
                 enums: dict[str, list[EnumDef]], scope: Scope,
                 bool_style: tuple[str, str], revision: str | None,
                 report: Report) -> str:
-    projection = consolespec.load_projection()
     group_classes = parse_group_classes(root, report)
     core = root / "Source/Core/Core"
     gcpad_controls, gcpad_settings = parse_controller(
@@ -1276,7 +1276,8 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
         lines += [target_header(root_id, section) for section in sections]
         lines.append("")
 
-    lines += ['[input]', 'dialect = "dolphin"', 'device = "SDL/{index}/{name}"', ""]
+    lines += ['[input]', 'driver = "sdl3"', 'device = "SDL/{index}/{name}"', ""]
+    lines += build_sdl_mapping(root, report) + [""]
 
     bound = 0
     exposed = 0
@@ -1292,10 +1293,6 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
             if not consolespec.check_binding(device, element, report, "input"):
                 continue
             entry = device.elements[element]
-            if projection.slot(layout, entry) is None:
-                report.warn(f"input: `{entry.path}` reaches no SDL slot; "
-                            f"omitted from {layout}")
-                continue
             lines.append(f"{toml_key(entry.path)} = {toml_string(control)}")
             bound += 1
         lines.append("")
@@ -1366,6 +1363,30 @@ def dolphin_revision(root: Path) -> str | None:
         return None
     return result.stdout.strip() or None
 
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def build_sdl_mapping(root: Path, report: Report) -> list[str]:
+    """`[input.mapping]`: the SDL virtual gamepad, in Dolphin's own words.
+
+    Dolphin names an SDL control by its semantic position, and signs a stick half
+    by the direction it pushes toward — the same convention consolespec uses, so
+    `analog.stick.left.y+` is `Left Y+` with no inversion. Trigger axes take the
+    bare name; `Axis::GetName` returns no sign for them.
+    """
+    source = read_text(root / "Source/Core/InputCommon/ControllerInterface/SDL/SDLGamepad.h")
+    buttons = sdlpad.named(source, "s_sdl_button_names")
+    axes = sdlpad.named(source, "s_sdl_axis_names")
+    entries = sdlpad.compose(buttons, axes, sign_first=False, raw_sdl=False)
+    missing = [key for key in sdlpad.BUTTONS.values()
+               if key not in {entry for entry, _ in entries}]
+    if missing:
+        report.note(f"input: {'Dolphin'} names no SDL control for {', '.join(missing)}")
+    report.note(f"input: {len(entries)} SDL controls paired by constant")
+    return sdlpad.emit_mapping(entries)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,

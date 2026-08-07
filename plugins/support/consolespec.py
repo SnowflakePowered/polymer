@@ -32,9 +32,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = [
-    "Element", "InputSpec", "InputGroup", "MachineSpec", "Projection",
+    "Element", "InputSpec", "InputGroup", "MachineSpec",
     "SpecError", "find_root", "load_inputspec", "load_machinespec", "expand",
-    "check_binding", "check_group", "load_projection",
+    "check_binding", "check_group",
 ]
 
 
@@ -94,7 +94,7 @@ class Element:
     kind: str          # button, directional, analog, trigger, rumble, pointer, ...
     label: str | None  # the cluster's label, when it carries one
     path: str = ""     # binding key: <kind>[.<class>][.<alignment>][.<component>]
-    cluster: str = ""  # the same, without the component; what the projection places
+    cluster: str = ""  # the same, without the component: the cluster it belongs to
     analog: bool = False    # pressure-sensitive button (DualShock 2 face buttons)
     digital: bool = False   # analog-positioned element with a digital signal only
     optional: bool = False  # add-on rather than built in (N64 Rumble Pak)
@@ -384,65 +384,3 @@ def load_machinespec(root: Path, machine: str) -> MachineSpec:
     spec = MachineSpec(machine, identity.get("name", machine), groups, path)
     _machines[key] = spec
     return spec
-
-
-# --------------------------------------------------------------------------
-# SDL projection
-# --------------------------------------------------------------------------
-
-
-class Projection:
-    """Reader for `crates/input/snowglass-input/projection/SDL.proj.toml`.
-
-    Mirrors the resolution order in `snowglass_input::projection` so a
-    generator and the runtime agree on whether a binding can ever fire. A
-    component entry wins over its cluster, which is what keeps a device's
-    second directional off the hat its first one holds.
-    """
-
-    def __init__(self, defaults: dict[str, str], layouts: dict[str, dict[str, str]]):
-        self.defaults = defaults
-        self.layouts = layouts
-
-    @staticmethod
-    def _flatten(prefix: str, value, into: dict[str, str]) -> None:
-        if isinstance(value, str):
-            into[prefix.rstrip(".")] = value
-        elif isinstance(value, dict):
-            for key, nested in value.items():
-                path = prefix.rstrip(".") if key == "" else f"{prefix}{key}"
-                Projection._flatten(f"{path}.", nested, into)
-
-    @classmethod
-    def load(cls, path: Path) -> "Projection":
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-        defaults: dict[str, str] = {}
-        for kind, value in document.get("defaults", {}).items():
-            cls._flatten(f"{kind}.", value, defaults)
-        return cls(defaults, document.get("layouts", {}))
-
-    def slot(self, layout: str, element: Element) -> str | None:
-        """The SDL slot an element reaches, or None if it reaches nothing."""
-        table = self.layouts.get(layout, {})
-        if element.path in table:
-            return table[element.path]
-        if element.cluster in table:
-            return table[element.cluster]
-        probe = element.cluster
-        while probe:
-            if probe in self.defaults:
-                return self.defaults[probe]
-            if "." not in probe:
-                return None
-            probe = probe.rsplit(".", 1)[0]
-        return None
-
-
-def load_projection(root: Path | None = None) -> Projection:
-    """Load the projection that ships with `snowglass-input`."""
-    here = (root or Path(__file__)).resolve()
-    for candidate in (here, *here.parents):
-        table = (candidate / "crates/input/snowglass-input/projection/SDL.proj.toml")
-        if table.is_file():
-            return Projection.load(table)
-    raise SpecError(f"no SDL.proj.toml above {here}")

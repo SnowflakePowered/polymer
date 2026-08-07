@@ -10233,6 +10233,7 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+ "toml-spanner",
 ]
 
 [[package]]
@@ -13079,6 +13080,15 @@ dependencies = [
  "toml_parser",
  "toml_writer",
  "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml-spanner"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0454309849e01bb15a8591a5032d706694445b393f0b1ac84b5e3b0b07ca8d69"
+dependencies = [
+ "foldhash 0.2.0",
 ]
 
 [[package]]

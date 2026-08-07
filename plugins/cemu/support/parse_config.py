@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "support"))
 import consolespec
+import sdlpad
 import cppconfig
 from cppconfig import *  # noqa: F403 — shared C++/TOML machinery
 
@@ -758,7 +759,7 @@ def build_actions(hotkeys: dict[str, str | None], revision: str | None,
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_input(ids: dict[str, dict[str, int]], spec_root: Path,
+def build_input(ids: dict[str, dict[str, int]], root: Path, spec_root: Path,
                 revision: str | None, report: Report) -> str:
     slots = GAMEPAD_PORTS + CONTROLLER_PORTS
     lines = [
@@ -781,7 +782,8 @@ def build_input(ids: dict[str, dict[str, int]], spec_root: Path,
                                 "mappings"),
                   ""]
 
-    lines += ["[input]", 'device = "SDL/{index}"', ""]
+    lines += ["[input]", 'driver = "sdl3"', 'device = "SDL/{index}"', ""]
+    lines += build_sdl_mapping(root, report) + [""]
 
     bound = 0
     for layout, definition in LAYOUTS.items():
@@ -849,6 +851,76 @@ def revision_of(root: Path) -> str | None:
     return result.stdout.strip() or None
 
 
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def build_sdl_mapping(root: Path, report: Report) -> list[str]:
+    """`[input.mapping]`: the SDL virtual gamepad, in Cemu's own words.
+
+    Cemu is the case that makes this a table rather than a rule: it names
+    nothing. A profile stores an integer into `ControllerBase`'s own index space,
+    and `SDLController::raw_state` writes SDL button *i* into slot *i*, so for
+    buttons the value is SDL's own numbering. Axes are not in that run — they sit
+    in a separate region of the enum, one constant per signed half — so both are
+    resolved from `Controller.h` rather than assumed.
+    """
+    source = read_text(root / "src/input/api/Controller.h")
+    order = enum_order(source, "Buttons2")
+    # `axis` is the left stick, `rotation` the right, `trigger` the triggers;
+    # P and N are SDL's own signs, not screen directions.
+    axis_constant = {
+        "SDL_GAMEPAD_AXIS_LEFTX": "kAxisX",
+        "SDL_GAMEPAD_AXIS_LEFTY": "kAxisY",
+        "SDL_GAMEPAD_AXIS_RIGHTX": "kRotationX",
+        "SDL_GAMEPAD_AXIS_RIGHTY": "kRotationY",
+        "SDL_GAMEPAD_AXIS_LEFT_TRIGGER": "kTriggerX",
+        "SDL_GAMEPAD_AXIS_RIGHT_TRIGGER": "kTriggerY",
+    }
+    absent = [name for name in ("kButton0", *axis_constant.values())
+              if f"{name}P" not in order and name not in order]
+    if absent:
+        report.error(f"input: Cemu's Buttons2 enum has no {', '.join(absent)}")
+        return []
+
+    entries = []
+    for constant, key in sdlpad.BUTTONS.items():
+        # SDL's value is the slot, and `kButton0` is where that run starts.
+        entries.append((key, str(order["kButton0"] + sdl_button_value(constant))))
+    for constant, key, sdl_positive in sdlpad.STICKS:
+        name = axis_constant[constant] + ("P" if sdl_positive else "N")
+        entries.append((key, str(order[name])))
+    for constant, key in sdlpad.TRIGGERS:
+        entries.append((key, str(order[axis_constant[constant] + "P"])))
+    report.note(f"input: {len(entries)} SDL controls resolved from Controller.h")
+    return sdlpad.emit_mapping(entries)
+
+
+def sdl_button_value(constant: str) -> int:
+    """`SDL_GAMEPAD_BUTTON_*`'s own value, which Cemu stores verbatim."""
+    return list(sdlpad.BUTTONS).index(constant)
+
+
+
+def enum_order(source: str, name: str) -> dict[str, int]:
+    """`{enumerator: value}` for a plain C++ enum with no explicit values."""
+    start = source.index(f"enum {name}")
+    body = source[source.index("{", start) + 1:source.index("};", start)]
+    order, value = {}, 0
+    for line in body.splitlines():
+        line = line.split("//")[0].strip().rstrip(",").strip()
+        if not line:
+            continue
+        if "=" in line:
+            # An alias like `kButtonNoneAxisMAX = kButtonRight` re-uses a value.
+            alias, target = (part.strip() for part in line.split("=", 1))
+            order[alias] = order.get(target, value)
+            continue
+        order[line] = value
+        value += 1
+    return order
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -880,7 +952,7 @@ def main(argv: list[str] | None = None) -> int:
                for header in {entry["header"] for entry in LAYOUTS.values()}}
         documents = {
             "actions.toml": build_actions(hotkeys, revision, report),
-            "input.toml": build_input(ids, spec_root, revision, report),
+            "input.toml": build_input(ids, root, spec_root, revision, report),
         }
         documents.update(build_definition(values, entries, revision, report))
     except (Bail, consolespec.SpecError) as error:

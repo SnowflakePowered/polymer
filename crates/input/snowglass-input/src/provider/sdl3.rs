@@ -1520,11 +1520,7 @@ fn default_button_target(
     if let Some(target) = labelled_face_target(gamepad, source, layout) {
         return Some(target);
     }
-    let wire = ALL_BUTTONS
-        .iter()
-        .position(|candidate| *candidate == source)
-        .expect("every SdlButton is in wire order in ALL_BUTTONS") as u8;
-    projected_from(layout, Wire::Button(wire))
+    projected_from(layout, Wire::Button(source))
         .or_else(|| positional_face_target(source, layout))
 }
 
@@ -1629,7 +1625,7 @@ fn element_wire(layout: &InputLayout, key: BindingKey) -> Option<Wire> {
 
 fn element_button(layout: &InputLayout, key: BindingKey) -> Option<GamepadButton> {
     match element_wire(layout, key)? {
-        Wire::Button(index) => GamepadButton::from_wire(index),
+        Wire::Button(button) => GamepadButton::from_wire(button.index()),
         _ => None,
     }
 }
@@ -1639,7 +1635,9 @@ fn element_button(layout: &InputLayout, key: BindingKey) -> Option<GamepadButton
 /// mapping and are not one of them.
 fn element_axis_index(layout: &InputLayout, key: BindingKey) -> Option<usize> {
     match element_wire(layout, key)? {
-        Wire::Axis(index) if usize::from(index) < DEFAULT_AXES.len() => Some(index.into()),
+        // The pointer's raw axes are outside the gamepad mapping, and
+        // `Wire::RawAxis` is how they say so.
+        Wire::Axis(axis) => Some(usize::from(axis.index())),
         _ => None,
     }
 }
@@ -1832,24 +1830,24 @@ mod tests {
         let projection = Projection::shared();
         for layout in InputLayout::all() {
             let mask = layout.sdl_output(projection).button_mask;
-            for wire in 0..ALL_BUTTONS.len() as u8 {
-                let advertised = mask & (1 << wire) != 0;
-                let Some(key) = projected_from(layout, Wire::Button(wire)) else {
+            for (sdl, _) in crate::sdl::BUTTONS {
+                let advertised = mask & (1 << sdl.index()) != 0;
+                let Some(key) = projected_from(layout, Wire::Button(sdl)) else {
                     assert!(
                         !advertised,
-                        "{}: wire {wire} is advertised but nothing drives it",
+                        "{}: {sdl:?} is advertised but nothing drives it",
                         layout.id
                     );
                     continue;
                 };
                 assert!(
                     advertised,
-                    "{}: {key} drives wire {wire}, which is not advertised",
+                    "{}: {key} drives {sdl:?}, which is not advertised",
                     layout.id
                 );
                 assert_eq!(
                     element_wire(layout, key),
-                    Some(Wire::Button(wire)),
+                    Some(Wire::Button(sdl)),
                     "{}: {key}",
                     layout.id
                 );
@@ -1862,12 +1860,12 @@ mod tests {
     #[test]
     fn no_two_controls_share_a_wire_button() {
         for layout in InputLayout::all() {
-            let mut seen: HashMap<u8, BindingKey> = HashMap::new();
+            let mut seen: HashMap<SdlButton, BindingKey> = HashMap::new();
             for element in &layout.elements {
                 if let Some(Wire::Button(wire)) = element_wire(layout, element.key)
                     && let Some(other) = seen.insert(wire, element.key)
                 {
-                    panic!("{}: {other} and {} both drive wire {wire}", layout.id, element.key);
+                    panic!("{}: {other} and {} both drive {wire:?}", layout.id, element.key);
                 }
             }
         }
@@ -1879,17 +1877,17 @@ mod tests {
         let gamecube = InputLayout::get("GAMECUBE_CONTROLLER").unwrap();
         // Right shoulder is where the pad advertises Z, so that is what it drives.
         assert_eq!(
-            projected_from(gamecube, Wire::Button(10)),
+            projected_from(gamecube, Wire::Button(SdlButton::RightShoulder)),
             Some(key!(button.z))
         );
         // And nothing is advertised at the left shoulder, so nothing drives it.
-        assert_eq!(projected_from(gamecube, Wire::Button(9)), None);
+        assert_eq!(projected_from(gamecube, Wire::Button(SdlButton::LeftShoulder)), None);
 
         // The N64's D-pad holds the hat; its C-buttons are on the right stick
         // and so are not reachable from any physical button.
         let n64 = InputLayout::get("N64_CONTROLLER").unwrap();
         assert_eq!(
-            projected_from(n64, Wire::Button(11)),
+            projected_from(n64, Wire::Button(SdlButton::DpadUp)),
             Some(key!(directional.left.n))
         );
     }

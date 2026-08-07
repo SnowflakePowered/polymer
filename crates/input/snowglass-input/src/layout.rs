@@ -227,7 +227,7 @@ impl InputLayout {
         }
         // Pointer X/Y are Snowglass-specific raw joystick axes, outside the
         // gamepad mapping and present regardless of the selected topology.
-        for axis in sdl::POINTER_AXES {
+        for (axis, _) in sdl::POINTER {
             output.axis_mask |= 1 << axis;
         }
         output
@@ -248,8 +248,9 @@ impl SdlOutputLayout {
     /// Claims whatever of the pad the given SDL control occupies.
     fn claim(&mut self, target: BindingKey) {
         match sdl::wire(target) {
-            Some(Wire::Button(index)) => self.button_mask |= 1 << index,
-            Some(Wire::Axis(index)) => self.axis_mask |= 1 << index,
+            Some(Wire::Button(button)) => self.button_mask |= 1 << button.index(),
+            Some(Wire::Axis(axis)) => self.axis_mask |= 1 << axis.index(),
+            Some(Wire::RawAxis(index)) => self.axis_mask |= 1 << index,
             Some(Wire::Sensor(sensor)) => self.sensor_mask |= 1 << sensor as u8,
             // The projection rejects a target the pad does not have at load, so
             // this is unreachable for any table that parsed.
@@ -362,6 +363,60 @@ pub enum SdlAxis {
     RightY,
     LeftTrigger,
     RightTrigger,
+}
+
+impl SdlButton {
+    /// `SDL_GAMEPAD_BUTTON_*`'s value, which is also the wire position.
+    pub const fn index(self) -> u8 {
+        self as u8
+    }
+
+    /// The SDL constant this is, as emulator sources spell it in their own
+    /// tables. Joining on this rather than on a position is what lets a
+    /// generator survive SDL adding a control in the middle of the enum.
+    pub const fn constant(self) -> &'static str {
+        match self {
+            Self::South => "SDL_GAMEPAD_BUTTON_SOUTH",
+            Self::East => "SDL_GAMEPAD_BUTTON_EAST",
+            Self::West => "SDL_GAMEPAD_BUTTON_WEST",
+            Self::North => "SDL_GAMEPAD_BUTTON_NORTH",
+            Self::Back => "SDL_GAMEPAD_BUTTON_BACK",
+            Self::Guide => "SDL_GAMEPAD_BUTTON_GUIDE",
+            Self::Start => "SDL_GAMEPAD_BUTTON_START",
+            Self::LeftStick => "SDL_GAMEPAD_BUTTON_LEFT_STICK",
+            Self::RightStick => "SDL_GAMEPAD_BUTTON_RIGHT_STICK",
+            Self::LeftShoulder => "SDL_GAMEPAD_BUTTON_LEFT_SHOULDER",
+            Self::RightShoulder => "SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER",
+            Self::DpadUp => "SDL_GAMEPAD_BUTTON_DPAD_UP",
+            Self::DpadDown => "SDL_GAMEPAD_BUTTON_DPAD_DOWN",
+            Self::DpadLeft => "SDL_GAMEPAD_BUTTON_DPAD_LEFT",
+            Self::DpadRight => "SDL_GAMEPAD_BUTTON_DPAD_RIGHT",
+            Self::Misc1 => "SDL_GAMEPAD_BUTTON_MISC1",
+            Self::RightPaddle1 => "SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1",
+            Self::LeftPaddle1 => "SDL_GAMEPAD_BUTTON_LEFT_PADDLE1",
+            Self::RightPaddle2 => "SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2",
+            Self::LeftPaddle2 => "SDL_GAMEPAD_BUTTON_LEFT_PADDLE2",
+            Self::Touchpad => "SDL_GAMEPAD_BUTTON_TOUCHPAD",
+        }
+    }
+}
+
+impl SdlAxis {
+    /// `SDL_GAMEPAD_AXIS_*`'s value, which is also the wire position.
+    pub const fn index(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn constant(self) -> &'static str {
+        match self {
+            Self::LeftX => "SDL_GAMEPAD_AXIS_LEFTX",
+            Self::LeftY => "SDL_GAMEPAD_AXIS_LEFTY",
+            Self::RightX => "SDL_GAMEPAD_AXIS_RIGHTX",
+            Self::RightY => "SDL_GAMEPAD_AXIS_RIGHTY",
+            Self::LeftTrigger => "SDL_GAMEPAD_AXIS_LEFT_TRIGGER",
+            Self::RightTrigger => "SDL_GAMEPAD_AXIS_RIGHT_TRIGGER",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -518,3 +573,4 @@ mod tests {
         );
     }
 }
+

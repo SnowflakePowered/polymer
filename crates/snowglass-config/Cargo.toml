@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 toml = { workspace = true, features = ["preserve_order"] }
-
+toml-spanner = { version = "1" }
 [dev-dependencies]
 tempfile.workspace = true
 
