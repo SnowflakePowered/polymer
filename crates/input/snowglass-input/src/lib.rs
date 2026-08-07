@@ -7,8 +7,8 @@ pub mod hub;
 pub mod layout;
 pub mod mouse;
 pub mod projection;
-pub mod sdl;
 pub mod provider;
+pub mod sdl;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {

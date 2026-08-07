@@ -8,5 +8,9 @@ platforms = ["SONY_PSX"]
 
 
 [emulator.configuration]
-definition = "config/duckstation.toml"
+definitions = [
+    "config/duckstation.toml",
+    "config/input.toml",
+    "config/sections/*.toml",
+]
 resolver = "config/resolvers.ts"

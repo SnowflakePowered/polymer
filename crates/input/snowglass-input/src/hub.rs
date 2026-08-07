@@ -654,7 +654,6 @@ mod tests {
     use super::*;
     use consolespec::key;
 
-
     /// An Xbox: one `controller` group of four ports, accepting one layout.
     const MACHINE: &str = "MICROSOFT_XBOX";
 

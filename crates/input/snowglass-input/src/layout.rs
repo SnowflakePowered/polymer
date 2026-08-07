@@ -439,7 +439,6 @@ mod tests {
     use super::*;
     use consolespec::key;
 
-
     #[test]
     fn parses_embedded_registry() {
         let xbox = InputLayout::get("XBOX_CONTROLLER").unwrap();
@@ -573,4 +572,3 @@ mod tests {
         );
     }
 }
-

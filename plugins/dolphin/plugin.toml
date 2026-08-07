@@ -8,5 +8,11 @@ platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
 
 
 [emulator.configuration]
-definition = "config/dolphin.toml"
+definitions = [
+    "config/dolphin.toml",
+    "config/input.toml",
+    "config/sections/main.toml",
+    "config/sections/gfx.toml",
+    "config/sections/gfx/*.toml",
+]
 resolver = "config/resolvers.ts"

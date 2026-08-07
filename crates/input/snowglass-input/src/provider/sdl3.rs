@@ -12,9 +12,7 @@ use crate::{
     projection::{Projection, Target},
     sdl::{self, Wire},
 };
-use consolespec::{
-    Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign,
-};
+use consolespec::{Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign};
 use parking_lot::Mutex;
 use sdl3::event::Event;
 // SDL's own axis enum names the six gamepad axes; consolespec's `Axis` names a
@@ -1520,8 +1518,7 @@ fn default_button_target(
     if let Some(target) = labelled_face_target(gamepad, source, layout) {
         return Some(target);
     }
-    projected_from(layout, Wire::Button(source))
-        .or_else(|| positional_face_target(source, layout))
+    projected_from(layout, Wire::Button(source)).or_else(|| positional_face_target(source, layout))
 }
 
 fn positional_face_target(source: SdlButton, layout: &InputLayout) -> Option<BindingKey> {
@@ -1770,7 +1767,6 @@ mod tests {
     use super::*;
     use consolespec::key;
 
-
     #[test]
     fn switch_face_labels_are_not_positional() {
         let layout = InputLayout::get("SWITCH_PRO_CONTROLLER").unwrap();
@@ -1865,7 +1861,10 @@ mod tests {
                 if let Some(Wire::Button(wire)) = element_wire(layout, element.key)
                     && let Some(other) = seen.insert(wire, element.key)
                 {
-                    panic!("{}: {other} and {} both drive {wire:?}", layout.id, element.key);
+                    panic!(
+                        "{}: {other} and {} both drive {wire:?}",
+                        layout.id, element.key
+                    );
                 }
             }
         }
@@ -1881,7 +1880,10 @@ mod tests {
             Some(key!(button.z))
         );
         // And nothing is advertised at the left shoulder, so nothing drives it.
-        assert_eq!(projected_from(gamecube, Wire::Button(SdlButton::LeftShoulder)), None);
+        assert_eq!(
+            projected_from(gamecube, Wire::Button(SdlButton::LeftShoulder)),
+            None
+        );
 
         // The N64's D-pad holds the hat; its C-buttons are on the right stick
         // and so are not reachable from any physical button.

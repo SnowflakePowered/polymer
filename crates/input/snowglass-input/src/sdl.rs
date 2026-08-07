@@ -231,22 +231,52 @@ mod tests {
         // pinned so a reordering of either is caught here rather than by an
         // emulator reading the wrong button.
         assert_eq!(wire(key!(button.a)), Some(Wire::Button(SdlButton::South)));
-        assert_eq!(wire(key!(button.r)), Some(Wire::Button(SdlButton::RightShoulder)));
+        assert_eq!(
+            wire(key!(button.r)),
+            Some(Wire::Button(SdlButton::RightShoulder))
+        );
         // The hat interrupts the buttons, and runs up/down/left/right.
-        assert_eq!(wire(key!(directional.n)), Some(Wire::Button(SdlButton::DpadUp)));
-        assert_eq!(wire(key!(directional.s)), Some(Wire::Button(SdlButton::DpadDown)));
-        assert_eq!(wire(key!(directional.w)), Some(Wire::Button(SdlButton::DpadLeft)));
-        assert_eq!(wire(key!(directional.e)), Some(Wire::Button(SdlButton::DpadRight)));
+        assert_eq!(
+            wire(key!(directional.n)),
+            Some(Wire::Button(SdlButton::DpadUp))
+        );
+        assert_eq!(
+            wire(key!(directional.s)),
+            Some(Wire::Button(SdlButton::DpadDown))
+        );
+        assert_eq!(
+            wire(key!(directional.w)),
+            Some(Wire::Button(SdlButton::DpadLeft))
+        );
+        assert_eq!(
+            wire(key!(directional.e)),
+            Some(Wire::Button(SdlButton::DpadRight))
+        );
         assert_eq!(wire(key!(button.0)), Some(Wire::Button(SdlButton::Misc1)));
-        assert_eq!(wire(key!(button.5)), Some(Wire::Button(SdlButton::Touchpad)));
+        assert_eq!(
+            wire(key!(button.5)),
+            Some(Wire::Button(SdlButton::Touchpad))
+        );
     }
 
     #[test]
     fn both_halves_of_an_axis_find_it() {
-        assert_eq!(wire(key!(analog.stick.left.x+)), Some(Wire::Axis(SdlAxis::LeftX)));
-        assert_eq!(wire(key!(analog.stick.left.x-)), Some(Wire::Axis(SdlAxis::LeftX)));
-        assert_eq!(wire(key!(analog.stick.right.y-)), Some(Wire::Axis(SdlAxis::RightY)));
-        assert_eq!(wire(key!(trigger.right)), Some(Wire::Axis(SdlAxis::RightTrigger)));
+        assert_eq!(
+            wire(key!(analog.stick.left.x+)),
+            Some(Wire::Axis(SdlAxis::LeftX))
+        );
+        assert_eq!(
+            wire(key!(analog.stick.left.x-)),
+            Some(Wire::Axis(SdlAxis::LeftX))
+        );
+        assert_eq!(
+            wire(key!(analog.stick.right.y-)),
+            Some(Wire::Axis(SdlAxis::RightY))
+        );
+        assert_eq!(
+            wire(key!(trigger.right)),
+            Some(Wire::Axis(SdlAxis::RightTrigger))
+        );
         assert_eq!(wire(key!(pointer.y-)), Some(Wire::RawAxis(7)));
     }
 

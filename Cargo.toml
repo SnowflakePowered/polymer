@@ -105,5 +105,7 @@ snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
 
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
+thiserror = "2"
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

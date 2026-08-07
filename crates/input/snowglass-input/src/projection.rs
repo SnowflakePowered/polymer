@@ -93,7 +93,8 @@ impl Projection {
     pub fn shared() -> &'static Self {
         static SHARED: OnceLock<Projection> = OnceLock::new();
         SHARED.get_or_init(|| {
-            Self::embedded().unwrap_or_else(|error| panic!("the SDL projection is unusable: {error}"))
+            Self::embedded()
+                .unwrap_or_else(|error| panic!("the SDL projection is unusable: {error}"))
         })
     }
 
@@ -253,8 +254,14 @@ mod tests {
         // The standard pad's L/R are digital shoulders, so C and Z spill to the
         // triggers. The 3D pad's L/R are analog triggers, so C and Z take the
         // shoulders instead. Same buttons, opposite slots, no hand-written rule.
-        assert_eq!(placed("SAT_CONTROLLER", key!(button.c)), Some(Wire::Axis(SdlAxis::LeftTrigger)));
-        assert_eq!(placed("SAT_CONTROLLER", key!(button.z)), Some(Wire::Axis(SdlAxis::RightTrigger)));
+        assert_eq!(
+            placed("SAT_CONTROLLER", key!(button.c)),
+            Some(Wire::Axis(SdlAxis::LeftTrigger))
+        );
+        assert_eq!(
+            placed("SAT_CONTROLLER", key!(button.z)),
+            Some(Wire::Axis(SdlAxis::RightTrigger))
+        );
         assert_eq!(
             placed("SAT_3D_CONTROLLER", key!(button.c)),
             Some(Wire::Button(SdlButton::LeftShoulder))
@@ -310,8 +317,16 @@ mod tests {
         );
         // Declared, so it is not a gap — unlike the rumble motors and
         // touchscreen, which have no pad input slot by design.
-        assert!(!projection.unprojected(layout).contains(&key!(pointer.right)));
-        assert!(!projection.unprojected(layout).contains(&key!(pointer.right.x+)));
+        assert!(
+            !projection
+                .unprojected(layout)
+                .contains(&key!(pointer.right))
+        );
+        assert!(
+            !projection
+                .unprojected(layout)
+                .contains(&key!(pointer.right.x+))
+        );
     }
 
     #[test]
@@ -398,6 +413,3 @@ mod smoke {
         assert_eq!(three_d_axes & 0b11, 0b11, "the 3D pad has a stick");
     }
 }
-
-
-

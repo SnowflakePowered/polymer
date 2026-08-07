@@ -8,5 +8,9 @@ platforms = ["SONY_PS2"]
 
 
 [emulator.configuration]
-definition = "config/pcsx2.toml"
+definitions = [
+    "config/pcsx2.toml",
+    "config/input.toml",
+    "config/sections/*.toml",
+]
 resolver = "config/resolvers.ts"
