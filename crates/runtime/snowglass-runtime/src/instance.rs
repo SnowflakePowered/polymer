@@ -58,7 +58,6 @@ pub struct EmulatorConfig {
     pub graph_tracking: bool,
     pub force_keyed_mutex: bool,
     pub gamepad_layouts: Vec<String>,
-    pub inputspec_directory: Option<PathBuf>,
 }
 
 impl EmulatorConfig {
@@ -1350,7 +1349,6 @@ mod tests {
             graph_tracking: false,
             force_keyed_mutex: false,
             gamepad_layouts: Vec::new(),
-            inputspec_directory: None,
         }
     }
 

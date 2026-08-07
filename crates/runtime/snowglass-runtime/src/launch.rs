@@ -148,12 +148,6 @@ fn hook_environment(runtime: &EmulatorConfig) -> Vec<(OsString, OsString)> {
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if let Some(database) = &runtime.inputspec_directory {
-        environment.push((
-            OsString::from(config::INPUTSPEC_DIRECTORY),
-            database.as_os_str().to_owned(),
-        ));
-    }
     if runtime.tracking_enabled {
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGET),

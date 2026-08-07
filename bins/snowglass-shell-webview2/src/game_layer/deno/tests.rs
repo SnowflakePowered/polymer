@@ -36,7 +36,7 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
         <html><body>
           <script>
             snowglassInput.configure({
-              operations: [{ type: "resetPortOverrides", port: 0 }]
+              operations: [{ type: "resetPortOverrides", port: "controller.0" }]
             }).then((configuration) => {
               postMessage({
                 type: "input-configured",
@@ -67,7 +67,7 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
             && matches!(
                 transaction.operations.as_slice(),
                 [snowglass_input::hub::InputOperation::ResetPortOverrides { port }]
-                    if port.0 == 0
+                    if port.to_string() == "controller.0"
             )
     ));
 
@@ -287,6 +287,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
                 webrtc: false,
               }],
               gamepadMapping: [],
+              machine: "MICROSOFT_XBOX",
             });
             instance.setVolume(0.35);
             instance.setMuted(true);

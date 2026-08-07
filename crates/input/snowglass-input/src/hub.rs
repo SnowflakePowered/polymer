@@ -5,6 +5,7 @@
 //! here, but neither owns user configuration.
 
 use crate::layout::{BindingKey, InputLayout, LayoutRegistry, SdlAxis, SdlButton};
+use crate::machine::{InputGroup, MachineRegistry};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,10 +14,70 @@ use std::{
     sync::Arc,
 };
 
-/// A stable emulator-facing controller port.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct VirtualPort(pub u8);
+/// A stable emulator-facing controller port: a machinespec input group and an
+/// index within it.
+///
+/// A machine's ports are not one flat run. A Wii U has one `gamepad` port and
+/// eight `controller` ports, which accept disjoint sets of devices; a Wii has
+/// four `wii` ports *and* four GameCube `controller` ports on a separate bus.
+/// Naming the group is what lets [`InputHub`] check a port against the machine
+/// that declares it — and it is deliberately **not** the virtual pad index, which
+/// is [`PortConfiguration::slot`]: a port in passthrough consumes an emulator
+/// port but no pad, so the two runs skew.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VirtualPort {
+    /// A machinespec `[input]` group name, e.g. `controller`, `gamepad`, `wii`.
+    pub group: String,
+    /// Zero-based index within the group.
+    pub index: u8,
+}
+
+impl VirtualPort {
+    pub fn new(group: impl Into<String>, index: u8) -> Self {
+        Self {
+            group: group.into(),
+            index,
+        }
+    }
+}
+
+impl fmt::Display for VirtualPort {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}.{}", self.group, self.index)
+    }
+}
+
+impl std::str::FromStr for VirtualPort {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (group, index) = text
+            .rsplit_once('.')
+            .ok_or_else(|| format!("`{text}` is not a port; expected `<group>.<index>`"))?;
+        if group.is_empty() {
+            return Err(format!("`{text}` names no group"));
+        }
+        let index = index
+            .parse()
+            .map_err(|_| format!("`{text}` has no port index"))?;
+        Ok(Self::new(group, index))
+    }
+}
+
+/// The wire form is `"controller.0"`, so the frontend can compare ports with
+/// `===` and use one as an object key, as it did when a port was a bare number.
+impl Serialize for VirtualPort {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for VirtualPort {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
 
 /// A source selector persisted independently from a particular SDL connection.
 ///
@@ -131,6 +192,15 @@ impl BindingOverride {
 pub struct PortConfiguration {
     pub port: VirtualPort,
     pub layout: String,
+    /// Which virtual gamepad this port drives, if any.
+    ///
+    /// Separate from [`VirtualPort`] on purpose. Ports are numbered per group by
+    /// the machine; virtual pads are numbered by the SDL provider, densely, over
+    /// only the ports that present one. A port in passthrough or left empty
+    /// consumes the former and not the latter, so `controller.3` is routinely
+    /// slot 2. Conflating them is what §6.3 of the config design calls port
+    /// index skew, and it silently binds player 3's config to player 2's pad.
+    pub slot: Option<u8>,
     pub source: Option<SourceSelector>,
     #[serde(default)]
     pub overrides: HashMap<BindingKey, BindingOverride>,
@@ -140,6 +210,9 @@ pub struct PortConfiguration {
 #[serde(rename_all = "camelCase")]
 pub struct InputConfiguration {
     pub revision: u64,
+    /// The machinespec this topology's ports belong to. `None` before any game
+    /// is attached, when there are no ports at all.
+    pub machine: Option<String>,
     pub ports: Vec<PortConfiguration>,
 }
 
@@ -148,12 +221,19 @@ pub struct InputConfiguration {
 pub enum InputOperation {
     /// Replaces the complete port topology. Hosts use this when attaching a
     /// game whose declared controller ports differ from the previous game.
+    ///
+    /// The machine comes with it: a port only means something against the
+    /// machinespec that declares its group, so changing the topology and
+    /// changing the machine is one operation, not two.
     ReplacePorts {
+        machine: String,
         ports: Vec<PortConfiguration>,
     },
     ConfigurePort {
         port: VirtualPort,
         layout: String,
+        #[serde(default)]
+        slot: Option<u8>,
         source: Option<SourceSelector>,
     },
     SetSource {
@@ -195,22 +275,51 @@ pub struct InputHub {
 
 struct HubInner {
     registry: LayoutRegistry,
+    machines: MachineRegistry,
     state: RwLock<HubState>,
 }
 
 #[derive(Clone)]
 struct HubState {
     revision: u64,
+    machine: Option<String>,
     ports: BTreeMap<VirtualPort, PortConfiguration>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputConfigurationError {
-    RevisionConflict { expected: u64, actual: u64 },
+    RevisionConflict {
+        expected: u64,
+        actual: u64,
+    },
     DuplicatePort(VirtualPort),
+    DuplicateSlot(u8),
     UnknownLayout(String),
+    UnknownMachine(String),
+    /// Ports were configured before any machine was declared.
+    NoMachine,
+    UnknownGroup {
+        machine: String,
+        group: String,
+    },
+    /// A port names a group that hosts accessories rather than controllers.
+    AccessoryGroup {
+        machine: String,
+        group: String,
+    },
+    PortOutOfRange {
+        port: VirtualPort,
+        ports: u8,
+    },
+    LayoutNotAccepted {
+        port: VirtualPort,
+        layout: String,
+    },
     UnknownPort(VirtualPort),
-    UnknownTarget { layout: String, target: BindingKey },
+    UnknownTarget {
+        layout: String,
+        target: BindingKey,
+    },
     InvalidBinding(String),
 }
 
@@ -221,9 +330,32 @@ impl fmt::Display for InputConfigurationError {
                 formatter,
                 "input configuration revision conflict: expected {expected}, actual {actual}"
             ),
-            Self::DuplicatePort(port) => write!(formatter, "duplicate virtual port {}", port.0),
+            Self::DuplicatePort(port) => write!(formatter, "duplicate virtual port {port}"),
+            Self::DuplicateSlot(slot) => {
+                write!(formatter, "two ports drive virtual pad slot {slot}")
+            }
             Self::UnknownLayout(layout) => write!(formatter, "unknown input layout {layout}"),
-            Self::UnknownPort(port) => write!(formatter, "unknown virtual port {}", port.0),
+            Self::UnknownMachine(machine) => write!(formatter, "unknown machine {machine}"),
+            Self::NoMachine => {
+                formatter.write_str("ports were configured before a machine was declared")
+            }
+            Self::UnknownGroup { machine, group } => {
+                write!(formatter, "machine {machine} has no input group {group}")
+            }
+            Self::AccessoryGroup { machine, group } => write!(
+                formatter,
+                "input group {group} of {machine} hosts accessories, not controllers"
+            ),
+            Self::PortOutOfRange { port, ports } => write!(
+                formatter,
+                "port {port} is outside the {} port(s) its group declares",
+                ports
+            ),
+            Self::LayoutNotAccepted { port, layout } => write!(
+                formatter,
+                "port {port} does not accept input layout {layout}"
+            ),
+            Self::UnknownPort(port) => write!(formatter, "unknown virtual port {port}"),
             Self::UnknownTarget { layout, target } => {
                 write!(formatter, "input layout {layout} has no element {target}")
             }
@@ -237,24 +369,57 @@ impl std::error::Error for InputConfigurationError {}
 impl InputHub {
     pub fn new(
         registry: LayoutRegistry,
+        machines: MachineRegistry,
+        machine: Option<String>,
         ports: impl IntoIterator<Item = PortConfiguration>,
     ) -> Result<Self, InputConfigurationError> {
         let ports = collect_ports(ports)?;
-        validate_ports(&registry, &ports)?;
+        validate_ports(&registry, &machines, machine.as_deref(), &ports)?;
         Ok(Self {
             inner: Arc::new(HubInner {
                 registry,
-                state: RwLock::new(HubState { revision: 0, ports }),
+                machines,
+                state: RwLock::new(HubState {
+                    revision: 0,
+                    machine,
+                    ports,
+                }),
             }),
         })
+    }
+
+    /// An empty topology on the embedded documents, which is what a host holds
+    /// before any game is attached.
+    pub fn embedded() -> Result<Self, String> {
+        let registry = LayoutRegistry::embedded()?;
+        let machines = MachineRegistry::embedded()?;
+        Self::new(registry, machines, None, []).map_err(|error| error.to_string())
     }
 
     pub fn snapshot(&self) -> InputConfiguration {
         let state = self.inner.state.read();
         InputConfiguration {
             revision: state.revision,
+            machine: state.machine.clone(),
             ports: state.ports.values().cloned().collect(),
         }
+    }
+
+    /// The machinespec documents this hub validates against.
+    pub fn machines(&self) -> &MachineRegistry {
+        &self.inner.machines
+    }
+
+    /// The input groups of the attached machine, in declaration order. Empty
+    /// before a machine is declared.
+    pub fn groups(&self) -> Vec<InputGroup> {
+        let state = self.inner.state.read();
+        state
+            .machine
+            .as_deref()
+            .and_then(|machine| self.inner.machines.machine(machine))
+            .map(|machine| machine.input_groups().map(InputGroup::from).collect())
+            .unwrap_or_default()
     }
 
     pub fn layouts(&self) -> Vec<InputLayout> {
@@ -277,9 +442,14 @@ impl InputHub {
         }
         let mut next = state.clone();
         for operation in transaction.operations {
-            apply_operation(&mut next.ports, operation)?;
+            apply_operation(&mut next, operation)?;
         }
-        validate_ports(&self.inner.registry, &next.ports)?;
+        validate_ports(
+            &self.inner.registry,
+            &self.inner.machines,
+            next.machine.as_deref(),
+            &next.ports,
+        )?;
         next.revision = next.revision.wrapping_add(1);
         *state = next;
         drop(state);
@@ -288,23 +458,30 @@ impl InputHub {
 }
 
 fn apply_operation(
-    ports: &mut BTreeMap<VirtualPort, PortConfiguration>,
+    state: &mut HubState,
     operation: InputOperation,
 ) -> Result<(), InputConfigurationError> {
+    let ports = &mut state.ports;
     match operation {
-        InputOperation::ReplacePorts { ports: replacement } => {
-            *ports = collect_ports(replacement)?;
+        InputOperation::ReplacePorts {
+            machine,
+            ports: replacement,
+        } => {
+            state.machine = Some(machine);
+            state.ports = collect_ports(replacement)?;
         }
         InputOperation::ConfigurePort {
             port,
             layout,
+            slot,
             source,
         } => {
             ports.insert(
-                port,
+                port.clone(),
                 PortConfiguration {
                     port,
                     layout,
+                    slot,
                     source,
                     overrides: HashMap::new(),
                 },
@@ -349,8 +526,8 @@ fn collect_ports(
 ) -> Result<BTreeMap<VirtualPort, PortConfiguration>, InputConfigurationError> {
     let mut collected = BTreeMap::new();
     for port in ports {
-        let id = port.port;
-        if collected.insert(id, port).is_some() {
+        let id = port.port.clone();
+        if collected.insert(id.clone(), port).is_some() {
             return Err(InputConfigurationError::DuplicatePort(id));
         }
     }
@@ -368,9 +545,55 @@ fn port_mut(
 
 fn validate_ports(
     registry: &LayoutRegistry,
+    machines: &MachineRegistry,
+    machine: Option<&str>,
     ports: &BTreeMap<VirtualPort, PortConfiguration>,
 ) -> Result<(), InputConfigurationError> {
+    if ports.is_empty() {
+        return Ok(());
+    }
+    let machine = machine.ok_or(InputConfigurationError::NoMachine)?;
+    let spec = machines
+        .machine(machine)
+        .ok_or_else(|| InputConfigurationError::UnknownMachine(machine.to_owned()))?;
+
+    let mut slots = HashMap::new();
     for port in ports.values() {
+        // The machine decides what a port *is*: whether the group exists, how
+        // many it has, and which layouts it accepts. Without this the port is a
+        // bare integer and a Wii U GamePad fits in a `controller` slot.
+        let group = spec.input_group(&port.port.group).ok_or_else(|| {
+            InputConfigurationError::UnknownGroup {
+                machine: machine.to_owned(),
+                group: port.port.group.clone(),
+            }
+        })?;
+        if group.is_accessory_group() && group.ports() == 0 {
+            return Err(InputConfigurationError::AccessoryGroup {
+                machine: machine.to_owned(),
+                group: group.name().to_owned(),
+            });
+        }
+        if port.port.index >= group.ports() {
+            return Err(InputConfigurationError::PortOutOfRange {
+                port: port.port.clone(),
+                ports: group.ports(),
+            });
+        }
+        if !group.accepts(&port.layout) {
+            return Err(InputConfigurationError::LayoutNotAccepted {
+                port: port.port.clone(),
+                layout: port.layout.clone(),
+            });
+        }
+        // Two ports on one virtual pad would have the emulator read one device
+        // for both players, which no caller ever means.
+        if let Some(slot) = port.slot
+            && slots.insert(slot, ()).is_some()
+        {
+            return Err(InputConfigurationError::DuplicateSlot(slot));
+        }
+
         let layout = registry
             .layout(&port.layout)
             .ok_or_else(|| InputConfigurationError::UnknownLayout(port.layout.clone()))?;
@@ -428,17 +651,42 @@ mod tests {
     }
     use crate::layout::LayoutRegistry;
 
-    fn hub() -> InputHub {
+    use crate::machine::MachineRegistry;
+
+    /// An Xbox: one `controller` group of four ports, accepting one layout.
+    const MACHINE: &str = "MICROSOFT_XBOX";
+
+    fn port(index: u8) -> PortConfiguration {
+        PortConfiguration {
+            port: VirtualPort::new("controller", index),
+            layout: "XBOX_CONTROLLER".to_owned(),
+            slot: Some(index),
+            source: Some(SourceSelector::SdlIndex { index: 0 }),
+            overrides: HashMap::new(),
+        }
+    }
+
+    fn hub_with(
+        ports: impl IntoIterator<Item = PortConfiguration>,
+    ) -> Result<InputHub, InputConfigurationError> {
         InputHub::new(
             LayoutRegistry::embedded().unwrap(),
-            [PortConfiguration {
-                port: VirtualPort(0),
-                layout: "XBOX_CONTROLLER".to_owned(),
-                source: Some(SourceSelector::SdlIndex { index: 0 }),
-                overrides: HashMap::new(),
-            }],
+            MachineRegistry::embedded().unwrap(),
+            Some(MACHINE.to_owned()),
+            ports,
         )
-        .unwrap()
+    }
+
+    fn hub() -> InputHub {
+        hub_with([port(0)]).unwrap()
+    }
+
+    /// `InputHub` is not `Debug` — it owns a lock — so the error path takes the
+    /// error rather than unwrapping the success.
+    fn rejected(result: Result<InputHub, InputConfigurationError>) -> InputConfigurationError {
+        result
+            .err()
+            .expect("the topology should have been rejected")
     }
 
     #[test]
@@ -449,7 +697,7 @@ mod tests {
                 expected_revision: 0,
                 operations: vec![
                     InputOperation::SetOverride {
-                        port: VirtualPort(0),
+                        port: VirtualPort::new("controller", 0),
                         target: key("button.a"),
                         binding: BindingOverride::Button {
                             source: SourceControl::GamepadButton {
@@ -458,7 +706,7 @@ mod tests {
                         },
                     },
                     InputOperation::SetSource {
-                        port: VirtualPort(0),
+                        port: VirtualPort::new("controller", 0),
                         source: Some(SourceSelector::KeyboardMouse),
                     },
                 ],
@@ -478,7 +726,7 @@ mod tests {
         hub.apply(InputTransaction {
             expected_revision: 0,
             operations: vec![InputOperation::ResetPortOverrides {
-                port: VirtualPort(0),
+                port: VirtualPort::new("controller", 0),
             }],
         })
         .unwrap();
@@ -486,7 +734,7 @@ mod tests {
             .apply(InputTransaction {
                 expected_revision: 0,
                 operations: vec![InputOperation::RemovePort {
-                    port: VirtualPort(0),
+                    port: VirtualPort::new("controller", 0),
                 }],
             })
             .unwrap_err();
@@ -508,11 +756,11 @@ mod tests {
                 expected_revision: 0,
                 operations: vec![
                     InputOperation::SetSource {
-                        port: VirtualPort(0),
+                        port: VirtualPort::new("controller", 0),
                         source: None,
                     },
                     InputOperation::SetOverride {
-                        port: VirtualPort(0),
+                        port: VirtualPort::new("controller", 0),
                         target: key("button.z"),
                         binding: BindingOverride::Disabled,
                     },
@@ -567,17 +815,156 @@ mod tests {
 
     #[test]
     fn duplicate_ports_are_rejected_instead_of_silently_overwriting() {
-        let registry = LayoutRegistry::embedded().unwrap();
-        let port = PortConfiguration {
-            port: VirtualPort(0),
-            layout: "XBOX_CONTROLLER".to_owned(),
+        let error = rejected(hub_with([port(0), port(0)]));
+        assert_eq!(
+            error,
+            InputConfigurationError::DuplicatePort(VirtualPort::new("controller", 0))
+        );
+    }
+
+    #[test]
+    fn two_ports_may_not_drive_one_virtual_pad() {
+        let mut second = port(1);
+        second.slot = Some(0);
+        assert_eq!(
+            rejected(hub_with([port(0), second])),
+            InputConfigurationError::DuplicateSlot(0)
+        );
+    }
+
+    #[test]
+    fn a_port_is_checked_against_the_machine_that_declares_it() {
+        // An Xbox has four controller ports and no other group.
+        let mut beyond = port(4);
+        beyond.slot = Some(4);
+        assert_eq!(
+            rejected(hub_with([beyond])),
+            InputConfigurationError::PortOutOfRange {
+                port: VirtualPort::new("controller", 4),
+                ports: 4,
+            }
+        );
+
+        let mut elsewhere = port(0);
+        elsewhere.port = VirtualPort::new("gamepad", 0);
+        assert_eq!(
+            rejected(hub_with([elsewhere])),
+            InputConfigurationError::UnknownGroup {
+                machine: MACHINE.to_owned(),
+                group: "gamepad".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_group_only_accepts_the_layouts_it_declares() {
+        // The layout exists — it is simply not something an Xbox accepts. This
+        // is the check a flat port index could not make at all.
+        let mut wrong = port(0);
+        wrong.layout = "WIIU_DRC_CONTROLLER".to_owned();
+        assert_eq!(
+            rejected(hub_with([wrong])),
+            InputConfigurationError::LayoutNotAccepted {
+                port: VirtualPort::new("controller", 0),
+                layout: "WIIU_DRC_CONTROLLER".to_owned(),
+            }
+        );
+    }
+
+    fn wiiu(
+        ports: impl IntoIterator<Item = PortConfiguration>,
+    ) -> Result<InputHub, InputConfigurationError> {
+        InputHub::new(
+            LayoutRegistry::embedded().unwrap(),
+            MachineRegistry::embedded().unwrap(),
+            Some("NINTENDO_WIIU".to_owned()),
+            ports,
+        )
+    }
+
+    fn wiiu_port(group: &str, index: u8, layout: &str, slot: Option<u8>) -> PortConfiguration {
+        PortConfiguration {
+            port: VirtualPort::new(group, index),
+            layout: layout.to_owned(),
+            slot,
             source: None,
             overrides: HashMap::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn the_wii_u_groups_stay_apart() {
+        // The case the flat model could not express: two device groups on one
+        // machine, with disjoint input sets and different port counts.
+        let hub = wiiu([
+            wiiu_port("gamepad", 0, "WIIU_DRC_CONTROLLER", Some(0)),
+            wiiu_port("controller", 0, "WIIU_PRO_CONTROLLER", Some(1)),
+        ])
+        .unwrap();
+        assert_eq!(hub.snapshot().ports.len(), 2);
+
+        // The GamePad does not fit a controller port, and there is only one of it.
         assert!(matches!(
-            InputHub::new(registry, [port.clone(), port]),
-            Err(InputConfigurationError::DuplicatePort(VirtualPort(0)))
+            wiiu([wiiu_port("controller", 1, "WIIU_DRC_CONTROLLER", Some(0))]),
+            Err(InputConfigurationError::LayoutNotAccepted { .. })
         ));
+        assert!(matches!(
+            wiiu([wiiu_port("gamepad", 1, "WIIU_DRC_CONTROLLER", Some(0))]),
+            Err(InputConfigurationError::PortOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn an_accessory_group_hosts_no_controller() {
+        assert!(matches!(
+            wiiu([wiiu_port("usb", 0, "WIIU_PRO_CONTROLLER", None)]),
+            Err(InputConfigurationError::AccessoryGroup { .. })
+        ));
+    }
+
+    #[test]
+    fn ports_without_a_machine_are_rejected() {
+        assert_eq!(
+            rejected(InputHub::new(
+                LayoutRegistry::embedded().unwrap(),
+                MachineRegistry::embedded().unwrap(),
+                None,
+                [port(0)],
+            )),
+            InputConfigurationError::NoMachine
+        );
+        // An empty topology needs no machine, which is what a host holds before
+        // a game is attached.
+        assert!(InputHub::embedded().is_ok());
+    }
+
+    #[test]
+    fn a_port_round_trips_through_its_wire_form() {
+        let port = VirtualPort::new("controller", 3);
+        assert_eq!(port.to_string(), "controller.3");
+        assert_eq!("controller.3".parse::<VirtualPort>().unwrap(), port);
+        assert_eq!(
+            serde_json::to_value(&port).unwrap(),
+            serde_json::json!("controller.3")
+        );
+        for bad in ["controller", "controller.", ".0", "controller.x", ""] {
+            assert!(bad.parse::<VirtualPort>().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn replacing_the_topology_changes_the_machine_with_it() {
+        let snapshot = hub()
+            .apply(InputTransaction {
+                expected_revision: 0,
+                operations: vec![InputOperation::ReplacePorts {
+                    machine: "NINTENDO_WIIU".to_owned(),
+                    ports: vec![wiiu_port("gamepad", 0, "WIIU_DRC_CONTROLLER", Some(0))],
+                }],
+            })
+            .unwrap();
+        assert_eq!(snapshot.machine.as_deref(), Some("NINTENDO_WIIU"));
+        assert_eq!(snapshot.ports[0].layout, "WIIU_DRC_CONTROLLER");
     }
 
     #[test]

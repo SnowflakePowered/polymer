@@ -6,6 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+consolespec.workspace = true
 parking_lot.workspace = true
 sdl3.workspace = true
 serde.workspace = true

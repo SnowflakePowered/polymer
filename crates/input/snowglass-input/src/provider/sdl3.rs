@@ -20,7 +20,7 @@ use sdl3::sensor::SensorType;
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -33,7 +33,6 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
     pub slots: Vec<SlotConfig>,
-    pub inputspec_directory: Option<PathBuf>,
     pub gamecontroller_database: Option<PathBuf>,
     pub keyboard_mapping_directory: Option<PathBuf>,
 }
@@ -46,7 +45,6 @@ impl Default for ProviderConfig {
                 layout_id: "XBOX_CONTROLLER".to_owned(),
                 force_mouse: false,
             }],
-            inputspec_directory: None,
             gamecontroller_database: None,
             keyboard_mapping_directory: None,
         }
@@ -338,7 +336,7 @@ fn validate_config(config: &ProviderConfig) -> Result<(), String> {
     if config.slots.len() > u8::MAX as usize + 1 {
         return Err("gamepad slot count must be 0..=256".to_owned());
     }
-    let registry = load_layout_registry(config.inputspec_directory.as_deref())?;
+    let registry = LayoutRegistry::embedded()?;
     for slot in &config.slots {
         if registry.layout(&slot.layout_id).is_none() {
             return Err(format!("unknown input layout {}", slot.layout_id));
@@ -714,7 +712,6 @@ fn run(
                     }
                     let candidate = ProviderConfig {
                         slots: slots.clone(),
-                        inputspec_directory: config.inputspec_directory.clone(),
                         gamecontroller_database: config.gamecontroller_database.clone(),
                         keyboard_mapping_directory: config.keyboard_mapping_directory.clone(),
                     };
@@ -933,7 +930,7 @@ type Initialized = (
 );
 
 fn initialize(config: &ProviderConfig) -> Result<Initialized, String> {
-    let registry = load_layout_registry(config.inputspec_directory.as_deref())?;
+    let registry = LayoutRegistry::embedded()?;
     let remappings = RemapDatabase::default();
     let sdl = sdl3::init().map_err(|error| format!("failed to initialize SDL3: {error}"))?;
     let subsystem = sdl
@@ -1692,13 +1689,6 @@ fn to_sdl_axis(axis: SdlAxis) -> SdlNativeAxis {
         SdlAxis::RightY => SdlNativeAxis::RightY,
         SdlAxis::LeftTrigger => SdlNativeAxis::TriggerLeft,
         SdlAxis::RightTrigger => SdlNativeAxis::TriggerRight,
-    }
-}
-
-fn load_layout_registry(directory: Option<&Path>) -> Result<LayoutRegistry, String> {
-    match directory {
-        Some(directory) => LayoutRegistry::from_directory(directory),
-        None => LayoutRegistry::embedded(),
     }
 }
 

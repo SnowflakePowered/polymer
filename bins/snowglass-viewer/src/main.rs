@@ -1,9 +1,9 @@
 use snowglass_input::{
+    layout::{InputBinding, InputLayout, LayoutRegistry, SdlAxis, SdlButton},
     mouse::{PointerPhase, layout::Extent},
     provider::sdl3::{
         DeviceSelector, ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig,
     },
-    layout::{InputBinding, SdlAxis, SdlButton, InputLayout, LayoutRegistry},
 };
 use snowglass_ipc::StreamReady;
 use snowglass_platform_windows::{
@@ -524,11 +524,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut capture = SurfaceCapture::default();
     let pointer_tx = capture.pointer_sender();
     let input_tx = RoutedInputSender::default();
-    let gamepad_registry = match options.inputspec.as_deref() {
-        Some(directory) => LayoutRegistry::from_directory(directory),
-        None => LayoutRegistry::embedded(),
-    }
-    .map_err(std::io::Error::other)?;
+    let gamepad_registry = LayoutRegistry::embedded().map_err(std::io::Error::other)?;
     let mut gamepad_provider = None;
     let mut gamepad_layouts = Vec::new();
     let mut gamepad_remap_drafts = Vec::new();
@@ -547,7 +543,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             launcher.render_target_surface_patterns(),
             launcher.graph_tracking,
             options.force_keyed_mutex,
-            options.inputspec.as_deref(),
             options.gamecontroller_db.clone(),
         ) {
             Ok(started) => {
@@ -1333,7 +1328,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             launcher.render_target_surface_patterns(),
                             launcher.graph_tracking,
                             options.force_keyed_mutex,
-                            options.inputspec.as_deref(),
                             options.gamecontroller_db.clone(),
                         ) {
                             Ok(started) => {
@@ -1425,7 +1419,6 @@ fn start_target_session(
     tracked_surface_patterns: Vec<Option<String>>,
     graph_tracking: bool,
     force_keyed_mutex: bool,
-    inputspec_directory: Option<&Path>,
     gamecontroller_database: Option<PathBuf>,
 ) -> Result<StartedTarget, Box<dyn Error>> {
     let target = launcher.target().map_err(std::io::Error::other)?;
@@ -1485,7 +1478,6 @@ fn start_target_session(
             graph_tracking,
             force_keyed_mutex,
             gamepad_layouts: layouts.iter().map(|layout| layout.id.clone()).collect(),
-            inputspec_directory: inputspec_directory.map(Path::to_path_buf),
         })?;
     let provider = Sdl3Provider::start(
         Sdl3ProviderConfig {
@@ -1497,7 +1489,6 @@ fn start_target_session(
                     force_mouse: pad.force_mouse,
                 })
                 .collect(),
-            inputspec_directory: inputspec_directory.map(Path::to_path_buf),
             gamecontroller_database,
             keyboard_mapping_directory: None,
         },

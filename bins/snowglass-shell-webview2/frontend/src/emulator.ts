@@ -15,7 +15,12 @@ export type TrackedSurface = {
 export type GamePadMapping = {
   gamepadId: number | "K" | string;
   mouse: boolean;
+  // The virtual pad this drives, dense from zero.
   slot: number;
+  // The emulator-facing port it stands in for, e.g. "controller.0". Optional:
+  // when the machine has exactly one group accepting `layout` — which is true
+  // of every machinespec today — the host resolves it.
+  port?: string;
   layout: string;
   mapping: Record<string, string>;
 };
@@ -27,6 +32,10 @@ export type LaunchOptions = {
   hook: GraphicsHook[];
   surfaces: TrackedSurface[];
   gamepadMapping: GamePadMapping[];
+  // The consolespec machine being emulated. Its machinespec is what decides
+  // which ports exist and which layouts may occupy them, so a launch cannot
+  // describe its input without naming it.
+  machine: string;
   webrtcBind?: string;
 };
 

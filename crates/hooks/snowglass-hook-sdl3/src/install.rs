@@ -80,11 +80,7 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     let module = Sdl3EntryInstallation::with_state(|state| state.module)
         .ok_or("SDL3 entry-hook state is not installed")?
         .as_ptr();
-    let registry = match config::inputspec_directory() {
-        Some(directory) => LayoutRegistry::from_directory(&directory)
-            .map_err(|_| "the inputspec directory is unreadable or invalid")?,
-        None => LayoutRegistry::embedded().map_err(|_| "the embedded inputspec is invalid")?,
-    };
+    let registry = LayoutRegistry::embedded().map_err(|_| "the embedded inputspec is invalid")?;
     let projection = Projection::embedded().map_err(|_| "the SDL projection is invalid")?;
     let layouts = config::layouts()
         .into_iter()

@@ -94,7 +94,10 @@ pub struct ViewerOptions {
     pub webrtc: Option<Vec<u32>>,
     pub bind_webrtc: SocketAddr,
     pub gamepads: Vec<GamepadArgument>,
-    pub inputspec: Option<PathBuf>,
+    /// The consolespec machinespec whose ports the gamepads occupy. A port is
+    /// only meaningful against the machine that declares its group, so this is
+    /// required with `--gamepad` and defaulted alongside the default pad.
+    pub machine: String,
     pub gamecontroller_db: Option<PathBuf>,
 }
 
@@ -118,10 +121,11 @@ struct ViewerArguments {
     #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
     pub(crate) gamepads: Vec<GamepadArgument>,
 
-    /// A consolespec `inputspec` directory. The embedded documents are used by
-    /// default.
-    #[arg(long = "inputspec", value_name = "DIR")]
-    pub(crate) inputspec: Option<PathBuf>,
+    /// The consolespec machine being emulated, e.g. NINTENDO_WIIU. Required
+    /// with --gamepad: it is what decides which ports exist and what may be
+    /// plugged into them.
+    #[arg(long, value_name = "ID")]
+    pub(crate) machine: Option<String>,
 
     /// Updated SDL gamecontrollerdb.txt. The embedded database is used by default.
     #[arg(long, value_name = "FILE")]
@@ -254,9 +258,16 @@ impl ViewerArguments {
             }
         }
         let mut gamepads = self.gamepads;
-        if gamepads.is_empty() {
+        // The default pad is an Xbox controller, so the default machine is the
+        // one that declares it. A caller who names pads must name the machine:
+        // a port only exists relative to the machine that declares its group.
+        let machine = if gamepads.is_empty() {
             gamepads.push("0:0:XBOX_CONTROLLER".parse()?);
-        }
+            self.machine.unwrap_or_else(|| "MICROSOFT_XBOX".to_owned())
+        } else {
+            self.machine
+                .ok_or("--gamepad requires --machine, e.g. --machine NINTENDO_WIIU")?
+        };
         gamepads.sort_by_key(|gamepad| gamepad.slot);
         for (expected, gamepad) in gamepads.iter().enumerate() {
             if gamepad.slot != expected || expected > u8::MAX as usize {
@@ -278,7 +289,7 @@ impl ViewerArguments {
             webrtc: self.webrtc,
             bind_webrtc: self.bind_webrtc,
             gamepads,
-            inputspec: self.inputspec,
+            machine,
             gamecontroller_db: self.gamecontroller_db,
         })
     }

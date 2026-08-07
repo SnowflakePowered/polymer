@@ -14,7 +14,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::str::FromStr;
 
 pub use crate::key::{
@@ -24,103 +23,9 @@ pub use crate::key::{
 
 use crate::projection::{Projection, SdlSensor, Slot};
 
-include!(concat!(env!("OUT_DIR"), "/inputspec.rs"));
-
 pub const EMBEDDED_GAMECONTROLLER_DB: &str =
     include_str!("../SDL_GameControllerDB/gamecontrollerdb.txt");
 pub const EMBEDDED_DEFAULT_KEYBOARD_MAPPING: &str = include_str!("../keyboard/DEFAULT.kb.toml");
-
-#[derive(Debug, Deserialize)]
-struct Document {
-    input: InputDocument,
-    meta: Option<MetaDocument>,
-}
-
-/// Identity of the physical product. Absent on `*_LAYOUT` documents, whose
-/// controls are built into a handheld and are not a separately named product.
-#[derive(Debug, Deserialize)]
-struct MetaDocument {
-    name: Option<String>,
-}
-
-/// The `[input]` table of an inputspec, in the schema's own shape.
-#[derive(Debug, Deserialize)]
-struct InputDocument {
-    id: String,
-    #[serde(default)]
-    button: Vec<ButtonDocument>,
-    #[serde(default)]
-    directional: Vec<DirectionalDocument>,
-    #[serde(default)]
-    analog: Vec<AnalogDocument>,
-    #[serde(default)]
-    trigger: Vec<TriggerDocument>,
-    #[serde(default)]
-    rumble: Vec<RumbleDocument>,
-    #[serde(default)]
-    pointer: Vec<PointerDocument>,
-    #[serde(default)]
-    touchscreen: Vec<PlainDocument>,
-    #[serde(default)]
-    microphone: Vec<PlainDocument>,
-    #[serde(default)]
-    camera: Vec<PlainDocument>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ButtonDocument {
-    label: String,
-    element: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct DirectionalDocument {
-    label: Option<String>,
-    directions: u8,
-    /// Present only where a device has more than one directional cluster, and
-    /// then on every one of them: the N64's D-pad and C-buttons, the Virtual
-    /// Boy's two D-pads. It is the description's own way of telling them
-    /// apart, and it is what the binding key is keyed on.
-    alignment: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnalogDocument {
-    label: Option<String>,
-    axes: u8,
-    /// What the cluster is: a stick (the default), a slider, or a motion
-    /// sensor. Never a position — that is `alignment`.
-    class: Option<String>,
-    /// Where the cluster sits, present only to tell two of the same class
-    /// apart: the Wii Remote's own accelerometer from the Nunchuk's.
-    alignment: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TriggerDocument {
-    label: Option<String>,
-    alignment: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RumbleDocument {
-    label: Option<String>,
-    size: String,
-    alignment: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PointerDocument {
-    label: Option<String>,
-    dimensions: u8,
-    alignment: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PlainDocument {
-    label: Option<String>,
-    alignment: Option<String>,
-}
 
 /// A button's element name, capitalized into the element id it forms.
 fn button_suffix(element: ButtonElement) -> String {
@@ -212,13 +117,13 @@ fn halves(axis: Axis) -> [(Component, &'static str); 2] {
 
 /// Reads an optional schema `alignment` field, rejecting a value the schema
 /// does not allow rather than letting it through into a key nothing matches.
-fn alignment_of(value: Option<&str>) -> Result<Option<Alignment>, String> {
-    match value {
-        None => Ok(None),
-        Some(text) => Alignment::from_str(text)
-            .map(Some)
-            .map_err(|_| format!("alignment `{text}`")),
-    }
+fn alignment_of(value: Option<consolespec::Alignment>) -> Option<Alignment> {
+    value.map(|value| match value {
+        consolespec::Alignment::Left => Alignment::Left,
+        consolespec::Alignment::Right => Alignment::Right,
+        consolespec::Alignment::Front => Alignment::Front,
+        consolespec::Alignment::Rear => Alignment::Rear,
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -295,7 +200,7 @@ pub struct InputLayout {
 /// Two clusters can expand onto the same id — the N64 pad declares two
 /// directionals, the DualSense two small rumble motors — so a repeat takes an
 /// ordinal suffix (`DirectionalN2`) in declaration order.
-fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>), String> {
+fn expand(spec: consolespec::InputSpec) -> Result<(Vec<InputElement>, Vec<Cluster>), String> {
     let mut elements: Vec<InputElement> = Vec::new();
     let mut clusters: Vec<Cluster> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -321,13 +226,13 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
         id
     };
 
-    for button in &document.button {
-        let element = ButtonElement::from_str(&button.element)
-            .map_err(|_| format!("unknown button element `{}`", button.element))?;
+    for button in spec.buttons() {
+        let element = ButtonElement::from_str(button.element())
+            .map_err(|_| format!("unknown button element `{}`", button.element()))?;
         let id = push(
             format!("Button{}", button_suffix(element)),
             BindingKey::Button(element),
-            button.label.clone(),
+            button.label().to_owned(),
             "Button",
         );
         clusters.push(Cluster {
@@ -339,14 +244,14 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             elements: vec![id],
         });
     }
-    for directional in &document.directional {
-        let directions: &[Direction] = match directional.directions {
+    for directional in spec.directionals() {
+        let directions: &[Direction] = match directional.directions() {
             4 => &HAT4,
             8 => &HAT8,
             hats => return Err(format!("directional cluster with {hats} directions")),
         };
-        let cluster = directional.label.as_deref().unwrap_or("D-Pad");
-        let alignment = alignment_of(directional.alignment.as_deref())?;
+        let cluster = directional.label().unwrap_or("D-Pad");
+        let alignment = alignment_of(directional.alignment());
         let ids = directions
             .iter()
             .map(|direction| {
@@ -366,21 +271,22 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             class: None,
             alignment,
             discriminator: alignment.map(|alignment| alignment.to_string()),
-            arity: directional.directions,
+            arity: directional.directions(),
             elements: ids,
         });
     }
-    for analog in &document.analog {
+    for analog in spec.analog() {
         // `class` says what the cluster is, `alignment` says where it sits.
         // Both are optional: class defaults to a stick, and alignment appears
         // only where a device has two clusters of the same class to tell apart.
-        let class = match analog.class.as_deref() {
-            None => AnalogClass::Stick,
-            Some(text) => {
-                AnalogClass::from_str(text).map_err(|_| format!("analog class `{text}`"))?
-            }
+        let class = match analog.class() {
+            consolespec::AnalogClass::Stick => AnalogClass::Stick,
+            consolespec::AnalogClass::Slider => AnalogClass::Slider,
+            consolespec::AnalogClass::Rotary => AnalogClass::Rotary,
+            consolespec::AnalogClass::Gyroscope => AnalogClass::Gyroscope,
+            consolespec::AnalogClass::Accelerometer => AnalogClass::Accelerometer,
         };
-        let alignment = alignment_of(analog.alignment.as_deref())?;
+        let alignment = alignment_of(analog.alignment());
         let prefix = match (class, alignment) {
             // A device with one stick need not say which side it is on; the
             // sole stick is the primary one. A rotary dial has no side at all
@@ -403,26 +309,27 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
                 pascal_case(side.as_str()),
                 pascal_case(class.as_str())
             ),
-            (class, None) => match analog.label.as_deref() {
+            (class, None) => match analog.label() {
                 Some(label) => format!("{}{}Axis", pascal_case(label), pascal_case(class.as_str())),
                 None => return Err(format!("`{class}` cluster with no alignment or label")),
             },
         };
-        if !(1..=3).contains(&analog.axes) {
-            return Err(format!("analog cluster with {} axes", analog.axes));
+        if !(1..=3).contains(&analog.axes()) {
+            return Err(format!("analog cluster with {} axes", analog.axes()));
         }
-        let cluster = analog
-            .label
-            .clone()
-            .unwrap_or_else(|| match (class, alignment) {
-                (AnalogClass::Stick, None) => "Stick".to_owned(),
-                (AnalogClass::Stick, Some(Alignment::Left)) => "Left Stick".to_owned(),
-                (AnalogClass::Stick, Some(Alignment::Right)) => "Right Stick".to_owned(),
-                (AnalogClass::Rotary, _) => "Dial".to_owned(),
-                (class, _) => pascal_case(class.as_str()),
-            });
+        let cluster =
+            analog
+                .label()
+                .map(str::to_owned)
+                .unwrap_or_else(|| match (class, alignment) {
+                    (AnalogClass::Stick, None) => "Stick".to_owned(),
+                    (AnalogClass::Stick, Some(Alignment::Left)) => "Left Stick".to_owned(),
+                    (AnalogClass::Stick, Some(Alignment::Right)) => "Right Stick".to_owned(),
+                    (AnalogClass::Rotary, _) => "Dial".to_owned(),
+                    (class, _) => pascal_case(class.as_str()),
+                });
         let mut ids = Vec::new();
-        for axis in &AXES[..usize::from(analog.axes)] {
+        for axis in &AXES[..usize::from(analog.axes())] {
             for (component, sign) in halves(*axis) {
                 ids.push(push(
                     format!("{prefix}{sign}{}", axis_suffix(*axis)),
@@ -445,22 +352,22 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             class: Some(class),
             alignment,
             discriminator: alignment.map(|alignment| alignment.to_string()),
-            arity: analog.axes,
+            arity: analog.axes(),
             elements: ids,
         });
     }
-    for trigger in &document.trigger {
-        let alignment = match Alignment::from_str(&trigger.alignment) {
-            Ok(side @ (Alignment::Left | Alignment::Right)) => side,
-            _ => return Err(format!("trigger alignment `{}`", trigger.alignment)),
+    for trigger in spec.triggers() {
+        let alignment = match alignment_of(Some(trigger.alignment())) {
+            Some(side @ (Alignment::Left | Alignment::Right)) => side,
+            _ => return Err("trigger alignment is not left or right".to_owned()),
         };
         let side = pascal_case(alignment.as_str());
         let id = push(
             format!("Trigger{side}"),
             BindingKey::Trigger { alignment },
             trigger
-                .label
-                .clone()
+                .label()
+                .map(str::to_owned)
                 .unwrap_or_else(|| format!("{side} Trigger")),
             "Trigger",
         );
@@ -473,22 +380,27 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             elements: vec![id],
         });
     }
-    for rumble in &document.rumble {
-        let size = RumbleSize::from_str(&rumble.size)
-            .map_err(|_| format!("rumble size `{}`", rumble.size))?;
+    for rumble in spec.rumble() {
+        let size = match rumble.size() {
+            consolespec::RumbleSize::Big => RumbleSize::Big,
+            consolespec::RumbleSize::Small => RumbleSize::Small,
+        };
         let (suffix, fallback) = match size {
             RumbleSize::Big => ("Big", "Strong Rumble"),
             RumbleSize::Small => ("Small", "Weak Rumble"),
         };
         // A device with two motors of one size tells them apart by side.
-        let motor = match alignment_of(rumble.alignment.as_deref())? {
+        let motor = match alignment_of(rumble.alignment()) {
             Some(alignment) => RumbleMotor::Aligned(alignment),
             None => RumbleMotor::Size(size),
         };
         let id = push(
             format!("Rumble{suffix}"),
             BindingKey::Rumble(motor),
-            rumble.label.clone().unwrap_or_else(|| fallback.to_owned()),
+            rumble
+                .label()
+                .map(str::to_owned)
+                .unwrap_or_else(|| fallback.to_owned()),
             "Rumble",
         );
         clusters.push(Cluster {
@@ -500,15 +412,15 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             elements: vec![id],
         });
     }
-    for pointer in &document.pointer {
-        if !(2..=3).contains(&pointer.dimensions) {
-            return Err(format!("pointer with {} dimensions", pointer.dimensions));
+    for pointer in spec.pointers() {
+        if !(2..=3).contains(&pointer.dimensions()) {
+            return Err(format!("pointer with {} dimensions", pointer.dimensions()));
         }
-        let cluster = pointer.label.as_deref().unwrap_or("Pointer");
-        let alignment = alignment_of(pointer.alignment.as_deref())?;
+        let cluster = pointer.label().unwrap_or("Pointer");
+        let alignment = alignment_of(pointer.alignment());
         // The absolute position, then the relative axis each dimension carries.
         push(
-            format!("Pointer{}D", pointer.dimensions),
+            format!("Pointer{}D", pointer.dimensions()),
             BindingKey::Pointer {
                 alignment,
                 component: None,
@@ -517,7 +429,7 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             "Pointer",
         );
         let mut ids = Vec::new();
-        for axis in &AXES[..usize::from(pointer.dimensions)] {
+        for axis in &AXES[..usize::from(pointer.dimensions())] {
             for (component, sign) in halves(*axis) {
                 ids.push(push(
                     format!("PointerAxis{sign}{}", axis_suffix(*axis)),
@@ -539,36 +451,52 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
             class: None,
             alignment,
             discriminator: alignment.map(|alignment| alignment.to_string()),
-            arity: pointer.dimensions,
+            arity: pointer.dimensions(),
             elements: ids,
         });
     }
-    for (entries, name, kind) in [
-        (
-            &document.touchscreen,
-            "Touchscreen",
-            Peripheral::Touchscreen,
-        ),
-        (&document.microphone, "Microphone", Peripheral::Microphone),
-        (&document.camera, "Camera", Peripheral::Camera),
-    ] {
-        for entry in entries {
-            let alignment = alignment_of(entry.alignment.as_deref())?;
-            let id = push(
-                name.to_owned(),
-                BindingKey::Peripheral { kind, alignment },
-                entry.label.clone().unwrap_or_else(|| name.to_owned()),
-                name,
-            );
-            clusters.push(Cluster {
-                kind: kind.as_str(),
-                class: None,
-                alignment,
-                discriminator: alignment.map(|alignment| alignment.to_string()),
-                arity: 1,
-                elements: vec![id],
-            });
-        }
+    let peripherals = spec
+        .touchscreens()
+        .map(|entry| {
+            (
+                entry.label(),
+                entry.alignment(),
+                "Touchscreen",
+                Peripheral::Touchscreen,
+            )
+        })
+        .chain(spec.microphones().map(|entry| {
+            (
+                entry.label(),
+                entry.alignment(),
+                "Microphone",
+                Peripheral::Microphone,
+            )
+        }))
+        .chain(spec.cameras().map(|entry| {
+            (
+                entry.label(),
+                entry.alignment(),
+                "Camera",
+                Peripheral::Camera,
+            )
+        }));
+    for (label, source_alignment, name, kind) in peripherals {
+        let alignment = alignment_of(source_alignment);
+        let id = push(
+            name.to_owned(),
+            BindingKey::Peripheral { kind, alignment },
+            label.map(str::to_owned).unwrap_or_else(|| name.to_owned()),
+            name,
+        );
+        clusters.push(Cluster {
+            kind: kind.as_str(),
+            class: None,
+            alignment,
+            discriminator: alignment.map(|alignment| alignment.to_string()),
+            arity: 1,
+            elements: vec![id],
+        });
     }
 
     if elements.is_empty() {
@@ -579,19 +507,14 @@ fn expand(document: &InputDocument) -> Result<(Vec<InputElement>, Vec<Cluster>),
 }
 
 impl InputLayout {
-    /// Parses and expands one inputspec document.
-    pub fn from_toml(source: &str) -> Result<Self, String> {
-        let document: Document =
-            toml::from_str(source).map_err(|error| format!("invalid inputspec: {error}"))?;
-        let (elements, clusters) = expand(&document.input)
-            .map_err(|error| format!("inputspec {}: {error}", document.input.id))?;
+    /// Expands one compile-time validated consolespec input definition.
+    pub fn from_spec(spec: consolespec::InputSpec) -> Result<Self, String> {
+        let (elements, clusters) =
+            expand(spec).map_err(|error| format!("inputspec {}: {error}", spec.id()))?;
         let keys = elements.iter().map(|element| element.key).collect();
-        let name = document
-            .meta
-            .and_then(|meta| meta.name)
-            .unwrap_or_else(|| document.input.id.clone());
+        let name = spec.name().unwrap_or_else(|| spec.id()).to_owned();
         Ok(Self {
-            id: document.input.id,
+            id: spec.id().to_owned(),
             name,
             elements,
             clusters,
@@ -733,55 +656,11 @@ pub struct LayoutRegistry {
 }
 
 impl LayoutRegistry {
-    /// The inputspec documents embedded at build time.
+    /// Layouts derived from compile-time validated consolespec data.
     pub fn embedded() -> Result<Self, String> {
-        Self::from_documents(EMBEDDED_INPUTSPEC.iter().map(|(id, source)| (*id, *source)))
-    }
-
-    /// Reads a `consolespec/inputspec` directory, for overriding the embedded
-    /// set at runtime.
-    pub fn from_directory(directory: &Path) -> Result<Self, String> {
-        let entries = std::fs::read_dir(directory)
-            .map_err(|error| format!("{}: {error}", directory.display()))?;
-        let mut documents = Vec::new();
-        for entry in entries {
-            let path = entry
-                .map_err(|error| format!("{}: {error}", directory.display()))?
-                .path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
-                continue;
-            }
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .ok_or_else(|| format!("{}: non-UTF8 filename", path.display()))?
-                .to_owned();
-            let source = std::fs::read_to_string(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-            documents.push((id, source));
-        }
-        if documents.is_empty() {
-            return Err(format!("{}: no inputspec documents", directory.display()));
-        }
-        Self::from_documents(
-            documents
-                .iter()
-                .map(|(id, source)| (id.as_str(), source.as_str())),
-        )
-    }
-
-    fn from_documents<'a>(
-        documents: impl Iterator<Item = (&'a str, &'a str)>,
-    ) -> Result<Self, String> {
         let mut layouts = HashMap::new();
-        for (id, source) in documents {
-            let layout = InputLayout::from_toml(source)?;
-            // The filename is how every other document refers to a layout, so a
-            // document whose own id disagrees would be unreachable by one name
-            // and shadow another by the other.
-            if layout.id != id {
-                return Err(format!("inputspec {id} declares id {}", layout.id));
-            }
+        for spec in consolespec::InputSpec::all() {
+            let layout = InputLayout::from_spec(spec)?;
             layouts.insert(layout.id.clone(), layout);
         }
         Ok(Self { layouts })

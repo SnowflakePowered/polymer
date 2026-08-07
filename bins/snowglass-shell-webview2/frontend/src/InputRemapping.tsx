@@ -20,14 +20,20 @@ type Binding =
   | { kind: "disabled" };
 
 type InputPort = {
-  port: number;
+  // A machinespec group and index, e.g. "controller.0".
+  port: string;
   layout: string;
+  // The virtual pad this port drives, if any. Ports are numbered per group;
+  // pads are numbered densely over only the ports that present one, so the two
+  // are not interchangeable.
+  slot: number | null;
   source: SourceSelector | null;
   overrides: Record<string, Binding>;
 };
 
 type InputConfiguration = {
   revision: number;
+  machine: string | null;
   ports: InputPort[];
 };
 
@@ -128,6 +134,14 @@ function friendlyKey(path: string) {
     .join(" ");
 }
 
+// "controller.0" -> "Controller 1"; the group leads because a machine may have
+// more than one, and the index is one-based for people.
+function portLabel(port: string) {
+  const [group, index] = port.split(".");
+  const name = group.charAt(0).toUpperCase() + group.slice(1);
+  return `${name} ${Number(index) + 1}`;
+}
+
 function controlGroups(layout?: InputLayout) {
   if (!layout) return [];
   const groups = new Map<string, ControlGroup>();
@@ -175,12 +189,14 @@ function bindingLabel(binding: Binding | undefined) {
   return `${friendlyControl(binding.source.axis)}${inverted}`;
 }
 
-function controllerForPort(
+// `assignedPorts` is reported by the provider, so it enumerates virtual pads.
+function controllerForSlot(
   controllers: PhysicalController[],
-  port: number,
+  slot: number | null,
 ) {
+  if (slot === null) return undefined;
   return controllers.find((controller) =>
-    controller.assignedPorts.includes(port),
+    controller.assignedPorts.includes(slot),
   );
 }
 
@@ -188,6 +204,7 @@ function currentConfiguration(api: InputApi): InputConfiguration {
   const configuration = api.configuration;
   return {
     revision: Number(configuration?.revision) || 0,
+    machine: configuration?.machine ?? null,
     ports: Array.isArray(configuration?.ports) ? configuration.ports : [],
   };
 }
@@ -201,7 +218,7 @@ export function InputRemapping({ onClose }: { onClose(): void }) {
     Array.isArray(api.controllers) ? [...api.controllers] : [],
   );
   const [selectedPort, setSelectedPort] = useState(
-    () => currentConfiguration(api).ports[0]?.port ?? 0,
+    () => currentConfiguration(api).ports[0]?.port ?? "",
   );
   const [capture, setCapture] = useState<Capture | null>(null);
   const [busyTargets, setBusyTargets] = useState<string[]>([]);
@@ -214,7 +231,7 @@ export function InputRemapping({ onClose }: { onClose(): void }) {
   const layout = api.layouts.find((candidate) => candidate.id === port?.layout);
   const groups = useMemo(() => controlGroups(layout), [layout]);
   const controller = port
-    ? controllerForPort(controllers, port.port)
+    ? controllerForSlot(controllers, port.slot)
     : undefined;
 
   useEffect(() => {
@@ -248,7 +265,7 @@ export function InputRemapping({ onClose }: { onClose(): void }) {
     if (!capture || !port) return;
     const captureInput = () => {
       if (capturePending.current) return;
-      const active = controllerForPort(api.controllers, port.port);
+      const active = controllerForSlot(api.controllers, port.slot);
       if (!active) return;
       if (capture.control.category === "button") {
         const pressed = active.buttons.find((button) => {
@@ -431,7 +448,7 @@ export function InputRemapping({ onClose }: { onClose(): void }) {
                     capturePending.current = false;
                   }}
                 >
-                  <span>Port {candidate.port + 1}</span>
+                  <span>{portLabel(candidate.port)}</span>
                   <small>{candidate.layout.replaceAll("_", " ")}</small>
                 </button>
               ))}

@@ -35,7 +35,6 @@ fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
             force_mouse: false,
         }]
     );
-    assert_eq!(options.inputspec, None);
     assert_eq!(options.gamecontroller_db, None);
     Ok(())
 }
@@ -63,6 +62,8 @@ fn cli_target_arguments_are_not_reparsed_or_requoted() -> Result<(), Box<dyn Err
         "--hook",
         "d3d11",
         "--no-isolate",
+        "--machine",
+        "NINTENDO_WII",
         "--gamepad",
         "0:0:WII_REMOTE_CONTROLLER",
         "--",
@@ -125,14 +126,14 @@ fn launcher_preserves_render_target_order_and_rotation() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn accepts_inputspec_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
+fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
     let options = arguments(&[
+        "--machine",
+        "NINTENDO_NSW",
         "--gamepad",
         "Nintendo Switch Controller:0:SWITCH_PRO_CONTROLLER",
         "--gamepad",
         "030000005e0400008e02000000000000:1:XBOX_CONTROLLER",
-        "--inputspec",
-        "consolespec/inputspec",
         "--gamecontroller-db",
         "controllers.txt",
         "--",
@@ -152,13 +153,15 @@ fn accepts_inputspec_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
         DeviceSelector::Guid(_)
     ));
     assert_eq!(
-        options.inputspec,
-        Some(PathBuf::from("consolespec/inputspec"))
-    );
-    assert_eq!(
         options.gamecontroller_db,
         Some(PathBuf::from("controllers.txt"))
     );
+    assert_eq!(options.machine, "NINTENDO_NSW");
+    // A port only exists against a machine, so naming pads without one is an
+    // error rather than a topology nothing could check.
+    assert!(arguments(&["--gamepad", "0:0:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
+    // With no pads at all the default machine comes with the default pad.
+    assert_eq!(arguments(&["--", "game.exe"])?.machine, "MICROSOFT_XBOX");
     let forced_mouse = "0+M:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
     assert_eq!(forced_mouse.selector, DeviceSelector::Index(0));
     assert!(forced_mouse.force_mouse);
@@ -166,9 +169,22 @@ fn accepts_inputspec_and_gamepad_configuration() -> Result<(), Box<dyn Error>> {
     let keyboard = "K:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
     assert_eq!(keyboard.selector, DeviceSelector::Keyboard);
     assert!(keyboard.force_mouse);
-    assert!(arguments(&["--gamepad", "0:1:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
+    // Slots must still be dense from zero.
     assert!(
         arguments(&[
+            "--machine",
+            "MICROSOFT_XBOX",
+            "--gamepad",
+            "0:1:XBOX_CONTROLLER",
+            "--",
+            "game.exe"
+        ])
+        .is_err()
+    );
+    assert!(
+        arguments(&[
+            "--machine",
+            "MICROSOFT_XBOX",
             "--gamepad",
             "0:0:XBOX_CONTROLLER",
             "--gamepad",

@@ -1037,7 +1037,12 @@ impl ShellState {
                 }
                 if let Some(provider) = self.input_provider() {
                     for port in &configuration.ports {
-                        provider.reset_bindings(port.port.0 as usize);
+                        // Overrides are fanned out per virtual pad; a port that
+                        // presents none has nothing to fan out to.
+                        let Some(slot) = port.slot.map(usize::from) else {
+                            continue;
+                        };
+                        provider.reset_bindings(slot);
                         for (target, binding) in &port.overrides {
                             if let BindingOverride::Axis {
                                 source:
@@ -1047,7 +1052,7 @@ impl ShellState {
                             } = binding
                             {
                                 provider.set_mouse_axis_binding(
-                                    port.port.0 as usize,
+                                    slot,
                                     target.clone(),
                                     source.clone(),
                                     *transform,
@@ -1064,9 +1069,9 @@ impl ShellState {
                                     BindingOverride::Disabled => None,
                                     _ => continue,
                                 };
-                                provider.set_key_binding(port.port.0 as usize, target.clone(), key);
+                                provider.set_key_binding(slot, target.clone(), key);
                             } else if let Some(binding) = binding.sdl_binding() {
-                                provider.set_binding(port.port.0 as usize, target.clone(), binding);
+                                provider.set_binding(slot, target.clone(), binding);
                             }
                         }
                     }
@@ -1224,12 +1229,14 @@ impl ShellState {
         self.emit_instance_event(token, "start", &serde_json::Value::Null);
         let mut gamepad_bindings = Vec::new();
         let mut hub_ports = Vec::new();
+        // Next free index per group, for mappings that leave the port implicit.
+        let mut group_indices: HashMap<String, u8> = HashMap::new();
         for mapping in &options.gamepad_mapping {
-            let Ok(port) = u8::try_from(mapping.slot) else {
+            let Ok(slot) = u8::try_from(mapping.slot) else {
                 self.emit_instance_event(
                     token,
                     "error",
-                    &serde_json::json!({ "message": "virtual controller port exceeds 255" }),
+                    &serde_json::json!({ "message": "virtual pad slot exceeds 255" }),
                 );
                 self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                 return;
@@ -1267,9 +1274,46 @@ impl ShellState {
                     }
                 }
             }
+            // A descriptor may name the port outright; when it does not, the
+            // machine decides, because no machinespec puts one layout in two
+            // groups. Indices run in slot order within each group.
+            let port = match mapping.port.clone() {
+                Some(port) => port,
+                None => {
+                    let resolved = self
+                        .input
+                        .transport
+                        .hub()
+                        .machines()
+                        .machine(&options.machine)
+                        .ok_or_else(|| format!("unknown machine {}", options.machine))
+                        .and_then(|machine| {
+                            machine.group_for(&mapping.layout).map(|group| {
+                                let index =
+                                    group_indices.entry(group.name().to_owned()).or_insert(0u8);
+                                let port = VirtualPort::new(group.name(), *index);
+                                *index += 1;
+                                port
+                            })
+                        });
+                    match resolved {
+                        Ok(port) => port,
+                        Err(error) => {
+                            self.emit_instance_event(
+                                token,
+                                "error",
+                                &serde_json::json!({ "message": error }),
+                            );
+                            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                            return;
+                        }
+                    }
+                }
+            };
             hub_ports.push(PortConfiguration {
-                port: VirtualPort(port),
+                port,
                 layout: mapping.layout.clone(),
+                slot: Some(slot),
                 source: Some(hub_source(mapping.selector())),
                 overrides,
             });
@@ -1277,7 +1321,10 @@ impl ShellState {
         let hub = self.input.transport.hub();
         if let Err(error) = hub.apply(InputTransaction {
             expected_revision: hub.snapshot().revision,
-            operations: vec![InputOperation::ReplacePorts { ports: hub_ports }],
+            operations: vec![InputOperation::ReplacePorts {
+                machine: options.machine.clone(),
+                ports: hub_ports,
+            }],
         }) {
             self.emit_instance_event(
                 token,
@@ -1315,7 +1362,6 @@ impl ShellState {
         }
         let provider_config = Sdl3ProviderConfig {
             slots,
-            inputspec_directory: None,
             gamecontroller_database: None,
             keyboard_mapping_directory: None,
         };
@@ -1409,7 +1455,6 @@ impl ShellState {
                 .into_iter()
                 .map(|mapping| mapping.layout.clone())
                 .collect(),
-            inputspec_directory: None,
         };
         let wake_proxy = self.game.proxy.clone();
         let capture_dirty = self.streams.dirty.clone();

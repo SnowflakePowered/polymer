@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/consolespec",
     "crates/snowglass-config",
     "crates/producers/*",
     "crates/hooks/*",
@@ -97,6 +98,7 @@ snowglass-input = { path = "crates/input/snowglass-input" }
 snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
 snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
 snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }
+consolespec = { path = "crates/consolespec" }
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
 
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }

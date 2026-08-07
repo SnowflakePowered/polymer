@@ -1267,6 +1267,7 @@
           ...mapping,
           mapping: { ...(mapping.mapping || {}) },
         })),
+        machine: options.machine,
         webrtcBind: options.webrtcBind,
       };
       const id = ops.op_emulator_launch(wire);

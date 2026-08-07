@@ -1592,6 +1592,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "consolespec"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "string-interner",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "const-hex"
 version = "1.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10180,6 +10189,10 @@ dependencies = [
 [[package]]
 name = "snowglass-config"
 version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+]
 
 [[package]]
 name = "snowglass-consumer-core"
@@ -10399,6 +10412,7 @@ name = "snowglass-input"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "consolespec",
  "parking_lot",
  "sdl3",
  "serde",
@@ -10898,6 +10912,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 dependencies = [
  "float-cmp",
+]
+
+[[package]]
+name = "string-interner"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad3df9b59e2eded8d825c7c4363ad339a20fb6bc0b9a4778560f518f59910b15"
+dependencies = [
+ "hashbrown 0.16.1",
+ "serde",
 ]
 
 [[package]]

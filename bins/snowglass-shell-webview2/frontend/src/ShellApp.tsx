@@ -170,6 +170,13 @@ function splitArguments(value: string) {
   return arguments_;
 }
 
+// The shell's launcher has no library yet, so it cannot know which console a
+// command emulates; it offers a generic pad and says so. `machine` and `layout`
+// move together — the machinespec is what declares the layout as acceptable —
+// so they are chosen here as a pair.
+const DEFAULT_MACHINE = "MICROSOFT_XBOX";
+const DEFAULT_LAYOUT = "XBOX_CONTROLLER";
+
 function gamepadMapping(choice: InputMapping): GamePadMapping[] {
   if (choice === "none") return [];
   return [
@@ -177,7 +184,9 @@ function gamepadMapping(choice: InputMapping): GamePadMapping[] {
       gamepadId: choice === "controller" ? 0 : "K",
       mouse: choice === "keyboard-mouse",
       slot: 0,
-      layout: "XBOX_CONTROLLER",
+      // The port is left out: the machine has one group that accepts this
+      // layout, so the host resolves it to `controller.0`.
+      layout: DEFAULT_LAYOUT,
       mapping: {},
     },
   ];
@@ -503,6 +512,7 @@ export function ShellApp() {
         { index: 1, rotation: 0, webrtc: false },
       ],
       gamepadMapping: gamepadMapping(configuration.inputMapping),
+      machine: DEFAULT_MACHINE,
     };
     updatePhase("launching");
     setStatus("Launching game");

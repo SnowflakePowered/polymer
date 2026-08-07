@@ -1,6 +1,7 @@
 use snowglass_input::{
-    provider::sdl3::DeviceSelector,
+    hub::VirtualPort,
     layout::{InputBinding, SdlAxis, SdlButton},
+    provider::sdl3::DeviceSelector,
 };
 use snowglass_renderer::cli::{GamepadArgument, HookBackend, ViewerOptions};
 use std::{
@@ -20,6 +21,10 @@ pub struct LaunchOptions {
     pub surfaces: Vec<TrackedSurface>,
     #[serde(default)]
     pub gamepad_mapping: Vec<GamepadMapping>,
+    /// The machinespec whose ports the mappings below name. A port only exists
+    /// relative to the machine that declares its group, so this is not optional:
+    /// without it nothing could validate the topology the launch installs.
+    pub machine: String,
     pub webrtc_bind: Option<String>,
 }
 
@@ -69,7 +74,18 @@ pub struct GamepadMapping {
     pub gamepad_id: GamepadId,
     #[serde(default)]
     pub mouse: bool,
+    /// The virtual pad this mapping drives. Dense and contiguous from zero.
     pub slot: usize,
+    /// The emulator-facing port it stands in for, e.g. `controller.0`. Distinct
+    /// from `slot`: ports are numbered per machinespec group, pads are numbered
+    /// over only the ports that present one.
+    ///
+    /// Optional only because the machine usually determines it — no machinespec
+    /// puts one layout in two groups — so a caller that names the device need
+    /// not also name the group. It is resolved at launch, and an ambiguous
+    /// machine is an error rather than a guess.
+    #[serde(default)]
+    pub port: Option<VirtualPort>,
     pub layout: String,
     #[serde(default)]
     pub mapping: HashMap<String, String>,
@@ -215,6 +231,7 @@ impl LaunchOptions {
             hook,
             surfaces,
             gamepad_mapping: options.gamepads.iter().map(GamepadMapping::from).collect(),
+            machine: options.machine.clone(),
             webrtc_bind: options
                 .webrtc
                 .as_ref()
@@ -240,6 +257,7 @@ impl From<&GamepadArgument> for GamepadMapping {
             gamepad_id,
             mouse: value.force_mouse,
             slot: value.slot,
+            port: None,
             layout: value.layout.clone(),
             mapping: HashMap::new(),
         }
@@ -290,7 +308,8 @@ mod tests {
                     "attach": 4,
                     "webrtc": false
                 }],
-                "gamepadMapping": []
+                "gamepadMapping": [],
+                "machine": "MICROSOFT_XBOX"
             }"#,
         )
         .unwrap();

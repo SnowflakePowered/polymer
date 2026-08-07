@@ -15,7 +15,6 @@ pub const SDL_LOG_FILE: &str = "SNOWGLASS_SDL_LOG_FILE";
 pub const SDL_GAMEPADS: &str = "SNOWGLASS_SDL_GAMEPADS";
 pub const LAYOUT: &str = "SNOWGLASS_LAYOUT";
 pub const LAYOUTS: &str = "SNOWGLASS_LAYOUTS";
-pub const INPUTSPEC_DIRECTORY: &str = "SNOWGLASS_INPUTSPEC";
 pub const DXGI_LOG_FILE: &str = "SNOWGLASS_DXGI_LOG_FILE";
 pub const D3D11_LOG_FILE: &str = "SNOWGLASS_D3D11_LOG_FILE";
 pub const D3D12_LOG_FILE: &str = "SNOWGLASS_D3D12_LOG_FILE";
@@ -71,10 +70,6 @@ pub fn layouts() -> Vec<String> {
         .map(|layouts| layouts.split(',').map(str::to_owned).collect())
         .filter(|layouts: &Vec<_>| !layouts.is_empty() && layouts.iter().all(|id| !id.is_empty()))
         .unwrap_or_else(|| vec![layout()])
-}
-
-pub fn inputspec_directory() -> Option<PathBuf> {
-    path(INPUTSPEC_DIRECTORY)
 }
 
 pub fn dxgi_log_file() -> Option<PathBuf> {

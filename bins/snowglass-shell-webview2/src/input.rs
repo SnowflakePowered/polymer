@@ -8,7 +8,6 @@ use snowglass_input::provider::sdl3::{DeviceSelector, ProviderConfig, Sdl3Provid
 use snowglass_input::{
     gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{InputConfiguration, InputHub, SourceSelector},
-    layout::LayoutRegistry,
 };
 use snowglass_ipc::{Message, MessageSink};
 use std::{collections::BTreeMap, sync::Arc};
@@ -105,9 +104,7 @@ impl InputTransport {
     pub fn runtime() -> Result<Self, String> {
         let control = RoutedInputSender::default();
         let gamepad = RoutedGamepadSink::default();
-        let registry =
-            LayoutRegistry::embedded().expect("the embedded inputspec documents are valid");
-        let hub = InputHub::new(registry, []).expect("an empty input topology is valid");
+        let hub = InputHub::embedded().expect("the embedded consolespec documents are valid");
         let provider = Sdl3Provider::start_disabled(
             ProviderConfig {
                 slots: Vec::new(),
@@ -162,29 +159,33 @@ impl InputTransport {
     }
 }
 
+/// The provider is indexed by virtual pad, not by emulator port. Ports that
+/// present no pad — passthrough, or simply unconfigured — contribute nothing, so
+/// the slot run is dense even where the port run is not.
 fn provider_config(configuration: &InputConfiguration) -> ProviderConfig {
-    let highest_port = configuration
+    let highest_slot = configuration
         .ports
         .iter()
-        .map(|port| usize::from(port.port.0))
+        .filter_map(|port| port.slot)
+        .map(usize::from)
         .max();
-    let mut slots = highest_port
-        .map(|port| {
+    let mut slots = highest_slot
+        .map(|slot| {
             vec![
                 SlotConfig {
                     selector: DeviceSelector::Index(usize::MAX),
                     layout_id: "XBOX_CONTROLLER".to_owned(),
                     force_mouse: false,
                 };
-                port + 1
+                slot + 1
             ]
         })
         .unwrap_or_default();
     for port in &configuration.ports {
-        let Some(source) = &port.source else {
+        let (Some(slot), Some(source)) = (port.slot, &port.source) else {
             continue;
         };
-        slots[usize::from(port.port.0)] = SlotConfig {
+        slots[usize::from(slot)] = SlotConfig {
             selector: match source {
                 SourceSelector::KeyboardMouse => DeviceSelector::Keyboard,
                 SourceSelector::SdlIndex { index } => DeviceSelector::Index(*index),
@@ -255,11 +256,15 @@ mod tests {
 
     #[test]
     fn provider_topology_preserves_ports_and_stable_selectors() {
+        // Port `controller.3` on slot 2: the runs skew, which is the whole
+        // reason the two are separate fields.
         let configuration = InputConfiguration {
             revision: 1,
+            machine: Some("NINTENDO_GCN".to_owned()),
             ports: vec![PortConfiguration {
-                port: VirtualPort(2),
+                port: VirtualPort::new("controller", 3),
                 layout: "GAMECUBE_CONTROLLER".to_owned(),
+                slot: Some(2),
                 source: Some(SourceSelector::SdlGuid {
                     guid: "abc".to_owned(),
                     duplicate_ordinal: 1,
