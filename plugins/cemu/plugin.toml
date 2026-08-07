@@ -8,5 +8,9 @@ platforms = ["NINTENDO_WIIU"]
 
 
 [emulator.configuration]
-definition = "config/cemu.toml"
+definitions = [
+    "config/cemu.toml",
+    "config/input.toml",
+    "config/sections/content-*.toml"
+]
 resolver = "config/resolvers.ts"
