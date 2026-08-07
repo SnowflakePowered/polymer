@@ -20,7 +20,6 @@ path = "Config/WiimoteNew.ini"
 [targets.wiipad.Wiimote4]
 
 [input]
-dialect = "dolphin"
 device = "SDL/{index}/{name}"
 
 [input.layouts.GAMECUBE_CONTROLLER]

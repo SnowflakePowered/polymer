@@ -9,6 +9,7 @@ target = "settings.content.Debug"
 key = "crash_dump_windows"
 title = "Crash Dump Windows"
 type = "int"
+default = 0
 emit = { key = "CrashDumpWindows" }
 
 [[sections.content-debug.options]]

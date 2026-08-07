@@ -15,7 +15,6 @@ path = "inis/PCSX2.ini"
 [targets.ini.Pad8]
 
 [input]
-dialect = "pcsx2"
 device = "SDL-{index}"
 
 [input.layouts.DUALSHOCK_2_CONTROLLER]

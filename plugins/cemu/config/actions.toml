@@ -5,15 +5,20 @@
 # a wxWidgets keycode and a controller button index. `encoding` names that
 # pairing so the emitter writes the keyboard half and leaves the pad half
 # at Cemu's own -1 sentinel.
+#
+# The hotkeys are written by `wxCemuConfig::Save`, which runs as a child of
+# `CemuConfig::Save` and is handed the `content` node the latter returns, so
+# they sit under `content` and not at the document root.
 
 [targets.settings]
 format = "xml"
 path = "settings.xml"
 
-[targets.settings.Hotkeys]
+[targets.settings.content]
+[targets.settings.content.Hotkeys]
 
 [actions]
-target = "settings.Hotkeys"
+target = "settings.content.Hotkeys"
 transport = "win32-message"
 keynames = "wxwidgets"
 encoding = "wx-keycode-pair"

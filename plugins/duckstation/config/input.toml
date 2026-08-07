@@ -15,7 +15,6 @@ path = "settings.ini"
 [targets.settings.Pad8]
 
 [input]
-dialect = "duckstation"
 device = "SDL-{index}"
 
 [input.layouts.PSX_CONTROLLER]

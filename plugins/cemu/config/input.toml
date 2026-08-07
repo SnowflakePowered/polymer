@@ -70,7 +70,6 @@ path = "controllerProfiles/controller7.xml"
 [targets.profile-7.emulated_controller.controller.mappings]
 
 [input]
-dialect = "cemu"
 device = "SDL/{index}"
 
 [input.layouts.WIIU_DRC_CONTROLLER]

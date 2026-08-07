@@ -13,10 +13,52 @@ default = false
 emit = { key = "advanced_ppc_logging", bool_style = "lower" }
 
 [[sections.content.options]]
+key = "check_update"
+title = "Check Update"
+type = "bool"
+default = true
+emit = { key = "check_update", bool_style = "lower" }
+
+[[sections.content.options]]
 key = "console_language"
 title = "Console Language"
 type = "int"
+default = 1
 emit = { key = "console_language" }
+
+[[sections.content.options]]
+key = "feral_gamemode"
+title = "Feral Gamemode"
+type = "bool"
+default = false
+emit = { key = "feral_gamemode", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "fullscreen"
+title = "Fullscreen"
+type = "bool"
+default = false
+emit = { key = "fullscreen", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "fullscreen_menubar"
+title = "Fullscreen Menubar"
+type = "bool"
+default = false
+emit = { key = "fullscreen_menubar", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "gp_download"
+title = "Gp Download"
+type = "bool"
+default = false
+emit = { key = "gp_download", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "language"
+title = "Language"
+type = "int"
+emit = { key = "language" }
 
 [[sections.content.options]]
 key = "logflag"
@@ -26,10 +68,39 @@ default = 0
 emit = { key = "logflag" }
 
 [[sections.content.options]]
+key = "macos_disclaimer"
+title = "Macos Disclaimer"
+type = "bool"
+default = false
+emit = { key = "macos_disclaimer", bool_style = "lower" }
+
+[[sections.content.options]]
 key = "mlc_path"
 title = "Mlc Path"
 type = "string"
+default = ""
 emit = { key = "mlc_path" }
+
+[[sections.content.options]]
+key = "msw_theme"
+title = "Msw Theme"
+type = "int"
+default = 0
+emit = { key = "msw_theme" }
+
+[[sections.content.options]]
+key = "open_pad"
+title = "Open Pad"
+type = "bool"
+default = false
+emit = { key = "open_pad", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "pad_maximized"
+title = "Pad Maximized"
+type = "bool"
+default = false
+emit = { key = "pad_maximized", bool_style = "lower" }
 
 [[sections.content.options]]
 key = "permanent_storage"
@@ -49,4 +120,47 @@ emit = { key = "play_boot_sound", bool_style = "lower" }
 key = "proxy_server"
 title = "Proxy Server"
 type = "string"
+default = ""
 emit = { key = "proxy_server" }
+
+[[sections.content.options]]
+key = "receive_untested_updates"
+title = "Receive Untested Updates"
+type = "bool"
+default = false
+emit = { key = "receive_untested_updates", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "save_screenshot"
+title = "Save Screenshot"
+type = "bool"
+default = true
+emit = { key = "save_screenshot", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "show_icon_column"
+title = "Show Icon Column"
+type = "bool"
+default = true
+emit = { key = "show_icon_column", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "use_discord_presence"
+title = "Use Discord Presence"
+type = "bool"
+default = true
+emit = { key = "use_discord_presence", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "vk_warning"
+title = "Vk Warning"
+type = "bool"
+default = false
+emit = { key = "vk_warning", bool_style = "lower" }
+
+[[sections.content.options]]
+key = "window_maximized"
+title = "Window Maximized"
+type = "bool"
+default = false
+emit = { key = "window_maximized", bool_style = "lower" }

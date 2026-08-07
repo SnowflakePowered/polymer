@@ -11,10 +11,16 @@ binding table is an integer mapping on both sides. Each emulated controller
 class declares its *own* `ButtonId` enum with its own ordering, so there is one
 table per layout and the enums are parsed from one header each.
 
+Two structs share `settings.xml`. `CemuConfig::Save` writes the `content` node
+and *returns* it, and `XMLConfig::Save` hands that return value to every child
+config, so `wxCemuConfig::Save` appends its own settings — and the hotkeys —
+under `content` as well. Both are parsed, and the wx half is rooted there.
+
 Outputs, into --out (default ../config):
 
-    cemu.toml      targets + section imports      (config/CemuConfig.{h,cpp})
-    sections/*.toml one rooted document per section (config/CemuConfig.{h,cpp})
+    cemu.toml      targets + section imports      (config/CemuConfig.{h,cpp},
+                                                   gui/wxgui/wxCemuConfig.{h,cpp})
+    sections/*.toml one rooted document per section
     actions.toml   action map                     (gui/wxgui/wxCemuConfig.{h,cpp})
     input.toml     ports + per-layout bindings    (input/emulated/*.h)
 
@@ -43,6 +49,28 @@ cppconfig.UNDEFINES = {
 
 SETTINGS_FILE = "settings.xml"
 BOOL_STYLE = "lower"
+
+# Member types that hold a collection rather than a setting. Cemu writes these
+# as repeated `Entry` elements, which an option cannot describe, so they are
+# skipped at the declaration rather than left to fail later as an unresolved
+# member.
+CONTAINER_TYPES = {
+    "std::vector", "std::map", "std::unordered_map", "std::set",
+    "std::unordered_set", "std::array", "std::mutex", "std::shared_mutex",
+    "std::atomic", "std::function", "std::unique_ptr", "std::shared_ptr",
+}
+
+# Types Cemu writes one element per field of. Walking the config struct finds
+# `Vector2i window_position{-1, -1}` but not what a `Vector2i` holds, because
+# it is a template in util/math/vector2.h rather than a member struct, so the
+# fields and their order are named here. Order matters: the brace initializer
+# is positional.
+AGGREGATES = {"Vector2i": {"x": "int", "y": "int"}}
+
+# Nodes the definition document does not describe. The hotkey elements are
+# `sHotkeyCfg` — a keycode and a pad button packed into one element — which is
+# not a scalar an option can carry; actions.toml owns them instead.
+EXCLUDED_PATHS = {("content", "Hotkeys")}
 
 # The machine these ports belong to, and how its machinespec groups them. A Wii
 # U has one GamePad port and eight controller ports; Cemu has eight profile
@@ -197,73 +225,337 @@ ACTION_VOCABULARY = {
 }
 
 
-def parse_config_values(root: Path, report: Report) -> dict[str, dict]:
-    """`ConfigValue<T> member{default};` declarations, keyed by member name."""
-    text = load_source(root / "src/config/CemuConfig.h", report)
-    scope = Scope()
-    values: dict[str, dict] = {}
-    pattern = re.compile(r"\bConfigValue(?:Bounds)?\s*<")
+def collect_enumerators(text: str, scope: Scope, namespace: str | None) -> None:
+    """Define every enumerator in `text`, bare and qualified.
+
+    Defaults are written both ways — `kStereo` unqualified, but
+    `ScreenPosition::kDisabled` and `DefaultColumnSize::name` through their
+    scope — and `Scope` resolves a qualified name by any suffix of it, so
+    defining the bare name alongside the enum tag and the enclosing namespace
+    covers every spelling that appears.
+    """
+    pattern = re.compile(r"\benum\s+(?:class\s+|struct\s+)?(\w+)?\s*(?::\s*[\w:\s]+?\s*)?\{")
     for found in pattern.finditer(text):
-        angle = found.end() - 1
+        tag = found.group(1)
         try:
-            type_end = match_braces(text, angle, "<", ">")
+            end = match_braces(text, found.end() - 1)
         except Bail:
             continue
-        ctype = text[angle + 1: type_end - 1].strip()
-        declaration = re.match(r"\s*(\w+)\s*\{([^;]*)\}\s*;", text[type_end:])
-        if not declaration:
+        following = 0
+        for entry in split_top_level(text[found.end(): end - 1]):
+            member = re.match(r"^(\w+)\s*(?:=\s*(.+))?$", entry.strip(), re.S)
+            if not member:
+                continue
+            if member.group(2):
+                try:
+                    following = int(evaluate_expression(member.group(2), scope))
+                except (Unresolved, TypeError, ValueError):
+                    continue
+            for qualifier in (None, tag, namespace):
+                scope.define(f"{qualifier}::{member.group(1)}" if qualifier
+                             else member.group(1), following)
+            following += 1
+
+
+def scope_of(text: str) -> Scope:
+    """The named constants a header declares: enumerators and `constexpr`s."""
+    scope = Scope()
+    for found in re.finditer(r"\bnamespace\s+(\w+)\s*\{", text):
+        try:
+            end = match_braces(text, found.end() - 1)
+        except Bail:
             continue
-        default = None
-        expression = declaration.group(2).strip()
-        if expression:
+        collect_enumerators(text[found.end(): end - 1], scope, found.group(1))
+    collect_enumerators(text, scope, None)
+    return resolve_constants(collect_constants(text), scope)
+
+
+def strip_casts(expression: str) -> str:
+    """Peel the casts and wrappers Cemu writes around a value or a member.
+
+    `static_cast<sint32>(x)`, `(sint64)x` and `boost::nowide::narrow(x).c_str()`
+    all name one thing; none of them survive being handed to the expression
+    evaluator or matched as a member path.
+    """
+    text = expression.strip()
+    for _ in range(8):
+        before = text
+        text = re.sub(r"^\(\s*[\w:]+\s*\)\s*", "", text).strip()
+        wrapper = re.match(r"^(?:static_cast\s*<[^>]*>|boost::nowide::narrow|"
+                           r"std::move|std::forward\s*<[^>]*>)\s*\(", text)
+        if wrapper:
             try:
-                default = evaluate_expression(expression, scope)
-            except Unresolved:
-                default = None
-        values[declaration.group(1)] = {"ctype": ctype, "default": default}
-    if not values:
-        raise Bail("no ConfigValue declarations found; check --cemu")
+                end = match_braces(text, wrapper.end() - 1, "(", ")")
+            except Bail:
+                return text
+            text = (text[wrapper.end(): end - 1] + text[end:]).strip()
+        if text.startswith("("):
+            try:
+                end = match_braces(text, 0, "(", ")")
+            except Bail:
+                return text
+            if end == len(text):
+                text = text[1:-1].strip()
+        text = re.sub(r"\.(?:GetValue|c_str)\(\)$", "", text).strip()
+        if text == before:
+            break
+    return text
+
+
+def split_members(body: str) -> list[str]:
+    """One entry per declaration in a struct body.
+
+    A declaration ends at a `;` outside brackets, but a member function's body
+    ends at `}`, so a run whose top-level `{` followed a `)` is a definition and
+    is discarded when that brace closes. Without that, a function body would be
+    glued onto whatever declaration came after it.
+    """
+    declarations: list[str] = []
+    current: list[str] = []
+    depth, function = 0, False
+    i = 0
+    while i < len(body):
+        character = body[i]
+        if character in "\"'":
+            end = skip_literal(body, i)
+            current.append(body[i:end])
+            i = end
+            continue
+        current.append(character)
+        if character in "([{":
+            if depth == 0 and character == "{":
+                function = bool(re.search(r"\)\s*(?:const\s*)?$",
+                                          "".join(current[:-1])))
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+            if depth == 0 and character == "}" and function:
+                current, function = [], False
+        elif character == ";" and depth == 0:
+            declarations.append("".join(current[:-1]))
+            current = []
+        i += 1
+    return [entry.strip() for entry in declarations if entry.strip()]
+
+
+DECLARATION = re.compile(
+    r"^((?:(?:const|constexpr|static|inline|mutable|unsigned|signed)\s+)*"
+    r"[\w:]+(?:\s*<.*>)?(?:\s*[*&])?)\s+(.+)$", re.S)
+
+
+def parse_members(body: str, scope: Scope, report: Report, origin: str,
+                  prefix: str = "") -> dict[str, dict]:
+    """Every scalar member a struct body declares, keyed by dotted path.
+
+    Cemu does not store settings uniformly: some are `ConfigValue<T>`, some are
+    plain typed members, and some live in an anonymous struct that names the XML
+    node they land under (`overlay.text_scale` -> `Graphic/Overlay/TextScale`).
+    All three have to resolve, because the writer refers to them by whichever
+    form the member happens to take.
+    """
+    # Access specifiers and the `#define`/`#undef` pairs Cemu wraps around a
+    # platform-dependent default both sit between declarations without a `;` of
+    # their own, so they would otherwise be read as part of the next one.
+    body = re.sub(r"\b(?:public|private|protected)\s*:", "", body)
+    body = re.sub(r"^[ \t]*#[ \t]*\w+[^\n]*$", "", body, flags=re.M)
+    values: dict[str, dict] = {}
+    for declaration in split_members(body):
+        nested = re.match(r"^(?:struct|union)\b\s*(\w+)?\s*(?=\{)", declaration)
+        if nested:
+            try:
+                end = match_braces(declaration, nested.end())
+            except Bail:
+                continue
+            name = re.match(r"^\s*(\w+)", declaration[end:])
+            if not name:
+                continue  # a tag-only declaration: a type, not a member
+            values.update(parse_members(declaration[nested.end() + 1: end - 1],
+                                        scope, report, origin,
+                                        f"{prefix}{name.group(1)}."))
+            continue
+
+        config = re.match(r"^ConfigValue(Bounds)?\s*(?=<)", declaration)
+        if config:
+            try:
+                type_end = match_braces(declaration, config.end(), "<", ">")
+            except Bail:
+                continue
+            ctype = declaration[config.end() + 1: type_end - 1].strip()
+            rest = declaration[type_end:].strip()
+            name = re.match(r"^(\w+)\s*(?=\{|$)", rest)
+            if not name:
+                continue
+            arguments: list[str] = []
+            if rest[name.end():].startswith("{"):
+                try:
+                    end = match_braces(rest, name.end())
+                except Bail:
+                    continue
+                arguments = split_top_level(rest[name.end() + 1: end - 1])
+            # `ConfigValueBounds` takes (min, init, max); everything else, and
+            # its enum-iterator overload, takes the initial value alone. An
+            # absent or empty initializer is value-initialization, which is a
+            # real default and not a missing one.
+            if config.group(1) and len(arguments) == 3:
+                expression = arguments[1]
+            elif len(arguments) == 1:
+                expression = arguments[0]
+            elif arguments:
+                report.warn(f"{origin}: `{prefix}{name.group(1)}` has "
+                            f"{len(arguments)} initializers; default not read")
+                expression = None
+            else:
+                expression = None
+            values[f"{prefix}{name.group(1)}"] = {
+                "ctype": ctype,
+                "default": (evaluate_default(expression, scope) if expression
+                            else value_initialized(ctype)),
+            }
+            continue
+
+        parsed = DECLARATION.match(declaration)
+        if not parsed:
+            continue
+        qualifiers, declarators = parsed.group(1).strip(), parsed.group(2)
+        if re.match(r"^(?:static|constexpr)\b", qualifiers):
+            continue
+        ctype = re.sub(r"^(?:(?:const|inline|mutable)\s+)*", "", qualifiers).strip()
+        if ctype.split("<")[0].strip() in CONTAINER_TYPES or ctype.endswith(("*", "&")):
+            continue
+        for declarator in split_top_level(declarators):
+            member = re.match(r"^(\w+)\s*(?:=\s*(.+)|\{(.*)\})?\s*$",
+                              declarator.strip(), re.S)
+            if not member:
+                continue  # a function declaration, or a declarator we cannot read
+            name, expression = member.group(1), member.group(2)
+            fields = AGGREGATES.get(ctype.split("::")[-1])
+            if fields:
+                # `Vector2i pad_size{-1, -1}` — one element per field, in order.
+                initializers = split_top_level(member.group(3) or "")
+                for index, (field, field_type) in enumerate(fields.items()):
+                    values[f"{prefix}{name}.{field}"] = {
+                        "ctype": field_type,
+                        "default": (evaluate_default(initializers[index], scope)
+                                    if index < len(initializers)
+                                    else value_initialized(field_type)),
+                    }
+                continue
+            if expression is None and member.group(3):
+                expression = member.group(3)
+            values[f"{prefix}{name}"] = {
+                "ctype": ctype,
+                "default": (evaluate_default(expression, scope) if expression
+                            else value_initialized(ctype)),
+            }
     return values
 
 
-def parse_xml_layout(root: Path, report: Report) -> list[dict]:
+def evaluate_default(expression: str, scope: Scope) -> object:
+    """A declared initializer as a value, or None when it is not a constant."""
+    text = strip_casts(expression)
+    # `L"default"` and friends: the encoding prefix is not part of the literal.
+    text = re.sub(r'(?<![\w])(?:L|u8|u|U)(?=")', "", text)
+    if not text:
+        return None
+    try:
+        value = evaluate_expression(text, scope)
+    except (Unresolved, Bail):
+        return None
+    return value if isinstance(value, (bool, int, float, str)) else None
+
+
+def value_initialized(ctype: str) -> object:
+    """What `TType()` gives a member Cemu declares without an initializer.
+
+    `ConfigValueAtomic()` and `ConfigValueNoneAtomic()` both value-initialize,
+    so `ConfigValue<bool> pad_open;` really does default to false rather than to
+    nothing, and the document should say so.
+    """
+    return {"bool": False, "int": 0, "float": 0.0, "string": ""}[cemu_type(ctype)]
+
+
+def parse_config_values(root: Path, report: Report) -> dict[str, dict]:
+    """Members of both structs that share settings.xml, keyed by dotted path.
+
+    The two never collide: `CemuConfig`'s members are only ever read by
+    `CemuConfig::Save` and `wxCemuConfig`'s only by its own, so a single table
+    keyed by member path serves both writers.
+    """
+    values: dict[str, dict] = {}
+    for source, struct in (("src/config/CemuConfig.h", "CemuConfig"),
+                           ("src/gui/wxgui/wxCemuConfig.h", "wxCemuConfig")):
+        text = load_source(root / source, report)
+        found = re.search(rf"\bstruct\s+{struct}\s*\{{", text)
+        if not found:
+            raise Bail(f"{source} no longer declares `struct {struct}`")
+        body = text[found.end(): match_braces(text, found.end() - 1) - 1]
+        parsed = parse_members(body, scope_of(text), report, Path(source).name)
+        if not parsed:
+            raise Bail(f"{source}: `struct {struct}` parsed without members")
+        values.update(parsed)
+    return values
+
+
+def parse_save(text: str, qualified: str, seed: tuple[str, ...],
+               report: Report) -> list[dict]:
     """The XML path and member behind every `config.set("name", member)` call.
 
     Cemu writes its document with a parser handle per element, so the enclosing
     path is tracked through the `auto x = y.set("Node")` assignments rather than
-    being visible at the call site.
+    being visible at the call site. `seed` is where the method's own parser
+    argument already sits: `CemuConfig::Save` receives the document root and
+    opens `content` itself, while `wxCemuConfig::Save` is handed the `content`
+    node that the former returned.
     """
-    text = load_source(root / "src/config/CemuConfig.cpp", report)
-    start = re.search(r"XMLConfigParser\s+CemuConfig::Save\s*\([^)]*\)\s*\{", text)
+    start = re.search(
+        rf"\b{re.escape(qualified)}\s*\(\s*XMLConfigParser\s*&\s*(\w+)\s*\)\s*\{{",
+        text)
     if not start:
-        raise Bail("CemuConfig.cpp no longer defines CemuConfig::Save")
+        raise Bail(f"{qualified} is no longer defined as expected")
     body = text[start.end(): match_braces(text, start.end() - 1) - 1]
 
-    handles: dict[str, tuple[str, ...]] = {}
+    handles: dict[str, tuple[str, ...]] = {start.group(1): seed}
     entries: list[dict] = []
+    attributes = 0
     for found in re.finditer(
-        r"(?:auto\s+(\w+)\s*=\s*)?(\w+)\s*\.set\s*(?:<[^>]*>)?\s*\(", body
+        r"(?:auto\s+(\w+)\s*=\s*)?(\w+)\s*\.set(_attribute)?\s*(?:<[^>]*>)?\s*\(", body
     ):
-        target, handle = found.group(1), found.group(2)
+        target, handle, attribute = found.group(1), found.group(2), found.group(3)
         close = match_braces(body, found.end() - 1, "(", ")")
         arguments = split_top_level(body[found.end(): close - 1])
         name = parse_string_literal(arguments[0]) if arguments else None
         if name is None:
             continue
         parent = handles.get(handle, ())
+        if attribute:
+            # An XML attribute, not an element. Targets address elements, so
+            # these cannot be expressed; count them so they do not read as an
+            # oversight in the emitted document.
+            attributes += 1
+            continue
         if target:
             handles[target] = parent + (name,)
             continue
         if len(arguments) < 2:
             continue
-        member = re.match(r"^([\w.]+?)(?:\.GetValue\(\))?(?:\.c_str\(\))?$",
-                          arguments[1].strip())
-        if not member:
+        member = strip_casts(arguments[1])
+        if not re.fullmatch(r"[\w.]+", member):
             continue
-        entries.append({"path": parent, "name": name, "member": member.group(1)})
+        entries.append({"path": parent, "name": name, "member": member})
     if not entries:
-        raise Bail("CemuConfig::Save yielded no settings")
+        raise Bail(f"{qualified} yielded no settings")
+    if attributes:
+        report.note(f"definition: {attributes} settings under {qualified} are XML "
+                    "attributes rather than elements and cannot be targeted")
     return entries
+
+
+def parse_xml_layout(root: Path, report: Report) -> list[dict]:
+    """Every setting both writers put into settings.xml, in document order."""
+    return (parse_save(load_source(root / "src/config/CemuConfig.cpp", report),
+                       "CemuConfig::Save", (), report)
+            + parse_save(load_source(root / "src/gui/wxgui/wxCemuConfig.cpp", report),
+                         "wxCemuConfig::Save", ("content",), report))
 
 
 def parse_hotkeys(root: Path, report: Report) -> dict[str, str | None]:
@@ -319,16 +611,21 @@ def parse_button_ids(root: Path, header: str, report: Report) -> dict[str, int]:
 def build_definition(values: dict[str, dict], entries: list[dict],
                      revision: str | None, report: Report) -> dict[str, str]:
     grouped: dict[tuple[str, ...], list[dict]] = {}
-    unresolved = 0
+    unresolved: list[str] = []
     for entry in entries:
+        if entry["path"] in EXCLUDED_PATHS:
+            continue
         declared = values.get(entry["member"])
         if declared is None:
-            unresolved += 1
+            unresolved.append(f"{'/'.join(entry['path'] + (entry['name'],))} "
+                              f"({entry['member']})")
             continue
         grouped.setdefault(entry["path"], []).append({**entry, **declared})
-    if unresolved:
-        report.note(f"definition: {unresolved} XML entries have no ConfigValue "
-                    "declaration (computed or container members)")
+    for entry in unresolved:
+        # Every one of these is a repeated container element whose member is a
+        # loop variable, so there is nothing to declare. Listed rather than
+        # counted, because a *new* one would mean a setting was dropped.
+        report.note(f"definition: no declaration for {entry}")
 
     main_lines = [
         "# Generated by support/parse_config.py. Do not edit by hand.",
@@ -403,7 +700,7 @@ def cemu_type(ctype: str) -> str:
     simple = ctype.split("::")[-1].strip()
     if simple == "bool":
         return "bool"
-    if simple in ("std::string", "string", "fs::path"):
+    if simple in ("std::string", "string", "std::wstring", "wstring", "fs::path"):
         return "string"
     if simple in ("float", "double"):
         return "float"
@@ -422,15 +719,20 @@ def build_actions(hotkeys: dict[str, str | None], revision: str | None,
         "# a wxWidgets keycode and a controller button index. `encoding` names that",
         "# pairing so the emitter writes the keyboard half and leaves the pad half",
         "# at Cemu's own -1 sentinel.",
+        "#",
+        "# The hotkeys are written by `wxCemuConfig::Save`, which runs as a child of",
+        "# `CemuConfig::Save` and is handed the `content` node the latter returns, so",
+        "# they sit under `content` and not at the document root.",
         "",
         target_header("settings"),
         'format = "xml"',
         f"path = {toml_string(SETTINGS_FILE)}",
         "",
-        target_header("settings", "Hotkeys"),
+        target_header("settings", "content"),
+        target_header("settings", "content", "Hotkeys"),
         "",
         "[actions]",
-        f'target = {toml_string(target_id("settings", "Hotkeys"))}',
+        f'target = {toml_string(target_id("settings", "content", "Hotkeys"))}',
         # Cemu is wxWidgets, so it reads the keyboard through window messages.
         'transport = "win32-message"',
         'keynames = "wxwidgets"',
@@ -458,7 +760,6 @@ def build_actions(hotkeys: dict[str, str | None], revision: str | None,
 
 def build_input(ids: dict[str, dict[str, int]], spec_root: Path,
                 revision: str | None, report: Report) -> str:
-    projection = consolespec.load_projection()
     slots = GAMEPAD_PORTS + CONTROLLER_PORTS
     lines = [
         "# Generated by support/parse_config.py. Do not edit by hand.",
@@ -480,7 +781,7 @@ def build_input(ids: dict[str, dict[str, int]], spec_root: Path,
                                 "mappings"),
                   ""]
 
-    lines += ["[input]", 'dialect = "cemu"', 'device = "SDL/{index}"', ""]
+    lines += ["[input]", 'device = "SDL/{index}"', ""]
 
     bound = 0
     for layout, definition in LAYOUTS.items():
@@ -496,10 +797,6 @@ def build_input(ids: dict[str, dict[str, int]], spec_root: Path,
             if not consolespec.check_binding(device, element, report, "input"):
                 continue
             entry = device.elements[element]
-            if projection.slot(layout, entry) is None:
-                report.warn(f"input: `{entry.path}` reaches no SDL slot; "
-                            f"omitted from {layout}")
-                continue
             lines.append(f"{toml_key(entry.path)} = {toml_string(str(ordinal))}")
             bound += 1
         lines.append("")

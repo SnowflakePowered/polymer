@@ -9,6 +9,7 @@ target = "settings.content.Graphic"
 key = "api"
 title = "Api"
 type = "int"
+default = 1
 emit = { key = "api" }
 
 [[sections.content-graphic.options]]
@@ -22,6 +23,7 @@ emit = { key = "AsyncCompile", bool_style = "lower" }
 key = "downscale_filter"
 title = "Downscale Filter"
 type = "int"
+default = 0
 emit = { key = "DownscaleFilter" }
 
 [[sections.content-graphic.options]]
@@ -35,6 +37,7 @@ emit = { key = "ForceMeshShaders", bool_style = "lower" }
 key = "fullscreen_scaling"
 title = "Fullscreen Scaling"
 type = "int"
+default = 0
 emit = { key = "FullscreenScaling" }
 
 [[sections.content-graphic.options]]
@@ -43,6 +46,13 @@ title = "Gx2 Drawdone Sync"
 type = "bool"
 default = true
 emit = { key = "GX2DrawdoneSync", bool_style = "lower" }
+
+[[sections.content-graphic.options]]
+key = "mtl_device"
+title = "Mtl Device"
+type = "int"
+default = 0
+emit = { key = "mtlDevice" }
 
 [[sections.content-graphic.options]]
 key = "override_app_gamma_preference"
@@ -62,6 +72,7 @@ emit = { key = "OverrideGammaValue" }
 key = "upscale_filter"
 title = "Upscale Filter"
 type = "int"
+default = 1
 emit = { key = "UpscaleFilter" }
 
 [[sections.content-graphic.options]]
