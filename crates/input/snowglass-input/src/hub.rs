@@ -4,7 +4,8 @@
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::layout::{BindingKey, InputLayout, SdlAxis, SdlButton};
+use crate::layout::{InputLayout, SdlAxis, SdlButton};
+use consolespec::BindingKey;
 use consolespec::MachineSpec;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -655,7 +656,6 @@ mod tests {
     fn key(text: &str) -> BindingKey {
         text.parse().expect("test binding key")
     }
-
 
     /// An Xbox: one `controller` group of four ports, accepting one layout.
     const MACHINE: &str = "MICROSOFT_XBOX";

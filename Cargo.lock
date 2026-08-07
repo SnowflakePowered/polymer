@@ -10733,6 +10733,7 @@ name = "snowglass-viewer"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "consolespec",
  "cssparser 0.37.0",
  "cssparser-color",
  "egui",

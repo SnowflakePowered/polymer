@@ -5,16 +5,18 @@ use crate::gamepad::LatestGamepadMailbox;
 use crate::{
     gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{AxisTransform, PointerAxis, SourceControl},
-    key::{Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Direction, Sign},
     layout::{
         EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, InputBinding, InputLayout,
         KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
     },
 };
+use consolespec::{
+    Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Direction, Sign,
+};
 use parking_lot::Mutex;
 use sdl3::event::Event;
-// SDL's own axis enum names the six gamepad axes; `key::Axis` names a degree
-// of freedom of a cluster. Both appear here, so SDL's takes the qualified name.
+// SDL's own axis enum names the six gamepad axes; consolespec's `Axis` names a
+// degree of freedom of a cluster. Both appear here, so SDL's is qualified.
 use sdl3::gamepad::{Axis as SdlNativeAxis, Button, ButtonLabel, Gamepad};
 use sdl3::sensor::SensorType;
 use std::{
@@ -714,8 +716,7 @@ fn run(
                         gamecontroller_database: config.gamecontroller_database.clone(),
                         keyboard_mapping_directory: config.keyboard_mapping_directory.clone(),
                     };
-                    let new_keyboard_mappings = match load_keyboard_mappings(&candidate)
-                    {
+                    let new_keyboard_mappings = match load_keyboard_mappings(&candidate) {
                         Ok(mappings) => mappings,
                         Err(error) => {
                             let _ = response.send(Err(error));
@@ -1037,8 +1038,8 @@ fn refresh_devices(
         match subsystem.open(id) {
             Ok(gamepad) => {
                 let has_touchpad = gamepad.touchpads_count() != 0;
-                let layout = InputLayout::get(&slots[slot].layout_id)
-                    .expect("validated slot layout");
+                let layout =
+                    InputLayout::get(&slots[slot].layout_id).expect("validated slot layout");
                 enable_layout_sensors(&gamepad, layout);
                 let mapping = compiled_with_overrides(
                     &gamepad,
@@ -1171,8 +1172,7 @@ fn recompile_pad(
     let Some(pad) = pads.get_mut(slot).and_then(Option::as_mut) else {
         return;
     };
-    let layout = InputLayout::get(&pad.layout_id)
-        .expect("pinned layout remains available");
+    let layout = InputLayout::get(&pad.layout_id).expect("pinned layout remains available");
     pad.mapping =
         compiled_with_overrides(&pad.gamepad, &pad.identity, layout, remappings, overrides);
     pad.last.buttons = !pad.last.buttons;
@@ -1706,8 +1706,7 @@ fn load_keyboard_mappings(
             if !matches!(slot.selector, DeviceSelector::Keyboard) {
                 return Ok(None);
             }
-            let layout = InputLayout::get(&slot.layout_id)
-                .expect("slot layout was validated");
+            let layout = InputLayout::get(&slot.layout_id).expect("slot layout was validated");
             let controller_path = directory.join(format!("{}.kb.toml", slot.layout_id));
             let source = if controller_path.is_file() {
                 fs::read_to_string(&controller_path).map_err(|error| {

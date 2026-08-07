@@ -137,7 +137,7 @@ pub enum Peripheral {
 ///
 /// `alignment` is `Option` exactly where the grammar makes it optional, so an
 /// unqualified key is representable and means "the device's primary cluster of
-/// this kind" — see [`InputLayout::resolve`](crate::layout::InputLayout::resolve).
+/// this kind. Consumers may resolve it against a device's primary cluster.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BindingKey {
     Button(ButtonElement),
@@ -442,7 +442,7 @@ impl Axis {
         })
     }
 
-    /// The nth axis of a cluster, as [`expand`](crate::layout) walks them.
+    /// The nth axis of a compiled inputspec cluster.
     pub fn nth(index: usize) -> Self {
         match index {
             0 => Self::X,
@@ -475,7 +475,7 @@ impl fmt::Display for Axis {
 }
 
 impl Component {
-    pub fn new(axis: Axis, sign: Sign) -> Self {
+    pub const fn new(axis: Axis, sign: Sign) -> Self {
         Self { axis, sign }
     }
 

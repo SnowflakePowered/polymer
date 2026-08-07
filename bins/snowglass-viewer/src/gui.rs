@@ -1,5 +1,5 @@
 use super::*;
-use snowglass_input::key::BindingKey;
+use consolespec::BindingKey;
 
 #[derive(Clone)]
 pub(crate) struct LauncherGamepad {

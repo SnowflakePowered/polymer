@@ -4,7 +4,6 @@
 
 pub mod gamepad;
 pub mod hub;
-pub mod key;
 pub mod layout;
 pub mod mouse;
 pub mod projection;

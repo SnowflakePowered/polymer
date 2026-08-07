@@ -10,6 +10,7 @@ egui = "0.29.1"
 egui-winit = "0.29.1"
 cssparser = "0.37"
 cssparser-color = "0.5"
+consolespec.workspace = true
 parking_lot.workspace = true
 raw-window-handle.workspace = true
 regex.workspace = true

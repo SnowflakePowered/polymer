@@ -13,6 +13,7 @@ use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
+use consolespec::BindingKey;
 use game_layer::{
     DomKeyboardEvent, DomMouseEvent, EmulatorCommand, EmulatorCommandSink, GameLayerFactory,
     GameViewStyle, InstanceToken,
@@ -29,7 +30,6 @@ use snowglass_input::{
         BindingOverride, InputOperation, InputTransaction, PortConfiguration, SourceControl,
         SourceSelector, VirtualPort,
     },
-    key::BindingKey,
     layout::SdlButton,
     mouse::{PointerPhase, layout::Rect},
     provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
