@@ -58,8 +58,41 @@ pub enum GamepadButton {
 }
 
 impl GamepadButton {
+    /// Every button, in wire order — which is `SDL_GAMEPAD_BUTTON_*` order, and
+    /// so the order of [`sdl::BUTTONS`](crate::sdl::BUTTONS). The two are pinned
+    /// to each other by `wire_order_matches_the_pad`; a disagreement would have
+    /// the hook advertise one button and the wire carry another.
+    pub const ALL: [Self; 21] = [
+        Self::A,
+        Self::B,
+        Self::X,
+        Self::Y,
+        Self::Select,
+        Self::Guide,
+        Self::Start,
+        Self::LeftStick,
+        Self::RightStick,
+        Self::L,
+        Self::R,
+        Self::DpadUp,
+        Self::DpadDown,
+        Self::DpadLeft,
+        Self::DpadRight,
+        Self::Misc1,
+        Self::RightPaddle1,
+        Self::LeftPaddle1,
+        Self::RightPaddle2,
+        Self::LeftPaddle2,
+        Self::Touchpad,
+    ];
+
     pub const fn mask(self) -> u32 {
         1 << self as u8
+    }
+
+    /// The button at a wire index.
+    pub fn from_wire(index: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(index)).copied()
     }
 }
 

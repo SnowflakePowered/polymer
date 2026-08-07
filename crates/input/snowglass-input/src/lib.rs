@@ -7,6 +7,7 @@ pub mod hub;
 pub mod layout;
 pub mod mouse;
 pub mod projection;
+pub mod sdl;
 pub mod provider;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

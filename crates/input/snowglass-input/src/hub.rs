@@ -652,10 +652,8 @@ fn validate_binding(binding: &BindingOverride) -> Result<(), InputConfigurationE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use consolespec::key;
 
-    fn key(text: &str) -> BindingKey {
-        text.parse().expect("test binding key")
-    }
 
     /// An Xbox: one `controller` group of four ports, accepting one layout.
     const MACHINE: &str = "MICROSOFT_XBOX";
@@ -697,7 +695,7 @@ mod tests {
                 operations: vec![
                     InputOperation::SetOverride {
                         port: VirtualPort::new("controller", 0),
-                        target: key("button.a"),
+                        target: key!(button.a),
                         binding: BindingOverride::Button {
                             source: SourceControl::GamepadButton {
                                 button: SdlButton::East,
@@ -716,7 +714,7 @@ mod tests {
             snapshot.ports[0].source,
             Some(SourceSelector::KeyboardMouse)
         );
-        assert!(snapshot.ports[0].overrides.contains_key(&key("button.a")));
+        assert!(snapshot.ports[0].overrides.contains_key(&key!(button.a)));
     }
 
     #[test]
@@ -760,7 +758,7 @@ mod tests {
                     },
                     InputOperation::SetOverride {
                         port: VirtualPort::new("controller", 0),
-                        target: key("button.z"),
+                        target: key!(button.z),
                         binding: BindingOverride::Disabled,
                     },
                 ],

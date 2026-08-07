@@ -9,9 +9,11 @@ use crate::{
         EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, InputBinding, InputLayout,
         KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
     },
+    projection::{Projection, Target},
+    sdl::{self, Wire},
 };
 use consolespec::{
-    Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Direction, Sign,
+    Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign,
 };
 use parking_lot::Mutex;
 use sdl3::event::Event;
@@ -461,6 +463,9 @@ struct CompiledMapping {
 
 #[derive(Clone)]
 struct CompiledKeyboardMapping {
+    /// Which device the bindings below name. Layouts are compile-time data, so
+    /// holding one costs nothing and spares every caller from passing it.
+    layout: &'static InputLayout,
     bindings: Vec<(BindingKey, String, KeyboardTarget)>,
 }
 
@@ -472,7 +477,7 @@ enum KeyboardTarget {
 }
 
 impl CompiledKeyboardMapping {
-    fn new(mapping: KeyboardMapping, layout: &InputLayout) -> Result<Self, String> {
+    fn new(mapping: KeyboardMapping, layout: &'static InputLayout) -> Result<Self, String> {
         let mut bindings = Vec::new();
         for (element, key) in mapping.bindings {
             // The document writes canonical keys, so one default mapping serves
@@ -483,18 +488,18 @@ impl CompiledKeyboardMapping {
             if key.trim().is_empty() {
                 return Err(format!("keyboard binding {element} has an empty key"));
             }
-            let Some(target) = keyboard_target(element) else {
+            let Some(target) = keyboard_target(layout, element) else {
                 continue;
             };
             bindings.push((element, key, target));
         }
-        Ok(Self { bindings })
+        Ok(Self { layout, bindings })
     }
 
     fn set(&mut self, element: BindingKey, key: Option<String>) {
         self.bindings
             .retain(|(existing, _, _)| *existing != element);
-        if let (Some(key), Some(target)) = (key, keyboard_target(element)) {
+        if let (Some(key), Some(target)) = (key, keyboard_target(self.layout, element)) {
             self.bindings.push((element, key, target));
         }
     }
@@ -542,11 +547,11 @@ impl CompiledKeyboardMapping {
     }
 }
 
-fn keyboard_target(element: BindingKey) -> Option<KeyboardTarget> {
-    if let Some(button) = element_button(element) {
+fn keyboard_target(layout: &InputLayout, element: BindingKey) -> Option<KeyboardTarget> {
+    if let Some(button) = element_button(layout, element) {
         return Some(KeyboardTarget::Button(button));
     }
-    let index = element_axis_index(element)?;
+    let index = element_axis_index(layout, element)?;
     if index >= 4 {
         return Some(KeyboardTarget::Trigger { index });
     }
@@ -571,6 +576,7 @@ fn keyboard_target(element: BindingKey) -> Option<KeyboardTarget> {
 
 fn apply_mouse_axes(
     state: &mut GamepadState,
+    layout: &InputLayout,
     mappings: &HashMap<BindingKey, MouseAxisMap>,
     pointer: PointerSample,
     now: Instant,
@@ -578,7 +584,7 @@ fn apply_mouse_axes(
     let mut values = [0.0f32; 6];
     let mut assigned = [false; 6];
     for (&target, mapping) in mappings {
-        let Some(index) = element_axis_index(target) else {
+        let Some(index) = element_axis_index(layout, target) else {
             continue;
         };
         let value = match &mapping.source {
@@ -878,7 +884,15 @@ fn run(
             } else {
                 pointer.position.unwrap_or_default()
             };
-            apply_mouse_axes(&mut state, &interactive_mouse_mappings[slot], pointer, now);
+            if let Some(layout) = InputLayout::get(&config.slots[slot].layout_id) {
+                apply_mouse_axes(
+                    &mut state,
+                    layout,
+                    &interactive_mouse_mappings[slot],
+                    pointer,
+                    now,
+                );
+            }
             if keyboard_mappings[slot].is_some() {
                 snapshots[slot] = Some(keyboard_diagnostic_state(
                     &config.slots[slot].layout_id,
@@ -1294,14 +1308,14 @@ impl CompiledMapping {
             if !layout.has(element) {
                 continue;
             }
-            if let Some(target) = element_button(element) {
+            if let Some(target) = element_button(layout, element) {
                 if let InputBinding::Button { button } = binding {
                     buttons.retain(|(_, existing)| *existing != target);
                     buttons.push((button, target));
                 }
                 continue;
             }
-            let Some(index) = element_axis_index(element) else {
+            let Some(index) = element_axis_index(layout, element) else {
                 continue;
             };
             match binding {
@@ -1448,36 +1462,36 @@ const ALL_AXES: [SdlAxis; 6] = [
     SdlAxis::RightTrigger,
 ];
 
-fn default_button_target(
+/// The device control the virtual pad presents at a wire location.
+///
+/// This is the projection read backwards. The pad advertises a GameCube's Z at
+/// the right shoulder, so the physical right shoulder is what should drive it —
+/// and a hand-written table of the same thing could only ever be a second,
+/// disagreeing opinion.
+fn projected_from(layout: &InputLayout, wire: Wire) -> Option<BindingKey> {
+    layout
+        .elements
+        .iter()
+        .map(|element| element.key)
+        .find(|key| element_wire(layout, *key) == Some(wire))
+}
+
+/// The device control a *physically labelled* face button should drive.
+///
+/// The one question the projection cannot answer: which button a user will
+/// press for "A" depends on what their hardware prints, not on where the pad
+/// puts it. A Nintendo pad prints A on the east position, so east is what
+/// should drive the emulated A.
+fn labelled_face_target(
     gamepad: &Gamepad,
     source: SdlButton,
     layout: &InputLayout,
 ) -> Option<BindingKey> {
-    let dpad = |direction| {
-        Some(BindingKey::Directional {
-            alignment: None,
-            direction,
-        })
-    };
-    let fixed = match source {
-        SdlButton::Back => Some(BindingKey::Button(ButtonElement::Select)),
-        SdlButton::Guide => Some(BindingKey::Button(ButtonElement::Guide)),
-        SdlButton::Start => Some(BindingKey::Button(ButtonElement::Start)),
-        SdlButton::LeftStick => Some(BindingKey::Button(ButtonElement::ClickL)),
-        SdlButton::RightStick => Some(BindingKey::Button(ButtonElement::ClickR)),
-        SdlButton::LeftShoulder => Some(BindingKey::Button(ButtonElement::L)),
-        SdlButton::RightShoulder => Some(BindingKey::Button(ButtonElement::R)),
-        SdlButton::DpadUp => dpad(Direction::N),
-        SdlButton::DpadDown => dpad(Direction::S),
-        SdlButton::DpadLeft => dpad(Direction::W),
-        SdlButton::DpadRight => dpad(Direction::E),
-        SdlButton::Misc1 | SdlButton::Touchpad => {
-            Some(BindingKey::Button(ButtonElement::Numbered(0)))
-        }
-        _ => None,
-    };
-    if let Some(target) = fixed.and_then(|target| layout.resolve(target)) {
-        return Some(target);
+    if !matches!(
+        source,
+        SdlButton::South | SdlButton::East | SdlButton::West | SdlButton::North
+    ) {
+        return None;
     }
     let label = match gamepad.button_label_for_gamepad_type(to_sdl_button(source)) {
         ButtonLabel::A => "A",
@@ -1488,13 +1502,29 @@ fn default_button_target(
         ButtonLabel::Circle => "Circle",
         ButtonLabel::Square => "Square",
         ButtonLabel::Triangle => "Triangle",
-        ButtonLabel::Unknown => return positional_face_target(source, layout),
+        ButtonLabel::Unknown => return None,
     };
     layout
         .elements
         .iter()
         .find(|element| element.label.eq_ignore_ascii_case(label))
         .map(|element| element.key)
+}
+
+/// Which of the device's controls a physical button drives by default.
+fn default_button_target(
+    gamepad: &Gamepad,
+    source: SdlButton,
+    layout: &InputLayout,
+) -> Option<BindingKey> {
+    if let Some(target) = labelled_face_target(gamepad, source, layout) {
+        return Some(target);
+    }
+    let wire = ALL_BUTTONS
+        .iter()
+        .position(|candidate| *candidate == source)
+        .expect("every SdlButton is in wire order in ALL_BUTTONS") as u8;
+    projected_from(layout, Wire::Button(wire))
         .or_else(|| positional_face_target(source, layout))
 }
 
@@ -1578,66 +1608,38 @@ fn profile_matches(
         && profile.layout.as_ref().is_none_or(|id| id == &layout.id)
 }
 
-fn element_button(key: BindingKey) -> Option<GamepadButton> {
-    Some(match key {
-        BindingKey::Button(element) => match element {
-            ButtonElement::A => GamepadButton::A,
-            ButtonElement::B => GamepadButton::B,
-            ButtonElement::X => GamepadButton::X,
-            ButtonElement::Y => GamepadButton::Y,
-            ButtonElement::Select => GamepadButton::Select,
-            ButtonElement::Guide => GamepadButton::Guide,
-            ButtonElement::Start => GamepadButton::Start,
-            ButtonElement::ClickL => GamepadButton::LeftStick,
-            ButtonElement::ClickR => GamepadButton::RightStick,
-            ButtonElement::L => GamepadButton::L,
-            ButtonElement::R => GamepadButton::R,
-            ButtonElement::Numbered(0) => GamepadButton::Misc1,
-            _ => return None,
-        },
-        // Only the primary directional reaches the hat. A device's second one
-        // — the N64's C-buttons — is placed elsewhere by the projection and has
-        // no D-pad button to land on.
-        BindingKey::Directional {
-            alignment: None | Some(Alignment::Left),
-            direction,
-        } => match direction {
-            Direction::N => GamepadButton::DpadUp,
-            Direction::S => GamepadButton::DpadDown,
-            Direction::W => GamepadButton::DpadLeft,
-            Direction::E => GamepadButton::DpadRight,
-            _ => return None,
-        },
-        _ => return None,
-    })
+/// Where a device control appears on the virtual pad.
+///
+/// The projection decides; this only asks it. The provider used to answer from
+/// a table of its own, which agreed with the projection for a plain pad and
+/// disagreed for every device the projection remaps — a GameCube Z reaches the
+/// right shoulder, and an N64 C-button the right stick, neither of which a
+/// key-shaped match could have known.
+fn element_wire(layout: &InputLayout, key: BindingKey) -> Option<Wire> {
+    match Projection::shared().target(layout, key)? {
+        Target::Key(target) => sdl::wire(target),
+        // A composite is at no *single* location: an eight-way stick's
+        // north-east is the pad's up and right together, which one binding
+        // cannot drive and one physical button cannot be. It still claims both
+        // in the advertised mask — see `InputLayout::sdl_output`.
+        Target::Both(..) => None,
+        Target::Transport(_) | Target::None => None,
+    }
+}
+
+fn element_button(layout: &InputLayout, key: BindingKey) -> Option<GamepadButton> {
+    match element_wire(layout, key)? {
+        Wire::Button(index) => GamepadButton::from_wire(index),
+        _ => None,
+    }
 }
 
 /// Which of the six gamepad axes a key drives: 0/1 the left stick, 2/3 the
-/// right, 4/5 the triggers.
-fn element_axis_index(key: BindingKey) -> Option<usize> {
-    let (side, axis) = match key {
-        BindingKey::Trigger { alignment } => {
-            return Some(match alignment {
-                Alignment::Left => 4,
-                Alignment::Right => 5,
-                _ => return None,
-            });
-        }
-        BindingKey::Analog {
-            class: AnalogClass::Stick | AnalogClass::Rotary,
-            alignment,
-            component,
-        } => match alignment {
-            // A dial declares no side and reads as the primary analog axis.
-            None | Some(Alignment::Left) => (0, component.axis),
-            Some(Alignment::Right) => (2, component.axis),
-            _ => return None,
-        },
-        _ => return None,
-    };
-    match axis {
-        Axis::X => Some(side),
-        Axis::Y => Some(side + 1),
+/// right, 4/5 the triggers. The pointer's raw axes are outside the gamepad
+/// mapping and are not one of them.
+fn element_axis_index(layout: &InputLayout, key: BindingKey) -> Option<usize> {
+    match element_wire(layout, key)? {
+        Wire::Axis(index) if usize::from(index) < DEFAULT_AXES.len() => Some(index.into()),
         _ => None,
     }
 }
@@ -1768,19 +1770,128 @@ fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use consolespec::key;
 
-    fn key(text: &str) -> BindingKey {
-        text.parse().expect("test binding key")
-    }
 
     #[test]
     fn switch_face_labels_are_not_positional() {
         let layout = InputLayout::get("SWITCH_PRO_CONTROLLER").unwrap();
         assert_eq!(
             layout.elements.iter().find(|e| e.label == "B").unwrap().key,
-            key("button.b")
+            key!(button.b)
         );
-        assert_eq!(element_button(key("button.b")), Some(GamepadButton::B));
+        assert_eq!(
+            element_button(layout, key!(button.b)),
+            Some(GamepadButton::B)
+        );
+    }
+
+    /// The provider's own table could only answer for controls whose name the
+    /// pad already had, so every remapped control fell through it and reached
+    /// nothing. Asking the projection is what fixes that, and these are the
+    /// three shapes it used to get wrong.
+    #[test]
+    fn remapped_controls_reach_the_wire_the_pad_presents() {
+        let gamecube = InputLayout::get("GAMECUBE_CONTROLLER").unwrap();
+        // Z has no name on the pad; the projection puts it on the right shoulder.
+        assert_eq!(
+            element_button(gamecube, key!(button.z)),
+            Some(GamepadButton::R)
+        );
+        // The digital shoulder clicks drive the trigger axes.
+        assert_eq!(element_axis_index(gamecube, key!(button.l)), Some(4));
+
+        // An N64 C-button is a directional that drives half of the right stick.
+        let n64 = InputLayout::get("N64_CONTROLLER").unwrap();
+        assert_eq!(element_axis_index(n64, key!(directional.right.n)), Some(3));
+        // Its D-pad still reaches the hat.
+        assert_eq!(
+            element_button(n64, key!(directional.left.n)),
+            Some(GamepadButton::DpadUp)
+        );
+
+        // A keypad button is routed off the pad, so it drives no wire at all.
+        let a5200 = InputLayout::get("A5200_CONTROLLER").unwrap();
+        assert_eq!(element_button(a5200, key!(button.0)), None);
+        assert_eq!(element_axis_index(a5200, key!(button.0)), None);
+    }
+
+    /// The pointer's raw axes are outside `SDL_GAMEPAD_AXIS_COUNT`, so they are
+    /// not one of the six a binding can drive.
+    #[test]
+    fn the_pointer_axes_are_not_gamepad_axes() {
+        let remote = InputLayout::get("WII_REMOTE_CONTROLLER").unwrap();
+        assert_eq!(element_axis_index(remote, key!(pointer.x+)), None);
+    }
+
+    /// Physical and virtual now agree by construction: whatever the pad
+    /// advertises at a wire location is what the physical button there drives.
+    /// A hand-written table could not state this, let alone be checked against it.
+    #[test]
+    fn every_advertised_button_round_trips_through_the_wire() {
+        let projection = Projection::shared();
+        for layout in InputLayout::all() {
+            let mask = layout.sdl_output(projection).button_mask;
+            for wire in 0..ALL_BUTTONS.len() as u8 {
+                let advertised = mask & (1 << wire) != 0;
+                let Some(key) = projected_from(layout, Wire::Button(wire)) else {
+                    assert!(
+                        !advertised,
+                        "{}: wire {wire} is advertised but nothing drives it",
+                        layout.id
+                    );
+                    continue;
+                };
+                assert!(
+                    advertised,
+                    "{}: {key} drives wire {wire}, which is not advertised",
+                    layout.id
+                );
+                assert_eq!(
+                    element_wire(layout, key),
+                    Some(Wire::Button(wire)),
+                    "{}: {key}",
+                    layout.id
+                );
+            }
+        }
+    }
+
+    /// The inverse takes the first control it finds, so two controls sharing a
+    /// wire button would make it arbitrary. None do.
+    #[test]
+    fn no_two_controls_share_a_wire_button() {
+        for layout in InputLayout::all() {
+            let mut seen: HashMap<u8, BindingKey> = HashMap::new();
+            for element in &layout.elements {
+                if let Some(Wire::Button(wire)) = element_wire(layout, element.key)
+                    && let Some(other) = seen.insert(wire, element.key)
+                {
+                    panic!("{}: {other} and {} both drive wire {wire}", layout.id, element.key);
+                }
+            }
+        }
+    }
+
+    /// The inverse reaches controls the old fixed table had no name for.
+    #[test]
+    fn the_inverse_finds_what_a_fixed_table_could_not() {
+        let gamecube = InputLayout::get("GAMECUBE_CONTROLLER").unwrap();
+        // Right shoulder is where the pad advertises Z, so that is what it drives.
+        assert_eq!(
+            projected_from(gamecube, Wire::Button(10)),
+            Some(key!(button.z))
+        );
+        // And nothing is advertised at the left shoulder, so nothing drives it.
+        assert_eq!(projected_from(gamecube, Wire::Button(9)), None);
+
+        // The N64's D-pad holds the hat; its C-buttons are on the right stick
+        // and so are not reachable from any physical button.
+        let n64 = InputLayout::get("N64_CONTROLLER").unwrap();
+        assert_eq!(
+            projected_from(n64, Wire::Button(11)),
+            Some(key!(directional.left.n))
+        );
     }
 
     #[test]
@@ -1825,7 +1936,7 @@ mod tests {
         let defaults = CompiledKeyboardMapping::new(source, layout).unwrap();
         let mut mapping = defaults.clone();
 
-        mapping.set(key("button.a"), Some("KeyZ".to_owned()));
+        mapping.set(key!(button.a), Some("KeyZ".to_owned()));
         assert_eq!(
             mapping.state(&HashSet::from(["KeyX".to_owned()])).buttons & GamepadButton::A.mask(),
             0
@@ -1835,7 +1946,7 @@ mod tests {
             0
         );
 
-        mapping.restore(key("button.a"), Some(&defaults));
+        mapping.restore(key!(button.a), Some(&defaults));
         assert_ne!(
             mapping.state(&HashSet::from(["KeyX".to_owned()])).buttons & GamepadButton::A.mask(),
             0
@@ -1848,7 +1959,7 @@ mod tests {
         let mut pointer = PointerSample::default();
         pointer.set_relative([50.0, 0.0], now);
         let mappings = HashMap::from([(
-            key("analog.stick.right.x+"),
+            key!(analog.stick.right.x+),
             MouseAxisMap {
                 source: SourceControl::MouseDelta {
                     axis: PointerAxis::X,
@@ -1861,10 +1972,17 @@ mod tests {
         )]);
 
         let mut state = GamepadState::default();
-        apply_mouse_axes(&mut state, &mappings, pointer, now);
+        let layout = InputLayout::get("XBOX_CONTROLLER").unwrap();
+        apply_mouse_axes(&mut state, layout, &mappings, pointer, now);
         assert_eq!(state.right_stick[0], i16::MAX);
 
-        apply_mouse_axes(&mut state, &mappings, pointer, now + RELATIVE_MOUSE_RELEASE);
+        apply_mouse_axes(
+            &mut state,
+            layout,
+            &mappings,
+            pointer,
+            now + RELATIVE_MOUSE_RELEASE,
+        );
         assert_eq!(state.right_stick[0], 0);
     }
 
@@ -1874,7 +1992,7 @@ mod tests {
         let mut pointer = PointerSample::default();
         pointer.set_position(Some([i16::MAX, 0]));
         let mappings = HashMap::from([(
-            key("analog.stick.left.x+"),
+            key!(analog.stick.left.x+),
             MouseAxisMap {
                 source: SourceControl::MousePosition {
                     axis: PointerAxis::X,
@@ -1887,7 +2005,8 @@ mod tests {
             },
         )]);
         let mut state = GamepadState::default();
-        apply_mouse_axes(&mut state, &mappings, pointer, now);
+        let layout = InputLayout::get("XBOX_CONTROLLER").unwrap();
+        apply_mouse_axes(&mut state, layout, &mappings, pointer, now);
         assert_eq!(state.left_stick[0], -16_384);
     }
 

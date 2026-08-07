@@ -20,7 +20,8 @@ use std::sync::OnceLock;
 
 use consolespec::{Alignment, AnalogClass, BindingKey};
 
-use crate::projection::{Projection, SdlSensor, Slot};
+use crate::projection::{Projection, Target};
+use crate::sdl::{self, SdlSensor, Wire};
 
 pub const EMBEDDED_GAMECONTROLLER_DB: &str =
     include_str!("../SDL_GameControllerDB/gamecontrollerdb.txt");
@@ -157,9 +158,9 @@ impl InputLayout {
         if self.has(key) {
             return Some(key);
         }
-        // Only a key with a component after the alignment has a cluster to fall
-        // back to: `trigger.left` and `rumble.big` end at theirs, and an already
-        // aligned key asked for one particular cluster and must not get another.
+        // An already aligned key asked for one particular cluster and must not
+        // be given another, and `trigger.left` and `rumble.big` spend their only
+        // component on the alignment, so neither has a cluster to fall back to.
         let (kind, class) = match key {
             BindingKey::Directional {
                 alignment: None, ..
@@ -169,9 +170,10 @@ impl InputLayout {
                 alignment: None,
                 ..
             } => ("analog", Some(class)),
+            // Both the absolute position and a relative axis: a device with
+            // two mice has a primary one, and it is the same one for both.
             BindingKey::Pointer {
-                alignment: None,
-                component: Some(_),
+                alignment: None, ..
             } => ("pointer", None),
             _ => return None,
         };
@@ -208,24 +210,26 @@ impl InputLayout {
     /// absent from the pad.
     pub fn sdl_output(&self, projection: &Projection) -> SdlOutputLayout {
         let mut output = SdlOutputLayout::default();
-        for cluster in &self.clusters {
-            // Components are checked first, and win. A device's *second*
-            // directional is placed direction by direction — the N64's
-            // C-buttons onto the right stick — and must not fall back to the
-            // hat, which its first directional already holds.
-            if let Some(slots) = projection.component_slots(&self.id, cluster) {
-                for slot in slots {
-                    output.claim(slot);
+        // Every control is placed on its own. A device's *second* directional
+        // goes direction by direction — the N64's C-buttons onto the right
+        // stick — which needs no special case once the unit of mapping is a
+        // control rather than a cluster.
+        for element in &self.elements {
+            match projection.target(self, element.key) {
+                Some(Target::Key(target)) => output.claim(target),
+                Some(Target::Both(first, second)) => {
+                    output.claim(first);
+                    output.claim(second);
                 }
-                continue;
-            }
-            if let Some(slot) = projection.resolve(&self.id, cluster) {
-                output.claim(slot);
+                // A control off the pad claims nothing on it.
+                Some(Target::Transport(_) | Target::None) | None => {}
             }
         }
         // Pointer X/Y are Snowglass-specific raw joystick axes, outside the
         // gamepad mapping and present regardless of the selected topology.
-        output.axis_mask |= (1 << 6) | (1 << 7);
+        for axis in sdl::POINTER_AXES {
+            output.axis_mask |= 1 << axis;
+        }
         output
     }
 }
@@ -241,15 +245,15 @@ pub struct SdlOutputLayout {
 }
 
 impl SdlOutputLayout {
-    fn claim(&mut self, slot: Slot) {
-        match slot {
-            Slot::Button(index) => self.button_mask |= 1 << index,
-            Slot::Hat => self.button_mask |= 0b1111 << 11,
-            Slot::Stick(axis) => self.axis_mask |= 0b11 << axis,
-            Slot::Axis(axis) | Slot::HalfAxis { axis, .. } => self.axis_mask |= 1 << axis,
-            Slot::Pointer => self.axis_mask |= (1 << 6) | (1 << 7),
-            Slot::Sensor(sensor) => self.sensor_mask |= 1 << sensor as u8,
-            Slot::Keyboard => {}
+    /// Claims whatever of the pad the given SDL control occupies.
+    fn claim(&mut self, target: BindingKey) {
+        match sdl::wire(target) {
+            Some(Wire::Button(index)) => self.button_mask |= 1 << index,
+            Some(Wire::Axis(index)) => self.axis_mask |= 1 << index,
+            Some(Wire::Sensor(sensor)) => self.sensor_mask |= 1 << sensor as u8,
+            // The projection rejects a target the pad does not have at load, so
+            // this is unreachable for any table that parsed.
+            None => {}
         }
     }
 
@@ -378,15 +382,13 @@ impl KeyboardMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use consolespec::key;
 
-    fn key(text: &str) -> BindingKey {
-        text.parse().expect("test binding key")
-    }
 
     #[test]
     fn parses_embedded_registry() {
         let xbox = InputLayout::get("XBOX_CONTROLLER").unwrap();
-        assert!(xbox.has(key("button.a")));
+        assert!(xbox.has(key!(button.a)));
         assert_eq!(
             InputLayout::get("GAMECUBE_CONTROLLER").unwrap().name,
             "Nintendo GameCube Controller"
@@ -394,8 +396,8 @@ mod tests {
         // A handheld's built-in controls are not a named product.
         let vita = InputLayout::get("PSV_LAYOUT").unwrap();
         assert_eq!(vita.name, "PSV_LAYOUT");
-        assert!(xbox.has(key("analog.stick.left.x+")));
-        assert!(InputLayout::all().iter().count() > 1);
+        assert!(xbox.has(key!(analog.stick.left.x+)));
+        assert!(InputLayout::all().len() > 1);
     }
 
     #[test]
@@ -414,33 +416,33 @@ mod tests {
     fn compiled_clusters_contain_elements() {
         let pad = InputLayout::get("GAMECUBE_CONTROLLER").unwrap();
         // `directions = 4` becomes four directionals, `axes = 2` two signed pairs.
-        for text in [
-            "directional.n",
-            "directional.e",
-            "directional.s",
-            "directional.w",
-            "analog.stick.left.x+",
-            "analog.stick.left.y-",
-            "analog.stick.right.x+",
-            "trigger.left",
-            "trigger.right",
-            "rumble.big",
-            "rumble.small",
+        for expected in [
+            key!(directional.n),
+            key!(directional.e),
+            key!(directional.s),
+            key!(directional.w),
+            key!(analog.stick.left.x+),
+            key!(analog.stick.left.y-),
+            key!(analog.stick.right.x+),
+            key!(trigger.left),
+            key!(trigger.right),
+            key!(rumble.big),
+            key!(rumble.small),
         ] {
             assert!(
-                pad.has(key(text)),
-                "{text} missing from GAMECUBE_CONTROLLER"
+                pad.has(expected),
+                "{expected} missing from GAMECUBE_CONTROLLER"
             );
         }
-        assert!(!pad.has(key("button.clickl")));
+        assert!(!pad.has(key!(button.clickl)));
 
         // A pointer contributes an absolute element and its relative axes.
         let remote = InputLayout::get("WII_REMOTE_CONTROLLER").unwrap();
-        assert!(remote.has(key("pointer")));
-        assert!(remote.has(key("pointer.x+")));
-        assert!(remote.has(key("analog.accelerometer.z-")));
+        assert!(remote.has(key!(pointer)));
+        assert!(remote.has(key!(pointer.x+)));
+        assert!(remote.has(key!(analog.accelerometer.z-)));
         // `element = "0"` is the button printed "1" on the shell.
-        assert!(remote.has(key("button.0")));
+        assert!(remote.has(key!(button.0)));
         assert_eq!(
             remote
                 .elements
@@ -455,8 +457,8 @@ mod tests {
     fn repeated_clusters_take_an_ordinal() {
         // The N64 pad declares two directionals: the D-pad and the C-buttons.
         let pad = InputLayout::get("N64_CONTROLLER").unwrap();
-        assert!(pad.has(key("directional.left.n")));
-        assert!(pad.has(key("directional.right.n")));
+        assert!(pad.has(key!(directional.left.n)));
+        assert!(pad.has(key!(directional.right.n)));
         assert_eq!(
             pad.elements
                 .iter()
@@ -466,8 +468,8 @@ mod tests {
         );
         // An unaligned key still reaches the D-pad, never the C-buttons.
         assert_eq!(
-            pad.resolve(key("directional.n")),
-            Some(key("directional.left.n"))
+            pad.resolve(key!(directional.n)),
+            Some(key!(directional.left.n))
         );
     }
 
@@ -478,7 +480,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            remap.bindings[&key("button.a")],
+            remap.bindings[&key!(button.a)],
             InputBinding::Button {
                 button: SdlButton::East
             }
@@ -504,13 +506,13 @@ mod tests {
     fn parses_embedded_keyboard_mapping() {
         let mapping = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
         assert_eq!(
-            mapping.bindings.get(&key("button.a")).map(String::as_str),
+            mapping.bindings.get(&key!(button.a)).map(String::as_str),
             Some("KeyX")
         );
         assert_eq!(
             mapping
                 .bindings
-                .get(&key("directional.n"))
+                .get(&key!(directional.n))
                 .map(String::as_str),
             Some("ArrowUp")
         );
