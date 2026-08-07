@@ -289,7 +289,6 @@ pub(crate) fn directions(cluster: &Cluster) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::LayoutRegistry;
 
     #[test]
     fn embedded_projection_parses() {
@@ -299,10 +298,9 @@ mod tests {
 
     #[test]
     fn every_layout_is_fully_projected() {
-        let registry = LayoutRegistry::embedded().unwrap();
         let projection = Projection::embedded().unwrap();
         let mut gaps = Vec::new();
-        for layout in registry.layouts() {
+        for layout in InputLayout::all().iter() {
             for cluster in projection.unprojected(layout) {
                 // Output and non-gamepad clusters have no SDL input slot by
                 // design; everything a binding can name must reach somewhere.
@@ -320,10 +318,9 @@ mod tests {
 
     #[test]
     fn saturn_pads_differ_by_what_else_they_carry() {
-        let registry = LayoutRegistry::embedded().unwrap();
         let projection = Projection::embedded().unwrap();
         let find = |id: &str, path: &str| {
-            let layout = registry.layout(id).unwrap();
+            let layout = InputLayout::get(id).unwrap();
             let cluster = layout
                 .clusters
                 .iter()
@@ -342,9 +339,8 @@ mod tests {
 
     #[test]
     fn a_nunchuk_carries_two_accelerometers() {
-        let registry = LayoutRegistry::embedded().unwrap();
         let projection = Projection::embedded().unwrap();
-        let layout = registry.layout("WII_REMOTE_NUNCHUCK_CONTROLLER").unwrap();
+        let layout = InputLayout::get("WII_REMOTE_NUNCHUCK_CONTROLLER").unwrap();
         let sensors: Vec<_> = layout
             .clusters
             .iter()
@@ -362,7 +358,6 @@ mod tests {
 #[cfg(test)]
 mod smoke {
     use super::*;
-    use crate::layout::LayoutRegistry;
 
     /// The pad each layout actually presents. These were read off the
     /// projection and checked by hand against the physical devices; they exist
@@ -371,10 +366,9 @@ mod smoke {
     /// second directional inheriting the hat instead of the right stick.
     #[test]
     fn representative_layouts_project_as_expected() {
-        let registry = LayoutRegistry::embedded().unwrap();
         let projection = Projection::embedded().unwrap();
         let pad = |id: &str| {
-            let out = registry.layout(id).unwrap().sdl_output(&projection);
+            let out = InputLayout::get(id).unwrap().sdl_output(&projection);
             (
                 out.button_mask,
                 out.axis_mask,

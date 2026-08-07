@@ -1280,13 +1280,8 @@ impl ShellState {
             let port = match mapping.port.clone() {
                 Some(port) => port,
                 None => {
-                    let resolved = self
-                        .input
-                        .transport
-                        .hub()
-                        .machines()
-                        .machine(&options.machine)
-                        .ok_or_else(|| format!("unknown machine {}", options.machine))
+                    let resolved = consolespec::MachineSpec::try_from(options.machine.as_str())
+                        .map_err(|error| error.to_string())
                         .and_then(|machine| {
                             machine.group_for(&mapping.layout).map(|group| {
                                 let index =

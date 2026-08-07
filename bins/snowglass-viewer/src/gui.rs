@@ -375,7 +375,6 @@ pub(crate) fn draw_gamepad_window(
 pub(crate) fn draw_launcher_window(
     context: &egui::Context,
     launcher: &mut LauncherState,
-    registry: &LayoutRegistry,
     error: &mut Option<String>,
 ) -> bool {
     let mut start = false;
@@ -483,8 +482,8 @@ pub(crate) fn draw_launcher_window(
                 }
             });
             let mut remove = None;
-            let mut layout_ids = registry
-                .layouts()
+            let mut layout_ids = InputLayout::all()
+                .iter()
                 .map(|layout| layout.id.clone())
                 .collect::<Vec<_>>();
             layout_ids.sort_unstable();

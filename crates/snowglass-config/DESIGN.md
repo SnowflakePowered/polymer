@@ -26,7 +26,8 @@ It does **not** own:
 
 Dependencies: `serde`, `toml`, `indexmap` (§3.2), `serde_json`,
 `blake3`, `smallvec`, and
-`snowglass-input` (Stone types). No `tokio`, no `deno_*`, no `windows`.
+`snowglass-input` (layout and SDL-projection types). No `tokio`, no `deno_*`,
+no `windows`.
 `#![forbid(unsafe_code)]`.
 
 **Crate home:** stays at `crates/snowglass-config` rather than moving under
@@ -44,9 +45,14 @@ from a host that never launches anything (settings UI, config preview, tests).
    the definition is lowered, with a diagnostic naming the offending key.
 5. **Never destroy user intent.** Unknown keys, hand edits, and stored values whose
    domain member vanished are preserved.
-6. **One input vocabulary.** Plugins bind Stone element ids — the same vocabulary
-   `InputHub`, the SDL hooks, and the remap database already use. There is no
-   second element namespace and nothing is codegen'd from `stone.dist.json`.
+6. **One input vocabulary.** Plugins bind consolespec *binding keys* —
+   `button.a`, `analog.stick.left.x+` — the same vocabulary `InputHub`, the SDL
+   hooks, the keyboard defaults and the remap database use. There is no second
+   namespace and nothing is codegen'd from the spec. consolespec does not spell
+   every control out: an inputspec declares a *cluster* (`axes = 2,
+   alignment = "left"`, `directions = 4`) and the keys expand from it by a fixed
+   rule (§6.5.1). A key is built from its own cluster's fields, so it is stable
+   against the device gaining another.
 
 ---
 
@@ -73,7 +79,7 @@ plugin package (TOML + TS)
 
 The frontend is a conduit. It receives an opaque JSON object from the emulator's
 JS module and hands it to the launch op unchanged; it never interprets an option
-path, a target, or a Stone element.
+path, a target, or an input element.
 
 ---
 
@@ -98,7 +104,7 @@ class = "emulator"
 provides = ["configuration", "launch"]
 
 [emulator]
-platforms = ["NINTENDO_GC", "NINTENDO_WII"]
+platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
 
 [emulator.configuration]
 definition = "config/dolphin.toml"
@@ -223,6 +229,38 @@ ordering a reader sees directly** — it is the order of controls on a settings
 page — and an array states it in the syntax instead of resting on map iteration
 order. Sections keep the keyed form because they have nesting to express, which
 is what the table path buys them; options have none.
+
+### 3.2.1 Split section files
+
+A section may replace its body with an `import`, keeping a large definition
+readable without changing its section paths:
+
+```toml
+# config/pcsx2.toml
+[sections.achievements]
+import = "achievements.toml"
+```
+
+Imports are relative to the file containing the import and must remain inside
+the plugin package. The imported TOML remains an ordinary, rooted definition
+document, so `config/achievements.toml` repeats the full section path:
+
+```toml
+[sections.achievements]
+title  = "Achievements"
+target = "ini.Achievements"
+
+[[sections.achievements.options]]
+key = "enabled"
+type = "bool"
+emit = { key = "Enabled", bool_style = "lower" }
+```
+
+The import is an exact splice point: the imported document must contain only
+the named section and its descendants, and the importing section may contain no
+field other than `import`. The imported subtree replaces the placeholder at its
+position, preserving sibling order. Imports may nest; paths are resolved from
+each containing file, and cyclic imports are rejected with their import chain.
 
 `options` remains a reserved subsection name (§4.1): a table under a section is a
 subsection, and the `options` array is what holds its controls.
@@ -470,9 +508,13 @@ Environment and arguments:
 - an `[[argv]]` entry with a `flag` but no `value`
 
 Input (§6):
-- a binding key that is not a Stone element id in the registry
-- a port mode of `kind = "managed"` without a `layout`, or with a layout absent
-  from the Stone registry
+- a binding key that is not an element of the layout it is declared under —
+  the layout's elements, not a global list, since consolespec expands them
+  per device (§6.5.1)
+- a port mode of `kind = "managed"` without a `layout`, or with a layout that
+  is not an inputspec id
+- a port group that the machinespec does not declare, or a layout the group
+  does not accept (§6.5)
 - a partial atom table for a vector element kind
 - `[input]` present with `distinct_devices = false` and more than one managed port
 
@@ -528,7 +570,7 @@ supplies it; the crate never discovers it.
 
 ```rust
 pub struct HostFacts<'a> {
-    pub stone: &'a StoneRegistry,          // snowglass_input::stone
+    pub layouts: &'a LayoutRegistry,       // snowglass_input::layout
     pub ports: &'a [PortFact],             // resolved topology for this launch
     pub emulator: EmulatorBuild,           // version + sdl_major, for applies_to
     pub capabilities: &'a dyn CapabilityRegistry,   // gpu.adapters, display.modes, …
@@ -539,8 +581,8 @@ pub struct PortFact {
     pub port: u8,                          // emulator-facing port index
     pub sdl_index: Option<u8>,             // dense index among managed ports — see §6.3
     pub mode: PortModeId,
-    pub layout: Option<StoneLayoutId>,
-    pub sdl: Option<SdlOutputLayout>,      // from StoneLayout::sdl_output()
+    pub layout: Option<InputLayoutId>,
+    pub sdl: Option<SdlOutputLayout>,      // from InputLayout::sdl_output()
 }
 ```
 
@@ -549,11 +591,25 @@ and SDL3 builds of the same emulator, and snowglass's own SDL2 path has no senso
 support (§6.2). The host detects it from the target's import table; a plugin may
 pin it.
 
+**consolespec is the only input vocabulary.** Plugin documents name inputspec
+layouts and consolespec elements and machinespec input groups, and so does the
+runtime: `LayoutRegistry` (`crates/input/snowglass-input/src/layout.rs`) reads
+the inputspec documents that `build.rs` embeds, expanding each document's
+clusters into elements by the rules in §6.5.1. There is no translation step and
+no second layout set — the ids in a plugin document are the ids the hub, the SDL
+hooks, and `SdlOutputLayout` use. A layout id that consolespec does not declare
+fails at load rather than binding to nothing.
+
+`LayoutRegistry::from_directory` overrides the embedded set from
+`SNOWGLASS_INPUTSPEC`, which is how a newer consolespec reaches an already-built
+hook.
+
 ### 6.1 Input is not a static document — it is parameterized by layout
 
-**[V]** The SDL3 hook builds each virtual pad from the port's Stone layout:
-`SdlOutputLayout` is computed by `StoneLayout::sdl_output()`
-(`crates/input/snowglass-input/src/stone.rs:71`), and the hook maps semantic index
+**[V]** The SDL3 hook builds each virtual pad from the port's layout:
+`SdlOutputLayout` is computed by `InputLayout::sdl_output()`
+(`crates/input/snowglass-input/src/layout.rs`) over the shared projection table
+(`crates/input/snowglass-input/projection/SDL.proj.toml`), and the hook maps semantic index
 → device index through `dense_mask_index`
 (`crates/hooks/snowglass-hook-sdl3/src/api.rs:27`). A GameCube layout and a Switch
 Pro layout therefore produce **different raw joystick indices for the same
@@ -564,8 +620,8 @@ Consequences, which replace §7.3 and §10 of the previous design:
 - **Raw-index binding is unsound.** Mapped presentation is not the safer of two
   options; it is the only correct one.
 - **There is no `profiles/sdl.gamepad.toml`.** The element set is
-  `StoneRegistry` + `sdl_output()` at realize time. Nothing is generated from
-  `stone.dist.json`, and there is no version field to drift.
+  `LayoutRegistry` + `sdl_output()` at realize time. Nothing is generated from a
+  distribution file, and there is no version field to drift.
 - **Fragments are filtered per port.** A binding for an element absent from that
   port's layout is silently suppressed, not emitted as a dead key. Lowering warns
   only if an element appears in no layout reachable from any declared port mode.
@@ -619,15 +675,16 @@ device  = "SDL/{index}/{name}"     # emulator-specific device-string syntax
 dialect = "dolphin"                # control-name dialect, shipped with the plugin
 
 [input.keys]
-ButtonA                  = { key = "Buttons/A" }
-AxisLeftAnalogPositiveX  = { key = "Main Stick/Right" }
-GyroscopeAxisPositiveX   = { key = "IMUGyroscope/Pitch Up" }
-TriggerLeft              = { key = "Triggers/L", control = "Full Axis 4+" }  # override
+"button.a"               = { key = "Buttons/A" }
+"analog.stick.left.x+"   = { key = "Main Stick/Right" }
+"analog.gyroscope.x+"    = { key = "IMUGyroscope/Pitch Up" }
+"trigger.left"           = { key = "Triggers/L", control = "Full Axis 4+" }  # override
 ```
 
 - key side: the emulator's config key, from the plugin.
 - value side: `{device}:{control}`, where `control` comes from the dialect table
-  (Stone element → that emulator's SDL control name) unless overridden inline.
+  (consolespec binding key → that emulator's SDL control name) unless overridden
+  inline.
 - `{name}` expands to the virtual pad name for that port's layout, so P2's change
   propagates automatically.
 
@@ -651,19 +708,42 @@ differ from the previous game" (`:151`). **The definition supplies topology; the
 hub remains the authority.** This crate does not model bindings, sources, or
 overrides — only which ports exist and what each one accepts.
 
-Which ports exist is a property of the *platform being launched*, not of the
+Which ports exist is a property of the *machine being launched*, not of the
 emulator. Dolphin running a GameCube title has four SI ports; running a Wii title
 it has four Wii Remote slots **and** four SI ports, because Wii games read GameCube
-controllers too. So ports hang off the platform:
+controllers too. So ports hang off the machine.
+
+They also hang off an **input group**. Those two families of Wii port are not
+interchangeable — different bus, different devices — and a flat numbering can
+only distinguish them by an interleaving convention that nothing records. The
+machinespec already names the groups, so ports are keyed by group and then by
+index within it:
 
 ```toml
-[platforms.NINTENDO_GC.ports.0]
-target  = "gcpad.GCPad1"
-layouts = ["GCN_CONTROLLER"]
-emit.unplugged      = [{ target = "main.Core", key = "SIDevice0", value = "0" }]
-emit.GCN_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
+# consolespec/machinespec/NINTENDO_WII.toml
+[input]
+groups = ["wii", "gamecube", "usb"]
 
-[platforms.NINTENDO_WII.ports.0]
+[input.wii]
+inputs = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
+ports  = 4
+```
+
+A group's `inputs` is the authority on what may be plugged in there, and
+lowering checks the plugin's `layouts` against it. A group's `ports` is the
+machine's base port count; a plugin may declare **fewer** (an emulator need not
+implement every port) and may declare **more** only where a multitap accounts
+for the difference — DuckStation exposes eight pad slots on a two-port
+PlayStation. Exceeding the count is a warning, never silent.
+
+```toml
+[platforms.NINTENDO_GCN.ports.controller.0]
+target  = "gcpad.GCPad1"
+layouts = ["GAMECUBE_CONTROLLER"]
+emit.unplugged           = [{ target = "main.Core", key = "SIDevice0", value = "0" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
+
+[platforms.NINTENDO_WII.ports.wii.0]
 target      = "wiimote.Wiimote1"
 layouts     = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
@@ -679,7 +759,7 @@ emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [
 ]
 ```
 
-A port's choices are exactly: the Stone layouts in `layouts`, `unplugged` always, and
+A port's choices are exactly: the inputspec layouts in `layouts`, `unplugged` always, and
 `passthrough` when the port declares it. There is no separate `kind` field —
 naming a layout *is* choosing a managed port, and the emissions under that key
 are what "this port is now that" means in the emulator's config. `emit` entries
@@ -691,42 +771,99 @@ needed anywhere.** Dolphin numbers pad sections from 1 and SI devices from 0; a
 `{n}`/`{n-1}` scheme would have to encode that, and every emulator's variant of
 it. Twelve explicit port declarations are longer and cannot be wrong.
 
-The platform keys must be ones the manifest's `platforms` list declares, and
-lowering checks that.
+The platform keys must be machinespec ids that the manifest's `platforms` list
+also declares, and lowering checks both.
 
 ### 6.5.1 Layout bindings
 
-What an element is *called* is a property of the layout, not of the port, so key
+What a control is *called* is a property of the layout, not of the port, so key
 tables are declared once and referenced by every port that offers the layout:
 
 ```toml
 [input.layouts.WII_REMOTE_CONTROLLER]
-ButtonA                = "Buttons/A"
-ButtonSelect           = "Buttons/-"
-ButtonGuide            = "Buttons/Home"
-DirectionalN           = "D-Pad/Up"
-PointerAxisPositiveX   = "IR/Right"
-GyroscopeAxisPositiveY = "IMUGyroscope/Pitch Up"
-AccelerometerAxisPositiveZ = "IMUAccelerometer/Up"
+"button.a"                 = "Buttons/A"
+"button.select"            = "Buttons/-"
+"button.guide"             = "Buttons/Home"
+"directional.n"            = "D-Pad/Up"
+"pointer.x+"               = "IR/Right"
+"analog.gyroscope.y+"      = "IMUGyroscope/Pitch Up"
+"analog.accelerometer.z+"  = "IMUAccelerometer/Up"
 
 [input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER]
-extends                 = "WII_REMOTE_CONTROLLER"
-ButtonC                 = "Nunchuk/Buttons/C"
-ButtonZ                 = "Nunchuk/Buttons/Z"
-AxisLeftAnalogPositiveY = "Nunchuk/Stick/Up"
+"button.a"                        = "Buttons/A"
+"button.c"                        = "Nunchuk/Buttons/C"
+"analog.stick.left.y+"            = "Nunchuk/Stick/Up"
+"analog.accelerometer.right.z+"   = "IMUAccelerometer/Up"
+"analog.accelerometer.left.z+"    = "Nunchuk/IMUAccelerometer/Up"
+# ... and the rest of the remote's controls, restated
 ```
 
-`extends` matters because Stone models a Wii Remote and a Wii Remote with a
-nunchuk as two layouts, while Dolphin models one controller with a swappable
-extension: the second layout is the first plus five elements, and its extra keys
-live under an `Nunchuk/` prefix that Dolphin builds by concatenation
-(`Attachments::SaveConfig`). Without inheritance the second table would repeat
-twenty-six identical entries and drift from the first.
+**A layout table declares its bindings in full; there is no inheritance.** The
+two tables above overlap heavily and it is tempting to let the second extend the
+first — consolespec models a Wii Remote and a Wii Remote with a nunchuk as two
+layouts, while Dolphin models one controller with a swappable extension, so the
+second really is the first plus five controls. It is not safe. A key is stable
+against its *own* cluster's fields, not against the device's: attaching the
+nunchuk gives the device a second accelerometer, which forces the remote's own
+to declare `alignment = "right"`, and `analog.accelerometer.z+` becomes
+`analog.accelerometer.right.z+`. An inherited table would carry six keys the
+child device does not have — which is exactly what the `extends` key did before
+it was removed, undetected, because nothing revalidated an inherited key against
+the child. Restating is longer and cannot be wrong.
 
-Keys are validated against the `StoneRegistry` at lowering — a table may not name
-an element the layout does not have — and against the emulator's own vocabulary
-where a generator can extract it (§10). `extends` and `options` are reserved, so
-a layout table may not bind an element by either name.
+Keys are validated against the layout's own expanded key set at lowering — a
+table may not name a control the device does not have — and against the
+emulator's own vocabulary where a generator can extract it (§10). That first
+check is not cosmetic: it is what caught the Cemu plugin binding its Wii Remote
+through the Pro Controller's table, sixteen controls a Wii Remote does not have.
+
+The key set is *derived*, because consolespec declares clusters rather than
+controls. A key is built from the declaring cluster's own fields and nothing
+else, so a device gaining a cluster never renames a key belonging to another.
+The grammar:
+
+```
+button.<element>
+directional[.<alignment>].<direction>
+analog.<class>[.<alignment>].<axis><sign>
+trigger.<alignment>
+rumble.<alignment|size>
+pointer[.<alignment>][.<axis><sign>]
+touchscreen|keyboard|microphone|camera [.<alignment>]
+```
+
+The expansion, in full:
+
+| inputspec entry | binding keys |
+|---|---|
+| `button` with `element = "a"` | `button.a`; `start`/`select`/`guide`/`clickl`/`clickr` likewise, and `"0"`-`"31"` give `button.0`-`button.31` |
+| `directional` with `directions = 4` | `directional.n`, `.e`, `.s`, `.w` (`directions = 8` adds the four intercardinals) |
+| `analog` with `axes = 2` | `analog.stick.{x,y}{+,-}` — one positive and one negative per axis, over x, y, z as `axes` allows. `class` defaults to `stick` |
+| `analog` with `class = "gyroscope"`/`"accelerometer"`/`"slider"`/`"rotary"` | `analog.gyroscope.…`, `analog.accelerometer.…`, same expansion |
+| `alignment` on any of the above | inserted before the component: `analog.stick.left.x+`, `directional.right.n` |
+| `trigger` with `alignment = "left"` | `trigger.left` |
+| `rumble` with `size = "big"` | `rumble.big`; a motor with an `alignment` uses that instead |
+| `pointer` with `dimensions = 2` | `pointer` for the absolute position, plus `pointer.{x,y}{+,-}` |
+| `touchscreen`, `keyboard`, `microphone`, `camera` | `touchscreen`, `keyboard`, `microphone`, `camera` |
+
+`alignment` appears only where a device has two clusters of one kind and class
+to tell apart. A key that omits it means the device's *primary* cluster of that
+kind, which is how one keyboard-defaults document serves every layout:
+`directional.n` reaches the N64's `directional.left.n` and no other. Only the
+first cluster, in declaration order, answers to the unqualified key.
+
+The dotted string is the *wire* form only. In the runtime a key is
+`snowglass_input::key::BindingKey`, a `Copy` sum type parsed at document load,
+so a malformed key fails there — naming itself — rather than being dropped
+silently where nobody looks, and no consumer picks a key apart with `starts_with`.
+
+Controls also carry an *id* (`ButtonA`, `AxisLeftAnalogPositiveX`) for display,
+and where two clusters expand onto one id — the N64's two directionals, the
+DualSense's two small motors — the second takes an ordinal suffix
+(`DirectionalN2`) in declaration order. Ids are not binding keys and nothing
+persists them.
+
+`options` is reserved, so a layout table may not bind a control by that name.
 
 ### 6.5.2 Layout options
 
@@ -760,9 +897,9 @@ option at `ports.<platform>.<index>.<key>` whose `emit.target` is that port's
 target. So a four-remote Wii setup gets four independent `sideways` settings, and
 their values persist per port rather than bleeding across them.
 
-They inherit through `extends` with the key table, which is what makes a nunchuk
-port keep the remote's options: `WII_REMOTE_NUNCHUCK_CONTROLLER` declares only
-what a nunchuk adds.
+Like the key table (§6.5.1), a layout declares its options in full — a nunchuk
+port keeps the remote's options because `WII_REMOTE_NUNCHUCK_CONTROLLER` states
+them again, not because it inherits them.
 
 **Every port has an implicit option, `ports.<platform>.<index>.layout`**, whose
 domain is the port's `layouts` plus `unplugged` and, where declared,
@@ -789,7 +926,7 @@ carries an absolute position in presentation coordinates
 
 | transport | reaches | evidence |
 | --- | --- | --- |
-| `sdl-axis` | emulators reading raw joystick axes 6/7 | `stone.rs:112` — always present, outside `SDL_GAMEPAD_AXIS_COUNT` |
+| `sdl-axis` | emulators reading raw joystick axes 6/7 | `layout.rs`, `sdl_output()` — always present, outside `SDL_GAMEPAD_AXIS_COUNT` |
 | `win32-message` | Qt/wx/SDL-windowed emulators | `snowglass-hook-win32/src/lib.rs:1` |
 | `dinput-mouse` | Dolphin's `Keyboard Mouse` device on Windows | `snowglass-hook-dinput/src/runtime.rs:243` |
 
@@ -1064,7 +1201,7 @@ verbatim; nothing in it requires understanding an option path.
 The JSON the emulator's JS module returns. Three explicit outputs — `config`,
 `env`, `argv` — plus the launch facts the runtime needs. The frontend passes it
 through verbatim; nothing in it requires understanding an option path, a target,
-or a Stone element.
+or an input element.
 
 ```jsonc
 {
@@ -1117,7 +1254,7 @@ Design rules:
    no out-of-band handle to resolve.
 2. **The frontend is a conduit.** It does not validate, merge, or interpret. The
    host validates shape on receipt: relative paths inside the root, no reserved
-   env names, known hook ids, known Stone layouts.
+   env names, known hook ids, known inputspec layouts.
 3. **`definitionHash` makes staleness detectable.** A descriptor built against a
    definition that has since been reloaded is rejected at launch with a specific
    error rather than launched with stale files.
@@ -1248,10 +1385,10 @@ itself.
 | --- | --- | --- |
 | `*.gen.d.ts` | definition TOML | tsc |
 | keyname tables | per-emulator source audit | `applies_to` + build detection |
-| dialect tables | per-emulator source audit | lowering, against `StoneRegistry` |
+| dialect tables | per-emulator source audit | lowering, against `LayoutRegistry` |
 
 The previous design's `profiles/sdl.gamepad.toml` and `layouts/*.toml` are gone:
-this crate depends on `snowglass-input` and reads `StoneRegistry` and
+this crate depends on `snowglass-input` and reads `LayoutRegistry` and
 `SdlOutputLayout` directly, so there is no constant to hand-copy and no version
 field to drift.
 
@@ -1270,7 +1407,7 @@ src/
   realize/
   emit/        Node, Rewriter, merge, Origin
     codec/     ini, cfg, xml, json
-  input/       Stone projection, fragments, port plans, mapping generation
+  input/       element projection, fragments, port plans, mapping generation
   action/      platform VK table, chord lowering
   descriptor/  LaunchDescriptor (serde, versioned)
 ```
@@ -1308,6 +1445,10 @@ Closed by source inspection:
 - ~~pointer reachability~~ — three transports, `dinput-mouse` reaches Dolphin
   (§6.6).
 - ~~Stone layout codegen~~ — replaced by a direct `snowglass-input` dependency.
+- ~~the runtime reading Stone~~ — `LayoutRegistry` reads inputspec directly;
+  there is one vocabulary end to end (§6).
+- ~~unvalidated platform ids~~ — machinespec is the source of truth, and the
+  generators check against it (§6.5).
 
 Remaining:
 

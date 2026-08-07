@@ -8,7 +8,7 @@ use crate::{
     key::{Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Direction, Sign},
     layout::{
         EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, InputBinding, InputLayout,
-        KeyboardMapping, LayoutRegistry, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
+        KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
     },
 };
 use parking_lot::Mutex;
@@ -336,9 +336,8 @@ fn validate_config(config: &ProviderConfig) -> Result<(), String> {
     if config.slots.len() > u8::MAX as usize + 1 {
         return Err("gamepad slot count must be 0..=256".to_owned());
     }
-    let registry = LayoutRegistry::embedded()?;
     for slot in &config.slots {
-        if registry.layout(&slot.layout_id).is_none() {
+        if InputLayout::get(&slot.layout_id).is_none() {
             return Err(format!("unknown input layout {}", slot.layout_id));
         }
     }
@@ -648,7 +647,7 @@ fn run(
     initially_enabled: bool,
 ) {
     let result = initialize(&config);
-    let (sdl, subsystem, mut event_pump, registry, remappings) = match result {
+    let (sdl, subsystem, mut event_pump, remappings) = match result {
         Ok(value) => value,
         Err(error) => {
             let _ = started.send(Err(error));
@@ -669,7 +668,7 @@ fn run(
     let mut interactive_mouse_mappings =
         vec![HashMap::<BindingKey, MouseAxisMap>::new(); config.slots.len()];
     let mut config = config;
-    let mut keyboard_mappings = match load_keyboard_mappings(&config, &registry) {
+    let mut keyboard_mappings = match load_keyboard_mappings(&config) {
         Ok(mappings) => mappings,
         Err(error) => {
             let _ = started.send(Err(error));
@@ -704,7 +703,7 @@ fn run(
                 ProviderCommand::ReconfigureSlots { slots, response } => {
                     let invalid_layout = slots
                         .iter()
-                        .find(|slot| registry.layout(&slot.layout_id).is_none());
+                        .find(|slot| InputLayout::get(&slot.layout_id).is_none());
                     if let Some(slot) = invalid_layout {
                         let _ =
                             response.send(Err(format!("unknown input layout {}", slot.layout_id)));
@@ -715,7 +714,7 @@ fn run(
                         gamecontroller_database: config.gamecontroller_database.clone(),
                         keyboard_mapping_directory: config.keyboard_mapping_directory.clone(),
                     };
-                    let new_keyboard_mappings = match load_keyboard_mappings(&candidate, &registry)
+                    let new_keyboard_mappings = match load_keyboard_mappings(&candidate)
                     {
                         Ok(mappings) => mappings,
                         Err(error) => {
@@ -759,7 +758,7 @@ fn run(
                 } => {
                     if let Some(bindings) = interactive_remappings.get_mut(slot) {
                         bindings.insert(target, binding);
-                        recompile_pad(slot, &mut pads, &registry, &remappings, bindings);
+                        recompile_pad(slot, &mut pads, &remappings, bindings);
                     }
                 }
                 ProviderCommand::SetKeyBinding { slot, target, key } => {
@@ -779,13 +778,13 @@ fn run(
                     }
                     if let Some(bindings) = interactive_remappings.get_mut(slot) {
                         bindings.insert(target, InputBinding::Disabled { disabled: true });
-                        recompile_pad(slot, &mut pads, &registry, &remappings, bindings);
+                        recompile_pad(slot, &mut pads, &remappings, bindings);
                     }
                 }
                 ProviderCommand::ResetBindings { slot } => {
                     if let Some(bindings) = interactive_remappings.get_mut(slot) {
                         bindings.clear();
-                        recompile_pad(slot, &mut pads, &registry, &remappings, bindings);
+                        recompile_pad(slot, &mut pads, &remappings, bindings);
                     }
                     if let Some(mapping) = keyboard_mappings.get_mut(slot) {
                         mapping.clone_from(
@@ -802,7 +801,7 @@ fn run(
                 ProviderCommand::ClearBinding { slot, target } => {
                     if let Some(bindings) = interactive_remappings.get_mut(slot) {
                         bindings.remove(&target);
-                        recompile_pad(slot, &mut pads, &registry, &remappings, bindings);
+                        recompile_pad(slot, &mut pads, &remappings, bindings);
                     }
                     let defaults = default_keyboard_mappings.get(slot).and_then(Option::as_ref);
                     if let Some(Some(mapping)) = keyboard_mappings.get_mut(slot) {
@@ -837,7 +836,6 @@ fn run(
                 &subsystem,
                 &mut pads,
                 &config.slots,
-                &registry,
                 &remappings,
                 &interactive_remappings,
             );
@@ -925,12 +923,10 @@ type Initialized = (
     sdl3::Sdl,
     sdl3::GamepadSubsystem,
     sdl3::EventPump,
-    LayoutRegistry,
     RemapDatabase,
 );
 
 fn initialize(config: &ProviderConfig) -> Result<Initialized, String> {
-    let registry = LayoutRegistry::embedded()?;
     let remappings = RemapDatabase::default();
     let sdl = sdl3::init().map_err(|error| format!("failed to initialize SDL3: {error}"))?;
     let subsystem = sdl
@@ -948,7 +944,7 @@ fn initialize(config: &ProviderConfig) -> Result<Initialized, String> {
     let event_pump = sdl
         .event_pump()
         .map_err(|error| format!("failed to create SDL3 event pump: {error}"))?;
-    Ok((sdl, subsystem, event_pump, registry, remappings))
+    Ok((sdl, subsystem, event_pump, remappings))
 }
 
 fn refresh_observed_devices(subsystem: &sdl3::GamepadSubsystem, observed: &mut Vec<ObservedPad>) {
@@ -1008,7 +1004,6 @@ fn refresh_devices(
     subsystem: &sdl3::GamepadSubsystem,
     pads: &mut [Option<Pad>],
     slots: &[SlotConfig],
-    registry: &LayoutRegistry,
     remappings: &RemapDatabase,
     interactive_remappings: &[HashMap<BindingKey, InputBinding>],
 ) {
@@ -1042,8 +1037,7 @@ fn refresh_devices(
         match subsystem.open(id) {
             Ok(gamepad) => {
                 let has_touchpad = gamepad.touchpads_count() != 0;
-                let layout = registry
-                    .layout(&slots[slot].layout_id)
+                let layout = InputLayout::get(&slots[slot].layout_id)
                     .expect("validated slot layout");
                 enable_layout_sensors(&gamepad, layout);
                 let mapping = compiled_with_overrides(
@@ -1171,15 +1165,13 @@ fn select_device(
 fn recompile_pad(
     slot: usize,
     pads: &mut [Option<Pad>],
-    registry: &LayoutRegistry,
     remappings: &RemapDatabase,
     overrides: &HashMap<BindingKey, InputBinding>,
 ) {
     let Some(pad) = pads.get_mut(slot).and_then(Option::as_mut) else {
         return;
     };
-    let layout = registry
-        .layout(&pad.layout_id)
+    let layout = InputLayout::get(&pad.layout_id)
         .expect("pinned layout remains available");
     pad.mapping =
         compiled_with_overrides(&pad.gamepad, &pad.identity, layout, remappings, overrides);
@@ -1694,7 +1686,6 @@ fn to_sdl_axis(axis: SdlAxis) -> SdlNativeAxis {
 
 fn load_keyboard_mappings(
     config: &ProviderConfig,
-    registry: &LayoutRegistry,
 ) -> Result<Vec<Option<CompiledKeyboardMapping>>, String> {
     let directory = config
         .keyboard_mapping_directory
@@ -1715,8 +1706,7 @@ fn load_keyboard_mappings(
             if !matches!(slot.selector, DeviceSelector::Keyboard) {
                 return Ok(None);
             }
-            let layout = registry
-                .layout(&slot.layout_id)
+            let layout = InputLayout::get(&slot.layout_id)
                 .expect("slot layout was validated");
             let controller_path = directory.join(format!("{}.kb.toml", slot.layout_id));
             let source = if controller_path.is_file() {
@@ -1786,8 +1776,7 @@ mod tests {
 
     #[test]
     fn switch_face_labels_are_not_positional() {
-        let registry = LayoutRegistry::embedded().unwrap();
-        let layout = registry.layout("SWITCH_PRO_CONTROLLER").unwrap();
+        let layout = InputLayout::get("SWITCH_PRO_CONTROLLER").unwrap();
         assert_eq!(
             layout.elements.iter().find(|e| e.label == "B").unwrap().key,
             key("button.b")
@@ -1817,8 +1806,7 @@ mod tests {
 
     #[test]
     fn embedded_keyboard_mapping_drives_wii_remote_buttons() {
-        let registry = LayoutRegistry::embedded().unwrap();
-        let layout = registry.layout("WII_REMOTE_CONTROLLER").unwrap();
+        let layout = InputLayout::get("WII_REMOTE_CONTROLLER").unwrap();
         let mapping = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
         let mapping = CompiledKeyboardMapping::new(mapping, layout).unwrap();
         let pressed = HashSet::from(["KeyX".to_owned(), "ArrowUp".to_owned()]);
@@ -1833,8 +1821,7 @@ mod tests {
 
     #[test]
     fn keyboard_targets_can_be_overridden_and_restored_live() {
-        let registry = LayoutRegistry::embedded().unwrap();
-        let layout = registry.layout("XBOX_CONTROLLER").unwrap();
+        let layout = InputLayout::get("XBOX_CONTROLLER").unwrap();
         let source = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING).unwrap();
         let defaults = CompiledKeyboardMapping::new(source, layout).unwrap();
         let mut mapping = defaults.clone();
@@ -1907,12 +1894,11 @@ mod tests {
 
     #[test]
     fn rejects_user_targets_outside_the_selected_layout() {
-        let registry = LayoutRegistry::embedded().unwrap();
         // Well-formed, but an Xbox pad has no Z button.
         let remap =
             RemapDatabase::from_json(r#"{"bindings":{"button.z":{"button":"south"}}}"#).unwrap();
         assert!(
-            validate_remappings(&remap, &[registry.layout("XBOX_CONTROLLER").unwrap()]).is_err()
+            validate_remappings(&remap, &[InputLayout::get("XBOX_CONTROLLER").unwrap()]).is_err()
         );
     }
 

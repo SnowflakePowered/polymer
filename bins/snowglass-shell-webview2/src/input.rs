@@ -104,7 +104,7 @@ impl InputTransport {
     pub fn runtime() -> Result<Self, String> {
         let control = RoutedInputSender::default();
         let gamepad = RoutedGamepadSink::default();
-        let hub = InputHub::embedded().expect("the embedded consolespec documents are valid");
+        let hub = InputHub::new(None, []).expect("an empty topology is valid");
         let provider = Sdl3Provider::start_disabled(
             ProviderConfig {
                 slots: Vec::new(),

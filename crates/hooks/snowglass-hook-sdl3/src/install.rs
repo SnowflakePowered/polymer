@@ -3,7 +3,7 @@
 use crate::api;
 use parking_lot::Mutex;
 use snowglass_hook::config;
-use snowglass_input::layout::LayoutRegistry;
+use snowglass_input::layout::InputLayout;
 use snowglass_input::projection::Projection;
 use snowglass_input_sdl::Runtime;
 use std::{
@@ -80,13 +80,11 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     let module = Sdl3EntryInstallation::with_state(|state| state.module)
         .ok_or("SDL3 entry-hook state is not installed")?
         .as_ptr();
-    let registry = LayoutRegistry::embedded().map_err(|_| "the embedded inputspec is invalid")?;
     let projection = Projection::embedded().map_err(|_| "the SDL projection is invalid")?;
     let layouts = config::layouts()
         .into_iter()
         .map(|layout_id| {
-            registry
-                .layout(&layout_id)
+            InputLayout::get(&layout_id)
                 .ok_or("the requested input layout is unavailable")
                 .map(|layout| {
                     (

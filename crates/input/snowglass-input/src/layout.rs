@@ -1,7 +1,9 @@
-//! Runtime input-layout registry and user-remapping documents.
+//! Input layouts and user-remapping documents.
 //!
-//! Layouts come from consolespec's `inputspec` documents, embedded at build
-//! time by `build.rs`. An inputspec does not spell its elements out: it declares
+//! Layouts come from the `consolespec` crate, whose build script parses and
+//! cross-checks the documents, so there is nothing to load and no registry to
+//! own — [`InputLayout::all`] expands the compile-time table once, on first use.
+//! An inputspec does not spell its elements out: it declares
 //! *clusters* — `axes = 2, alignment = "left"` for a stick, `directions = 4`
 //! D-pad — and the elements expand from them by the rules in [`expand`].
 //!
@@ -14,6 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::str::FromStr;
 
 pub use crate::key::{
@@ -522,6 +525,16 @@ impl InputLayout {
         })
     }
 
+    /// Every layout consolespec declares, by id.
+    pub fn all() -> &'static [InputLayout] {
+        layouts()
+    }
+
+    /// One layout by its inputspec id.
+    pub fn get(id: &str) -> Option<&'static InputLayout> {
+        layouts().iter().find(|layout| layout.id == id)
+    }
+
     /// Whether this device has the control a binding key names.
     pub fn has(&self, key: BindingKey) -> bool {
         self.keys.contains(&key)
@@ -650,29 +663,23 @@ impl SdlOutputLayout {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LayoutRegistry {
-    layouts: HashMap<String, InputLayout>,
-}
-
-impl LayoutRegistry {
-    /// Layouts derived from compile-time validated consolespec data.
-    pub fn embedded() -> Result<Self, String> {
-        let mut layouts = HashMap::new();
-        for spec in consolespec::InputSpec::all() {
-            let layout = InputLayout::from_spec(spec)?;
-            layouts.insert(layout.id.clone(), layout);
-        }
-        Ok(Self { layouts })
-    }
-
-    pub fn layout(&self, id: &str) -> Option<&InputLayout> {
-        self.layouts.get(id)
-    }
-
-    pub fn layouts(&self) -> impl Iterator<Item = &InputLayout> {
-        self.layouts.values()
-    }
+/// Every consolespec input definition, expanded once.
+///
+/// There is no registry to hand around: consolespec is a compile-time table, so
+/// the expansion of it is a property of the program rather than of any object.
+/// Expansion is deterministic and its inputs were validated when the crate was
+/// built, so a failure here is a build bug — `every_spec_expands` is what keeps
+/// it from being discovered at runtime.
+fn layouts() -> &'static [InputLayout] {
+    static LAYOUTS: OnceLock<Vec<InputLayout>> = OnceLock::new();
+    LAYOUTS.get_or_init(|| {
+        consolespec::InputSpec::all()
+            .map(|spec| {
+                InputLayout::from_spec(spec)
+                    .unwrap_or_else(|error| panic!("consolespec inputspec is unusable: {error}"))
+            })
+            .collect()
+    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -778,24 +785,33 @@ mod tests {
 
     #[test]
     fn parses_embedded_registry() {
-        let registry = LayoutRegistry::embedded().unwrap();
-        let xbox = registry.layout("XBOX_CONTROLLER").unwrap();
+        let xbox = InputLayout::get("XBOX_CONTROLLER").unwrap();
         assert!(xbox.has(key("button.a")));
         assert_eq!(
-            registry.layout("GAMECUBE_CONTROLLER").unwrap().name,
+            InputLayout::get("GAMECUBE_CONTROLLER").unwrap().name,
             "Nintendo GameCube Controller"
         );
         // A handheld's built-in controls are not a named product.
-        let vita = registry.layout("PSV_LAYOUT").unwrap();
+        let vita = InputLayout::get("PSV_LAYOUT").unwrap();
         assert_eq!(vita.name, "PSV_LAYOUT");
         assert!(xbox.has(key("analog.stick.left.x+")));
-        assert!(registry.layouts().count() > 1);
+        assert!(InputLayout::all().iter().count() > 1);
+    }
+
+    /// `layouts()` panics rather than returning an error, because a consolespec
+    /// document that will not expand is a build bug and not a runtime condition.
+    /// That is only defensible if every document does expand, which is this.
+    #[test]
+    fn every_spec_expands() {
+        for spec in consolespec::InputSpec::all() {
+            InputLayout::from_spec(spec).unwrap_or_else(|error| panic!("{error}"));
+        }
+        assert_eq!(InputLayout::all().len(), consolespec::InputSpec::all().len());
     }
 
     #[test]
     fn expands_clusters_into_elements() {
-        let registry = LayoutRegistry::embedded().unwrap();
-        let pad = registry.layout("GAMECUBE_CONTROLLER").unwrap();
+        let pad = InputLayout::get("GAMECUBE_CONTROLLER").unwrap();
         // `directions = 4` becomes four directionals, `axes = 2` two signed pairs.
         for text in [
             "directional.n",
@@ -818,7 +834,7 @@ mod tests {
         assert!(!pad.has(key("button.clickl")));
 
         // A pointer contributes an absolute element and its relative axes.
-        let remote = registry.layout("WII_REMOTE_CONTROLLER").unwrap();
+        let remote = InputLayout::get("WII_REMOTE_CONTROLLER").unwrap();
         assert!(remote.has(key("pointer")));
         assert!(remote.has(key("pointer.x+")));
         assert!(remote.has(key("analog.accelerometer.z-")));
@@ -837,8 +853,7 @@ mod tests {
     #[test]
     fn repeated_clusters_take_an_ordinal() {
         // The N64 pad declares two directionals: the D-pad and the C-buttons.
-        let registry = LayoutRegistry::embedded().unwrap();
-        let pad = registry.layout("N64_CONTROLLER").unwrap();
+        let pad = InputLayout::get("N64_CONTROLLER").unwrap();
         assert!(pad.has(key("directional.left.n")));
         assert!(pad.has(key("directional.right.n")));
         assert_eq!(
@@ -871,10 +886,8 @@ mod tests {
 
     #[test]
     fn compiles_sdl_capabilities_from_layout_elements() {
-        let registry = LayoutRegistry::embedded().unwrap();
         let projection = crate::projection::Projection::embedded().unwrap();
-        let switch = registry
-            .layout("SWITCH_PRO_CONTROLLER")
+        let switch = InputLayout::get("SWITCH_PRO_CONTROLLER")
             .unwrap()
             .sdl_output(&projection);
         assert_ne!(switch.button_mask & (1 << 0), 0); // A / south projection

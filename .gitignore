@@ -8,3 +8,4 @@
 *.exp
 
 consolespec/scripts/**/*.pyc
+*.pyc

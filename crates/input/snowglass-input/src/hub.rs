@@ -4,8 +4,8 @@
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::layout::{BindingKey, InputLayout, LayoutRegistry, SdlAxis, SdlButton};
-use crate::machine::{InputGroup, MachineRegistry};
+use crate::layout::{BindingKey, InputLayout, SdlAxis, SdlButton};
+use consolespec::MachineSpec;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -76,6 +76,30 @@ impl<'de> Deserialize<'de> for VirtualPort {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
         text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// A serializable view of a consolespec input group, for the frontend.
+///
+/// [`consolespec::InputGroup`] borrows the compile-time table, which is exactly
+/// right in the hub and useless over a JSON boundary; this owns its strings.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputGroup {
+    pub name: String,
+    pub inputs: Vec<String>,
+    pub ports: u8,
+    pub accessories: bool,
+}
+
+impl From<consolespec::InputGroup> for InputGroup {
+    fn from(group: consolespec::InputGroup) -> Self {
+        Self {
+            name: group.name().to_owned(),
+            inputs: group.inputs().map(str::to_owned).collect(),
+            ports: group.ports(),
+            accessories: group.is_accessory_group(),
+        }
     }
 }
 
@@ -274,8 +298,6 @@ pub struct InputHub {
 }
 
 struct HubInner {
-    registry: LayoutRegistry,
-    machines: MachineRegistry,
     state: RwLock<HubState>,
 }
 
@@ -368,17 +390,13 @@ impl std::error::Error for InputConfigurationError {}
 
 impl InputHub {
     pub fn new(
-        registry: LayoutRegistry,
-        machines: MachineRegistry,
         machine: Option<String>,
         ports: impl IntoIterator<Item = PortConfiguration>,
     ) -> Result<Self, InputConfigurationError> {
         let ports = collect_ports(ports)?;
-        validate_ports(&registry, &machines, machine.as_deref(), &ports)?;
+        validate_ports(machine.as_deref(), &ports)?;
         Ok(Self {
             inner: Arc::new(HubInner {
-                registry,
-                machines,
                 state: RwLock::new(HubState {
                     revision: 0,
                     machine,
@@ -386,14 +404,6 @@ impl InputHub {
                 }),
             }),
         })
-    }
-
-    /// An empty topology on the embedded documents, which is what a host holds
-    /// before any game is attached.
-    pub fn embedded() -> Result<Self, String> {
-        let registry = LayoutRegistry::embedded()?;
-        let machines = MachineRegistry::embedded()?;
-        Self::new(registry, machines, None, []).map_err(|error| error.to_string())
     }
 
     pub fn snapshot(&self) -> InputConfiguration {
@@ -405,9 +415,10 @@ impl InputHub {
         }
     }
 
-    /// The machinespec documents this hub validates against.
-    pub fn machines(&self) -> &MachineRegistry {
-        &self.inner.machines
+    /// The attached machine's consolespec entry, for a caller that needs to ask
+    /// it something the hub does not expose — which group accepts a layout, say.
+    pub fn machine(&self) -> Option<MachineSpec> {
+        machine_spec(self.inner.state.read().machine.as_deref())
     }
 
     /// The input groups of the attached machine, in declaration order. Empty
@@ -417,15 +428,13 @@ impl InputHub {
         state
             .machine
             .as_deref()
-            .and_then(|machine| self.inner.machines.machine(machine))
+            .and_then(|machine| MachineSpec::try_from(machine).ok())
             .map(|machine| machine.input_groups().map(InputGroup::from).collect())
             .unwrap_or_default()
     }
 
-    pub fn layouts(&self) -> Vec<InputLayout> {
-        let mut layouts = self.inner.registry.layouts().cloned().collect::<Vec<_>>();
-        layouts.sort_by(|left, right| left.id.cmp(&right.id));
-        layouts
+    pub fn layouts(&self) -> &'static [InputLayout] {
+        InputLayout::all()
     }
 
     /// Applies all operations or none of them.
@@ -444,12 +453,7 @@ impl InputHub {
         for operation in transaction.operations {
             apply_operation(&mut next, operation)?;
         }
-        validate_ports(
-            &self.inner.registry,
-            &self.inner.machines,
-            next.machine.as_deref(),
-            &next.ports,
-        )?;
+        validate_ports(next.machine.as_deref(), &next.ports)?;
         next.revision = next.revision.wrapping_add(1);
         *state = next;
         drop(state);
@@ -543,9 +547,13 @@ fn port_mut(
         .ok_or(InputConfigurationError::UnknownPort(port))
 }
 
+/// The consolespec entry for an attached machine. Lookup is a binary search
+/// over a compile-time table, so there is nothing to own and nothing to pass.
+fn machine_spec(machine: Option<&str>) -> Option<MachineSpec> {
+    MachineSpec::try_from(machine?).ok()
+}
+
 fn validate_ports(
-    registry: &LayoutRegistry,
-    machines: &MachineRegistry,
     machine: Option<&str>,
     ports: &BTreeMap<VirtualPort, PortConfiguration>,
 ) -> Result<(), InputConfigurationError> {
@@ -553,8 +561,7 @@ fn validate_ports(
         return Ok(());
     }
     let machine = machine.ok_or(InputConfigurationError::NoMachine)?;
-    let spec = machines
-        .machine(machine)
+    let spec = machine_spec(Some(machine))
         .ok_or_else(|| InputConfigurationError::UnknownMachine(machine.to_owned()))?;
 
     let mut slots = HashMap::new();
@@ -594,8 +601,7 @@ fn validate_ports(
             return Err(InputConfigurationError::DuplicateSlot(slot));
         }
 
-        let layout = registry
-            .layout(&port.layout)
+        let layout = InputLayout::get(&port.layout)
             .ok_or_else(|| InputConfigurationError::UnknownLayout(port.layout.clone()))?;
         for (&target, binding) in &port.overrides {
             if !layout.has(target) {
@@ -649,9 +655,7 @@ mod tests {
     fn key(text: &str) -> BindingKey {
         text.parse().expect("test binding key")
     }
-    use crate::layout::LayoutRegistry;
 
-    use crate::machine::MachineRegistry;
 
     /// An Xbox: one `controller` group of four ports, accepting one layout.
     const MACHINE: &str = "MICROSOFT_XBOX";
@@ -669,12 +673,7 @@ mod tests {
     fn hub_with(
         ports: impl IntoIterator<Item = PortConfiguration>,
     ) -> Result<InputHub, InputConfigurationError> {
-        InputHub::new(
-            LayoutRegistry::embedded().unwrap(),
-            MachineRegistry::embedded().unwrap(),
-            Some(MACHINE.to_owned()),
-            ports,
-        )
+        InputHub::new(Some(MACHINE.to_owned()), ports)
     }
 
     fn hub() -> InputHub {
@@ -874,12 +873,7 @@ mod tests {
     fn wiiu(
         ports: impl IntoIterator<Item = PortConfiguration>,
     ) -> Result<InputHub, InputConfigurationError> {
-        InputHub::new(
-            LayoutRegistry::embedded().unwrap(),
-            MachineRegistry::embedded().unwrap(),
-            Some("NINTENDO_WIIU".to_owned()),
-            ports,
-        )
+        InputHub::new(Some("NINTENDO_WIIU".to_owned()), ports)
     }
 
     fn wiiu_port(group: &str, index: u8, layout: &str, slot: Option<u8>) -> PortConfiguration {
@@ -925,17 +919,12 @@ mod tests {
     #[test]
     fn ports_without_a_machine_are_rejected() {
         assert_eq!(
-            rejected(InputHub::new(
-                LayoutRegistry::embedded().unwrap(),
-                MachineRegistry::embedded().unwrap(),
-                None,
-                [port(0)],
-            )),
+            rejected(InputHub::new(None, [port(0)])),
             InputConfigurationError::NoMachine
         );
         // An empty topology needs no machine, which is what a host holds before
         // a game is attached.
-        assert!(InputHub::embedded().is_ok());
+        assert!(InputHub::new(None, []).is_ok());
     }
 
     #[test]

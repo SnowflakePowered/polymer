@@ -1,5 +1,5 @@
 use snowglass_input::{
-    layout::{InputBinding, InputLayout, LayoutRegistry, SdlAxis, SdlButton},
+    layout::{InputBinding, InputLayout, SdlAxis, SdlButton},
     mouse::{PointerPhase, layout::Extent},
     provider::sdl3::{
         DeviceSelector, ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig,
@@ -524,7 +524,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut capture = SurfaceCapture::default();
     let pointer_tx = capture.pointer_sender();
     let input_tx = RoutedInputSender::default();
-    let gamepad_registry = LayoutRegistry::embedded().map_err(std::io::Error::other)?;
     let mut gamepad_provider = None;
     let mut gamepad_layouts = Vec::new();
     let mut gamepad_remap_drafts = Vec::new();
@@ -533,7 +532,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     if start_immediately {
         match start_target_session(
             &launcher,
-            &gamepad_registry,
             &executable_dir,
             &session,
             surface_limit,
@@ -1145,7 +1143,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             launch_requested = draw_launcher_window(
                                 context,
                                 &mut launcher,
-                                &gamepad_registry,
                                 &mut launch_error,
                             );
                         } else if let Some(message) = launch_error.clone() {
@@ -1318,7 +1315,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                         launch_error = None;
                         match start_target_session(
                             &launcher,
-                            &gamepad_registry,
                             &executable_dir,
                             &session,
                             surface_limit,
@@ -1409,7 +1405,6 @@ struct StartedTarget {
 #[expect(clippy::too_many_arguments)]
 fn start_target_session(
     launcher: &LauncherState,
-    registry: &LayoutRegistry,
     executable_dir: &Path,
     session: &str,
     surface_limit: u32,
@@ -1434,7 +1429,7 @@ fn start_target_session(
     let layouts = gamepads
         .iter()
         .map(|pad| {
-            registry.layout(&pad.layout).cloned().ok_or_else(|| {
+            InputLayout::get(&pad.layout).cloned().ok_or_else(|| {
                 std::io::Error::other(format!("unknown input layout {}", pad.layout))
             })
         })
