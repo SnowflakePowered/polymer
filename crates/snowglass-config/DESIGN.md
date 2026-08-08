@@ -8,18 +8,19 @@ owns and corrected against the snowglass tree. Source-verified claims are marked
 
 ## 0. Scope
 
-`snowglass-config` is a pure library: **`(definition, values, host facts) → (files, launch descriptor)`**.
+`snowglass-config` is a pure library: **`(definition, overrides, host facts) → (files, launch arguments)`**.
 
 It owns:
 
 - parsing definition documents into `Raw*` structs,
 - lowering them to a validated arena IR,
-- realizing an IR against a value stack, host facts, and an optional resolver runtime,
-- emitting configuration bytes and a launch descriptor.
+- materializing an IR into a configuration instance against host facts and an
+  optional resolver runtime,
+- serializing that instance to configuration bytes and a launch descriptor.
 
 It does **not** own:
 
-- persistence — the caller hands in a `ValueStack` and stores whatever comes back;
+- persistence — the caller hands in a flat override map and stores whatever comes back;
 - the filesystem — `emit` returns file contents, the host writes them;
 - process launch, IPC, or `EmulatorInstance`;
 - the JS runtime — only the `ResolverRuntime` trait; `deno_core` lives in the shell.
@@ -81,6 +82,7 @@ every section below is tagged:
 | `overrides` on a target | designed (§3.1) | — |
 | `enabled_when`, `when_disabled`, `repeat`, `repr` | designed (§3.2, §4) | — |
 | everything from `lower` onward | designed (§4, §5, §8) | — |
+| `setupLaunch` and the instance model | designed (§5.1) | — |
 
 **All four plugin packages parse completely**, and
 `toml/document.rs::every_plugin_package_parses` asserts it: it reads each
@@ -161,17 +163,19 @@ plugin package (TOML + TS)
         ▼
     Raw* ──lower──► Definition (arena IR, content-hashed)   [once, at load]
                           │
-   ValueStack ───────────►│
-   HostFacts ────────────►│ realize()                        [per launch / per UI edit]
+   HostFacts ────────────►│ materialize()                    [per launch / per UI edit]
    dyn ResolverRuntime ──►│
                           ▼
-          RealizedDefinition + ResolvedValues + Diagnostics
-                          │ emit(existing bytes)
+                     Instance + Diagnostics
+                          │ apply(configOverrides), launch script reads/writes
+                          ▼
+                     Instance (settled)
+                          │ serialize(existing bytes)
                           ▼
           Realized { config, env, argv, ports, actions, claims }
-                          │ serialize
+                          │ launch script composes
                           ▼
-          LaunchDescriptor ──► emulator JS ──► frontend ──► launch op ──► host writes, launches
+          LaunchArguments ──► frontend ──► launch op ──► host writes, launches
 ```
 
 The frontend is a conduit. It receives an opaque JSON object from the emulator's
@@ -304,7 +308,7 @@ without a path is then unspellable rather than a lowering check, and "does this
 serialize" is one `Option` rather than a pair that can disagree.
 
 A **null root** is realized like any other — its options resolve, its values fold
-through the value stack — but it produces no entry in `Realized::config`, and its
+through the override map — but it produces no entry in `Realized::config`, and its
 subtree is instead visible to the emulator's launch script. That makes it the
 place for bookkeeping the emulator never reads from a file: a computed install
 layout, a value the JS needs when assembling `argv`, a group of settings the
@@ -629,7 +633,7 @@ host state changes, and lowering warns when it names something ordinal" —
 to stop a driver reshuffle from silently repointing saved config. The generated
 documents solved it structurally instead:
 
-- **`key` is the stable identity.** It is what the value stack persists
+- **`key` is the stable identity.** It is what the instance persists
   (§5), what an `Expr` compares against, and what a `Repr::Mapped` arm names. It
   is symbolic and it never changes because the emulator renumbered something.
 - **`value` is what gets written to the file.** Dolphin's enums are ordinals, so
@@ -855,40 +859,114 @@ Actions (§7):
 
 ---
 
-## 5. Values
+## 5. Values and the configuration instance
 
-A resolution stack, folded at realize time. **This crate defines the types and the
-fold; it never loads or saves a layer.**
+### 5.1 The launch flow
+
+The frontend drives a launch through one call, whose shape the rest of this
+section is written against. `setupLaunch` itself is **[designed]** — the
+signature below is settled, its implementation is not:
+
+```ts
+Emulator.setupLaunch({
+  launchPath: string,
+  emulator: string,                      // selects the launch script
+  configOverrides: { [path: string]: Value },   // flat option path → value
+  console: string,                       // consolespec machine id
+  portAssignments: { [group: string]: string[] },  // inputspec layout id per port index
+}) -> LaunchArguments
+```
+
+and the steps behind it:
 
 ```
-[ definition defaults, user profile, per-game, runtime overrides, system-forced ]
+definitions ──parse──► Definition ──materialize──► Instance   (defaults)
+                                                      │
+                            configOverrides ──apply──►│
+                                                      │
+                        launch script reads values ◄──┤        (any target, incl. null)
+                                                      │
+                                                  serialize
+                                                      ▼
+                                    { path: ArrayBuffer } per serializing root
+                                                      │
+                            launch script returns ────┴──► LaunchArguments
 ```
 
-Each layer is a sparse `OptionPath → Value` map. Forced values (background input
-required by managed actions, a hook-compatible backend) sit above the user's and
-retain provenance, so the UI can say *"forced by system"* rather than appearing to
-ignore the user.
+```ts
+// minimally; extended as §8.4's other channels land
+{ command: string, argv: string[], config: { [path: string]: ArrayBuffer } }
+```
+
+Three consequences that overturn earlier revisions of this document.
+
+**The machine is a parameter, not a discovery.** `console` names the machinespec
+id, so a `Definition` is lowered once per plugin and covers every machine it
+declares, while an `Instance` is per machine. Ports belonging to other machines
+never materialize. That is what keeps `Definition::hash` stable — it is a pure
+function of the documents (§3.2.1) and of nothing about this launch.
+
+**Port assignment arrives from the caller.** `portAssignments` gives a layout id
+per port index within each group, which is exactly the domain of the implicit
+`layout` option (§6.5.2). So that option stays, and `setupLaunch` *seeds* it
+rather than replacing it: `emit.<choice>` selection, layout-option enablement,
+and persistence all keep working through one mechanism instead of two.
+
+**Config output is bytes, not text.** §8.2 previously required `String`
+contents and told a plugin needing a blob to route it around this map. The
+frontend takes `ArrayBuffer`, so that restriction is withdrawn: a codec returns
+bytes, encoding is the codec's business, and an emulator wanting UTF-16, a BOM,
+or a binary section is expressible rather than special.
+
+### 5.2 The instance
+
+An `Instance` is a `Definition` plus a value per option. Materializing one seeds
+every option from its default; applying `configOverrides` writes over that.
+
+**This replaces the five-layer `ValueStack`** of an earlier revision
+(`[defaults, user profile, per-game, runtime overrides, system-forced]`). The
+frontend owns persistence (§0), so it also owns *folding* — by the time a launch
+happens it has already decided what the effective value is, and hands over one
+flat map. A stack inside this crate would be a second place to resolve
+precedence that nothing can observe.
+
+What that costs is provenance: the crate can no longer distinguish "the user set
+this" from "the system forced it", so a UI cannot say *forced by system* on the
+strength of anything here. If that is wanted, the honest way is a tagged value in
+`configOverrides` rather than reinstating the stack, since the frontend is where
+the tag is actually known.
 
 ```rust
-pub struct ValueStack { pub layers: Vec<(LayerId, BTreeMap<OptionPath, Value>)> }
-
-pub enum Resolution {
-    Matched(Choice),
-    Orphaned { stored: Value, effective: Value },
+pub struct Instance {
+    pub definition: Arc<Definition>,
+    pub machine: MachineId,
+    pub values: Vec<Value>,             // indexed by OptionId
+    pub origin: Vec<Origin>,            // Default | Override, parallel to `values`
 }
 
-pub struct ResolvedValues {
-    pub definition: ContentHash,
-    pub entries: BTreeMap<OptionPath, Resolved>,   // value + Resolution + winning LayerId
+pub enum Resolution {
+    Matched(ChoiceIndex),
+    Orphaned { stored: Value, effective: Value },
 }
 ```
 
-Two invariants the caller must honor when it persists:
+An **orphan** — a stored value whose domain member has vanished — is still kept
+as stored rather than collapsed to the effective value, so unplugging the
+configured GPU, launching on the iGPU, and plugging it back in returns the
+setting (§0.1, principle 5). And the caller must key persisted values against
+`Definition::hash`, never against anything resolved, or saved config depends on
+which GPU was plugged in when it was saved.
 
-1. **Key against `Definition::hash`, never the realized form.** Otherwise saved
-   config depends on which GPU was plugged in when it was saved.
-2. **Persist orphans as stored, not effective.** Unplug the configured GPU, launch
-   on the iGPU, plug it back in — the setting returns.
+**The launch script reads the instance directly**, by option path, before
+serialization — which is what makes a null root (§3.1) work without any new
+channel. A value at a null target is materialized, overridable, and readable
+exactly like any other; it simply contributes nothing to the serialize step. An
+earlier draft of this document asked how such a subtree should reach the launch
+descriptor. It does not: the script reaches *it*.
+
+That makes `OptionPath` the scripting API as well as the persistence key, so
+`Definition::by_path` is load-bearing and paths are a compatibility surface —
+renaming one breaks saved config *and* every launch script that reads it.
 
 ---
 
@@ -1636,26 +1714,47 @@ but the descriptor carries the held-key set so the shell knows what to assert on
 
 ---
 
-## 8. Realize, emit, and the descriptor
+## 8. Materialize, serialize, and the descriptor
+
+Two steps, matching §5.1's flow. An earlier revision called them `realize` and
+`emit` and had them exchange a `RealizedDefinition`/`ResolvedValues` pair; the
+`Instance` is that pair, named, and mutable between the two calls so the launch
+script can read and adjust it.
 
 ```rust
-pub fn realize(
-    doc: &Definition,
-    layers: &ValueStack,
+pub fn materialize(
+    definition: &Arc<Definition>,
+    machine: MachineId,
+    ports: &PortAssignments,
     facts: &HostFacts<'_>,
     resolvers: &dyn ResolverRuntime,
-) -> Result<(RealizedDefinition, ResolvedValues, Diagnostics)>;
+) -> Result<(Instance, Diagnostics)>;
 
-pub fn emit(
-    realized: &RealizedDefinition,
-    values: &ResolvedValues,
+impl Instance {
+    pub fn apply(&mut self, overrides: &BTreeMap<OptionPath, Value>) -> Diagnostics;
+    pub fn get(&self, path: &OptionPath) -> Option<&Value>;   // the launch script's view
+    pub fn set(&mut self, path: &OptionPath, value: Value) -> Result<()>;
+}
+
+pub fn serialize(
+    instance: &Instance,
     existing: &dyn ExistingFiles,     // borrowed bytes, host-supplied; no I/O here
 ) -> Result<Realized>;
 ```
 
-`realize` iterates `doc.order` — a toposort over `deps` and `enabled_when` refs, so
-a cycle fails loudly at load rather than producing different files on different
-runs. Per option: resolve domain, evaluate enable, fold layers, commit.
+`materialize` iterates `definition.order` — a toposort over `deps` and
+`enabled_when` refs, so a cycle fails loudly at load rather than producing
+different files on different runs. Per option: resolve domain, evaluate enable,
+seed from default, commit.
+
+`apply` is separate from `materialize` rather than an argument to it because the
+frontend's overrides and the launch script's writes are the same operation, and
+because a settings UI edits an instance repeatedly without rebuilding it.
+
+An override naming a path the definition does not have is a **diagnostic, not a
+rejection**: `configOverrides` may legitimately carry values saved against an
+older definition whose option has since been renamed or removed, and principle 5
+says not to destroy them. The caller decides whether a warning is fatal.
 
 ### 8.1 Emission AST
 
@@ -1686,7 +1785,7 @@ Writing config is a **merge**, not a clobber:
 ```
 parse(existing) ──┐
                   ├─► merge(policy) ─► rewriters ─► Codec::emit
-realize(def) ─────┘
+Instance ─────────┘
 ```
 
 Foreign keys and comments survive. `Origin::Fragment` and `Origin::Forced` are
@@ -1697,11 +1796,11 @@ There is no `cmdline` codec. Arguments are rendered directly from `[[argv]]`:
 there is nothing to parse, nothing to merge, and no foreign content to preserve,
 so the round-trip machinery would be dead weight.
 
-### 8.2 Realize output
+### 8.2 Serialize output
 
 ```rust
 pub struct Realized {
-    pub config:  BTreeMap<String, String>,  // config-root-relative path → file contents
+    pub config:  BTreeMap<String, Vec<u8>>, // config-root-relative path → file bytes
     pub env:     BTreeMap<String, String>,
     pub argv:    Vec<String>,
     pub ports:   Vec<PortPlan>,        // layout per port, in port order
@@ -1718,17 +1817,23 @@ pub enum ResourceClaim {
 }
 ```
 
-`emit` **returns** contents rather than writing them: sandboxing, unit tests with
-no filesystem, and a free "preview generated config" feature. Unsatisfiable claims
-fail *before* launch with a specific message, rather than after launch with a
-silently dead controller.
+`serialize` **returns** contents rather than writing them: sandboxing, unit tests
+with no filesystem, and a free "preview generated config" feature. Unsatisfiable
+claims fail *before* launch with a specific message, rather than after launch with
+a silently dead controller.
+
+Only roots carrying an `output` (§3.1) contribute an entry. A null root is
+realized and readable through `Instance::get` but produces no file, so the size
+of this map is a property of the definition, not of the values.
 
 `config` is a flat `path → contents` map, not a list of structs, because that is
 what it becomes on the wire (§8.4). Two consequences worth stating:
 
-- **Contents are `String`, so config output is UTF-8 text.** Every format in §8.1
-  is textual. A plugin needing to produce a binary blob writes it as a resource
-  the host copies, not through this map.
+- **Contents are bytes.** They reach the frontend as `ArrayBuffer` (§5.1), so
+  encoding is the codec's business rather than a constraint on the map. An
+  earlier revision made these `String` and told a plugin needing a blob to route
+  it around this channel; that ruled out UTF-16, a BOM, and any format with a
+  binary section, for no gain now that the wire type takes bytes anyway.
 - **Paths are relative to a config root the host resolves**, so the map is
   portable between a portable install and `%APPDATA%`, and a plugin cannot write
   outside the root. Lowering rejects absolute paths and `..` components.
@@ -1814,7 +1919,7 @@ Design rules:
 3. **`definitionHash` makes staleness detectable.** A descriptor built against a
    definition that has since been reloaded is rejected at launch with a specific
    error rather than launched with stale files.
-4. **The JS composes; realize supplies.** `ctx.realize()` returns `config`, `env`,
+4. **The JS composes; serialize supplies.** `ctx.realize()` returns `config`, `env`,
    `argv`, `ports`, `actions`, `claims`; the JS module adds `command`,
    `configRoot`, `surfaces`, `hooks`, and the game-specific tail of `argv`.
    Argv assembly, install-layout discovery, and the backend→hook mapping are all
@@ -1833,8 +1938,8 @@ transaction on `InputHub`, `actions` → `send_hotkey` with a transport.
 
 ### 8.5 Merge needs the existing files, and JS does not have them
 
-`emit` merges against the current on-disk contents (§8.1), so the host reads them
-*before* calling realize and passes them in through `ExistingFiles` — the same
+`serialize` merges against the current on-disk contents (§8.1), so the host reads
+them *before* materializing and passes them in through `ExistingFiles` — the same
 call that produced the descriptor. By the time `config` exists as a `path →
 contents` map it is already merged, and writing an entry is a plain overwrite. The
 host does not re-merge at write time, and JS never sees the pre-merge state.
@@ -1963,7 +2068,7 @@ src/
     with.rs      custom collectors (binding keys, target paths)
   ir/          Definition, OptionDef, TargetGraph, Expr, ContentHash
   lower/       toml → ir, diagnostics
-  value/       Value, ValueStack, ResolvedValues, Resolution
+  value/       Value, Instance, Resolution
   host/        HostFacts, CapabilityRegistry, PortFact
   realize/
   emit/        Node, Rewriter, merge, Origin

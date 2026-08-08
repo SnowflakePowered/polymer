@@ -541,6 +541,11 @@ mod packages {
                 }
             }
 
+            let owned = crate::ast::ConfigurationDefinition::from(configuration);
+            assert!(!owned.sections.is_empty(), "{name}: no owned sections");
+            assert!(!owned.targets.is_empty(), "{name}: no owned targets");
+            assert!(!owned.options.is_empty(), "{name}: no owned options");
+
             checked += 1;
         }
 

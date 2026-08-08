@@ -4,11 +4,11 @@ use toml_spanner::Toml;
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
 pub struct Emit<'de> {
-    target: Option<TargetPath<'de>>,
-    key: &'de str,
-    value: Option<OptionValue<'de>>,
-    bool_style: Option<&'de str>,
-    int_style: Option<&'de str>,
+    pub(crate) target: Option<TargetPath<'de>>,
+    pub(crate) key: &'de str,
+    pub(crate) value: Option<OptionValue<'de>>,
+    pub(crate) bool_style: Option<&'de str>,
+    pub(crate) int_style: Option<&'de str>,
 }
 
 #[derive(Debug, Toml)]
@@ -42,8 +42,8 @@ pub struct SelectDefinition<'de> {
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
 pub struct OptionRange {
-    min: i64,
-    max: i64,
+    pub(crate) min: i64,
+    pub(crate) max: i64,
 }
 
 #[derive(Debug, Toml)]
