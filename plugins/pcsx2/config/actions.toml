@@ -2,8 +2,7 @@
 # PCSX2 revision: unknown
 
 [targets.ini]
-format = "ini"
-path = "inis/PCSX2.ini"
+output = { format = "ini", path = "inis/PCSX2.ini" }
 
 [targets.ini.Hotkeys]
 

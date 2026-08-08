@@ -10,8 +10,7 @@ true = "true"
 false = "false"
 
 [targets.settings]
-format = "xml"
-path = "settings.xml"
+output = { format = "xml", path = "settings.xml" }
 
 [targets.settings.content]
 [targets.settings.content.Account]

@@ -10,8 +10,7 @@ true = "true"
 false = "false"
 
 [targets.settings]
-format = "ini"
-path = "settings.ini"
+output = { format = "ini", path = "settings.ini" }
 
 [targets.settings.Audio]
 [targets.settings.BIOS]

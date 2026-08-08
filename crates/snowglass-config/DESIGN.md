@@ -69,7 +69,7 @@ every section below is tagged:
 | area | state | where |
 | --- | --- | --- |
 | `[meta]`, `[bool_style.*]` | parsed | `toml/document.rs`, `toml/config.rs` |
-| `[targets.*]` | parsed, with a known defect (§3.1) | `toml/config.rs`, `toml/with.rs` |
+| `[targets.*]` | parsed, recursively (§3.1) | `toml/config/mod.rs` |
 | `[sections.*]` + `options` | parsed | `toml/config.rs` |
 | multi-document merge | parsed | `toml/document.rs` |
 | `[input]`, `[input.mapping]`, `[input.layouts.*]` | parsed | `toml/input.rs` |
@@ -77,7 +77,8 @@ every section below is tagged:
 | `[actions]` | authored; no type at all, and no manifest lists it (§7) | — |
 | static and resolver domains | parsed, via `OptionDomain` (§3.5) | `toml/config.rs` |
 | `[env]`, `[[argv]]` | designed; no plugin authors them (§3.3) | — |
-| `parent` / `node` / `overrides` on a target | designed (§3.1) | — |
+| `parent` on a target | parsed; not yet honoured by lowering (§3.1) | `toml/config/mod.rs` |
+| `overrides` on a target | designed (§3.1) | — |
 | `enabled_when`, `when_disabled`, `repeat`, `repr` | designed (§3.2, §4) | — |
 | everything from `lower` onward | designed (§4, §5, §8) | — |
 
@@ -268,23 +269,56 @@ TOML already has nesting — so the common case declares no relationships at all
 
 ```toml
 [targets.gfx]
-format = "ini"
-path   = "Config/GFX.ini"
+output = { format = "ini", path = "Config/GFX.ini" }
 
 [targets.gfx.Hardware]
 [targets.gfx.Settings]
 [targets.gfx."Color Correction"]
 ```
 
-The table path **is** the target id: options emit to `"gfx.Hardware"`. The last
-path component is the node name, so a section whose INI name is a valid bare key
-needs no body whatsoever; quote the key when it is not, and set `node`
-explicitly only when the id and the emitted name should differ.
+The table path **is** the target id, and its last component **is** the emitted
+node name — always, with no way to separate them. Options emit to
+`"gfx.Hardware"`; a section whose INI name is a valid bare key needs no body
+whatsoever, and one whose name is not gets quoted (`[targets.gfx."Color
+Correction"]`).
 
-A target carrying `format` and `path` is a file and therefore a root; one without
-them is a node inside its enclosing file. Depth is unbounded — XML and JSON
-formats nest further than INI's single level, and Cemu's `settings.xml` uses four
-(`settings.content.Graphic.Overlay`).
+An earlier revision had a `node` field for the case where the id and the emitted
+name should differ. It is **removed**: nothing in any package used it, quoting
+already covers names that are not bare keys, and the one argument left for it —
+two shared subtrees (below) both writing `<video>` under different parents —
+is hypothetical. Keeping id and name identical means there is no second name to
+keep in sync, and it can come back when a plugin actually needs it.
+
+**Being a root and having an output are two different things.** A root is a
+target with no parent — a positional fact, decided by where it is declared.
+`output` says only that a root *serializes*, and a root may legitimately carry
+none:
+
+```toml
+[targets.install]          # a null root: realized, never written
+[targets.install.paths]
+```
+
+`output` is one table, `{ format, path }`, rather than two loose keys. A format
+without a path is then unspellable rather than a lowering check, and "does this
+serialize" is one `Option` rather than a pair that can disagree.
+
+A **null root** is realized like any other — its options resolve, its values fold
+through the value stack — but it produces no entry in `Realized::config`, and its
+subtree is instead visible to the emulator's launch script. That makes it the
+place for bookkeeping the emulator never reads from a file: a computed install
+layout, a value the JS needs when assembling `argv`, a group of settings the
+plugin consumes itself. It is not a hack around the target tree; it is what the
+target tree looks like when the sink is the launch descriptor rather than a file.
+
+Consequently the schema cannot tell a root from a child, and does not try:
+`Target::output` answers only "does this serialize", and rootness is established
+by the walk over `targets`. An earlier revision had `Target::is_root()` returning
+`format.is_some() && path.is_some()`, which was wrong twice — it conflated the
+two properties, and a `Target` value has no idea whether it is top-level.
+
+Depth is unbounded — XML and JSON formats nest further than INI's single level,
+and Cemu's `settings.xml` uses four (`settings.content.Graphic.Overlay`).
 
 The reference to a target — an option's `emit.target`, a section's `target`, a
 port's `target` — is a dotted string parsed into `TargetPath`
@@ -293,24 +327,29 @@ port's `target` — is a dotted string parsed into `TargetPath`
 That is the right relation for the DAG below, where siblings are genuinely
 unordered.
 
-**[defect]** `Target::subtargets` is collected by `with::target_paths`
-(`toml/with.rs`), which is wrong twice and needs replacing before lowering reads
-it:
+`Target` is **recursive** — `output`, `parent`, and a flattened
+`children: BTreeMap<&str, Target>` — so a target tree is walked rather than
+collected, and each node's id is accumulated on the way down. That shape
+replaced a `#[toml(flatten, with = with::target_paths)]` collector that was
+wrong three ways, all of which the recursion removes rather than fixes:
 
-- it recurses with `key.as_str()` rather than an accumulated path, so
-  `targets.settings.content.Audio` is collected as the bare `"Audio"`;
-- it pushes only *leaf* tables, so an interior node that is itself a target —
+- it recursed with `key.as_str()` rather than an accumulated path, so
+  `targets.settings.content.Audio` was collected as the bare `"Audio"`;
+- it pushed only *leaf* tables, so an interior node that is itself a target —
   `settings.content.Graphic`, which has both options of its own and a
-  `Notification` child — is never collected at all.
+  `Notification` child — was never collected at all;
+- it opened with `let Some(table) = item.as_table() else { return; }`, silently
+  skipping any non-table key. That is the §0.3 swallow again, and it would have
+  eaten a misspelled `parent`. `BTreeMap<&str, Target>` instead reports
+  `expected a table, found integer at 'targets.gfx.nonsense'`.
 
-The fix is a full recursive walk that records every table, interior nodes
-included, with its path accumulated from the root. Lowering wants the whole
-tree anyway, since §3.1's "a target without `format`/`path` is a node inside its
-enclosing file" is a statement about interior nodes.
+The cost is that `output` is optional, which the null root above requires
+anyway. What moves into lowering is only the rule that a *child* may not declare
+one — a top-level target with neither `output` nor `parent` is a null root, not
+an error.
 
-`parent`, `node`, and `overrides` are **[designed]** — the parser has no field
-for any of them and no generator emits one. The rest of this subsection describes
-where they go when they land.
+`overrides` is **[designed]**; `parent` parses but lowering does not yet honour
+it.
 
 `parent` exists **only** for the case nesting cannot express: one subtree
 reachable from more than one root, such as settings duplicated across RetroArch's
@@ -318,10 +357,17 @@ core and global configs. Such a target is declared at the top level and names it
 parents:
 
 ```toml
-[targets.shared-video]
+[targets.video]
 parent = ["retroarch-core", "retroarch-global"]
-node   = "video"
 ```
+
+It is a **list**. A single parent would express nothing nesting cannot, and
+§3.2.1's merge already lets any document write `[targets.a.b.c]` directly;
+several parents is the whole reason the field exists.
+
+The declaration is named for the node it writes — `video`, not `shared-video` —
+because the id is the emitted name. Its own children nest under it normally, so
+`targets.video.scaling` materializes at `<video><scaling>` beneath every parent.
 
 A shared subtree materializes once per reachable root. Nesting and `parent` are
 mutually exclusive on one target: a nested target's parent is where it is
@@ -751,10 +797,10 @@ missing key, and it is painful to retrofit once plugins exist.
 Static structure:
 - unknown target reference; cycle in the target graph or in `deps`
 - a target declaring both a nesting position and `parent`
-- a root target (one with `format`/`path`) that is nested, or a nested target
-  that declares `format`/`path`
+- a nested target that declares `output` — serializing is a property of a root,
+  and a root is any target with no parent, with or without an output (§3.1)
 - a child table whose key collides with a target field name (`format`, `path`,
-  `node`, `parent`, `overrides`) or a section field name (`title`, `target`,
+  `output`, `parent`, `overrides`) or a section field name (`title`, `target`,
   `options`, `repeat`, `description`)
 - an option with an `emit` whose target is neither stated nor inherited from any
   ancestor section
@@ -1932,9 +1978,9 @@ src/
 ## 12. Implementation order
 
 0. ~~Malformed input must be an error~~ — done (§0.3). ~~Wire `[platforms]` into
-   `ConfigurationToml`~~ — done (§6.5), guarded by
-   `every_plugin_package_parses`. Still open from §3.1: `Target::subtargets`
-   must record full paths including interior nodes.
+   `ConfigurationToml`~~ — done (§6.5). ~~`Target` must record full paths
+   including interior nodes~~ — done, by making it recursive (§3.1). All three
+   are guarded by `every_plugin_package_parses`.
 1. Model `[actions]` and add `config/actions.toml` to each manifest's
    `definitions` (§7.2). At this point the documents the generators already emit
    are fully readable.

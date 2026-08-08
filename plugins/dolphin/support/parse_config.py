@@ -554,8 +554,8 @@ def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict
     # the table key, so a section needs no body at all.
     for system in sorted({system for system, _ in grouped}):
         main_lines.append(target_header(slugify(system)))
-        main_lines.append('format = "ini"')
-        main_lines.append(f'path = {toml_string(systems[system])}')
+        main_lines.append(
+            f'output = {{ format = "ini", path = {toml_string(systems[system])} }}')
         main_lines.append("")
         for other, section in sorted(grouped):
             if other == system:
@@ -850,8 +850,7 @@ def build_actions(root: Path, revision: str | None, report: Report) -> str:
         f"# Dolphin revision: {revision or 'unknown'}",
         "",
         target_header("hotkeys"),
-        'format = "ini"',
-        'path = "Config/Hotkeys.ini"',
+        'output = { format = "ini", path = "Config/Hotkeys.ini" }',
         "",
         target_header("hotkeys", "Hotkeys"),
         "",
@@ -1264,8 +1263,9 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
         if system not in systems:
             raise Bail(f"System::{system} has no INI path; cannot place input config")
         root_id = slugify(system)
-        lines += [target_header(root_id), 'format = "ini"',
-                  f"path = {toml_string(systems[system])}", ""]
+        lines += [target_header(root_id),
+                  f'output = {{ format = "ini", path = {toml_string(systems[system])} }}',
+                  ""]
         lines += [target_header(root_id, section) for section in sections]
         lines.append("")
 

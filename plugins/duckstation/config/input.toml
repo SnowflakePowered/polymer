@@ -2,8 +2,7 @@
 # DuckStation revision: unknown
 
 [targets.settings]
-format = "ini"
-path = "settings.ini"
+output = { format = "ini", path = "settings.ini" }
 
 [targets.settings.Pad1]
 [targets.settings.Pad2]

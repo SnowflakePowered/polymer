@@ -11,8 +11,7 @@
 # they sit under `content` and not at the document root.
 
 [targets.settings]
-format = "xml"
-path = "settings.xml"
+output = { format = "xml", path = "settings.xml" }
 
 [targets.settings.content]
 [targets.settings.content.Hotkeys]

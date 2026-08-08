@@ -6,64 +6,56 @@
 # own ButtonId enum, so the same element is a different number per layout.
 
 [targets.profile-0]
-format = "xml"
-path = "controllerProfiles/controller0.xml"
+output = { format = "xml", path = "controllerProfiles/controller0.xml" }
 
 [targets.profile-0.emulated_controller]
 [targets.profile-0.emulated_controller.controller]
 [targets.profile-0.emulated_controller.controller.mappings]
 
 [targets.profile-1]
-format = "xml"
-path = "controllerProfiles/controller1.xml"
+output = { format = "xml", path = "controllerProfiles/controller1.xml" }
 
 [targets.profile-1.emulated_controller]
 [targets.profile-1.emulated_controller.controller]
 [targets.profile-1.emulated_controller.controller.mappings]
 
 [targets.profile-2]
-format = "xml"
-path = "controllerProfiles/controller2.xml"
+output = { format = "xml", path = "controllerProfiles/controller2.xml" }
 
 [targets.profile-2.emulated_controller]
 [targets.profile-2.emulated_controller.controller]
 [targets.profile-2.emulated_controller.controller.mappings]
 
 [targets.profile-3]
-format = "xml"
-path = "controllerProfiles/controller3.xml"
+output = { format = "xml", path = "controllerProfiles/controller3.xml" }
 
 [targets.profile-3.emulated_controller]
 [targets.profile-3.emulated_controller.controller]
 [targets.profile-3.emulated_controller.controller.mappings]
 
 [targets.profile-4]
-format = "xml"
-path = "controllerProfiles/controller4.xml"
+output = { format = "xml", path = "controllerProfiles/controller4.xml" }
 
 [targets.profile-4.emulated_controller]
 [targets.profile-4.emulated_controller.controller]
 [targets.profile-4.emulated_controller.controller.mappings]
 
 [targets.profile-5]
-format = "xml"
-path = "controllerProfiles/controller5.xml"
+output = { format = "xml", path = "controllerProfiles/controller5.xml" }
 
 [targets.profile-5.emulated_controller]
 [targets.profile-5.emulated_controller.controller]
 [targets.profile-5.emulated_controller.controller.mappings]
 
 [targets.profile-6]
-format = "xml"
-path = "controllerProfiles/controller6.xml"
+output = { format = "xml", path = "controllerProfiles/controller6.xml" }
 
 [targets.profile-6.emulated_controller]
 [targets.profile-6.emulated_controller.controller]
 [targets.profile-6.emulated_controller.controller.mappings]
 
 [targets.profile-7]
-format = "xml"
-path = "controllerProfiles/controller7.xml"
+output = { format = "xml", path = "controllerProfiles/controller7.xml" }
 
 [targets.profile-7.emulated_controller]
 [targets.profile-7.emulated_controller.controller]

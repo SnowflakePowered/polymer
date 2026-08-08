@@ -2,8 +2,7 @@
 # Dolphin revision: unknown
 
 [targets.hotkeys]
-format = "ini"
-path = "Config/Hotkeys.ini"
+output = { format = "ini", path = "Config/Hotkeys.ini" }
 
 [targets.hotkeys.Hotkeys]
 

@@ -15,8 +15,7 @@ true = "true"
 false = "false"
 
 [targets.ini]
-format = "ini"
-path = "inis/PCSX2.ini"
+output = { format = "ini", path = "inis/PCSX2.ini" }
 
 [targets.ini.Achievements]
 [targets.ini."DEV9/Eth"]

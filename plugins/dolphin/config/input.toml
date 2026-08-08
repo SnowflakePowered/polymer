@@ -2,8 +2,7 @@
 # Dolphin revision: unknown
 
 [targets.gcpad]
-format = "ini"
-path = "Config/GCPadNew.ini"
+output = { format = "ini", path = "Config/GCPadNew.ini" }
 
 [targets.gcpad.GCPad1]
 [targets.gcpad.GCPad2]
@@ -11,8 +10,7 @@ path = "Config/GCPadNew.ini"
 [targets.gcpad.GCPad4]
 
 [targets.wiipad]
-format = "ini"
-path = "Config/WiimoteNew.ini"
+output = { format = "ini", path = "Config/WiimoteNew.ini" }
 
 [targets.wiipad.Wiimote1]
 [targets.wiipad.Wiimote2]

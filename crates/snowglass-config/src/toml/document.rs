@@ -364,6 +364,7 @@ mod packages {
     use toml_spanner::{Arena, Toml};
 
     use super::ConfigurationToml;
+    use crate::toml::config::Target;
 
     // The manifest is the host's to parse, not this crate's (§2). Modelled
     // here only far enough to reach `definitions`, and completely enough that
@@ -469,6 +470,32 @@ mod packages {
             // on `Ok`.
             assert!(!configuration.sections.is_empty(), "{name}: no sections");
             assert!(!configuration.targets.is_empty(), "{name}: no targets");
+
+            // Walk the target tree accumulating each node's declaration path.
+            // The collector this replaced recorded only leaves, and recorded
+            // them under their bare last component, so both the depth and the
+            // dotted ids below are the regression guard.
+            let mut nodes: Vec<(String, bool)> = Vec::new();
+            let mut stack: Vec<(String, &Target)> = configuration
+                .targets
+                .iter()
+                .map(|(key, target)| ((*key).to_owned(), target))
+                .collect();
+            while let Some((id, target)) = stack.pop() {
+                nodes.push((id.clone(), target.output.is_some()));
+                for (key, child) in &target.children {
+                    stack.push((format!("{id}.{key}"), child));
+                }
+            }
+
+            assert!(
+                nodes.iter().any(|(_, file)| *file),
+                "{name}: no target declares a file"
+            );
+            assert!(
+                nodes.iter().any(|(id, _)| id.contains('.')),
+                "{name}: no target below a root — only leaves were collected"
+            );
             assert!(
                 !configuration.bool_styles.is_empty(),
                 "{name}: no bool styles"

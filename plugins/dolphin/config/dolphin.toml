@@ -10,8 +10,7 @@ true = "True"
 false = "False"
 
 [targets.gfx]
-format = "ini"
-path = "Config/GFX.ini"
+output = { format = "ini", path = "Config/GFX.ini" }
 
 [targets.gfx.ColorCorrection]
 [targets.gfx.Enhancements]
@@ -22,8 +21,7 @@ path = "Config/GFX.ini"
 [targets.gfx.Stereoscopy]
 
 [targets.main]
-format = "ini"
-path = "Config/Dolphin.ini"
+output = { format = "ini", path = "Config/Dolphin.ini" }
 
 [targets.main.Analytics]
 [targets.main.AutoUpdate]
