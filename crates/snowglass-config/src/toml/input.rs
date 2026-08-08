@@ -40,9 +40,19 @@ pub struct LayoutMapping<'de> {
     pub options: Vec<OptionDefinition<'de>>,
 }
 
-type PortGroup<'de> = BTreeMap<&'de str, PortAssignment<'de>>;
-type PortGroups<'de> = BTreeMap<&'de str, PortGroup<'de>>;
-type PortTable<'de> = BTreeMap<&'de str, PortGroups<'de>>;
+pub type PortGroup<'de> = BTreeMap<&'de str, PortAssignment<'de>>;
+pub type PortGroups<'de> = BTreeMap<&'de str, PortGroup<'de>>;
+
+/// The ports one machine exposes.
+///
+/// A struct rather than another map level so that a misspelled `ports` is
+/// rejected where it is written, instead of parsing as a platform whose only
+/// input group is named after the typo.
+#[derive(Debug, Toml)]
+#[toml(FromToml)]
+pub struct PortTable<'de> {
+    pub ports: PortGroups<'de>,
+}
 
 /// Port groups
 #[derive(Debug, Toml)]
@@ -55,7 +65,7 @@ pub struct PlatformPortsBlock<'de> {
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
 pub struct PortAssignment<'de> {
-    target: TargetPath<'de>,
-    layouts: Vec<&'de str>,
-    emit: BTreeMap<&'de str, Vec<Emit<'de>>>,
+    pub target: TargetPath<'de>,
+    pub layouts: Vec<&'de str>,
+    pub emit: BTreeMap<&'de str, Vec<Emit<'de>>>,
 }

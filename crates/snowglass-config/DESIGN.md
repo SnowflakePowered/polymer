@@ -24,10 +24,11 @@ It does **not** own:
 - process launch, IPC, or `EmulatorInstance`;
 - the JS runtime — only the `ResolverRuntime` trait; `deno_core` lives in the shell.
 
-Dependencies: `serde`, `toml`, `indexmap` (§3.2), `serde_json`,
-`blake3`, `smallvec`, and
-`snowglass-input` (layout and SDL-projection types). No `tokio`, no `deno_*`,
-no `windows`.
+Dependencies: `toml-spanner` (§3.0), `consolespec`, `indexmap`, `thiserror`, and —
+once lowering lands — `blake3` and `smallvec`. No `tokio`, no `deno_*`, no
+`windows`, and notably **no `serde`**: definition documents are parsed by
+`toml-spanner`'s `FromToml` derive, which yields span-carrying diagnostics and
+borrows out of an `Arena` instead of allocating.
 `#![forbid(unsafe_code)]`.
 
 **Crate home:** stays at `crates/snowglass-config` rather than moving under
@@ -53,6 +54,101 @@ from a host that never launches anything (settings UI, config preview, tests).
    alignment = "left"`, `directions = 4`) and the keys expand from it by a fixed
    rule (§6.5.1). A key is built from its own cluster's fields, so it is stable
    against the device gaining another.
+
+### 0.2 Implementation status
+
+The crate today is `error` + `toml` (the `Raw*` layer, `src/toml/`). Nothing
+downstream of parsing exists yet. This document distinguishes three states, and
+every section below is tagged:
+
+- **[parsed]** — a `FromToml` struct accepts it and four plugin packages exercise it.
+- **[authored]** — the generators emit it and the documents contain it, but no
+  Rust type reads it yet.
+- **[designed]** — neither parsed nor authored; the shape below is a proposal.
+
+| area | state | where |
+| --- | --- | --- |
+| `[meta]`, `[bool_style.*]` | parsed | `toml/document.rs`, `toml/config.rs` |
+| `[targets.*]` | parsed, with a known defect (§3.1) | `toml/config.rs`, `toml/with.rs` |
+| `[sections.*]` + `options` | parsed | `toml/config.rs` |
+| multi-document merge | parsed | `toml/document.rs` |
+| `[input]`, `[input.mapping]`, `[input.layouts.*]` | parsed | `toml/input.rs` |
+| `[platforms.*.ports.*]` | parsed (§6.5) | `toml/input.rs` |
+| `[actions]` | authored; no type at all, and no manifest lists it (§7) | — |
+| static and resolver domains | parsed, via `OptionDomain` (§3.5) | `toml/config.rs` |
+| `[env]`, `[[argv]]` | designed; no plugin authors them (§3.3) | — |
+| `parent` / `node` / `overrides` on a target | designed (§3.1) | — |
+| `enabled_when`, `when_disabled`, `repeat`, `repr` | designed (§3.2, §4) | — |
+| everything from `lower` onward | designed (§4, §5, §8) | — |
+
+**All four plugin packages parse completely**, and
+`toml/document.rs::every_plugin_package_parses` asserts it: it reads each
+`plugin.toml`, expands its `definitions` globs, merges the result, and checks
+that sections, targets, bool styles, the input mapping, layouts, and ports all
+came out non-empty. Asserting on substance rather than on `Ok` is the point —
+every bug in §0.3 produced a perfectly successful parse of nothing.
+
+`config/actions.toml` is not currently reachable: no manifest lists it in
+`definitions`, so wiring `[actions]` into the schema (§7.2) means changing the
+manifests too.
+
+### 0.3 Malformed input is an error, not a default
+
+`TableHelper::optional` records a conversion failure in the `Context` and then
+returns `None`; `Vec` does the same per element. So a malformed optional field
+produced an `Ok` value with the field silently absent, and a malformed array
+element silently vanished. `Document::to` guards against exactly this —
+`Ok(v) if self.ctx.errors.is_empty()` — but §3.2.1's merge cannot use it, because
+the merged table is not a `Document`, so `try_from_tomls` drove `from_toml`
+directly and never read the context back.
+
+It now does: any error the context recorded is returned as
+`Error::DefinitionError`, whatever `from_toml` itself returned. Four cases that
+previously parsed clean, all covered by tests in `toml/document.rs`:
+
+| document | was | now |
+| --- | --- | --- |
+| `domain = { nonsense = 3 }` | `domain: None` | error |
+| `range = { min = "not an int", max = 5 }` | `range: None` | error |
+| `emit = { keyy = "K" }` | **the option vanished from the array** | error |
+| a section table with no `title` | **the entire `sections` map emptied** | error |
+
+The last two mattered most because the loss was not local to the bad field. Note
+the fourth is only an error when nothing supplies the title: a `[sections.gfx]`
+stub carrying no `title` is legal on its own, because §3.2.1's merge may supply
+it from another document before the schema runs.
+
+Errors accumulate rather than short-circuiting, so one pass reports every
+violation in the package instead of the first — which is what makes the check
+usable against a regenerated plugin, where a generator change tends to break
+many options identically.
+
+**Turning the check on exposed three parser bugs that had been invisible:**
+
+- **`[bool_style.*]` had never parsed.** `BoolStyle` spells its fields as the
+  raw identifiers `r#true`/`r#false`, and the derive does not strip the `r#`, so
+  it looked for keys literally named `r#true`. Every table failed, and
+  `#[toml(default)]` on `bool_styles` turned that into an empty map. Fixed with
+  `#[toml(rename = "true")]`. Since §3.4 makes an undeclared `bool_style`
+  reference a lowering error, this would have failed *every* boolean option in
+  every package the moment lowering was written.
+- **`OptionValue` had no `Float`.** `type = "float"` options exist and their
+  defaults are floats (`default = 2.2`), so 22 defaults were being dropped.
+- **`Emit` had no `int_style`.** Integer emits can carry a stdlib-style format
+  string such as `0x{:08x}`, which lowers to §4's `Repr::Int { style }`.
+  It was an unknown key.
+
+**Untagged enums.** `OptionDomain` and `OptionValue` both need
+`#[toml(FromToml, untagged)]`. Without it the derive expects an
+externally-tagged representation that no document uses, so *every* variant fails
+to match — and where the field is `Option<…>` that failure used to be silent.
+Any future sum over document shapes needs the same attribute, and the
+missing-`untagged` failure looks exactly like "this field is never set".
+
+**What remains unmodeled.** With the above fixed and `[platforms]` wired in
+(§6.5), every package parses as one document. `[actions]` (§7.2) is the only
+block still without a type, and no manifest lists `config/actions.toml` in its
+`definitions`, so nothing tries to parse it yet.
 
 ---
 
@@ -87,40 +183,83 @@ path, a target, or an input element.
 
 ```
 plugins/dolphin/
-  plugin.toml                manifest + capability grants
-  config/dolphin.toml        definition document
-  config/input.toml          input block (may be inlined)
-  config/actions.toml        action map (may be inlined)
-  config/resolvers.ts        optional; exports are addressed as `resolver:<name>`
-  config/dolphin.gen.d.ts    codegen'd types
-  support/parse_config.py    regenerates the documents from emulator source
+  plugin.toml                     manifest
+  config/dolphin.toml             meta, bool styles, file targets
+  config/input.toml               input targets, mapping, layouts, ports
+  config/actions.toml             hotkey target and action map
+  config/sections/main.toml       one document per top-level section
+  config/sections/gfx.toml
+  config/sections/gfx/*.toml      one per subsection, where a section is large
+  config/resolvers.ts             optional; exports are addressed as `resolver:<name>`
+  support/parse_config.py         regenerates the documents from emulator source
 ```
 
 ```toml
 [plugin]
 id = "dolphin"
-version = "0.4.1"
+version = "0.0.1"
 class = "emulator"
-provides = ["configuration", "launch"]
 
 [emulator]
 platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
 
 [emulator.configuration]
-definition = "config/dolphin.toml"
-resolver   = "config/resolvers.ts"    # omit → NoResolvers, no JS runtime is created
+definitions = [
+    "config/dolphin.toml",
+    "config/input.toml",
+    "config/sections/main.toml",
+    "config/sections/gfx.toml",
+    "config/sections/gfx/*.toml",
+]
+resolver = "config/resolvers.ts"    # omit → NoResolvers, no JS runtime is created
+```
 
+**A definition is a list of documents, not one document.** `definitions` is an
+ordered list of package-relative paths, each of which may be a glob; the host
+expands it and hands the crate an iterator of strings, in list order, with each
+glob's expansion sorted. §3.2.1 describes how they combine.
+
+`[capabilities]` is **[designed]** — no manifest declares one yet. When it lands,
+capabilities are enforced by the host `CapabilityRegistry` and a resolver cannot
+reach anything the manifest did not request:
+
+```toml
 [capabilities]
 host = ["gpu.adapters", "display.modes", "emulator.build"]
 fs   = ["plugin-dir:read"]
 ```
 
-Capabilities are enforced by the host `CapabilityRegistry`. A resolver cannot
-reach anything the manifest did not request.
+Note that the manifest itself is **not this crate's business** — nothing in
+`snowglass-config` parses `plugin.toml`. The host reads it, resolves the globs,
+and passes the text in.
 
 ---
 
 ## 3. Definition document
+
+### 3.0 The parser
+
+Documents are parsed by `toml-spanner`, not `serde`. Three properties matter to
+the design and one of them is load-bearing:
+
+1. **Spans survive.** A `Context` carries the byte range of every key and value,
+   so a diagnostic can name the offending key *and point at it* — which is what
+   principle 4 is actually asking for. `serde`'s data model discards position.
+2. **The `Raw*` layer borrows.** Every struct in `src/toml/` is generic over
+   `'de` and holds `&'de str`, allocated out of an `Arena` the caller owns. A
+   Dolphin package is ~2.5 MB of TOML across thirty documents; parsing it
+   allocates one arena and no strings. This is why lowering (§4) is where owned
+   data first appears — the `Raw*` layer is a view over the source text.
+3. **Custom collectors.** `#[toml(flatten, with = …)]` lets a struct absorb the
+   keys a fixed schema does not name, with a per-key hook that runs *at parse
+   time and with a span in hand*. That is how `[input.layouts.X]` parses each
+   key straight into a `consolespec::BindingKey` (`toml/with.rs`), so a
+   malformed binding key fails at its own line rather than surviving as a string
+   nobody validates. §0.1's principle 6 stops being a convention and becomes a
+   type.
+
+The cost is that error handling is explicit rather than derived, which is
+exactly where the §0.2 defect comes from.
 
 ### 3.1 Targets
 
@@ -144,7 +283,34 @@ explicitly only when the id and the emitted name should differ.
 
 A target carrying `format` and `path` is a file and therefore a root; one without
 them is a node inside its enclosing file. Depth is unbounded — XML and JSON
-formats nest further than INI's single level.
+formats nest further than INI's single level, and Cemu's `settings.xml` uses four
+(`settings.content.Graphic.Overlay`).
+
+The reference to a target — an option's `emit.target`, a section's `target`, a
+port's `target` — is a dotted string parsed into `TargetPath`
+(`toml/config/path.rs`), which precomputes its separator offsets and implements
+`PartialOrd` as *ancestry*: two paths compare only when one contains the other.
+That is the right relation for the DAG below, where siblings are genuinely
+unordered.
+
+**[defect]** `Target::subtargets` is collected by `with::target_paths`
+(`toml/with.rs`), which is wrong twice and needs replacing before lowering reads
+it:
+
+- it recurses with `key.as_str()` rather than an accumulated path, so
+  `targets.settings.content.Audio` is collected as the bare `"Audio"`;
+- it pushes only *leaf* tables, so an interior node that is itself a target —
+  `settings.content.Graphic`, which has both options of its own and a
+  `Notification` child — is never collected at all.
+
+The fix is a full recursive walk that records every table, interior nodes
+included, with its path accumulated from the root. Lowering wants the whole
+tree anyway, since §3.1's "a target without `format`/`path` is a node inside its
+enclosing file" is a statement about interior nodes.
+
+`parent`, `node`, and `overrides` are **[designed]** — the parser has no field
+for any of them and no generator emits one. The rest of this subsection describes
+where they go when they land.
 
 `parent` exists **only** for the case nesting cannot express: one subtree
 reachable from more than one root, such as settings duplicated across RetroArch's
@@ -193,24 +359,37 @@ key    = "backend"
 title  = "Graphics Backend"
 type   = "select"
 emit   = { target = "main.Core", key = "GFXBackend" }   # different file, so explicit
-domain = { source = "resolver:resolveGraphicsBackend" }  # §3.5
+domain = { source = "resolver:resolveGraphicsBackend" }  # §3.5, [authored]
 
 [sections.video.advanced]
 title = "Advanced"                       # target inherited from `video`
 
 [[sections.video.advanced.options]]
 key     = "adapter"                      # path: video.advanced.adapter
+title   = "Adapter"
 type    = "select"
 emit    = { target = "gfx.Hardware", key = "Adapter" }
-domain  = { source = "host:gpu.adapters", value = "uuid", label = "name" }
-default = { strategy = { first_where = "discrete == true" } }
-enabled_when = "video.backend != 'Software'"
+domain  = { source = "host:gpu.adapters", value = "uuid", label = "name" }   # [designed]
+default = { strategy = { first_where = "discrete == true" } }               # [designed]
+enabled_when = "video.backend != 'Software'"                                # [designed]
 ```
+
+The parsed shape is `OptionDefinition` in `toml/config.rs`. `key`, `title`,
+`type`, and `emit` are required; `range`, `default`, and `domain` are optional.
+`type` is one of `bool`, `int`, `float`, `string`, `select` — a bare `&str` today,
+and a closed enum in the IR. `enabled_when`, `when_disabled`, `description`, and
+`repeat` are **[designed]**: nothing parses them and no generator emits one.
 
 `target` resolves from the nearest ancestor that declares one; `emit.target`
 overrides it per option. A section holding only subsections is a legitimate
-grouping and needs no `target` of its own. An option with no `emit` at all is
-UI-only — it participates in expressions and defaults but writes nothing.
+grouping and needs no `target` of its own — `[sections.gfx]` in Dolphin is
+exactly that, a title and nothing else.
+
+**`emit` is required.** The design previously said an option with no `emit` is
+UI-only. No generator produces one, and making the field optional would mean the
+common typo — a misspelled `emit` table — parses as a UI-only option and writes
+nothing, silently. If a UI-only option is ever needed it should say so
+(`emit = false` or `ui_only = true`), not say nothing.
 
 **An option may also have no `default`**, and that is not the same as having one.
 Some emulators do not keep their defaults anywhere a generator can read: PCSX2
@@ -218,74 +397,105 @@ sets them in the struct constructors its settings macros wrap, so its definition
 has 358 keys and no values. Such an option is *unset* until the user picks
 something, and an unset option **emits nothing at all** — the key stays absent
 and the emulator applies its own default, which is the only honest thing to write
-when we do not know what that default is. Lowering therefore rejects a missing
-default only for a static domain, where the first choice would be an arbitrary
-pick, and `when_disabled = "default"` is a lowering error on an option that has
-none.
+when we do not know what that default is.
+
+The previous design added "…except for a static domain, where lowering rejects a
+missing default, because the first choice would be an arbitrary pick."
+**Withdrawn.** Dolphin's `main.core.fallback_region` is a `select` over six
+static choices with no default, because Dolphin's own default lives somewhere
+`parse_config.py` cannot read — and this is common, not exceptional. The rule
+would reject correct documents. An unset select is unset, its first choice is a
+*display* convention for the UI, and it emits nothing until the user picks. The
+one thing that does stay a lowering error is `when_disabled = "default"` on an
+option that has no default, since that one has no coherent behavior at all.
 
 Options stay an array of tables rather than becoming keyed tables like their
-section. The path would be marginally tidier, but **option order is the one
-ordering a reader sees directly** — it is the order of controls on a settings
-page — and an array states it in the syntax instead of resting on map iteration
-order. Sections keep the keyed form because they have nesting to express, which
-is what the table path buys them; options have none.
+section. The path would be marginally tidier, but options need no nesting and an
+array is the natural shape for a flat list.
 
-### 3.2.1 Split section files
+**Option order within a section is document order; section order is
+lexicographic.** The previous design argued for `IndexMap` throughout so that
+sibling section order would be document order. That does not survive §3.2.1:
+sections arrive from thirty separate files merged into one table, so "document
+order" names nothing. `Section::sections` is therefore a `BTreeMap` and siblings
+sort by key. Options keep their order because they are an array inside one
+document, where the question is well posed. `IndexMap` survives only where order
+is genuinely meaningful and genuinely local — `LayoutMapping::mapping`, §6.5.1.
 
-A section may replace its body with an `import`, keeping a large definition
-readable without changing its section paths:
+A settings UI that wants a curated page order will need to say so explicitly
+(a `weight`, or an ordered list of children on the parent). Deriving it from the
+filesystem was never going to hold.
+
+### 3.2.1 Split documents — merge, not import
+
+The previous design gave a section an `import` field naming a file to splice in
+at that point. **That mechanism is gone**, replaced by something with no
+mechanism at all: the documents in `definitions` are **merged into one table
+before any schema is applied**, and a document is an ordinary rooted definition
+that states the full path of whatever it contributes.
 
 ```toml
-# config/pcsx2.toml
-[sections.achievements]
-import = "achievements.toml"
+# config/sections/gfx.toml
+[sections.gfx]
+title = "Graphics"
 ```
-
-Imports are relative to the file containing the import and must remain inside
-the plugin package. The imported TOML remains an ordinary, rooted definition
-document, so `config/achievements.toml` repeats the full section path:
-
 ```toml
-[sections.achievements]
-title  = "Achievements"
-target = "ini.Achievements"
+# config/sections/gfx/hardware.toml
+[sections.gfx.hardware]
+title  = "Hardware"
+target = "gfx.Hardware"
 
-[[sections.achievements.options]]
-key = "enabled"
+[[sections.gfx.hardware.options]]
+key = "vsync"
+title = "Vsync"
 type = "bool"
-emit = { key = "Enabled", bool_style = "lower" }
+default = false
+emit = { key = "VSync", bool_style = "upper" }
 ```
 
-The import is an exact splice point: the imported document must contain only
-the named section and its descendants, and the importing section may contain no
-field other than `import`. The imported subtree replaces the placeholder at its
-position, preserving sibling order. Imports may nest; paths are resolved from
-each containing file, and cyclic imports are rejected with their import chain.
+`ConfigurationToml::try_from_tomls` (`toml/document.rs`) parses each text to a
+raw `Table`, then folds it into an accumulator: two tables at the same path are
+merged recursively, and any non-table — a scalar, an array, an inline table —
+**replaces** whatever was there. Later documents win. The merged table is
+handed to `FromToml` exactly once, so the schema sees a single document and
+knows nothing about how many files produced it.
+
+This is strictly simpler than importing and it is what the generators wanted
+anyway. Three consequences worth stating:
+
+- **There is no splice point and no placeholder.** A file does not need to be
+  mentioned by the section it extends; `definitions` lists it and the path in
+  the file does the rest. `config/sections/gfx/*.toml` is one glob, and adding a
+  subsection is adding a file.
+- **Order matters only for conflicts.** Merging is otherwise commutative, so the
+  order of `definitions` is a tiebreak rule rather than a structure. It is a
+  *sharp* tiebreak, though: an `options` array in a later document replaces the
+  earlier one wholesale rather than appending, because arrays are not tables.
+  Two documents contributing options to the same section is therefore a silent
+  loss, and lowering should reject it (§4.1).
+- **Cycles are impossible**, since nothing refers to anything. The import
+  design's cycle check and its chain diagnostic are both moot.
+
+The cost is that the merge happens below the schema, so a stub like
+`[sections.gfx]` in one file and `[sections.gfx.hardware]` in another combine
+into a section that is only valid *after* merging — which is correct, but it
+means no single file is independently checkable, and the §0.2 defect makes a
+missing `title` on such a stub fatal-but-silent rather than diagnosed.
 
 `options` remains a reserved subsection name (§4.1): a table under a section is a
 subsection, and the `options` array is what holds its controls.
 
-**No graph in the document orders sections.** The target DAG says where a value
-is *written*, and `Definition::order` (§4) is a toposort over data dependencies
-that says what must *resolve* first — a partial order in which almost every
-option is incomparable with almost every other. Neither is a statement about
-presentation, and deriving page order from either would mean a settings screen
-rearranging itself because two options happened to gain a dependency. So sibling
-order is document order, and the section tree supplies the hierarchy.
+`repeat` is **[designed]** — general over controller ports, memory card slots and
+per-player blocks, expanding at lower time into N sections with paths
+`port.1.mode`, `port.2.mode`. Note that ports specifically did *not* end up using
+it (§6.5): every port is written out explicitly, because the emulators' numbering
+conventions differ enough that a template would have to encode each one.
 
-That costs one dependency: the `Raw*` types hold their children in an
-`IndexMap`, since a `HashMap` would discard the order before lowering ever saw
-it. It is `indexmap` rather than `toml`'s `preserve_order` feature, which only
-governs `toml::Value`; parsing straight into the `Raw*` structs bypasses that
-representation entirely.
+### 3.3 Environment and arguments — [designed]
 
-`repeat` is general — controller ports, memory card slots, per-player blocks —
-and expands at lower time into N sections with paths `port.1.mode`,
-`port.2.mode`. Nothing downstream knows repetition happened.
-
-### 3.3 Environment and arguments
-
-Two explicit blocks, producing the two non-file outputs directly.
+Two explicit blocks, producing the two non-file outputs directly. Nothing parses
+these and no plugin authors them; they are step 5 of §12 and the shape below is
+unchanged from the previous design.
 
 ```toml
 [env]
@@ -317,7 +527,7 @@ emits nothing, flag included.
 Both blocks reuse `Repr` (§4), so a boolean going to argv renders through the
 same named bool style (§3.4) as one going to an INI file.
 
-### 3.4 Bool styles
+### 3.4 Bool styles — [parsed]
 
 How a boolean is spelled is a property of the *emulator*, not of each option, so
 it is declared once at the top of the document and referenced by name:
@@ -345,19 +555,72 @@ have been written by the emulator itself.
 
 ### 3.5 Domains
 
-| kind | source | plugin code? |
-| --- | --- | --- |
-| static | inline TOML | no |
-| host | `host:gpu.adapters` via capability registry | no |
-| resolver | `resolver:resolveGraphicsBackend` → TS module export | yes |
+| kind | source | state | plugin code? |
+| --- | --- | --- | --- |
+| static | inline array of choices | parsed | no |
+| host | `host:gpu.adapters` via capability registry | designed | no |
+| resolver | `resolver:resolveGraphicsBackend` → TS module export | parsed | yes |
+
+A static domain is an array of `{ key, label, value }` triples:
 
 ```toml
-[[sections.video.options]]
-key    = "backend"
+[[sections.main.core.options]]
+key    = "fallback_region"
+title  = "Fallback Region"
 type   = "select"
-emit   = { target = "main.Core", key = "GFXBackend" }
-domain = { source = "resolver:resolveGraphicsBackend" }
+domain = [
+  { key = "NTSC_J", label = "NTSC-J", value = "0" },
+  { key = "NTSC_U", label = "NTSC-U", value = "1" },
+  { key = "PAL",    label = "PAL",    value = "2" },
+]
+emit   = { key = "FallbackRegion" }
 ```
+
+**The triple, not the pair, is the important correction to the previous design.**
+It had `Choice { value, label }`, where `value` was both what gets stored and
+what gets emitted, and then had to add a rule — "`value` must be stable across
+host state changes, and lowering warns when it names something ordinal" —
+to stop a driver reshuffle from silently repointing saved config. The generated
+documents solved it structurally instead:
+
+- **`key` is the stable identity.** It is what the value stack persists
+  (§5), what an `Expr` compares against, and what a `Repr::Mapped` arm names. It
+  is symbolic and it never changes because the emulator renumbered something.
+- **`value` is what gets written to the file.** Dolphin's enums are ordinals, so
+  it is usually `"0"`, `"1"`, `"2"` — precisely the thing that must not be a
+  storage key.
+- **`label` is display only** and never persists.
+
+That splits the two jobs `value` was doing, and the ordinal-stability warning
+becomes unnecessary: an ordinal in `value` is now the *expected* case, and there
+is nothing to warn about. It also makes `Repr::Mapped` (§4) largely redundant for
+selects, since `key → value` is already the map.
+
+A resolver domain has a different shape entirely — a table, not an array:
+
+```toml
+[[sections.main.core.options]]
+key    = "gfx_backend"
+title  = "Gfx Backend"
+type   = "select"
+domain = { source = "resolver:resolveGraphicsBackend" }
+emit   = { key = "GFXBackend" }
+```
+
+The two forms are one untagged sum, `OptionDomain` — `Select(Vec<SelectDefinition>)`
+against the array, `Resolve { source }` against the table. Untagged matters here
+(§0.2): without it neither variant matches, and `Option<OptionDomain>` turns that
+into a silent `None` rather than an error.
+
+A resolver returning choices must return the same triple, so a resolved domain
+and a static one persist identically — that is what makes "the domain moved from
+inline to resolved" a non-migration for stored values.
+
+`source` stays a `&str` at this layer and splits into scheme and name during
+lowering, where `resolver:` can be checked against the manifest's module exports
+and `host:` against the capability registry (§4.1). Parsing it into a sum earlier
+would put knowledge of the schemes in the document layer, which has no way to
+validate either half.
 
 A build-dependent set is the archetypal resolver domain. Which video backends
 exist is a property of *this installation* — Dolphin compiles D3D only on Windows
@@ -381,7 +644,8 @@ nothing at launch.
 
 ```rust
 pub struct Choice {
-    pub value: Value,                 // stored + emitted
+    pub key: Arc<str>,                // stable identity — stored, compared, mapped
+    pub value: Value,                 // emitted
     pub label: Arc<str>,              // display only, never persisted
     pub description: Option<Arc<str>>,
     pub availability: Availability,
@@ -395,9 +659,9 @@ pub enum Availability {
 ```
 
 `meta` is what `first_where` evaluates against, reusing the same closed `Expr`.
-**`value` must be stable across host state changes**; lowering warns when
-`value_field` names something ordinal, because a driver reshuffle would otherwise
-silently repoint saved config.
+`key` carries the stability requirement the previous design placed on `value`, so
+a host record projected into a domain must project its *stable* field — a GPU's
+UUID — into `key`, and may put whatever the emulator wants into `value`.
 
 ### 3.6 Expressions
 
@@ -419,7 +683,11 @@ Anything it cannot express escapes to a TS predicate.
 
 ---
 
-## 4. IR and lowering
+## 4. IR and lowering — [designed]
+
+None of this exists. It is the next thing to build, and the shapes below predate
+the `toml/` layer — read them as intent, to be reconciled against what §3 and §6
+actually parse.
 
 ```rust
 pub struct Definition {
@@ -465,7 +733,7 @@ pub struct EmitSpec { pub target: TargetId, pub key: Arc<str>, pub repr: Repr }
 
 pub enum Repr {
     Bool(BoolStyleId),                    // index into Definition::bool_styles (§3.4)
-    Int { radix: Radix, width: Option<usize> },
+    Int { style: Arc<str> },
     Str { quote: QuoteStyle },
     List { sep: Arc<str> },
     Mapped(Arc<HashMap<Value, Arc<str>>>), // "Vulkan" -> "3"; also numeric keycodes
@@ -500,6 +768,9 @@ Static structure:
 - a `bool_style` reference naming an undeclared style, or a declared style
   missing either member
 - two options emitting the same `(target, key)` without an explicit `overrides` marker
+- a duplicate `key` among a domain's choices, or among a section's options
+- an option whose `default` is not one of its static domain's `key`s (§3.5 —
+  the default names a key, never a `value`)
 
 Environment and arguments:
 - two root targets writing the same file path without `overrides`
@@ -507,7 +778,19 @@ Environment and arguments:
 - an `[env]` or `[[argv]]` entry referencing an undeclared option path
 - an `[[argv]]` entry with a `flag` but no `value`
 
+Document set (§3.2.1) — new, and only meaningful because merge replaced import:
+- two documents contributing an `options` array to the same section path. Arrays
+  replace rather than append, so the earlier one is lost silently. This is the
+  one merge hazard the model introduces and it must be caught; it needs the
+  merge to record which document last wrote each path.
+- a section reached by the merge that carries no `title` — today the whole
+  `sections` map silently empties instead (§0.2)
+
 Input (§6):
+- a port index that is not a decimal integer, or two ports in one group with
+  indices that collide after parsing (`0` and `00`)
+- a `[platforms.<id>]` key that is not a machinespec id, or is one the manifest's
+  `platforms` list does not declare
 - a binding key that is not an element of the layout it is declared under —
   the layout's elements, not a global list, since consolespec expands them
   per device (§6.5.1)
@@ -677,38 +960,60 @@ shared tables. There is no second document beside it and no per-emulator dialect
 to select: a plugin states its emulator's vocabulary, and snowglass states where
 each control lives.
 
-**An input port is an ordinary section.** It is not a separate `input.toml`
-grammar — it is a section like any other, in the emulator's configuration path,
-carrying `input = true`:
+**A port is not a section.** The previous design proposed making it one, with
+`input = true` as the marker, and called reconciling that with the generators'
+`[platforms.…]` spelling "the open work of §6.4". **That is now closed the other
+way: `[platforms.…]` won** (§6.5), and `input = true` is withdrawn.
+
+The reason is that the two things a port needs are things a section does not
+have. A port is keyed by *(machine, group, index)* — it exists only when that
+machine is being launched, and only within a group the machinespec declares — so
+a port that lived in the section tree would have to carry a machine id, a group
+id, and an index as fields, and lowering would have to check that trio against
+consolespec anyway. Nothing about the section tree helps with that, and putting
+ports in it would mean every consumer walking the tree has to know that some
+nodes are not settings pages. Meanwhile the settings UI wants a port to look like
+a page, which it can do by *rendering* one — it does not require the port to be
+stored as one.
+
+What survives from the `input = true` proposal is its substance, now attached to
+the port declaration instead:
+
+1. `{index}` and `{name}` expand in what a port emits, where `{index}` is the
+   virtual pad slot (§6.3, *not* the port number) and `{name}` the pad's name for
+   that port's layout. These live in `[input].device` now rather than being
+   per-section — see below.
+2. A port's emissions are **filtered by its selected layout**, so a control the
+   chosen device does not have is never written.
+3. A port has the implicit `layout` option of §6.5.2, whose domain is `layouts`
+   plus `unplugged` and, where declared, `passthrough`.
+
+**The `[input]` block header carries the two facts that are per-emulator rather
+than per-layout** — which driver to hook, and how that emulator spells a device
+reference:
 
 ```toml
-[sections.gcpad.pad1]
-title   = "GameCube Controller 1"
-target  = "gcpad.GCPad1"
-input   = true                        # see below
-layouts = ["GAMECUBE_CONTROLLER"]
+[input]
+driver = "sdl3"                   # sdl3 | sdl2 — selects the hook, and gates sensors
+device = "SDL/{index}/{name}"     # the emulator's device-reference syntax
 ```
 
-`input = true` is what turns a section into a port. It means three things and
-nothing else:
+`device` is the template §6.4 previously described in prose as the fixed string
+`SDL/0/Snowglass Virtual Gamepad`. Making it a template does two things: it
+carries the port skew of §6.3 explicitly through `{index}`, and it lets P2's
+per-layout pad rename (`{name}`) propagate without any plugin edit. An emulator
+that spells device references differently states so here rather than needing a
+dialect flag.
 
-1. **`{index}` and `{name}` expand** in the values this section emits. `{index}`
-   is the virtual pad slot — §6.3, *not* the port number — and `{name}` the pad's
-   name for that port's layout, so P2's rename propagates without touching a
-   plugin.
-2. The section's emissions are **filtered by the port's selected layout**, so a
-   control the chosen device does not have is never written.
-3. The section gains the implicit `layout` option of §6.5.2, whose domain is
-   `layouts` plus `unplugged` and, where declared, `passthrough`.
+`driver` replaces the previous design's `EmulatorBuild::sdl_major` *detection*
+for this purpose. The host still detects the build's SDL major from its import
+table — that is a fact about the installed binary — but which hook to install is
+a plugin statement, and disagreement between the two is a launch-time error worth
+naming rather than something to silently reconcile.
 
-Everything else about it is a section: `target` says where it writes, `emit`
-entries and options behave exactly as elsewhere, and it nests in the same tree.
-That is the point — an input port was never a different kind of thing, and giving
-it its own document made it look like one.
-
-**What a plugin still declares per layout** is the emulator's own configuration
-key for each control (§6.5.1). The left side is a consolespec binding key, the
-right is the emulator's vocabulary and is the plugin's business alone:
+**What a plugin declares per layout** is the emulator's own configuration key for
+each control (§6.5.1). The left side is a consolespec binding key, the right is
+the emulator's vocabulary and is the plugin's business alone:
 
 ```toml
 [input.layouts.GAMECUBE_CONTROLLER]
@@ -762,17 +1067,49 @@ static constexpr std::array<const char*, 21> s_sdl_button_names = {
 So the value side is **not** a grammar over indices — Dolphin spells button 10
 `Shoulder R`, not `Button 10` — and it is **not** per layout. It is one table per
 emulator, over a vocabulary SDL fixes, and it belongs in that emulator's own
-definition:
+definition. The previous design proposed two positional arrays for it:
 
 ```toml
-[input.sdl]                        # not yet emitted; extracted like any other table
+[input.sdl]                        # WITHDRAWN
 buttons = ["Button S", "Button E", …, "Shoulder R", "Pad N", …]
 axes    = ["Left X", "Left Y", "Right X", "Right Y", "Trigger L", "Trigger R"]
 ```
 
-With that, realize composes the value from three things it already has — the
-plugin's key table, the shared projection, and the plugin's SDL names — and
-nothing lives outside the document.
+**That is now `[input.mapping]`, keyed by binding key rather than by position:**
+
+```toml
+[input.mapping]
+"button.a"              = "Button S"
+"button.b"              = "Button E"
+"button.l"              = "Shoulder L"
+"button.r"              = "Shoulder R"
+"directional.n"         = "Pad N"
+"analog.stick.left.x+"  = "Left X+"
+"trigger.left"          = "Trigger L"
+```
+
+This is the better shape for three reasons, and it is worth being explicit about
+them because the positional form looks more faithful to SDL:
+
+- **It is the same vocabulary as everything else** (principle 6). `[input.mapping]`
+  and `[input.layouts.X]` are both `BindingKey → &str` — the same
+  `LayoutMapping` type, the same parse-time `BindingKey` validation, the same
+  diagnostics. The left column of one is the SDL virtual gamepad *as a device*;
+  the left column of the other is the emulated device. Two arrays indexed by
+  `SDL_GAMEPAD_BUTTON_*` would have been a second, positional namespace living
+  beside the first, and §0.1 spent a principle saying there is only one.
+- **A positional array cannot express the sign split.** Dolphin names each half
+  of an axis separately (`Left X+`, `Left X-`), so the axis array would need six
+  entries carrying twelve names, in a convention the schema does not state.
+  `analog.stick.left.x+` states it.
+- **Absence is expressible.** An emulator that does not name paddles simply omits
+  those keys; a positional array has to pad with placeholders and lowering has to
+  guess whether a placeholder means "unsupported".
+
+The composition is unchanged: realize builds the value from the plugin's layout
+key table, the shared projection, `[input.mapping]`, and `[input].device` —
+`"button.z" → button.r → "Shoulder R" → "SDL/0/Snowglass Virtual Gamepad:Shoulder R"`
+— and nothing lives outside the document.
 
 Static bindings are **not options** — no user ever sets `Buttons/A`. They lower to
 `Node::Entry` with `origin.layer = Fragment(id)` and are always snowglass-owned on
@@ -822,9 +1159,9 @@ implement every port) and may declare **more** only where a multitap accounts
 for the difference — DuckStation exposes eight pad slots on a two-port
 PlayStation. Exceeding the count is a warning, never silent.
 
-A port declaration is the section of §6.4 — `input = true` is what makes it one
-— and the `[platforms.…]` spelling below is how the generators emit it today.
-Reconciling the two is the open work of §6.4; nothing else about a port changes.
+A port declaration is a `[platforms.<MACHINE>.ports.<group>.<index>]` table.
+This is now normative (§6.4); `PortAssignment` in `toml/input.rs` is its type,
+and the path spells the *(machine, group, index)* key directly:
 
 ```toml
 [platforms.NINTENDO_GCN.ports.controller.0]
@@ -836,7 +1173,6 @@ emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "
 [platforms.NINTENDO_WII.ports.wii.0]
 target      = "wiimote.Wiimote1"
 layouts     = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
 emit.unplugged   = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [
@@ -849,25 +1185,70 @@ emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [
 ]
 ```
 
-A port's choices are exactly: the inputspec layouts in `layouts`, `unplugged` always, and
-`passthrough` when the port declares it. There is no separate `kind` field —
-naming a layout *is* choosing a managed port, and the emissions under that key
-are what "this port is now that" means in the emulator's config. `emit` entries
-without a `target` land in the port's own; the GameCube device-type key lives in
-a different file, so it names one.
+A port's choices are exactly: the inputspec layouts in `layouts`, `unplugged`
+always, and `passthrough` when the port emits for it. There is no separate `kind`
+field — naming a layout *is* choosing a managed port, and the emissions under
+that key are what "this port is now that" means in the emulator's config. `emit`
+entries without a `target` land in the port's own; the GameCube device-type key
+lives in a different file, so it names one.
+
+**Passthrough is an `emit.passthrough` entry and nothing else.** An earlier
+revision also gave the port a `passthrough = { transport = "bluetooth-hci",
+requires = [...] }` table, which has been removed from both the design and the
+Dolphin generator. Two reasons:
+
+- **It said the same thing twice.** A port that emits for `passthrough`
+  supports passthrough; a port that does not, does not. A separate field could
+  only agree redundantly or disagree, and lowering would have to decide which
+  wins. Choices are declared exactly one way — by appearing in `emit` — which is
+  already true of `unplugged` and of every layout.
+- **Its contents were not the plugin's to state.** That a Wii Remote is reached
+  over `bluetooth-hci`, and that doing so needs exclusive use of the host's
+  adapter, are facts about the *device and the host*, identical for every
+  emulator that passes a Wii Remote through. Principle 3: the host owns
+  capability, the plugin owns intent. Dolphin's intent is `Source = 2`; the
+  transport belongs beside the machinespec, and the `ResourceClaim` (§8.2) is
+  derived from the port's group and chosen mode rather than copied out of each
+  plugin that happens to mention it.
+
+So `PortAssignment` carries `target`, `layouts`, and `emit`, and its `emit` map
+is keyed by choice — a layout id, `unplugged`, or `passthrough`. Lowering checks
+that every key is one of those three (a test in `toml/document.rs` asserts it
+across all four packages today).
 
 **Every port names its own target and its own keys, so no template arithmetic is
 needed anywhere.** Dolphin numbers pad sections from 1 and SI devices from 0; a
 `{n}`/`{n-1}` scheme would have to encode that, and every emulator's variant of
-it. Twelve explicit port declarations are longer and cannot be wrong.
+it. Twelve explicit port declarations are longer and cannot be wrong. Cemu makes
+the case louder still: its ports are separate *files* (`controllerProfiles/
+controller0.xml` … `controller7.xml`), each a root target of its own, and its
+gamepad group and controller group are numbered from a single shared sequence —
+`gamepad.0` is `profile-0`, `controller.0` is `profile-1`. No template expresses
+that; eight explicit declarations do.
 
 The platform keys must be machinespec ids that the manifest's `platforms` list
 also declares, and lowering checks both.
 
-### 6.5.1 Layout bindings
+`[platforms]` is a `BTreeMap<&str, PortTable>` on `ConfigurationToml`, keyed by
+machinespec id. `PortTable` is a struct with the single field `ports` rather
+than a third map level, so a misspelled `ports` is rejected where it is written
+instead of parsing as a platform whose only input group is named after the typo.
+Below it the nesting is two anonymous maps, `group → index → PortAssignment`,
+which types the index as `&str`: lowering must parse it as an integer and reject
+a non-numeric key, since `ports.controller.x` would otherwise merge cleanly and
+mean nothing.
+
+### 6.5.1 Layout bindings — [parsed]
 
 What a control is *called* is a property of the layout, not of the port, so key
-tables are declared once and referenced by every port that offers the layout:
+tables are declared once and referenced by every port that offers the layout.
+A table parses into `LayoutMapping` (`toml/input.rs`) as an
+`IndexMap<BindingKey, &str>` — keys are parsed into `consolespec::BindingKey`
+at their own line via the `with::binding_map` collector, so a malformed or
+misspelled key fails *there*, with a span, rather than being carried as a string
+to be validated later or never. This is §0.1's principle 6 as a type rather than
+a convention, and it is the part of §3.0's custom-collector machinery that
+earns its keep.
 
 ```toml
 [input.layouts.WII_REMOTE_CONTROLLER]
@@ -900,6 +1281,14 @@ to declare `alignment = "right"`, and `analog.accelerometer.z+` becomes
 child device does not have — which is exactly what the `extends` key did before
 it was removed, undetected, because nothing revalidated an inherited key against
 the child. Restating is longer and cannot be wrong.
+
+**[V]** The generated Dolphin document confirms this precisely.
+`WII_REMOTE_CONTROLLER` binds `analog.accelerometer.z+`; the nunchuk layout binds
+*neither* that key nor an inherited copy of it, but `analog.accelerometer.right.z+`
+for the remote's own accelerometer and `analog.accelerometer.left.z+` for the
+nunchuk's — twelve keys where the parent had six, and not one of the parent's six
+still valid. Inheritance would have silently produced six dead bindings and lost
+six live ones.
 
 Keys are validated against the layout's own expanded key set at lowering — a
 table may not name a control the device does not have — and against the
@@ -955,7 +1344,7 @@ persists them.
 
 `options` is reserved, so a layout table may not bind a control by that name.
 
-### 6.5.2 Layout options
+### 6.5.2 Layout options — [parsed]
 
 A layout also carries the emulator's own settings for that device — Dolphin's
 sideways and upright Wii Remote, its battery level, whether a MotionPlus is
@@ -982,16 +1371,24 @@ default = 95
 `range` is one value, not two loose keys: a bound without its partner is almost
 always a mistake, and lowering checks `default` against it as a unit (§4.1).
 
+These are `OptionDefinition`s — the same type as a section's, with the same
+required `key`/`title`/`type`/`emit` and the same optional `range` and `default`
+— living in `LayoutMapping::options` beside the binding table. Dolphin authors
+five for `WII_REMOTE_CONTROLLER` (MotionPlus, speaker pan, battery, upright,
+sideways) and one for `GAMECUBE_CONTROLLER`.
+
 Lowering expands each one across every port that offers the layout, producing an
-option at `ports.<platform>.<index>.<key>` whose `emit.target` is that port's
-target. So a four-remote Wii setup gets four independent `sideways` settings, and
-their values persist per port rather than bleeding across them.
+option at `ports.<machine>.<group>.<index>.<key>` whose `emit.target` is that
+port's target. So a four-remote Wii setup gets four independent `sideways`
+settings, and their values persist per port rather than bleeding across them. The
+path gains a group component relative to the previous design, for the reason
+§6.5 gives: `wii.0` and `gamecube.0` are different ports.
 
 Like the key table (§6.5.1), a layout declares its options in full — a nunchuk
 port keeps the remote's options because `WII_REMOTE_NUNCHUCK_CONTROLLER` states
 them again, not because it inherits them.
 
-**Every port has an implicit option, `ports.<platform>.<index>.layout`**, whose
+**Every port has an implicit option, `ports.<machine>.<group>.<index>.layout`**, whose
 domain is the port's `layouts` plus `unplugged` and, where declared,
 `passthrough`. It is not written in the document — the port already lists its
 choices, and repeating them could only disagree. Two things hang off it: the
@@ -1095,28 +1492,51 @@ backend."* The survey is the reason why: Dolphin reads DInput, DuckStation and
 melonDS read Qt (window messages), PPSSPP reads SDL events.
 
 So `transport` returns — not as a user knob, but as the fact the survey already
-collected:
+collected. The authored shape, **[authored]** by all four generators and parsed
+by nothing:
 
 ```toml
+# plugins/duckstation/config/actions.toml
 [actions]
-target        = "hotkeys"
-template      = "Keyboard/{key}"
-keynames      = "duckstation"
-transport     = "win32-message"     # win32-message | dinput
-applies_to    = ">=0.1-7000"
+target    = "settings.Hotkeys"
+transport = "win32-message"      # win32-message | dinput
+keynames  = "duckstation"
 
 [actions.map]
-load_state        = { key = "F1",     name = "LoadSelectedSaveState" }
-save_state        = { key = "F2",     name = "SaveSelectedSaveState" }
-fast_forward      = { key = "Tab",    name = "FastForward" }
-pause             = { key = "Space",  name = "TogglePause" }
-screenshot        = { key = "F10",    name = "Screenshot" }
-toggle_fullscreen = { key = "F11",    name = "ToggleFullscreen" }
-exit              = { key = "alt+return", fixed = true }   # hardcoded; emits nothing
+load_state        = { key = "f1",  expression = "Keyboard/F1",  name = "LoadSelectedSaveState" }
+save_state        = { key = "f2",  expression = "Keyboard/F2",  name = "SaveSelectedSaveState" }
+toggle_fullscreen = { key = "f11", expression = "Keyboard/F11", name = "ToggleFullscreen" }
 ```
 
-`fixed = true` means the emulator hardcodes the binding: send the key, write
-nothing. Distinct from a missing `name`, and worth re-verifying on version bumps.
+Four corrections to the previous design:
+
+- **`template` is gone; `expression` is per-action.** The design assumed a
+  `"Keyboard/{key}"` template would render every binding. It does not survive
+  chords: PCSX2 writes `toggle_fullscreen` as `Keyboard/Alt & Keyboard/Return`
+  and Dolphin writes `@(Alt+RETURN)` — the emulator's *expression grammar*, not
+  a key name substituted into a slot. So the generator, which is already reading
+  that emulator's source, emits the finished expression. `keynames` survives as
+  a dialect tag, but purely as provenance for the generator now, not as a table
+  the crate indexes.
+- **`key` and `expression` are two different things and both are needed.** `key`
+  (`"alt+return"`, lowercase, snowglass's own chord syntax) is what §7.3's
+  platform table turns into a `HotkeyKey` for the hook to synthesize.
+  `expression` is what gets written into the emulator's file. They describe the
+  same chord in two vocabularies and neither derives the other.
+- **`device` joins `[actions]` where the emulator needs one.** Dolphin's hotkeys
+  are qualified by input device (`device = "DInput/0/Keyboard Mouse"`), the same
+  way its pad bindings are; the stenzek emulators are not.
+- **`fixed = true` did not materialize; a partial entry did.** Cemu's map is
+  `exit = { name = "ExitApplication" }` — a `name` with no `key` and no
+  `expression`, meaning "this action exists and Cemu hardcodes its binding".
+  Cemu also carries `encoding = "wx-keycode-pair"` on the block and `wx_key =
+  "WXK_F12"` on the two entries it can actually write. So the entry is a sum:
+  fully bound, name-only, or absent (the five actions Cemu has no equivalent for
+  are simply not in the map, which is what §7.4 asks for).
+
+`applies_to` is **[designed]** — the versioning of §7.5 is real but no generator
+emits a version constraint yet, since none of them can determine a revision
+(`source_revision = "unknown"` in every `[meta]`).
 
 ### 7.3 Two key tables, both required
 
@@ -1488,9 +1908,15 @@ field to drift.
 ```
 src/
   lib.rs
-  raw/         serde structs, 1:1 with the document
+  error.rs     [exists]
+  toml/        [exists] FromToml structs, 1:1 with the document — was `raw/`
+    config.rs    targets, sections, options, bool styles
+    config/path.rs   TargetPath
+    document.rs  ConfigurationToml + the multi-document merge
+    input.rs     [input], layouts, ports
+    with.rs      custom collectors (binding keys, target paths)
   ir/          Definition, OptionDef, TargetGraph, Expr, ContentHash
-  lower/       raw → ir, diagnostics
+  lower/       toml → ir, diagnostics
   value/       Value, ValueStack, ResolvedValues, Resolution
   host/        HostFacts, CapabilityRegistry, PortFact
   realize/
@@ -1505,21 +1931,27 @@ src/
 
 ## 12. Implementation order
 
-1. `raw` + `ir` + `lower` with the §4.1 reject list, and a snapshot test per
-   rejection. Independent of everything else and the most expensive thing to
-   retrofit.
-2. `value` + `realize` against static domains only, `NoResolvers`, empty
+0. ~~Malformed input must be an error~~ — done (§0.3). ~~Wire `[platforms]` into
+   `ConfigurationToml`~~ — done (§6.5), guarded by
+   `every_plugin_package_parses`. Still open from §3.1: `Target::subtargets`
+   must record full paths including interior nodes.
+1. Model `[actions]` and add `config/actions.toml` to each manifest's
+   `definitions` (§7.2). At this point the documents the generators already emit
+   are fully readable.
+2. `ir` + `lower` with the §4.1 reject list, and a snapshot test per rejection.
+   The most expensive thing to retrofit.
+3. `value` + `realize` against static domains only, `NoResolvers`, empty
    `HostFacts`.
-3. `emit` + the `ini` codec, with round-trip tests: parse → merge → emit preserves
+4. `emit` + the `ini` codec, with round-trip tests: parse → merge → emit preserves
    foreign keys, comments, and hand edits.
-4. `descriptor` — serialization plus host-side shape validation. At this point
+5. `descriptor` — serialization plus host-side shape validation. At this point
    Dolphin's video section produces a real `GFX.ini` and a real descriptor.
-5. `[env]` and `[[argv]]`, then P3 (`EmulatorConfig::env`) to consume them.
-6. P1 + P2 in the SDL hooks, then `input/`: port plans, layout-filtered fragments,
+6. `[env]` and `[[argv]]`, then P3 (`EmulatorConfig::env`) to consume them.
+7. P1 + P2 in the SDL hooks, then `input/`: port plans, layout-filtered fragments,
    mapping generation.
-7. P4/P5 (transport selectors on `send_hotkey` and pointer delivery), then
+8. P4/P5 (transport selectors on `send_hotkey` and pointer delivery), then
    `action/`.
-8. Resolver ops in the shell's deno host; remaining codecs.
+9. Resolver ops in the shell's deno host; remaining codecs.
 
 ---
 
@@ -1539,16 +1971,46 @@ Closed by source inspection:
 - ~~unvalidated platform ids~~ — machinespec is the source of truth, and the
   generators check against it (§6.5).
 
+Closed by the generated documents:
+
+- ~~`input = true` sections vs `[platforms.…]` ports~~ — `[platforms.…]` won;
+  ports are keyed by *(machine, group, index)* and are not sections (§6.4, §6.5).
+- ~~the `[input.sdl]` positional arrays~~ — replaced by `[input.mapping]`, keyed
+  by binding key like every other table (§6.4).
+- ~~`import` splice points~~ — replaced by a pre-schema merge over a glob list
+  (§3.2.1). Cycles, chains, and placeholder rules are all moot.
+- ~~`IndexMap` for section order~~ — merging across documents makes "document
+  order" meaningless for sections; they sort lexicographically and options keep
+  their array order (§3.2).
+- ~~ordinal `value` silently repointing saved config~~ — a choice is a
+  `{ key, label, value }` triple, `key` persists and `value` is emitted (§3.5).
+- ~~`template = "Keyboard/{key}"`~~ — chords do not survive substitution; the
+  generator emits a finished `expression` per action (§7.2).
+
 Remaining:
 
-1. **PPSSPP `NKCODE_` range** — does F13+ exist? Single-file read of
+1. **Section presentation order.** §3.2's lexicographic sibling order is honest
+   but arbitrary — Dolphin's Graphics page would list `colorcorrection` before
+   `hardware`. If a curated order is wanted it now needs an explicit field
+   (`weight`, or an ordered `children` list on the parent), because neither the
+   filesystem nor the merge can supply it.
+2. **What `keynames` is for.** With `expression` authored per action, the
+   dialect tag no longer selects a table this crate indexes. Either it is
+   generator provenance and belongs in `[meta]`, or §7.3's emulator-side table
+   still has a job and it should say which.
+3. **Merge provenance.** Catching the options-array clobber of §4.1 means the
+   merge must remember which document last wrote each path. That is cheap to add
+   now and awkward later.
+4. **PPSSPP `NKCODE_` range** — does F13+ exist? Single-file read of
    `Common/Input/KeyCodes.h`.
-2. **melonDS modifier encoding** — `Config.cpp`.
-3. **PCSX2/DuckStation keyname table sharing** — shared InputManager suggests yes.
-4. **Linux/macOS keyboard hooks** — required if Dolphin off Windows is in scope.
+5. **melonDS modifier encoding** — `Config.cpp`.
+6. **PCSX2/DuckStation keyname table sharing** — shared InputManager suggests yes.
+7. **Linux/macOS keyboard hooks** — required if Dolphin off Windows is in scope.
    Windows-first is a fine trade; Linux is real work.
-5. **Dolphin profile-scoped hotkeys** — may need a repeated target keyed on
-   profile name, the same construct as ports.
-6. **Config root discovery** — the JS supplies `configRoot`, but portable-vs-roaming
+8. **Dolphin profile-scoped hotkeys** — may need a repeated target keyed on
+   profile name, the same construct as ports. Note Cemu already does exactly
+   this for *ports* — one file per profile, each a root target (§6.5) — so the
+   construct exists and the question is only whether hotkeys reuse it.
+9. **Config root discovery** — the JS supplies `configRoot`, but portable-vs-roaming
    detection is per-emulator and needs a host capability (`emulator.install`) to
    avoid every plugin reimplementing it.

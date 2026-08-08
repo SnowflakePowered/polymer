@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use toml_spanner::Toml;
 
+mod options;
 mod path;
+
+pub use options::*;
 
 pub use path::TargetPath;
 
@@ -28,7 +31,9 @@ pub struct Target<'de> {
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
 pub struct BoolStyle<'de> {
+    #[toml(rename = "true")]
     pub r#true: &'de str,
+    #[toml(rename = "false")]
     pub r#false: &'de str,
 }
 
@@ -39,42 +44,8 @@ pub struct Emit<'de> {
     key: &'de str,
     value: Option<OptionValue<'de>>,
     bool_style: Option<&'de str>,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml)]
-pub struct OptionDefinition<'de> {
-    pub key: &'de str,
-    pub title: &'de str,
-    #[toml(rename = "type")]
-    pub kind: &'de str,
-    pub range: Option<OptionRange>,
-    pub default: Option<OptionValue<'de>>,
-    pub domain: Option<Vec<SelectDefinition<'de>>>,
-    pub emit: Emit<'de>,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml)]
-pub struct SelectDefinition<'de> {
-    pub label: &'de str,
-    pub key: &'de str,
-    pub value: OptionValue<'de>,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml)]
-pub struct OptionRange {
-    min: i64,
-    max: i64,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml, untagged)]
-pub enum OptionValue<'de> {
-    Boolean(bool),
-    Integer(i64),
-    String(&'de str),
+    /// A stdlib-style format string describing how an integer is spelled.
+    int_style: Option<&'de str>,
 }
 
 #[derive(Debug, Toml)]
@@ -147,7 +118,7 @@ mod tests {
     fn parses_cemu_section_options() {
         let arena = Arena::new();
         let mut document = toml_spanner::parse(
-            include_str!("../../../../plugins/cemu/config/sections/content-audio.toml"),
+            include_str!("../../../../../plugins/cemu/config/sections/content-audio.toml"),
             &arena,
         )
         .unwrap();

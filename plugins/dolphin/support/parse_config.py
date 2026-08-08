@@ -352,8 +352,7 @@ def build_option(info: InfoDef, enums: dict[str, list[EnumDef]], scope: Scope,
         radix, width = INT_TYPES[ctype]
         option["type"] = "int"
         if radix != "dec":
-            option["emit"]["radix"] = radix
-            option["emit"]["width"] = width
+            option["emit"]["int_style"] = f"0x{{:0{width}x}}"
         default = try_default(info, scope, report)
         if isinstance(default, bool):
             default = int(default)
@@ -1171,7 +1170,6 @@ def dolphin_ports(enums: dict[str, list[EnumDef]], report: Report):
         gc_ports.append({
             "target": target_id("gcpad", f"GCPad{index + 1}"),
             "layouts": ["GAMECUBE_CONTROLLER"],
-            "passthrough": None,
             "emit": {
                 "unplugged": [{"target": "main.Core", "key": key, "value": si_none}],
                 "GAMECUBE_CONTROLLER": [{"target": "main.Core", "key": key, "value": si_pad}],
@@ -1182,8 +1180,10 @@ def dolphin_ports(enums: dict[str, list[EnumDef]], report: Report):
         wii_ports.append({
             "target": target_id("wiipad", f"Wiimote{index + 1}"),
             "layouts": ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"],
-            "passthrough": {"transport": "bluetooth-hci",
-                            "requires": ["host:bluetooth.adapter.exclusive"]},
+            # An `emit.passthrough` entry is what declares the port supports
+            # passthrough; there is no separate field. The transport it needs
+            # and the resources it claims are facts about the device and the
+            # host, not about Dolphin's config file, so they are not ours.
             "emit": {
                 "unplugged": [{"key": "Source", "value": wii_none}],
                 "passthrough": [{"key": "Source", "value": wii_real}],
@@ -1319,8 +1319,6 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
                     f"[platforms.{toml_key(platform)}.ports.{toml_key(group)}.{index}]")
                 lines.append(f"target = {toml_string(port['target'])}")
                 lines.append(f"layouts = {toml_value(port['layouts'])}")
-                if port["passthrough"]:
-                    lines.append(f"passthrough = {toml_value(port['passthrough'])}")
                 for choice, entries in port["emit"].items():
                     lines.append(f"emit.{toml_key(choice)} = {toml_value(entries)}")
                 lines.append("")

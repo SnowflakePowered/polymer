@@ -293,7 +293,7 @@ key = "msaa"
 title = "MSAA"
 type = "int"
 default = 1
-emit = { key = "MSAA", radix = "hex", width = 8 }
+emit = { key = "MSAA", int_style = "0x{:08x}" }
 
 [[sections.gfx.settings.options]]
 key = "mtl_use_present_drawable"
@@ -570,7 +570,7 @@ key = "widescreen_heuristic_transition_threshold"
 title = "Widescreen Heuristic Transition Threshold"
 type = "int"
 default = 3
-emit = { key = "WidescreenHeuristicTransitionThreshold", radix = "hex", width = 8 }
+emit = { key = "WidescreenHeuristicTransitionThreshold", int_style = "0x{:08x}" }
 
 [[sections.gfx.settings.options]]
 key = "widescreen_heuristic_widescreen_ratio"

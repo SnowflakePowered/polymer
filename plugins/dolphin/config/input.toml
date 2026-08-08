@@ -258,7 +258,6 @@ emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "
 [platforms.NINTENDO_WII.ports.wii.0]
 target = "wiipad.Wiimote1"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
@@ -267,7 +266,6 @@ emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = 
 [platforms.NINTENDO_WII.ports.wii.1]
 target = "wiipad.Wiimote2"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
@@ -276,7 +274,6 @@ emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = 
 [platforms.NINTENDO_WII.ports.wii.2]
 target = "wiipad.Wiimote3"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
@@ -285,7 +282,6 @@ emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = 
 [platforms.NINTENDO_WII.ports.wii.3]
 target = "wiipad.Wiimote4"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-passthrough = { transport = "bluetooth-hci", requires = ["host:bluetooth.adapter.exclusive"] }
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
 emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]

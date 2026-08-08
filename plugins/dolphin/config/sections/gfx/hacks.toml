@@ -108,7 +108,7 @@ key = "missing_color_value"
 title = "Missing Color Value"
 type = "int"
 default = 4294967295
-emit = { key = "MissingColorValue", radix = "hex", width = 8 }
+emit = { key = "MissingColorValue", int_style = "0x{:08x}" }
 
 [[sections.gfx.hacks.options]]
 key = "skip_duplicate_xf_bs"

@@ -150,7 +150,7 @@ key = "aram_expansion_size"
 title = "ARAM Expansion Size"
 type = "int"
 default = 4194304
-emit = { key = "ARAMExpansionSize", radix = "hex", width = 8 }
+emit = { key = "ARAMExpansionSize", int_style = "0x{:08x}" }
 
 [[sections.main.core.options]]
 key = "audio_buffer_size"
@@ -262,7 +262,7 @@ key = "custom_rtc_value"
 title = "Custom Rtc Value"
 type = "int"
 default = 946684800
-emit = { key = "CustomRTCValue", radix = "hex", width = 8 }
+emit = { key = "CustomRTCValue", int_style = "0x{:08x}" }
 
 [[sections.main.core.options]]
 key = "default_iso"
@@ -473,14 +473,14 @@ key = "mem1_size"
 title = "Mem1 Size"
 type = "int"
 default = 25165824
-emit = { key = "MEM1Size", radix = "hex", width = 8 }
+emit = { key = "MEM1Size", int_style = "0x{:08x}" }
 
 [[sections.main.core.options]]
 key = "mem2_size"
 title = "Mem2 Size"
 type = "int"
 default = 67108864
-emit = { key = "MEM2Size", radix = "hex", width = 8 }
+emit = { key = "MEM2Size", int_style = "0x{:08x}" }
 
 [[sections.main.core.options]]
 key = "memcard_a_path"
@@ -868,7 +868,7 @@ key = "wii_sd_card_filesize"
 title = "WII SD Card Filesize"
 type = "int"
 default = 0
-emit = { key = "WiiSDCardFilesize", radix = "hex", width = 16 }
+emit = { key = "WiiSDCardFilesize", int_style = "0x{:016x}" }
 
 [sections.main.dsp]
 title = "DSP"
@@ -1959,28 +1959,28 @@ key = "buffer_size"
 title = "Buffer Size"
 type = "int"
 default = 5
-emit = { key = "BufferSize", radix = "hex", width = 8 }
+emit = { key = "BufferSize", int_style = "0x{:08x}" }
 
 [[sections.main.netplay.options]]
 key = "buffer_size_client"
 title = "Buffer Size Client"
 type = "int"
 default = 1
-emit = { key = "BufferSizeClient", radix = "hex", width = 8 }
+emit = { key = "BufferSizeClient", int_style = "0x{:08x}" }
 
 [[sections.main.netplay.options]]
 key = "chunked_upload_limit"
 title = "Chunked Upload Limit"
 type = "int"
 default = 3000
-emit = { key = "ChunkedUploadLimit", radix = "hex", width = 8 }
+emit = { key = "ChunkedUploadLimit", int_style = "0x{:08x}" }
 
 [[sections.main.netplay.options]]
 key = "connect_port"
 title = "Connect Port"
 type = "int"
 default = 2626
-emit = { key = "ConnectPort", radix = "hex", width = 4 }
+emit = { key = "ConnectPort", int_style = "0x{:04x}" }
 
 [[sections.main.netplay.options]]
 key = "enable_chunked_upload_limit"
@@ -2022,7 +2022,7 @@ key = "host_port"
 title = "Host Port"
 type = "int"
 default = 2626
-emit = { key = "HostPort", radix = "hex", width = 4 }
+emit = { key = "HostPort", int_style = "0x{:04x}" }
 
 [[sections.main.netplay.options]]
 key = "index_name"
@@ -2057,7 +2057,7 @@ key = "listen_port"
 title = "Listen Port"
 type = "int"
 default = 2626
-emit = { key = "ListenPort", radix = "hex", width = 4 }
+emit = { key = "ListenPort", int_style = "0x{:04x}" }
 
 [[sections.main.netplay.options]]
 key = "network_mode"
@@ -2120,14 +2120,14 @@ key = "traversal_port"
 title = "Traversal Port"
 type = "int"
 default = 6262
-emit = { key = "TraversalPort", radix = "hex", width = 4 }
+emit = { key = "TraversalPort", int_style = "0x{:04x}" }
 
 [[sections.main.netplay.options]]
 key = "traversal_port_alt"
 title = "Traversal Port Alt"
 type = "int"
 default = 6226
-emit = { key = "TraversalPortAlt", radix = "hex", width = 4 }
+emit = { key = "TraversalPortAlt", int_style = "0x{:04x}" }
 
 [[sections.main.netplay.options]]
 key = "traversal_server"
