@@ -13,15 +13,18 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use windows::core::Interface;
+use windows::{
+    Win32::Devices::HumanInterfaceDevice::{
+        GUID_SysKeyboard, GUID_SysMouse, IDirectInput8A, IDirectInput8W,
+    },
+    core::{GUID, Interface},
+};
 use windows_sys::{
     Win32::{
-        Devices::HumanInterfaceDevice::{
-            DIDEVICEOBJECTDATA, DIGDD_PEEK, GUID_SysKeyboard, GUID_SysMouse,
-        },
+        Devices::HumanInterfaceDevice::{DIDEVICEOBJECTDATA, DIGDD_PEEK},
         Foundation::HINSTANCE,
     },
-    core::{GUID, HRESULT},
+    core::{GUID as SysGuid, HRESULT},
 };
 
 pub(crate) struct Runtime {
@@ -63,41 +66,27 @@ impl Runtime {
     ) {
         self.input.set_event_notification(key, device, event);
     }
-}
 
-fn guid_matches_interface<T: Interface>(guid: &GUID) -> bool {
-    windows::core::GUID::from_values(guid.data1, guid.data2, guid.data3, guid.data4) == T::IID
-}
-
-unsafe fn wrap_direct_input(
-    runtime: Arc<Runtime>,
-    interface: *mut c_void,
-    iid: &GUID,
-) -> Option<*mut c_void> {
-    let (wide, iid) = if guid_matches_interface::<
-        windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8W,
-    >(iid)
-    {
-        (
-            true,
-            windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8W::IID,
-        )
-    } else if guid_matches_interface::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A>(
-        iid,
-    ) {
-        (
-            false,
-            windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A::IID,
-        )
-    } else {
-        return None;
-    };
-    unsafe {
-        IDirectInputHook::wrap::<windows::Win32::Devices::HumanInterfaceDevice::IDirectInput8A>(
-            interface,
-            iid,
-            crate::vtable::DirectInputContext { runtime, wide },
-        )
+    unsafe fn wrap_direct_input(
+        self: &Arc<Self>,
+        interface: *mut c_void,
+        iid: &GUID,
+    ) -> Option<*mut c_void> {
+        let wide = match *iid {
+            IDirectInput8W::IID => true,
+            IDirectInput8A::IID => false,
+            _ => return None,
+        };
+        unsafe {
+            IDirectInputHook::wrap::<IDirectInput8A>(
+                interface,
+                *iid,
+                crate::vtable::DirectInputContext {
+                    runtime: self.clone(),
+                    wide,
+                },
+            )
+        }
     }
 }
 
@@ -126,9 +115,10 @@ pub(crate) unsafe fn create_device(
         }
     );
     if result >= 0 && !class.is_null() && !output.is_null() {
-        let device_class = if unsafe { guid_eq(&*class, &GUID_SysKeyboard) } {
+        let class = unsafe { &*class };
+        let device_class = if class == &GUID_SysKeyboard {
             Some(DirectInputDevice::Keyboard)
-        } else if unsafe { guid_eq(&*class, &GUID_SysMouse) } {
+        } else if class == &GUID_SysMouse {
             Some(DirectInputDevice::Mouse)
         } else {
             None
@@ -142,13 +132,6 @@ pub(crate) unsafe fn create_device(
             tracing::debug!("snowglass: hooked {device_class:?} DirectInput device");
         }
     }
-}
-
-fn guid_eq(left: &GUID, right: &GUID) -> bool {
-    left.data1 == right.data1
-        && left.data2 == right.data2
-        && left.data3 == right.data3
-        && left.data4 == right.data4
 }
 
 unsafe fn wrap_device(
@@ -346,7 +329,7 @@ pub(crate) unsafe fn get_device_data(
 pub(crate) unsafe fn direct_input_8_create(
     instance: HINSTANCE,
     version: u32,
-    interface_id: *const GUID,
+    interface_id: *const SysGuid,
     output: *mut *mut c_void,
     outer: *mut c_void,
     result: HRESULT,
@@ -357,9 +340,8 @@ pub(crate) unsafe fn direct_input_8_create(
         "snowglass: DirectInput8Create version={version:#x} iid={interface_id:p} returned {result:#x}"
     );
     if result >= 0 && !interface_id.is_null() && !output.is_null() && outer.is_null() {
-        if let Some(proxy) =
-            unsafe { wrap_direct_input(context.state.clone(), *output, &*interface_id) }
-        {
+        let interface_id = unsafe { &*interface_id.cast::<GUID>() };
+        if let Some(proxy) = unsafe { context.state.wrap_direct_input(*output, interface_id) } {
             unsafe { *output = proxy };
         }
     }

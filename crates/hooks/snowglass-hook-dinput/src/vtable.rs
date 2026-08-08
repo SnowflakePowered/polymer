@@ -18,10 +18,8 @@ use windows::Win32::Devices::HumanInterfaceDevice::{
     IDirectInput8A, IDirectInput8A_Vtbl, IDirectInput8W, IDirectInput8W_Vtbl, IDirectInputDevice8A,
     IDirectInputDevice8A_Vtbl, IDirectInputDevice8W, IDirectInputDevice8W_Vtbl,
 };
-use windows_sys::{
-    Win32::Devices::HumanInterfaceDevice::DIDEVICEOBJECTDATA,
-    core::{GUID, HRESULT},
-};
+use windows::core::GUID;
+use windows_sys::{Win32::Devices::HumanInterfaceDevice::DIDEVICEOBJECTDATA, core::HRESULT};
 
 snowglass_hook::vtable! {
     [IDirectInput8A],
