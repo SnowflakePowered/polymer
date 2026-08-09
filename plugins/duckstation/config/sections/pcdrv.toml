@@ -22,5 +22,5 @@ emit = { key = "EnableWrites", bool_style = "lower" }
 [[sections.pcdrv.options]]
 key = "root"
 title = "Root"
-type = "string"
+type = "path"
 emit = { key = "Root" }

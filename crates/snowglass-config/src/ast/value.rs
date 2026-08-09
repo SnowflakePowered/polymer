@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// A value stored in a realized configuration or configuration instance.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -7,6 +9,7 @@ pub enum Value {
     Integer(i64),
     Float(f64),
     String(Box<str>),
+    Path(PathBuf),
     /// A stable select-domain key, distinct from its emulator-facing value.
     Choice(Box<str>),
 }

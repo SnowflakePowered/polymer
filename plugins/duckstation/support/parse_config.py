@@ -43,6 +43,7 @@ cppconfig.NOOP_MACROS = ("TRANSLATE_NOOP", "TRANSLATE_DISAM_NOOP", "FSUI_NSTR")
 
 SETTINGS_FILE = "settings.ini"
 BOOL_STYLE = "lower"
+FILESYSTEM_SETTINGS = {("PCDrv", "Root"), ("PIO", "FlashImagePath")}
 
 # DuckStation's own standard-pad vocabulary (`GenericInputBinding`) already says
 # what each controller control corresponds to on a normal gamepad. Mapping the
@@ -307,7 +308,9 @@ def build_definition(settings: list[dict], revision: str | None,
             lines.append(f"[[sections.{toml_key(slug)}.options]]")
             lines.append(f"key = {toml_string(key)}")
             lines.append(f"title = {toml_string(humanize(setting['key']))}")
-            lines.append(f"type = {toml_string(setting['type'])}")
+            kind = ("path" if (section, setting["key"]) in FILESYSTEM_SETTINGS
+                    else setting["type"])
+            lines.append(f"type = {toml_string(kind)}")
             if setting["default"] is not None:
                 lines.append(f"default = {toml_value(setting['default'])}")
             lines.append(f"emit = {toml_value(emit)}")

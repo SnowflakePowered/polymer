@@ -29,6 +29,6 @@ emit = { key = "GDBPort" }
 [[sections.content-debug.options]]
 key = "gpu_capture_dir"
 title = "GPU Capture Dir"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "GPUCaptureDir" }

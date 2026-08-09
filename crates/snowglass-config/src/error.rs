@@ -1,4 +1,4 @@
-use std::error::Error as StdError;
+use std::{error::Error as StdError, path::PathBuf};
 
 use consolespec::BindingKey;
 use thiserror::Error;
@@ -64,6 +64,8 @@ pub enum Error {
     UnknownChoice { path: Box<str>, choice: Box<str> },
     #[error("choice `{choice}` selected by setting `{path}` does not resolve to a scalar")]
     NonScalarChoice { path: Box<str>, choice: Box<str> },
+    #[error("filesystem path cannot be represented in a text configuration: {0:?}")]
+    NonUtf8Path(PathBuf),
     #[error("no emitter is registered for output format `{0}`")]
     UnsupportedFormat(Box<str>),
     #[error("more than one target writes output path `{0}`")]

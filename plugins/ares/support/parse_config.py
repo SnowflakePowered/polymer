@@ -331,11 +331,12 @@ def build_definition(settings: list[dict], revision: str | None, report: Report)
                 emit["target"] = target_id("settings", *setting["path"][:-1])
             if setting["type"] == "bool":
                 emit["bool_style"] = BOOL_STYLE
+            option_type = "path" if section == "Paths" else setting["type"]
             lines.extend([
                 f"[[sections.{toml_key(slug)}.options]]",
                 f"key = {toml_string(key)}",
                 f"title = {toml_string(humanize(relative[-1]))}",
-                f"type = {toml_string(setting['type'])}",
+                f"type = {toml_string(option_type)}",
             ])
             if setting["default"] is not None:
                 lines.append(f"default = {toml_value(setting['default'])}")

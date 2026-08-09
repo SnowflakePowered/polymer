@@ -139,7 +139,6 @@ fn lower_option<'de>(
     definition: &mut ConfigurationDefinition,
     option: TomlOptionDefinition<'de>,
 ) -> Handle<OptionDefinition> {
-    let choice = option.kind == "select";
     let kind = match option.kind {
         "bool" => ValueKind::Boolean,
         "int" => ValueKind::Integer {
@@ -155,15 +154,14 @@ fn lower_option<'de>(
             }),
         },
         "string" => ValueKind::String,
+        "path" => ValueKind::Path,
         "select" => ValueKind::Select {
             domain: lower_domain(option.domain),
         },
         kind => panic!("unsupported configuration option type `{kind}`"),
     };
-    let value = ValueDefinition {
-        kind,
-        default: lower_default(option.default, choice),
-    };
+    let default = lower_default(option.default, &kind);
+    let value = ValueDefinition { kind, default };
 
     definition.options.append(OptionDefinition {
         key: option.key.into(),
@@ -173,15 +171,18 @@ fn lower_option<'de>(
     })
 }
 
-fn lower_default(default: Option<OptionValue<'_>>, choice: bool) -> DefaultDefinition {
+fn lower_default(default: Option<OptionValue<'_>>, kind: &ValueKind) -> DefaultDefinition {
     default.map_or(DefaultDefinition::None, |value| {
-        let value = if choice {
-            match value {
+        let value = match kind {
+            ValueKind::Select { .. } => match value {
                 OptionValue::String(key) => Value::Choice(key.into()),
                 other => lower_value(other),
-            }
-        } else {
-            lower_value(value)
+            },
+            ValueKind::Path => match value {
+                OptionValue::String(path) => Value::Path(path.into()),
+                other => lower_value(other),
+            },
+            _ => lower_value(value),
         };
         DefaultDefinition::Literal(value)
     })

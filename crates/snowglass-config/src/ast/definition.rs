@@ -88,6 +88,7 @@ pub enum ValueKind {
     Integer { range: Option<OptionRange> },
     Float { range: Option<OptionRange> },
     String,
+    Path,
     Select { domain: DomainDefinition },
 }
 

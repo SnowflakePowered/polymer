@@ -36,6 +36,16 @@ import sdlpad
 import cppconfig
 from cppconfig import *  # noqa: F403 — shared C++/TOML machinery
 
+FILESYSTEM_OPTION_KEYS = {
+    "agp_cart_a_path", "agp_cart_b_path", "gci_folder_a_path",
+    "gci_folder_a_path_override", "gci_folder_b_path",
+    "gci_folder_b_path_override", "memcard_a_path", "memcard_b_path",
+    "perf_map_dir", "bios", "gb_player_rom", "rom1", "rom2", "rom3",
+    "rom4", "saves_path", "current_state_path", "dump_path", "load_path",
+    "nand_root_path", "resource_pack_path", "skylanders_collection_path",
+    "wfs_path", "wii_sd_card_path", "wii_sd_card_sync_folder",
+}
+
 
 # Snowglass's global action vocabulary → the Dolphin hotkey that implements it.
 # `fallback` is used when Dolphin ships no default binding for that hotkey; the
@@ -365,7 +375,8 @@ def build_option(info: InfoDef, enums: dict[str, list[EnumDef]], scope: Scope,
         return option
 
     if ctype in STRING_TYPES:
-        option["type"] = "string"
+        option["type"] = ("path" if option["key"] in FILESYSTEM_OPTION_KEYS
+                          else "string")
         default = try_default(info, scope, report)
         if isinstance(default, str):
             option["default"] = default

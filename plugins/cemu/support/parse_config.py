@@ -73,6 +73,10 @@ AGGREGATES = {"Vector2i": {"x": "int", "y": "int"}}
 # not a scalar an option can carry; actions.toml owns them instead.
 EXCLUDED_PATHS = {("content", "Hotkeys")}
 
+# Cemu stores these filesystem paths in string-backed config fields, so their
+# C++ type alone cannot distinguish them from ordinary text settings.
+FILESYSTEM_SETTINGS = {"GPUCaptureDir", "mlc_path"}
+
 # The machine these ports belong to, and how its machinespec groups them. A Wii
 # U has one GamePad port and eight controller ports; Cemu has eight profile
 # slots total, of which at most two can hold a GamePad
@@ -675,7 +679,8 @@ def build_definition(values: dict[str, dict], entries: list[dict],
             if key in used:
                 continue
             used.add(key)
-            kind = cemu_type(entry["ctype"])
+            kind = ("path" if entry["name"] in FILESYSTEM_SETTINGS
+                    else cemu_type(entry["ctype"]))
             emit = {"key": entry["name"]}
             if kind == "bool":
                 emit["bool_style"] = BOOL_STYLE

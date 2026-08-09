@@ -14,7 +14,7 @@ emit = { key = "BackupSavestate", bool_style = "lower" }
 [[sections.emucore.options]]
 key = "block_dump_save_directory"
 title = "Block Dump Save Directory"
-type = "string"
+type = "path"
 emit = { key = "BlockDumpSaveDirectory" }
 
 [[sections.emucore.options]]

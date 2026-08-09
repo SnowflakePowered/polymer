@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt, io::Write};
+use std::{borrow::Cow, fmt, io::Write, path::Path};
 
 use rt_format::{FormatArgument, NoNamedArguments, ParsedFormat, Specifier};
 
@@ -90,6 +90,7 @@ pub enum ScalarValue<'a> {
     },
     Float(f64),
     String(&'a str),
+    Path(&'a Path),
 }
 
 impl<'a> ScalarValue<'a> {
@@ -114,6 +115,11 @@ impl<'a> ScalarValue<'a> {
             } => Cow::Owned(render_integer(value, style)?),
             Self::Float(value) => Cow::Owned(value.to_string()),
             Self::String(value) => Cow::Borrowed(value),
+            Self::Path(value) => Cow::Borrowed(
+                value
+                    .to_str()
+                    .ok_or_else(|| Error::NonUtf8Path(value.to_owned()))?,
+            ),
         })
     }
 }

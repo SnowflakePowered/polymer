@@ -451,6 +451,7 @@ impl<'a> Serializer<'a> {
             },
             Value::Float(value) => ScalarValue::Float(*value),
             Value::String(value) => ScalarValue::String(value),
+            Value::Path(value) => ScalarValue::Path(value),
             Value::Null | Value::Choice(_) => unreachable!(),
         }))
     }
@@ -543,6 +544,9 @@ mod tests {
                 ScalarValue::String(string) => {
                     writeln!(self.output, "{}={string}", value.key)
                 }
+                ScalarValue::Path(path) => {
+                    writeln!(self.output, "{}={}", value.key, path.display())
+                }
                 ScalarValue::Integer { value: integer, .. } => {
                     writeln!(self.output, "{}={integer}", value.key)
                 }
@@ -587,6 +591,13 @@ mod tests {
             type = "bool"
             default = false
             emit = { key = "Enabled", bool_style = "words" }
+
+            [[sections.general.options]]
+            key = "data_path"
+            title = "Data Path"
+            type = "path"
+            default = "/default/data"
+            emit = { key = "DataPath" }
 
             [sections.graphics]
             title = "Graphics"
@@ -644,6 +655,11 @@ mod tests {
             .unwrap();
         let mut instance = realized.instantiate("example", BTreeMap::new()).unwrap();
         instance["general.enabled"] = Value::Boolean(true);
+        assert_eq!(
+            instance["general.data_path"],
+            Value::Path(std::path::PathBuf::from("/default/data"))
+        );
+        instance["general.data_path"] = Value::Path("/games/library".into());
         assert_eq!(instance["input.gain"], Value::Integer(3));
         instance["input.gain"] = Value::Integer(4);
 
@@ -658,7 +674,7 @@ mod tests {
 
         assert_eq!(
             std::str::from_utf8(&outputs["config.txt"]).unwrap(),
-            "document main\nEnabled=yes\nenter Core\nBackend=VulkanAPI\nInputGain=4\nPort=none\nexit Core\nend\n"
+            "document main\nEnabled=yes\nDataPath=/games/library\nenter Core\nBackend=VulkanAPI\nInputGain=4\nPort=none\nexit Core\nend\n"
         );
 
         let ini_outputs = serializer
@@ -668,6 +684,10 @@ mod tests {
         ini.read(String::from_utf8(ini_outputs["config.txt"].clone()).unwrap())
             .unwrap();
         assert_eq!(ini.get("default", "Enabled").as_deref(), Some("yes"));
+        assert_eq!(
+            ini.get("default", "DataPath").as_deref(),
+            Some("/games/library")
+        );
         assert_eq!(ini.get("Core", "Backend").as_deref(), Some("VulkanAPI"));
         assert_eq!(ini.get("Core", "InputGain").as_deref(), Some("4"));
         assert_eq!(ini.get("Core", "Port").as_deref(), Some("none"));

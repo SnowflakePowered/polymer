@@ -77,7 +77,7 @@ emit = { key = "macos_disclaimer", bool_style = "lower" }
 [[sections.content.options]]
 key = "mlc_path"
 title = "Mlc Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "mlc_path" }
 

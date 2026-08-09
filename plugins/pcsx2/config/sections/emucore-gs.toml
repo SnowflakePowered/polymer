@@ -284,7 +284,7 @@ emit = { key = "HWDownloadMode" }
 [[sections.emucore-gs.options]]
 key = "hw_dump_directory"
 title = "Hw Dump Directory"
-type = "string"
+type = "path"
 emit = { key = "HWDumpDirectory" }
 
 [[sections.emucore-gs.options]]
@@ -374,7 +374,7 @@ emit = { key = "OsdBoldText", bool_style = "lower" }
 [[sections.emucore-gs.options]]
 key = "osd_font_path"
 title = "Osd Font Path"
-type = "string"
+type = "path"
 emit = { key = "OsdFontPath" }
 
 [[sections.emucore-gs.options]]
@@ -728,7 +728,7 @@ emit = { key = "StretchY" }
 [[sections.emucore-gs.options]]
 key = "sw_dump_directory"
 title = "Sw Dump Directory"
-type = "string"
+type = "path"
 emit = { key = "SWDumpDirectory" }
 
 [[sections.emucore-gs.options]]

@@ -14,7 +14,7 @@ emit = { key = "DeviceType" }
 [[sections.pio.options]]
 key = "flash_image_path"
 title = "Flash Image Path"
-type = "string"
+type = "path"
 emit = { key = "FlashImagePath" }
 
 [[sections.pio.options]]

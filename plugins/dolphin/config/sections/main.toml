@@ -134,14 +134,14 @@ emit = { key = "AdapterRumble3", bool_style = "upper" }
 [[sections.main.core.options]]
 key = "agp_cart_a_path"
 title = "Agp Cart A Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "AgpCartAPath" }
 
 [[sections.main.core.options]]
 key = "agp_cart_b_path"
 title = "Agp Cart B Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "AgpCartBPath" }
 
@@ -386,28 +386,28 @@ emit = { key = "FPRF", bool_style = "upper" }
 [[sections.main.core.options]]
 key = "gci_folder_a_path"
 title = "GCI Folder A Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "GCIFolderAPath" }
 
 [[sections.main.core.options]]
 key = "gci_folder_a_path_override"
 title = "GCI Folder A Path Override"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "GCIFolderAPathOverride" }
 
 [[sections.main.core.options]]
 key = "gci_folder_b_path"
 title = "GCI Folder B Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "GCIFolderBPath" }
 
 [[sections.main.core.options]]
 key = "gci_folder_b_path_override"
 title = "GCI Folder B Path Override"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "GCIFolderBPathOverride" }
 
@@ -485,14 +485,14 @@ emit = { key = "MEM2Size", int_style = "0x{:08x}" }
 [[sections.main.core.options]]
 key = "memcard_a_path"
 title = "Memcard A Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "MemcardAPath" }
 
 [[sections.main.core.options]]
 key = "memcard_b_path"
 title = "Memcard B Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "MemcardBPath" }
 
@@ -562,7 +562,7 @@ emit = { key = "PauseOnPanic", bool_style = "upper" }
 [[sections.main.core.options]]
 key = "perf_map_dir"
 title = "Perf Map Dir"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "PerfMapDir" }
 
@@ -1309,42 +1309,42 @@ target = "main.GBA"
 [[sections.main.gba.options]]
 key = "bios"
 title = "BIOS"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "BIOS" }
 
 [[sections.main.gba.options]]
 key = "gb_player_rom"
 title = "Gb Player Rom"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "GBPlayerRom" }
 
 [[sections.main.gba.options]]
 key = "rom1"
 title = "Rom1"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "Rom1" }
 
 [[sections.main.gba.options]]
 key = "rom2"
 title = "Rom2"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "Rom2" }
 
 [[sections.main.gba.options]]
 key = "rom3"
 title = "Rom3"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "Rom3" }
 
 [[sections.main.gba.options]]
 key = "rom4"
 title = "Rom4"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "Rom4" }
 
@@ -1358,7 +1358,7 @@ emit = { key = "SavesInRomPath", bool_style = "upper" }
 [[sections.main.gba.options]]
 key = "saves_path"
 title = "Saves Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "SavesPath" }
 
@@ -1632,14 +1632,14 @@ target = "main.General"
 [[sections.main.general.options]]
 key = "current_state_path"
 title = "Current State Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "CurrentStatePath" }
 
 [[sections.main.general.options]]
 key = "dump_path"
 title = "Dump Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "DumpPath" }
 
@@ -1681,14 +1681,14 @@ emit = { key = "ISOPaths" }
 [[sections.main.general.options]]
 key = "load_path"
 title = "Load Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "LoadPath" }
 
 [[sections.main.general.options]]
 key = "nand_root_path"
 title = "NAND Root Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "NANDRootPath" }
 
@@ -1702,7 +1702,7 @@ emit = { key = "RecursiveISOPaths", bool_style = "upper" }
 [[sections.main.general.options]]
 key = "resource_pack_path"
 title = "Resource Pack Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "ResourcePackPath" }
 
@@ -1723,7 +1723,7 @@ emit = { key = "ShowLag", bool_style = "upper" }
 [[sections.main.general.options]]
 key = "skylanders_collection_path"
 title = "Skylanders Collection Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "SkylandersCollectionPath" }
 
@@ -1744,21 +1744,21 @@ emit = { key = "UseGameCovers", bool_style = "upper" }
 [[sections.main.general.options]]
 key = "wfs_path"
 title = "Wfs Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "WFSPath" }
 
 [[sections.main.general.options]]
 key = "wii_sd_card_path"
 title = "WII SD Card Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "WiiSDCardPath" }
 
 [[sections.main.general.options]]
 key = "wii_sd_card_sync_folder"
 title = "WII SD Card Sync Folder"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "WiiSDCardSyncFolder" }
 

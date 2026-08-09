@@ -177,7 +177,7 @@ emit = { key = "DumpMipTextures", bool_style = "upper" }
 [[sections.gfx.settings.options]]
 key = "dump_path"
 title = "Dump Path"
-type = "string"
+type = "path"
 default = ""
 emit = { key = "DumpPath" }
 

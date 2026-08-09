@@ -14,5 +14,5 @@ emit = { key = "HddEnable" }
 [[sections.dev9-hdd.options]]
 key = "hdd_file"
 title = "HDD File"
-type = "string"
+type = "path"
 emit = { key = "HddFile" }

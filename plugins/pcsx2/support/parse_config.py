@@ -46,6 +46,13 @@ cppconfig.NOOP_MACROS = ("TRANSLATE_NOOP", "TRANSLATE_SV", "FSUI_NSTR")
 
 SETTINGS_FILE = "inis/PCSX2.ini"
 BOOL_STYLE = "lower"
+FILESYSTEM_SETTINGS = {
+    ("DEV9/Hdd", "HddFile"),
+    ("EmuCore", "BlockDumpSaveDirectory"),
+    ("EmuCore/GS", "HWDumpDirectory"),
+    ("EmuCore/GS", "OSDFontPath"),
+    ("EmuCore/GS", "SWDumpDirectory"),
+}
 
 # PCSX2 shares stenzek's InputManager with DuckStation, so the same generic-pad
 # vocabulary appears in its binding tables and the same element mapping serves.
@@ -308,6 +315,8 @@ def build_definition(settings: list[dict], defaults: dict[tuple[str, str], str],
                 kind = infer_type(raw)
             else:
                 typed += 1
+            if (section, setting["key"]) in FILESYSTEM_SETTINGS:
+                kind = "path"
             emit = {"key": setting["key"]}
             if kind == "bool":
                 emit["bool_style"] = BOOL_STYLE
