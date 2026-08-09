@@ -41,11 +41,9 @@ impl<'de> From<ConfigurationToml<'de>> for ConfigurationDefinition {
             })
             .collect();
 
-        definition.root_targets = configuration
-            .targets
-            .into_iter()
-            .map(|(key, target)| lower_target(&mut definition, None, key, target))
-            .collect();
+        for (key, target) in configuration.targets {
+            lower_target(&mut definition, None, key, target);
+        }
 
         definition.root_sections = configuration
             .sections
@@ -56,6 +54,7 @@ impl<'de> From<ConfigurationToml<'de>> for ConfigurationDefinition {
         definition.input = configuration
             .input
             .map(|input| lower_input(&mut definition, input, configuration.platforms));
+        let _ = definition.target_graph();
         definition
     }
 }
@@ -86,30 +85,32 @@ fn lower_target<'de>(
         output,
         parent,
         additional_parents,
-        children: Box::new([]),
     });
-    let children = children
-        .into_iter()
-        .map(|(key, target)| lower_target(definition, Some(handle), key, target))
-        .collect();
-    definition.targets[handle].children = children;
+    for (key, target) in children {
+        lower_target(definition, Some(handle), key, target);
+    }
     handle
 }
 
 fn lower_section<'de>(
     definition: &mut ConfigurationDefinition,
-    parent: Option<Handle<SectionDefinition>>,
+    parent: Option<(Handle<SectionDefinition>, Option<OwnedTargetPath>)>,
     key: &'de str,
     section: Section<'de>,
 ) -> Handle<SectionDefinition> {
-    let path = parent.map_or_else(
+    let path = parent.as_ref().map_or_else(
         || SectionPath::from_key(Arc::from(key)),
-        |parent| {
-            definition.sections[parent]
+        |(parent, _)| {
+            definition.sections[*parent]
                 .path
                 .join::<family::Section>(key)
         },
     );
+    let inherited_target = parent.and_then(|(_, target)| target);
+    let target = section
+        .target
+        .map(|path| path.to_owned_path())
+        .or(inherited_target);
     let options = section
         .options
         .into_iter()
@@ -118,18 +119,17 @@ fn lower_section<'de>(
     let sections = section.sections;
 
     let handle = definition.sections.append(SectionDefinition {
-        key: key.into(),
         path,
         title: section.title.into(),
-        description: None,
-        target: section.target.map(|path| path.to_owned_path()),
-        parent,
+        target: target.clone(),
         children: Box::new([]),
         options,
     });
     let children = sections
         .into_iter()
-        .map(|(key, section)| lower_section(definition, Some(handle), key, section))
+        .map(|(key, section)| {
+            lower_section(definition, Some((handle, target.clone())), key, section)
+        })
         .collect();
     definition.sections[handle].children = children;
     handle
@@ -139,38 +139,35 @@ fn lower_option<'de>(
     definition: &mut ConfigurationDefinition,
     option: TomlOptionDefinition<'de>,
 ) -> Handle<OptionDefinition> {
-    let value = match option.kind {
-        "bool" => ValueDefinition::Boolean {
-            default: lower_default(option.default, false),
-        },
-        "int" => ValueDefinition::Integer {
+    let choice = option.kind == "select";
+    let kind = match option.kind {
+        "bool" => ValueKind::Boolean,
+        "int" => ValueKind::Integer {
             range: option.range.map(|range| OptionRange::Integer {
                 min: range.min,
                 max: range.max,
             }),
-            default: lower_default(option.default, false),
         },
-        "float" => ValueDefinition::Float {
+        "float" => ValueKind::Float {
             range: option.range.map(|range| OptionRange::Float {
                 min: range.min as f64,
                 max: range.max as f64,
             }),
-            default: lower_default(option.default, false),
         },
-        "string" => ValueDefinition::String {
-            default: lower_default(option.default, false),
-        },
-        "select" => ValueDefinition::Select {
+        "string" => ValueKind::String,
+        "select" => ValueKind::Select {
             domain: lower_domain(option.domain),
-            default: lower_default(option.default, true),
         },
         kind => panic!("unsupported configuration option type `{kind}`"),
+    };
+    let value = ValueDefinition {
+        kind,
+        default: lower_default(option.default, choice),
     };
 
     definition.options.append(OptionDefinition {
         key: option.key.into(),
         title: option.title.into(),
-        description: None,
         value,
         emit: lower_emit(option.emit),
     })
@@ -273,30 +270,23 @@ fn lower_layout_mapping(
 }
 
 fn lower_platform(platform: PortTable<'_>) -> PlatformDefinition {
-    PlatformDefinition {
-        groups: platform
-            .ports
-            .into_iter()
-            .map(|(key, ports)| {
-                let mut ports: Vec<_> = ports
-                    .into_iter()
-                    .map(|(index, port)| {
-                        let index = index
-                            .parse()
-                            .unwrap_or_else(|_| panic!("port index `{index}` is not an integer"));
-                        lower_port(index, port)
-                    })
-                    .collect();
-                ports.sort_by_key(|port| port.index);
-                (
-                    key.into(),
-                    PortGroupDefinition {
-                        ports: ports.into_boxed_slice(),
-                    },
-                )
-            })
-            .collect(),
-    }
+    platform
+        .ports
+        .into_iter()
+        .map(|(key, ports)| {
+            let mut ports: Vec<_> = ports
+                .into_iter()
+                .map(|(index, port)| {
+                    let index = index
+                        .parse()
+                        .unwrap_or_else(|_| panic!("port index `{index}` is not an integer"));
+                    lower_port(index, port)
+                })
+                .collect();
+            ports.sort_by_key(|port| port.index);
+            (key.into(), ports.into_boxed_slice())
+        })
+        .collect()
 }
 
 fn lower_port(index: usize, port: PortAssignment<'_>) -> PortDefinition {

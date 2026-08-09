@@ -3,12 +3,14 @@ mod from_toml;
 mod instance;
 mod path;
 mod realized;
+mod target;
 mod value;
 
 pub use definition::*;
 pub use instance::*;
 pub use path::*;
 pub use realized::*;
+pub use target::*;
 pub use value::*;
 
 #[cfg(test)]
@@ -25,16 +27,17 @@ mod tests {
         let backend = definition.options.append(OptionDefinition {
             key: "backend".into(),
             title: "Backend".into(),
-            description: None,
-            value: ValueDefinition::Select {
-                domain: DomainDefinition::Static(
-                    vec![Choice {
-                        key: ChoiceKey::from("vulkan"),
-                        label: "Vulkan".into(),
-                        value: Value::String("Vulkan".into()),
-                    }]
-                    .into_boxed_slice(),
-                ),
+            value: ValueDefinition {
+                kind: ValueKind::Select {
+                    domain: DomainDefinition::Static(
+                        vec![Choice {
+                            key: ChoiceKey::from("vulkan"),
+                            label: "Vulkan".into(),
+                            value: Value::String("Vulkan".into()),
+                        }]
+                        .into_boxed_slice(),
+                    ),
+                },
                 default: DefaultDefinition::Literal(Value::Choice("vulkan".into())),
             },
             emit: emit("Backend"),
@@ -42,20 +45,17 @@ mod tests {
         let sideways = definition.options.append(OptionDefinition {
             key: "sideways".into(),
             title: "Sideways Wii Remote".into(),
-            description: None,
-            value: ValueDefinition::Boolean {
+            value: ValueDefinition {
+                kind: ValueKind::Boolean,
                 default: DefaultDefinition::Literal(Value::Boolean(false)),
             },
             emit: emit("Sideways"),
         });
 
         let graphics = definition.sections.append(SectionDefinition {
-            key: "graphics".into(),
             path: SectionPath::new("graphics").unwrap(),
             title: "Graphics".into(),
-            description: None,
             target: None,
-            parent: None,
             children: Box::new([]),
             options: Box::new([backend]),
         });
@@ -75,43 +75,34 @@ mod tests {
             )]),
             platforms: BTreeMap::from([(
                 "NINTENDO_WII".into(),
-                PlatformDefinition {
-                    groups: BTreeMap::from([(
-                        "wii".into(),
-                        PortGroupDefinition {
-                            ports: Box::new([PortDefinition {
-                                index: 0,
-                                target: OwnedTargetPath::new("wiipad.Wiimote1").unwrap(),
-                                layouts: Box::new(["WII_REMOTE_CONTROLLER".into()]),
-                                emit: BTreeMap::new(),
-                            }]),
-                        },
-                    )]),
-                },
+                BTreeMap::from([(
+                    "wii".into(),
+                    Box::new([PortDefinition {
+                        index: 0,
+                        target: OwnedTargetPath::new("wiipad.Wiimote1").unwrap(),
+                        layouts: Box::new(["WII_REMOTE_CONTROLLER".into()]),
+                        emit: BTreeMap::new(),
+                    }]) as PortGroupDefinition,
+                )]),
             )]),
         });
 
         let definition = Arc::new(definition);
         let realized = definition
             .resolve_with(|_handle, option| -> Result<_, std::convert::Infallible> {
-                let (default, domain) = match &option.value {
-                    ValueDefinition::Boolean { default }
-                    | ValueDefinition::Integer { default, .. }
-                    | ValueDefinition::Float { default, .. }
-                    | ValueDefinition::String { default } => {
-                        (literal(default), RealizedDomain::None)
-                    }
-                    ValueDefinition::Select { default, domain } => (
-                        literal(default),
-                        match domain {
-                            DomainDefinition::Static(_) => RealizedDomain::Static,
-                            DomainDefinition::None | DomainDefinition::Resolver(_) => {
-                                RealizedDomain::None
-                            }
-                        },
-                    ),
+                let domain = match &option.value.kind {
+                    ValueKind::Select { domain } => match domain {
+                        DomainDefinition::Static(_) => RealizedDomain::Static,
+                        DomainDefinition::None | DomainDefinition::Resolver(_) => {
+                            RealizedDomain::None
+                        }
+                    },
+                    _ => RealizedDomain::None,
                 };
-                Ok(RealizedOption { default, domain })
+                Ok(RealizedOption {
+                    default: literal(&option.value.default),
+                    domain,
+                })
             })
             .unwrap();
 
@@ -187,7 +178,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            InstantiateError::LayoutNotAccepted { index: 0, .. }
+            crate::error::Error::LayoutNotAccepted { index: 0, .. }
         ));
     }
 
@@ -244,12 +235,7 @@ mod tests {
         assert_eq!(definition.targets.len(), 2);
         assert_eq!(definition.sections.len(), 1);
         assert_eq!(definition.options.len(), 1);
-        assert_eq!(
-            definition.targets[definition.root_targets[0]]
-                .children
-                .len(),
-            1
-        );
+        assert_eq!(definition.target_graph().unwrap().output_roots().len(), 1);
         assert_eq!(
             definition.sections[definition.root_sections[0]]
                 .path
@@ -257,10 +243,28 @@ mod tests {
             "general"
         );
         assert_eq!(
-            definition.input.as_ref().unwrap().platforms["NINTENDO_GCN"].groups["controller"].ports
-                [0]
-            .index,
+            definition.input.as_ref().unwrap().platforms["NINTENDO_GCN"]["controller"][0].index,
             0
         );
+    }
+
+    #[test]
+    fn lowering_compiles_and_validates_the_target_graph() {
+        let source = r#"
+            [targets.first]
+            parent = ["second"]
+
+            [targets.second]
+            parent = ["first"]
+        "#;
+        let arena = toml_spanner::Arena::new();
+        let parsed =
+            crate::ConfigurationToml::try_from_tomls(&arena, std::iter::once(source)).unwrap();
+        let definition = ConfigurationDefinition::from(parsed);
+
+        assert!(matches!(
+            definition.target_graph(),
+            Err(crate::error::Error::TargetCycle(_))
+        ));
     }
 }

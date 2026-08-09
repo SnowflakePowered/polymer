@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use consolespec::BindingKey;
 use indexmap::IndexMap;
 
 use crate::arena::{Arena, Handle};
 
-use super::{ChoiceKey, OwnedTargetPath, SectionPath, Value};
+use super::{ChoiceKey, OwnedTargetPath, SectionPath, TargetDefinition, TargetGraph, Value};
 
 /// An owned, context-independent configuration definition.
 #[derive(Debug)]
@@ -13,11 +13,11 @@ pub struct ConfigurationDefinition {
     pub meta: BTreeMap<Box<str>, Box<str>>,
     pub bool_styles: BTreeMap<Box<str>, BoolStyleDefinition>,
     pub targets: Arena<TargetDefinition>,
-    pub root_targets: Box<[Handle<TargetDefinition>]>,
     pub sections: Arena<SectionDefinition>,
     pub root_sections: Box<[Handle<SectionDefinition>]>,
     pub options: Arena<OptionDefinition>,
     pub input: Option<InputDefinition>,
+    pub(super) target_graph: OnceLock<TargetGraph>,
 }
 
 impl ConfigurationDefinition {
@@ -26,11 +26,11 @@ impl ConfigurationDefinition {
             meta: BTreeMap::new(),
             bool_styles: BTreeMap::new(),
             targets: Arena::new(),
-            root_targets: Box::new([]),
             sections: Arena::new(),
             root_sections: Box::new([]),
             options: Arena::new(),
             input: None,
+            target_graph: OnceLock::new(),
         }
     }
 }
@@ -39,21 +39,6 @@ impl ConfigurationDefinition {
 pub struct BoolStyleDefinition {
     pub r#true: Box<str>,
     pub r#false: Box<str>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TargetDefinition {
-    pub path: OwnedTargetPath,
-    pub output: Option<TargetOutputDefinition>,
-    pub parent: Option<Handle<TargetDefinition>>,
-    pub additional_parents: Box<[OwnedTargetPath]>,
-    pub children: Box<[Handle<TargetDefinition>]>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TargetOutputDefinition {
-    pub format: Box<str>,
-    pub path: Box<str>,
 }
 
 impl Default for ConfigurationDefinition {
@@ -65,12 +50,9 @@ impl Default for ConfigurationDefinition {
 /// A node in the flattened presentation hierarchy.
 #[derive(Clone, Debug)]
 pub struct SectionDefinition {
-    pub key: Box<str>,
     pub path: SectionPath,
     pub title: Box<str>,
-    pub description: Option<Box<str>>,
     pub target: Option<OwnedTargetPath>,
-    pub parent: Option<Handle<SectionDefinition>>,
     pub children: Box<[Handle<SectionDefinition>]>,
     pub options: Box<[Handle<OptionDefinition>]>,
 }
@@ -81,7 +63,6 @@ pub struct OptionDefinition {
     /// The local key beneath a section or concrete input placement.
     pub key: Box<str>,
     pub title: Box<str>,
-    pub description: Option<Box<str>>,
     pub value: ValueDefinition,
     pub emit: EmitDefinition,
 }
@@ -96,25 +77,18 @@ pub struct EmitDefinition {
 }
 
 #[derive(Clone, Debug)]
-pub enum ValueDefinition {
-    Boolean {
-        default: DefaultDefinition,
-    },
-    Integer {
-        range: Option<OptionRange>,
-        default: DefaultDefinition,
-    },
-    Float {
-        range: Option<OptionRange>,
-        default: DefaultDefinition,
-    },
-    String {
-        default: DefaultDefinition,
-    },
-    Select {
-        domain: DomainDefinition,
-        default: DefaultDefinition,
-    },
+pub struct ValueDefinition {
+    pub kind: ValueKind,
+    pub default: DefaultDefinition,
+}
+
+#[derive(Clone, Debug)]
+pub enum ValueKind {
+    Boolean,
+    Integer { range: Option<OptionRange> },
+    Float { range: Option<OptionRange> },
+    String,
+    Select { domain: DomainDefinition },
 }
 
 #[derive(Clone, Debug)]
@@ -175,16 +149,10 @@ pub struct LayoutDefinition {
     pub options: Box<[Handle<OptionDefinition>]>,
 }
 
-#[derive(Debug)]
-pub struct PlatformDefinition {
-    pub groups: BTreeMap<Box<str>, PortGroupDefinition>,
-}
+pub type PlatformDefinition = BTreeMap<Box<str>, PortGroupDefinition>;
 
-#[derive(Debug)]
-pub struct PortGroupDefinition {
-    /// Array position is the port index exposed through the launch API.
-    pub ports: Box<[PortDefinition]>,
-}
+/// Ports in one named launch-API group.
+pub type PortGroupDefinition = Box<[PortDefinition]>;
 
 #[derive(Debug)]
 pub struct PortDefinition {

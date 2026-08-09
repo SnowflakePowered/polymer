@@ -11,24 +11,6 @@ use core::{cmp::Ordering, fmt, hash, marker::PhantomData};
 /// the same size and representation as `Handle<T>`.
 pub type Index = crate::arena::non_max_u32::NonMaxU32;
 
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq)]
-#[error("Handle {index} of {kind} is either not present, or inaccessible yet")]
-pub struct BadHandle {
-    pub kind: &'static str,
-    pub _source: &'static str,
-    pub index: usize,
-}
-
-impl BadHandle {
-    pub fn new<T, H>(handle: Handle<T, H>) -> Self {
-        Self {
-            kind: core::any::type_name::<T>(),
-            _source: core::any::type_name::<H>(),
-            index: handle.index(),
-        }
-    }
-}
-
 /// A strongly typed reference to an arena item.
 ///
 /// A `Handle` value can be used as an index into an [`Arena`].

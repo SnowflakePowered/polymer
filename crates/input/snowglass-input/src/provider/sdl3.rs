@@ -1609,7 +1609,7 @@ fn profile_matches(
 /// right shoulder, and an N64 C-button the right stick, neither of which a
 /// key-shaped match could have known.
 fn element_wire(layout: &InputLayout, key: BindingKey) -> Option<Wire> {
-    match Projection::shared().target(layout, key)? {
+    match Projection::shared().target(&layout.id, key)? {
         Target::Key(target) => sdl::wire(target),
         // A composite is at no *single* location: an eight-way stick's
         // north-east is the pad's up and right together, which one binding

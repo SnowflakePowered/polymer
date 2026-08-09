@@ -215,7 +215,7 @@ impl InputLayout {
         // stick — which needs no special case once the unit of mapping is a
         // control rather than a cluster.
         for element in &self.elements {
-            match projection.target(self, element.key) {
+            match projection.target(&self.id, element.key) {
                 Some(Target::Key(target)) => output.claim(target),
                 Some(Target::Both(first, second)) => {
                     output.claim(first);

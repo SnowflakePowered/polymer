@@ -63,7 +63,7 @@ output = { format = "xml", path = "controllerProfiles/controller7.xml" }
 
 [input]
 driver = "sdl3"
-device = "SDL/{index}"
+device = "{index}_{guid}"
 
 [input.mapping]
 "button.a"              = "0"

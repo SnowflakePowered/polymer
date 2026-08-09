@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, collections::HashMap, ops, slice, sync::Arc};
 
-use crate::arena::{Arena, Handle};
+use crate::{
+    arena::{Arena, Handle},
+    error::{Error, Result},
+};
 
 use super::{OptionDefinition, RealizedDefinition, SettingPath, Value, family};
 
@@ -22,46 +25,16 @@ pub struct Setting {
     pub value: Value,
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
-pub enum InstantiateError {
-    #[error("the definition has no input configuration")]
-    NoInputDefinition,
-    #[error("unknown console `{0}`")]
-    UnknownConsole(Box<str>),
-    #[error("unknown port group `{group}` for console `{console}`")]
-    UnknownPortGroup { console: Box<str>, group: Box<str> },
-    #[error(
-        "port group `{group}` for console `{console}` expects at most {expected} assignments, got {actual}"
-    )]
-    TooManyPortAssignments {
-        console: Box<str>,
-        group: Box<str>,
-        expected: usize,
-        actual: usize,
-    },
-    #[error("port {index} is not declared in group `{group}`")]
-    UnknownPort { group: Box<str>, index: usize },
-    #[error("unknown input layout `{0}`")]
-    UnknownLayout(Box<str>),
-    #[error("port {index} in group `{group}` does not accept layout `{layout}`")]
-    LayoutNotAccepted {
-        group: Box<str>,
-        index: usize,
-        layout: Box<str>,
-    },
-    #[error("more than one setting materialized at `{0}`")]
-    DuplicateSetting(SettingPath),
-}
-
 impl RealizedDefinition {
     pub fn instantiate(
         self: &Arc<Self>,
         console: impl Into<Box<str>>,
         port_assignments: PortAssignments,
-    ) -> Result<ConfigurationInstance, InstantiateError> {
+    ) -> Result<ConfigurationInstance> {
         let console = console.into();
         let mut builder = InstanceBuilder::new(self.clone(), console, port_assignments);
         builder.instantiate_sections()?;
+        builder.instantiate_input_options()?;
         builder.instantiate_ports()?;
         Ok(builder.finish())
     }
@@ -90,7 +63,7 @@ impl InstanceBuilder {
         }
     }
 
-    fn instantiate_sections(&mut self) -> Result<(), InstantiateError> {
+    fn instantiate_sections(&mut self) -> Result<()> {
         let definition = self.definition.definition();
         let mut placements = Vec::new();
         for (_, section) in definition.sections.iter() {
@@ -110,36 +83,32 @@ impl InstanceBuilder {
         Ok(())
     }
 
-    fn instantiate_ports(&mut self) -> Result<(), InstantiateError> {
+    fn instantiate_ports(&mut self) -> Result<()> {
         let definition = self.definition.definition();
         let Some(input) = definition.input.as_ref() else {
             return if self.port_assignments.is_empty() {
                 Ok(())
             } else {
-                Err(InstantiateError::NoInputDefinition)
+                Err(Error::NoInputDefinition)
             };
         };
         let platform = input
             .platforms
             .get(self.console.as_ref())
-            .ok_or_else(|| InstantiateError::UnknownConsole(self.console.clone()))?;
+            .ok_or_else(|| Error::UnknownConsole(self.console.clone()))?;
 
         let mut placements = Vec::new();
         for (group_name, assignments) in &self.port_assignments {
-            let group = platform.groups.get(group_name.as_ref()).ok_or_else(|| {
-                InstantiateError::UnknownPortGroup {
-                    console: self.console.clone(),
-                    group: group_name.clone(),
-                }
-            })?;
-            let port_count = group
-                .ports
-                .iter()
-                .map(|port| port.index + 1)
-                .max()
-                .unwrap_or(0);
+            let group =
+                platform
+                    .get(group_name.as_ref())
+                    .ok_or_else(|| Error::UnknownPortGroup {
+                        console: self.console.clone(),
+                        group: group_name.clone(),
+                    })?;
+            let port_count = group.iter().map(|port| port.index + 1).max().unwrap_or(0);
             if assignments.len() > port_count {
-                return Err(InstantiateError::TooManyPortAssignments {
+                return Err(Error::TooManyPortAssignments {
                     console: self.console.clone(),
                     group: group_name.clone(),
                     expected: port_count,
@@ -149,15 +118,14 @@ impl InstanceBuilder {
 
             for (index, layout_name) in assignments.iter().enumerate() {
                 let port = group
-                    .ports
                     .iter()
                     .find(|port| port.index == index)
-                    .ok_or_else(|| InstantiateError::UnknownPort {
+                    .ok_or_else(|| Error::UnknownPort {
                         group: group_name.clone(),
                         index,
                     })?;
                 if !port.layouts.contains(layout_name) {
-                    return Err(InstantiateError::LayoutNotAccepted {
+                    return Err(Error::LayoutNotAccepted {
                         group: group_name.clone(),
                         index,
                         layout: layout_name.clone(),
@@ -166,7 +134,7 @@ impl InstanceBuilder {
                 let layout = input
                     .layouts
                     .get(layout_name.as_ref())
-                    .ok_or_else(|| InstantiateError::UnknownLayout(layout_name.clone()))?;
+                    .ok_or_else(|| Error::UnknownLayout(layout_name.clone()))?;
 
                 for option in layout.options.iter().copied() {
                     let option_definition = &definition.options[option];
@@ -187,13 +155,31 @@ impl InstanceBuilder {
         Ok(())
     }
 
-    fn append(
-        &mut self,
-        path: SettingPath,
-        option: Handle<OptionDefinition>,
-    ) -> Result<(), InstantiateError> {
+    fn instantiate_input_options(&mut self) -> Result<()> {
+        let Some(input) = self.definition.definition().input.as_ref() else {
+            return Ok(());
+        };
+        let placements = input
+            .options
+            .iter()
+            .copied()
+            .map(|option| {
+                let key = &self.definition.definition().options[option].key;
+                (
+                    SettingPath::from_key(Arc::from(format!("input.{key}"))),
+                    option,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (path, option) in placements {
+            self.append(path, option)?;
+        }
+        Ok(())
+    }
+
+    fn append(&mut self, path: SettingPath, option: Handle<OptionDefinition>) -> Result<()> {
         if self.setting_by_path.contains_key(path.as_str()) {
-            return Err(InstantiateError::DuplicateSetting(path));
+            return Err(Error::DuplicateSetting(path));
         }
 
         let value = self.definition.realized_option(option).default.clone();

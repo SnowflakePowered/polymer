@@ -1,5 +1,7 @@
 use std::{borrow::Borrow, cmp::Ordering, fmt, hash, iter, marker::PhantomData, sync::Arc};
 
+use crate::error::{Error, Result};
+
 /// Marker types distinguishing configuration path namespaces.
 pub mod family {
     pub enum Generic {}
@@ -90,12 +92,12 @@ impl<S: AsRef<str>, F> ConfigurationPath<S, F> {
 
 impl<F> ConfigurationPath<Arc<str>, F> {
     /// Creates an owned configuration path.
-    pub fn new(path: impl Into<Arc<str>>) -> Result<Self, InvalidConfigurationPath> {
+    pub fn new(path: impl Into<Arc<str>>) -> Result<Self> {
         let path = path.into();
         if Self::is_valid(&path) {
             Ok(Self::from_key(path))
         } else {
-            Err(InvalidConfigurationPath)
+            Err(Error::InvalidConfigurationPath)
         }
     }
 
@@ -103,10 +105,6 @@ impl<F> ConfigurationPath<Arc<str>, F> {
         ConfigurationPath::from_key(Arc::from(format!("{}.{component}", self.as_str())))
     }
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("a configuration path cannot contain an empty component")]
-pub struct InvalidConfigurationPath;
 
 impl<S: AsRef<str>, T: AsRef<str>, F> PartialEq<ConfigurationPath<T, F>>
     for ConfigurationPath<S, F>

@@ -95,6 +95,7 @@ snowglass-statistics = { path = "crates/runtime/snowglass-statistics" }
 snowglass-ui = { path = "crates/runtime/snowglass-ui" }
 snowglass-platform-windows = { path = "crates/runtime/snowglass-platform-windows" }
 snowglass-input = { path = "crates/input/snowglass-input" }
+snowglass-config = { path = "crates/snowglass-config" }
 snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
 snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
 snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }

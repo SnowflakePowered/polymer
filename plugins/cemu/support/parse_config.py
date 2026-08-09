@@ -778,7 +778,7 @@ def build_input(ids: dict[str, dict[str, int]], root: Path, spec_root: Path,
                                 "mappings"),
                   ""]
 
-    lines += ["[input]", 'driver = "sdl3"', 'device = "SDL/{index}"', ""]
+    lines += ["[input]", 'driver = "sdl3"', 'device = "{index}_{guid}"', ""]
     lines += build_sdl_mapping(root, report) + [""]
 
     bound = 0

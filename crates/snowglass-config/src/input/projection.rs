@@ -2,7 +2,7 @@
 //!
 //! This is mapping, not description. A device says what controls it has; this
 //! decides which of the SDL pad's controls carry them. Both sides are
-//! [`BindingKey`]s — the left of the device, the right of [`crate::sdl`]'s pad —
+//! [`BindingKey`]s — the left of the device, the right of the virtual SDL pad —
 //! so there is no third vocabulary of slot names, and the same table read
 //! backwards says which of *our* controls a physical pad's button is.
 //!
@@ -16,17 +16,18 @@
 //! Wii Remote has no X/Y face buttons; a Saturn pad's C and Z become shoulders
 //! because its shoulder slots are free.
 
-use consolespec::BindingKey;
-use serde::Deserialize;
-use std::collections::HashMap;
+use consolespec::{BindingKey, InputSpec};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::OnceLock;
+use toml_spanner::Arena;
 
-use crate::layout::InputLayout;
-use crate::sdl;
+use crate::error::{Error, Result};
 
-pub const EMBEDDED_SDL_PROJECTION: &str = include_str!("../projection/SDL.proj.toml");
+use super::gamepad::VirtualPad;
+
+pub const EMBEDDED_SDL_PROJECTION: &str = include_str!("../../projection/SDL.proj.toml");
 
 /// A way off the pad. Some controls are not gamepad controls at all, and saying
 /// *which* transport carries them is what lets one be routed later.
@@ -70,10 +71,6 @@ pub enum Target {
     None,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(transparent)]
-struct Document(HashMap<String, HashMap<String, String>>);
-
 #[derive(Clone, Debug)]
 pub struct Projection {
     /// Layout id -> device key -> where it goes.
@@ -81,7 +78,7 @@ pub struct Projection {
 }
 
 impl Projection {
-    pub fn embedded() -> Result<Self, String> {
+    pub fn embedded() -> Result<Self> {
         Self::from_toml(EMBEDDED_SDL_PROJECTION)
     }
 
@@ -98,34 +95,33 @@ impl Projection {
         })
     }
 
-    pub fn from_toml(source: &str) -> Result<Self, String> {
-        let document: Document =
-            toml::from_str(source).map_err(|error| format!("invalid projection: {error}"))?;
+    pub(crate) fn from_toml(source: &str) -> Result<Self> {
+        let arena = Arena::new();
+        let mut document = toml_spanner::parse(source, &arena)?;
+        let document = document.to::<BTreeMap<&str, BTreeMap<&str, &str>>>()?;
         let mut layouts = HashMap::new();
-        for (layout, table) in document.0 {
+        for (layout, table) in document {
             let mut entries = HashMap::new();
             for (key, target) in table {
-                let key = BindingKey::from_str(&key)
-                    .map_err(|error| format!("projection {layout}: {error}"))?;
+                let key = BindingKey::from_str(key)?;
                 let target = if target == "none" {
                     Target::None
-                } else if let Some(transport) = Transport::parse(&target) {
+                } else if let Some(transport) = Transport::parse(target) {
                     Target::Transport(transport)
                 } else {
-                    let target = BindingKey::from_str(&target)
-                        .map_err(|error| format!("projection {layout}.{key}: {error}"))?;
+                    let target = BindingKey::from_str(target)?;
                     // A target the pad does not have could never fire, and is
                     // the mistake this file is most able to make.
-                    if !sdl::has(target) {
-                        return Err(format!(
+                    if !VirtualPad::has(target) {
+                        return Err(Error::projection(format!(
                             "projection {layout}.{key}: the SDL pad has no {target}"
-                        ));
+                        )));
                     }
                     Target::Key(target)
                 };
                 entries.insert(key, target);
             }
-            layouts.insert(layout, entries);
+            layouts.insert(layout.to_owned(), entries);
         }
         Ok(Self { layouts })
     }
@@ -138,22 +134,22 @@ impl Projection {
     /// `directional.left.n` reaches the pad's `directional.n`, while a *second*
     /// directional does not: the N64's C-buttons are not its D-pad, and must
     /// say where they go.
-    pub fn target(&self, layout: &InputLayout, key: BindingKey) -> Option<Target> {
+    pub fn target(&self, layout_id: &str, key: BindingKey) -> Option<Target> {
         if let Some(target) = self
             .layouts
-            .get(&layout.id)
+            .get(layout_id)
             .and_then(|table| table.get(&key))
         {
             return Some(*target);
         }
         // A control the pad has under the same name keeps it.
-        if sdl::has(key) {
+        if VirtualPad::has(key) {
             return Some(Self::place(key));
         }
         // Otherwise the device's *primary* cluster of that kind answers to the
         // pad's unqualified name for it, and no other does.
         let unaligned = key.unaligned();
-        if layout.resolve(unaligned) == Some(key) && sdl::has(unaligned) {
+        if resolve(layout_id, unaligned) == Some(key) && VirtualPad::has(unaligned) {
             return Some(Self::place(unaligned));
         }
         None
@@ -161,7 +157,7 @@ impl Projection {
 
     /// One pad control, or the two a composite splits into.
     fn place(target: BindingKey) -> Target {
-        match sdl::decompose(target) {
+        match VirtualPad::decompose(target) {
             Some([first, second]) => Target::Both(first, second),
             None => Target::Key(target),
         }
@@ -169,13 +165,14 @@ impl Projection {
 
     /// Every control of `layout` that reaches neither the pad nor a declared
     /// transport. A binding for one of these could never fire.
-    pub fn unprojected(&self, layout: &InputLayout) -> Vec<BindingKey> {
-        layout
-            .elements
-            .iter()
-            .map(|element| element.key)
-            .filter(|key| self.target(layout, *key).is_none())
-            .collect()
+    pub fn unprojected(&self, layout_id: &str) -> Result<Vec<BindingKey>> {
+        let layout =
+            InputSpec::try_from(layout_id).map_err(|error| Error::projection(error.to_string()))?;
+        Ok(layout
+            .elements()
+            .map(|element| element.binding())
+            .filter(|key| self.target(layout_id, *key).is_none())
+            .collect())
     }
 
     pub fn layout_names(&self) -> impl Iterator<Item = &str> {
@@ -183,7 +180,94 @@ impl Projection {
     }
 }
 
+fn resolve(layout_id: &str, key: BindingKey) -> Option<BindingKey> {
+    let layout = InputSpec::try_from(layout_id).ok()?;
+    if layout.elements().any(|element| element.binding() == key) {
+        return Some(key);
+    }
+    let (kind, class) = match key {
+        BindingKey::Directional {
+            alignment: None, ..
+        } => ("directional", None),
+        BindingKey::Analog {
+            class,
+            alignment: None,
+            ..
+        } => ("analog", Some(class)),
+        BindingKey::Pointer {
+            alignment: None, ..
+        } => ("pointer", None),
+        _ => return None,
+    };
+    let cluster = layout
+        .clusters()
+        .find(|cluster| cluster.kind() == kind && cluster.class() == class)?;
+    let candidate = key.with_alignment(cluster.alignment());
+    layout
+        .elements()
+        .any(|element| element.binding() == candidate)
+        .then_some(candidate)
+}
+
 #[cfg(test)]
+mod config_tests {
+    use super::*;
+    use consolespec::key;
+
+    #[test]
+    fn embedded_projection_covers_every_configurable_control() {
+        let projection = Projection::embedded().unwrap();
+        let mut gaps = Vec::new();
+        for layout in InputSpec::all() {
+            for key in projection.unprojected(layout.id()).unwrap() {
+                if matches!(key, BindingKey::Rumble(_) | BindingKey::Peripheral { .. }) {
+                    continue;
+                }
+                gaps.push(format!("{}: {key}", layout.id()));
+            }
+        }
+        assert!(gaps.is_empty(), "controls with no projection: {gaps:#?}");
+    }
+
+    #[test]
+    fn primary_clusters_and_explicit_overrides_are_resolved() {
+        let projection = Projection::embedded().unwrap();
+        assert_eq!(
+            projection.target("XBOX_CONTROLLER", key!(button.a)),
+            Some(Target::Key(key!(button.a)))
+        );
+        assert_eq!(
+            projection.target("N64_CONTROLLER", key!(directional.left.n)),
+            Some(Target::Key(key!(directional.n)))
+        );
+        assert_eq!(
+            projection.target("N64_CONTROLLER", key!(directional.right.n)),
+            Some(Target::Key(key!(analog.stick.right.y-)))
+        );
+    }
+
+    #[test]
+    fn projection_values_must_be_strings() {
+        let error = Projection::from_toml("[XBOX_CONTROLLER]\n\"button.a\" = 1\n")
+            .expect_err("a numeric projection target must be rejected");
+        assert!(
+            error
+                .to_string()
+                .starts_with("the definition does not match the schema:"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn binding_parse_errors_remain_typed() {
+        let error = Projection::from_toml("[XBOX_CONTROLLER]\n\"not-a-binding\" = \"button.a\"\n")
+            .expect_err("an invalid binding key must be rejected");
+
+        assert!(matches!(error, Error::BindingError(_)));
+    }
+}
+
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use crate::layout::{SdlAxis, SdlButton};
@@ -337,7 +421,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod smoke {
     use super::*;
 

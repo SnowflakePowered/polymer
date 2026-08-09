@@ -5,6 +5,8 @@ pub use handle::*;
 
 use core::{fmt, ops, slice};
 
+use crate::error::{Error, Result};
+
 /// An arena holding values that can be referenced by strongly typed handles.
 #[derive(Clone)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -107,10 +109,10 @@ impl<T> Arena<T> {
     }
 
     /// Returns a value when `handle` belongs to this arena.
-    pub fn try_get(&self, handle: Handle<T>) -> Result<&T, BadHandle> {
+    pub fn try_get(&self, handle: Handle<T>) -> Result<&T> {
         self.data
             .get(handle.index())
-            .ok_or_else(|| BadHandle::new(handle))
+            .ok_or_else(|| Error::bad_handle::<T, ()>(handle.index()))
     }
 
     /// Returns a mutable reference to the value at `handle`.
@@ -124,11 +126,11 @@ impl<T> Arena<T> {
     }
 
     /// Checks that `handle` belongs to this arena.
-    pub fn check_contains_handle(&self, handle: Handle<T>) -> Result<(), BadHandle> {
+    pub fn check_contains_handle(&self, handle: Handle<T>) -> Result<()> {
         if handle.index() < self.data.len() {
             Ok(())
         } else {
-            Err(BadHandle::new(handle))
+            Err(Error::bad_handle::<T, ()>(handle.index()))
         }
     }
 

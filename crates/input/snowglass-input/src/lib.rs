@@ -6,7 +6,7 @@ pub mod gamepad;
 pub mod hub;
 pub mod layout;
 pub mod mouse;
-pub mod projection;
+pub use snowglass_config::input::projection;
 pub mod provider;
 pub mod sdl;
 

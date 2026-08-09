@@ -1,4 +1,4 @@
-# Projects each device's controls onto the SDL virtual gamepad.
+# Projects each consolespec device's controls onto the Snowglass SDL virtual gamepad.
 #
 # Both sides are binding keys: the left of a device, the right of
 # `crate::sdl`'s pad. A control the pad has under the same key needs no

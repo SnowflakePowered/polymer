@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use crate::arena::Handle;
 
-use super::{Choice, ConfigurationDefinition, DomainDefinition, OptionDefinition, RealizedOptionRef, Value};
+use super::{
+    Choice, ConfigurationDefinition, DomainDefinition, OptionDefinition, RealizedOptionRef, Value,
+    ValueKind,
+};
 
 /// The context-dependent overlay used both by the frontend and by instances.
 pub struct RealizedDefinition {
@@ -52,10 +55,9 @@ impl RealizedDefinition {
     pub fn choices(&self, handle: Handle<OptionDefinition>) -> Option<&[Choice]> {
         match &self.options[handle.index()].domain {
             RealizedDomain::None => None,
-            RealizedDomain::Static => match &self.definition.options[handle].value {
-                super::ValueDefinition::Select {
+            RealizedDomain::Static => match &self.definition.options[handle].value.kind {
+                ValueKind::Select {
                     domain: DomainDefinition::Static(choices),
-                    ..
                 } => Some(choices),
                 _ => None,
             },

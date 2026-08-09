@@ -1044,23 +1044,21 @@ Gamepad"` (`snowglass-hook-sdl3/src/install.rs:92`,
 `sdl::BUTTONS` by `wire_order_matches_the_pad`. So the SDL GUID is stable — which
 is what makes pinning a mapping possible at all.
 
-### 6.2 Two prerequisites in snowglass proper
+### 6.2 SDL2 prerequisite
 
 These are not this crate's work, but the input design is unsound without them.
 
-- **P1 — SDL2 must honor `SdlOutputLayout`.** **[V]** `snowglass-hook-sdl2` hard
+- **SDL2 must honor `SdlOutputLayout`.** **[V]** `snowglass-hook-sdl2` hard
   codes `button_mask = (1 << COUNT) - 1` and a single name
   (`src/api.rs:50‑55`) and `Api::load` takes no layouts, while SDL3 takes
   `Vec<(SdlOutputLayout, String)>`. The two backends present *different topologies
   today*. The SDL2 `VirtualJoystickDesc` already has the mask fields; it needs the
   same plumbing SDL3 has in `install.rs:88‑96`. Until then, an SDL2 emulator sees
   every element regardless of layout.
-- **P2 — the virtual pad name must include the layout id.** All ports currently
-  share one name, hence one GUID, hence one `SDL_GAMECONTROLLERCONFIG` mapping —
-  which cannot be correct for two ports with different masks. Making the name
-  `"Snowglass Virtual Gamepad (GAMECUBE_CONTROLLER)"` yields a distinct GUID per
-  topology and lets §6.4 emit one mapping per distinct layout. It also gives
-  emulators that identify devices by name a way to tell ports apart.
+The virtual devices keep the injected identity: the name is always
+`Snowglass Virtual Gamepad`, its GUID follows from that SDL descriptor, and its
+index is the dense virtual slot. Layout differences affect the controls exposed
+by a slot, not the identity templates serialized for the emulator.
 
 Sensors are SDL3-only: the SDL2 virtual joystick descriptor has no sensor array at
 all. `sensor_*` fragments are suppressed when `sdl_major < 3` — this replaces the
@@ -1077,6 +1075,71 @@ passthrough has `sdl_index = 2`. `PortFact` carries both, target expansion uses
 wrong binds player 3's config to player 2's pad, silently.
 
 ### 6.4 Emitted bindings
+
+This is the normative input-serialization contract.
+
+The shared SDL projection belongs to `snowglass-config`, because it participates
+in realizing emulator configuration. `snowglass-input` depends on and reuses
+that projection when it constructs the virtual pads; the config crate never
+depends on the input runtime. `BindingKey` remains the single control vocabulary
+and is owned by `consolespec`.
+
+```toml
+[input]
+driver = "sdl3"
+device = "SDL/{index}/{name}"
+
+[input.mapping]
+"button.a" = "`Button S`"
+
+[input.layouts.GAMECUBE_CONTROLLER]
+"button.a" = "Buttons/A"
+```
+
+`driver` only selects the Snowglass hook. It never selects or implies an
+emulator configuration value. `device` is the emulator-facing identity template
+for one Snowglass virtual gamepad. It may use `{index}`, `{name}`, and `{guid}`;
+active ports receive dense virtual indices in deterministic platform/group/port
+order. The real-device-to-virtual-device routing is invisible to the emulator.
+
+The two mapping tables have deliberately different roles:
+
+- `input.layouts.<layout>` maps a logical consolespec `BindingKey` to the
+  emulator's configuration key.
+- `input.mapping` maps a projected virtual-SDL `BindingKey` to the complete
+  emulator binding value. That value may contain `{device}`.
+
+For each active port, serialization projects every logical key through the
+shared SDL projection, looks up the projected key in `input.mapping`, expands
+`{device}`, and sends the resulting `(emulator key, emulator value)` pair to the
+port target as a binding event. A missing projection or SDL mapping is an error.
+Controls explicitly projected to `none` or another transport are omitted;
+composite projections are rejected until a format defines how one logical
+binding represents two SDL controls.
+
+Bindings are distinct emitter events, not schema metadata. INI and BML emitters
+write them as ordinary key/value pairs. The XML emitter writes each pair as:
+
+```xml
+<entry><mapping>EMULATOR_KEY</mapping><button>EMULATOR_VALUE</button></entry>
+```
+
+Port `emit.<layout>` entries remain ordinary literal emits. Their string `value`
+may contain `{device}`, which is how a format writes device identity outside its
+binding table. This supports the current formats without a `binding` or `device`
+field on mappings:
+
+- Cemu emits `api = SDLController` and `uuid = {device}` beside XML mappings.
+- Dolphin emits `Device = {device}` and uses complete expressions such as
+  `` `Button S` `` as mapping values.
+- PCSX2 uses mapping values such as `{device}/FaceSouth`.
+- Ares uses mapping values such as `{device}/3/0`.
+
+An inactive port has no virtual device and emits no bindings. Its entire output
+policy comes from `emit.unplugged`; no serializer-side inactive-port policy is
+inferred.
+
+<!-- Superseded design discussion retained temporarily for decision history.
 
 **The definition document is complete.** Everything needed to write an emulator's
 input configuration is either in that emulator's own definition or in snowglass's
@@ -1244,6 +1307,8 @@ convention (rad/s, m/s², right-handed) from every physical source; per-emulator
 sensitivity and deadzone are ordinary options. `AxisTransform`
 (`snowglass-input/src/hub.rs`) already owns invert/scale/deadzone on the snowglass
 side. A config file names a binding; it cannot transform a value.
+
+-->
 
 ### 6.5 Ports are declared per platform
 
@@ -1851,8 +1916,8 @@ paths, `SDL_DYNAMIC_API`, `SDL3_DYNAMIC_API`, `VK_LAYER_PATH`, and
   cannot set a `SNOWGLASS_*`, `VK_*`, or `SDL*_DYNAMIC_API` name; lowering rejects
   those outright, so the failure lands at load rather than at launch. Host-wins is
   a single rule at one site, which is why `[env]` needs no per-entry policy.
-- `SDL_GAMECONTROLLERCONFIG` is generated by realize from each distinct
-  `SdlOutputLayout` (§6.2/P2), not authored by a plugin.
+- `SDL_GAMECONTROLLERCONFIG` is generated by the input runtime from each
+  `SdlOutputLayout`, not authored by a plugin.
 
 ### 8.4 Launch descriptor
 
@@ -2098,8 +2163,8 @@ src/
 5. `descriptor` — serialization plus host-side shape validation. At this point
    Dolphin's video section produces a real `GFX.ini` and a real descriptor.
 6. `[env]` and `[[argv]]`, then P3 (`EmulatorConfig::env`) to consume them.
-7. P1 + P2 in the SDL hooks, then `input/`: port plans, layout-filtered fragments,
-   mapping generation.
+7. SDL2 topology support in the hook, then `input/`: port plans,
+   layout-filtered fragments, mapping generation.
 8. P4/P5 (transport selectors on `send_hotkey` and pointer delivery), then
    `action/`.
 9. Resolver ops in the shell's deno host; remaining codecs.
