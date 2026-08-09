@@ -185,53 +185,53 @@ device = "SDL/{index}"
 [platforms.NINTENDO_WIIU.ports.gamepad.0]
 target = "profile-0.emulated_controller.controller.mappings"
 layouts = ["WIIU_DRC_CONTROLLER"]
-emit.WIIU_DRC_CONTROLLER = [{ target = "profile-0.emulated_controller", key = "type", value = "Wii U GamePad" }]
+emit.WIIU_DRC_CONTROLLER = [{ target = "profile-0.emulated_controller", key = "type", value = "Wii U GamePad" }, { target = "profile-0.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-0.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.0]
 target = "profile-1.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-1.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-1.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-1.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-1.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-1.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-1.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-1.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-1.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-1.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-1.emulated_controller", key = "device_type", value = "0" }, { target = "profile-1.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-1.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-1.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-1.emulated_controller", key = "device_type", value = "1" }, { target = "profile-1.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-1.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.1]
 target = "profile-2.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-2.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-2.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-2.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-2.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-2.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-2.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-2.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-2.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-2.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-2.emulated_controller", key = "device_type", value = "0" }, { target = "profile-2.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-2.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-2.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-2.emulated_controller", key = "device_type", value = "1" }, { target = "profile-2.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-2.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.2]
 target = "profile-3.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-3.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-3.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-3.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-3.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-3.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-3.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-3.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-3.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-3.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-3.emulated_controller", key = "device_type", value = "0" }, { target = "profile-3.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-3.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-3.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-3.emulated_controller", key = "device_type", value = "1" }, { target = "profile-3.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-3.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.3]
 target = "profile-4.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-4.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-4.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-4.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-4.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-4.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-4.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-4.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-4.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-4.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-4.emulated_controller", key = "device_type", value = "0" }, { target = "profile-4.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-4.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-4.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-4.emulated_controller", key = "device_type", value = "1" }, { target = "profile-4.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-4.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.4]
 target = "profile-5.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-5.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-5.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-5.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-5.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-5.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-5.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-5.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-5.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-5.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-5.emulated_controller", key = "device_type", value = "0" }, { target = "profile-5.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-5.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-5.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-5.emulated_controller", key = "device_type", value = "1" }, { target = "profile-5.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-5.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.5]
 target = "profile-6.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-6.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-6.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-6.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-6.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-6.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-6.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-6.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-6.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-6.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-6.emulated_controller", key = "device_type", value = "0" }, { target = "profile-6.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-6.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-6.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-6.emulated_controller", key = "device_type", value = "1" }, { target = "profile-6.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-6.emulated_controller.controller", key = "uuid", value = "{device}" }]
 
 [platforms.NINTENDO_WIIU.ports.controller.6]
 target = "profile-7.emulated_controller.controller.mappings"
 layouts = ["WIIU_PRO_CONTROLLER", "WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
-emit.WIIU_PRO_CONTROLLER = [{ target = "profile-7.emulated_controller", key = "type", value = "Wii U Pro Controller" }]
-emit.WII_REMOTE_CONTROLLER = [{ target = "profile-7.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-7.emulated_controller", key = "device_type", value = "0" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-7.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-7.emulated_controller", key = "device_type", value = "1" }]
+emit.WIIU_PRO_CONTROLLER = [{ target = "profile-7.emulated_controller", key = "type", value = "Wii U Pro Controller" }, { target = "profile-7.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-7.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ target = "profile-7.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-7.emulated_controller", key = "device_type", value = "0" }, { target = "profile-7.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-7.emulated_controller.controller", key = "uuid", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ target = "profile-7.emulated_controller", key = "type", value = "Wiimote" }, { target = "profile-7.emulated_controller", key = "device_type", value = "1" }, { target = "profile-7.emulated_controller.controller", key = "api", value = "SDLController" }, { target = "profile-7.emulated_controller.controller", key = "uuid", value = "{device}" }]

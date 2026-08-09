@@ -55,7 +55,7 @@ ACTION_VOCABULARY = {
     "exit": {"hotkey": "HK_STOP"},
 }
 
-# consolespec element → the Dolphin control it drives, per inputspec layout. Each
+# consolespec binding key → the Dolphin control it drives, per inputspec layout. Each
 # entry is validated twice: against the group/input tables parsed out of Dolphin's
 # controller sources, so an upstream rename is an error rather than a binding that
 # writes to nothing, and against the element vocabulary consolespec expands for
@@ -67,94 +67,91 @@ ACTION_VOCABULARY = {
 # on, so the two layouts do not agree on what to call it. Inheriting the first
 # table into the second would carry keys the second device does not have.
 WII_REMOTE_BINDINGS = {
-    "ButtonA": "Buttons/A",
-    "ButtonB": "Buttons/B",
+    "button.a": "Buttons/A",
+    "button.b": "Buttons/B",
     # The remote's numbered buttons: consolespec's `0` is the one printed "1".
-    "Button0": "Buttons/1",
-    "Button1": "Buttons/2",
-    "ButtonSelect": "Buttons/-",
-    "ButtonStart": "Buttons/+",
-    "ButtonGuide": "Buttons/Home",
-    "DirectionalN": "D-Pad/Up",
-    "DirectionalS": "D-Pad/Down",
-    "DirectionalW": "D-Pad/Left",
-    "DirectionalE": "D-Pad/Right",
-    "PointerAxisPositiveX": "IR/Right",
-    "PointerAxisNegativeX": "IR/Left",
-    "PointerAxisPositiveY": "IR/Up",
-    "PointerAxisNegativeY": "IR/Down",
-    "AccelerometerAxisPositiveX": "IMUAccelerometer/Right",
-    "AccelerometerAxisNegativeX": "IMUAccelerometer/Left",
-    "AccelerometerAxisPositiveY": "IMUAccelerometer/Forward",
-    "AccelerometerAxisNegativeY": "IMUAccelerometer/Backward",
-    "AccelerometerAxisPositiveZ": "IMUAccelerometer/Up",
-    "AccelerometerAxisNegativeZ": "IMUAccelerometer/Down",
-    # Stone labels the X gyro axis "Roll Forward/Backward" where Dolphin says
-    # "Roll Left/Right". Same axis, opposite naming convention; verify the sign
-    # against a real remote before trusting it.
-    "GyroscopeAxisPositiveX": "IMUGyroscope/Roll Right",
-    "GyroscopeAxisNegativeX": "IMUGyroscope/Roll Left",
-    "GyroscopeAxisPositiveY": "IMUGyroscope/Pitch Up",
-    "GyroscopeAxisNegativeY": "IMUGyroscope/Pitch Down",
-    "GyroscopeAxisPositiveZ": "IMUGyroscope/Yaw Right",
-    "GyroscopeAxisNegativeZ": "IMUGyroscope/Yaw Left",
+    "button.0": "Buttons/1",
+    "button.1": "Buttons/2",
+    "button.select": "Buttons/-",
+    "button.start": "Buttons/+",
+    "button.guide": "Buttons/Home",
+    "directional.n": "D-Pad/Up",
+    "directional.s": "D-Pad/Down",
+    "directional.w": "D-Pad/Left",
+    "directional.e": "D-Pad/Right",
+    "pointer.x+": "IR/Right",
+    "pointer.x-": "IR/Left",
+    "pointer.y+": "IR/Up",
+    "pointer.y-": "IR/Down",
+    "analog.accelerometer.x+": "IMUAccelerometer/Right",
+    "analog.accelerometer.x-": "IMUAccelerometer/Left",
+    "analog.accelerometer.y+": "IMUAccelerometer/Forward",
+    "analog.accelerometer.y-": "IMUAccelerometer/Backward",
+    "analog.accelerometer.z+": "IMUAccelerometer/Up",
+    "analog.accelerometer.z-": "IMUAccelerometer/Down",
+    "analog.gyroscope.x+": "IMUGyroscope/Roll Right",
+    "analog.gyroscope.x-": "IMUGyroscope/Roll Left",
+    "analog.gyroscope.y+": "IMUGyroscope/Pitch Up",
+    "analog.gyroscope.y-": "IMUGyroscope/Pitch Down",
+    "analog.gyroscope.z+": "IMUGyroscope/Yaw Right",
+    "analog.gyroscope.z-": "IMUGyroscope/Yaw Left",
 }
 
 # The remote's own accelerometer, once a nunchuk gives the device a second one.
-# consolespec aligns the remote's `right` and the nunchuk's `left`, and the ids
-# follow, so neither layout's key works in the other's table.
+# consolespec aligns the remote's `right` and the nunchuk's `left`, so neither
+# layout's accelerometer binding path works in the other's table.
 WII_REMOTE_ACCELEROMETER_ALIGNED = {
-    f"Right{element}": control
-    for element, control in WII_REMOTE_BINDINGS.items()
-    if element.startswith("AccelerometerAxis")
+    key.replace("analog.accelerometer.", "analog.accelerometer.right."): control
+    for key, control in WII_REMOTE_BINDINGS.items()
+    if key.startswith("analog.accelerometer.")
 }
 
 WII_NUNCHUK_BINDINGS = {
     **{
-        element: control
-        for element, control in WII_REMOTE_BINDINGS.items()
-        if not element.startswith("AccelerometerAxis")
+        key: control
+        for key, control in WII_REMOTE_BINDINGS.items()
+        if not key.startswith("analog.accelerometer.")
     },
     **WII_REMOTE_ACCELEROMETER_ALIGNED,
-    "ButtonC": "Nunchuk/Buttons/C",
-    "ButtonZ": "Nunchuk/Buttons/Z",
-    "AxisLeftAnalogPositiveY": "Nunchuk/Stick/Up",
-    "AxisLeftAnalogNegativeY": "Nunchuk/Stick/Down",
-    "AxisLeftAnalogNegativeX": "Nunchuk/Stick/Left",
-    "AxisLeftAnalogPositiveX": "Nunchuk/Stick/Right",
+    "button.c": "Nunchuk/Buttons/C",
+    "button.z": "Nunchuk/Buttons/Z",
+    "analog.stick.left.y+": "Nunchuk/Stick/Up",
+    "analog.stick.left.y-": "Nunchuk/Stick/Down",
+    "analog.stick.left.x-": "Nunchuk/Stick/Left",
+    "analog.stick.left.x+": "Nunchuk/Stick/Right",
     # The nunchuk carries an accelerometer of its own, which the Wii Remote
     # layout has no element for at all.
-    "LeftAccelerometerAxisPositiveX": "Nunchuk/IMUAccelerometer/Right",
-    "LeftAccelerometerAxisNegativeX": "Nunchuk/IMUAccelerometer/Left",
-    "LeftAccelerometerAxisPositiveY": "Nunchuk/IMUAccelerometer/Forward",
-    "LeftAccelerometerAxisNegativeY": "Nunchuk/IMUAccelerometer/Backward",
-    "LeftAccelerometerAxisPositiveZ": "Nunchuk/IMUAccelerometer/Up",
-    "LeftAccelerometerAxisNegativeZ": "Nunchuk/IMUAccelerometer/Down",
+    "analog.accelerometer.left.x+": "Nunchuk/IMUAccelerometer/Right",
+    "analog.accelerometer.left.x-": "Nunchuk/IMUAccelerometer/Left",
+    "analog.accelerometer.left.y+": "Nunchuk/IMUAccelerometer/Forward",
+    "analog.accelerometer.left.y-": "Nunchuk/IMUAccelerometer/Backward",
+    "analog.accelerometer.left.z+": "Nunchuk/IMUAccelerometer/Up",
+    "analog.accelerometer.left.z-": "Nunchuk/IMUAccelerometer/Down",
 }
 
 GAMECUBE_BINDINGS = {
-    "ButtonA": "Buttons/A",
-    "ButtonB": "Buttons/B",
-    "ButtonX": "Buttons/X",
-    "ButtonY": "Buttons/Y",
-    "ButtonZ": "Buttons/Z",
-    "ButtonStart": "Buttons/Start",
-    "DirectionalN": "D-Pad/Up",
-    "DirectionalS": "D-Pad/Down",
-    "DirectionalW": "D-Pad/Left",
-    "DirectionalE": "D-Pad/Right",
-    "ButtonL": "Triggers/L",
-    "ButtonR": "Triggers/R",
-    "TriggerLeft": "Triggers/L-Analog",
-    "TriggerRight": "Triggers/R-Analog",
-    "AxisLeftAnalogPositiveY": "Main Stick/Up",
-    "AxisLeftAnalogNegativeY": "Main Stick/Down",
-    "AxisLeftAnalogNegativeX": "Main Stick/Left",
-    "AxisLeftAnalogPositiveX": "Main Stick/Right",
-    "AxisRightAnalogPositiveY": "C-Stick/Up",
-    "AxisRightAnalogNegativeY": "C-Stick/Down",
-    "AxisRightAnalogNegativeX": "C-Stick/Left",
-    "AxisRightAnalogPositiveX": "C-Stick/Right",
+    "button.a": "Buttons/A",
+    "button.b": "Buttons/B",
+    "button.x": "Buttons/X",
+    "button.y": "Buttons/Y",
+    "button.z": "Buttons/Z",
+    "button.start": "Buttons/Start",
+    "directional.n": "D-Pad/Up",
+    "directional.s": "D-Pad/Down",
+    "directional.w": "D-Pad/Left",
+    "directional.e": "D-Pad/Right",
+    "button.l": "Triggers/L",
+    "button.r": "Triggers/R",
+    "trigger.left": "Triggers/L-Analog",
+    "trigger.right": "Triggers/R-Analog",
+    "analog.stick.left.y+": "Main Stick/Up",
+    "analog.stick.left.y-": "Main Stick/Down",
+    "analog.stick.left.x-": "Main Stick/Left",
+    "analog.stick.left.x+": "Main Stick/Right",
+    "analog.stick.right.y+": "C-Stick/Up",
+    "analog.stick.right.y-": "C-Stick/Down",
+    "analog.stick.right.x-": "C-Stick/Left",
+    "analog.stick.right.x+": "C-Stick/Right",
 }
 
 
@@ -1278,15 +1275,14 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
         lines.append(f"[input.layouts.{toml_key(layout)}]")
         known = vocabulary[layout]
         device = consolespec.load_inputspec(spec_root, layout)
-        for element, control in sorted(bindings.items()):
+        for key, control in sorted(bindings.items()):
             if control not in known:
-                report.error(f"input: Dolphin has no control `{control}` for `{element}` "
+                report.error(f"input: Dolphin has no control `{control}` for `{key}` "
                              f"in {layout}")
                 continue
-            if not consolespec.check_binding(device, element, report, "input"):
+            if not consolespec.check_binding(device, key, report, "input"):
                 continue
-            entry = device.elements[element]
-            lines.append(f"{toml_key(entry.path)} = {toml_string(control)}")
+            lines.append(f"{toml_key(key)} = {toml_string(control)}")
             bound += 1
         lines.append("")
         # The emulator's own per-device settings, expanded per port at lowering.
@@ -1320,6 +1316,8 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
                 lines.append(f"target = {toml_string(port['target'])}")
                 lines.append(f"layouts = {toml_value(port['layouts'])}")
                 for choice, entries in port["emit"].items():
+                    if choice in layouts:
+                        entries = [*entries, {"key": "Device", "value": "{device}"}]
                     lines.append(f"emit.{toml_key(choice)} = {toml_value(entries)}")
                 lines.append("")
                 total += 1
@@ -1377,7 +1375,7 @@ def build_sdl_mapping(root: Path, report: Report) -> list[str]:
     if missing:
         report.note(f"input: {'Dolphin'} names no SDL control for {', '.join(missing)}")
     report.note(f"input: {len(entries)} SDL controls paired by constant")
-    return sdlpad.emit_mapping(entries)
+    return sdlpad.emit_mapping((key, f"`{value}`") for key, value in entries)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,

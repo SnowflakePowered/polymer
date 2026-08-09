@@ -49,32 +49,32 @@ BOOL_STYLE = "lower"
 # consolespec element vocabulary onto *that* gives every controller type at
 # once, instead of a table per type. Each element is still checked against the
 # layout it is emitted for, so a control the device does not have is skipped.
-ELEMENT_TO_GENERIC = {
-    "ButtonA": "Cross",
-    "ButtonB": "Circle",
-    "ButtonX": "Square",
-    "ButtonY": "Triangle",
-    "ButtonSelect": "Select",
-    "ButtonStart": "Start",
-    "ButtonGuide": "System",
-    "ButtonL": "L1",
-    "ButtonR": "R1",
-    "TriggerLeft": "L2",
-    "TriggerRight": "R2",
-    "ButtonClickL": "L3",
-    "ButtonClickR": "R3",
-    "DirectionalN": "DPadUp",
-    "DirectionalS": "DPadDown",
-    "DirectionalW": "DPadLeft",
-    "DirectionalE": "DPadRight",
-    "AxisLeftAnalogNegativeX": "LeftStickLeft",
-    "AxisLeftAnalogPositiveX": "LeftStickRight",
-    "AxisLeftAnalogNegativeY": "LeftStickDown",
-    "AxisLeftAnalogPositiveY": "LeftStickUp",
-    "AxisRightAnalogNegativeX": "RightStickLeft",
-    "AxisRightAnalogPositiveX": "RightStickRight",
-    "AxisRightAnalogNegativeY": "RightStickDown",
-    "AxisRightAnalogPositiveY": "RightStickUp",
+BINDING_TO_GENERIC = {
+    "button.a": "Cross",
+    "button.b": "Circle",
+    "button.x": "Square",
+    "button.y": "Triangle",
+    "button.select": "Select",
+    "button.start": "Start",
+    "button.guide": "System",
+    "button.l": "L1",
+    "button.r": "R1",
+    "trigger.left": "L2",
+    "trigger.right": "R2",
+    "button.clickl": "L3",
+    "button.clickr": "R3",
+    "directional.n": "DPadUp",
+    "directional.s": "DPadDown",
+    "directional.w": "DPadLeft",
+    "directional.e": "DPadRight",
+    "analog.stick.left.x-": "LeftStickLeft",
+    "analog.stick.left.x+": "LeftStickRight",
+    "analog.stick.left.y-": "LeftStickDown",
+    "analog.stick.left.y+": "LeftStickUp",
+    "analog.stick.right.x-": "RightStickLeft",
+    "analog.stick.right.x+": "RightStickRight",
+    "analog.stick.right.y-": "RightStickDown",
+    "analog.stick.right.y+": "RightStickUp",
 }
 
 # The machine these ports belong to and the machinespec input group they sit
@@ -398,19 +398,18 @@ def build_input(tables: dict[str, dict[str, str]], root: Path, spec_root: Path,
             continue
         lines.append(f"[input.layouts.{toml_key(layout)}]")
         device = consolespec.load_inputspec(spec_root, layout)
-        for element, generic in sorted(ELEMENT_TO_GENERIC.items()):
+        for key, generic in sorted(BINDING_TO_GENERIC.items()):
             binding = table.get(generic)
             if binding is None:
                 continue
             # The generic table is shared across controller types, so an
             # element DuckStation names for this type but the device does not
             # have is a disagreement between two vocabularies, not a typo here.
-            if element not in device:
-                report.note(f"input: {layout} has no `{element}`; DuckStation's "
+            if key not in device:
+                report.note(f"input: {layout} has no `{key}`; DuckStation's "
                             f"{controller} binds it as `{binding}`")
                 continue
-            entry = device.elements[element]
-            lines.append(f"{toml_key(entry.path)} = {toml_string(binding)}")
+            lines.append(f"{toml_key(key)} = {toml_string(binding)}")
             bound += 1
         lines.append("")
 
@@ -462,7 +461,7 @@ def build_sdl_mapping(root: Path, report: Report) -> list[str]:
     if missing:
         report.note(f"input: {'Duckstation'} names no SDL control for {', '.join(missing)}")
     report.note(f"input: {len(entries)} SDL controls paired by constant")
-    return sdlpad.emit_mapping(entries)
+    return sdlpad.emit_mapping((key, f"{{device}}/{value}") for key, value in entries)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,

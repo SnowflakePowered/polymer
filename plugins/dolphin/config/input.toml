@@ -22,37 +22,37 @@ driver = "sdl3"
 device = "SDL/{index}/{name}"
 
 [input.mapping]
-"button.a"              = "Button S"
-"button.b"              = "Button E"
-"button.x"              = "Button W"
-"button.y"              = "Button N"
-"button.select"         = "Back"
-"button.guide"          = "Guide"
-"button.start"          = "Start"
-"button.clickl"         = "Thumb L"
-"button.clickr"         = "Thumb R"
-"button.l"              = "Shoulder L"
-"button.r"              = "Shoulder R"
-"directional.n"         = "Pad N"
-"directional.s"         = "Pad S"
-"directional.w"         = "Pad W"
-"directional.e"         = "Pad E"
-"button.0"              = "Misc 1"
-"button.1"              = "Paddle 1"
-"button.2"              = "Paddle 2"
-"button.3"              = "Paddle 3"
-"button.4"              = "Paddle 4"
-"button.5"              = "Touchpad"
-"analog.stick.left.x+"  = "Left X+"
-"analog.stick.left.x-"  = "Left X-"
-"analog.stick.left.y+"  = "Left Y+"
-"analog.stick.left.y-"  = "Left Y-"
-"analog.stick.right.x+" = "Right X+"
-"analog.stick.right.x-" = "Right X-"
-"analog.stick.right.y+" = "Right Y+"
-"analog.stick.right.y-" = "Right Y-"
-"trigger.left"          = "Trigger L"
-"trigger.right"         = "Trigger R"
+"button.a"              = "`Button S`"
+"button.b"              = "`Button E`"
+"button.x"              = "`Button W`"
+"button.y"              = "`Button N`"
+"button.select"         = "`Back`"
+"button.guide"          = "`Guide`"
+"button.start"          = "`Start`"
+"button.clickl"         = "`Thumb L`"
+"button.clickr"         = "`Thumb R`"
+"button.l"              = "`Shoulder L`"
+"button.r"              = "`Shoulder R`"
+"directional.n"         = "`Pad N`"
+"directional.s"         = "`Pad S`"
+"directional.w"         = "`Pad W`"
+"directional.e"         = "`Pad E`"
+"button.0"              = "`Misc 1`"
+"button.1"              = "`Paddle 1`"
+"button.2"              = "`Paddle 2`"
+"button.3"              = "`Paddle 3`"
+"button.4"              = "`Paddle 4`"
+"button.5"              = "`Touchpad`"
+"analog.stick.left.x+"  = "`Left X+`"
+"analog.stick.left.x-"  = "`Left X-`"
+"analog.stick.left.y+"  = "`Left Y+`"
+"analog.stick.left.y-"  = "`Left Y-`"
+"analog.stick.right.x+" = "`Right X+`"
+"analog.stick.right.x-" = "`Right X-`"
+"analog.stick.right.y+" = "`Right Y+`"
+"analog.stick.right.y-" = "`Right Y-`"
+"trigger.left"          = "`Trigger L`"
+"trigger.right"         = "`Trigger R`"
 
 [input.layouts.GAMECUBE_CONTROLLER]
 "analog.stick.left.x-" = "Main Stick/Left"
@@ -233,81 +233,81 @@ emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
 target = "gcpad.GCPad1"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice0", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_GCN.ports.controller.1]
 target = "gcpad.GCPad2"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice1", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_GCN.ports.controller.2]
 target = "gcpad.GCPad3"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice2", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_GCN.ports.controller.3]
 target = "gcpad.GCPad4"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice3", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.0]
 target = "wiipad.Wiimote1"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.1]
 target = "wiipad.Wiimote2"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.2]
 target = "wiipad.Wiimote3"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.3]
 target = "wiipad.Wiimote4"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.gamecube.0]
 target = "gcpad.GCPad1"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice0", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice0", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.gamecube.1]
 target = "gcpad.GCPad2"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice1", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice1", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.gamecube.2]
 target = "gcpad.GCPad3"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice2", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice2", value = "6" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.gamecube.3]
 target = "gcpad.GCPad4"
 layouts = ["GAMECUBE_CONTROLLER"]
 emit.unplugged = [{ target = "main.Core", key = "SIDevice3", value = "0" }]
-emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }]
+emit.GAMECUBE_CONTROLLER = [{ target = "main.Core", key = "SIDevice3", value = "6" }, { key = "Device", value = "{device}" }]
 
 # Dolphin controls with no consolespec element bound to them:
 #   GAMECUBE_CONTROLLER:

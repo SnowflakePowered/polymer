@@ -4,13 +4,11 @@ consolespec replaces Stone as the source of truth for what a machine's ports
 accept and what elements an input device has. Two things changed that the
 plugin config parsers have to accommodate.
 
-**Elements are compressed.** Stone spelled every element out: a stick was four
-named entries (`AxisLeftAnalogPositiveX` and friends), a D-pad was four
-`Directional*` entries. consolespec declares the *cluster* and leaves the
-expansion implicit — `axes = 2, alignment = "left"` for the stick, `directions = 4`
-for the D-pad. The element vocabulary is unchanged; it is now derived rather
-than read. `expand` below is that derivation, and it is the only place the
-naming rules live.
+**Elements are compressed.** consolespec declares clusters and leaves their
+binding-key expansion implicit — `axes = 2, alignment = "left"` for a stick,
+`directions = 4` for a D-pad. `expand` derives the canonical binding paths used
+by plugin configuration documents; it does not recreate Stone's old element
+identifiers.
 
 **Ports are grouped.** A machinespec no longer offers a flat port count; it
 names groups (`[input.wii]`, `[input.gamecube]`) that each carry their own port
@@ -26,7 +24,6 @@ load, which is the intended way to find them.
 
 from __future__ import annotations
 
-import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,13 +39,9 @@ class SpecError(Exception):
     """A consolespec document is missing or does not say what was assumed."""
 
 
-# Buttons name their element semantically; the element id capitalizes it.
-# Anything not listed is a numbered button ("0".."31" -> Button0..Button31).
 BUTTON_ELEMENTS = {
-    "a": "A", "b": "B", "c": "C", "x": "X", "y": "Y", "z": "Z",
-    "l": "L", "r": "R",
-    "start": "Start", "select": "Select", "guide": "Guide",
-    "clickl": "ClickL", "clickr": "ClickR",
+    "a", "b", "c", "x", "y", "z", "l", "r", "start", "select",
+    "guide", "clickl", "clickr",
 }
 
 # A cluster of `directions` directional buttons, in the order the schema
@@ -58,39 +51,16 @@ HAT_DIRECTIONS = {
     8: ("N", "E", "S", "W", "NE", "SE", "SW", "NW"),
 }
 
-# An analog cluster's (class, alignment) picks the element prefix. Sticks are
-# named for the side of the device; motion sensors for the quantity they
-# measure, and only while a device has just one of them.
-ANALOG_PREFIXES = {
-    # A device with one stick need not say which side it is on. A rotary dial
-    # has no side at all and reads as the primary analog axis.
-    ("stick", None): "AxisLeftAnalog",
-    ("stick", "left"): "AxisLeftAnalog",
-    ("stick", "right"): "AxisRightAnalog",
-    ("rotary", None): "AxisLeftAnalog",
-    ("rotary", "left"): "AxisLeftAnalog",
-    ("rotary", "right"): "AxisRightAnalog",
-    ("gyroscope", None): "GyroscopeAxis",
-    ("accelerometer", None): "AccelerometerAxis",
-}
-
-
-def _pascal(text: str) -> str:
-    """`"3D Slider"` -> `"3DSlider"`, for ids derived from a label."""
-    return "".join(word[:1].upper() + word[1:]
-                   for word in re.split(r"[^A-Za-z0-9]+", text) if word)
-
-# Each axis of an analog or pointer cluster expands to a positive and a
-# negative element, over as many of X, Y, Z as the cluster declares.
-AXIS_NAMES = ("X", "Y", "Z")
-AXIS_SIGNS = ("Positive", "Negative")
+# Each axis of an analog or pointer cluster expands to positive and negative
+# binding paths, over as many of x, y, z as the cluster declares.
+AXIS_NAMES = ("x", "y", "z")
+AXIS_SIGNS = ("+", "-")
 
 
 @dataclass(frozen=True)
 class Element:
     """One expanded element of an input device."""
 
-    id: str
     kind: str          # button, directional, analog, trigger, rumble, pointer, ...
     label: str | None  # the cluster's label, when it carries one
     path: str = ""     # binding key: <kind>[.<class>][.<alignment>][.<component>]
@@ -106,18 +76,11 @@ class InputSpec:
 
     id: str
     type: str
-    elements: dict[str, Element]
+    elements: tuple[Element, ...]
     path: Path
 
-    def __contains__(self, element: str) -> bool:
-        return element in self.elements
-
-    def ids(self) -> set[str]:
-        return set(self.elements)
-
-    def path(self, element: str) -> str:
-        """The binding key for an element, e.g. `analog.stick.left.x+`."""
-        return self.elements[element].path
+    def __contains__(self, binding: str) -> bool:
+        return any(element.path == binding for element in self.elements)
 
 
 @dataclass
@@ -157,49 +120,25 @@ def _path(kind: str, *parts: str | None) -> str:
     return ".".join([kind, *(part for part in parts if part)])
 
 
-def _finish(element: Element) -> Element:
-    """A cluster with one component is its own cluster path."""
-    if element.cluster:
-        return element
-    return Element(element.id, element.kind, element.label, element.path,
-                   element.path, element.analog, element.digital, element.optional)
+def _add(elements: list[Element], element: Element) -> None:
+    """Record an expanded element and default its cluster to its own path."""
+    if not element.cluster:
+        element = Element(element.kind, element.label, element.path, element.path,
+                          element.analog, element.digital, element.optional)
+    elements.append(element)
 
 
-def _unique(elements: dict[str, Element], element: Element) -> None:
-    """Record an element, disambiguating a repeated id with an ordinal.
-
-    Most devices have at most one cluster per discriminator, but not all: the
-    N64 pad declares two directionals, the DualSense two small rumble motors.
-    The second and later get a `2`, `3`, ... suffix in declaration order, so a
-    reordered document changes which is which but a stable one is stable.
-    """
-    element = _finish(element)
-    if element.id not in elements:
-        elements[element.id] = element
-        return
-    ordinal = 2
-    while f"{element.id}{ordinal}" in elements:
-        ordinal += 1
-    suffixed = f"{element.id}{ordinal}"
-    elements[suffixed] = Element(suffixed, element.kind, element.label, element.path,
-                                 element.cluster, element.analog, element.digital,
-                                 element.optional)
-
-
-def expand(document: dict, source: str = "<inputspec>") -> dict[str, Element]:
-    """Expand an inputspec's `[input]` table into its element vocabulary."""
-    elements: dict[str, Element] = {}
+def expand(document: dict, source: str = "<inputspec>") -> tuple[Element, ...]:
+    """Expand an inputspec's `[input]` table into canonical binding paths."""
+    elements: list[Element] = []
 
     for entry in document.get("button", []):
         raw = str(entry.get("element", ""))
-        name = BUTTON_ELEMENTS.get(raw)
-        if name is None:
+        if raw not in BUTTON_ELEMENTS:
             if not raw.isdigit() or not 0 <= int(raw) <= 31:
                 raise SpecError(f"{source}: unknown button element `{raw}`")
-            name = raw
-        _unique(elements, Element(f"Button{name}", "button", entry.get("label"),
-                                  _path("button", raw),
-                                  analog=bool(entry.get("analog"))))
+        _add(elements, Element("button", entry.get("label"), _path("button", raw),
+                               analog=bool(entry.get("analog"))))
 
     for entry in document.get("directional", []):
         hats = entry.get("directions")
@@ -208,11 +147,9 @@ def expand(document: dict, source: str = "<inputspec>") -> dict[str, Element]:
             raise SpecError(f"{source}: directional cluster with {hats} directions")
         alignment = entry.get("alignment")
         for direction in directions:
-            _unique(elements, Element(f"Directional{direction}", "directional",
-                                      entry.get("label"),
-                                      _path("directional", alignment,
-                                            direction.lower()),
-                                      cluster=_path("directional", alignment)))
+            _add(elements, Element("directional", entry.get("label"),
+                                   _path("directional", alignment, direction.lower()),
+                                   cluster=_path("directional", alignment)))
 
     for entry in document.get("analog", []):
         # `class` says what the cluster is, `alignment` says where it sits.
@@ -220,47 +157,32 @@ def expand(document: dict, source: str = "<inputspec>") -> dict[str, Element]:
         # only where a device has two clusters of one class to tell apart.
         cluster_class = entry.get("class", "stick")
         alignment = entry.get("alignment")
-        prefix = ANALOG_PREFIXES.get((cluster_class, alignment))
-        if prefix is None:
-            # A cluster sharing its class with another on the same device, or a
-            # slider, has no id in this vocabulary. Qualifying by position or
-            # label keeps it unique until binding keys move to cluster paths.
-            qualifier = alignment or entry.get("label")
-            if not qualifier:
-                raise SpecError(
-                    f"{source}: `{cluster_class}` cluster with no alignment or label")
-            prefix = _pascal(qualifier) + _pascal(cluster_class) + "Axis"
         axes = entry.get("axes")
         if axes not in (1, 2, 3):
             raise SpecError(f"{source}: analog cluster with {axes} axes")
         for axis in AXIS_NAMES[:axes]:
             for sign in AXIS_SIGNS:
-                component = f"{axis.lower()}{'+' if sign == 'Positive' else '-'}"
-                _unique(elements, Element(f"{prefix}{sign}{axis}", "analog",
-                                          entry.get("label"),
-                                          _path("analog", cluster_class, alignment,
-                                                component),
-                                          cluster=_path("analog", cluster_class,
-                                                        alignment),
-                                          digital=bool(entry.get("digital"))))
+                _add(elements, Element("analog", entry.get("label"),
+                                       _path("analog", cluster_class, alignment,
+                                             f"{axis}{sign}"),
+                                       cluster=_path("analog", cluster_class, alignment),
+                                       digital=bool(entry.get("digital"))))
 
     for entry in document.get("trigger", []):
         alignment = entry.get("alignment")
         if alignment not in ("left", "right"):
             raise SpecError(f"{source}: trigger alignment `{alignment}`")
-        _unique(elements, Element(f"Trigger{alignment.capitalize()}", "trigger",
-                                  entry.get("label"),
-                                  _path("trigger", alignment),
-                                  digital=bool(entry.get("digital"))))
+        _add(elements, Element("trigger", entry.get("label"),
+                               _path("trigger", alignment),
+                               digital=bool(entry.get("digital"))))
 
     for entry in document.get("rumble", []):
         size = entry.get("size")
         if size not in ("big", "small"):
             raise SpecError(f"{source}: rumble size `{size}`")
-        _unique(elements, Element(f"Rumble{size.capitalize()}", "rumble",
-                                  entry.get("label"),
-                                  _path("rumble", entry.get("alignment") or size),
-                                  optional=bool(entry.get("optional"))))
+        _add(elements, Element("rumble", entry.get("label"),
+                               _path("rumble", entry.get("alignment") or size),
+                               optional=bool(entry.get("optional"))))
 
     for entry in document.get("pointer", []):
         dimensions = entry.get("dimensions")
@@ -268,40 +190,29 @@ def expand(document: dict, source: str = "<inputspec>") -> dict[str, Element]:
             raise SpecError(f"{source}: pointer with {dimensions} dimensions")
         # The absolute position, then the relative axes each dimension carries.
         align = entry.get("alignment")
-        _unique(elements, Element(f"Pointer{dimensions}D", "pointer",
-                                  entry.get("label"),
-                                  _path("pointer", align)))
+        _add(elements, Element("pointer", entry.get("label"),
+                               _path("pointer", align)))
         for axis in AXIS_NAMES[:dimensions]:
             for sign in AXIS_SIGNS:
-                component = f"{axis.lower()}{'+' if sign == 'Positive' else '-'}"
-                _unique(elements, Element(f"PointerAxis{sign}{axis}", "pointer",
-                                          entry.get("label"),
-                                          _path("pointer", align, component),
-                                          cluster=_path("pointer", align)))
+                _add(elements, Element("pointer", entry.get("label"),
+                                       _path("pointer", align, f"{axis}{sign}"),
+                                       cluster=_path("pointer", align)))
 
-    for kind, name in (("touchscreen", "Touchscreen"),
-                       ("microphone", "Microphone"), ("camera", "Camera")):
+    for kind in ("touchscreen", "microphone", "camera"):
         for entry in document.get(kind, []):
-            _unique(elements, Element(name, kind, entry.get("label"),
-                                      _path(kind, entry.get("alignment"))))
+            _add(elements, Element(kind, entry.get("label"),
+                                   _path(kind, entry.get("alignment"))))
 
     if not elements:
         raise SpecError(f"{source}: no elements")
-    return elements
+    return tuple(elements)
 
 
-def check_binding(spec: InputSpec, element: str, report, context: str) -> bool:
-    """Whether `element` is one the device actually has, reporting if not.
-
-    Stone let a plugin name any element it liked; nothing checked that the
-    layout had it. Now that the vocabulary is derived from the device, a
-    binding for an element the device does not have is a plugin bug — Cemu's
-    Wii Remote table was a copy of its Pro Controller table, which is how this
-    check found it — so it is an error, not a warning.
-    """
-    if element in spec:
+def check_binding(spec: InputSpec, binding: str, report, context: str) -> bool:
+    """Whether `binding` is a canonical path the device actually has."""
+    if binding in spec:
         return True
-    report.error(f"{context}: `{element}` is not an element of {spec.id}")
+    report.error(f"{context}: `{binding}` is not a binding of {spec.id}")
     return False
 
 

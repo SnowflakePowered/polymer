@@ -49,32 +49,32 @@ BOOL_STYLE = "lower"
 
 # PCSX2 shares stenzek's InputManager with DuckStation, so the same generic-pad
 # vocabulary appears in its binding tables and the same element mapping serves.
-ELEMENT_TO_GENERIC = {
-    "ButtonA": "Cross",
-    "ButtonB": "Circle",
-    "ButtonX": "Square",
-    "ButtonY": "Triangle",
-    "ButtonSelect": "Select",
-    "ButtonStart": "Start",
-    "ButtonGuide": "System",
-    "ButtonL": "L1",
-    "ButtonR": "R1",
-    "TriggerLeft": "L2",
-    "TriggerRight": "R2",
-    "ButtonClickL": "L3",
-    "ButtonClickR": "R3",
-    "DirectionalN": "DPadUp",
-    "DirectionalS": "DPadDown",
-    "DirectionalW": "DPadLeft",
-    "DirectionalE": "DPadRight",
-    "AxisLeftAnalogNegativeX": "LeftStickLeft",
-    "AxisLeftAnalogPositiveX": "LeftStickRight",
-    "AxisLeftAnalogNegativeY": "LeftStickDown",
-    "AxisLeftAnalogPositiveY": "LeftStickUp",
-    "AxisRightAnalogNegativeX": "RightStickLeft",
-    "AxisRightAnalogPositiveX": "RightStickRight",
-    "AxisRightAnalogNegativeY": "RightStickDown",
-    "AxisRightAnalogPositiveY": "RightStickUp",
+BINDING_TO_GENERIC = {
+    "button.a": "Cross",
+    "button.b": "Circle",
+    "button.x": "Square",
+    "button.y": "Triangle",
+    "button.select": "Select",
+    "button.start": "Start",
+    "button.guide": "System",
+    "button.l": "L1",
+    "button.r": "R1",
+    "trigger.left": "L2",
+    "trigger.right": "R2",
+    "button.clickl": "L3",
+    "button.clickr": "R3",
+    "directional.n": "DPadUp",
+    "directional.s": "DPadDown",
+    "directional.w": "DPadLeft",
+    "directional.e": "DPadRight",
+    "analog.stick.left.x-": "LeftStickLeft",
+    "analog.stick.left.x+": "LeftStickRight",
+    "analog.stick.left.y-": "LeftStickDown",
+    "analog.stick.left.y+": "LeftStickUp",
+    "analog.stick.right.x-": "RightStickLeft",
+    "analog.stick.right.x+": "RightStickRight",
+    "analog.stick.right.y-": "RightStickDown",
+    "analog.stick.right.y+": "RightStickUp",
 }
 
 # The machine these ports belong to and its machinespec input group. PCSX2
@@ -440,18 +440,17 @@ def build_input(tables: dict[str, dict[str, str]], root: Path, spec_root: Path,
             continue
         lines.append(f"[input.layouts.{toml_key(layout)}]")
         device = consolespec.load_inputspec(spec_root, layout)
-        for element, generic in sorted(ELEMENT_TO_GENERIC.items()):
+        for key, generic in sorted(BINDING_TO_GENERIC.items()):
             binding = table.get(generic)
             if binding is None:
                 continue
             # The generic vocabulary is wider than any one device; an element
             # this pad does not have is a gap between the two, not a typo here.
-            if element not in device:
-                report.note(f"input: {layout} has no `{element}`; PCSX2 binds "
+            if key not in device:
+                report.note(f"input: {layout} has no `{key}`; PCSX2 binds "
                             f"it as `{binding}` on {controller}")
                 continue
-            entry = device.elements[element]
-            lines.append(f"{toml_key(entry.path)} = {toml_string(binding)}")
+            lines.append(f"{toml_key(key)} = {toml_string(binding)}")
             bound += 1
         lines.append("")
 
@@ -504,7 +503,7 @@ def build_sdl_mapping(root: Path, report: Report) -> list[str]:
     if missing:
         report.note(f"input: {'Pcsx2'} names no SDL control for {', '.join(missing)}")
     report.note(f"input: {len(entries)} SDL controls paired by constant")
-    return sdlpad.emit_mapping(entries)
+    return sdlpad.emit_mapping((key, f"{{device}}/{value}") for key, value in entries)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,

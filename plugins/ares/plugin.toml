@@ -1,0 +1,42 @@
+[plugin]
+id = "ares"
+version = "0.0.1"
+class = "emulator"
+
+[emulator]
+platforms = [
+    "ATARI_2600",
+    "BANDAI_WS",
+    "BANDAI_WSC",
+    "COLECO_CV",
+    "NEC_SGFX",
+    "NEC_TG16",
+    "NEC_TGCD",
+    "NINTENDO_FDS",
+    "NINTENDO_GB",
+    "NINTENDO_GBA",
+    "NINTENDO_GBC",
+    "NINTENDO_N64",
+    "NINTENDO_N64DD",
+    "NINTENDO_NES",
+    "NINTENDO_SNES",
+    "SEGA_32X",
+    "SEGA_32X_CD",
+    "SEGA_CD",
+    "SEGA_GEN",
+    "SEGA_GG",
+    "SEGA_SAT",
+    "SEGA_SG1000",
+    "SEGA_SMS",
+    "SNK_NG",
+    "SNK_NGP",
+    "SNK_NGPC",
+    "SONY_PSX",
+]
+
+[emulator.configuration]
+definitions = [
+    "config/ares.toml",
+    "config/input.toml",
+    "config/sections/*.toml",
+]

@@ -85,63 +85,63 @@ MACHINE = "NINTENDO_WIIU"
 GAMEPAD_PORTS = 1
 CONTROLLER_PORTS = 7
 
-# consolespec element → the `ButtonId` enumerator Cemu's profile stores as a
+# consolespec binding key → the `ButtonId` enumerator Cemu's profile stores as a
 # number. Cemu's own names are the vocabulary; the parser turns them into the
 # integers the file actually holds, so a reordered enum changes the emitted
 # numbers. Every class declares its own enum: `kButtonId_Home` is 27 on a
 # GamePad, 11 on a Pro Controller and 17 on a Wiimote, so the tables cannot be
 # shared even where the element names coincide.
 VPAD_BINDINGS = {
-    "ButtonA": "kButtonId_A",
-    "ButtonB": "kButtonId_B",
-    "ButtonX": "kButtonId_X",
-    "ButtonY": "kButtonId_Y",
-    "ButtonL": "kButtonId_L",
-    "ButtonR": "kButtonId_R",
-    "TriggerLeft": "kButtonId_ZL",
-    "TriggerRight": "kButtonId_ZR",
-    "ButtonSelect": "kButtonId_Minus",
-    "ButtonStart": "kButtonId_Plus",
-    "ButtonClickL": "kButtonId_StickL",
-    "ButtonClickR": "kButtonId_StickR",
-    "DirectionalN": "kButtonId_Up",
-    "DirectionalS": "kButtonId_Down",
-    "DirectionalW": "kButtonId_Left",
-    "DirectionalE": "kButtonId_Right",
-    "AxisLeftAnalogPositiveY": "kButtonId_StickL_Up",
-    "AxisLeftAnalogNegativeY": "kButtonId_StickL_Down",
-    "AxisLeftAnalogNegativeX": "kButtonId_StickL_Left",
-    "AxisLeftAnalogPositiveX": "kButtonId_StickL_Right",
-    "AxisRightAnalogPositiveY": "kButtonId_StickR_Up",
-    "AxisRightAnalogNegativeY": "kButtonId_StickR_Down",
-    "AxisRightAnalogNegativeX": "kButtonId_StickR_Left",
-    "AxisRightAnalogPositiveX": "kButtonId_StickR_Right",
-    "ButtonGuide": "kButtonId_Home",
+    "button.a": "kButtonId_A",
+    "button.b": "kButtonId_B",
+    "button.x": "kButtonId_X",
+    "button.y": "kButtonId_Y",
+    "button.l": "kButtonId_L",
+    "button.r": "kButtonId_R",
+    "trigger.left": "kButtonId_ZL",
+    "trigger.right": "kButtonId_ZR",
+    "button.select": "kButtonId_Minus",
+    "button.start": "kButtonId_Plus",
+    "button.clickl": "kButtonId_StickL",
+    "button.clickr": "kButtonId_StickR",
+    "directional.n": "kButtonId_Up",
+    "directional.s": "kButtonId_Down",
+    "directional.w": "kButtonId_Left",
+    "directional.e": "kButtonId_Right",
+    "analog.stick.left.y+": "kButtonId_StickL_Up",
+    "analog.stick.left.y-": "kButtonId_StickL_Down",
+    "analog.stick.left.x-": "kButtonId_StickL_Left",
+    "analog.stick.left.x+": "kButtonId_StickL_Right",
+    "analog.stick.right.y+": "kButtonId_StickR_Up",
+    "analog.stick.right.y-": "kButtonId_StickR_Down",
+    "analog.stick.right.x-": "kButtonId_StickR_Left",
+    "analog.stick.right.x+": "kButtonId_StickR_Right",
+    "button.guide": "kButtonId_Home",
 }
 
 # ProController::ButtonId. Mostly the same element names as the GamePad but
 # different ordinals: the Pro enum puts Home before the D-pad where the GamePad
 # puts it last. The stick clicks are absent because the inputspec does not
 # declare them (see UNDECLARED).
-PRO_BINDINGS = {element: enumerator for element, enumerator in VPAD_BINDINGS.items()
-                if element not in ("ButtonClickL", "ButtonClickR")}
+PRO_BINDINGS = {key: enumerator for key, enumerator in VPAD_BINDINGS.items()
+                if key not in ("button.clickl", "button.clickr")}
 
 # WiimoteController::ButtonId, which shares almost nothing with the other two.
 # A Wii Remote has no second stick, no shoulder buttons and no stick clicks; its
 # numbered buttons are the ones printed "1" and "2", which consolespec spells as
 # the numbered elements 0 and 1.
 WIIMOTE_BINDINGS = {
-    "ButtonA": "kButtonId_A",
-    "ButtonB": "kButtonId_B",
-    "Button0": "kButtonId_1",
-    "Button1": "kButtonId_2",
-    "ButtonStart": "kButtonId_Plus",
-    "ButtonSelect": "kButtonId_Minus",
-    "ButtonGuide": "kButtonId_Home",
-    "DirectionalN": "kButtonId_Up",
-    "DirectionalS": "kButtonId_Down",
-    "DirectionalW": "kButtonId_Left",
-    "DirectionalE": "kButtonId_Right",
+    "button.a": "kButtonId_A",
+    "button.b": "kButtonId_B",
+    "button.0": "kButtonId_1",
+    "button.1": "kButtonId_2",
+    "button.start": "kButtonId_Plus",
+    "button.select": "kButtonId_Minus",
+    "button.guide": "kButtonId_Home",
+    "directional.n": "kButtonId_Up",
+    "directional.s": "kButtonId_Down",
+    "directional.w": "kButtonId_Left",
+    "directional.e": "kButtonId_Right",
 }
 
 # Cemu models the extension as part of the Wiimote's own enum rather than a
@@ -152,12 +152,12 @@ WIIMOTE_BINDINGS = {
 # on — so no table may be inherited into a layout it was not written for.
 WII_NUNCHUK_BINDINGS = {
     **WIIMOTE_BINDINGS,
-    "ButtonZ": "kButtonId_Nunchuck_Z",
-    "ButtonC": "kButtonId_Nunchuck_C",
-    "AxisLeftAnalogPositiveY": "kButtonId_Nunchuck_Up",
-    "AxisLeftAnalogNegativeY": "kButtonId_Nunchuck_Down",
-    "AxisLeftAnalogNegativeX": "kButtonId_Nunchuck_Left",
-    "AxisLeftAnalogPositiveX": "kButtonId_Nunchuck_Right",
+    "button.z": "kButtonId_Nunchuck_Z",
+    "button.c": "kButtonId_Nunchuck_C",
+    "analog.stick.left.y+": "kButtonId_Nunchuck_Up",
+    "analog.stick.left.y-": "kButtonId_Nunchuck_Down",
+    "analog.stick.left.x-": "kButtonId_Nunchuck_Left",
+    "analog.stick.left.x+": "kButtonId_Nunchuck_Right",
 }
 
 # `WPADDeviceType`, which `WiimoteController::save` writes into `<device_type>`
@@ -172,8 +172,8 @@ WPAD_FREESTYLE = "1"   # kWAPDevFreestyle — remote with nunchuk
 # hardware and Cemu maps them, but WIIU_PRO_CONTROLLER declares no `clickl` /
 # `clickr` button, unlike WIIU_DRC_CONTROLLER.
 UNDECLARED = {
-    ("WIIU_PRO_CONTROLLER", "ButtonClickL"): "kButtonId_StickL",
-    ("WIIU_PRO_CONTROLLER", "ButtonClickR"): "kButtonId_StickR",
+    ("WIIU_PRO_CONTROLLER", "button.clickl"): "kButtonId_StickL",
+    ("WIIU_PRO_CONTROLLER", "button.clickr"): "kButtonId_StickR",
 }
 
 # inputspec layout → the Cemu emulated controller that realizes it: the header
@@ -786,16 +786,15 @@ def build_input(ids: dict[str, dict[str, int]], root: Path, spec_root: Path,
         lines.append(f"[input.layouts.{toml_key(layout)}]")
         device = consolespec.load_inputspec(spec_root, layout)
         enumerators = ids[definition["header"]]
-        for element, enumerator in sorted(definition["bindings"].items()):
+        for key, enumerator in sorted(definition["bindings"].items()):
             ordinal = enumerators.get(enumerator)
             if ordinal is None:
                 report.error(f"input: `{enumerator}` is not in "
                              f"{definition['header']}'s ButtonId")
                 continue
-            if not consolespec.check_binding(device, element, report, "input"):
+            if not consolespec.check_binding(device, key, report, "input"):
                 continue
-            entry = device.elements[element]
-            lines.append(f"{toml_key(entry.path)} = {toml_string(str(ordinal))}")
+            lines.append(f"{toml_key(key)} = {toml_string(str(ordinal))}")
             bound += 1
         lines.append("")
 
@@ -818,6 +817,12 @@ def build_input(ids: dict[str, dict[str, int]], root: Path, spec_root: Path,
                 definition = LAYOUTS[layout]
                 entries = [{"target": target_id(profile, "emulated_controller"),
                             "key": "type", "value": definition["type"]}]
+                entries += [
+                    {"target": target_id(profile, "emulated_controller", "controller"),
+                     "key": "api", "value": "SDLController"},
+                    {"target": target_id(profile, "emulated_controller", "controller"),
+                     "key": "uuid", "value": "{device}"},
+                ]
                 entries += [{"target": target_id(profile, "emulated_controller"),
                              "key": key, "value": value}
                             for key, value in definition["emit"].items()]
@@ -832,8 +837,8 @@ def build_input(ids: dict[str, dict[str, int]], root: Path, spec_root: Path,
                 "silently changes every emitted number, so regenerate on version bumps")
     report.note("input: Cemu's Wii U Classic Controller has no inputspec layout "
                 "and is not offered")
-    for (layout, element), enumerator in sorted(UNDECLARED.items()):
-        report.warn(f"input: {layout} declares no `{element}`, so Cemu's "
+    for (layout, key), enumerator in sorted(UNDECLARED.items()):
+        report.warn(f"input: {layout} declares no `{key}`, so Cemu's "
                     f"`{enumerator}` is left unbound")
     return "\n".join(lines).rstrip() + "\n"
 
