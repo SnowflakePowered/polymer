@@ -7,5 +7,4 @@
 *.lib
 *.exp
 
-consolespec/scripts/**/*.pyc
 *.pyc

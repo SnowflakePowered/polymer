@@ -238,13 +238,14 @@ def check_group(machine: MachineSpec, group: str, layouts, ports: int,
 
 
 def find_root(start: Path | None = None) -> Path:
-    """Locate the `consolespec` directory by walking up from `start`."""
+    """Locate the consolespec repository by walking up from `start`."""
     here = (start or Path(__file__)).resolve()
     for candidate in (here, *here.parents):
-        root = candidate / "consolespec"
-        if (root / "inputspec").is_dir() and (root / "machinespec").is_dir():
-            return root
-    raise SpecError(f"no consolespec directory above {here}")
+        roots = (candidate, candidate / "consolespec", candidate.parent / "consolespec")
+        for root in roots:
+            if (root / "inputspec").is_dir() and (root / "machinespec").is_dir():
+                return root
+    raise SpecError(f"no consolespec repository near {here}")
 
 
 _inputs: dict[tuple[Path, str], InputSpec] = {}
