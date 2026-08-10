@@ -126,6 +126,7 @@ impl Runtime {
         width: u32,
         height: u32,
         emulator_commands: EmulatorCommandSink,
+        plugin_host: snowglass_pluginhost::PluginHost,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // deno_runtime selects aws-lc-rs. With both providers compiled rustls
@@ -137,7 +138,11 @@ impl Runtime {
         let tokio_context = tokio.enter();
         let document_url = ModuleSpecifier::parse(source_name)?;
         start_inspector_server()?;
-        let module_loader = Rc::new(BrowserModuleLoader::new());
+        let browser_loader = Rc::new(BrowserModuleLoader::new());
+        let module_loader = Rc::new(snowglass_pluginhost::PluginModuleRouter::new(
+            plugin_host,
+            browser_loader.clone(),
+        ));
         let sys = sys_traits::impls::RealSys;
         let permissions = PermissionsContainer::allow_all(Arc::new(
             RuntimePermissionDescriptorParser::new(sys.clone()),
@@ -171,7 +176,10 @@ impl Runtime {
             services,
             WorkerOptions {
                 bootstrap,
-                extensions: vec![snowglass_game_layer::init()],
+                extensions: vec![
+                    snowglass_pluginhost::deno::extension(),
+                    snowglass_game_layer::init(),
+                ],
                 ..Default::default()
             },
         );
@@ -193,7 +201,7 @@ impl Runtime {
             let result = execute_document_script(
                 &tokio,
                 &mut worker,
-                module_loader.as_ref(),
+                browser_loader.as_ref(),
                 &document_url,
                 index,
                 script,
@@ -441,6 +449,28 @@ impl Runtime {
                 .borrow_mut::<BridgeState>()
                 .proxy_messages,
         )
+    }
+
+    /// Invokes a registered emulator capability in this shell-owned Deno
+    /// instance. Module routing follows the plugin module's referrer.
+    pub fn run_emulator_plugin(
+        &mut self,
+        plugin: Arc<dyn snowglass_pluginhost::EmulatorPluginInstance>,
+        arguments: serde_json::Value,
+        configuration: snowglass_config::ast::ConfigurationInstance,
+    ) -> Result<
+        snowglass_pluginhost::EmulatorLaunchArguments,
+        snowglass_pluginhost::EmulatorHostError,
+    > {
+        let mut launch = snowglass_pluginhost::EmulatorLaunch::attach(&mut self.worker.js_runtime);
+        let result = self.tokio.block_on(launch.execute(
+            snowglass_pluginhost::EmulatorSetupInvocation {
+                plugin,
+                arguments,
+                configuration,
+            },
+        ));
+        result
     }
 }
 

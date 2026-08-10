@@ -203,6 +203,7 @@ pub struct GameLayerFactory {
     gpu: GameLayerGpu,
     adapter_luid: AdapterLuid,
     alternate_gpus: Vec<(AdapterLuid, GameLayerGpu)>,
+    plugin_host: snowglass_pluginhost::PluginHost,
 }
 
 struct GameLayerGpu {
@@ -274,7 +275,7 @@ impl GameLayerGpu {
 }
 
 impl GameLayerFactory {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub fn new(plugin_host: snowglass_pluginhost::PluginHost) -> Result<Self, Box<dyn Error>> {
         // Prepare every D3D12 adapter before WebView2 starts Chromium. A stream
         // can later identify a different producer adapter without creating
         // Vello's D3D12 pipelines inside Chromium's runtime context.
@@ -315,6 +316,7 @@ impl GameLayerFactory {
             gpu,
             adapter_luid: default_luid,
             alternate_gpus,
+            plugin_host,
         })
     }
 
@@ -394,6 +396,7 @@ impl GameLayerFactory {
             .map(|(id, _)| (id, id))
             .collect::<HashMap<_, _>>();
         let dom_to_script = script_to_dom.clone();
+        let plugin_host = self.plugin_host.clone();
         let mut layer = GameLayer {
             document,
             arrivals,
@@ -423,6 +426,7 @@ impl GameLayerFactory {
             layer.width,
             layer.height,
             emulator_commands,
+            plugin_host,
         ) {
             Ok(runtime) => layer.runtime = Some(runtime),
             Err(error) => {
@@ -435,6 +439,19 @@ impl GameLayerFactory {
 }
 
 impl GameLayer {
+    pub fn run_emulator_plugin(
+        &mut self,
+        plugin: Arc<dyn snowglass_pluginhost::EmulatorPluginInstance>,
+        arguments: serde_json::Value,
+        configuration: snowglass_config::ast::ConfigurationInstance,
+    ) -> Result<snowglass_pluginhost::EmulatorLaunchArguments, String> {
+        self.runtime
+            .as_mut()
+            .ok_or_else(|| "the background JavaScript runtime is unavailable".to_owned())?
+            .run_emulator_plugin(plugin, arguments, configuration)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn switch_adapter(&mut self, desired: AdapterLuid) -> Result<bool, Box<dyn Error>> {
         let changed = switch_game_layer_gpu(
             &mut self.gpu,
@@ -1400,6 +1417,7 @@ mod tests {
             800,
             600,
             deno::EmulatorCommandSink::default(),
+            snowglass_pluginhost::PluginHost::new(),
         )
         .unwrap();
         apply_dom_mutations(

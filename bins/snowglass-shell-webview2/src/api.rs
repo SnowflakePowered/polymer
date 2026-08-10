@@ -3,11 +3,74 @@ use snowglass_input::{
     layout::{InputBinding, SdlAxis, SdlButton},
     provider::sdl3::DeviceSelector,
 };
+pub use snowglass_pluginhost::{EmulatorLaunchArguments, GraphicsHook};
 use snowglass_renderer::cli::{GamepadArgument, HookBackend, ViewerOptions};
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
 };
+
+// TODO: move this into runtime eventually where we need to take in the dirmap later.
+
+pub fn plugin_launch_options(
+    plan: EmulatorLaunchArguments,
+    viewer: &ViewerOptions,
+) -> Result<LaunchOptions, String> {
+    let webrtc = viewer.webrtc.as_deref().unwrap_or_default();
+    let launch = LaunchOptions {
+        command: file_url_or_path(&plan.command)?,
+        arguments: plan.argv,
+        isolated: plan.isolate,
+        hook: plan.hooks,
+        surfaces: plan
+            .surfaces
+            .into_iter()
+            .map(|surface| TrackedSurface {
+                index: surface.index,
+                rotation: surface.rotation,
+                selector: surface.pattern,
+                attach: None,
+                webrtc: webrtc.contains(&surface.index),
+            })
+            .collect(),
+        gamepad_mapping: viewer.gamepads.iter().map(GamepadMapping::from).collect(),
+        machine: viewer.machine.clone(),
+        webrtc_bind: viewer
+            .webrtc
+            .as_ref()
+            .map(|_| viewer.bind_webrtc.to_string()),
+    };
+    launch.validate_inner(false)?;
+    Ok(launch)
+}
+
+pub fn plugin_config_root_path(
+    plan: &EmulatorLaunchArguments,
+) -> Result<std::path::PathBuf, String> {
+    Ok(std::path::PathBuf::from(file_url_or_path(
+        &plan.config_root,
+    )?))
+}
+
+fn file_url_or_path(value: &str) -> Result<String, String> {
+    if !value.starts_with("file:") {
+        return Ok(value.to_owned());
+    }
+    let url = deno_core::ModuleSpecifier::parse(value)
+        .map_err(|error| format!("invalid file URL '{value}': {error}"))?;
+    url.to_file_path()
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|()| format!("file URL is not a local path: {value}"))
+}
+
+pub fn graphics_hook_backend(hook: GraphicsHook) -> HookBackend {
+    match hook {
+        GraphicsHook::Opengl => HookBackend::OpenGl,
+        GraphicsHook::Vulkan => HookBackend::Vulkan,
+        GraphicsHook::D3d11 => HookBackend::D3d11,
+        GraphicsHook::D3d12 => HookBackend::D3d12,
+    }
+}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,26 +89,6 @@ pub struct LaunchOptions {
     /// without it nothing could validate the topology the launch installs.
     pub machine: String,
     pub webrtc_bind: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum GraphicsHook {
-    Opengl,
-    Vulkan,
-    D3d11,
-    D3d12,
-}
-
-impl From<GraphicsHook> for HookBackend {
-    fn from(value: GraphicsHook) -> Self {
-        match value {
-            GraphicsHook::Opengl => Self::OpenGl,
-            GraphicsHook::Vulkan => Self::Vulkan,
-            GraphicsHook::D3d11 => Self::D3d11,
-            GraphicsHook::D3d12 => Self::D3d12,
-        }
-    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

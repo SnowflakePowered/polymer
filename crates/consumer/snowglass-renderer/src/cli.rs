@@ -79,6 +79,7 @@ pub struct TrackedRenderTarget {
     pub surface_pattern: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct ViewerOptions {
     pub target: Vec<String>,
     pub track_render_targets: Option<Vec<TrackedRenderTarget>>,
@@ -232,7 +233,10 @@ struct ViewerArguments {
 }
 
 impl ViewerArguments {
-    fn into_options(self) -> Result<ViewerOptions, Box<dyn Error>> {
+    fn into_options(
+        self,
+        default_machine: Option<String>,
+    ) -> Result<ViewerOptions, Box<dyn Error>> {
         let mut hooks = Vec::new();
         expand_hook_choices(&mut hooks, self.hook_choices)?;
         if hooks.is_empty() {
@@ -266,6 +270,7 @@ impl ViewerArguments {
             self.machine.unwrap_or_else(|| "MICROSOFT_XBOX".to_owned())
         } else {
             self.machine
+                .or(default_machine)
                 .ok_or("--gamepad requires --machine, e.g. --machine NINTENDO_WIIU")?
         };
         gamepads.sort_by_key(|gamepad| gamepad.slot);
@@ -315,7 +320,16 @@ pub fn viewer_command_named(name: &'static str) -> Command {
 /// Decodes shared viewer options from matches produced by
 /// [`viewer_command_named`], ignoring arguments added by a renderer host.
 pub fn viewer_options_from_matches(matches: &ArgMatches) -> Result<ViewerOptions, Box<dyn Error>> {
-    ViewerArguments::from_arg_matches(matches)?.into_options()
+    viewer_options_from_matches_with_default_machine(matches, None)
+}
+
+/// Decodes shared viewer options while allowing a host-selected emulator
+/// package to supply its only supported machine when `--machine` is omitted.
+pub fn viewer_options_from_matches_with_default_machine(
+    matches: &ArgMatches,
+    default_machine: Option<String>,
+) -> Result<ViewerOptions, Box<dyn Error>> {
+    ViewerArguments::from_arg_matches(matches)?.into_options(default_machine)
 }
 
 pub fn split_command_arguments(value: &str) -> Result<Vec<String>, String> {
@@ -350,7 +364,7 @@ pub fn parse_arguments(
     ViewerArguments::try_parse_from(
         std::iter::once("snowglass-viewer".to_owned()).chain(arguments),
     )?
-    .into_options()
+    .into_options(None)
 }
 
 fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String> {

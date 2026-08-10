@@ -1,0 +1,6 @@
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = [
+    "-C", "linker-flavor=lld-link",
+    "-C", "link-arg=/NODEFAULTLIB:libucrt.lib",
+    "-C", "link-arg=ucrt.lib",
+]

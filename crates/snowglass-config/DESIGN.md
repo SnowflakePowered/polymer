@@ -170,17 +170,21 @@ plugin package (TOML + TS)
                           │ apply(configOverrides), launch script reads/writes
                           ▼
                      Instance (settled)
-                          │ serialize(existing bytes)
+                          │ launch script returns opaque instance + launch policy
+                          ▼
+                     PluginLaunchPlan
+                          │ host reads existing bytes, then serialize(instance)
                           ▼
           Realized { config, env, argv, ports, actions, claims }
-                          │ launch script composes
+                          │ host composes wire descriptor
                           ▼
           LaunchArguments ──► frontend ──► launch op ──► host writes, launches
 ```
 
-The frontend is a conduit. It receives an opaque JSON object from the emulator's
-JS module and hands it to the launch op unchanged; it never interprets an option
-path, a target, or an input element.
+The frontend is a conduit. It receives the JSON `LaunchArguments` produced by
+the host and hands them to the launch op unchanged; it never sees the opaque
+configuration instance and never interprets an option path, a target, or an
+input element.
 
 ---
 
@@ -874,7 +878,7 @@ Emulator.setupLaunch({
   configOverrides: { [path: string]: Value },   // flat option path → value
   console: string,                       // consolespec machine id
   portAssignments: { [group: string]: string[] },  // inputspec layout id per port index
-}) -> LaunchArguments
+}) -> PluginLaunchPlan
 ```
 
 and the steps behind it:
@@ -884,18 +888,47 @@ definitions ──parse──► Definition ──materialize──► Instance 
                                                       │
                             configOverrides ──apply──►│
                                                       │
-                        launch script reads values ◄──┤        (any target, incl. null)
+                   launch script reads/writes values ◄┤        (any target, incl. null)
                                                       │
-                                                  serialize
+                      launch script returns handle ──►│ + launch policy
                                                       ▼
-                                    { path: ArrayBuffer } per serializing root
+                                             PluginLaunchPlan
                                                       │
-                            launch script returns ────┴──► LaunchArguments
+                           host reads existing files, serializes, and composes
+                                                      ▼
+                                              LaunchArguments
 ```
 
 ```ts
-// minimally; extended as §8.4's other channels land
-{ command: string, argv: string[], config: { [path: string]: ArrayBuffer } }
+// Host-backed and deliberately not JSON-serializable. Nested property reads
+// and writes operate on the invocation-scoped ConfigurationInstance retained
+// by the plugin host; the proxy converts property chains to setting paths.
+type ConfigurationOptions = {
+  [key: string]: ConfigurationOptions | null | boolean | number | string;
+};
+
+interface Configuration {
+  options(): ConfigurationOptions;
+  entries(): Iterable<[string, null | boolean | number | string]>;
+}
+
+// The plugin's return value. `argv` is the emulator/game-specific tail; the
+// host prepends argv emitted by the configuration definition.
+interface PluginLaunchPlan {
+  command: string;
+  argv: string[];
+  configRoot: string;
+  config: Configuration;
+  isolate: boolean;
+  hooks: string[];
+  surfaces: SurfacePlan[];
+}
+
+interface SurfacePlan {
+  index: number;
+  rotation?: number;
+  pattern?: string;
+}
 ```
 
 Three consequences that overturn earlier revisions of this document.
@@ -912,11 +945,18 @@ per port index within each group, which is exactly the domain of the implicit
 rather than replacing it: `emit.<choice>` selection, layout-option enablement,
 and persistence all keep working through one mechanism instead of two.
 
-**Config output is bytes, not text.** §8.2 previously required `String`
-contents and told a plugin needing a blob to route it around this map. The
-frontend takes `ArrayBuffer`, so that restriction is withdrawn: a codec returns
-bytes, encoding is the codec's business, and an emulator wanting UTF-16, a BOM,
-or a binary section is expressible rather than special.
+**The launch script never serializes configuration.** It receives a host-backed
+`Configuration`, may observe and mutate any materialized option, and must return
+that same opaque object as `PluginLaunchPlan.config`. The host unwraps it only
+after the script returns, reads existing files under the returned `configRoot`,
+and drives serialization. A plugin cannot stringify the handle or substitute a
+configuration from another definition or launch.
+
+**Serialized config output is bytes, not text.** §8.2 previously required
+`String` contents and told a plugin needing a blob to route it around this map.
+The wire descriptor carries byte buffers, so that restriction is withdrawn: a
+codec returns bytes, encoding is the codec's business, and an emulator wanting
+UTF-16, a BOM, or a binary section is expressible rather than special.
 
 ### 5.2 The instance
 
@@ -957,12 +997,15 @@ setting (§0.1, principle 5). And the caller must key persisted values against
 `Definition::hash`, never against anything resolved, or saved config depends on
 which GPU was plugged in when it was saved.
 
-**The launch script reads the instance directly**, by option path, before
+**The launch script reads and mutates the instance directly**, through its
+opaque `Configuration` façade and by option path, before host-driven
 serialization — which is what makes a null root (§3.1) work without any new
 channel. A value at a null target is materialized, overridable, and readable
 exactly like any other; it simply contributes nothing to the serialize step. An
 earlier draft of this document asked how such a subtree should reach the launch
-descriptor. It does not: the script reaches *it*.
+descriptor. It does not: the script reaches *it*. Returning the façade gives
+the host the settled instance to serialize; it does not expose the instance to
+the frontend or put a handle in the wire descriptor.
 
 That makes `OptionPath` the scripting API as well as the persistence key, so
 `Definition::by_path` is load-bearing and paths are a compatibility surface —
@@ -1781,10 +1824,11 @@ but the descriptor carries the held-key set so the shell knows what to assert on
 
 ## 8. Materialize, serialize, and the descriptor
 
-Two steps, matching §5.1's flow. An earlier revision called them `realize` and
-`emit` and had them exchange a `RealizedDefinition`/`ResolvedValues` pair; the
-`Instance` is that pair, named, and mutable between the two calls so the launch
-script can read and adjust it.
+Two host-owned steps with a plugin callback between them, matching §5.1's flow.
+An earlier revision called them `realize` and `emit` and had them exchange a
+`RealizedDefinition`/`ResolvedValues` pair; the `Instance` is that pair, named,
+and mutable between materialization and serialization so the launch script can
+read and adjust it. The script never calls `serialize` itself.
 
 ```rust
 pub fn materialize(
@@ -1815,6 +1859,13 @@ seed from default, commit.
 `apply` is separate from `materialize` rather than an argument to it because the
 frontend's overrides and the launch script's writes are the same operation, and
 because a settings UI edits an instance repeatedly without rebuilding it.
+
+The plugin host exposes the instance to JS as a branded `Configuration` object.
+`get`, `set`, and iteration are ordinary host operations; `set` performs the
+same type and domain checks as a Rust-side instance mutation. The object is
+valid only for its setup call. The returned `PluginLaunchPlan.config` must be
+that exact object, which prevents a plugin from accidentally returning a stale
+instance or one materialized for a different machine.
 
 An override naming a path the definition does not have is a **diagnostic, not a
 rejection**: `configOverrides` may legitimately carry values saved against an
@@ -1921,13 +1972,15 @@ paths, `SDL_DYNAMIC_API`, `SDL3_DYNAMIC_API`, `VK_LAYER_PATH`, and
 
 ### 8.4 Launch descriptor
 
-The JSON the emulator's JS module returns. The frontend passes it through
-verbatim; nothing in it requires understanding an option path.
-
-The JSON the emulator's JS module returns. Three explicit outputs — `config`,
-`env`, `argv` — plus the launch facts the runtime needs. The frontend passes it
-through verbatim; nothing in it requires understanding an option path, a target,
-or an input element.
+There are two shapes at this boundary. The emulator's JS module returns an
+in-process `PluginLaunchPlan`: launch policy plus the opaque `Configuration`
+object it was given. This value is not JSON and never leaves the plugin host.
+The host validates the plan, reads existing files under `configRoot`, serializes
+the returned instance, and composes the JSON `LaunchArguments` below. Three
+explicit outputs — `config`, `env`, and `argv` — plus the launch facts the
+runtime needs cross the wire. The frontend passes that JSON through verbatim;
+nothing in it requires understanding an option path, a target, or an input
+element.
 
 ```jsonc
 {
@@ -1977,22 +2030,26 @@ Design rules:
 1. **`config`, `env`, and `argv` are the whole configuration output.** A host that
    writes every `config` entry under `configRoot`, applies `env`, and appends
    `argv` has applied the configuration completely. There is no fourth channel and
-   no out-of-band handle to resolve.
+   no out-of-band handle to resolve in the wire protocol. The opaque object in
+   `PluginLaunchPlan` is an in-process handoff back to the host, not a fourth
+   launch channel.
 2. **The frontend is a conduit.** It does not validate, merge, or interpret. The
-   host validates shape on receipt: relative paths inside the root, no reserved
-   env names, known hook ids, known inputspec layouts.
+   plugin host validates the plan before serialization, and the launch host
+   validates the final descriptor on receipt: relative paths inside the root,
+   no reserved env names, known hook ids, known inputspec layouts.
 3. **`definitionHash` makes staleness detectable.** A descriptor built against a
    definition that has since been reloaded is rejected at launch with a specific
    error rather than launched with stale files.
-4. **The JS composes; serialize supplies.** `ctx.realize()` returns `config`, `env`,
-   `argv`, `ports`, `actions`, `claims`; the JS module adds `command`,
-   `configRoot`, `surfaces`, `hooks`, and the game-specific tail of `argv`.
-   Argv assembly, install-layout discovery, and the backend→hook mapping are all
-   genuinely code: which hook captures a given renderer is knowledge about
-   snowglass, not a fact about the emulator's config file, so it lives in the TS
-   module rather than in the definition document. Editing what realize produced
-   is possible and unpoliced: the plugin author wrote both halves, so this is a
-   correctness boundary, not a trust boundary. The host validates shape, not
+4. **The JS chooses; the host serializes and composes.** The JS module returns
+   `command`, `configRoot`, `surfaces`, `hooks`, the game-specific tail of
+   `argv`, and its settled opaque `config`. The host serializes that instance,
+   prepends configuration-emitted `argv`, and supplies `config`, `env`, `ports`,
+   `actions`, `pointer`, `claims`, and diagnostics in the final descriptor.
+   Install-layout discovery and the backend→hook mapping are genuinely code:
+   which hook captures a given renderer is knowledge about snowglass, not a fact
+   about the emulator's config file, so it lives in the TS module rather than in
+   the definition document. The plugin may edit the instance arbitrarily before
+   returning it; the host validates values and descriptor shape, not plugin
    intent.
 
 Consuming the descriptor is mechanical: write `config` under `configRoot`, `env` →
@@ -2004,10 +2061,12 @@ transaction on `InputHub`, `actions` → `send_hotkey` with a transport.
 ### 8.5 Merge needs the existing files, and JS does not have them
 
 `serialize` merges against the current on-disk contents (§8.1), so the host reads
-them *before* materializing and passes them in through `ExistingFiles` — the same
-call that produced the descriptor. By the time `config` exists as a `path →
-contents` map it is already merged, and writing an entry is a plain overwrite. The
-host does not re-merge at write time, and JS never sees the pre-merge state.
+them after the plugin returns `configRoot` and passes them through
+`ExistingFiles` when it serializes the returned opaque instance. Materialization
+does not need the existing bytes. By the time the host inserts `config` into the
+wire descriptor it is already merged, and writing an entry is a plain overwrite.
+The host does not re-merge at write time, and JS sees neither the pre-merge bytes
+nor the serialized result.
 
 The window between read and write is real but uninteresting: an emulator that is
 not running is not editing its own config, and the host holds the session.
@@ -2064,17 +2123,15 @@ export const resolveShaderPacks = {
 };
 
 export default definePlugin<Dolphin>({
-  // returns the launch descriptor; ctx.realize() is an op into this crate
+  // Returns an in-process plan. The host serializes ctx.config only after this
+  // function returns, then builds the JSON launch descriptor.
   async launch(ctx, game) {
     const root = await ctx.installRoot();            // portable vs %APPDATA%
-    const { config, env, argv, ...plan } = await ctx.realize({ configRoot: root });
     return {
-      ...plan,                                        // ports, actions, claims, …
       command: `${root}/Dolphin.exe`,
       configRoot: `${root}/User`,
-      config,
-      env,
-      argv: [...argv, "-b", "-e", game.path],
+      config: ctx.config,                             // opaque host-backed instance
+      argv: ["-b", "-e", game.path],                 // appended after config argv
       hooks: HOOKS[ctx.get("main.core.gfx_backend")]
              ?? fail("Snowglass requires Dolphin's Vulkan, D3D, D3D12 or OGL backend."),
     };
@@ -2093,8 +2150,9 @@ const HOOKS = {
 };
 ```
 
-`ctx` is the entire surface: `get()`, `host.enumerate()`, scoped `fs`, `realize()`.
-No network, no process, no `EmulatorInstance`. That narrowness is what makes a
+`ctx` is the entire surface: the opaque `config` façade (`get()`, `set()`, and
+iteration), `host.enumerate()`, and scoped `fs`. It has no serialization op, no
+network, no process, and no `EmulatorInstance`. That narrowness is what makes a
 later swap to a WASM Component Model guest mechanical.
 
 Note the existing game-layer ops (`op_emulator_launch`, `op_input_configure` in

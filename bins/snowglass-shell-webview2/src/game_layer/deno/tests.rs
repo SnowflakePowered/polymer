@@ -3,6 +3,68 @@ use std::sync::{Arc, Mutex};
 
 use super::{EmulatorCommand, EmulatorCommandSink, KeyboardEvent, MouseEvent, Mutation, Runtime};
 
+#[test]
+fn executes_the_cemu_package_with_realized_configuration() {
+    let html = "<html><body></body></html>";
+    let document = document(html);
+    let (command_sink, _) = command_recorder();
+    let plugins = snowglass_pluginhost::PluginHost::new();
+    plugins
+        .load(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("plugins")
+                .join("cemu")
+                .join("plugin.toml"),
+        )
+        .unwrap();
+    let plugin = plugins
+        .plugin::<dyn snowglass_pluginhost::EmulatorPluginInstance>("cemu")
+        .unwrap();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///plugin-test.html",
+        800,
+        600,
+        command_sink,
+        plugins,
+    )
+    .unwrap();
+    let assignments = plugin
+        .port_assignments("NINTENDO_WIIU", &["WIIU_DRC_CONTROLLER".to_owned()])
+        .unwrap();
+    let configuration = plugin.materialize("NINTENDO_WIIU", assignments).unwrap();
+    let plan: crate::api::EmulatorLaunchArguments = runtime
+        .run_emulator_plugin(
+            plugin,
+            serde_json::json!({
+                "launchPath": "E:/games/U-King.rpx",
+                "console": "NINTENDO_WIIU",
+                "portAssignments": { "gamepad": ["WIIU_DRC_CONTROLLER"] },
+            }),
+            configuration,
+        )
+        .unwrap();
+
+    assert_eq!(plan.argv, ["-g", "E:/games/U-King.rpx"]);
+    assert!(plan.command.ends_with("/Cemu.exe"), "{}", plan.command);
+    assert_eq!(plan.surfaces[0].index, 0);
+    assert_eq!(plan.surfaces[0].rotation, 0);
+    assert_eq!(plan.surfaces[0].pattern.as_deref(), Some("Cemu+"));
+    assert!(plan.config.contains_key("settings.xml"));
+    assert!(
+        plan.config
+            .contains_key("controllerProfiles/controller0.xml")
+    );
+    let settings = std::str::from_utf8(&plan.config["settings.xml"]).unwrap();
+    assert!(
+        settings.contains("<open_pad>true</open_pad>"),
+        "cemu.ts did not mutate content.open_pad before host serialization:\n{settings}"
+    );
+}
+
 fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>) {
     let commands = Arc::new(Mutex::new(Vec::new()));
     let recorded = commands.clone();
@@ -55,6 +117,7 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
         800,
         600,
         command_sink,
+        snowglass_pluginhost::PluginHost::new(),
     )
     .unwrap();
 
@@ -133,6 +196,7 @@ fn runs_inline_modules_with_relative_imports() {
         800,
         600,
         EmulatorCommandSink::default(),
+        snowglass_pluginhost::PluginHost::new(),
     )
     .unwrap();
 
@@ -184,6 +248,7 @@ fn queues_dynamic_dom_tree_mutations() {
         800,
         600,
         EmulatorCommandSink::default(),
+        snowglass_pluginhost::PluginHost::new(),
     )
     .unwrap();
     let mutations = runtime.take_mutations();
@@ -326,6 +391,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
         800,
         600,
         command_sink,
+        snowglass_pluginhost::PluginHost::new(),
     )
     .unwrap();
 

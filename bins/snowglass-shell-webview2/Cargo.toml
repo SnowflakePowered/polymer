@@ -21,12 +21,15 @@ peniko = "0.5.0"
 raw-window-handle.workspace = true
 regex.workspace = true
 serde.workspace = true
+serde_bytes = "0.11"
 serde_json.workspace = true
 style = { package = "stylo", version = "0.8.0" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true
+snowglass-config.workspace = true
 snowglass-platform-windows.workspace = true
+snowglass-pluginhost = { path = "../../crates/runtime/snowglass-pluginhost" }
 snowglass-protocol.workspace = true
 snowglass-runtime.workspace = true 
 snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }

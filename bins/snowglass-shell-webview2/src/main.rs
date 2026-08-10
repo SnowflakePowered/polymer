@@ -7,8 +7,11 @@ mod game_layer;
 mod game_layer_host;
 mod input;
 
-use api::{LaunchOptions, parse_input_binding};
-use cli::ShellOptions;
+use api::{
+    EmulatorLaunchArguments, LaunchOptions, graphics_hook_backend, parse_input_binding,
+    plugin_config_root_path, plugin_launch_options,
+};
+use cli::{PluginLaunchRequest, ShellOptions};
 use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
@@ -46,6 +49,7 @@ use snowglass_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, Re
 use std::{
     collections::HashMap,
     error::Error,
+    path::{Component, Path},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -681,7 +685,90 @@ struct GameSessionState {
     session: String,
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     active: Option<ActiveEmulator>,
-    pending_cli_launch: Option<LaunchOptions>,
+    pending_cli_launch: Option<PendingCliLaunch>,
+}
+
+enum PendingCliLaunch {
+    Ready(LaunchOptions),
+    Plugin {
+        request: PluginLaunchRequest,
+        viewer: snowglass_renderer::cli::ViewerOptions,
+    },
+}
+
+// todo: lift this to runtime orchestrator
+fn install_plugin_configuration(plan: &EmulatorLaunchArguments) -> Result<(), String> {
+    let root = plugin_config_root_path(plan)?;
+    if !root.is_dir() {
+        return Err(format!(
+            "plugin config root does not exist: {}",
+            root.display()
+        ));
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve config root {}: {error}", root.display()))?;
+    let mut written = 0usize;
+    for (relative, bytes) in &plan.config {
+        let relative = Path::new(relative);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(format!(
+                "plugin config path must stay beneath its root: {}",
+                relative.display()
+            ));
+        }
+        let target = root.join(relative);
+        if target.exists() {
+            let resolved_target = target.canonicalize().map_err(|error| {
+                format!(
+                    "cannot resolve existing config {}: {error}",
+                    target.display()
+                )
+            })?;
+            if !resolved_target.starts_with(&root) {
+                return Err(format!(
+                    "plugin config path escapes its root through a link: {}",
+                    target.display()
+                ));
+            }
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "cannot create config directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+            let resolved_parent = parent.canonicalize().map_err(|error| {
+                format!(
+                    "cannot resolve config directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+            if !resolved_parent.starts_with(&root) {
+                return Err(format!(
+                    "plugin config path escapes its root through a link: {}",
+                    target.display()
+                ));
+            }
+        }
+        std::fs::write(&target, bytes).map_err(|error| {
+            format!(
+                "cannot write generated config {}: {error}",
+                target.display()
+            )
+        })?;
+        written += 1;
+    }
+    tracing::error!(
+        "snowglass: plugin configuration realized: {written} file(s) written under {}",
+        root.display()
+    );
+    Ok(())
 }
 
 struct PresentationState {
@@ -718,14 +805,24 @@ impl ShellState {
         let ShellOptions {
             viewer: options,
             foreground_url,
+            plugins,
+            plugin_launch,
         } = options;
         if options.api != ViewerApi::D3d12 {
             return Err(
                 "snowglass-shell-webview2 requires `--api d3d12` for DirectComposition".into(),
             );
         }
-        let pending_cli_launch =
-            LaunchOptions::from_cli(&options).map_err(std::io::Error::other)?;
+        let pending_cli_launch = if let Some(request) = plugin_launch {
+            Some(PendingCliLaunch::Plugin {
+                request,
+                viewer: options.clone(),
+            })
+        } else {
+            LaunchOptions::from_cli(&options)
+                .map_err(std::io::Error::other)?
+                .map(PendingCliLaunch::Ready)
+        };
 
         let window = event_loop.create_window(
             Window::default_attributes()
@@ -740,7 +837,7 @@ impl ShellState {
         // system. The factory chooses the initial adapter, and the merged
         // compositor must use the same device so it can import Vello's shared
         // game-layer textures before a captured stream supplies an adapter.
-        let game_layer_factory = GameLayerFactory::new()?;
+        let game_layer_factory = GameLayerFactory::new(plugins)?;
         let merged = D3d12Compositor::new_for_shared_composition(
             &render_window,
             game_layer_factory.adapter_luid(),
@@ -912,8 +1009,20 @@ impl ShellState {
     }
 
     fn deliver_cli_launch(&mut self) {
-        let Some(options) = self.game.pending_cli_launch.take() else {
+        let Some(pending) = self.game.pending_cli_launch.take() else {
             return;
+        };
+        let options = match pending {
+            PendingCliLaunch::Ready(options) => options,
+            PendingCliLaunch::Plugin { request, viewer } => {
+                match self.realize_plugin_launch(request, &viewer) {
+                    Ok(options) => options,
+                    Err(error) => {
+                        tracing::error!("snowglass: emulator plugin launch failed: {error}");
+                        return;
+                    }
+                }
+            }
         };
         let Ok(options) = serde_json::to_value(&options) else {
             return;
@@ -926,6 +1035,47 @@ impl ShellState {
             return;
         }
         self.flush_game_layer_bridge();
+    }
+
+    fn realize_plugin_launch(
+        &mut self,
+        request: PluginLaunchRequest,
+        viewer: &snowglass_renderer::cli::ViewerOptions,
+    ) -> Result<LaunchOptions, String> {
+        let layouts = viewer
+            .gamepads
+            .iter()
+            .map(|pad| pad.layout.clone())
+            .collect::<Vec<_>>();
+        let assignments = request
+            .plugin
+            .port_assignments(&viewer.machine, &layouts)
+            .map_err(|error| error.to_string())?;
+        let port_assignments = assignments
+            .iter()
+            .map(|(group, layouts)| {
+                (
+                    group.to_string(),
+                    layouts.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let configuration = request
+            .plugin
+            .materialize(&viewer.machine, assignments)
+            .map_err(|error| error.to_string())?;
+        let arguments = serde_json::json!({
+            "launchPath": request.game.to_string_lossy(),
+            "console": viewer.machine,
+            "portAssignments": port_assignments,
+        });
+        let plan: EmulatorLaunchArguments = self
+            .game_layer
+            .active_mut()
+            .ok_or_else(|| "CLI plugin launch requires a linked game layer".to_owned())?
+            .run_emulator_plugin(request.plugin, arguments, configuration)?;
+        install_plugin_configuration(&plan)?;
+        plugin_launch_options(plan, viewer)
     }
 
     fn flush_game_layer_bridge(&mut self) {
@@ -1429,7 +1579,7 @@ impl ShellState {
                 .hook
                 .iter()
                 .copied()
-                .map(snowglass_renderer::cli::HookBackend::from)
+                .map(graphics_hook_backend)
                 .collect(),
             consumer: snowglass_runtime::ConsumerPreference::D3d12,
             isolate: options.isolated,
@@ -3455,6 +3605,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use style::{
         properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
         values::computed::{LengthPercentage, Percentage, position::Position},
@@ -3468,6 +3619,33 @@ mod tests {
                 LengthPercentage::new_percent(Percentage(y)),
             ),
         }
+    }
+
+    #[test]
+    fn plugin_configuration_replaces_an_existing_generated_file() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = root.path().join("settings.xml");
+        std::fs::write(&settings, b"old").unwrap();
+        let plan = EmulatorLaunchArguments {
+            command: "emulator.exe".to_owned(),
+            argv: Vec::new(),
+            config_root: root.path().to_string_lossy().into_owned(),
+            config: BTreeMap::from([(
+                "settings.xml".to_owned(),
+                serde_bytes::ByteBuf::from(b"generated".to_vec()),
+            )]),
+            isolate: true,
+            hooks: vec![snowglass_pluginhost::GraphicsHook::Vulkan],
+            surfaces: vec![snowglass_pluginhost::TrackedSurface {
+                index: 0,
+                rotation: 0,
+                pattern: None,
+            }],
+        };
+
+        install_plugin_configuration(&plan).unwrap();
+
+        assert_eq!(std::fs::read(settings).unwrap(), b"generated");
     }
 
     #[test]

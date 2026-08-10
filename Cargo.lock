@@ -10377,6 +10377,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-consolestorage"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "snowglass-consumer-core"
 version = "0.1.0"
 dependencies = [
@@ -10669,6 +10676,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-pluginhost"
+version = "0.1.0"
+dependencies = [
+ "deno_ast",
+ "deno_core",
+ "deno_error",
+ "glob",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "snowglass-config",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "toml-spanner",
+]
+
+[[package]]
 name = "snowglass-producer-d3d11"
 version = "0.1.0"
 dependencies = [
@@ -10826,12 +10852,15 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde",
+ "serde_bytes",
  "serde_json",
+ "snowglass-config",
  "snowglass-egui",
  "snowglass-input",
  "snowglass-input-dinput",
  "snowglass-ipc",
  "snowglass-platform-windows",
+ "snowglass-pluginhost",
  "snowglass-protocol",
  "snowglass-renderer",
  "snowglass-runtime",
