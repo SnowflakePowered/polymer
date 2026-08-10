@@ -7,7 +7,7 @@
 use crate::game_layer::{GameLayer, GameLayerFactory};
 use serde_json::Value;
 use snowglass_protocol::AdapterLuid;
-use std::error::Error;
+use std::{error::Error, future::Future};
 use wry::WebView;
 
 pub(crate) struct GameLayerHost {
@@ -41,11 +41,15 @@ impl GameLayerHost {
         }
     }
 
-    pub fn activate(&mut self, create: impl FnOnce(GameLayerFactory) -> GameLayer) -> bool {
+    pub async fn activate<F, Fut>(&mut self, create: F) -> bool
+    where
+        F: FnOnce(GameLayerFactory) -> Fut,
+        Fut: Future<Output = GameLayer>,
+    {
         let slot = std::mem::replace(&mut self.slot, GameLayerSlot::Disabled);
         match slot {
             GameLayerSlot::Awaiting(factory) => {
-                self.slot = GameLayerSlot::Active(create(factory));
+                self.slot = GameLayerSlot::Active(create(factory).await);
                 true
             }
             slot => {
@@ -104,8 +108,11 @@ impl GameLayerHost {
         true
     }
 
-    pub fn poll_runtime(&mut self) -> bool {
-        self.active_mut().is_some_and(GameLayer::poll_runtime)
+    pub async fn poll_runtime(&mut self) -> bool {
+        let Some(layer) = self.active_mut() else {
+            return false;
+        };
+        layer.poll_runtime().await
     }
 
     pub fn set_input_configuration(&mut self, configuration: &Value, layouts: &Value) {

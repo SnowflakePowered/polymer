@@ -237,8 +237,15 @@ impl ModuleLoader for PluginModuleRouter {
         referrer: &str,
         kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let referrer = ModuleSpecifier::parse(referrer).map_err(ModuleLoaderError::from_err)?;
-        if specifier.starts_with("pkg:") || plugin_id(&referrer).is_some() {
+        let plugin_referrer = ModuleSpecifier::parse(referrer)
+            .ok()
+            .filter(|referrer| plugin_id(referrer).is_some());
+        if specifier.starts_with("pkg:") || plugin_referrer.is_some() {
+            let referrer = plugin_referrer.ok_or_else(|| {
+                ModuleLoaderError::type_error(format!(
+                    "pkg: import has no plugin package referrer: {referrer}"
+                ))
+            })?;
             let plugin = self.plugin(&referrer).ok_or_else(|| {
                 ModuleLoaderError::type_error(format!(
                     "plugin import has no registered package referrer: {referrer}"
@@ -248,7 +255,7 @@ impl ModuleLoader for PluginModuleRouter {
                 .module_loader()
                 .resolve(specifier, referrer.as_str(), kind)
         } else {
-            self.fallback.resolve(specifier, referrer.as_str(), kind)
+            self.fallback.resolve(specifier, referrer, kind)
         }
     }
 

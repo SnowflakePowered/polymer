@@ -10846,7 +10846,6 @@ dependencies = [
  "node_resolver",
  "parking_lot",
  "peniko",
- "pollster",
  "raw-window-handle",
  "regex",
  "reqwest",
@@ -15485,6 +15484,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 [[package]]
 name = "wry"
 version = "0.55.1"
+source = "git+https://github.com/chyyran/wry?branch=snowglass#09f44f090f3bb8f5f0c8a3e1086df39e80b17f12"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",

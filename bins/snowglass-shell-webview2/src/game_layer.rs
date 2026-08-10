@@ -244,15 +244,17 @@ fn switch_game_layer_gpu(
 }
 
 impl GameLayerGpu {
-    fn new(adapter: &wgpu::Adapter) -> Result<Self, Box<dyn Error>> {
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("snowglass game layer"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            trace: wgpu::Trace::default(),
-        }))
-        .map_err(|error| format!("the game layer could not open a D3D12 device: {error}"))?;
+    async fn new(adapter: &wgpu::Adapter) -> Result<Self, Box<dyn Error>> {
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("snowglass game layer"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::default(),
+            })
+            .await
+            .map_err(|error| format!("the game layer could not open a D3D12 device: {error}"))?;
         let renderer = Renderer::new(
             &device,
             RendererOptions {
@@ -275,7 +277,9 @@ impl GameLayerGpu {
 }
 
 impl GameLayerFactory {
-    pub fn new(plugin_host: snowglass_pluginhost::PluginHost) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(
+        plugin_host: snowglass_pluginhost::PluginHost,
+    ) -> Result<Self, Box<dyn Error>> {
         // Prepare every D3D12 adapter before WebView2 starts Chromium. A stream
         // can later identify a different producer adapter without creating
         // Vello's D3D12 pipelines inside Chromium's runtime context.
@@ -283,17 +287,19 @@ impl GameLayerFactory {
             backends: wgpu::Backends::DX12,
             ..Default::default()
         });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .map_err(|error| {
-            format!("the game layer could not find a default D3D12 adapter: {error}")
-        })?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|error| {
+                format!("the game layer could not find a default D3D12 adapter: {error}")
+            })?;
         let default_luid = adapter_luid(&adapter)
             .ok_or("the game layer default D3D12 adapter did not expose an adapter LUID")?;
-        let gpu = GameLayerGpu::new(&adapter)?;
+        let gpu = GameLayerGpu::new(&adapter).await?;
 
         let mut alternate_gpus = Vec::new();
         for adapter in instance.enumerate_adapters(wgpu::Backends::DX12) {
@@ -303,7 +309,7 @@ impl GameLayerFactory {
             if luid == default_luid {
                 continue;
             }
-            match GameLayerGpu::new(&adapter) {
+            match GameLayerGpu::new(&adapter).await {
                 Ok(gpu) => alternate_gpus.push((luid, gpu)),
                 Err(error) => {
                     tracing::error!(
@@ -337,7 +343,7 @@ impl GameLayerFactory {
     /// number of chrome bands, which is one more than that. The document names
     /// each one by its `<tracked-surface src>`, so this is a capacity, not a
     /// mapping.
-    pub fn create(
+    pub async fn create(
         self,
         html: &str,
         base_url: String,
@@ -374,11 +380,12 @@ impl GameLayerFactory {
             (width, height),
             emulator_commands,
         )
+        .await
     }
 }
 
 impl GameLayerFactory {
-    fn build(
+    async fn build(
         self,
         document: blitz_html::HtmlDocument,
         arrivals: Receiver<Resource>,
@@ -419,15 +426,23 @@ impl GameLayerFactory {
         // document scripts. Resolve once first so geometry APIs have useful
         // values during initialisation.
         layer.document.as_mut().resolve(1.0);
-        match deno::Runtime::new(
+        let runtime = match deno::Runtime::serialized_snapshot(
             layer.document.as_ref(),
-            html,
-            source_name,
             layer.width,
             layer.height,
-            emulator_commands,
-            plugin_host,
         ) {
+            Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
+                initial_snapshot,
+                html.to_owned(),
+                source_name.to_owned(),
+                emulator_commands,
+                plugin_host,
+            ))
+            .await
+            .unwrap_or_else(|error| Err(Box::new(error))),
+            Err(error) => Err(Box::new(error) as Box<dyn Error>),
+        };
+        match runtime {
             Ok(runtime) => layer.runtime = Some(runtime),
             Err(error) => {
                 tracing::error!("snowglass: starting game-layer JavaScript failed: {error}");
@@ -439,7 +454,7 @@ impl GameLayerFactory {
 }
 
 impl GameLayer {
-    pub fn run_emulator_plugin(
+    pub async fn run_emulator_plugin(
         &mut self,
         plugin: Arc<dyn snowglass_pluginhost::EmulatorPluginInstance>,
         arguments: serde_json::Value,
@@ -449,6 +464,7 @@ impl GameLayer {
             .as_mut()
             .ok_or_else(|| "the background JavaScript runtime is unavailable".to_owned())?
             .run_emulator_plugin(plugin, arguments, configuration)
+            .await
             .map_err(|error| error.to_string())
     }
 
@@ -753,11 +769,11 @@ impl GameLayer {
 
     /// Advances timers, fetches, WebSockets, promises, and inspector traffic
     /// without waiting for the JavaScript realm to become idle.
-    pub fn poll_runtime(&mut self) -> bool {
+    pub async fn poll_runtime(&mut self) -> bool {
         let Some(runtime) = self.runtime.as_mut() else {
             return false;
         };
-        if let Err(error) = runtime.poll_event_loop() {
+        if let Err(error) = runtime.poll_event_loop().await {
             tracing::error!("snowglass: polling game-layer JavaScript failed: {error}");
         }
         self.apply_script_mutations();
@@ -1360,8 +1376,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dynamically_inserted_tracked_surfaces_are_placed() {
+    #[tokio::test]
+    async fn dynamically_inserted_tracked_surfaces_are_placed() {
         let html = r##"
             <style>
               :root, body, #root { width: 100%; height: 100%; margin: 0; }
@@ -1419,6 +1435,7 @@ mod tests {
             deno::EmulatorCommandSink::default(),
             snowglass_pluginhost::PluginHost::new(),
         )
+        .await
         .unwrap();
         apply_dom_mutations(
             &mut document,

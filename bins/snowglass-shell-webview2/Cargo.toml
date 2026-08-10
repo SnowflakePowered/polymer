@@ -54,8 +54,7 @@ windows = { workspace = true, features = [
 ] }
 windows-core.workspace = true
 winit = "0.30.13"
-wry = { path = "../../../wry", default-features = false, features = ["os-webview", "transparent"] }
-pollster = "0.4"
+wry = { git = "https://github.com/chyyran/wry", branch = "snowglass", default-features = false, features = ["os-webview", "transparent"] }
 vello = "0.6"
 # Vello rasterises through wgpu, but the compositor samples plain D3D12. The
 # HAL is how the texture Vello draws into is also a resource we can share.

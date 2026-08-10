@@ -83,6 +83,7 @@ use winit::{
     event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::Key,
+    platform::pump_events::{EventLoopExtPumpEvents, PumpStatus},
     window::{Window, WindowId},
 };
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
@@ -797,15 +798,16 @@ struct ShellState {
 
 impl ShellState {
     fn new(
-        event_loop: &ActiveEventLoop,
+        window: Window,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
         options: ShellOptions,
         statistics_recorder: RecorderHandle,
+        game_layer_factory: GameLayerFactory,
     ) -> Result<Self, Box<dyn Error>> {
         let ShellOptions {
             viewer: options,
             foreground_url,
-            plugins,
+            plugins: _,
             plugin_launch,
         } = options;
         if options.api != ViewerApi::D3d12 {
@@ -824,11 +826,6 @@ impl ShellState {
                 .map(PendingCliLaunch::Ready)
         };
 
-        let window = event_loop.create_window(
-            Window::default_attributes()
-                .with_title("Snowglass")
-                .with_inner_size(LogicalSize::new(1280.0, 720.0)),
-        )?;
         let mut composition = CompositionTree::new(&window)?;
         let size = window.inner_size();
         let render_window = SurfaceWindow::new(&window, size.width.max(1), size.height.max(1));
@@ -837,7 +834,6 @@ impl ShellState {
         // system. The factory chooses the initial adapter, and the merged
         // compositor must use the same device so it can import Vello's shared
         // game-layer textures before a captured stream supplies an adapter.
-        let game_layer_factory = GameLayerFactory::new(plugins)?;
         let merged = D3d12Compositor::new_for_shared_composition(
             &render_window,
             game_layer_factory.adapter_luid(),
@@ -1008,14 +1004,14 @@ impl ShellState {
         })
     }
 
-    fn deliver_cli_launch(&mut self) {
+    async fn deliver_cli_launch(&mut self) {
         let Some(pending) = self.game.pending_cli_launch.take() else {
             return;
         };
         let options = match pending {
             PendingCliLaunch::Ready(options) => options,
             PendingCliLaunch::Plugin { request, viewer } => {
-                match self.realize_plugin_launch(request, &viewer) {
+                match self.realize_plugin_launch(request, &viewer).await {
                     Ok(options) => options,
                     Err(error) => {
                         tracing::error!("snowglass: emulator plugin launch failed: {error}");
@@ -1037,7 +1033,7 @@ impl ShellState {
         self.flush_game_layer_bridge();
     }
 
-    fn realize_plugin_launch(
+    async fn realize_plugin_launch(
         &mut self,
         request: PluginLaunchRequest,
         viewer: &snowglass_renderer::cli::ViewerOptions,
@@ -1073,7 +1069,8 @@ impl ShellState {
             .game_layer
             .active_mut()
             .ok_or_else(|| "CLI plugin launch requires a linked game layer".to_owned())?
-            .run_emulator_plugin(request.plugin, arguments, configuration)?;
+            .run_emulator_plugin(request.plugin, arguments, configuration)
+            .await?;
         install_plugin_configuration(&plan)?;
         plugin_launch_options(plan, viewer)
     }
@@ -1288,7 +1285,7 @@ impl ShellState {
         }
     }
 
-    fn frontend_ready(
+    async fn frontend_ready(
         &mut self,
         background: Option<DiscoveredGameLayer>,
         background_error: Option<String>,
@@ -1299,30 +1296,39 @@ impl ShellState {
         if let Some(background) = background {
             let size = self.window.inner_size();
             let command_proxy = self.game.proxy.clone();
-            let activated = self.game_layer.activate(|factory| {
-                let emulator_commands = EmulatorCommandSink::new(move |command| {
-                    if command_proxy
-                        .send_event(UserEvent::EmulatorCommand(command))
-                        .is_err()
-                    {
-                        tracing::error!("snowglass: emulator command event loop is unavailable");
-                    }
-                });
-                factory.create(
-                    &background.html,
-                    background.base_url.clone(),
-                    GAME_LAYER_VIEWS,
-                    size.width,
-                    size.height,
-                    emulator_commands,
-                )
-            });
+            let html = background.html.clone();
+            let base_url = background.base_url.clone();
+            let activated = self
+                .game_layer
+                .activate(|factory| async move {
+                    let emulator_commands = EmulatorCommandSink::new(move |command| {
+                        if command_proxy
+                            .send_event(UserEvent::EmulatorCommand(command))
+                            .is_err()
+                        {
+                            tracing::error!(
+                                "snowglass: emulator command event loop is unavailable"
+                            );
+                        }
+                    });
+                    factory
+                        .create(
+                            &html,
+                            base_url,
+                            GAME_LAYER_VIEWS,
+                            size.width,
+                            size.height,
+                            emulator_commands,
+                        )
+                        .await
+                })
+                .await;
             if !activated {
                 tracing::error!(
                     "snowglass: ignoring a second game layer discovered at {}",
                     background.base_url
                 );
-                self.deliver_cli_launch();
+                self.deliver_cli_launch().await;
                 return;
             }
             self.refresh_game_layer();
@@ -1343,7 +1349,7 @@ impl ShellState {
             self.game_layer.disable();
         }
         self.publish_input_configuration();
-        self.deliver_cli_launch();
+        self.deliver_cli_launch().await;
     }
 
     fn launch_game(&mut self, token: InstanceToken, options: LaunchOptions) {
@@ -2896,30 +2902,81 @@ struct ShellApplication {
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     options: Option<ShellOptions>,
     statistics_recorder: Option<RecorderHandle>,
+    game_layer_factory: Option<GameLayerFactory>,
+    pending_frontend_ready: Option<(Option<DiscoveredGameLayer>, Option<String>)>,
+    pending_window: Option<Window>,
+    initializing: bool,
     state: Option<ShellState>,
     error: Option<Box<dyn Error>>,
 }
 
+impl ShellApplication {
+    async fn run_async_tasks(&mut self) {
+        if self.state.is_none()
+            && self.error.is_none()
+            && let Some(window) = self.pending_window.take()
+        {
+            let options = self
+                .options
+                .take()
+                .expect("shell options are consumed exactly once");
+            let statistics_recorder = self
+                .statistics_recorder
+                .take()
+                .expect("statistics recorder is consumed exactly once");
+            let game_layer_factory = self
+                .game_layer_factory
+                .take()
+                .expect("the game-layer renderer is consumed exactly once");
+            match ShellState::new(
+                window,
+                self.proxy.clone(),
+                options,
+                statistics_recorder,
+                game_layer_factory,
+            ) {
+                Ok(state) => self.state = Some(state),
+                Err(error) => self.error = Some(error),
+            }
+        }
+        if let Some((background, background_error)) = self.pending_frontend_ready.take()
+            && let Some(state) = self.state.as_mut()
+        {
+            state.frontend_ready(background, background_error).await;
+        }
+        if let Some(state) = self.state.as_mut()
+            && state.game_layer.poll_runtime().await
+        {
+            state.flush_game_layer_bridge();
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for ShellApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() || self.error.is_some() {
+        // Create only the native window inside Winit's callback. WebView2
+        // spins a nested Win32 message loop while its controller is created,
+        // so the rest of `ShellState` is built after this pump returns.
+        if self.initializing
+            || self.pending_window.is_some()
+            || self.state.is_some()
+            || self.error.is_some()
+        {
             return;
         }
-        let options = self
-            .options
-            .take()
-            .expect("shell options are consumed exactly once");
-        let statistics_recorder = self
-            .statistics_recorder
-            .take()
-            .expect("statistics recorder is consumed exactly once");
-        match ShellState::new(event_loop, self.proxy.clone(), options, statistics_recorder) {
-            Ok(state) => self.state = Some(state),
+        self.initializing = true;
+        match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("Snowglass")
+                .with_inner_size(LogicalSize::new(1280.0, 720.0)),
+        ) {
+            Ok(window) => self.pending_window = Some(window),
             Err(error) => {
-                self.error = Some(error);
+                self.error = Some(error.into());
                 event_loop.exit();
             }
         }
+        self.initializing = false;
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -2949,7 +3006,7 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             UserEvent::FrontendReady {
                 background,
                 background_error,
-            } => state.frontend_ready(background, background_error),
+            } => self.pending_frontend_ready = Some((background, background_error)),
             UserEvent::ForegroundHitRegions(regions) => {
                 state.input.foreground_hit_regions = regions
                     .into_iter()
@@ -3288,6 +3345,10 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.error.is_some() {
+            event_loop.exit();
+            return;
+        }
         let now = Instant::now();
         let mut deadline = now + Duration::from_millis(100);
         if let Some(state) = self.state.as_mut() {
@@ -3311,11 +3372,10 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             state.publish_input_state();
             state.presentation.profile.record(TurnPhase::Input, entered);
             state.poll_target();
-            if state.game_layer.poll_runtime() {
-                state.flush_game_layer_bridge();
+            if state.game_layer.active().is_some() {
                 // Deno owns browser timers, fetch, WebSockets, promises, and
-                // inspector traffic. Keep that event loop moving even when
-                // the native window has no other reason to wake.
+                // inspector traffic. Return to the Tokio loop regularly so it
+                // can advance them even when the window is otherwise idle.
                 deadline = deadline.min(now + Duration::from_millis(16));
             }
             if state.presentation.overlay.repaint_due(now) {
@@ -3582,23 +3642,51 @@ impl Drop for TimerResolution {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let tasks = tokio::task::LocalSet::new();
+    tasks
+        .run_until(async { tokio::task::spawn_local(run()).await })
+        .await??;
+    Ok(())
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn")
+    });
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let statistics_recorder = snowglass_statistics::install()?;
     let options = cli::parse()?;
+    // Prepare every Vello renderer before WebView2 can start Chromium, while
+    // letting Tokio drive wgpu's asynchronous adapter and device requests.
+    let game_layer_factory = GameLayerFactory::new(options.plugins.clone()).await?;
+    tracing::debug!("snowglass: game-layer renderers are ready");
     let _timer_resolution = TimerResolution::raise();
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    let mut event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    tracing::debug!("snowglass: Winit event loop is ready");
     let proxy = event_loop.create_proxy();
-    let mut application = ShellApplication {
+    // The application owns several Vello renderers. Keep that large state
+    // separately heap-allocated from the local task that drives it.
+    let mut application = Box::new(ShellApplication {
         proxy,
         options: Some(options),
         statistics_recorder: Some(statistics_recorder),
+        game_layer_factory: Some(game_layer_factory),
+        pending_frontend_ready: None,
+        pending_window: None,
+        initializing: false,
         state: None,
         error: None,
-    };
-    event_loop.run_app(&mut application)?;
+    });
+    loop {
+        let status =
+            event_loop.pump_app_events(Some(Duration::from_millis(100)), application.as_mut());
+        if matches!(status, PumpStatus::Exit(_)) {
+            break;
+        }
+        application.run_async_tasks().await;
+    }
     application.error.map_or(Ok(()), Err)
 }
 

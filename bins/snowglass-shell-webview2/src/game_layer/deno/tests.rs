@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use super::{EmulatorCommand, EmulatorCommandSink, KeyboardEvent, MouseEvent, Mutation, Runtime};
 
-#[test]
-fn executes_the_cemu_package_with_realized_configuration() {
+#[tokio::test]
+async fn executes_the_cemu_package_with_realized_configuration() {
     let html = "<html><body></body></html>";
     let document = document(html);
     let (command_sink, _) = command_recorder();
@@ -31,6 +31,7 @@ fn executes_the_cemu_package_with_realized_configuration() {
         command_sink,
         plugins,
     )
+    .await
     .unwrap();
     let assignments = plugin
         .port_assignments("NINTENDO_WIIU", &["WIIU_DRC_CONTROLLER".to_owned()])
@@ -46,6 +47,7 @@ fn executes_the_cemu_package_with_realized_configuration() {
             }),
             configuration,
         )
+        .await
         .unwrap();
 
     assert_eq!(plan.argv, ["-g", "E:/games/U-King.rpx"]);
@@ -92,8 +94,8 @@ fn document(html: &str) -> blitz_html::HtmlDocument {
     document
 }
 
-#[test]
-fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
+#[tokio::test]
+async fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
     let html = r#"
         <html><body>
           <script>
@@ -119,6 +121,7 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
         command_sink,
         snowglass_pluginhost::PluginHost::new(),
     )
+    .await
     .unwrap();
 
     assert!(matches!(
@@ -146,6 +149,7 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
             }),
         )
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_messages(),
         [serde_json::json!({
@@ -155,8 +159,8 @@ fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
     );
 }
 
-#[test]
-fn runs_inline_modules_with_relative_imports() {
+#[tokio::test]
+async fn runs_inline_modules_with_relative_imports() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(
         directory.path().join("dependency.js"),
@@ -198,6 +202,7 @@ fn runs_inline_modules_with_relative_imports() {
         EmulatorCommandSink::default(),
         snowglass_pluginhost::PluginHost::new(),
     )
+    .await
     .unwrap();
 
     assert_eq!(
@@ -212,16 +217,16 @@ fn runs_inline_modules_with_relative_imports() {
             "browserGlobals": true,
         })]
     );
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    runtime.poll_event_loop().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_messages(),
         [serde_json::json!({ "type": "timer-ran" })]
     );
 }
 
-#[test]
-fn queues_dynamic_dom_tree_mutations() {
+#[tokio::test]
+async fn queues_dynamic_dom_tree_mutations() {
     let html = r##"
         <html><body><div id="root"></div>
           <script>
@@ -250,6 +255,7 @@ fn queues_dynamic_dom_tree_mutations() {
         EmulatorCommandSink::default(),
         snowglass_pluginhost::PluginHost::new(),
     )
+    .await
     .unwrap();
     let mutations = runtime.take_mutations();
 
@@ -277,8 +283,8 @@ fn queues_dynamic_dom_tree_mutations() {
     );
 }
 
-#[test]
-fn bridges_dom_events_games_messages_and_remote_objects() {
+#[tokio::test]
+async fn bridges_dom_events_games_messages_and_remote_objects() {
     let html = r##"
         <html><body>
           <div id="handle"><tracked-surface src="0"></tracked-surface></div>
@@ -393,6 +399,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
         command_sink,
         snowglass_pluginhost::PluginHost::new(),
     )
+    .await
     .unwrap();
 
     let initial_commands = drain_recorded_commands(&commands);
@@ -446,6 +453,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             }],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_messages(),
         [
@@ -475,6 +483,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             },
         )
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert!(result.handled);
     assert!(result.default_prevented);
     assert!(matches!(
@@ -511,6 +520,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             },
         )
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert!(result.handled);
     assert!(result.default_prevented);
     assert_eq!(
@@ -524,6 +534,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
     );
 
     runtime.resize(1024, 768).unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_messages(),
         [serde_json::json!({
@@ -536,6 +547,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
     runtime
         .post_message(&serde_json::json!({ "value": "from-foreground" }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_messages(),
         [serde_json::json!({
@@ -553,6 +565,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "args": [{ "kind": "value", "value": 0.6 }],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_proxy_messages(),
         [serde_json::json!({
@@ -580,6 +593,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             ],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_proxy_messages(),
         [serde_json::json!({
@@ -599,6 +613,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "args": [{ "kind": "value", "value": "tracked-surface" }],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     let surface_response = runtime.take_proxy_messages().pop().unwrap();
     let surface_handle = surface_response["value"]["handle"].as_u64().unwrap();
     assert_eq!(surface_response["value"]["kind"], "backgroundReference");
@@ -615,6 +630,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             }],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_proxy_messages()[0]["value"],
         serde_json::json!({ "kind": "value", "value": true })
@@ -632,6 +648,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             ],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     let registration = runtime.take_proxy_messages();
     assert_eq!(
         registration[0]["ok"],
@@ -647,6 +664,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "args": [{ "kind": "value", "value": "callback-value" }],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     let proxy_messages = runtime.take_proxy_messages();
     assert_eq!(proxy_messages[0]["type"], "callback");
     assert_eq!(proxy_messages[0]["handle"], 11);
@@ -664,6 +682,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             ],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     let emulator_registration = runtime.take_proxy_messages();
     assert_eq!(
         emulator_registration[0]["ok"],
@@ -678,6 +697,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "path": ["Emulator", "activeInstance"],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     let active_response = runtime.take_proxy_messages();
     let active_handle = active_response[0]["value"]["handle"].as_u64().unwrap();
     runtime
@@ -689,6 +709,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "args": [],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     runtime.take_proxy_messages();
     assert!(matches!(
         drain_recorded_commands(&commands).as_slice(),
@@ -704,6 +725,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "payload": null,
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     let active_change = runtime.take_proxy_messages();
     assert_eq!(active_change[0]["type"], "callback");
     assert_eq!(active_change[0]["handle"], 12);
@@ -716,6 +738,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "args": [{ "kind": "value", "value": 0.2 }],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     runtime.take_proxy_messages();
     assert!(drain_recorded_commands(&commands).is_empty());
     runtime
@@ -726,6 +749,7 @@ fn bridges_dom_events_games_messages_and_remote_objects() {
             "path": ["Emulator", "activeInstance"],
         }))
         .unwrap();
+    runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_proxy_messages(),
         [serde_json::json!({

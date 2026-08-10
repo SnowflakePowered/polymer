@@ -219,8 +219,7 @@ fn is_classic_script_type(script_type: &str) -> bool {
     )
 }
 
-pub(super) fn execute_document_script(
-    tokio: &tokio::runtime::Runtime,
+pub(super) async fn execute_document_script(
     worker: &mut MainWorker,
     loader: &BrowserModuleLoader,
     document_url: &ModuleSpecifier,
@@ -236,7 +235,7 @@ pub(super) fn execute_document_script(
         DocumentScript::Classic { source, code } => {
             let (specifier, code) = if let Some(source) = source {
                 let specifier = document_url.join(&source)?;
-                let code = tokio.block_on(loader.load_classic(&specifier))?;
+                let code = loader.load_classic(&specifier).await?;
                 (specifier, code)
             } else {
                 (inline_url(), code)
@@ -253,7 +252,7 @@ pub(super) fn execute_document_script(
                 loader.insert_inline(specifier.clone(), code);
                 specifier
             };
-            tokio.block_on(worker.execute_side_module(&specifier))?;
+            worker.execute_side_module(&specifier).await?;
         }
     }
     Ok(())

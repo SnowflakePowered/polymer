@@ -112,14 +112,11 @@ deno_core::extension!(
 
 pub struct Runtime {
     worker: MainWorker,
-    // V8's task runner schedules delayed foreground tasks through Tokio. Keep
-    // this executor alive for exactly as long as the isolate and enter it for
-    // every interaction with V8.
-    tokio: tokio::runtime::Runtime,
 }
 
 impl Runtime {
-    pub fn new(
+    #[cfg(test)]
+    pub async fn new(
         document: &BaseDocument,
         html: &str,
         source_name: &str,
@@ -128,15 +125,36 @@ impl Runtime {
         emulator_commands: EmulatorCommandSink,
         plugin_host: snowglass_pluginhost::PluginHost,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_snapshot(
+            Self::serialized_snapshot(document, width, height)?,
+            html.to_owned(),
+            source_name.to_owned(),
+            emulator_commands,
+            plugin_host,
+        )
+        .await
+    }
+
+    pub(in crate::game_layer) fn serialized_snapshot(
+        document: &BaseDocument,
+        width: u32,
+        height: u32,
+    ) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&snapshot(document, width, height, None))
+    }
+
+    pub(in crate::game_layer) async fn from_snapshot(
+        initial_snapshot: String,
+        html: String,
+        source_name: String,
+        emulator_commands: EmulatorCommandSink,
+        plugin_host: snowglass_pluginhost::PluginHost,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // deno_runtime selects aws-lc-rs. With both providers compiled rustls
         // requires the embedder to choose one before fetch creates a client.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let tokio = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let tokio_context = tokio.enter();
-        let document_url = ModuleSpecifier::parse(source_name)?;
+        let document_url = ModuleSpecifier::parse(&source_name)?;
         start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
         let module_loader = Rc::new(snowglass_pluginhost::PluginModuleRouter::new(
@@ -192,29 +210,27 @@ impl Runtime {
         worker
             .js_runtime
             .execute_script("snowglass:game-layer/deno/runtime.js", BOOTSTRAP)?;
-        let snapshot = serde_json::to_string(&snapshot(document, width, height, None))?;
         worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/document.js",
-            format!("__snowglassDom.install({snapshot});"),
+            format!("__snowglassDom.install({initial_snapshot});"),
         )?;
-        for (index, script) in document_scripts(html).enumerate() {
+        for (index, script) in document_scripts(&html).enumerate() {
             let result = execute_document_script(
-                &tokio,
                 &mut worker,
                 browser_loader.as_ref(),
                 &document_url,
                 index,
                 script,
-            );
+            )
+            .await;
             if let Err(error) = result {
                 // A browser reports an individual script error without
                 // discarding the document's realm or preventing later scripts.
                 tracing::error!("snowglass: game-layer script {index} failed: {error}");
             }
         }
-        drop(tokio_context);
-        tokio.block_on(worker.run_up_to_duration(std::time::Duration::ZERO))?;
-        Ok(Self { worker, tokio })
+        worker.run_up_to_duration(std::time::Duration::ZERO).await?;
+        Ok(Self { worker })
     }
 
     pub fn sync(
@@ -224,7 +240,6 @@ impl Runtime {
         height: u32,
         node_ids: &HashMap<usize, usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let _tokio_context = self.tokio.enter();
         let snapshot = serde_json::to_string(&snapshot(document, width, height, Some(node_ids)))?;
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/sync.js",
@@ -234,13 +249,11 @@ impl Runtime {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/resize.js",
             format!("__snowglassDom.resize({width}, {height});"),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()
+        Ok(())
     }
 
     pub fn dispatch_mouse(
@@ -249,7 +262,6 @@ impl Runtime {
         target: usize,
         mouse: MouseEvent,
     ) -> Result<EventResult, Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker
             .js_runtime
             .op_state()
@@ -264,8 +276,6 @@ impl Runtime {
                 serde_json::to_string(kind)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()?;
         Ok(self
             .worker
             .js_runtime
@@ -280,7 +290,6 @@ impl Runtime {
         kind: &str,
         keyboard: KeyboardEvent,
     ) -> Result<EventResult, Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker
             .js_runtime
             .op_state()
@@ -295,8 +304,6 @@ impl Runtime {
                 serde_json::to_string(kind)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()?;
         Ok(self
             .worker
             .js_runtime
@@ -307,7 +314,6 @@ impl Runtime {
     }
 
     pub fn post_message(&mut self, message: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/message-event.js",
             format!(
@@ -315,13 +321,10 @@ impl Runtime {
                 serde_json::to_string(message)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()?;
         Ok(())
     }
 
     pub fn proxy_request(&mut self, request: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/proxy-request.js",
             format!(
@@ -329,8 +332,6 @@ impl Runtime {
                 serde_json::to_string(request)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()?;
         Ok(())
     }
 
@@ -338,7 +339,6 @@ impl Runtime {
         &mut self,
         event: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/emulator-event.js",
             format!(
@@ -346,8 +346,6 @@ impl Runtime {
                 serde_json::to_string(event)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()?;
         Ok(())
     }
 
@@ -356,7 +354,6 @@ impl Runtime {
         configuration: &Value,
         layouts: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/input-configuration.js",
             format!(
@@ -365,8 +362,7 @@ impl Runtime {
                 serde_json::to_string(layouts)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()
+        Ok(())
     }
 
     pub fn set_input_state(
@@ -374,7 +370,6 @@ impl Runtime {
         controllers: &Value,
         priority: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/input-state.js",
             format!(
@@ -383,8 +378,7 @@ impl Runtime {
                 serde_json::to_string(priority)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()
+        Ok(())
     }
 
     pub fn input_configuration_result(
@@ -392,7 +386,6 @@ impl Runtime {
         request_id: u64,
         result: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tokio_context = self.tokio.enter();
         self.worker.js_runtime.execute_script(
             "snowglass:game-layer/deno/input-configuration-result.js",
             format!(
@@ -400,8 +393,7 @@ impl Runtime {
                 serde_json::to_string(result)?
             ),
         )?;
-        drop(tokio_context);
-        self.poll_event_loop()
+        Ok(())
     }
 
     /// Polls Deno once without waiting for the realm to become idle.
@@ -409,9 +401,10 @@ impl Runtime {
     /// A browser realm may keep timers, sockets, or an inspector session alive
     /// indefinitely. The shell's event loop calls this regularly so those
     /// tasks progress without blocking the window thread.
-    pub fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.tokio
-            .block_on(self.worker.run_up_to_duration(std::time::Duration::ZERO))?;
+    pub async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.worker
+            .run_up_to_duration(std::time::Duration::ZERO)
+            .await?;
         Ok(())
     }
 
@@ -453,7 +446,7 @@ impl Runtime {
 
     /// Invokes a registered emulator capability in this shell-owned Deno
     /// instance. Module routing follows the plugin module's referrer.
-    pub fn run_emulator_plugin(
+    pub async fn run_emulator_plugin(
         &mut self,
         plugin: Arc<dyn snowglass_pluginhost::EmulatorPluginInstance>,
         arguments: serde_json::Value,
@@ -463,14 +456,13 @@ impl Runtime {
         snowglass_pluginhost::EmulatorHostError,
     > {
         let mut launch = snowglass_pluginhost::EmulatorLaunch::attach(&mut self.worker.js_runtime);
-        let result = self.tokio.block_on(launch.execute(
-            snowglass_pluginhost::EmulatorSetupInvocation {
+        launch
+            .execute(snowglass_pluginhost::EmulatorSetupInvocation {
                 plugin,
                 arguments,
                 configuration,
-            },
-        ));
-        result
+            })
+            .await
     }
 }
 
