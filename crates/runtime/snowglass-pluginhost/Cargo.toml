@@ -1,0 +1,28 @@
+[package]
+name = "snowglass-pluginhost"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deno_core = "0.409.0"
+deno_ast = { version = "0.53.3", features = ["transpiling"] }
+deno_error = "0.7.1"
+glob = "0.3"
+serde.workspace = true
+serde_bytes = "0.11"
+serde_json.workspace = true
+snowglass-config.workspace = true
+toml.workspace = true
+toml-spanner = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1.53.0", features = ["rt", "macros"] }
+
+[lints]
+workspace = true
