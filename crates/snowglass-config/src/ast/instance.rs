@@ -18,10 +18,10 @@ pub struct ConfigurationInstance {
     setting_by_path: HashMap<SettingPath, Handle<Setting>>,
 }
 
-/// A setting is deliberately ignorant of presentation and output concerns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Setting {
     pub path: SettingPath,
+    pub option: Handle<OptionDefinition>,
     pub value: Value,
 }
 
@@ -185,6 +185,7 @@ impl InstanceBuilder {
         let value = self.definition.realized_option(option).default.clone();
         let handle = self.settings.append(Setting {
             path: path.clone(),
+            option,
             value,
         });
         self.setting_by_path.insert(path, handle);
@@ -234,6 +235,11 @@ impl ConfigurationInstance {
     pub fn get_mut(&mut self, path: &str) -> Option<&mut Value> {
         let handle = self.handle(path)?;
         Some(&mut self[handle])
+    }
+
+    pub fn setting(&self, path: &str) -> Option<&Setting> {
+        let handle = self.handle(path)?;
+        Some(&self.settings[handle])
     }
 
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (Handle<Setting>, &Setting)> {
