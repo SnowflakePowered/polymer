@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use consolespec::{Alignment, AnalogClass, BindingKey};
+use consolespec::input::{Alignment, AnalogClass, BindingKey};
 
 use crate::projection::{Projection, Target};
 use crate::sdl::{self, SdlSensor, Wire};
@@ -437,7 +437,7 @@ impl KeyboardMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use consolespec::key;
+    use consolespec::input::key;
 
     #[test]
     fn parses_embedded_registry() {

@@ -12,7 +12,7 @@
 //! device uses is what lets the projection be device-key → SDL-key, rather than
 //! device-cluster → a slot vocabulary that exists nowhere else.
 
-use consolespec::{Alignment, AnalogClass, BindingKey, Component, Direction, Sign, key};
+use consolespec::input::{Alignment, AnalogClass, BindingKey, Component, Direction, Sign, key};
 
 use crate::layout::{SdlAxis, SdlButton};
 

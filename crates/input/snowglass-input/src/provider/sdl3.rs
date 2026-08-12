@@ -12,7 +12,9 @@ use crate::{
     projection::{Projection, Target},
     sdl::{self, Wire},
 };
-use consolespec::{Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign};
+use consolespec::input::{
+    Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign,
+};
 use parking_lot::Mutex;
 use sdl3::event::Event;
 // SDL's own axis enum names the six gamepad axes; consolespec's `Axis` names a
@@ -1765,7 +1767,7 @@ fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use consolespec::key;
+    use consolespec::input::key;
 
     #[test]
     fn switch_face_labels_are_not_positional() {

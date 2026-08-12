@@ -103,6 +103,21 @@ impl PluginHost {
         self.plugins.read().unwrap().get(id)?.get::<I>()
     }
 
+    /// Retrieves every registered implementation of an interface, ordered by
+    /// plugin ID so callers can present a stable selection to users.
+    pub fn plugins<I>(&self) -> Vec<Arc<I>>
+    where
+        I: PluginInstance + ?Sized,
+        Arc<I>: Any + Send + Sync,
+    {
+        let plugins = self.plugins.read().unwrap();
+        let mut ids = plugins.keys().collect::<Vec<_>>();
+        ids.sort();
+        ids.into_iter()
+            .filter_map(|id| plugins[id].get::<I>())
+            .collect()
+    }
+
     fn register(&self, id: &str, registered: RegisteredPlugin) -> Result<(), PluginRegistryError> {
         let mut plugins = self.plugins.write().unwrap();
         if plugins.contains_key(id) {

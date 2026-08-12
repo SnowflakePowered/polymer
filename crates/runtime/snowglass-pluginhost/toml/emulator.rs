@@ -1,5 +1,5 @@
 use super::plugin::{PackageError, PluginPackage, confined_path};
-use crate::{EmulatorPluginInstance, PluginInstance, PluginModuleLoader};
+use crate::{EmulatorPluginInstance, EmulatorPort, PluginInstance, PluginModuleLoader};
 use deno_core::ModuleSpecifier;
 use serde::Deserialize;
 use snowglass_config::{
@@ -120,6 +120,28 @@ impl EmulatorPlugin {
         &self.package.block().platforms
     }
 
+    pub fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
+        let input = self
+            .definition
+            .input
+            .as_ref()
+            .ok_or(PackageError::NoInputDefinition)?;
+        let platform = input
+            .platforms
+            .get(console)
+            .ok_or_else(|| PackageError::UnknownPlatform(console.to_owned()))?;
+        Ok(platform
+            .iter()
+            .flat_map(|(group, ports)| {
+                ports.iter().map(|port| EmulatorPort {
+                    group: group.to_string(),
+                    index: port.index,
+                    layouts: port.layouts.iter().map(ToString::to_string).collect(),
+                })
+            })
+            .collect())
+    }
+
     /// Maps viewer pad layouts onto the unique compatible port group in order.
     pub fn port_assignments(
         &self,
@@ -219,6 +241,10 @@ impl EmulatorPluginInstance for EmulatorPlugin {
 
     fn platforms(&self) -> &[String] {
         self.platforms()
+    }
+
+    fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
+        self.ports(console)
     }
 
     fn port_assignments(

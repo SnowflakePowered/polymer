@@ -1,5 +1,5 @@
 use super::*;
-use consolespec::BindingKey;
+use consolespec::input::BindingKey;
 
 #[derive(Clone)]
 pub(crate) struct LauncherGamepad {

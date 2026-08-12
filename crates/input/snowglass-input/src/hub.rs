@@ -5,8 +5,8 @@
 //! here, but neither owns user configuration.
 
 use crate::layout::{InputLayout, SdlAxis, SdlButton};
-use consolespec::BindingKey;
 use consolespec::MachineSpec;
+use consolespec::input::BindingKey;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -82,7 +82,7 @@ impl<'de> Deserialize<'de> for VirtualPort {
 
 /// A serializable view of a consolespec input group, for the frontend.
 ///
-/// [`consolespec::InputGroup`] borrows the compile-time table, which is exactly
+/// [`consolespec::machine::InputGroup`] borrows the compile-time table, which is exactly
 /// right in the hub and useless over a JSON boundary; this owns its strings.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,8 +93,8 @@ pub struct InputGroup {
     pub accessories: bool,
 }
 
-impl From<consolespec::InputGroup> for InputGroup {
-    fn from(group: consolespec::InputGroup) -> Self {
+impl From<consolespec::machine::InputGroup> for InputGroup {
+    fn from(group: consolespec::machine::InputGroup) -> Self {
         Self {
             name: group.name().to_owned(),
             inputs: group.inputs().map(str::to_owned).collect(),
@@ -652,7 +652,7 @@ fn validate_binding(binding: &BindingOverride) -> Result<(), InputConfigurationE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use consolespec::key;
+    use consolespec::input::key;
 
     /// An Xbox: one `controller` group of four ports, accepting one layout.
     const MACHINE: &str = "MICROSOFT_XBOX";

@@ -50,10 +50,18 @@ pub struct EmulatorSetupInvocation {
     pub configuration: ConfigurationInstance,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmulatorPort {
+    pub group: String,
+    pub index: usize,
+    pub layouts: Vec<String>,
+}
+
 /// Emulator capability projected from a registered [`PluginInstance`].
 pub trait EmulatorPluginInstance: PluginInstance {
     fn entrypoint(&self) -> &ModuleSpecifier;
     fn platforms(&self) -> &[String];
+    fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError>;
     fn port_assignments(
         &self,
         console: &str,

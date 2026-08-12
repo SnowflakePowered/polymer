@@ -17,8 +17,8 @@ pub mod toml;
 pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
 pub use deno::EmulatorLaunch;
 pub use emulator::{
-    EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorSetupInvocation,
-    GraphicsHook, TrackedSurface,
+    EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort,
+    EmulatorSetupInvocation, GraphicsHook, TrackedSurface,
 };
 pub use module_loader::{PluginModuleLoader, PluginModuleRouter};
 pub use runtime::{PluginHost, PluginInstance, PluginRegistryError};
@@ -118,6 +118,10 @@ mod tests {
 
         fn platforms(&self) -> &[String] {
             &[]
+        }
+
+        fn ports(&self, _console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
+            unreachable!()
         }
 
         fn port_assignments(
@@ -223,6 +227,14 @@ mod tests {
         assert_eq!(base.id(), "cemu");
         assert_eq!(emulator.id(), "cemu");
         assert!(plugins.plugin::<TestPlugin>("cemu").is_none());
+        assert_eq!(
+            plugins
+                .plugins::<dyn EmulatorPluginInstance>()
+                .into_iter()
+                .map(|plugin| plugin.id().to_owned())
+                .collect::<Vec<_>>(),
+            ["cemu"]
+        );
         assert!(matches!(
             plugins.load(manifest),
             Err(PluginRegistryError::DuplicatePlugin(id)) if id == "cemu"
