@@ -9,3 +9,5 @@ path = "lib.rs"
 
 [dependencies]
 thiserror.workspace = true
+image = { version = "0.25", default-features = false }
+jiff = "0.2.35"
