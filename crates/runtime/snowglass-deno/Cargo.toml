@@ -1,0 +1,26 @@
+[package]
+name = "snowglass-deno"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+deno_core = "0.409.0"
+deno_fetch = "0.280.0"
+deno_inspector_server = "0.30.0"
+deno_permissions = "0.115.0"
+deno_web = "0.287.0"
+deno_webidl = "0.256.0"
+deno_websocket = "0.261.0"
+deno_webstorage = "0.251.0"
+sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
+tokio = { version = "1.53.0", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true
