@@ -19,7 +19,9 @@ every standard slot is taken does anything land on a spare.
 import tomllib
 from pathlib import Path
 
-ROOT = Path("consolespec/inputspec")
+import consolespec
+
+ROOT = consolespec.find_root() / "definitions" / "inputspec"
 
 # What each consolespec element claims by default.
 BUTTON_SLOT = {

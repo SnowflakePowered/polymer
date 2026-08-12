@@ -85,7 +85,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
-zerocopy = { version = "0.8.52", features = ["derive"] }
+zerocopy = { version = "0.8.55", features = ["derive"] }
 snowglass-api = { path = "crates/snowglass-api" }
 snowglass-protocol = { path = "crates/runtime/snowglass-protocol" }
 snowglass-ipc = { path = "crates/runtime/snowglass-ipc" }
@@ -98,7 +98,8 @@ snowglass-config = { path = "crates/snowglass-config" }
 snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
 snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
 snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }
-consolespec = { path = "../consolespec" }
+consolespec = { git = "https://github.com/SnowflakePowered/consolespec" }
+gumshoe = { git = "https://github.com/SnowflakePowered/gumshoe", rev = "ba12927450f56fa10ddb12f206f9b8eed985bcb9" }
 phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }

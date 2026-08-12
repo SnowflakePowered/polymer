@@ -1375,7 +1375,7 @@ machinespec already names the groups, so ports are keyed by group and then by
 index within it:
 
 ```toml
-# consolespec/machinespec/NINTENDO_WII.toml
+# Equivalent source data compiled into consolespec::MachineSpec:
 [input]
 groups = ["wii", "gamecube", "usb"]
 

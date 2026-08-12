@@ -3,18 +3,19 @@ use snowglass_pluginhost::{EmulatorPluginInstance, PluginHost};
 use snowglass_renderer::cli::{
     ViewerOptions, viewer_command_named, viewer_options_from_matches_with_default_machine,
 };
-use std::{error::Error, path::PathBuf, sync::Arc};
+use std::{error::Error, fs, path::PathBuf};
 
-pub struct PluginLaunchRequest {
-    pub plugin: Arc<dyn EmulatorPluginInstance>,
+#[derive(Debug)]
+pub struct GameLaunchRequest {
     pub game: PathBuf,
+    pub emulator: Option<String>,
 }
 
 pub struct ShellOptions {
     pub viewer: ViewerOptions,
     pub foreground_url: String,
     pub plugins: PluginHost,
-    pub plugin_launch: Option<PluginLaunchRequest>,
+    pub game_launch: Option<GameLaunchRequest>,
 }
 
 pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
@@ -38,13 +39,33 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             Arg::new("game")
                 .long("game")
                 .value_name("PATH")
-                .requires("emulator")
+                .conflicts_with("target")
                 .action(ArgAction::Set)
-                .help("Game path passed to the emulator plugin"),
+                .help("Game package to detect and launch with a compatible emulator plugin"),
         )
         .get_matches();
     let plugins = PluginHost::new();
-    let plugin_launch = matches
+    let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plugins");
+    if plugin_root.is_dir() {
+        let mut manifests = fs::read_dir(&plugin_root)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("plugin.toml"))
+            .filter(|manifest| manifest.is_file())
+            .collect::<Vec<_>>();
+        manifests.sort();
+        for manifest in manifests {
+            if let Err(error) = plugins.load(&manifest) {
+                eprintln!(
+                    "snowglass: skipping emulator plugin {}: {error}",
+                    manifest.display()
+                );
+            }
+        }
+    }
+    let emulator = matches
         .get_one::<String>("emulator")
         .map(|emulator| -> Result<_, Box<dyn Error>> {
             if emulator.is_empty()
@@ -54,30 +75,28 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             {
                 return Err(format!("invalid emulator plugin ID '{emulator}'").into());
             }
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("plugins")
-                .join(emulator);
-            plugins.load(root.join("plugin.toml"))?;
-            let plugin = plugins
+            plugins
                 .plugin::<dyn EmulatorPluginInstance>(emulator)
-                .ok_or_else(|| format!("plugin '{emulator}' has no emulator capability"))?;
-            let game = PathBuf::from(
-                matches
-                    .get_one::<String>("game")
-                    .expect("--emulator requires --game"),
-            )
-            .canonicalize()?;
-            Ok(PluginLaunchRequest { plugin, game })
+                .ok_or_else(|| format!("plugin '{emulator}' is not a loaded emulator plugin"))?;
+            Ok(emulator.clone())
         })
         .transpose()?;
-    let default_machine = plugin_launch.as_ref().and_then(|request| {
-        let [platform] = request.plugin.platforms() else {
-            return None;
-        };
-        Some(platform.clone())
-    });
+    let game_launch = matches
+        .get_one::<String>("game")
+        .map(|game| GameLaunchRequest {
+            game: PathBuf::from(game),
+            emulator: emulator.clone(),
+        });
+    let default_machine = emulator
+        .as_ref()
+        .and_then(|emulator| {
+            let plugin = plugins.plugin::<dyn EmulatorPluginInstance>(emulator)?;
+            let [platform] = plugin.platforms() else {
+                return None;
+            };
+            Some(platform.clone())
+        })
+        .or_else(|| game_launch.as_ref().map(|_| String::new()));
     Ok(ShellOptions {
         viewer: viewer_options_from_matches_with_default_machine(&matches, default_machine)?,
         foreground_url: matches
@@ -85,6 +104,6 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             .expect("required URL is present")
             .to_owned(),
         plugins,
-        plugin_launch,
+        game_launch,
     })
 }

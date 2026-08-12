@@ -243,7 +243,8 @@ def find_root(start: Path | None = None) -> Path:
     for candidate in (here, *here.parents):
         roots = (candidate, candidate / "consolespec", candidate.parent / "consolespec")
         for root in roots:
-            if (root / "inputspec").is_dir() and (root / "machinespec").is_dir():
+            definitions = root / "definitions"
+            if (definitions / "inputspec").is_dir() and (definitions / "machinespec").is_dir():
                 return root
     raise SpecError(f"no consolespec repository near {here}")
 
@@ -257,9 +258,11 @@ def load_inputspec(root: Path, layout: str) -> InputSpec:
     key = (root, layout)
     if key in _inputs:
         return _inputs[key]
-    path = root / "inputspec" / f"{layout}.toml"
+    path = root / "definitions" / "inputspec" / f"{layout}.toml"
     if not path.is_file():
-        raise SpecError(f"no inputspec `{layout}` in {root / 'inputspec'}")
+        raise SpecError(
+            f"no inputspec `{layout}` in {root / 'definitions' / 'inputspec'}"
+        )
     document = tomllib.loads(path.read_text(encoding="utf-8")).get("input")
     if document is None:
         raise SpecError(f"{path}: no [input] table")
@@ -276,9 +279,11 @@ def load_machinespec(root: Path, machine: str) -> MachineSpec:
     key = (root, machine)
     if key in _machines:
         return _machines[key]
-    path = root / "machinespec" / f"{machine}.toml"
+    path = root / "definitions" / "machinespec" / f"{machine}.toml"
     if not path.is_file():
-        raise SpecError(f"no machinespec `{machine}` in {root / 'machinespec'}")
+        raise SpecError(
+            f"no machinespec `{machine}` in {root / 'definitions' / 'machinespec'}"
+        )
     document = tomllib.loads(path.read_text(encoding="utf-8"))
     identity = document.get("machine", {})
     if identity.get("id") != machine:

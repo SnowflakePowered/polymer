@@ -1,204 +1,93 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type {
   BackgroundRemoteValue,
-  GamePadMapping,
-  GraphicsHook,
-  LaunchRequest,
+  LauncherEmulator,
+  LauncherGame,
+  LauncherOption,
+  LauncherStartRequest,
+  LauncherState,
 } from "./emulator";
 import { InputRemapping } from "./InputRemapping";
 import "./emulator";
 import "./shell.css";
 
-type InputMapping = "none" | "controller" | "keyboard" | "keyboard-mouse";
 type ForegroundPhase = "idle" | "launching" | "running" | "closing";
-type GameAudioState = {
-  available: boolean;
-  volume: number;
-  muted: boolean;
-};
-type LaunchHistoryEntry = {
-  command: string;
-  arguments: string[];
-  isolated: boolean;
-  hooks: GraphicsHook[];
-  inputMapping: InputMapping;
-  launchedAt: number;
-};
-type LaunchConfiguration = Omit<LaunchHistoryEntry, "launchedAt">;
-
-const DEFAULT_AUDIO: GameAudioState = {
-  available: false,
-  volume: 1,
-  muted: false,
+type GameAudioState = { available: boolean; volume: number; muted: boolean };
+type RecentGame = {
+  path: string;
+  name: string;
+  platform: string;
+  emulator: string;
+  playedAt: number;
 };
 
-const HOOKS: Array<{ id: GraphicsHook; label: string }> = [
-  { id: "vulkan", label: "Vulkan" },
-  { id: "opengl", label: "OpenGL" },
-  { id: "d3d12", label: "Direct3D 12" },
-  { id: "d3d11", label: "Direct3D 11" },
-];
-const INPUT_MAPPING_LABELS: Record<InputMapping, string> = {
-  none: "No input",
-  controller: "Controller 1",
-  keyboard: "Keyboard",
-  "keyboard-mouse": "Keyboard + mouse",
-};
-const LAUNCH_HISTORY_KEY = "snowglass.launchHistory.v1";
-const LAUNCH_HISTORY_LIMIT = 10;
+const DEFAULT_AUDIO: GameAudioState = { available: false, volume: 1, muted: false };
+const RECENT_GAMES_KEY = "snowglass.recentGames.v2";
+const RECENT_GAMES_LIMIT = 8;
 
-function isGraphicsHook(value: unknown): value is GraphicsHook {
-  return HOOKS.some(({ id }) => id === value);
-}
-
-function isInputMapping(value: unknown): value is InputMapping {
-  return (
-    value === "none" ||
-    value === "controller" ||
-    value === "keyboard" ||
-    value === "keyboard-mouse"
-  );
-}
-
-function readLaunchHistory(): LaunchHistoryEntry[] {
+function readRecentGames(): RecentGame[] {
   try {
-    const stored = JSON.parse(localStorage.getItem(LAUNCH_HISTORY_KEY) || "null");
-    if (
-      !stored ||
-      stored.version !== 1 ||
-      !Array.isArray(stored.entries)
-    ) {
-      return [];
-    }
+    const stored = JSON.parse(localStorage.getItem(RECENT_GAMES_KEY) || "null");
+    if (!stored || stored.version !== 2 || !Array.isArray(stored.entries)) return [];
     return stored.entries
       .filter(
-        (entry: unknown): entry is LaunchHistoryEntry =>
+        (entry: unknown): entry is RecentGame =>
           Boolean(entry) &&
           typeof entry === "object" &&
-          typeof (entry as LaunchHistoryEntry).command === "string" &&
-          Boolean((entry as LaunchHistoryEntry).command.trim()) &&
-          Array.isArray((entry as LaunchHistoryEntry).arguments) &&
-          (entry as LaunchHistoryEntry).arguments.every(
-            (argument) => typeof argument === "string",
-          ) &&
-          typeof (entry as LaunchHistoryEntry).isolated === "boolean" &&
-          Array.isArray((entry as LaunchHistoryEntry).hooks) &&
-          (entry as LaunchHistoryEntry).hooks.length > 0 &&
-          (entry as LaunchHistoryEntry).hooks.every(isGraphicsHook) &&
-          isInputMapping((entry as LaunchHistoryEntry).inputMapping) &&
-          Number.isSafeInteger((entry as LaunchHistoryEntry).launchedAt) &&
-          (entry as LaunchHistoryEntry).launchedAt >= 0 &&
-          (entry as LaunchHistoryEntry).launchedAt <= 8_640_000_000_000_000,
+          typeof (entry as RecentGame).path === "string" &&
+          typeof (entry as RecentGame).name === "string" &&
+          typeof (entry as RecentGame).platform === "string" &&
+          typeof (entry as RecentGame).emulator === "string" &&
+          Number.isSafeInteger((entry as RecentGame).playedAt),
       )
-      .slice(0, LAUNCH_HISTORY_LIMIT);
-  } catch (historyError) {
-    console.warn("Could not read launch history", historyError);
+      .slice(0, RECENT_GAMES_LIMIT);
+  } catch (error) {
+    console.warn("Could not read recently played games", error);
     return [];
   }
 }
 
-function writeLaunchHistory(entries: LaunchHistoryEntry[]) {
+function writeRecentGames(entries: RecentGame[]) {
   try {
     localStorage.setItem(
-      LAUNCH_HISTORY_KEY,
-      JSON.stringify({ version: 1, entries }),
+      RECENT_GAMES_KEY,
+      JSON.stringify({ version: 2, entries }),
     );
-  } catch (historyError) {
-    console.warn("Could not save launch history", historyError);
+  } catch (error) {
+    console.warn("Could not save recently played games", error);
   }
 }
 
-function launchIdentity(entry: LaunchConfiguration) {
-  return JSON.stringify([
-    entry.command.toLowerCase(),
-    entry.arguments,
-    entry.isolated,
-    [...entry.hooks].sort(),
-    entry.inputMapping,
-  ]);
-}
-
-function commandName(command: string) {
-  return command.split(/[\\/]/).filter(Boolean).pop() || command;
-}
-
-function hooksLabel(hooks: GraphicsHook[]) {
-  return hooks
-    .map((hook) => HOOKS.find(({ id }) => id === hook)?.label || hook)
-    .join(" · ");
-}
-
-function formatArguments(arguments_: string[]) {
-  return arguments_
-    .map((argument) => (/\s/.test(argument) ? `"${argument}"` : argument))
-    .join(" ");
-}
-
-function launchedLabel(timestamp: number) {
+function relativeTime(timestamp: number) {
   const elapsed = Date.now() - timestamp;
   if (elapsed < 60_000) return "Just now";
   if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} min ago`;
-  if (elapsed < 86_400_000) {
-    const hours = Math.floor(elapsed / 3_600_000);
-    return `${hours} hr${hours === 1 ? "" : "s"} ago`;
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-  }).format(timestamp);
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} hr ago`;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(timestamp);
 }
 
-function splitArguments(value: string) {
-  const arguments_: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (const character of value) {
-    if (character === '"') {
-      quoted = !quoted;
-    } else if (/\s/.test(character) && !quoted) {
-      if (current) {
-        arguments_.push(current);
-        current = "";
-      }
-    } else {
-      current += character;
-    }
-  }
-  if (quoted) throw new Error("Arguments contain an unmatched quote");
-  if (current) arguments_.push(current);
-  return arguments_;
+function friendlyName(value: string) {
+  return value
+    .replace(/^NINTENDO_/, "Nintendo ")
+    .replace(/^MICROSOFT_/, "Microsoft ")
+    .replace(/^SONY_/, "Sony ")
+    .replace(/^SEGA_/, "Sega ")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\bWiiu\b/g, "Wii U")
+    .replace(/\bDrc\b/g, "GamePad")
+    .replace(/\bGcn\b/g, "GameCube")
+    .replace(/\bN64\b/g, "Nintendo 64")
+    .replace(/\bPsx\b/g, "PlayStation");
 }
 
-// The shell's launcher has no library yet, so it cannot know which console a
-// command emulates; it offers a generic pad and says so. `machine` and `layout`
-// move together — the machinespec is what declares the layout as acceptable —
-// so they are chosen here as a pair.
-const DEFAULT_MACHINE = "MICROSOFT_XBOX";
-const DEFAULT_LAYOUT = "XBOX_CONTROLLER";
-
-function gamepadMapping(choice: InputMapping): GamePadMapping[] {
-  if (choice === "none") return [];
-  return [
-    {
-      gamepadId: choice === "controller" ? 0 : "K",
-      mouse: choice === "keyboard-mouse",
-      slot: 0,
-      // The port is left out: the machine has one group that accepts this
-      // layout, so the host resolves it to `controller.0`.
-      layout: DEFAULT_LAYOUT,
-      mapping: {},
-    },
-  ];
-}
-
-function backgroundWindow(): BackgroundRemoteValue {
-  return window.gameLayer.contentWindow;
+function cloneGame(game: LauncherGame): LauncherGame {
+  return JSON.parse(JSON.stringify(game)) as LauncherGame;
 }
 
 function emulatorApi(): BackgroundRemoteValue {
-  return (window as unknown as { readonly Emulator: BackgroundRemoteValue })
-    .Emulator;
+  return (window as unknown as { readonly Emulator: BackgroundRemoteValue }).Emulator;
 }
 
 function activeEmulatorInstance(): BackgroundRemoteValue {
@@ -206,10 +95,7 @@ function activeEmulatorInstance(): BackgroundRemoteValue {
 }
 
 function audioState(value: unknown): GameAudioState {
-  const audio =
-    value && typeof value === "object"
-      ? (value as Partial<GameAudioState>)
-      : DEFAULT_AUDIO;
+  const audio = value && typeof value === "object" ? (value as Partial<GameAudioState>) : DEFAULT_AUDIO;
   const volume = Number(audio.volume);
   return {
     available: Boolean(audio.available),
@@ -219,19 +105,13 @@ function audioState(value: unknown): GameAudioState {
 }
 
 type ViewTransitionDocument = Document & {
-  startViewTransition?: (update: () => void) => {
-    finished: Promise<unknown>;
-  };
+  startViewTransition?: (update: () => void) => { finished: Promise<unknown> };
 };
-
 let activeViewTransitions = 0;
 
 function updateWithCrossfade(update: () => void) {
   const viewDocument = document as ViewTransitionDocument;
-  if (
-    !viewDocument.startViewTransition ||
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  ) {
+  if (!viewDocument.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     update();
     return;
   }
@@ -239,11 +119,7 @@ function updateWithCrossfade(update: () => void) {
   document.documentElement.classList.add("snowglass-view-transition");
   const finish = () => {
     activeViewTransitions -= 1;
-    if (activeViewTransitions === 0) {
-      document.documentElement.classList.remove(
-        "snowglass-view-transition",
-      );
-    }
+    if (activeViewTransitions === 0) document.documentElement.classList.remove("snowglass-view-transition");
   };
   try {
     const transition = viewDocument.startViewTransition(() => flushSync(update));
@@ -258,47 +134,241 @@ function isGameView(phase: ForegroundPhase) {
   return phase === "running" || phase === "closing";
 }
 
-export function ShellApp() {
-  const [command, setCommand] = useState("");
-  const [argumentsText, setArgumentsText] = useState("");
-  const [isolated, setIsolated] = useState(false);
-  const [inputMapping, setInputMapping] =
-    useState<InputMapping>("controller");
-  const [hooks, setHooks] = useState<GraphicsHook[]>(
-    HOOKS.map(({ id }) => id),
+function ControllerOutline({ layout }: { layout: string }) {
+  const kind = layout.toUpperCase();
+  if (kind.includes("WIIU_DRC")) {
+    return (
+      <svg className="controller-outline drc" viewBox="0 0 240 130" aria-hidden="true">
+        <path d="M27 17C14 21 8 34 8 51v51c0 15 15 22 27 13l18-15h134l18 15c12 9 27 2 27-13V51c0-17-6-30-19-34-24-8-162-8-186 0Z" />
+        <rect x="70" y="27" width="100" height="64" rx="7" />
+        <circle cx="42" cy="42" r="12" /><circle cx="198" cy="42" r="12" />
+        <path d="M35 75v24M23 87h24" />
+        <circle cx="198" cy="82" r="4" /><circle cx="212" cy="70" r="4" />
+        <circle cx="184" cy="70" r="4" /><circle cx="198" cy="58" r="4" />
+        <circle cx="120" cy="108" r="5" />
+      </svg>
+    );
+  }
+  if (kind.includes("WII") && !kind.includes("CLASSIC")) {
+    return (
+      <svg className="controller-outline remote" viewBox="0 0 110 190" aria-hidden="true">
+        <rect x="22" y="5" width="66" height="180" rx="24" />
+        <circle cx="55" cy="38" r="13" /><path d="M55 27v22M44 38h22" />
+        <circle cx="55" cy="77" r="8" /><circle cx="55" cy="105" r="11" />
+        <circle cx="55" cy="138" r="5" /><path d="M40 160h30" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="controller-outline gamepad" viewBox="0 0 240 130" aria-hidden="true">
+      <path d="M72 28h96c21 0 36 12 45 35l17 43c5 14-11 24-22 14l-28-26H60l-28 26c-11 10-27 0-22-14l17-43c9-23 24-35 45-35Z" />
+      <path d="M58 56v30M43 71h30" />
+      <circle cx="182" cy="59" r="5" /><circle cx="198" cy="73" r="5" />
+      <circle cx="166" cy="73" r="5" /><circle cx="182" cy="87" r="5" />
+      <circle cx="91" cy="91" r="12" /><circle cx="149" cy="91" r="12" />
+      <path d="M108 57h24" />
+    </svg>
   );
+}
+
+function OptionField({ option, onChange }: { option: LauncherOption; onChange(value: unknown): void }) {
+  if (option.kind === "boolean") {
+    return (
+      <label className="option-toggle">
+        <span>{option.title}</span>
+        <input type="checkbox" checked={Boolean(option.value)} onChange={(event) => onChange(event.target.checked)} />
+        <i aria-hidden="true" />
+      </label>
+    );
+  }
+  if (option.kind === "select") {
+    return (
+      <label className="config-field"><span>{option.title}</span>
+        <select value={String(option.value ?? "")} onChange={(event) => onChange(event.target.value)}>
+          {(option.choices || []).map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
+        </select>
+      </label>
+    );
+  }
+  const numeric = option.kind === "integer" || option.kind === "float";
+  return (
+    <label className="config-field"><span>{option.title}</span>
+      <input
+        type={numeric ? "number" : "text"}
+        step={option.kind === "integer" ? 1 : option.kind === "float" ? "any" : undefined}
+        min={option.min}
+        max={option.max}
+        value={String(option.value ?? "")}
+        onChange={(event) => onChange(numeric ? Number(event.target.value) : event.target.value)}
+      />
+    </label>
+  );
+}
+
+function DropHome({
+  state,
+  recent,
+  dragging,
+  setDragging,
+  onRecent,
+  onClear,
+}: {
+  state: LauncherState;
+  recent: RecentGame[];
+  dragging: boolean;
+  setDragging(value: boolean): void;
+  onRecent(game: RecentGame): void;
+  onClear(): void;
+}) {
+  const busy = state.kind === "detecting";
+  return (
+    <section className="library-home">
+      <header className="library-brand"><span className="brand-gem">◇</span><div><p>Snowglass</p><h1>Your games, one drop away.</h1></div></header>
+      <div
+        className="drop-hero"
+        data-dragging={dragging ? "true" : "false"}
+        data-busy={busy ? "true" : "false"}
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragging(true); }}
+        onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
+        onDrop={(event) => { event.preventDefault(); setDragging(false); }}
+      >
+        <div className="drop-orbit"><span className="drop-icon">＋</span></div>
+        <div>
+          <p className="drop-kicker">{busy ? "Detecting system" : dragging ? "Release to add" : "Drag & drop"}</p>
+          <h2>{busy ? state.name : "Drop a game or game folder here"}</h2>
+          <p>{busy ? "Finding a compatible emulator…" : "Snowglass detects the system and finds an installed emulator."}</p>
+        </div>
+      </div>
+      {state.kind === "error" && <div className="launcher-error" role="alert"><span>!</span><p>{state.message}</p></div>}
+      <section className="recent-library" aria-labelledby="recent-games-title">
+        <div className="library-section-title"><div><p>Library</p><h2 id="recent-games-title">Recently played</h2></div>{recent.length > 0 && <button type="button" onClick={onClear}>Clear</button>}</div>
+        {recent.length ? (
+          <div className="recent-grid">
+            {recent.map((game) => (
+              <button className="recent-card" type="button" key={game.path} disabled={busy} onClick={() => onRecent(game)}>
+                <span className="recent-art"><span>▶</span></span>
+                <span className="recent-copy"><strong>{game.name}</strong><small>{friendlyName(game.platform)}</small><time>{relativeTime(game.playedAt)}</time></span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="recent-empty"><span>◌</span><div><strong>No recent games</strong><p>Games you start will stay within reach here.</p></div></div>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function GameConfiguration({ game, onChange, onCancel, onStart }: {
+  game: LauncherGame;
+  onChange(game: LauncherGame): void;
+  onCancel(): void;
+  onStart(): void;
+}) {
+  const candidate = game.candidates.find(({ id }) => id === game.selectedEmulator) || game.candidates[0];
+  const updateCandidate = (update: (candidate: LauncherEmulator) => void) => {
+    const next = cloneGame(game);
+    const selected = next.candidates.find(({ id }) => id === next.selectedEmulator) || next.candidates[0];
+    update(selected);
+    onChange(next);
+  };
+  return (
+    <section className="launch-config">
+      <header className="config-header">
+        <button className="back-button" type="button" onClick={onCancel} aria-label="Back to library">←</button>
+        <div className="game-identity"><span className="game-badge">▶</span><div><p>{friendlyName(game.platform)}</p><h1>{game.name}</h1><small title={game.path}>{game.path}</small></div></div>
+        <button className="primary-start compact" type="button" onClick={onStart}>Start <span>▶</span></button>
+      </header>
+      <div className="config-layout">
+        <main className="controller-setup">
+          <div className="config-section-heading"><div><p>Input assignments</p><h2>Controllers</h2></div><span>Choose what sits in each virtual port</span></div>
+          {candidate.groups.length === 0 ? <div className="no-controllers">This emulator does not expose configurable controller ports.</div> : candidate.groups.map((group, groupIndex) => (
+            <section className="controller-group" key={group.name}>
+              <div className="controller-group-title"><h3>{friendlyName(group.name)}</h3><label><span>Connected</span><select value={group.connected} onChange={(event) => updateCandidate((selected) => { selected.groups[groupIndex].connected = Number(event.target.value); })}>{group.ports.map((_, index) => <option key={index} value={index}>{index}</option>)}<option value={group.ports.length}>{group.ports.length}</option></select></label></div>
+              <div className="controller-grid">
+                {group.ports.slice(0, group.connected).map((port, portIndex) => (
+                  <article className="controller-card" key={port.index}>
+                    <span className="port-number">P{port.index + 1}</span>
+                    <ControllerOutline layout={port.selectedLayout} />
+                    <strong>{friendlyName(port.selectedLayout)}</strong>
+                    <div className="controller-selects">
+                      <label><span>Device</span><select value={port.selectedDevice} onChange={(event) => updateCandidate((selected) => { selected.groups[groupIndex].ports[portIndex].selectedDevice = event.target.value; })}>
+                        <option value="K">Keyboard + mouse</option><option value="0">Controller 1</option><option value="1">Controller 2</option><option value="2">Controller 3</option><option value="3">Controller 4</option>
+                      </select></label>
+                      <label><span>Layout</span><select value={port.selectedLayout} onChange={(event) => updateCandidate((selected) => { selected.groups[groupIndex].ports[portIndex].selectedLayout = event.target.value; })}>{port.layouts.map((layout) => <option key={layout} value={layout}>{friendlyName(layout)}</option>)}</select></label>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ))}
+        </main>
+        <aside className="emulator-settings">
+          <div className="config-section-heading"><div><p>Runtime</p><h2>Emulator</h2></div></div>
+          <label className="config-field"><span>Use emulator</span><select value={game.selectedEmulator} onChange={(event) => onChange({ ...game, selectedEmulator: event.target.value })}>{game.candidates.map(({ id }) => <option key={id} value={id}>{friendlyName(id)}</option>)}</select></label>
+          {candidate.options.length > 0 && <div className="option-stack">{candidate.options.map((option, index) => <OptionField key={option.path} option={option} onChange={(value) => updateCandidate((selected) => { selected.options[index].value = value; })} />)}</div>}
+          {candidate.options.length === 0 && <p className="settings-empty">This emulator is ready with its default settings.</p>}
+          <button className="primary-start" type="button" onClick={onStart}><span>▶</span> Start game</button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+export function ShellApp() {
+  const [launcherState, setLauncherState] = useState<LauncherState>(() => window.snowglassLauncher.state);
+  const [draft, setDraft] = useState<LauncherGame | null>(() => launcherState.kind === "configure" ? cloneGame(launcherState.game) : null);
+  const [recentGames, setRecentGames] = useState<RecentGame[]>(readRecentGames);
+  const [dragging, setDragging] = useState(false);
   const [phase, setPhase] = useState<ForegroundPhase>("idle");
   const phaseRef = useRef<ForegroundPhase>("idle");
+  const pendingRecent = useRef<RecentGame | null>(null);
   const [status, setStatus] = useState("Choose a game to start");
   const [error, setError] = useState("");
   const [audio, setAudio] = useState<GameAudioState>(DEFAULT_AUDIO);
   const [confirmClose, setConfirmClose] = useState(false);
   const [remappingOpen, setRemappingOpen] = useState(false);
-  const [launchHistory, setLaunchHistory] =
-    useState<LaunchHistoryEntry[]>(readLaunchHistory);
 
   const updatePhase = (nextPhase: ForegroundPhase) => {
-    const previousPhase = phaseRef.current;
-    if (previousPhase === nextPhase) return;
+    const previous = phaseRef.current;
+    if (previous === nextPhase) return;
     phaseRef.current = nextPhase;
     const update = () => setPhase(nextPhase);
-    if (isGameView(previousPhase) !== isGameView(nextPhase)) {
-      updateWithCrossfade(update);
-    } else {
-      update();
-    }
+    isGameView(previous) !== isGameView(nextPhase) ? updateWithCrossfade(update) : update();
   };
 
+  const rememberPendingGame = () => {
+    const game = pendingRecent.current;
+    if (!game) return;
+    pendingRecent.current = null;
+    setRecentGames((entries) => [game, ...entries.filter(({ path }) => path !== game.path)].slice(0, RECENT_GAMES_LIMIT));
+  };
+
+  useEffect(() => writeRecentGames(recentGames), [recentGames]);
+
   useEffect(() => {
-    writeLaunchHistory(launchHistory);
-  }, [launchHistory]);
+    const changed = (event: Event) => {
+      const state = (event as CustomEvent<LauncherState>).detail;
+      setLauncherState(state);
+      if (state.kind === "configure") { setDraft(cloneGame(state.game)); setError(""); }
+      if (state.kind === "detecting") setError("");
+      if (state.kind === "launching") { updatePhase("launching"); setStatus(`Launching ${state.name}`); setError(""); }
+      if (state.kind === "error") {
+        pendingRecent.current = null;
+        updatePhase("idle");
+        setError(state.message);
+        setStatus(state.message);
+      }
+    };
+    window.snowglassLauncher.addEventListener("statechange", changed);
+    return () => window.snowglassLauncher.removeEventListener("statechange", changed);
+  }, []);
 
   useEffect(() => {
     if (!remappingOpen) return;
     void activeEmulatorInstance().deactivateInput().catch(() => {});
-    return () => {
-      void activeEmulatorInstance().activateInput().catch(() => {});
-    };
+    return () => { void activeEmulatorInstance().activateInput().catch(() => {}); };
   }, [remappingOpen]);
 
   useEffect(() => {
@@ -308,653 +378,103 @@ export function ShellApp() {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let instance: BackgroundRemoteValue | null = null;
     let binding = 0;
-
-    const updateAudio = (value: unknown) => {
-      if (subscribed) setAudio(audioState(value));
-    };
-
-    const ready = () => {
-      if (!subscribed) return;
-      updatePhase("running");
-      setStatus("Game is running");
-      setError("");
-    };
-
+    const updateAudio = (value: unknown) => { if (subscribed) setAudio(audioState(value)); };
+    const ready = () => { if (!subscribed) return; updatePhase("running"); setStatus("Game is running"); setError(""); rememberPendingGame(); };
     const failed = (value: unknown) => {
       if (!subscribed) return;
-      const message =
-        value && typeof value === "object" && "message" in value
-          ? String(value.message)
-          : "Game launch failed";
-      updatePhase("idle");
-      setStatus(message);
-      setError(message);
+      const message = value && typeof value === "object" && "message" in value ? String(value.message) : "Game launch failed";
+      pendingRecent.current = null; updatePhase("idle"); setStatus(message); setError(message); window.snowglassLauncher.cancel();
     };
-
     const closed = () => {
       if (!subscribed) return;
-      updatePhase("idle");
-      setStatus("Game closed");
-      setAudio(DEFAULT_AUDIO);
-      setConfirmClose(false);
-      setRemappingOpen(false);
+      updatePhase("idle"); setStatus("Game closed"); setError(""); setAudio(DEFAULT_AUDIO); setConfirmClose(false); setRemappingOpen(false); window.snowglassLauncher.cancel();
     };
-
     const detach = (target: BackgroundRemoteValue | null) => {
       if (!target) return;
-      void target.off("ready", ready).catch(() => {});
-      void target.off("audioChanged", updateAudio).catch(() => {});
-      void target.off("error", failed).catch(() => {});
-      void target.off("closed", closed).catch(() => {});
+      void target.off("ready", ready).catch(() => {}); void target.off("audioChanged", updateAudio).catch(() => {}); void target.off("error", failed).catch(() => {}); void target.off("closed", closed).catch(() => {});
     };
-
     const bindActiveInstance = async () => {
       const currentBinding = ++binding;
       const resolved = (await activeEmulatorInstance()) as unknown;
       if (!subscribed || currentBinding !== binding) return;
-
-      detach(instance);
-      instance = resolved ? (resolved as BackgroundRemoteValue) : null;
+      detach(instance); instance = resolved ? (resolved as BackgroundRemoteValue) : null;
       if (!instance) {
-        updatePhase("idle");
-        setAudio(DEFAULT_AUDIO);
-        setConfirmClose(false);
-        setRemappingOpen(false);
+        const hadGame = phaseRef.current !== "idle";
+        updatePhase("idle"); setAudio(DEFAULT_AUDIO); setConfirmClose(false); setRemappingOpen(false);
+        if (hadGame) window.snowglassLauncher.cancel();
         return;
       }
-
       setError("");
-      await Promise.all([
-        instance.on("ready", ready),
-        instance.on("audioChanged", updateAudio),
-        instance.on("error", failed),
-        instance.on("closed", closed),
-      ]);
+      await Promise.all([instance.on("ready", ready), instance.on("audioChanged", updateAudio), instance.on("error", failed), instance.on("closed", closed)]);
       if (!subscribed || currentBinding !== binding) return;
-
       updateAudio((await instance.audio) as unknown);
       const nativeState = String(await instance.state);
       if (!subscribed || currentBinding !== binding) return;
-      if (nativeState === "ready") {
-        ready();
-      } else if (nativeState === "closing") {
-        updatePhase("closing");
-        setStatus("Closing game");
-      } else if (nativeState === "error") {
-        const remoteError = (await instance.error) as unknown;
-        const message = remoteError
-          ? String(await (remoteError as BackgroundRemoteValue).message)
-          : "Game launch failed";
-        failed({ message });
-      } else if (nativeState === "closed") {
-        closed();
-      } else {
-        updatePhase("launching");
-        setStatus("Launching game");
-      }
+      if (nativeState === "ready") ready();
+      else if (nativeState === "closing") { updatePhase("closing"); setStatus("Closing game"); }
+      else if (nativeState === "error") { const remoteError = (await instance.error) as unknown; failed({ message: remoteError ? String(await (remoteError as BackgroundRemoteValue).message) : "Game launch failed" }); }
+      else if (nativeState === "closed") closed();
+      else { updatePhase("launching"); setStatus("Launching game"); }
     };
-
-    const activeChanged = () => {
-      void bindActiveInstance().catch((bindingError: unknown) => {
-        if (subscribed) {
-          console.error("Could not bind the active emulator", bindingError);
-        }
-      });
-    };
-
+    const activeChanged = () => { void bindActiveInstance().catch((cause) => console.error("Could not bind the active emulator", cause)); };
     const observeActiveInstance = () => {
       if (!subscribed || observing || observed) return;
       observing = true;
-      void (async () => {
-        await emulatorApi().addEventListener(
-          "activeinstancechange",
-          activeChanged,
-        );
-        observed = true;
-        if (!subscribed) {
-          await emulatorApi().removeEventListener(
-            "activeinstancechange",
-            activeChanged,
-          );
-          return;
-        }
-        await bindActiveInstance();
-      })()
-        .catch((subscriptionError: unknown) => {
-          if (subscribed) {
-            console.error(
-              "Could not observe the active emulator",
-              subscriptionError,
-            );
-          }
-        })
-        .finally(() => {
-          observing = false;
-          if (
-            subscribed &&
-            !observed &&
-            window.gameLayer.ready &&
-            retryTimer === null
-          ) {
-            retryTimer = setTimeout(() => {
-              retryTimer = null;
-              observeActiveInstance();
-            }, 100);
-          }
-        });
+      void (async () => { await emulatorApi().addEventListener("activeinstancechange", activeChanged); observed = true; if (!subscribed) { await emulatorApi().removeEventListener("activeinstancechange", activeChanged); return; } await bindActiveInstance(); })()
+        .catch((cause) => console.error("Could not observe the active emulator", cause))
+        .finally(() => { observing = false; if (subscribed && !observed && window.gameLayer.ready && retryTimer === null) retryTimer = setTimeout(() => { retryTimer = null; observeActiveInstance(); }, 100); });
     };
-
-    window.gameLayer.addEventListener("load", observeActiveInstance);
-    if (window.gameLayer.ready) observeActiveInstance();
-
-    return () => {
-      subscribed = false;
-      binding += 1;
-      window.gameLayer.removeEventListener("load", observeActiveInstance);
-      if (retryTimer !== null) clearTimeout(retryTimer);
-      detach(instance);
-      if (observed) {
-        void emulatorApi()
-          .removeEventListener("activeinstancechange", activeChanged)
-          .catch(() => {});
-      }
-    };
+    window.gameLayer.addEventListener("load", observeActiveInstance); if (window.gameLayer.ready) observeActiveInstance();
+    return () => { subscribed = false; binding += 1; window.gameLayer.removeEventListener("load", observeActiveInstance); if (retryTimer !== null) clearTimeout(retryTimer); detach(instance); if (observed) void emulatorApi().removeEventListener("activeinstancechange", activeChanged).catch(() => {}); };
   }, []);
 
-  const toggleHook = (hook: GraphicsHook) => {
-    setHooks((selected) =>
-      selected.includes(hook)
-        ? selected.filter((value) => value !== hook)
-        : [...selected, hook],
-    );
-  };
-
-  const rememberLaunch = (configuration: LaunchConfiguration) => {
-    const identity = launchIdentity(configuration);
-    setLaunchHistory((entries) => [
-      {
-        ...configuration,
-        arguments: [...configuration.arguments],
-        hooks: [...configuration.hooks],
-        launchedAt: Date.now(),
-      },
-      ...entries.filter(
-        (entry) =>
-          launchIdentity({
-            command: entry.command,
-            arguments: entry.arguments,
-            isolated: entry.isolated,
-            hooks: entry.hooks,
-            inputMapping: entry.inputMapping,
-          }) !== identity,
-      ),
-    ].slice(0, LAUNCH_HISTORY_LIMIT));
-  };
-
-  const launchGame = async (configuration: LaunchConfiguration) => {
-    setError("");
-    if (!configuration.command.trim()) {
-      setError("Choose an executable first.");
-      return;
-    }
-    if (!configuration.hooks.length) {
-      setError("Select at least one graphics hook.");
-      return;
-    }
-
-    const options: LaunchRequest = {
-      command: configuration.command.trim(),
-      arguments: [...configuration.arguments],
-      isolated: configuration.isolated,
-      hook: [...configuration.hooks],
-      surfaces: [
-        { index: 0, rotation: 0, webrtc: false },
-        { index: 1, rotation: 0, webrtc: false },
-      ],
-      gamepadMapping: gamepadMapping(configuration.inputMapping),
-      machine: DEFAULT_MACHINE,
+  const startGame = () => {
+    if (!draft) return;
+    const candidate = draft.candidates.find(({ id }) => id === draft.selectedEmulator) || draft.candidates[0];
+    const request: LauncherStartRequest = {
+      generation: draft.generation,
+      emulator: candidate.id,
+      groups: candidate.groups.map((group) => ({ name: group.name, ports: group.ports.slice(0, group.connected).map((port) => ({ index: port.index, layout: port.selectedLayout, device: port.selectedDevice })) })),
+      settings: Object.fromEntries(candidate.options.filter(({ value }) => value !== null && value !== undefined).map(({ path, value }) => [path, value])),
     };
-    updatePhase("launching");
-    setStatus("Launching game");
-    try {
-      const background = backgroundWindow();
-      const surfaces = [];
-      for (const surface of options.surfaces) {
-        const attach = (await background.document.querySelector(
-          `tracked-surface[src="${surface.index}"]`,
-        )) as unknown;
-        if (!attach) {
-          throw new Error(
-            `No background tracked-surface exists for target ${surface.index}`,
-          );
-        }
-        surfaces.push({ ...surface, attach });
-      }
-      const instance = await emulatorApi().launch({
-        ...options,
-        surfaces,
-      });
-      if (!instance) {
-        throw new Error("Another emulator instance is already active");
-      }
-      rememberLaunch(configuration);
-    } catch (launchError) {
-      const message =
-        launchError instanceof Error ? launchError.message : String(launchError);
-      updatePhase("idle");
-      setStatus(message);
-      setError(message);
-    }
-  };
-
-  const startGame = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    let arguments_: string[];
-    try {
-      arguments_ = splitArguments(argumentsText);
-    } catch (launchError) {
-      setError(
-        launchError instanceof Error
-          ? launchError.message
-          : "Could not parse the arguments.",
-      );
-      return;
-    }
-    void launchGame({
-      command: command.trim(),
-      arguments: arguments_,
-      isolated,
-      hooks,
-      inputMapping,
-    });
-  };
-
-  const relaunch = (entry: LaunchHistoryEntry) => {
-    void launchGame({
-      command: entry.command,
-      arguments: entry.arguments,
-      isolated: entry.isolated,
-      hooks: entry.hooks,
-      inputMapping: entry.inputMapping,
-    });
-  };
-
-  const editLaunch = (entry: LaunchHistoryEntry) => {
-    setCommand(entry.command);
-    setArgumentsText(formatArguments(entry.arguments));
-    setIsolated(entry.isolated);
-    setHooks([...entry.hooks]);
-    setInputMapping(entry.inputMapping);
-    setError("");
-    setStatus(`Loaded ${commandName(entry.command)}`);
-  };
-
-  const removeLaunch = (entry: LaunchHistoryEntry) => {
-    const identity = launchIdentity(entry);
-    setLaunchHistory((entries) =>
-      entries.filter((candidate) => launchIdentity(candidate) !== identity),
-    );
+    pendingRecent.current = { path: draft.path, name: draft.name, platform: draft.platform, emulator: candidate.id, playedAt: Date.now() };
+    window.snowglassLauncher.start(request);
   };
 
   const gameActive = isGameView(phase);
-  const launchBusy = phase !== "idle";
-  const hotbarVisible = gameActive;
-
-  const setGameVolume = (volume: number) => {
-    volume = Math.max(0, Math.min(1, volume));
-    setAudio((state) => ({ ...state, volume }));
-    void activeEmulatorInstance()
-      .setVolume(volume)
-      .catch((volumeError: unknown) => {
-        console.error("Could not set game volume", volumeError);
-      });
-  };
-
-  const toggleGameMuted = () => {
-    const muted = !audio.muted;
-    setAudio((state) => ({ ...state, muted }));
-    void activeEmulatorInstance()
-      .setMuted(muted)
-      .catch((muteError: unknown) => {
-        console.error("Could not change game mute state", muteError);
-      });
-  };
-
-  const closeGame = () => {
-    setConfirmClose(false);
-    updatePhase("closing");
-    setStatus("Closing game");
-    void activeEmulatorInstance().close().catch((closeError: unknown) => {
-      updatePhase("running");
-      setError(
-        closeError instanceof Error ? closeError.message : String(closeError),
-      );
-    });
-  };
+  const homeState: LauncherState = launcherState.kind === "idle" && error
+    ? { kind: "error", message: error }
+    : launcherState;
+  const setGameVolume = (volume: number) => { volume = Math.max(0, Math.min(1, volume)); setAudio((state) => ({ ...state, volume })); void activeEmulatorInstance().setVolume(volume).catch((cause: unknown) => console.error("Could not set game volume", cause)); };
+  const toggleGameMuted = () => { const muted = !audio.muted; setAudio((state) => ({ ...state, muted })); void activeEmulatorInstance().setMuted(muted).catch((cause: unknown) => console.error("Could not change game mute state", cause)); };
+  const closeGame = () => { setConfirmClose(false); updatePhase("closing"); setStatus("Closing game"); void activeEmulatorInstance().close().catch((cause: unknown) => { updatePhase("running"); setError(cause instanceof Error ? cause.message : String(cause)); }); };
 
   return (
     <>
-      <main className="shell" data-game-active={gameActive ? "true" : "false"}>
-        <section className="launcher-panel" aria-label="Game launcher">
-          <header className="launcher-header">
-            <span className="snowglass-mark" aria-hidden="true">
-              ◈
-            </span>
-            <div>
-              <p className="eyebrow">Snowglass</p>
-              <h1>Game launcher</h1>
-              <p className="launcher-intro">
-                Resume a recent setup or configure a new launch.
-              </p>
-            </div>
-          </header>
-
-          <div className="launcher-grid">
-            <section className="recent-launches" aria-labelledby="recent-title">
-              <div className="section-heading">
-                <div>
-                  <p className="section-kicker">Library</p>
-                  <h2 id="recent-title">Recent launches</h2>
-                </div>
-                {launchHistory.length > 0 && (
-                  <button
-                    className="text-button"
-                    type="button"
-                    onClick={() => setLaunchHistory([])}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-
-              {launchHistory.length > 0 ? (
-                <ul className="history-list">
-                  {launchHistory.map((entry) => {
-                    const identity = launchIdentity(entry);
-                    return (
-                      <li className="history-entry" key={identity}>
-                        <button
-                          className="history-launch"
-                          type="button"
-                          disabled={launchBusy}
-                          onClick={() => relaunch(entry)}
-                          title={`Launch ${commandName(entry.command)}`}
-                        >
-                          <span className="history-icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24">
-                              <path d="m9 7 8 5-8 5V7z" />
-                            </svg>
-                          </span>
-                          <span className="history-copy">
-                            <strong>{commandName(entry.command)}</strong>
-                            <small className="history-command">
-                              {entry.command}
-                              {entry.arguments.length > 0
-                                ? ` ${formatArguments(entry.arguments)}`
-                                : ""}
-                            </small>
-                            <span className="history-meta">
-                              <span>{hooksLabel(entry.hooks)}</span>
-                              <span>{INPUT_MAPPING_LABELS[entry.inputMapping]}</span>
-                              {entry.isolated && <span>Isolated</span>}
-                              <time dateTime={new Date(entry.launchedAt).toISOString()}>
-                                {launchedLabel(entry.launchedAt)}
-                              </time>
-                            </span>
-                          </span>
-                        </button>
-                        <div className="history-actions">
-                          <button
-                            type="button"
-                            onClick={() => editLaunch(entry)}
-                            title="Load this setup into the form"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            className="history-remove"
-                            type="button"
-                            onClick={() => removeLaunch(entry)}
-                            aria-label={`Remove ${commandName(entry.command)} from history`}
-                            title="Remove from history"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : (
-                <div className="history-empty">
-                  <span className="history-empty-icon" aria-hidden="true">
-                    ◷
-                  </span>
-                  <h3>No recent games yet</h3>
-                  <p>Your successful launches will appear here for one-click replay.</p>
-                </div>
-              )}
-            </section>
-
-            <section className="launch-setup" aria-labelledby="setup-title">
-              <div className="section-heading">
-                <div>
-                  <p className="section-kicker">Configuration</p>
-                  <h2 id="setup-title">New launch</h2>
-                </div>
-              </div>
-
-              <form className="launcher-form" onSubmit={startGame}>
-                <label className="field">
-                  <span>Command</span>
-                  <input
-                    type="text"
-                    value={command}
-                    onChange={(event) => setCommand(event.target.value)}
-                    placeholder="C:\Games\Game\game.exe"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Arguments</span>
-                  <input
-                    type="text"
-                    value={argumentsText}
-                    onChange={(event) => setArgumentsText(event.target.value)}
-                    placeholder='--fullscreen --profile "Player One"'
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </label>
-
-                <fieldset className="hooks">
-                  <legend>Graphics hooks</legend>
-                  <div className="hook-options">
-                    {HOOKS.map((hook) => (
-                      <label key={hook.id} className="check-option">
-                        <input
-                          type="checkbox"
-                          checked={hooks.includes(hook.id)}
-                          onChange={() => toggleHook(hook.id)}
-                        />
-                        <span>{hook.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-
-                <div className="form-row">
-                  <label className="field mapping-field">
-                    <span>Input mapping</span>
-                    <select
-                      value={inputMapping}
-                      onChange={(event) =>
-                        setInputMapping(event.target.value as InputMapping)
-                      }
-                    >
-                      <option value="controller">Controller 1</option>
-                      <option value="keyboard">Keyboard</option>
-                      <option value="keyboard-mouse">Keyboard + mouse</option>
-                      <option value="none">None</option>
-                    </select>
-                  </label>
-
-                  <label className="isolate-option">
-                    <input
-                      type="checkbox"
-                      checked={isolated}
-                      onChange={(event) => setIsolated(event.target.checked)}
-                    />
-                    <span>
-                      <strong>Isolated desktop</strong>
-                      <small>Keep the game separate from your desktop</small>
-                    </span>
-                  </label>
-                </div>
-
-                <output
-                  className="launcher-message"
-                  data-error={error ? "true" : "false"}
-                >
-                  {error || status}
-                </output>
-
-                <button
-                  className="start-button"
-                  type="submit"
-                  disabled={launchBusy}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m9 7 8 5-8 5V7z" />
-                  </svg>
-                  Start game
-                </button>
-              </form>
-            </section>
-          </div>
-        </section>
+      <main className="shell" data-game-active={gameActive ? "true" : "false"} data-snowglass-foreground-hit-region>
+        {launcherState.kind === "configure" && draft ? (
+          <GameConfiguration game={draft} onChange={setDraft} onCancel={() => window.snowglassLauncher.cancel()} onStart={startGame} />
+        ) : launcherState.kind === "launching" || (phase === "launching" && pendingRecent.current) ? (
+          <section className="launching-screen"><div className="launch-spinner" /><p>Starting game</p><h1>{launcherState.kind === "launching" ? launcherState.name : pendingRecent.current?.name}</h1><small>{status}</small></section>
+        ) : (
+          <DropHome state={homeState} recent={recentGames} dragging={dragging} setDragging={setDragging} onRecent={(game) => window.snowglassLauncher.open(game.path)} onClear={() => setRecentGames([])} />
+        )}
       </main>
 
-      <div
-        className="game-controls-layer"
-        data-visible={hotbarVisible ? "true" : "false"}
-      >
-        <div
-          className="game-hotbar-trigger"
-          data-snowglass-foreground-hit-region
-        >
-          <div
-            className="game-hotbar"
-            role="toolbar"
-            aria-label="Game controls"
-          >
-            <button
-              className="hotbar-button hotbar-power"
-              type="button"
-              aria-label="Close game"
-              title="Close game"
-              onClick={() => setConfirmClose(true)}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 2.5v9" />
-                <path d="M6.35 5.65a8 8 0 1 0 11.3 0" />
-              </svg>
-            </button>
+      <div className="game-controls-layer" data-visible={gameActive ? "true" : "false"}>
+        <div className="game-hotbar-trigger" data-snowglass-foreground-hit-region>
+          <div className="game-hotbar" role="toolbar" aria-label="Game controls">
+            <button className="hotbar-button hotbar-power" type="button" aria-label="Close game" title="Close game" onClick={() => setConfirmClose(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5v9" /><path d="M6.35 5.65a8 8 0 1 0 11.3 0" /></svg></button>
             <span className="hotbar-divider" />
-            <button
-              className="hotbar-button hotbar-remapping"
-              type="button"
-              aria-label="Controller mapping"
-              aria-pressed={remappingOpen}
-              title="Controller mapping"
-              onClick={() => setRemappingOpen(true)}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7.5 8h9a4.5 4.5 0 0 1 4.2 6.1l-1.1 2.8a2 2 0 0 1-3.2.8L14.7 16H9.3l-1.7 1.7a2 2 0 0 1-3.2-.8l-1.1-2.8A4.5 4.5 0 0 1 7.5 8Z" />
-                <path d="M7 11v4M5 13h4" />
-                <circle cx="16.5" cy="12" r=".7" />
-                <circle cx="18.5" cy="14" r=".7" />
-              </svg>
-            </button>
-            <button
-              className="hotbar-button hotbar-audio"
-              type="button"
-              aria-label={audio.muted ? "Unmute game" : "Mute game"}
-              aria-pressed={audio.muted}
-              title={audio.muted ? "Unmute" : "Mute"}
-              onClick={toggleGameMuted}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 9v6h4l5 4V5L8 9H4z" className="speaker-body" />
-                {audio.muted || audio.volume === 0 ? (
-                  <>
-                    <path d="m17 9 5 5" />
-                    <path d="m22 9-5 5" />
-                  </>
-                ) : (
-                  <>
-                    <path d="M16 8.5a5 5 0 0 1 0 7" />
-                    {audio.volume > 0.55 && (
-                      <path d="M18.5 6a8.5 8.5 0 0 1 0 12" />
-                    )}
-                  </>
-                )}
-              </svg>
-            </button>
-            <input
-              className="hotbar-volume"
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={audio.volume}
-              aria-label="Game volume"
-              title={`Volume ${Math.round(audio.volume * 100)}%`}
-              onChange={(event) => setGameVolume(Number(event.target.value))}
-            />
+            <button className="hotbar-button hotbar-remapping" type="button" aria-label="Controller mapping" aria-pressed={remappingOpen} title="Controller mapping" onClick={() => setRemappingOpen(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 8h9a4.5 4.5 0 0 1 4.2 6.1l-1.1 2.8a2 2 0 0 1-3.2.8L14.7 16H9.3l-1.7 1.7a2 2 0 0 1-3.2-.8l-1.1-2.8A4.5 4.5 0 0 1 7.5 8Z" /><path d="M7 11v4M5 13h4" /><circle cx="16.5" cy="12" r=".7" /><circle cx="18.5" cy="14" r=".7" /></svg></button>
+            <button className="hotbar-button hotbar-audio" type="button" aria-label={audio.muted ? "Unmute game" : "Mute game"} aria-pressed={audio.muted} title={audio.muted ? "Unmute" : "Mute"} onClick={toggleGameMuted}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z" className="speaker-body" />{audio.muted || audio.volume === 0 ? <><path d="m17 9 5 5" /><path d="m22 9-5 5" /></> : <><path d="M16 8.5a5 5 0 0 1 0 7" />{audio.volume > 0.55 && <path d="M18.5 6a8.5 8.5 0 0 1 0 12" />}</>}</svg></button>
+            <input className="hotbar-volume" type="range" min="0" max="1" step="0.01" value={audio.volume} aria-label="Game volume" title={`Volume ${Math.round(audio.volume * 100)}%`} onChange={(event) => setGameVolume(Number(event.target.value))} />
           </div>
         </div>
       </div>
 
-      {remappingOpen && (
-        <InputRemapping onClose={() => setRemappingOpen(false)} />
-      )}
-
-      {confirmClose && (
-        <div
-          className="close-confirmation"
-          role="presentation"
-          data-snowglass-foreground-hit-region
-        >
-          <section
-            className="close-confirmation-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Close game?"
-          >
-            <h1>Close this game?</h1>
-            <p>Any unsaved progress will be lost.</p>
-            <div className="close-confirmation-actions">
-              <button
-                className="dialog-button secondary"
-                type="button"
-                onClick={() => setConfirmClose(false)}
-              >
-                Keep playing
-              </button>
-              <button
-                className="dialog-button danger"
-                type="button"
-                onClick={closeGame}
-              >
-                Close game
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      {remappingOpen && <InputRemapping onClose={() => setRemappingOpen(false)} />}
+      {confirmClose && <div className="close-confirmation" role="presentation" data-snowglass-foreground-hit-region><section className="close-confirmation-dialog" role="dialog" aria-modal="true" aria-label="Close game?"><h1>Close this game?</h1><p>Any unsaved progress will be lost.</p><div className="close-confirmation-actions"><button className="dialog-button secondary" type="button" onClick={() => setConfirmClose(false)}>Keep playing</button><button className="dialog-button danger" type="button" onClick={closeGame}>Close game</button></div></section></div>}
     </>
   );
 }

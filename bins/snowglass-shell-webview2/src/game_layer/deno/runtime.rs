@@ -6,9 +6,6 @@ use std::sync::OnceLock;
 
 use blitz_dom::BaseDocument;
 use deno_core::ModuleSpecifier;
-use deno_runtime::deno_permissions::{PermissionsContainer, RuntimePermissionDescriptorParser};
-use deno_runtime::worker::{MainWorker, WorkerOptions, WorkerServiceOptions};
-use deno_runtime::{BootstrapOptions, FeatureChecker};
 use serde_json::Value;
 
 use super::dom::{
@@ -21,7 +18,7 @@ use super::emulator::{
     op_emulator_message, op_emulator_set_muted, op_emulator_set_volume, op_input_configure,
 };
 use super::input::{EventResult, KeyboardEvent, MouseEvent, op_event_result};
-use super::modules::{BrowserModuleLoader, NoNpm, document_scripts, execute_document_script};
+use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::state::{BridgeState, op_post_message, op_proxy_message};
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
@@ -111,7 +108,7 @@ deno_core::extension!(
 );
 
 pub struct Runtime {
-    worker: MainWorker,
+    worker: snowglass_deno::Runtime,
 }
 
 impl Runtime {
@@ -151,7 +148,7 @@ impl Runtime {
         plugin_host: snowglass_pluginhost::PluginHost,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
-        // deno_runtime selects aws-lc-rs. With both providers compiled rustls
+        // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
         // requires the embedder to choose one before fetch creates a client.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let document_url = ModuleSpecifier::parse(&source_name)?;
@@ -161,56 +158,30 @@ impl Runtime {
             plugin_host,
             browser_loader.clone(),
         ));
-        let sys = sys_traits::impls::RealSys;
-        let permissions = PermissionsContainer::allow_all(Arc::new(
-            RuntimePermissionDescriptorParser::new(sys.clone()),
-        ));
-        let services: WorkerServiceOptions<NoNpm, NoNpm, sys_traits::impls::RealSys> =
-            WorkerServiceOptions {
-                blob_store: deno_runtime::deno_web::BlobStore::default_arc(),
-                broadcast_channel: Default::default(),
-                deno_rt_native_addon_loader: None,
-                feature_checker: Arc::new(FeatureChecker::default()),
-                fs: Arc::new(deno_runtime::deno_fs::RealFs),
-                module_loader: module_loader.clone(),
-                node_services: None,
-                npm_process_state_provider: None,
-                permissions,
-                root_cert_store_provider: None,
-                fetch_dns_resolver: Default::default(),
-                shared_array_buffer_store: None,
-                compiled_wasm_module_store: None,
-                v8_code_cache: None,
-                bundle_provider: None,
-            };
-        let bootstrap = BootstrapOptions {
-            location: Some(document_url.clone()),
-            inspect: true,
+        let storage_dir = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .map(|path| path.join("Snowglass").join("webstorage"));
+        let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
+            main_module: document_url.clone(),
+            module_loader,
+            extensions: vec![
+                snowglass_pluginhost::deno::extension(),
+                snowglass_game_layer::init(),
+            ],
             user_agent: format!("Snowglass/{}", env!("CARGO_PKG_VERSION")),
-            ..Default::default()
-        };
-        let mut worker = MainWorker::bootstrap_from_options(
-            &document_url,
-            services,
-            WorkerOptions {
-                bootstrap,
-                extensions: vec![
-                    snowglass_pluginhost::deno::extension(),
-                    snowglass_game_layer::init(),
-                ],
-                ..Default::default()
-            },
-        );
+            storage_dir,
+            inspect: true,
+        });
         worker
-            .js_runtime
+            .js_runtime_mut()
             .op_state()
             .borrow_mut()
             .borrow_mut::<EmulatorBridge>()
             .command_sink = emulator_commands;
         worker
-            .js_runtime
+            .js_runtime_mut()
             .execute_script("snowglass:game-layer/deno/runtime.js", BOOTSTRAP)?;
-        worker.js_runtime.execute_script(
+        worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/document.js",
             format!("__snowglassDom.install({initial_snapshot});"),
         )?;
@@ -241,7 +212,7 @@ impl Runtime {
         node_ids: &HashMap<usize, usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = serde_json::to_string(&snapshot(document, width, height, Some(node_ids)))?;
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/sync.js",
             format!("__snowglassDom.sync({snapshot});"),
         )?;
@@ -249,7 +220,7 @@ impl Runtime {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/resize.js",
             format!("__snowglassDom.resize({width}, {height});"),
         )?;
@@ -263,13 +234,13 @@ impl Runtime {
         mouse: MouseEvent,
     ) -> Result<EventResult, Box<dyn std::error::Error>> {
         self.worker
-            .js_runtime
+            .js_runtime_mut()
             .op_state()
             .borrow_mut()
             .borrow_mut::<BridgeState>()
             .event = EventResult::default();
         let init = serde_json::to_string(&mouse)?;
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/mouse-event.js",
             format!(
                 "__snowglassDom.dispatchMouse({}, {target}, {init});",
@@ -278,7 +249,7 @@ impl Runtime {
         )?;
         Ok(self
             .worker
-            .js_runtime
+            .js_runtime()
             .op_state()
             .borrow()
             .borrow::<BridgeState>()
@@ -291,13 +262,13 @@ impl Runtime {
         keyboard: KeyboardEvent,
     ) -> Result<EventResult, Box<dyn std::error::Error>> {
         self.worker
-            .js_runtime
+            .js_runtime_mut()
             .op_state()
             .borrow_mut()
             .borrow_mut::<BridgeState>()
             .event = EventResult::default();
         let init = serde_json::to_string(&keyboard)?;
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/keyboard-event.js",
             format!(
                 "__snowglassDom.dispatchKeyboard({}, {init});",
@@ -306,7 +277,7 @@ impl Runtime {
         )?;
         Ok(self
             .worker
-            .js_runtime
+            .js_runtime()
             .op_state()
             .borrow()
             .borrow::<BridgeState>()
@@ -314,7 +285,7 @@ impl Runtime {
     }
 
     pub fn post_message(&mut self, message: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/message-event.js",
             format!(
                 "__snowglassDom.dispatchMessage({});",
@@ -325,7 +296,7 @@ impl Runtime {
     }
 
     pub fn proxy_request(&mut self, request: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/proxy-request.js",
             format!(
                 "__snowglassDom.proxyRequest({});",
@@ -339,7 +310,7 @@ impl Runtime {
         &mut self,
         event: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/emulator-event.js",
             format!(
                 "__snowglassDom.dispatchEmulatorEvent({});",
@@ -354,7 +325,7 @@ impl Runtime {
         configuration: &Value,
         layouts: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/input-configuration.js",
             format!(
                 "__snowglassDom.setInputConfiguration({}, {});",
@@ -370,7 +341,7 @@ impl Runtime {
         controllers: &Value,
         priority: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/input-state.js",
             format!(
                 "__snowglassDom.setInputState({}, {});",
@@ -386,7 +357,7 @@ impl Runtime {
         request_id: u64,
         result: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime.execute_script(
+        self.worker.js_runtime_mut().execute_script(
             "snowglass:game-layer/deno/input-configuration-result.js",
             format!(
                 "__snowglassDom.inputConfigurationResult({request_id}, {});",
@@ -412,7 +383,7 @@ impl Runtime {
         std::mem::take(
             &mut self
                 .worker
-                .js_runtime
+                .js_runtime_mut()
                 .op_state()
                 .borrow_mut()
                 .borrow_mut::<BridgeState>()
@@ -424,7 +395,7 @@ impl Runtime {
         std::mem::take(
             &mut self
                 .worker
-                .js_runtime
+                .js_runtime_mut()
                 .op_state()
                 .borrow_mut()
                 .borrow_mut::<BridgeState>()
@@ -436,7 +407,7 @@ impl Runtime {
         std::mem::take(
             &mut self
                 .worker
-                .js_runtime
+                .js_runtime_mut()
                 .op_state()
                 .borrow_mut()
                 .borrow_mut::<BridgeState>()
@@ -455,7 +426,7 @@ impl Runtime {
         snowglass_pluginhost::EmulatorLaunchArguments,
         snowglass_pluginhost::EmulatorHostError,
     > {
-        let mut launch = snowglass_pluginhost::EmulatorLaunch::attach(&mut self.worker.js_runtime);
+        let mut launch = snowglass_pluginhost::EmulatorLaunch::attach(self.worker.js_runtime_mut());
         launch
             .execute(snowglass_pluginhost::EmulatorSetupInvocation {
                 plugin,
@@ -474,10 +445,10 @@ fn start_inspector_server() -> Result<(), Box<dyn std::error::Error>> {
     static INSPECTOR: OnceLock<Result<std::net::SocketAddr, String>> = OnceLock::new();
     #[cfg(not(test))]
     match INSPECTOR.get_or_init(|| {
-        let server = deno_runtime::deno_inspector_server::create_inspector_server(
+        let server = snowglass_deno::create_inspector_server(
             std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
             "snowglass",
-            deno_runtime::deno_inspector_server::InspectPublishUid {
+            snowglass_deno::InspectPublishUid {
                 console: false,
                 http: true,
             },

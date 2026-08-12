@@ -13,6 +13,7 @@ blitz-paint = "0.2.1"
 blitz-traits = "0.2.0"
 clap = "4.6.1"
 consolespec.workspace = true
+gumshoe.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"
 kurbo = "0.12"
@@ -66,14 +67,12 @@ windows-wgpu = { package = "windows", version = "0.58", features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi_Common",
 ] }
+winapi = { version = "0.3.9", features = ["errhandlingapi"] }
 deno_core = "0.409.0"
 deno_error = "0.7.1"
-deno_runtime = { version = "0.264.0", features = ["transpile"] }
-deno_semver = "=0.10.1"
-node_resolver = { version = "0.94.0", features = ["sync"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23.40", default-features = false, features = ["aws_lc_rs"] }
-sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
+snowglass-deno = { path = "../../crates/runtime/snowglass-deno" }
 tokio = { version = "1.53.0", features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

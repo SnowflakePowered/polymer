@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use deno_core::error::ModuleLoaderError;
@@ -8,9 +7,6 @@ use deno_core::{
     ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader, ModuleSource,
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind, resolve_import,
 };
-use deno_runtime::worker::MainWorker;
-use node_resolver::errors::PackageFolderResolveError;
-use node_resolver::{InNpmPackageChecker, NpmPackageFolderResolver, UrlOrPathRef};
 
 #[derive(Clone)]
 pub(super) struct BrowserModuleLoader {
@@ -91,34 +87,6 @@ impl BrowserModuleLoader {
             ModuleSourceCode::Bytes(source) => String::from_utf8(source.to_vec())
                 .map_err(|error| ModuleLoaderError::type_error(error.to_string())),
         }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct NoNpm;
-
-impl InNpmPackageChecker for NoNpm {
-    fn in_npm_package(&self, _specifier: &ModuleSpecifier) -> bool {
-        false
-    }
-}
-
-impl NpmPackageFolderResolver for NoNpm {
-    fn resolve_package_folder_from_package(
-        &self,
-        _specifier: &str,
-        _referrer: &UrlOrPathRef,
-    ) -> Result<PathBuf, PackageFolderResolveError> {
-        unreachable!("npm resolution is not configured for game-layer documents")
-    }
-
-    fn resolve_types_package_folder(
-        &self,
-        _types_package_name: &str,
-        _maybe_package_version: Option<&deno_semver::Version>,
-        _maybe_referrer: Option<&UrlOrPathRef>,
-    ) -> Option<PathBuf> {
-        None
     }
 }
 
@@ -220,7 +188,7 @@ fn is_classic_script_type(script_type: &str) -> bool {
 }
 
 pub(super) async fn execute_document_script(
-    worker: &mut MainWorker,
+    worker: &mut snowglass_deno::Runtime,
     loader: &BrowserModuleLoader,
     document_url: &ModuleSpecifier,
     index: usize,
@@ -241,7 +209,7 @@ pub(super) async fn execute_document_script(
                 (inline_url(), code)
             };
             worker
-                .js_runtime
+                .js_runtime_mut()
                 .execute_script(specifier.to_string(), code)?;
         }
         DocumentScript::Module { source, code } => {

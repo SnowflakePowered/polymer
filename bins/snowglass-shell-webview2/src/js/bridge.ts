@@ -6,6 +6,12 @@ interface Window {
     postMessage(message: unknown): void;
   };
   readonly Emulator: BackgroundWindowProxy;
+  readonly snowglassLauncher: EventTarget & {
+    readonly state: Readonly<Record<string, unknown>>;
+    open(path: string, emulator?: string): void;
+    start(request: Record<string, unknown>): void;
+    cancel(): void;
+  };
   __snowglassGameLayerMessage(message: unknown): void;
   __snowglassGameLayerProxyMessage(message: ProxyMessage): void;
   __snowglassGameLayerReady(): void;
@@ -24,6 +30,7 @@ interface Window {
       error?: string;
     },
   ): void;
+  __snowglassSetLauncherState(state: Record<string, unknown>): void;
 }
 
 type ForegroundHitRegion = {
@@ -326,6 +333,50 @@ Object.defineProperties(snowglassInputTarget, {
 Object.freeze(snowglassInputTarget);
 Object.defineProperty(window, "snowglassInput", {
   value: snowglassInputTarget,
+  writable: false,
+});
+
+let launcherState: Readonly<Record<string, unknown>> = Object.freeze({
+  kind: "idle",
+});
+const snowglassLauncherTarget = new EventTarget();
+
+window.__snowglassSetLauncherState = (state) => {
+  launcherState = Object.freeze({ ...state });
+  const event = new CustomEvent("statechange", { detail: launcherState });
+  snowglassLauncherTarget.dispatchEvent(event);
+  dispatchEvent(
+    new CustomEvent("snowglasslauncherstatechange", {
+      detail: launcherState,
+    }),
+  );
+};
+
+Object.defineProperties(snowglassLauncherTarget, {
+  state: {
+    get: () => launcherState,
+  },
+  open: {
+    value: (path: string, emulator?: string) => {
+      window.ipc.postMessage(
+        JSON.stringify({ type: "launcherOpen", path, emulator }),
+      );
+    },
+  },
+  start: {
+    value: (request: Record<string, unknown>) => {
+      window.ipc.postMessage(JSON.stringify({ type: "launcherStart", request }));
+    },
+  },
+  cancel: {
+    value: () => {
+      window.ipc.postMessage(JSON.stringify({ type: "launcherCancel" }));
+    },
+  },
+});
+Object.freeze(snowglassLauncherTarget);
+Object.defineProperty(window, "snowglassLauncher", {
+  value: snowglassLauncherTarget,
   writable: false,
 });
 

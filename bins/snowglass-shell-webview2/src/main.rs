@@ -6,17 +6,18 @@ mod composition;
 mod game_layer;
 mod game_layer_host;
 mod input;
+mod launcher;
 
 use api::{
     EmulatorLaunchArguments, LaunchOptions, graphics_hook_backend, parse_input_binding,
     plugin_config_root_path, plugin_launch_options,
 };
-use cli::{PluginLaunchRequest, ShellOptions};
+use cli::{GameLaunchRequest, ShellOptions};
 use composition::{
     CompositionTree, ForegroundHitRegion, SurfaceLayout, SurfaceWindow, chrome_band_z_index,
     game_view_z_index,
 };
-use consolespec::BindingKey;
+use consolespec::input::BindingKey;
 use game_layer::{
     DomKeyboardEvent, DomMouseEvent, EmulatorCommand, EmulatorCommandSink, GameLayerFactory,
     GameViewStyle, InstanceToken,
@@ -104,6 +105,13 @@ enum UserEvent {
         transaction: InputTransaction,
     },
     EmulatorCommand(EmulatorCommand),
+    LauncherOpen(GameLaunchRequest),
+    LauncherStart(launcher::LauncherStartRequest),
+    LauncherCancel,
+    GameDetected {
+        generation: u64,
+        result: Result<launcher::DetectedGame, String>,
+    },
 }
 
 #[derive(Debug)]
@@ -478,9 +486,9 @@ impl EguiOverlay {
         self.sample();
         let input = self.state.take_egui_input(window);
         let diagnostics = &self.diagnostics;
-        let mut output = self.context.run(input, |context| {
-            draw_debug_overlay(context, diagnostics);
-        });
+        let mut output = self
+            .context
+            .run(input, |context| draw_debug_overlay(context, diagnostics));
         self.state
             .handle_platform_output(window, std::mem::take(&mut output.platform_output));
         let primitives = self
@@ -687,14 +695,16 @@ struct GameSessionState {
     proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     active: Option<ActiveEmulator>,
     pending_cli_launch: Option<PendingCliLaunch>,
+    plugins: snowglass_pluginhost::PluginHost,
+    viewer: snowglass_renderer::cli::ViewerOptions,
+    launcher_state: launcher::LauncherState,
+    prepared_game: Option<launcher::PreparedGame>,
+    detection_generation: u64,
 }
 
 enum PendingCliLaunch {
     Ready(LaunchOptions),
-    Plugin {
-        request: PluginLaunchRequest,
-        viewer: snowglass_renderer::cli::ViewerOptions,
-    },
+    Plugin(launcher::ConfiguredGameLaunch),
 }
 
 // todo: lift this to runtime orchestrator
@@ -807,23 +817,20 @@ impl ShellState {
         let ShellOptions {
             viewer: options,
             foreground_url,
-            plugins: _,
-            plugin_launch,
+            plugins,
+            game_launch,
         } = options;
         if options.api != ViewerApi::D3d12 {
             return Err(
                 "snowglass-shell-webview2 requires `--api d3d12` for DirectComposition".into(),
             );
         }
-        let pending_cli_launch = if let Some(request) = plugin_launch {
-            Some(PendingCliLaunch::Plugin {
-                request,
-                viewer: options.clone(),
-            })
-        } else {
+        let pending_cli_launch = if game_launch.is_none() {
             LaunchOptions::from_cli(&options)
                 .map_err(std::io::Error::other)?
                 .map(PendingCliLaunch::Ready)
+        } else {
+            None
         };
 
         let mut composition = CompositionTree::new(&window)?;
@@ -929,6 +936,41 @@ impl ShellState {
                             }
                         }
                     }
+                    Some("launcherOpen") => {
+                        let Some(path) = message.get("path").and_then(serde_json::Value::as_str)
+                        else {
+                            return;
+                        };
+                        let emulator = message
+                            .get("emulator")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
+                        let _ = foreground_proxy.send_event(UserEvent::LauncherOpen(
+                            GameLaunchRequest {
+                                game: path.into(),
+                                emulator,
+                            },
+                        ));
+                    }
+                    Some("launcherStart") => {
+                        let Some(request) = message.get("request").cloned() else {
+                            return;
+                        };
+                        match serde_json::from_value::<launcher::LauncherStartRequest>(request) {
+                            Ok(request) => {
+                                let _ =
+                                    foreground_proxy.send_event(UserEvent::LauncherStart(request));
+                            }
+                            Err(error) => {
+                                tracing::error!(
+                                    "snowglass: invalid frontend launch request: {error}"
+                                );
+                            }
+                        }
+                    }
+                    Some("launcherCancel") => {
+                        let _ = foreground_proxy.send_event(UserEvent::LauncherCancel);
+                    }
                     _ => {}
                 }
             })
@@ -956,7 +998,7 @@ impl ShellState {
         // eligible for a hardware overlay plane.
 
         composition.commit()?;
-        Ok(Self {
+        let mut state = Self {
             foreground_webview,
             window,
             game_layer,
@@ -984,6 +1026,11 @@ impl ShellState {
                 proxy,
                 active: None,
                 pending_cli_launch,
+                plugins,
+                viewer: options,
+                launcher_state: launcher::LauncherState::Idle,
+                prepared_game: None,
+                detection_generation: 0,
             },
             input: ShellInputState {
                 transport: input,
@@ -1001,7 +1048,127 @@ impl ShellState {
                 next_publish: Instant::now(),
                 guide_chord_held: false,
             },
-        })
+        };
+        if let Some(request) = game_launch {
+            state.queue_game(request);
+        }
+        Ok(state)
+    }
+
+    fn queue_game(&mut self, request: GameLaunchRequest) {
+        self.game.detection_generation = self.game.detection_generation.wrapping_add(1);
+        let generation = self.game.detection_generation;
+        let path = request.game;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        self.game.prepared_game = None;
+        self.game.launcher_state = launcher::LauncherState::Detecting {
+            path: path.to_string_lossy().into_owned(),
+            name,
+        };
+        self.publish_launcher_state();
+        let proxy = self.game.proxy.clone();
+        tokio::task::spawn_local(async move {
+            let detected = launcher::detect_game(path, request.emulator).await;
+            let _ = proxy.send_event(UserEvent::GameDetected {
+                generation,
+                result: detected,
+            });
+        });
+    }
+
+    fn game_detected(&mut self, generation: u64, result: Result<launcher::DetectedGame, String>) {
+        if generation != self.game.detection_generation {
+            return;
+        }
+        let result = result.and_then(|detected| {
+            tracing::info!(
+                "snowglass: detected {} as {}",
+                detected.path.display(),
+                detected.platform
+            );
+            launcher::PreparedGame::new(
+                generation,
+                detected,
+                self.game
+                    .plugins
+                    .plugins::<dyn snowglass_pluginhost::EmulatorPluginInstance>(),
+                self.game.viewer.clone(),
+            )
+        });
+        match result {
+            Ok(prepared) => {
+                tracing::info!(
+                    "snowglass: compatible emulator plugins: {}",
+                    prepared
+                        .descriptor()
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                self.game.launcher_state = launcher::LauncherState::Configure {
+                    game: prepared.descriptor().clone(),
+                };
+                self.game.prepared_game = Some(prepared);
+            }
+            Err(error) => {
+                tracing::error!("snowglass: game detection failed: {error}");
+                self.game.launcher_state = launcher::LauncherState::Error { message: error };
+                self.game.prepared_game = None;
+            }
+        }
+        self.publish_launcher_state();
+    }
+
+    fn start_prepared_game(&mut self, request: launcher::LauncherStartRequest) {
+        if self.game.active.is_some() {
+            self.game.launcher_state = launcher::LauncherState::Error {
+                message: "Close the active game before launching another one.".to_owned(),
+            };
+            self.publish_launcher_state();
+            return;
+        }
+        let Some(prepared) = self.game.prepared_game.as_ref() else {
+            self.game.launcher_state = launcher::LauncherState::Error {
+                message: "Choose a game before pressing Start.".to_owned(),
+            };
+            self.publish_launcher_state();
+            return;
+        };
+        match prepared.start(request) {
+            Ok(launch) => {
+                let name = prepared.descriptor().name.clone();
+                self.game.pending_cli_launch = Some(PendingCliLaunch::Plugin(launch));
+                self.game.launcher_state = launcher::LauncherState::Launching { name };
+                self.game.prepared_game = None;
+            }
+            Err(message) => {
+                self.game.launcher_state = launcher::LauncherState::Error { message };
+            }
+        }
+        self.publish_launcher_state();
+    }
+
+    fn cancel_launcher(&mut self) {
+        self.game.detection_generation = self.game.detection_generation.wrapping_add(1);
+        self.game.prepared_game = None;
+        self.game.launcher_state = launcher::LauncherState::Idle;
+        self.publish_launcher_state();
+    }
+
+    fn publish_launcher_state(&self) {
+        let Ok(state) = serde_json::to_string(&self.game.launcher_state) else {
+            return;
+        };
+        let script = format!("window.__snowglassSetLauncherState?.({state});");
+        if let Err(error) = self.foreground_webview.evaluate_script(&script) {
+            tracing::debug!("snowglass: launcher state is waiting for the frontend: {error}");
+        }
     }
 
     async fn deliver_cli_launch(&mut self) {
@@ -1010,15 +1177,15 @@ impl ShellState {
         };
         let options = match pending {
             PendingCliLaunch::Ready(options) => options,
-            PendingCliLaunch::Plugin { request, viewer } => {
-                match self.realize_plugin_launch(request, &viewer).await {
-                    Ok(options) => options,
-                    Err(error) => {
-                        tracing::error!("snowglass: emulator plugin launch failed: {error}");
-                        return;
-                    }
+            PendingCliLaunch::Plugin(request) => match self.realize_plugin_launch(request).await {
+                Ok(options) => options,
+                Err(error) => {
+                    tracing::error!("snowglass: emulator plugin launch failed: {error}");
+                    self.game.launcher_state = launcher::LauncherState::Error { message: error };
+                    self.publish_launcher_state();
+                    return;
                 }
-            }
+            },
         };
         let Ok(options) = serde_json::to_value(&options) else {
             return;
@@ -1027,7 +1194,10 @@ impl ShellState {
             "type": "snowglass-cli-launch",
             "options": options,
         })) {
-            tracing::error!("snowglass: CLI launch requires a linked game layer");
+            let message = "CLI launch requires a linked game layer".to_owned();
+            tracing::error!("snowglass: {message}");
+            self.game.launcher_state = launcher::LauncherState::Error { message };
+            self.publish_launcher_state();
             return;
         }
         self.flush_game_layer_bridge();
@@ -1035,19 +1205,11 @@ impl ShellState {
 
     async fn realize_plugin_launch(
         &mut self,
-        request: PluginLaunchRequest,
-        viewer: &snowglass_renderer::cli::ViewerOptions,
+        request: launcher::ConfiguredGameLaunch,
     ) -> Result<LaunchOptions, String> {
-        let layouts = viewer
-            .gamepads
-            .iter()
-            .map(|pad| pad.layout.clone())
-            .collect::<Vec<_>>();
-        let assignments = request
-            .plugin
-            .port_assignments(&viewer.machine, &layouts)
-            .map_err(|error| error.to_string())?;
-        let port_assignments = assignments
+        let port_assignments = request
+            .configuration
+            .port_assignments()
             .iter()
             .map(|(group, layouts)| {
                 (
@@ -1056,23 +1218,19 @@ impl ShellState {
                 )
             })
             .collect::<HashMap<_, _>>();
-        let configuration = request
-            .plugin
-            .materialize(&viewer.machine, assignments)
-            .map_err(|error| error.to_string())?;
         let arguments = serde_json::json!({
             "launchPath": request.game.to_string_lossy(),
-            "console": viewer.machine,
+            "console": request.viewer.machine,
             "portAssignments": port_assignments,
         });
         let plan: EmulatorLaunchArguments = self
             .game_layer
             .active_mut()
             .ok_or_else(|| "CLI plugin launch requires a linked game layer".to_owned())?
-            .run_emulator_plugin(request.plugin, arguments, configuration)
+            .run_emulator_plugin(request.plugin, arguments, request.configuration)
             .await?;
         install_plugin_configuration(&plan)?;
-        plugin_launch_options(plan, viewer)
+        plugin_launch_options(plan, &request.viewer)
     }
 
     fn flush_game_layer_bridge(&mut self) {
@@ -1349,6 +1507,7 @@ impl ShellState {
             self.game_layer.disable();
         }
         self.publish_input_configuration();
+        self.publish_launcher_state();
         self.deliver_cli_launch().await;
     }
 
@@ -2949,6 +3108,12 @@ impl ShellApplication {
         {
             state.flush_game_layer_bridge();
         }
+        if let Some(state) = self.state.as_mut()
+            && state.game.pending_cli_launch.is_some()
+            && state.game_layer.active().is_some()
+        {
+            state.deliver_cli_launch().await;
+        }
     }
 }
 
@@ -3028,6 +3193,12 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                 transaction,
             } => state.configure_input(request_id, transaction, false),
             UserEvent::EmulatorCommand(command) => state.apply_emulator_command(command),
+            UserEvent::LauncherOpen(request) => state.queue_game(request),
+            UserEvent::LauncherStart(request) => state.start_prepared_game(request),
+            UserEvent::LauncherCancel => state.cancel_launcher(),
+            UserEvent::GameDetected { generation, result } => {
+                state.game_detected(generation, result)
+            }
         }
     }
 
@@ -3100,6 +3271,19 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
         }
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => event_loop.exit(),
+            WindowEvent::DroppedFile(path) => {
+                if state.game.active.is_some() {
+                    state.game.launcher_state = launcher::LauncherState::Error {
+                        message: "Close the active game before launching another one.".to_owned(),
+                    };
+                    state.publish_launcher_state();
+                } else {
+                    state.queue_game(GameLaunchRequest {
+                        game: path,
+                        emulator: None,
+                    });
+                }
+            }
             WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
                 let bounds = wry::Rect {
                     position: wry::dpi::PhysicalPosition::new(0, 0).into(),

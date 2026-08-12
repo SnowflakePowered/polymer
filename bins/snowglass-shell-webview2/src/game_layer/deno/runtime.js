@@ -226,7 +226,7 @@
     return [...declarations].map(([name, value]) => `${name}: ${value}`).join("; ");
   }
 
-  // deno_runtime supplies Event, EventTarget, CustomEvent and MessageEvent.
+  // snowglass-deno supplies Event, EventTarget, CustomEvent and MessageEvent.
   // MouseEvent is part of the browser DOM rather than deno_web, so the Blitz
   // bridge adds only that DOM-specific subclass.
   class MouseEvent extends Event {
