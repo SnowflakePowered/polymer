@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use consolespec::BindingKey;
+use consolespec::input::BindingKey;
 use indexmap::IndexMap;
 use toml_spanner::Toml;
 

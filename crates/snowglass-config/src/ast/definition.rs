@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::OnceLock};
 
-use consolespec::BindingKey;
+use consolespec::input::BindingKey;
 use indexmap::IndexMap;
 
 use crate::arena::{Arena, Handle};

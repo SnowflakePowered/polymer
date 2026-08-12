@@ -1,7 +1,7 @@
 use toml_spanner::{Context, Failed, Item, Key, Table};
 
 pub(super) mod binding_map {
-    use consolespec::BindingKey;
+    use consolespec::input::BindingKey;
     use indexmap::IndexMap;
 
     use super::*;

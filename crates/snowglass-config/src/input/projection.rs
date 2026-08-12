@@ -16,7 +16,7 @@
 //! Wii Remote has no X/Y face buttons; a Saturn pad's C and Z become shoulders
 //! because its shoulder slots are free.
 
-use consolespec::{BindingKey, InputSpec};
+use consolespec::{InputSpec, input::BindingKey};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::str::FromStr;
@@ -212,7 +212,7 @@ fn resolve(layout_id: &str, key: BindingKey) -> Option<BindingKey> {
 #[cfg(test)]
 mod config_tests {
     use super::*;
-    use consolespec::key;
+    use consolespec::input::key;
 
     #[test]
     fn embedded_projection_covers_every_configurable_control() {
@@ -272,7 +272,7 @@ mod tests {
     use super::*;
     use crate::layout::{SdlAxis, SdlButton};
     use crate::sdl::{SdlSensor, Wire};
-    use consolespec::key;
+    use consolespec::input::key;
 
     fn placed(layout: &str, control: BindingKey) -> Option<Wire> {
         let layout = InputLayout::get(layout).unwrap();

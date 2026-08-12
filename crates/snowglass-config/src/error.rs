@@ -1,6 +1,6 @@
 use std::{error::Error as StdError, path::PathBuf};
 
-use consolespec::BindingKey;
+use consolespec::input::BindingKey;
 use thiserror::Error;
 
 use crate::ast::SettingPath;
@@ -16,7 +16,7 @@ pub enum Error {
     #[error("the definition does not match the schema: {0}")]
     DefinitionError(#[from] toml_spanner::FromTomlError),
     #[error("invalid binding key: {0}")]
-    BindingError(#[from] consolespec::ParseKeyError),
+    BindingError(#[from] consolespec::input::ParseKeyError),
     #[error("invalid projection: {0}")]
     ProjectionError(Box<str>),
     #[error("a configuration path cannot contain an empty component")]

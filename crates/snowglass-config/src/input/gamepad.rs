@@ -1,6 +1,6 @@
 //! Identity of the SDL virtual gamepad injected by Snowglass.
 
-use consolespec::{Alignment, AnalogClass, BindingKey, ButtonElement, Direction, key};
+use consolespec::input::{Alignment, AnalogClass, BindingKey, ButtonElement, Direction, key};
 use crc::{CRC_16_ARC, Crc};
 pub use uuid::Uuid;
 

@@ -15,7 +15,7 @@ use crate::{
 use super::*;
 
 type OwnedLayoutMapping = (
-    indexmap::IndexMap<consolespec::BindingKey, Box<str>>,
+    indexmap::IndexMap<consolespec::input::BindingKey, Box<str>>,
     Box<[Handle<OptionDefinition>]>,
 );
 
