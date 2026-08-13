@@ -3,7 +3,6 @@
 //! Validated launch-plan adaptation, process lifecycle, and captured-surface
 //! models are contained here; the shell coordinator only forwards commands.
 
-#[path = "game_host/shared.rs"]
 mod shared;
 
 use crate::{
@@ -76,7 +75,7 @@ impl BackgroundGpu {
             })
             .await
             .map_err(|error| format!("background chrome could not open a D3D12 device: {error}"))?;
-        let renderer = VelloRenderer::new(
+        let mut renderer = VelloRenderer::new(
             &device,
             RendererOptions {
                 use_cpu: false,
@@ -86,6 +85,27 @@ impl BackgroundGpu {
             },
         )
         .map_err(|error| format!("background chrome could not start Vello: {error}"))?;
+        // Vello creates part of its D3D12 work lazily on the first render.
+        // Force that work to finish before WebView2 starts Chromium's WARP
+        // device; doing the first render afterwards can fault in d3d10warp.
+        let warmup = SharedTexture::new(&device, 1, 1)?;
+        renderer
+            .render_to_texture(
+                &device,
+                &queue,
+                &vello::Scene::new(),
+                &warmup.view,
+                &RenderParams {
+                    base_color: vello::peniko::Color::TRANSPARENT,
+                    width: 1,
+                    height: 1,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .map_err(|error| format!("background chrome could not warm up Vello: {error}"))?;
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| format!("background chrome warmup did not finish: {error}"))?;
         Ok(Self {
             renderer,
             device,

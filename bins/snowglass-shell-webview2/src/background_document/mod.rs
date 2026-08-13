@@ -12,8 +12,8 @@
 //! and splits the remaining chrome into bands, which the compositor stacks
 //! around them.
 
-#[path = "background_document/bands.rs"]
 mod bands;
+
 use crate::background_dom::{BackgroundFrame, BackgroundHitSnapshot};
 use crate::background_runtime::{
     BackgroundRuntime, EmulatorCommandSink, KeyboardEvent, MouseEvent, Mutation,
@@ -221,9 +221,6 @@ impl NetProvider for LocalAssets {
                         return;
                     }
                 }
-            }
-            "snowglass" if url.path() == "/assets/wiiu-drc.png" => {
-                include_bytes!("../frontend/src/assets/wiiu-drc.png").to_vec()
             }
             _ => {
                 tracing::error!("snowglass: the game layer will not fetch {url}");

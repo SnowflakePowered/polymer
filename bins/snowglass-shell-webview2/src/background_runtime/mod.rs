@@ -3,9 +3,7 @@
 //! Plugin packages never enter this isolate. Its plugin facade is a client of
 //! the shared bus; pluginhost creates a separate worker isolate for each call.
 
-#[path = "background_runtime/deno/mod.rs"]
 pub(crate) mod deno;
-#[path = "background_runtime/launch_coordinator.rs"]
 mod launch_coordinator;
 
 use blitz_dom::BaseDocument;
