@@ -505,8 +505,6 @@ function GameLayer() {
   const sourceRatio = mainSource.width / mainSource.height;
   const mainWidth = Math.min(availableWidth, availableHeight * sourceRatio);
   const mainHeight = mainWidth / sourceRatio;
-  const mainX = (viewport.width - mainWidth) / 2;
-  const mainY = (viewport.height - mainHeight) / 2;
   const gamepadStyle: CSSProperties = {
     left: `${gamepad.x.toFixed(1)}px`,
     top: `${gamepad.renderedY.toFixed(1)}px`,
@@ -516,25 +514,13 @@ function GameLayer() {
   const mainStyle: CSSProperties = {
     width: `${mainWidth.toFixed(1)}px`,
     height: `${mainHeight.toFixed(1)}px`,
+    opacity: 1 - lifecycle.surfaceFade,
   };
-  const mainOverlayStyle: CSSProperties = {
-    left: `${mainX.toFixed(1)}px`,
-    top: `${mainY.toFixed(1)}px`,
-    width: `${mainWidth.toFixed(1)}px`,
-    height: `${mainHeight.toFixed(1)}px`,
-  };
-
   return (
     <section className="surface-stage">
       <article className="primary-surface">
         {trackedSurface(0, "game-view main-game-view", 4, mainStyle)}
       </article>
-      <div className="main-view-overlay" style={mainOverlayStyle}>
-        <div
-          className="main-surface-fade"
-          style={{ opacity: lifecycle.surfaceFade }}
-        />
-      </div>
       <div
         className="gamepad-drawer"
         data-visible={gamepad.visible ? "true" : "false"}
@@ -546,11 +532,9 @@ function GameLayer() {
         >
           <span className="gamepad-grip" />
         </div>
-        {trackedSurface(1, "game-view gamepad-view", 9)}
-        <div
-          className="gamepad-surface-fade"
-          style={{ opacity: lifecycle.surfaceFade }}
-        />
+        {trackedSurface(1, "game-view gamepad-view", 9, {
+          opacity: 1 - lifecycle.surfaceFade,
+        })}
         <div
           className="gamepad-resize-handle"
           onMouseDown={beginInteraction("resize")}

@@ -407,6 +407,14 @@
       return 0;
     }
 
+    dispatchEvent(event) {
+      // deno_web's generic EventTarget fast path returns immediately when the
+      // target itself has no listener. DOM Nodes are different: an event can
+      // still be observed by delegated listeners on any ancestor, Document,
+      // or Window. Enter the full DOM dispatcher unconditionally for Nodes.
+      return dispatchNativeEvent(this, event);
+    }
+
     get parentElement() {
       const parent = this.parentNode;
       return parent instanceof Element ? parent : null;

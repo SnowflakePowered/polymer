@@ -3,6 +3,10 @@ id = "dolphin"
 version = "0.0.1"
 class = "emulator"
 
+[plugin.config]
+# todo: make this path relative to package (i.e pkg://runtime/Cemu.exe)
+cemu_path = "file://E:/Emulators/Dolphin/Cemu.exe"
+
 [emulator]
 platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
 

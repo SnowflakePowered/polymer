@@ -806,6 +806,25 @@ struct ShellState {
     input: ShellInputState,
 }
 
+fn synchronize_foreground_webview(
+    webview: &WebView,
+    width: u32,
+    height: u32,
+) -> Result<(), Box<dyn Error>> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    webview.set_bounds(wry::Rect {
+        position: wry::dpi::PhysicalPosition::new(0, 0).into(),
+        size: wry::dpi::PhysicalSize::new(width, height).into(),
+    })?;
+    // Composition input is routed by the shell instead of Wry's HWND
+    // subclass. Keep the lifecycle notification that subclass would send:
+    // WebView2 uses it to anchor native popup windows such as <select> menus.
+    unsafe { webview.controller().NotifyParentWindowPositionChanged()? };
+    Ok(())
+}
+
 impl ShellState {
     fn new(
         window: Window,
@@ -975,6 +994,7 @@ impl ShellState {
                 }
             })
             .build(&window)?;
+        synchronize_foreground_webview(&foreground_webview, size.width, size.height)?;
 
         // A page driven by `requestAnimationFrame`, which is what Chromium
         // throttles when it decides a window is not being seen. Used to check
@@ -2352,6 +2372,14 @@ impl ShellState {
         let Some(merged) = self.presentation.merged.as_mut() else {
             return;
         };
+        // Vello and the merged compositor are separate D3D12 devices. Before
+        // Vello reuses its shared band textures, finish any preceding frame
+        // which can still be sampling them. The writer-side wait in
+        // GameLayer::paint provides the other half of this ordering.
+        if let Err(error) = merged.synchronize_chrome_update() {
+            tracing::error!("snowglass: synchronizing game-layer chrome failed: {error}");
+            return;
+        }
         let mut bands = 0;
         let (painted, placements) = {
             let Some(layer) = self.game_layer.active_mut() else {
@@ -3106,6 +3134,17 @@ impl ShellApplication {
         if let Some(state) = self.state.as_mut()
             && state.game_layer.poll_runtime().await
         {
+            // Timers, promises, fetches, and WebSockets can mutate the
+            // background DOM without a Winit event. Polling applies those
+            // mutations and marks the layer dirty; repaint it here so async
+            // UI changes (including the launch fade) reach the compositor.
+            if state
+                .game_layer
+                .active()
+                .is_some_and(game_layer::GameLayer::needs_paint)
+            {
+                state.refresh_game_layer();
+            }
             state.flush_game_layer_bridge();
         }
         if let Some(state) = self.state.as_mut()
@@ -3238,7 +3277,13 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
             .overlay
             .state
             .on_window_event(&state.window, &event);
-        let mut consumed = response.consumed;
+        // At game priority the virtual pad owns keyboard events. egui reports
+        // them consumed while its diagnostic overlay is focused, which used
+        // to starve keyboard-backed controllers even though the overlay has no
+        // editable keyboard controls.
+        let keyboard_owned_by_game = matches!(&event, WindowEvent::KeyboardInput { .. })
+            && state.input.priority == InputPriority::Game;
+        let mut consumed = response.consumed && !keyboard_owned_by_game;
         if consumed {
             // egui took this event, so it is being interacted with and gets to
             // set its own repaint rate until the interaction settles.
@@ -3284,12 +3329,22 @@ impl ApplicationHandler<UserEvent> for ShellApplication {
                     });
                 }
             }
+            WindowEvent::Moved(_) => {
+                let size = state.window.inner_size();
+                if let Err(error) = synchronize_foreground_webview(
+                    &state.foreground_webview,
+                    size.width,
+                    size.height,
+                ) {
+                    tracing::error!("snowglass: synchronizing foreground WebView2 failed: {error}");
+                }
+            }
             WindowEvent::Resized(size) if size.width != 0 && size.height != 0 => {
-                let bounds = wry::Rect {
-                    position: wry::dpi::PhysicalPosition::new(0, 0).into(),
-                    size: wry::dpi::PhysicalSize::new(size.width, size.height).into(),
-                };
-                if let Err(error) = state.foreground_webview.set_bounds(bounds) {
+                if let Err(error) = synchronize_foreground_webview(
+                    &state.foreground_webview,
+                    size.width,
+                    size.height,
+                ) {
                     tracing::error!("snowglass: resizing foreground WebView2 failed: {error}");
                 }
                 if let Err(error) = state.presentation.overlay.resize(&state.window) {

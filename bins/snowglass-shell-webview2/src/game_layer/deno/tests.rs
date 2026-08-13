@@ -95,6 +95,47 @@ fn document(html: &str) -> blitz_html::HtmlDocument {
 }
 
 #[tokio::test]
+async fn node_dispatch_event_reaches_delegated_ancestors() {
+    let html = r##"
+        <html><body>
+          <button id="drag-handle">drag</button>
+          <script>
+            document.addEventListener("dragstart", event => {
+              event.preventDefault();
+              postMessage({ type: "delegated", target: event.target.id });
+            });
+            const accepted = document.querySelector("#drag-handle").dispatchEvent(
+              new CustomEvent("dragstart", { bubbles: true, cancelable: true })
+            );
+            postMessage({ type: "dispatch-result", accepted });
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let (command_sink, _) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///delegated-event-test.html",
+        800,
+        600,
+        command_sink,
+        snowglass_pluginhost::PluginHost::new(),
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+
+    assert_eq!(
+        runtime.take_messages(),
+        [
+            serde_json::json!({ "type": "delegated", "target": "drag-handle" }),
+            serde_json::json!({ "type": "dispatch-result", "accepted": false }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn background_input_api_sends_revisioned_transactions_and_resolves_results() {
     let html = r#"
         <html><body>

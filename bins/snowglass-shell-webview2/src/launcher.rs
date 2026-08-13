@@ -312,11 +312,12 @@ fn default_groups(
                         })
                         .cloned()
                         .unwrap_or_else(|| port.layouts[0].clone());
-                    let selected_device = viewer
-                        .gamepads
-                        .get(source_slot)
-                        .map_or_else(|| source_slot.to_string(), selector_text);
-                    source_slot += 1;
+                    let selected_device = default_device_for_port(
+                        &viewer.gamepads,
+                        port.index < connected,
+                        port.index,
+                        &mut source_slot,
+                    );
                     PortDescriptor {
                         index: port.index,
                         layouts: port.layouts,
@@ -338,6 +339,25 @@ fn default_groups(
         group.connected = usize::from(!group.ports.is_empty());
     }
     groups
+}
+
+fn default_device_for_port(
+    gamepads: &[GamepadArgument],
+    connected: bool,
+    port_index: usize,
+    source_slot: &mut usize,
+) -> String {
+    if !connected {
+        // Merely describing an available port must not consume a requested
+        // input source. Machines such as the Wii U list their optional
+        // controller group before the connected GamePad group.
+        return port_index.to_string();
+    }
+    let selected = gamepads
+        .get(*source_slot)
+        .map_or_else(|| source_slot.to_string(), selector_text);
+    *source_slot += 1;
+    selected
 }
 
 fn descriptor_assignments(groups: &[PortGroupDescriptor]) -> PortAssignments {
@@ -656,6 +676,30 @@ fn consolespec_platform(platform: PlatformIdentifier) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_ports_do_not_consume_requested_input_sources() {
+        let gamepads = [GamepadArgument {
+            selector: DeviceSelector::Keyboard,
+            slot: 0,
+            layout: "WIIU_DRC_CONTROLLER".to_owned(),
+            force_mouse: true,
+        }];
+        let mut source_slot = 0;
+
+        for port_index in 0..7 {
+            assert_eq!(
+                default_device_for_port(&gamepads, false, port_index, &mut source_slot),
+                port_index.to_string()
+            );
+        }
+        assert_eq!(source_slot, 0);
+        assert_eq!(
+            default_device_for_port(&gamepads, true, 0, &mut source_slot),
+            "K"
+        );
+        assert_eq!(source_slot, 1);
+    }
 
     #[test]
     fn maps_platform_ids_used_by_the_loaded_plugins() {

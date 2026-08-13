@@ -6,19 +6,86 @@
 //! NAPI, workers, or other services bundled by `deno_runtime::MainWorker`.
 
 use deno_core::{
-    Extension, JsRuntime, ModuleId, ModuleLoader, ModuleSpecifier, PollEventLoopOptions,
-    RuntimeOptions as CoreRuntimeOptions,
+    Extension, JsRuntime, ModuleCodeString, ModuleId, ModuleLoader, ModuleName, ModuleSpecifier,
+    OpState, PollEventLoopOptions, RuntimeOptions as CoreRuntimeOptions, SourceMapData, op2,
 };
 use deno_permissions::{PermissionsContainer, RuntimePermissionDescriptorParser};
-use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 pub use deno_inspector_server::{InspectPublishUid, InspectorServerError, create_inspector_server};
 
-deno_core::extension!(
-    snowglass_web_runtime,
+struct UserAgent(String);
+
+#[op2]
+#[string]
+fn op_snowglass_user_agent(state: &mut OpState) -> String {
+    state.borrow::<UserAgent>().0.clone()
+}
+
+deno_core::extension!(snowglass_web_runtime,
+    ops = [op_snowglass_user_agent],
     esm_entry_point = "ext:snowglass_web_runtime/bootstrap.js",
     esm = [dir ".", "bootstrap.js"],
+    options = {
+        user_agent: String,
+    },
+    state = |state, options| {
+        state.put(UserAgent(options.user_agent));
+    },
 );
+
+deno_error::js_error_wrapper!(deno_ast::ParseDiagnostic, JsParseDiagnostic, "Error");
+deno_error::js_error_wrapper!(deno_ast::TranspileError, JsTranspileError, "Error");
+
+fn transpile_extension_source(
+    name: ModuleName,
+    source: ModuleCodeString,
+) -> Result<(ModuleCodeString, Option<SourceMapData>), deno_error::JsErrorBox> {
+    use deno_ast::{
+        EmitOptions, ImportsNotUsedAsValues, MediaType, ParseParams, SourceMapOption,
+        TranspileModuleOptions, TranspileOptions,
+    };
+
+    let media_type = MediaType::from_path(Path::new(&name));
+    if matches!(media_type, MediaType::JavaScript | MediaType::Mjs) {
+        return Ok((source, None));
+    }
+    assert_eq!(media_type, MediaType::TypeScript);
+
+    let parsed = deno_ast::parse_module(ParseParams {
+        specifier: deno_core::url::Url::parse(&name).unwrap(),
+        text: source.into(),
+        media_type,
+        capture_tokens: false,
+        scope_analysis: false,
+        maybe_syntax: None,
+    })
+    .map_err(|error| deno_error::JsErrorBox::from_err(JsParseDiagnostic(error)))?;
+    let transpiled = parsed
+        .transpile(
+            &TranspileOptions {
+                imports_not_used_as_values: ImportsNotUsedAsValues::Remove,
+                ..Default::default()
+            },
+            &TranspileModuleOptions::default(),
+            &EmitOptions {
+                source_map: SourceMapOption::Separate,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| deno_error::JsErrorBox::from_err(JsTranspileError(error)))?
+        .into_source();
+
+    Ok((
+        transpiled.text.into(),
+        transpiled.source_map.map(|map| map.into_bytes().into()),
+    ))
+}
 
 /// Options for a minimal Snowglass JavaScript runtime.
 pub struct RuntimeOptions {
@@ -47,7 +114,9 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(mut options: RuntimeOptions) -> Self {
         let location = options.main_module.clone();
+        let user_agent = options.user_agent;
         let mut extensions = vec![
+            deno_telemetry::deno_telemetry::init(),
             deno_webidl::deno_webidl::init(),
             deno_web::deno_web::init(
                 deno_web::BlobStore::default_arc(),
@@ -55,19 +124,22 @@ impl Runtime {
                 true,
                 Default::default(),
             ),
+            deno_net::deno_net::init(None, None),
+            deno_tls::deno_tls::init(),
             deno_fetch::deno_fetch::init(deno_fetch::Options {
-                user_agent: options.user_agent,
+                user_agent: user_agent.clone(),
                 ..Default::default()
             }),
             deno_websocket::deno_websocket::init(),
             deno_webstorage::deno_webstorage::init(options.storage_dir),
-            snowglass_web_runtime::init(),
+            snowglass_web_runtime::init(user_agent),
         ];
         extensions.append(&mut options.extensions);
 
         let js_runtime = JsRuntime::new(CoreRuntimeOptions {
             module_loader: Some(options.module_loader),
             extensions,
+            extension_transpiler: Some(Rc::new(transpile_extension_source)),
             inspector: options.inspect,
             is_main: true,
             ..Default::default()
@@ -78,6 +150,10 @@ impl Runtime {
             .put(PermissionsContainer::allow_all(Arc::new(
                 RuntimePermissionDescriptorParser::new(sys_traits::impls::RealSys),
             )));
+        js_runtime
+            .op_state()
+            .borrow_mut()
+            .put(Arc::new(deno_features::FeatureChecker::default()));
 
         if options.inspect
             && let Some(server) = deno_inspector_server::get_inspector_server()
@@ -143,7 +219,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deno_core::{ModuleLoadResponse, ModuleSource, ResolutionKind, resolve_import};
+    use deno_core::{ModuleLoadResponse, ResolutionKind, resolve_import};
 
     struct EmptyLoader;
 
@@ -188,26 +264,34 @@ mod tests {
             .js_runtime_mut()
             .execute_script(
                 "snowglass:test/globals.js",
-                r#"JSON.stringify({
-                    event: typeof EventTarget === "function",
+                r#"(() => {
+                  let dispatched = false;
+                  addEventListener("snowglass-test", () => dispatched = true);
+                  dispatchEvent(new Event("snowglass-test"));
+                  sessionStorage.setItem("snowglass-test", "stored");
+                  return JSON.stringify({
+                    event: typeof EventTarget === "function" && dispatched,
                     url: new URL("child", "https://example.com/root/").href,
                     channel: typeof MessageChannel === "function",
                     timer: typeof setTimeout === "function",
                     fetch: typeof fetch === "function",
                     websocket: typeof WebSocket === "function",
-                    storage: typeof Storage === "function" && typeof sessionStorage === "object",
+                    navigator: navigator.userAgent === "Snowglass/Test",
+                    storage: typeof Storage === "function" &&
+                      sessionStorage.getItem("snowglass-test") === "stored",
                     deno: typeof Deno,
                     process: typeof process,
                     crypto: typeof crypto,
-                })"#,
+                  });
+                })()"#,
             )
             .unwrap();
-        let scope = &mut runtime.js_runtime_mut().handle_scope();
+        deno_core::scope!(scope, runtime.js_runtime_mut());
         let value = deno_core::v8::Local::new(scope, value);
         let value = value.to_rust_string_lossy(scope);
         assert_eq!(
             value,
-            r#"{"event":true,"url":"https://example.com/root/child","channel":true,"timer":true,"fetch":true,"websocket":true,"storage":true,"deno":"undefined","process":"undefined","crypto":"undefined"}"#
+            r#"{"event":true,"url":"https://example.com/root/child","channel":true,"timer":true,"fetch":true,"websocket":true,"navigator":true,"storage":true,"deno":"undefined","process":"undefined","crypto":"undefined"}"#
         );
     }
 
@@ -233,7 +317,7 @@ mod tests {
             .js_runtime_mut()
             .execute_script("snowglass:test/result.js", "JSON.stringify(result)")
             .unwrap();
-        let scope = &mut runtime.js_runtime_mut().handle_scope();
+        deno_core::scope!(scope, runtime.js_runtime_mut());
         let value = deno_core::v8::Local::new(scope, value);
         assert_eq!(value.to_rust_string_lossy(scope), r#"["ready","timer"]"#);
     }

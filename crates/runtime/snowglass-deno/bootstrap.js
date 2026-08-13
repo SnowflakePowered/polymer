@@ -3,6 +3,7 @@
 // globals Snowglass documents use, leaving WebCrypto, Node and the Deno
 // namespace absent by construction.
 import { core } from "ext:core/mod.js";
+const { ops } = core;
 
 const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
 const event = core.loadExtScript("ext:deno_web/02_event.js");
@@ -45,6 +46,13 @@ const loadWebSocketStream = core.createLazyLoader(
 let webStorage;
 const loadWebStorage = () =>
   webStorage ??= core.loadExtScript("ext:deno_webstorage/01_webstorage.js");
+const navigator = Object.freeze(Object.create(null, {
+  userAgent: { value: ops.op_snowglass_user_agent(), enumerable: true },
+  platform: { value: "Win32", enumerable: true },
+  language: { value: "en-US", enumerable: true },
+  languages: { value: Object.freeze(["en-US"]), enumerable: true },
+  hardwareConcurrency: { value: 1, enumerable: true },
+}));
 
 const lazy = (load, property) => ({
   configurable: true,
@@ -61,7 +69,13 @@ const lazy = (load, property) => ({
   },
 });
 
+// Window and worker globals inherit EventTarget in browsers. Using the same
+// prototype chain also satisfies deno_web's Web IDL brand checks when its
+// methods are called as global functions.
+Object.setPrototypeOf(globalThis, event.EventTarget.prototype);
+
 Object.defineProperties(globalThis, {
+  addEventListener: { value: event.EventTarget.prototype.addEventListener, configurable: true, writable: true },
   AbortController: { value: abortSignal.AbortController, configurable: true, writable: true },
   AbortSignal: { value: abortSignal.AbortSignal, configurable: true, writable: true },
   Blob: { value: file.Blob, configurable: true, writable: true },
@@ -98,6 +112,7 @@ Object.defineProperties(globalThis, {
     configurable: true,
     writable: true,
   },
+  dispatchEvent: { value: event.EventTarget.prototype.dispatchEvent, configurable: true, writable: true },
   fetch: {
     value: (...args) => loadFetch().fetch(...args),
     configurable: true,
@@ -110,7 +125,9 @@ Object.defineProperties(globalThis, {
     get: () => loadWebStorage().localStorage(),
     set() {},
   },
+  navigator: { value: navigator, configurable: true },
   reportError: { value: event.reportError, configurable: true, writable: true },
+  removeEventListener: { value: event.EventTarget.prototype.removeEventListener, configurable: true, writable: true },
   setInterval: { value: timers.setInterval, configurable: true, writable: true },
   setTimeout: { value: timers.setTimeout, configurable: true, writable: true },
   sessionStorage: {
@@ -124,3 +141,5 @@ Object.defineProperties(globalThis, {
 });
 
 event.setEventTargetData(globalThis);
+event.saveGlobalThisReference(globalThis);
+delete globalThis.Deno;

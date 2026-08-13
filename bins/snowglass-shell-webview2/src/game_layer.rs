@@ -16,14 +16,17 @@ mod bands;
 mod deno;
 mod shared;
 
+use anyrender::PaintScene as _;
 use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
 pub use bands::{GamePlacement, GameViewStyle};
-use blitz_dom::net::Resource;
-use blitz_dom::node::{CanvasData, Node, SpecialElementData};
+use blitz_dom::node::{Node, Widget};
 use blitz_dom::{Document as _, LocalName, QualName, local_name, ns};
-use blitz_traits::events::{BlitzMouseButtonEvent, MouseEventButton, MouseEventButtons, UiEvent};
-use blitz_traits::net::{BoxedHandler, NetProvider, Request, SharedCallback};
+use blitz_traits::events::{
+    BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, Point, PointerCoords,
+    PointerDetails, UiEvent,
+};
+use blitz_traits::net::{NetHandler, NetProvider, Request};
 pub use deno::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
 pub use shared::SharedChrome;
 use shared::SharedTexture;
@@ -47,10 +50,12 @@ const ASSET_ROUNDS: usize = 4;
 /// Set to report what each repaint of this layer costs.
 const PAINT_TIMING: &str = "SNOWGLASS_GAME_LAYER_TIMING";
 
-/// Blitz's stock hit test does not account for `pointer-events`, which lets a
-/// transparent full-window overlay starve the interactive layer below it.
-/// Walk the resolved paint order ourselves so `pointer-events: none` skips the
-/// current box while an explicitly re-enabled child remains targetable.
+/// Hit-tests in the same stacking order Blitz paints while allowing a child
+/// to restore `pointer-events: auto` beneath a transparent parent.
+///
+/// Blitz 0.3 hoists non-zero z-index descendants out of `paint_children`.
+/// Those lists therefore have to be traversed explicitly around the ordinary
+/// children, just as the painter does.
 fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) -> Option<usize> {
     pointer_hit_node(document, document.root_element(), x, y)
 }
@@ -63,6 +68,12 @@ fn pointer_hit_node(
 ) -> Option<usize> {
     let mut local_x = x - node.final_layout.location.x + node.scroll_offset.x as f32;
     let mut local_y = y - node.final_layout.location.y + node.scroll_offset.y as f32;
+    if let Some(transform) = node.transform {
+        let point = transform.inverse() * kurbo::Point::new(local_x.into(), local_y.into());
+        local_x = point.x as f32;
+        local_y = point.y as f32;
+    }
+
     let size = node.final_layout.size;
     let matches_self = local_x >= 0.0
         && local_x <= size.width + node.scroll_offset.x as f32
@@ -73,13 +84,40 @@ fn pointer_hit_node(
         && local_x <= content.width + node.scroll_offset.x as f32
         && local_y >= 0.0
         && local_y <= content.height + node.scroll_offset.y as f32;
-    if !matches_self && !matches_content {
+    let overflow = node.scrollable_overflow;
+    let matches_overflow = local_x >= overflow.x0 as f32
+        && local_x <= overflow.x1 as f32
+        && local_y >= overflow.y0 as f32
+        && local_y <= overflow.y1 as f32;
+    let matches_hoisted = node.stacking_context.as_ref().is_some_and(|context| {
+        let area = context.content_area;
+        local_x >= area.left + node.scroll_offset.x as f32
+            && local_x <= area.right + node.scroll_offset.x as f32
+            && local_y >= area.top + node.scroll_offset.y as f32
+            && local_y <= area.bottom + node.scroll_offset.y as f32
+    });
+    if !matches_self && !matches_content && !matches_overflow && !matches_hoisted {
         return None;
     }
 
     if node.flags.is_inline_root() {
         local_x -= node.final_layout.padding.left + node.final_layout.border.left;
         local_y -= node.final_layout.padding.top + node.final_layout.border.top;
+    }
+
+    if let Some(context) = &node.stacking_context {
+        for child in context.pos_z_hoisted_children().rev() {
+            if let Some(hit) = document.get_node(child.node_id).and_then(|node| {
+                pointer_hit_node(
+                    document,
+                    node,
+                    local_x - child.position.x,
+                    local_y - child.position.y,
+                )
+            }) {
+                return Some(hit);
+            }
+        }
     }
 
     let children = node.paint_children.borrow().clone().unwrap_or_default();
@@ -89,6 +127,21 @@ fn pointer_hit_node(
             .and_then(|child| pointer_hit_node(document, child, local_x, local_y))
         {
             return Some(hit);
+        }
+    }
+
+    if let Some(context) = &node.stacking_context {
+        for child in context.neg_z_hoisted_children().rev() {
+            if let Some(hit) = document.get_node(child.node_id).and_then(|node| {
+                pointer_hit_node(
+                    document,
+                    node,
+                    local_x - child.position.x,
+                    local_y - child.position.y,
+                )
+            }) {
+                return Some(hit);
+            }
         }
     }
 
@@ -106,11 +159,55 @@ fn pointer_hit_node(
 /// There is nothing to fetch over a network, so `blitz-net` would bring an
 /// async runtime along to do less than this.
 struct LocalAssets {
-    callback: SharedCallback<Resource>,
+    arrivals: Sender<()>,
 }
 
-impl NetProvider<Resource> for LocalAssets {
-    fn fetch(&self, doc_id: usize, request: Request, handler: BoxedHandler<Resource>) {
+#[derive(Default)]
+struct TrackedSurface {
+    source_id: Option<u64>,
+}
+
+impl TrackedSurface {
+    fn new(source_id: Option<u64>) -> Self {
+        Self { source_id }
+    }
+}
+
+impl Widget for TrackedSurface {
+    fn attribute_changed(&mut self, name: &str, _old_value: Option<&str>, new_value: Option<&str>) {
+        if name == "src" {
+            self.source_id = new_value.and_then(|value| value.parse().ok());
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _render_ctx: &mut dyn anyrender::RenderContext,
+        _styles: &blitz_dom::node::ComputedStyles,
+        width: u32,
+        height: u32,
+        _scale: f64,
+    ) -> anyrender::Scene {
+        let mut scene = anyrender::Scene::new();
+        if let Some(source_id) = self.source_id {
+            let paint = anyrender::Paint::Resource(peniko::ImageBrush {
+                image: anyrender::ResourceId::from_ffi(source_id),
+                sampler: Default::default(),
+            });
+            scene.fill(
+                peniko::Fill::NonZero,
+                kurbo::Affine::IDENTITY,
+                &paint,
+                None,
+                &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            );
+        }
+        scene
+    }
+}
+
+impl NetProvider for LocalAssets {
+    fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url = request.url;
         let bytes = match url.scheme() {
             "file" => {
@@ -137,9 +234,11 @@ impl NetProvider<Resource> for LocalAssets {
                 return;
             }
         };
-        // Parsing the bytes into an image is the handler's job; it hands the
-        // result to the callback, which queues it for the next paint.
-        handler.bytes(doc_id, bytes.into(), Arc::clone(&self.callback));
+        // Parsing the bytes and queueing the resulting document update is the
+        // handler's job. The local signal lets this synchronous provider keep
+        // resolving until newly discovered assets have also been requested.
+        handler.bytes(url.to_string(), bytes.into());
+        let _ = self.arrivals.send(());
     }
 }
 
@@ -147,7 +246,7 @@ pub struct GameLayer {
     document: blitz_html::HtmlDocument,
     /// Assets arrive here because a fetch is issued while the document is
     /// mid-resolve and cannot take them straight away.
-    arrivals: Receiver<Resource>,
+    arrivals: Receiver<()>,
     /// One encoded scene per band. Encoding is cheap and happens on the CPU;
     /// only rasterising is worth a GPU.
     bands: Vec<Scene>,
@@ -212,6 +311,18 @@ struct GameLayerGpu {
     queue: wgpu::Queue,
 }
 
+fn game_layer_instance_options() -> wgpu::InstanceDescriptor {
+    let mut options = wgpu::InstanceDescriptor::new_without_display_handle();
+    options.backends = wgpu::Backends::DX12;
+    // `Auto` will use any dxcompiler.dll found on PATH, even when its
+    // matching DXIL.dll is absent. Compilation then loses the device and wgpu
+    // reports its partially-created internal buffers as leaks while unwinding.
+    // The game layer does not require Shader Model 6, so use Windows' in-box
+    // compiler and keep the executable self-contained.
+    options.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    options
+}
+
 fn adapter_luid(adapter: &wgpu::Adapter) -> Option<AdapterLuid> {
     // SAFETY: the HAL adapter is borrowed only long enough to read its
     // immutable DXGI description.
@@ -250,6 +361,7 @@ impl GameLayerGpu {
                 label: Some("snowglass game layer"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::default(),
             })
@@ -283,10 +395,7 @@ impl GameLayerFactory {
         // Prepare every D3D12 adapter before WebView2 starts Chromium. A stream
         // can later identify a different producer adapter without creating
         // Vello's D3D12 pipelines inside Chromium's runtime context.
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::DX12,
-            ..Default::default()
-        });
+        let instance = wgpu::Instance::new(game_layer_instance_options());
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -302,7 +411,7 @@ impl GameLayerFactory {
         let gpu = GameLayerGpu::new(&adapter).await?;
 
         let mut alternate_gpus = Vec::new();
-        for adapter in instance.enumerate_adapters(wgpu::Backends::DX12) {
+        for adapter in instance.enumerate_adapters(wgpu::Backends::DX12).await {
             let Some(luid) = adapter_luid(&adapter) else {
                 continue;
             };
@@ -353,15 +462,7 @@ impl GameLayerFactory {
         emulator_commands: EmulatorCommandSink,
     ) -> GameLayer {
         let (sender, arrivals) = channel();
-        let net = Arc::new(LocalAssets {
-            callback: Arc::new(
-                move |_doc: usize, result: Result<Resource, Option<String>>| {
-                    if let Ok(resource) = result {
-                        let _ = Sender::send(&sender, resource);
-                    }
-                },
-            ),
-        });
+        let net = Arc::new(LocalAssets { arrivals: sender });
         let mut document = blitz_html::HtmlDocument::from_html(
             html,
             blitz_dom::DocumentConfig {
@@ -388,7 +489,7 @@ impl GameLayerFactory {
     async fn build(
         self,
         document: blitz_html::HtmlDocument,
-        arrivals: Receiver<Resource>,
+        arrivals: Receiver<()>,
         html: &str,
         source_name: &str,
         views: usize,
@@ -613,9 +714,17 @@ impl GameLayer {
         }
         self.apply_script_mutations();
         if !result.default_prevented {
-            let data = BlitzMouseButtonEvent {
-                x,
-                y,
+            let data = BlitzPointerEvent {
+                id: BlitzPointerId::Mouse,
+                is_primary: true,
+                coords: PointerCoords {
+                    page_x: x,
+                    page_y: y,
+                    screen_x: x,
+                    screen_y: y,
+                    client_x: x,
+                    client_y: y,
+                },
                 button: match button {
                     1 => MouseEventButton::Auxiliary,
                     2 => MouseEventButton::Secondary,
@@ -625,11 +734,14 @@ impl GameLayer {
                 },
                 buttons: MouseEventButtons::from_bits_truncate(buttons),
                 mods: Default::default(),
+                details: PointerDetails::default(),
+                element: Point::default(),
+                active_pointers: Default::default(),
             };
             let event = match kind {
-                "mousedown" => Some(UiEvent::MouseDown(data)),
-                "mouseup" => Some(UiEvent::MouseUp(data)),
-                "mousemove" => Some(UiEvent::MouseMove(data)),
+                "mousedown" => Some(UiEvent::PointerDown(data)),
+                "mouseup" => Some(UiEvent::PointerUp(data)),
+                "mousemove" => Some(UiEvent::PointerMove(data)),
                 _ => None,
             };
             if let Some(event) = event {
@@ -823,12 +935,19 @@ impl GameLayer {
                 .map(VelloScenePainter::new)
                 .collect::<Vec<_>>();
             let mut scene = BandedScene::new(&mut painters, &mut self.placements);
+            // blitz-paint 0.3 deliberately leaves scene lifetime to its
+            // caller. Reusing our retained Vello scenes without resetting
+            // them accumulates every prior drawer position, border and shadow
+            // across resize/drag animation frames.
+            scene.reset();
             blitz_paint::paint_scene(
                 &mut scene,
-                self.document.as_ref(),
+                self.document.as_mut(),
                 1.0,
                 self.width,
                 self.height,
+                0,
+                0,
             );
             (scene.bands_used(), scene.overflowed())
         };
@@ -880,7 +999,7 @@ impl GameLayer {
         // no fence between them. Waiting here is what makes that safe, and it
         // costs nothing in practice: this layer repaints on layout changes, not
         // on frames.
-        if let Err(error) = self.gpu.device.poll(wgpu::PollType::Wait) {
+        if let Err(error) = self.gpu.device.poll(wgpu::PollType::wait_indefinitely()) {
             tracing::error!("snowglass: waiting for the game layer to finish failed: {error}");
         }
         for (index, shared) in drawn {
@@ -904,8 +1023,7 @@ impl GameLayer {
     /// whether any did.
     fn take_arrivals(&mut self) -> bool {
         let mut arrived = false;
-        while let Ok(resource) = self.arrivals.try_recv() {
-            self.document.as_mut().load_resource(resource);
+        while self.arrivals.try_recv().is_ok() {
             arrived = true;
         }
         arrived
@@ -978,10 +1096,16 @@ fn apply_dom_mutation_batch(
     for mutation in mutations {
         match mutation {
             deno::Mutation::CreateElement { node, tag } => {
+                let is_tracked_surface = tag == "tracked-surface";
                 let actual = mutator.create_element(
                     QualName::new(None, ns!(html), LocalName::from(tag)),
                     Vec::new(),
                 );
+                if is_tracked_surface {
+                    mutator
+                        .doc
+                        .set_custom_widget(actual, Box::new(TrackedSurface::default()));
+                }
                 script_to_dom.insert(node, actual);
                 dom_to_script.insert(actual, node);
             }
@@ -1044,29 +1168,18 @@ fn apply_dom_mutation_batch(
                 let Some(node) = script_to_dom.get(&node).copied() else {
                     continue;
                 };
-                let is_source = name == "src";
                 mutator.set_attribute(
                     node,
                     QualName::new(None, ns!(html), LocalName::from(name)),
                     &value,
                 );
-                if is_source {
-                    set_tracked_surface_element(
-                        mutator.doc.get_node_mut(node),
-                        value.parse::<u64>().ok(),
-                    );
-                }
             }
             deno::Mutation::RemoveAttribute { node, name } => {
                 let Some(node) = script_to_dom.get(&node).copied() else {
                     continue;
                 };
-                let is_source = name == "src";
                 mutator
                     .clear_attribute(node, QualName::new(None, ns!(html), LocalName::from(name)));
-                if is_source {
-                    set_tracked_surface_element(mutator.doc.get_node_mut(node), None);
-                }
             }
         }
     }
@@ -1141,22 +1254,9 @@ fn set_tracked_surface_source(
     node: usize,
     source: Option<u64>,
 ) {
-    set_tracked_surface_element(document.as_mut().get_node_mut(node), source);
-}
-
-fn set_tracked_surface_element(node: Option<&mut blitz_dom::Node>, source: Option<u64>) {
-    let Some(element) = node
-        .and_then(blitz_dom::Node::element_data_mut)
-        .filter(|element| is_tracked_surface_element(element))
-    else {
-        return;
-    };
-    element.special_data = match source {
-        Some(source) => SpecialElementData::Canvas(CanvasData {
-            custom_paint_source_id: source,
-        }),
-        None => SpecialElementData::None,
-    };
+    document
+        .as_mut()
+        .set_custom_widget(node, Box::new(TrackedSurface::new(source)));
 }
 
 fn is_tracked_surface_element(element: &blitz_dom::node::ElementData) -> bool {
@@ -1166,6 +1266,16 @@ fn is_tracked_surface_element(element: &blitz_dom::node::ElementData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_layer_uses_the_self_contained_d3d12_shader_compiler() {
+        let options = game_layer_instance_options();
+        assert_eq!(options.backends, wgpu::Backends::DX12);
+        assert!(matches!(
+            options.backend_options.dx12.shader_compiler,
+            wgpu::Dx12Compiler::Fxc
+        ));
+    }
 
     #[test]
     fn tracked_surface_becomes_a_custom_paint_placeholder() {
@@ -1199,12 +1309,7 @@ mod tests {
                     .filter(|element| is_tracked_surface_element(element))
             })
             .unwrap();
-        assert_eq!(
-            surface
-                .canvas_data()
-                .map(|canvas| canvas.custom_paint_source_id),
-            Some(7)
-        );
+        assert!(surface.custom_widget_data().is_some());
         let mut scenes = (0..2).map(|_| Scene::new()).collect::<Vec<_>>();
         let mut painters = scenes
             .iter_mut()
@@ -1212,7 +1317,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut placements = Vec::new();
         let mut scene = BandedScene::new(&mut painters, &mut placements);
-        blitz_paint::paint_scene(&mut scene, document.as_ref(), 1.0, 800, 600);
+        blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 800, 600, 0, 0);
         apply_tracked_surface_styles(document.as_ref(), &mut placements);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].source_id, 7);
@@ -1249,7 +1354,8 @@ mod tests {
             <style>
               :root, body { width: 100%; height: 100%; margin: 0; }
               .surface, .overlay, .shield { position: absolute; inset: 0; }
-              .overlay, .shield { pointer-events: none; }
+              .overlay { z-index: 20; pointer-events: none; }
+              .shield { pointer-events: none; }
               .button {
                 position: absolute;
                 left: 10px;
@@ -1452,7 +1558,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut placements = Vec::new();
         let mut scene = BandedScene::new(&mut painters, &mut placements);
-        blitz_paint::paint_scene(&mut scene, document.as_ref(), 1.0, 800, 600);
+        blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 800, 600, 0, 0);
         assert_eq!(
             placements
                 .iter()

@@ -20,9 +20,10 @@
 //! being left and reopened on the band being entered — otherwise a clip
 //! established before a game view would stop applying after it.
 
-use anyrender::{CustomPaint, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene};
-use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
+use anyrender::{Filter, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
+use kurbo::{Affine, BezPath, Rect, Shape, Stroke, Vec2};
 use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
+use std::sync::Arc;
 use style::{
     properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
     values::computed::position::Position,
@@ -63,10 +64,12 @@ pub struct GamePlacement {
 
 /// A clip layer left open across a band switch.
 struct OpenLayer {
-    blend: BlendMode,
+    blend: Option<BlendMode>,
     alpha: f32,
     transform: Affine,
     clip: BezPath,
+    filter: Option<Arc<Filter>>,
+    backdrop_filter: Option<Arc<Filter>>,
 }
 
 /// Routes a document's paint into a series of chrome bands, diverting
@@ -120,10 +123,23 @@ impl<'a, S: PaintScene> BandedScene<'a, S> {
         self.current += 1;
         let (bands, stack) = (&mut *self.bands, &self.stack);
         for layer in stack {
-            bands[self.current].push_layer(layer.blend, layer.alpha, layer.transform, &layer.clip);
+            if let Some(blend) = layer.blend {
+                bands[self.current].push_layer(
+                    blend,
+                    layer.alpha,
+                    layer.transform,
+                    &layer.clip,
+                    layer.filter.clone(),
+                    layer.backdrop_filter.clone(),
+                );
+            } else {
+                bands[self.current].push_clip_layer(layer.transform, &layer.clip);
+            }
         }
     }
 }
+
+impl<S> RenderContext for BandedScene<'_, S> {}
 
 impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
     fn reset(&mut self) {
@@ -142,15 +158,39 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
         alpha: f32,
         transform: Affine,
         clip: &impl Shape,
+        filter: Option<Arc<Filter>>,
+        backdrop_filter: Option<Arc<Filter>>,
     ) {
         let blend = blend.into();
         let clip = clip.into_path(CLIP_TOLERANCE);
-        self.band().push_layer(blend, alpha, transform, &clip);
-        self.stack.push(OpenLayer {
+        self.band().push_layer(
             blend,
             alpha,
             transform,
+            &clip,
+            filter.clone(),
+            backdrop_filter.clone(),
+        );
+        self.stack.push(OpenLayer {
+            blend: Some(blend),
+            alpha,
+            transform,
             clip,
+            filter,
+            backdrop_filter,
+        });
+    }
+
+    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
+        let clip = clip.into_path(CLIP_TOLERANCE);
+        self.band().push_clip_layer(transform, &clip);
+        self.stack.push(OpenLayer {
+            blend: None,
+            alpha: 1.0,
+            transform,
+            clip,
+            filter: None,
+            backdrop_filter: None,
         });
     }
 
@@ -180,14 +220,12 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
         shape: &impl Shape,
     ) {
         let brush = brush.into();
-        if let Paint::Custom(custom) = brush
-            && let Some(custom) = custom.downcast_ref::<CustomPaint>()
-        {
+        if let Paint::Resource(resource) = brush {
             // The guest frame belongs here. Leave the pixels untouched so the
             // compositor can draw the texture into the hole, and start a new
             // band so anything painted afterwards lands above it.
             self.placements.push(GamePlacement {
-                source_id: custom.source_id,
+                source_id: resource.image.into_ffi(),
                 rect: transform.transform_rect_bbox(shape.bounding_box()),
                 corner_radius: 0.0,
                 style: None,
@@ -207,18 +245,20 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
         font_size: f32,
         hint: bool,
         normalized_coords: &'a [NormalizedCoord],
+        embolden: Vec2,
         style: impl Into<StyleRef<'a>>,
         brush: impl Into<PaintRef<'a>>,
         brush_alpha: f32,
         transform: Affine,
         glyph_transform: Option<Affine>,
-        glyphs: impl Iterator<Item = Glyph>,
+        glyphs: impl Iterator<Item = Glyph> + Clone,
     ) {
         self.bands[self.current].draw_glyphs(
             font,
             font_size,
             hint,
             normalized_coords,
+            embolden,
             style,
             brush,
             brush_alpha,

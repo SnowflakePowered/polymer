@@ -5,26 +5,26 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-anyrender = "0.6.2"
-anyrender_vello = "0.6.2"
-blitz-dom = "0.2.4"
-blitz-html = "0.2.0"
-blitz-paint = "0.2.1"
-blitz-traits = "0.2.0"
+anyrender = "0.11.1"
+anyrender_vello = "0.11.0"
+blitz-dom = { version = "0.3.0-beta.1", features = ["custom-widget"] }
+blitz-html = "0.3.0-beta.1"
+blitz-paint = { version = "0.3.0-beta.1", features = ["custom-widget"] }
+blitz-traits = "0.3.0-beta.1"
 clap = "4.6.1"
 consolespec.workspace = true
 gumshoe.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"
-kurbo = "0.12"
+kurbo = "0.13.1"
 parking_lot.workspace = true
-peniko = "0.5.0"
+peniko = "0.6.1"
 raw-window-handle.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_bytes = "0.11"
 serde_json.workspace = true
-style = { package = "stylo", version = "0.8.0" }
+style = { package = "stylo", version = "0.19.0" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true
@@ -56,14 +56,14 @@ windows = { workspace = true, features = [
 windows-core.workspace = true
 winit = "0.30.13"
 wry = { git = "https://github.com/chyyran/wry", branch = "snowglass", default-features = false, features = ["os-webview", "transparent"] }
-vello = "0.6"
+vello = "0.9"
 # Vello rasterises through wgpu, but the compositor samples plain D3D12. The
 # HAL is how the texture Vello draws into is also a resource we can share.
-wgpu-hal = { version = "26", features = ["dx12"] }
+wgpu-hal = { version = "29", features = ["dx12"] }
 # The version wgpu-hal is built against. Its D3D12 types are distinct from the
 # workspace's newer `windows`, so the two meet at a shared HANDLE rather than
 # at a COM interface.
-windows-wgpu = { package = "windows", version = "0.58", features = [
+windows-wgpu = { package = "windows", version = "0.62", features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi_Common",
 ] }
