@@ -1,7 +1,4 @@
-//! Deno adapter for a runtime owned by the embedding host.
-//!
-//! [`EmulatorLaunch`] only borrows a [`deno_core::JsRuntime`]. The embedder
-//! creates the runtime and includes [`extension`] in its runtime options.
+//! Invocation-scoped Deno adapter used only by pluginhost-owned workers.
 
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorSetupInvocation,
@@ -81,28 +78,26 @@ deno_core::extension!(
     },
 );
 
-/// Creates the pluginhost extension for a runtime that the caller owns.
-pub fn extension() -> deno_core::Extension {
+pub(crate) fn extension() -> deno_core::Extension {
     snowglass_pluginhost_deno::init()
 }
 
-/// One concrete emulator-plugin launch over a Deno runtime owned by the
-/// embedding application.
-pub struct EmulatorLaunch<'runtime> {
+struct EmulatorWorker<'runtime> {
     runtime: &'runtime mut JsRuntime,
 }
 
-impl<'runtime> EmulatorLaunch<'runtime> {
-    pub fn attach(runtime: &'runtime mut JsRuntime) -> Self {
+impl<'runtime> EmulatorWorker<'runtime> {
+    fn new(runtime: &'runtime mut JsRuntime) -> Self {
         Self { runtime }
     }
 
     pub async fn execute(
         &mut self,
         invocation: EmulatorSetupInvocation,
+        explicit_default: bool,
     ) -> Result<EmulatorLaunchArguments, EmulatorHostError> {
         let pending = self
-            .setup(invocation)
+            .setup(invocation, explicit_default)
             .await
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
         let configuration = self
@@ -142,6 +137,7 @@ impl<'runtime> EmulatorLaunch<'runtime> {
     async fn setup(
         &mut self,
         invocation: EmulatorSetupInvocation,
+        explicit_default: bool,
     ) -> Result<PendingDenoLaunch, DenoPluginError> {
         let EmulatorSetupInvocation {
             plugin,
@@ -159,21 +155,26 @@ impl<'runtime> EmulatorLaunch<'runtime> {
         let script = format!(
             r#"(async () => {{
                     const module = await import({entrypoint});
-                    const plugin = module.default;
-                    if (!plugin || typeof plugin.setupLaunch !== "function") {{
-                      throw new TypeError("plugin default export has no setupLaunch function");
+                    const explicitDefault = {explicit_default};
+                    const receiver = !explicitDefault && typeof module.setupLaunch === "function"
+                      ? module
+                      : module.default;
+                    const setupLaunch = receiver?.setupLaunch;
+                    if (typeof setupLaunch !== "function") {{
+                      throw new TypeError("plugin export 'setupLaunch' is not a function");
                     }}
                     const args = {arguments};
                     const configuration = __snowglassPluginHost.configuration({configuration_id});
                     args.emulatorConfig = configuration;
                     return {{
-                      result: await plugin.setupLaunch(args),
+                      result: await Reflect.apply(setupLaunch, receiver, [args]),
                       configuration,
                     }};
                 }})()"#,
             entrypoint = entrypoint,
             arguments = arguments,
             configuration_id = configuration_id,
+            explicit_default = explicit_default,
         );
         let result = async {
             let promise = self
@@ -233,6 +234,16 @@ impl<'runtime> EmulatorLaunch<'runtime> {
             surfaces: plan.surfaces,
         })
     }
+}
+
+pub(crate) async fn execute_emulator(
+    runtime: &mut JsRuntime,
+    invocation: EmulatorSetupInvocation,
+    explicit_default: bool,
+) -> Result<EmulatorLaunchArguments, EmulatorHostError> {
+    EmulatorWorker::new(runtime)
+        .execute(invocation, explicit_default)
+        .await
 }
 
 #[derive(serde::Deserialize)]

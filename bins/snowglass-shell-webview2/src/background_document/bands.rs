@@ -43,10 +43,16 @@ pub struct GameViewStyle {
 /// Where one game view landed, and which chrome band it is drawn over.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GamePlacement {
+    /// Blitz DOM node whose custom paint produced this placement.
+    pub node_id: Option<usize>,
     /// The `src` of the `<tracked-surface>`, naming which tracked render target
     /// belongs in this box.
     pub source_id: u64,
     pub rect: Rect,
+    /// Conservative physical-pixel clip accumulated from every open paint
+    /// layer. Non-rectangular paths are represented by their transformed
+    /// bounding rectangle because the native compositor consumes rectangles.
+    pub clipping: Option<Rect>,
     /// Corner radius, in physical pixels, applied by the merged GPU
     /// compositor to the guest texture.
     pub corner_radius: f32,
@@ -224,9 +230,20 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
             // The guest frame belongs here. Leave the pixels untouched so the
             // compositor can draw the texture into the hole, and start a new
             // band so anything painted afterwards lands above it.
+            let clipping = self
+                .stack
+                .iter()
+                .map(|layer| {
+                    layer
+                        .transform
+                        .transform_rect_bbox(layer.clip.bounding_box())
+                })
+                .reduce(|current, next| current.intersect(next));
             self.placements.push(GamePlacement {
+                node_id: None,
                 source_id: resource.image.into_ffi(),
                 rect: transform.transform_rect_bbox(shape.bounding_box()),
+                clipping,
                 corner_radius: 0.0,
                 style: None,
                 opacity: self.stack.iter().map(|layer| layer.alpha).product(),

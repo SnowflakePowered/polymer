@@ -1,0 +1,918 @@
+//! Window, native target, and DirectComposition ownership for the shell.
+
+#![allow(unsafe_code)]
+
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use snowglass_egui::{D3d12EguiPainter, DebugOverlayModel, InputDiagnostics, draw_debug_overlay};
+use snowglass_platform_windows::{performance_counter, performance_frequency};
+use snowglass_renderer::{CompositingPlan, D3d12Compositor, Extent, Renderer};
+use snowglass_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
+use std::{
+    collections::HashMap,
+    error::Error,
+    ffi::c_void,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use windows::{
+    Win32::{
+        Foundation::{CloseHandle, HANDLE, HMODULE, HWND, WAIT_FAILED, WAIT_OBJECT_0},
+        Graphics::{
+            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
+            Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice},
+            DirectComposition::{
+                DCompositionCreateDevice, DCompositionWaitForCompositorClock, IDCompositionDevice,
+                IDCompositionTarget, IDCompositionVisual,
+            },
+            Dxgi::IDXGIDevice,
+        },
+        Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod},
+        System::Threading::{CreateEventW, INFINITE, SetEvent},
+    },
+    core::{IUnknown, Interface},
+};
+
+/// Holds the process timer resolution at 1ms for the lifetime of the event
+/// loop so frame-pacing deadlines are not rounded to the legacy 15.6ms tick.
+pub(crate) struct TimerResolution(bool);
+
+impl TimerResolution {
+    pub(crate) fn raise() -> Self {
+        // SAFETY: a successful call is balanced in Drop.
+        Self(unsafe { timeBeginPeriod(1) } == TIMERR_NOERROR)
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        if self.0 {
+            // SAFETY: balances the successful `timeBeginPeriod(1)` above.
+            unsafe { timeEndPeriod(1) };
+        }
+    }
+}
+use winit::{
+    application::ApplicationHandler,
+    dpi::LogicalSize,
+    event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow},
+    keyboard::{Key, PhysicalKey},
+    window::{Window, WindowId},
+};
+pub(crate) use winit::{
+    event_loop::{EventLoop, EventLoopProxy},
+    platform::pump_events::{EventLoopExtPumpEvents, PumpStatus},
+};
+
+#[derive(Debug)]
+pub(crate) enum WindowCommand {
+    WakeCapture,
+    CompositorTick,
+}
+
+pub(crate) enum LoopDirective {
+    Exit,
+    WaitUntil(Instant),
+}
+
+/// Opaque ownership transfer used between winit's resume callback and the
+/// asynchronous construction turn. No other subsystem can inspect the native
+/// window representation.
+pub(crate) struct WindowBootstrap(Window);
+
+/// Raw winit integration. The coordinated application receives only neutral
+/// shell/device events and an abstract loop directive.
+pub(crate) struct EventLoopApplication {
+    inner: crate::app::ShellApplication,
+    creating_window: bool,
+}
+
+impl EventLoopApplication {
+    pub fn new(inner: crate::app::ShellApplication) -> Self {
+        Self {
+            inner,
+            creating_window: false,
+        }
+    }
+
+    pub async fn run_async_tasks(&mut self) {
+        self.inner.run_async_tasks().await;
+    }
+
+    pub fn into_result(self) -> Result<(), Box<dyn Error>> {
+        self.inner.into_result()
+    }
+}
+
+impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // WebView2 spins a nested Win32 loop during controller construction,
+        // so this callback creates only the native window. The coordinator
+        // consumes it after this event-pump turn returns.
+        if self.creating_window || !self.inner.wants_native_window() {
+            return;
+        }
+        self.creating_window = true;
+        match event_loop.create_window(
+            Window::default_attributes()
+                .with_title("Snowglass")
+                .with_inner_size(LogicalSize::new(1280.0, 720.0)),
+        ) {
+            Ok(window) => self.inner.accept_native_window(WindowBootstrap(window)),
+            Err(error) => {
+                self.inner.fail(error);
+                event_loop.exit();
+            }
+        }
+        self.creating_window = false;
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: crate::app::UserEvent) {
+        self.inner.handle_user_event(event);
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        self.inner
+            .handle_device_event(translate_device_event(event));
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(manager) = self.inner.window_manager_mut() else {
+            return;
+        };
+        if window_id != manager.id() {
+            return;
+        }
+        let response = manager.handle_window_event(&event);
+        let event = translate_window_event(event);
+        if self.inner.handle_window_event(event, response.consumed) {
+            event_loop.exit();
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        match self.inner.about_to_wait() {
+            LoopDirective::Exit => event_loop.exit(),
+            LoopDirective::WaitUntil(deadline) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ShellWindowEvent {
+    CloseRequested,
+    DroppedFile(PathBuf),
+    Moved,
+    Resized {
+        width: u32,
+        height: u32,
+    },
+    FocusLost,
+    Keyboard {
+        physical_key: Option<String>,
+        logical_key: String,
+        pressed: bool,
+        repeat: bool,
+    },
+    Modifiers {
+        alt: bool,
+        shift: bool,
+        control: bool,
+    },
+    CursorMoved {
+        x: f64,
+        y: f64,
+    },
+    MouseInput {
+        button: Option<u16>,
+        pressed: bool,
+    },
+    MouseWheel {
+        horizontal: i32,
+        vertical: i32,
+    },
+    RedrawRequested,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ShellDeviceEvent {
+    MouseMotion { delta_x: f64, delta_y: f64 },
+    Other,
+}
+
+pub(crate) fn translate_device_event(event: DeviceEvent) -> ShellDeviceEvent {
+    match event {
+        DeviceEvent::MouseMotion { delta } => ShellDeviceEvent::MouseMotion {
+            delta_x: delta.0,
+            delta_y: delta.1,
+        },
+        _ => ShellDeviceEvent::Other,
+    }
+}
+
+pub(crate) fn translate_window_event(event: WindowEvent) -> ShellWindowEvent {
+    match event {
+        WindowEvent::CloseRequested | WindowEvent::Destroyed => ShellWindowEvent::CloseRequested,
+        WindowEvent::DroppedFile(path) => ShellWindowEvent::DroppedFile(path),
+        WindowEvent::Moved(_) => ShellWindowEvent::Moved,
+        WindowEvent::Resized(size) => ShellWindowEvent::Resized {
+            width: size.width,
+            height: size.height,
+        },
+        WindowEvent::Focused(false) => ShellWindowEvent::FocusLost,
+        WindowEvent::Focused(true) => ShellWindowEvent::Other,
+        WindowEvent::KeyboardInput { event, .. } => {
+            let physical_key = match event.physical_key {
+                PhysicalKey::Code(code) => Some(format!("{code:?}")),
+                PhysicalKey::Unidentified(_) => None,
+            };
+            let logical_key = match event.logical_key {
+                Key::Named(key) => format!("{key:?}"),
+                Key::Character(key) => key.to_string(),
+                Key::Dead(_) => "Dead".into(),
+                Key::Unidentified(_) => "Unidentified".into(),
+            };
+            ShellWindowEvent::Keyboard {
+                physical_key,
+                logical_key,
+                pressed: event.state == ElementState::Pressed,
+                repeat: event.repeat,
+            }
+        }
+        WindowEvent::ModifiersChanged(modifiers) => ShellWindowEvent::Modifiers {
+            alt: modifiers.state().alt_key(),
+            shift: modifiers.state().shift_key(),
+            control: modifiers.state().control_key(),
+        },
+        WindowEvent::CursorMoved { position, .. } => ShellWindowEvent::CursorMoved {
+            x: position.x,
+            y: position.y,
+        },
+        WindowEvent::MouseInput { state, button, .. } => ShellWindowEvent::MouseInput {
+            button: neutral_mouse_button(button),
+            pressed: state == ElementState::Pressed,
+        },
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (horizontal, vertical) = match delta {
+                MouseScrollDelta::LineDelta(horizontal, vertical) => {
+                    ((horizontal * 120.0) as i32, (vertical * 120.0) as i32)
+                }
+                MouseScrollDelta::PixelDelta(delta) => (delta.x as i32, delta.y as i32),
+            };
+            ShellWindowEvent::MouseWheel {
+                horizontal,
+                vertical,
+            }
+        }
+        WindowEvent::RedrawRequested => ShellWindowEvent::RedrawRequested,
+        _ => ShellWindowEvent::Other,
+    }
+}
+
+fn neutral_mouse_button(button: MouseButton) -> Option<u16> {
+    match button {
+        MouseButton::Left => Some(1),
+        MouseButton::Right => Some(2),
+        MouseButton::Middle => Some(3),
+        MouseButton::Back => Some(4),
+        MouseButton::Forward => Some(5),
+        MouseButton::Other(button) => Some(button.saturating_add(4)),
+    }
+}
+
+/// Wakes the event loop once per DirectComposition frame while captured
+/// surfaces are visible.
+pub(crate) struct CompositorClock {
+    worker: Option<std::thread::JoinHandle<()>>,
+    stop_event: HANDLE,
+    active: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+    tick_pending: Arc<AtomicBool>,
+    stopping: Arc<AtomicBool>,
+}
+
+impl CompositorClock {
+    pub(crate) fn spawn(proxy: EventLoopProxy<crate::app::UserEvent>) -> std::io::Result<Self> {
+        let stop_event =
+            unsafe { CreateEventW(None, true, false, None) }.map_err(std::io::Error::other)?;
+        let active = Arc::new(AtomicBool::new(false));
+        let healthy = Arc::new(AtomicBool::new(true));
+        let tick_pending = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let thread_active = Arc::clone(&active);
+        let thread_healthy = Arc::clone(&healthy);
+        let thread_tick_pending = Arc::clone(&tick_pending);
+        let thread_stopping = Arc::clone(&stopping);
+        let thread_stop_event = stop_event.0 as usize;
+        let handle = match std::thread::Builder::new()
+            .name("snowglass-compositor-clock".to_owned())
+            .spawn(move || {
+                let thread_stop_event = HANDLE(thread_stop_event as *mut _);
+                loop {
+                    while !thread_active.load(Ordering::Acquire) {
+                        if thread_stopping.load(Ordering::Acquire) {
+                            return;
+                        }
+                        std::thread::park();
+                    }
+                    if thread_stopping.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let status = unsafe {
+                        DCompositionWaitForCompositorClock(Some(&[thread_stop_event]), INFINITE)
+                    };
+                    if status == WAIT_FAILED.0 {
+                        thread_healthy.store(false, Ordering::Release);
+                        return;
+                    }
+                    if thread_stopping.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if status != WAIT_OBJECT_0.0 + 1 {
+                        continue;
+                    }
+                    if !thread_tick_pending.swap(true, Ordering::AcqRel)
+                        && proxy
+                            .send_event(crate::app::UserEvent::Window(
+                                WindowCommand::CompositorTick,
+                            ))
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            }) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let _ = unsafe { CloseHandle(stop_event) };
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            worker: Some(handle),
+            stop_event,
+            active,
+            healthy,
+            tick_pending,
+            stopping,
+        })
+    }
+
+    pub(crate) fn set_active(&self, active: bool) {
+        if self.active.swap(active, Ordering::AcqRel) != active
+            && active
+            && let Some(worker) = &self.worker
+        {
+            worker.thread().unpark();
+        }
+    }
+
+    pub(crate) fn is_pacing(&self) -> bool {
+        self.healthy.load(Ordering::Acquire) && self.active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn clear_tick(&self) {
+        self.tick_pending.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for CompositorClock {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        self.active.store(true, Ordering::Release);
+        let _ = unsafe { SetEvent(self.stop_event) };
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+        let _ = unsafe { CloseHandle(self.stop_event) };
+    }
+}
+
+const EGUI_STATISTICS_REFRESH: Duration = Duration::from_millis(100);
+const EGUI_INTERACTION_GRACE: Duration = Duration::from_millis(250);
+const PENDING_PRESENT_RETRY: Duration = Duration::from_millis(1);
+
+/// Window-owned egui composition overlay and diagnostics renderer.
+pub(crate) struct EguiOverlay {
+    painter: D3d12EguiPainter,
+    compositor: D3d12Compositor,
+    context: egui::Context,
+    state: egui_winit::State,
+    diagnostics: DebugOverlayModel,
+    frames: HashMap<u64, FrameMetrics>,
+    statistics: LiveStatistics,
+    presentation: PresentationMetrics,
+    frequency: f64,
+    next_repaint: Instant,
+    interactive_until: Option<Instant>,
+}
+
+impl EguiOverlay {
+    pub(crate) fn new(window: &Window, recorder: RecorderHandle) -> Result<Self, Box<dyn Error>> {
+        let size = window.inner_size();
+        let render_window = SurfaceWindow::new(window, size.width.max(1), size.height.max(1));
+        let compositor = D3d12Compositor::new_default_for_transparent_composition(&render_window)?;
+        let painter = D3d12EguiPainter::new(
+            compositor.d3d12_device().clone(),
+            compositor.target_format(),
+            compositor.frames_in_flight(),
+        )?;
+        let context = egui::Context::default();
+        let state = egui_winit::State::new(
+            context.clone(),
+            egui::ViewportId::ROOT,
+            window,
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            None,
+        );
+        let mut diagnostics = DebugOverlayModel::default();
+        diagnostics.backend = "Waiting".to_owned();
+        diagnostics.consumer = "D3D12/DXGI".to_owned();
+        Ok(Self {
+            painter,
+            compositor,
+            context,
+            state,
+            diagnostics,
+            frames: HashMap::new(),
+            statistics: LiveStatistics::new(recorder),
+            presentation: PresentationMetrics::new("d3d12"),
+            frequency: performance_frequency().unwrap_or(1) as f64,
+            next_repaint: Instant::now(),
+            interactive_until: None,
+        })
+    }
+
+    pub(crate) fn content(&self) -> Result<windows::core::IUnknown, windows::core::Error> {
+        self.compositor.composition_content()
+    }
+
+    pub(crate) fn set_backend(&mut self, backend: String) {
+        self.diagnostics.backend = backend;
+    }
+
+    pub(crate) fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics) {
+        self.diagnostics.input = diagnostics;
+    }
+
+    pub(crate) fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+        self.frames
+            .insert(connection, FrameMetrics::new(connection, surface, target));
+    }
+
+    pub(crate) fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
+        let latency_ticks = performance_counter()
+            .unwrap_or(frame.timestamp_qpc)
+            .saturating_sub(frame.timestamp_qpc);
+        if let Some(metrics) = self.frames.get_mut(&connection) {
+            metrics.observe(
+                frame.frame_number,
+                frame.timestamp_qpc,
+                self.frequency,
+                Duration::from_secs_f64(latency_ticks as f64 / self.frequency.max(1.0)),
+            );
+        }
+        self.diagnostics.frame_number = frame.frame_number;
+        self.diagnostics.slot = frame.slot;
+        self.diagnostics.render_width = frame.render_width;
+        self.diagnostics.render_height = frame.render_height;
+        self.diagnostics.capture_x = frame.capture_x;
+        self.diagnostics.capture_y = frame.capture_y;
+        self.diagnostics.capture_width = frame.capture_width;
+        self.diagnostics.capture_height = frame.capture_height;
+    }
+
+    pub(crate) fn record_present(&mut self, carried_new_frame: bool) {
+        self.presentation.record_present(carried_new_frame);
+    }
+
+    pub(crate) fn record_clock(&mut self) {
+        self.presentation.record_clock();
+    }
+
+    pub(crate) fn set_note(&mut self, note: &str) {
+        let notes = &mut self.diagnostics.notes;
+        if note.is_empty() {
+            notes.clear();
+        } else if notes.first().is_none_or(|first| first != note) {
+            notes.clear();
+            notes.push(note.to_owned());
+        }
+    }
+
+    pub(crate) fn remove_target(&mut self, connection: u64) {
+        self.frames.remove(&connection);
+        self.statistics.remove_connection(connection);
+        self.diagnostics.statistics = self.statistics.snapshot().clone();
+    }
+
+    pub(crate) fn resize(&mut self, window: &Window) -> Result<(), Box<dyn Error>> {
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return Ok(());
+        }
+        let render_window = SurfaceWindow::new(window, size.width, size.height);
+        Renderer::recreate_swapchain(&mut self.compositor, &render_window)?;
+        Ok(())
+    }
+
+    pub(crate) fn on_window_event(
+        &mut self,
+        window: &Window,
+        event: &WindowEvent,
+    ) -> egui_winit::EventResponse {
+        self.state.on_window_event(window, event)
+    }
+
+    pub(crate) fn note_interaction(&mut self, now: Instant) {
+        self.interactive_until = Some(now + EGUI_INTERACTION_GRACE);
+        self.next_repaint = self.next_repaint.min(now);
+    }
+
+    fn interactive(&self, now: Instant) -> bool {
+        self.interactive_until.is_some_and(|until| now < until)
+    }
+
+    pub(crate) fn draw(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
+        let now = Instant::now();
+        let interactive = self.interactive(now);
+        if !interactive && !self.repaint_due(now) {
+            return Ok(false);
+        }
+        self.next_repaint = now + EGUI_STATISTICS_REFRESH;
+        if !self.compositor.try_begin_frame() {
+            if interactive {
+                self.next_repaint = now + PENDING_PRESENT_RETRY;
+            }
+            return Ok(false);
+        }
+        self.diagnostics.statistics = self.statistics.sample().clone();
+        let input = self.state.take_egui_input(window);
+        let diagnostics = &self.diagnostics;
+        let mut output = self
+            .context
+            .run(input, |context| draw_debug_overlay(context, diagnostics));
+        self.state
+            .handle_platform_output(window, std::mem::take(&mut output.platform_output));
+        let primitives = self
+            .context
+            .tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        if interactive {
+            let requested = output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(Duration::ZERO, |viewport| viewport.repaint_delay);
+            self.next_repaint = now + requested.min(EGUI_STATISTICS_REFRESH);
+        }
+        let plan = CompositingPlan::new([0.0, 0.0, 0.0, 0.0], Vec::new());
+        let Self {
+            painter,
+            compositor,
+            ..
+        } = self;
+        compositor.present_with(&plan, None, |pass| {
+            painter.paint(pass, &output, &primitives)
+        })?;
+        if self.context.is_using_pointer() || self.context.wants_pointer_input() {
+            self.note_interaction(now);
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn repaint_due(&self, now: Instant) -> bool {
+        self.next_repaint <= now
+    }
+
+    pub(crate) fn next_repaint(&self) -> Instant {
+        self.next_repaint
+    }
+
+    pub(crate) fn request_immediate_repaint(&mut self) {
+        self.next_repaint = Instant::now();
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WindowEventResponse {
+    pub consumed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Sole owner of the native shell window and all window-attached composition,
+/// overlay, and pacing resources.
+pub(crate) struct WindowManager {
+    window: Window,
+    composition: CompositionTree,
+    overlay: EguiOverlay,
+    clock: CompositorClock,
+}
+
+impl WindowManager {
+    pub fn new(
+        window: WindowBootstrap,
+        recorder: RecorderHandle,
+        proxy: EventLoopProxy<crate::app::UserEvent>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let WindowBootstrap(window) = window;
+        let composition = CompositionTree::new(&window)?;
+        let mut overlay = EguiOverlay::new(&window, recorder)?;
+        composition.set_egui_overlay_content(&overlay.content()?)?;
+        overlay.draw(&window)?;
+        composition.commit()?;
+        Ok(Self {
+            window,
+            composition,
+            overlay,
+            clock: CompositorClock::spawn(proxy)?,
+        })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.window.id()
+    }
+
+    pub fn size(&self) -> WindowSize {
+        let size = self.window.inner_size();
+        WindowSize {
+            width: size.width,
+            height: size.height,
+        }
+    }
+
+    pub fn surface(&self, width: u32, height: u32) -> SurfaceWindow<'_> {
+        SurfaceWindow::new(&self.window, width, height)
+    }
+
+    pub fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+
+    pub fn foreground_visual(&self) -> windows::core::Result<IUnknown> {
+        self.composition.foreground_visual()
+    }
+
+    pub fn set_merged_content(&mut self, content: &IUnknown) -> windows::core::Result<()> {
+        self.composition.set_merged_content(content)
+    }
+
+    pub fn commit(&self) -> windows::core::Result<()> {
+        self.composition.commit()
+    }
+
+    pub fn focus_host(&self) {
+        self.composition.focus_host();
+    }
+
+    pub fn handle_window_event(&mut self, event: &WindowEvent) -> WindowEventResponse {
+        let response = self.overlay.on_window_event(&self.window, event);
+        if response.repaint {
+            self.window.request_redraw();
+        }
+        WindowEventResponse {
+            consumed: response.consumed,
+        }
+    }
+
+    pub fn note_overlay_interaction(&mut self, now: Instant) {
+        self.overlay.note_interaction(now);
+    }
+
+    pub fn resize_overlay(&mut self) -> Result<(), Box<dyn Error>> {
+        self.overlay.resize(&self.window)
+    }
+
+    pub fn draw_overlay(&mut self) -> Result<bool, Box<dyn Error>> {
+        self.overlay.draw(&self.window)
+    }
+
+    pub fn overlay_repaint_due(&self, now: Instant) -> bool {
+        self.overlay.repaint_due(now)
+    }
+
+    pub fn next_overlay_repaint(&self) -> Instant {
+        self.overlay.next_repaint()
+    }
+
+    pub fn request_overlay_repaint(&mut self) {
+        self.overlay.request_immediate_repaint();
+    }
+
+    pub fn set_overlay_note(&mut self, note: &str) {
+        self.overlay.set_note(note);
+    }
+
+    pub fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics) {
+        self.overlay.set_input_diagnostics(diagnostics);
+    }
+
+    pub fn set_backend(&mut self, backend: String) {
+        self.overlay.set_backend(backend);
+    }
+
+    pub fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+        self.overlay.add_surface(connection, surface, target);
+    }
+
+    pub fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
+        self.overlay.observe_frame(connection, frame);
+    }
+
+    pub fn remove_target(&mut self, connection: u64) {
+        self.overlay.remove_target(connection);
+    }
+
+    pub fn record_present(&mut self, carried_new_frame: bool) {
+        self.overlay.record_present(carried_new_frame);
+    }
+
+    pub fn record_clock(&mut self) {
+        self.overlay.record_clock();
+    }
+
+    pub fn set_clock_active(&self, active: bool) {
+        self.clock.set_active(active);
+    }
+
+    pub fn is_pacing(&self) -> bool {
+        self.clock.is_pacing()
+    }
+
+    pub fn clear_clock_tick(&self) {
+        self.clock.clear_tick();
+    }
+}
+
+struct CompositionTree {
+    host: WindowTarget,
+    device: IDCompositionDevice,
+    _target: IDCompositionTarget,
+    root: IDCompositionVisual,
+    foreground: IDCompositionVisual,
+    overlay: IDCompositionVisual,
+    game: Option<IDCompositionVisual>,
+}
+
+/// Opaque native host-window target. Native handle extraction and operations
+/// stay in this platform adapter instead of leaking into DOM/input code.
+struct WindowTarget(HWND);
+
+impl WindowTarget {
+    fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
+        match window.window_handle()?.as_raw() {
+            RawWindowHandle::Win32(handle) => Ok(Self(HWND(handle.hwnd.get() as *mut c_void))),
+            _ => Err("WebView2 composition requires a Win32 window".into()),
+        }
+    }
+
+    fn focus(&self) {
+        // SAFETY: CompositionTree cannot outlive the winit window used to
+        // create it, and the target stores only that live host handle.
+        let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.0)) };
+    }
+}
+
+impl CompositionTree {
+    fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
+        let host = WindowTarget::new(window)?;
+
+        // SAFETY: the DirectComposition device, target, and visuals are
+        // retained by this tree for at least as long as the host HWND.
+        unsafe {
+            // Game surfaces and chrome are already merged by D3D12. This
+            // device only hosts that swapchain below WebView2.
+            let mut d3d11_device = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut d3d11_device),
+                None,
+                None,
+            )?;
+            let d3d11_device = d3d11_device.ok_or("D3D11 returned no device")?;
+            let dxgi_device: IDXGIDevice = d3d11_device.cast()?;
+            let device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
+            let target = device.CreateTargetForHwnd(host.0, true)?;
+            let root = device.CreateVisual()?;
+            let foreground_webview = device.CreateVisual()?;
+            let egui_overlay = device.CreateVisual()?;
+            // The game layer's chrome and the streams are inserted beneath
+            // these two as they appear, so the foreground page and the debug
+            // overlay always stay on top.
+            root.AddVisual(&foreground_webview, true, None::<&IDCompositionVisual>)?;
+            root.AddVisual(&egui_overlay, true, &foreground_webview)?;
+            target.SetRoot(&root)?;
+            device.Commit()?;
+
+            Ok(Self {
+                host,
+                device,
+                _target: target,
+                root,
+                foreground: foreground_webview,
+                overlay: egui_overlay,
+                game: None,
+            })
+        }
+    }
+
+    pub fn foreground_visual(&self) -> Result<IUnknown, windows::core::Error> {
+        self.foreground.cast()
+    }
+
+    pub fn focus_host(&self) {
+        self.host.focus();
+    }
+
+    pub fn set_egui_overlay_content(&self, content: &IUnknown) -> Result<(), windows::core::Error> {
+        // SAFETY: the content is a composition swapchain retained by the
+        // shell's overlay compositor.
+        unsafe { self.overlay.SetContent(content) }
+    }
+
+    /// Attaches the one window-spanning game swapchain below WebView2.
+    pub fn set_merged_content(&mut self, content: &IUnknown) -> Result<(), windows::core::Error> {
+        // SAFETY: the content is a composition swapchain, and the visual and
+        // content remain retained by the tree and merged compositor.
+        unsafe {
+            let visual = self.device.CreateVisual()?;
+            visual.SetContent(content)?;
+            // With no reference visual, `insert_above = true` inserts at the
+            // bottom of the child list, beneath WebView2 and the egui overlay.
+            self.root
+                .AddVisual(&visual, true, None::<&IDCompositionVisual>)?;
+            if let Some(previous) = self.game.replace(visual) {
+                self.root.RemoveVisual(&previous)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn commit(&self) -> windows::core::Result<()> {
+        // SAFETY: commits the retained tree without borrowing external data.
+        unsafe { self.device.Commit() }
+    }
+}
+
+pub struct SurfaceWindow<'a> {
+    window: &'a Window,
+    extent: Extent,
+}
+
+impl<'a> SurfaceWindow<'a> {
+    pub const fn new(window: &'a Window, width: u32, height: u32) -> Self {
+        Self {
+            window,
+            extent: Extent::new(width, height),
+        }
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for SurfaceWindow<'_> {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        self.window.window_handle()
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for SurfaceWindow<'_> {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        self.window.display_handle()
+    }
+}
+
+impl snowglass_renderer::RenderWindow for SurfaceWindow<'_> {
+    fn render_extent(&self) -> Extent {
+        self.extent
+    }
+}

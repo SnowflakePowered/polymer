@@ -7,7 +7,7 @@ use thiserror::Error;
 
 /// Fully realized arguments returned by an emulator plugin. Pluginhost owns
 /// this contract, while the viewer decides how to install and launch it.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmulatorLaunchArguments {
     pub command: String,

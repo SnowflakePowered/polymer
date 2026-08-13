@@ -1,4 +1,3 @@
-use crate::{PluginHost, PluginInstance};
 use deno_ast::{
     EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions, parse_module,
 };
@@ -7,7 +6,7 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind, error::ModuleLoaderError,
     resolve_import,
 };
-use std::{path::PathBuf, rc::Rc, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 const PLUGIN_SCHEME: &str = "snowglass-pkg";
 const PLUGIN_HOST: &str = "plugin";
@@ -208,82 +207,6 @@ impl ModuleLoader for PluginModuleLoader {
             self.load_source(module_specifier, requested_module_type(&options)),
         )
     }
-}
-
-/// The single Deno loader installed by the embedding application. Plugin
-/// modules are routed by their canonical referrer; everything else is handed
-/// to the application's loader.
-#[derive(Clone)]
-pub struct PluginModuleRouter {
-    plugins: PluginHost,
-    fallback: Rc<dyn ModuleLoader>,
-}
-
-impl PluginModuleRouter {
-    pub fn new(plugins: PluginHost, fallback: Rc<dyn ModuleLoader>) -> Self {
-        Self { plugins, fallback }
-    }
-
-    fn plugin(&self, specifier: &ModuleSpecifier) -> Option<Arc<dyn PluginInstance>> {
-        let id = plugin_id(specifier)?;
-        self.plugins.plugin::<dyn PluginInstance>(id)
-    }
-}
-
-impl ModuleLoader for PluginModuleRouter {
-    fn resolve(
-        &self,
-        specifier: &str,
-        referrer: &str,
-        kind: ResolutionKind,
-    ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let plugin_referrer = ModuleSpecifier::parse(referrer)
-            .ok()
-            .filter(|referrer| plugin_id(referrer).is_some());
-        if specifier.starts_with("pkg:") || plugin_referrer.is_some() {
-            let referrer = plugin_referrer.ok_or_else(|| {
-                ModuleLoaderError::type_error(format!(
-                    "pkg: import has no plugin package referrer: {referrer}"
-                ))
-            })?;
-            let plugin = self.plugin(&referrer).ok_or_else(|| {
-                ModuleLoaderError::type_error(format!(
-                    "plugin import has no registered package referrer: {referrer}"
-                ))
-            })?;
-            plugin
-                .module_loader()
-                .resolve(specifier, referrer.as_str(), kind)
-        } else {
-            self.fallback.resolve(specifier, referrer, kind)
-        }
-    }
-
-    fn load(
-        &self,
-        module_specifier: &ModuleSpecifier,
-        maybe_referrer: Option<&ModuleLoadReferrer>,
-        options: ModuleLoadOptions,
-    ) -> ModuleLoadResponse {
-        if let Some(plugin) = self.plugin(module_specifier) {
-            plugin
-                .module_loader()
-                .load(module_specifier, maybe_referrer, options)
-        } else {
-            self.fallback
-                .load(module_specifier, maybe_referrer, options)
-        }
-    }
-}
-
-fn plugin_id(specifier: &ModuleSpecifier) -> Option<&str> {
-    if specifier.scheme() != PLUGIN_SCHEME || specifier.host_str() != Some(PLUGIN_HOST) {
-        return None;
-    }
-    specifier
-        .path_segments()?
-        .next()
-        .filter(|id| !id.is_empty())
 }
 
 fn requested_module_type(options: &ModuleLoadOptions) -> ModuleType {

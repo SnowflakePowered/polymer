@@ -9766,6 +9766,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "snowglass-config",
+ "snowglass-deno",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

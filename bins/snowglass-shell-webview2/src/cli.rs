@@ -1,7 +1,12 @@
+use crate::{
+    input::GamepadMapping,
+    launch::{GraphicsHook, UnattachedLaunchPlan, UnattachedTrackedSurface},
+};
 use clap::{Arg, ArgAction};
-use snowglass_pluginhost::{EmulatorPluginInstance, PluginHost};
+use snowglass_pluginhost::{EmulatorPluginInstance, PluginRegistry};
 use snowglass_renderer::cli::{
-    ViewerOptions, viewer_command_named, viewer_options_from_matches_with_default_machine,
+    HookBackend, ViewerOptions, viewer_command_named,
+    viewer_options_from_matches_with_default_machine,
 };
 use std::{error::Error, fs, path::PathBuf};
 
@@ -14,8 +19,58 @@ pub struct GameLaunchRequest {
 pub struct ShellOptions {
     pub viewer: ViewerOptions,
     pub foreground_url: String,
-    pub plugins: PluginHost,
+    pub plugins: PluginRegistry,
     pub game_launch: Option<GameLaunchRequest>,
+}
+
+pub fn launch_from_viewer(options: &ViewerOptions) -> Result<Option<UnattachedLaunchPlan>, String> {
+    let Some(command) = options.target.first() else {
+        return Ok(None);
+    };
+    let hook = options
+        .hooks
+        .iter()
+        .map(|hook| match hook {
+            HookBackend::OpenGl => Ok(GraphicsHook::Opengl),
+            HookBackend::Vulkan => Ok(GraphicsHook::Vulkan),
+            HookBackend::D3d11 => Ok(GraphicsHook::D3d11),
+            HookBackend::D3d12 => Ok(GraphicsHook::D3d12),
+            HookBackend::Gdi => Err("the WebView2 emulator API does not expose GDI".to_owned()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let tracked = options.track_render_targets.clone().unwrap_or_else(|| {
+        vec![snowglass_renderer::cli::TrackedRenderTarget {
+            index: 0,
+            quarter_turns: 0,
+            surface_pattern: None,
+        }]
+    });
+    let webrtc = options.webrtc.as_deref().unwrap_or_default();
+    let surfaces = tracked
+        .into_iter()
+        .map(|surface| UnattachedTrackedSurface {
+            index: surface.index,
+            rotation: i32::from(surface.quarter_turns),
+            selector: surface.surface_pattern,
+            webrtc: webrtc.contains(&surface.index),
+        })
+        .collect();
+    let launch = UnattachedLaunchPlan {
+        command: command.clone(),
+        arguments: options.target[1..].to_vec(),
+        isolated: options.isolate,
+        hook,
+        surfaces,
+        gamepad_mapping: options.gamepads.iter().map(GamepadMapping::from).collect(),
+        machine: options.machine.clone(),
+        webrtc_bind: options
+            .webrtc
+            .as_ref()
+            .map(|_| options.bind_webrtc.to_string()),
+        generated_configuration: None,
+    };
+    launch.validate()?;
+    Ok(Some(launch))
 }
 
 pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
@@ -44,7 +99,7 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
                 .help("Game package to detect and launch with a compatible emulator plugin"),
         )
         .get_matches();
-    let plugins = PluginHost::new();
+    let plugins = PluginRegistry::new();
     let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")

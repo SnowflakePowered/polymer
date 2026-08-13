@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="background" href="/game-layer.html" />
+    <!-- Resolve this nonstandard relation at runtime. If `href` is present in
+         source, Vite treats the HTML entry as an opaque asset instead of the
+         separately transformed `gameLayer` Rollup input. -->
+    <link rel="background" data-href="./game-layer.html" />
+    <script>
+      const background = document.currentScript.previousElementSibling;
+      background.href = new URL(background.dataset.href, document.baseURI).href;
+    </script>
     <title>Snowglass</title>
   </head>
   <body>

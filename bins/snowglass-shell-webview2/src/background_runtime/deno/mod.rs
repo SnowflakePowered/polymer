@@ -1,4 +1,4 @@
-//! JavaScript and DOM bindings for the Blitz-owned game-layer document.
+//! JavaScript and DOM bindings for the Blitz-owned background document.
 //!
 //! Blitz remains the authoritative DOM. JavaScript sees stable wrapper objects
 //! backed by snapshots of that DOM, and mutations are immediately mirrored in
@@ -14,7 +14,7 @@ mod state;
 
 pub use dom::Mutation;
 pub use emulator::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
-pub use input::{KeyboardEvent, MouseEvent};
+pub use input::{EventResult, KeyboardEvent, MouseEvent};
 pub use runtime::Runtime;
 
 #[cfg(test)]

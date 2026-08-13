@@ -7,6 +7,10 @@ native composed background with a document link:
 <link rel="background" href="/game-layer.html" />
 ```
 
+When this page is bundled by Vite, the repository's `shell.html` assigns the
+same URL from `data-href` at runtime. That keeps `game-layer.html` as a real
+Rollup HTML entry instead of copying it as an untransformed generic asset.
+
 The shell discovers and fetches that URL through the loaded foreground page,
 then renders the linked document with Blitz. A page without the link has no
 composed game layer.
@@ -36,10 +40,10 @@ const surface = await background.document.querySelector(
 background.postMessage({ type: "foreground-ready" });
 ```
 
-Property reads and calls cross WebView2 IPC, so their results are promises.
-DOM objects, functions, and other platform objects remain live remote
-references; JSON-like values are copied. Functions passed as arguments are
-retained as callbacks, allowing operations such as
+Property reads and calls cross the shared binary bus, so their results are
+promises. DOM objects, functions, and other platform objects remain live
+remote references; structured-clone values are copied without JSON encoding.
+Functions passed as arguments are retained as callbacks, allowing operations such as
 `background.addEventListener("event-name", callback)`.
 
 Tracked surfaces attach to `HTMLTrackedSurfaceElement` objects in the

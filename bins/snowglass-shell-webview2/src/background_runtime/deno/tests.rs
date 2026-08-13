@@ -4,11 +4,8 @@ use std::sync::{Arc, Mutex};
 use super::{EmulatorCommand, EmulatorCommandSink, KeyboardEvent, MouseEvent, Mutation, Runtime};
 
 #[tokio::test]
-async fn executes_the_cemu_package_with_realized_configuration() {
-    let html = "<html><body></body></html>";
-    let document = document(html);
-    let (command_sink, _) = command_recorder();
-    let plugins = snowglass_pluginhost::PluginHost::new();
+async fn pluginhost_executes_the_cemu_package_with_realized_configuration() {
+    let plugins = snowglass_pluginhost::PluginRegistry::new();
     plugins
         .load(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -22,31 +19,25 @@ async fn executes_the_cemu_package_with_realized_configuration() {
     let plugin = plugins
         .plugin::<dyn snowglass_pluginhost::EmulatorPluginInstance>("cemu")
         .unwrap();
-    let mut runtime = Runtime::new(
-        document.as_ref(),
-        html,
-        "snowglass:///plugin-test.html",
-        800,
-        600,
-        command_sink,
-        plugins,
-    )
-    .await
-    .unwrap();
     let assignments = plugin
         .port_assignments("NINTENDO_WIIU", &["WIIU_DRC_CONTROLLER".to_owned()])
         .unwrap();
     let configuration = plugin.materialize("NINTENDO_WIIU", assignments).unwrap();
-    let plan: crate::api::EmulatorLaunchArguments = runtime
-        .run_emulator_plugin(
+    let runtime = snowglass_pluginhost::PluginRuntime::new(
+        plugins,
+        snowglass_pluginhost::PluginRuntimeOptions::default(),
+    );
+    let plan = runtime
+        .handle()
+        .setup_emulator(snowglass_pluginhost::EmulatorSetupInvocation {
             plugin,
-            serde_json::json!({
+            arguments: serde_json::json!({
                 "launchPath": "E:/games/U-King.rpx",
                 "console": "NINTENDO_WIIU",
                 "portAssignments": { "gamepad": ["WIIU_DRC_CONTROLLER"] },
             }),
             configuration,
-        )
+        })
         .await
         .unwrap();
 
@@ -65,6 +56,243 @@ async fn executes_the_cemu_package_with_realized_configuration() {
         settings.contains("<open_pad>true</open_pad>"),
         "cemu.ts did not mutate content.open_pad before host serialization:\n{settings}"
     );
+}
+
+#[tokio::test]
+async fn background_shared_client_emits_binary_plugin_and_bridge_records() {
+    let html = "<html><body></body></html>";
+    let document = document(html);
+    let (commands, _) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///shared-bus-test.html",
+        800,
+        600,
+        commands,
+    )
+    .await
+    .unwrap();
+    runtime.install_shared_bus_client_for_test().unwrap();
+    let record = runtime
+        .evaluate_for_test(
+            r#"(async () => {
+              snowglass.plugins.open("cemu").setupLaunch({ console: "NINTENDO_WIIU" });
+              await Promise.resolve();
+              const cyclic = { source: "background" };
+              cyclic.self = cyclic;
+              __snowglassSharedBus.send(
+                __snowglassSharedBus.routes.BRIDGE_MESSAGE,
+                __snowglassSharedBus.routes.FOREGROUND,
+                cyclic,
+              );
+              const capacity = 4096;
+              const base = 2 * (64 + capacity);
+              const data = base + 64;
+              const view = new DataView(__testBusBuffer);
+              const committed = Atomics.load(new Uint32Array(__testBusBuffer, data, 1), 0);
+              const body = data + 4;
+              const pathLength = view.getUint16(body + 13, true);
+              const payloadLength = view.getUint32(body + 15, true);
+              const path = new TextDecoder().decode(
+                new Uint8Array(__testBusBuffer, body + 19, pathLength)
+              );
+              const second = data + ((committed + 4 + 7) & ~7);
+              const secondCommitted = Atomics.load(
+                new Uint32Array(__testBusBuffer, second, 1), 0
+              );
+              const secondBody = second + 4;
+              const secondPathLength = view.getUint16(secondBody + 13, true);
+              return {
+                committed,
+                writeCursor: Number(Atomics.load(new BigUint64Array(__testBusBuffer, base + 24, 1), 0)),
+                kind: view.getUint16(body, true),
+                target: view.getUint8(body + 12),
+                path,
+                payloadLength,
+                codecMagic: view.getUint32(body + 19 + pathLength, true),
+                bridge: {
+                  committed: secondCommitted,
+                  kind: view.getUint16(secondBody, true),
+                  target: view.getUint8(secondBody + 12),
+                  codecMagic: view.getUint32(secondBody + 19 + secondPathLength, true),
+                },
+              };
+            })()"#,
+        )
+        .await
+        .unwrap();
+
+    assert!(record["committed"].as_u64().unwrap() > 19);
+    assert!(record["writeCursor"].as_u64().unwrap() > 0);
+    assert_eq!(record["kind"], 1);
+    assert_eq!(record["target"], 1);
+    assert_eq!(record["path"], "cemu\0setupLaunch");
+    assert!(record["payloadLength"].as_u64().unwrap() > 10);
+    assert_eq!(record["codecMagic"], 0x31434753_u32);
+    assert!(record["bridge"]["committed"].as_u64().unwrap() > 19);
+    assert_eq!(record["bridge"]["kind"], 10);
+    assert_eq!(record["bridge"]["target"], 2);
+    assert_eq!(record["bridge"]["codecMagic"], 0x31434753_u32);
+}
+
+#[tokio::test]
+async fn background_shared_client_tracks_native_generation_changes() {
+    let html = "<html><body></body></html>";
+    let document = document(html);
+    let (commands, _) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///shared-bus-generation-test.html",
+        800,
+        600,
+        commands,
+    )
+    .await
+    .unwrap();
+    runtime.install_shared_bus_client_for_test().unwrap();
+    let record = runtime
+        .evaluate_for_test(
+            r#"(() => {
+              const capacity = 4096;
+              for (let lane = 0; lane < 4; lane++) {
+                const base = lane * (64 + capacity);
+                Atomics.store(new Uint32Array(__testBusBuffer, base + 8, 1), 0, 2);
+                Atomics.store(new BigUint64Array(__testBusBuffer, base + 16, 1), 0, 0n);
+                Atomics.store(new BigUint64Array(__testBusBuffer, base + 24, 1), 0, 0n);
+              }
+              __snowglassSharedBusNotify();
+              __snowglassSharedBus.send(
+                __snowglassSharedBus.routes.BRIDGE_MESSAGE,
+                __snowglassSharedBus.routes.FOREGROUND,
+                { generation: 2 },
+              );
+              const base = 2 * (64 + capacity);
+              const body = base + 64 + 4;
+              const view = new DataView(__testBusBuffer);
+              return {
+                generation: view.getUint32(base + 8, true),
+                kind: view.getUint16(body, true),
+                target: view.getUint8(body + 12),
+              };
+            })()"#,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(record["generation"], 2);
+    assert_eq!(record["kind"], 10);
+    assert_eq!(record["target"], 2);
+}
+
+#[tokio::test]
+async fn shared_codec_round_trips_every_supported_javascript_value_category() {
+    let html = "<html><body></body></html>";
+    let document = document(html);
+    let (commands, _) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///shared-codec-test.html",
+        800,
+        600,
+        commands,
+    )
+    .await
+    .unwrap();
+    runtime.install_shared_bus_client_for_test().unwrap();
+
+    let result = runtime
+        .evaluate_for_test(
+            r#"(() => {
+              const typed = [
+                new Int8Array([-1, 2]),
+                new Uint8Array([1, 255]),
+                new Uint8ClampedArray([1, 255]),
+                new Int16Array([-2, 3]),
+                new Uint16Array([2, 65535]),
+                new Int32Array([-3, 4]),
+                new Uint32Array([3, 4294967295]),
+                new Float32Array([1.5, -2.25]),
+                new Float64Array([Math.PI, -Infinity]),
+                new BigInt64Array([-4n, 5n]),
+                new BigUint64Array([4n, 5n]),
+                new DataView(Uint8Array.from([9, 8, 7, 6]).buffer),
+              ];
+              const root = {
+                undefinedValue: undefined,
+                nullValue: null,
+                booleans: [false, true],
+                number: 42.25,
+                bigint: -12345678901234567890n,
+                string: "snowglass",
+                date: new Date(1725000000000),
+                map: new Map([["answer", 42]]),
+                set: new Set(["a", "b"]),
+                error: new TypeError("failed", { cause: "because" }),
+                buffer: Uint8Array.from([0, 255, 1, 254]).buffer,
+                typed,
+              };
+              root.self = root;
+              root.map.set(root, root.set);
+              const decoded = __snowglassStructuredCodec.decode(
+                __snowglassStructuredCodec.encode(root),
+              );
+              const typedEqual = decoded.typed.every((value, index) => {
+                const expected = typed[index];
+                return value.constructor === expected.constructor
+                  && value.byteLength === expected.byteLength
+                  && new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+                    .every((byte, offset) => byte === new Uint8Array(
+                      expected.buffer,
+                      expected.byteOffset,
+                      expected.byteLength,
+                    )[offset]);
+              });
+              const unsupported = [];
+              for (const value of [() => {}, Promise.resolve(), Symbol("x"), new WeakMap()]) {
+                try { __snowglassStructuredCodec.encode(value); unsupported.push(false); }
+                catch (error) { unsupported.push(error.name === "DataCloneError"); }
+              }
+              return {
+                cycle: decoded.self === decoded,
+                primitives: decoded.undefinedValue === undefined
+                  && decoded.nullValue === null
+                  && decoded.booleans[0] === false
+                  && decoded.booleans[1] === true
+                  && decoded.number === 42.25
+                  && decoded.bigint === -12345678901234567890n
+                  && decoded.string === "snowglass",
+                date: decoded.date.getTime() === 1725000000000,
+                collections: decoded.map.get("answer") === 42
+                  && decoded.map.get(decoded) === decoded.set
+                  && decoded.set.has("a") && decoded.set.has("b"),
+                error: decoded.error instanceof Error
+                  && decoded.error.name === "TypeError"
+                  && decoded.error.message === "failed"
+                  && decoded.error.cause === "because",
+                buffer: [...new Uint8Array(decoded.buffer)].join(",") === "0,255,1,254",
+                typed: typedEqual,
+                unsupported: unsupported.every(Boolean),
+              };
+            })()"#,
+        )
+        .await
+        .unwrap();
+
+    for field in [
+        "cycle",
+        "primitives",
+        "date",
+        "collections",
+        "error",
+        "buffer",
+        "typed",
+        "unsupported",
+    ] {
+        assert_eq!(result[field], true, "failed codec assertion: {field}");
+    }
 }
 
 fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>) {
@@ -120,7 +348,6 @@ async fn node_dispatch_event_reaches_delegated_ancestors() {
         800,
         600,
         command_sink,
-        snowglass_pluginhost::PluginHost::new(),
     )
     .await
     .unwrap();
@@ -160,7 +387,6 @@ async fn background_input_api_sends_revisioned_transactions_and_resolves_results
         800,
         600,
         command_sink,
-        snowglass_pluginhost::PluginHost::new(),
     )
     .await
     .unwrap();
@@ -241,7 +467,6 @@ async fn runs_inline_modules_with_relative_imports() {
         800,
         600,
         EmulatorCommandSink::default(),
-        snowglass_pluginhost::PluginHost::new(),
     )
     .await
     .unwrap();
@@ -294,7 +519,6 @@ async fn queues_dynamic_dom_tree_mutations() {
         800,
         600,
         EmulatorCommandSink::default(),
-        snowglass_pluginhost::PluginHost::new(),
     )
     .await
     .unwrap();
@@ -438,7 +662,6 @@ async fn bridges_dom_events_games_messages_and_remote_objects() {
         800,
         600,
         command_sink,
-        snowglass_pluginhost::PluginHost::new(),
     )
     .await
     .unwrap();
@@ -459,7 +682,7 @@ async fn bridges_dom_events_games_messages_and_remote_objects() {
                 token: muted_token,
                 muted: true,
             },
-        ] if options.surfaces[0].attach == Some(surface_node)
+        ] if options.surfaces[0].attach == surface_node
             && token == volume_token
             && token == muted_token
             && (*volume - 0.35).abs() < f64::EPSILON

@@ -37,6 +37,10 @@ export type LaunchOptions = {
   // describe its input without naming it.
   machine: string;
   webrtcBind?: string;
+  generatedConfiguration?: {
+    root: string;
+    files: Record<string, number[]>;
+  };
 };
 
 export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {

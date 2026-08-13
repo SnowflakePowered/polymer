@@ -1,37 +1,37 @@
-//! Emulator-plugin configuration host.
+//! Isolated Snowglass plugin registry and runtime.
 //!
-//! The embedding application owns its JavaScript runtime. This crate owns the
-//! adapter implementation that temporarily borrows that runtime, plus the
-//! invocation-scoped configuration exposed to a plugin. Pluginhost owns the
-//! emulator-facing output contract but leaves its interpretation to the viewer.
+//! Package discovery is kept separate from execution. Every call made through
+//! [`PluginRuntimeHandle`] runs in a fresh curated Deno/V8 isolate owned by this
+//! crate, and invocation-scoped resources are destroyed with that isolate.
 
 #![forbid(unsafe_code)]
 
+pub mod bus;
 mod configuration;
-pub mod deno;
+mod deno;
 mod emulator;
 mod module_loader;
+mod plugin_runtime;
 mod runtime;
 pub mod toml;
 
 pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
-pub use deno::EmulatorLaunch;
 pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort,
     EmulatorSetupInvocation, GraphicsHook, TrackedSurface,
 };
-pub use module_loader::{PluginModuleLoader, PluginModuleRouter};
-pub use runtime::{PluginHost, PluginInstance, PluginRegistryError};
+pub use module_loader::PluginModuleLoader;
+pub use plugin_runtime::{
+    PluginCancellationToken, PluginInvocationError, PluginRuntime, PluginRuntimeHandle,
+    PluginRuntimeOptions,
+};
+pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError};
 pub use toml::{EmulatorPlugin, PackageError, PluginPackage};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deno_core::{
-        JsRuntime, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader,
-        ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind,
-        RuntimeOptions, error::ModuleLoaderError, resolve_import,
-    };
+    use deno_core::ModuleSpecifier;
     use snowglass_config::{
         ConfigurationToml,
         ast::{
@@ -39,7 +39,7 @@ mod tests {
             PortAssignments, RealizedDomain, RealizedOption, Value, ValueKind,
         },
     };
-    use std::{collections::BTreeMap, convert::Infallible, rc::Rc, sync::Arc};
+    use std::{collections::BTreeMap, convert::Infallible, sync::Arc};
     use toml_spanner::Arena;
 
     fn configuration() -> snowglass_config::ast::ConfigurationInstance {
@@ -82,15 +82,6 @@ mod tests {
     struct TestPlugin {
         loader: PluginModuleLoader,
         entrypoint: ModuleSpecifier,
-    }
-
-    impl TestPlugin {
-        fn new() -> Self {
-            Self {
-                loader: PluginModuleLoader::new("test", std::env::current_dir().unwrap()),
-                entrypoint: ModuleSpecifier::parse("file:///plugin.js").unwrap(),
-            }
-        }
     }
 
     impl PluginInstance for TestPlugin {
@@ -141,76 +132,9 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct MemoryLoader;
-
-    impl ModuleLoader for MemoryLoader {
-        fn resolve(
-            &self,
-            specifier: &str,
-            referrer: &str,
-            _kind: ResolutionKind,
-        ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-            resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)
-        }
-
-        fn load(
-            &self,
-            module_specifier: &ModuleSpecifier,
-            _maybe_referrer: Option<&ModuleLoadReferrer>,
-            _options: ModuleLoadOptions,
-        ) -> ModuleLoadResponse {
-            let source = if module_specifier.as_str() == "file:///plugin.js" {
-                r#"
-                    export default {
-                      setupLaunch(args) {
-                        const entries = args.emulatorConfig.entries();
-                        if (!Array.isArray(entries) ||
-                            entries.find(([path]) => path === "general.enabled")?.[1] !== false) {
-                          throw new Error("configuration entries did not include the default");
-                        }
-                        if (args.emulatorConfig.options().general.enabled !== false) {
-                          throw new Error("configuration read did not return the default");
-                        }
-                        let rejected = false;
-                        try {
-                          args.emulatorConfig.options().general.enabled = "yes";
-                        } catch {
-                          rejected = true;
-                        }
-                        if (!rejected) {
-                          throw new Error("configuration accepted the wrong value type");
-                        }
-                        args.emulatorConfig.options().general.enabled = true;
-                        return {
-                          command: "emulator.exe",
-                          argv: [],
-                          configRoot: ".",
-                          config: args.emulatorConfig,
-                          isolate: false,
-                          hooks: ["vulkan"],
-                          surfaces: [{ index: 0, pattern: "window" }],
-                        };
-                      },
-                    };
-                "#
-            } else {
-                return ModuleLoadResponse::Sync(Err(ModuleLoaderError::type_error(format!(
-                    "unknown test module {module_specifier}"
-                ))));
-            };
-            ModuleLoadResponse::Sync(Ok(ModuleSource::new(
-                ModuleType::JavaScript,
-                ModuleSourceCode::String(source.to_owned().into()),
-                module_specifier,
-                None,
-            )))
-        }
-    }
-
     #[test]
     fn registry_projects_one_plugin_through_a_generic_interface_lookup() {
-        let plugins = PluginHost::new();
+        let plugins = PluginRegistry::new();
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -278,37 +202,5 @@ mod tests {
             Err(ConfigurationAccessError::UnknownConfiguration(id)) if id == first
         ));
         assert!(configurations.get(second, "general.enabled").is_ok());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn concrete_emulator_launch_realizes_config_before_returning_viewer_args() {
-        // The test, like the shell, creates and owns the runtime. Pluginhost
-        // only supplies an extension and temporarily borrows it below.
-        let mut deno = JsRuntime::new(RuntimeOptions {
-            extensions: vec![deno::extension()],
-            module_loader: Some(Rc::new(MemoryLoader)),
-            ..Default::default()
-        });
-        let mut launch = EmulatorLaunch::attach(&mut deno);
-        let args = launch
-            .execute(EmulatorSetupInvocation {
-                plugin: Arc::new(TestPlugin::new()),
-                arguments: serde_json::json!({ "launchPath": "game" }),
-                configuration: configuration(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(args.command, "emulator.exe");
-        let settings = std::str::from_utf8(&args.config["settings.ini"]).unwrap();
-        assert!(settings.contains("Enabled=true"), "{settings}");
-        assert!(
-            deno.execute_script(
-                "snowglass:pluginhost/inactive-configuration.js",
-                "__snowglassPluginHost.configuration(1).options().general.enabled",
-            )
-            .is_err(),
-            "configuration remained active after host serialization"
-        );
     }
 }

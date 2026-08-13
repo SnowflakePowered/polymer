@@ -2,20 +2,36 @@
   "use strict";
 
   const { ops, webEvents } = globalThis.__snowglassRuntime;
-  const {
-    defineEventHandler,
-    dispatch: dispatchNativeEvent,
-    listenerCount,
-  } = webEvents;
+  const { defineEventHandler } = webEvents;
+  const eventDispatch = globalThis.__snowglassCreateEventDispatch(webEvents, ops);
+  delete globalThis.__snowglassCreateEventDispatch;
+  const { MouseEvent, KeyboardEvent, dispatch, dispatchNativeEvent } = eventDispatch;
   delete globalThis.__snowglassRuntime;
   const nodes = new Map();
   let documentNode = null;
   let nextNodeId = 1;
-  let eventResult = { handled: false, defaultPrevented: false };
   const proxyObjects = new Map([[0, globalThis]]);
   const proxyObjectHandles = new WeakMap([[globalThis, 0]]);
   const foregroundCallbacks = new Map();
   let nextProxyObject = 1;
+  const sharedBus = globalThis.__snowglassSharedBus;
+  const bridgeRoutes = sharedBus?.routes;
+
+  function sendForegroundMessage(message) {
+    if (sharedBus) {
+      sharedBus.send(bridgeRoutes.BRIDGE_MESSAGE, bridgeRoutes.FOREGROUND, message);
+    } else {
+      ops.op_post_message(message);
+    }
+  }
+
+  function sendForegroundProxy(message) {
+    if (sharedBus) {
+      sharedBus.send(bridgeRoutes.BRIDGE_PROXY, bridgeRoutes.FOREGROUND, message);
+    } else {
+      ops.op_proxy_message(message);
+    }
+  }
 
   function proxyReference(value) {
     let handle = proxyObjectHandles.get(value);
@@ -30,94 +46,41 @@
     };
   }
 
-  function encodeProxyValue(value, seen = new Set()) {
-    if (value === undefined) return { kind: "undefined" };
-    if (typeof value === "bigint") {
-      return { kind: "bigint", value: value.toString() };
-    }
-    if (
-      value === null ||
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-    ) {
-      return { kind: "value", value };
-    }
-    if (typeof value === "function") return proxyReference(value);
-    if (typeof value !== "object") {
-      throw new TypeError(`Cannot proxy a ${typeof value} value`);
-    }
-    if (seen.has(value)) return proxyReference(value);
-
-    const prototype = Object.getPrototypeOf(value);
-    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+  const remoteValueCodec = globalThis.__snowglassCreateRemoteValueCodec({
+    encodeReference(value) {
       return proxyReference(value);
-    }
-    seen.add(value);
-    try {
-      if (Array.isArray(value)) {
-        return {
-          kind: "array",
-          value: value.map((item) => encodeProxyValue(item, seen)),
-        };
-      }
-      return {
-        kind: "object",
-        value: Object.fromEntries(
-          Object.entries(value).map(([key, item]) => [
-            key,
-            encodeProxyValue(item, seen),
-          ]),
-        ),
-      };
-    } finally {
-      seen.delete(value);
-    }
-  }
-
-  function decodeProxyValue(value) {
-    switch (value?.kind) {
-      case "undefined":
-        return undefined;
-      case "bigint":
-        return BigInt(value.value);
-      case "array":
-        return value.value.map(decodeProxyValue);
-      case "object":
-        return Object.fromEntries(
-          Object.entries(value.value).map(([key, item]) => [
-            key,
-            decodeProxyValue(item),
-          ]),
-        );
-      case "backgroundReference": {
+    },
+    decodeReference(value) {
+      switch (value?.kind) {
+        case "backgroundReference": {
         let current = proxyObjects.get(value.handle);
         if (current === undefined) {
           throw new ReferenceError(`Unknown background object ${value.handle}`);
         }
         for (const property of value.path || []) current = current[property];
         return current;
-      }
-      case "foregroundCallback": {
-        let callback = foregroundCallbacks.get(value.handle);
-        if (!callback) {
-          callback = (...args) => {
-            ops.op_proxy_message({
-              type: "callback",
-              handle: value.handle,
-              args: args.map((argument) => encodeProxyValue(argument)),
-            });
-          };
-          foregroundCallbacks.set(value.handle, callback);
         }
-        return callback;
+        case "foregroundCallback": {
+          let callback = foregroundCallbacks.get(value.handle);
+          if (!callback) {
+            callback = (...args) => {
+              sendForegroundProxy({
+                type: "callback",
+                handle: value.handle,
+                args: args.map((argument) => encodeProxyValue(argument)),
+              });
+            };
+            foregroundCallbacks.set(value.handle, callback);
+          }
+          return callback;
+        }
+        default:
+          throw new TypeError("Invalid foreground proxy value");
       }
-      case "value":
-        return value.value;
-      default:
-        throw new TypeError("Invalid foreground proxy value");
-    }
-  }
+    },
+  });
+  const encodeProxyValue = remoteValueCodec.encode;
+  const decodeProxyValue = remoteValueCodec.decode;
 
   function proxyTarget(handle, path) {
     let target = proxyObjects.get(handle);
@@ -186,14 +149,14 @@
             throw new TypeError(`Unknown proxy operation '${request.operation}'`);
         }
         result = await result;
-        ops.op_proxy_message({
+        sendForegroundProxy({
           type: "response",
           id: request.id,
           ok: true,
           value: encodeProxyValue(result),
         });
       } catch (error) {
-        ops.op_proxy_message({
+        sendForegroundProxy({
           type: "response",
           id: request.id,
           ok: false,
@@ -224,46 +187,6 @@
 
   function serializeDeclarations(declarations) {
     return [...declarations].map(([name, value]) => `${name}: ${value}`).join("; ");
-  }
-
-  // snowglass-deno supplies Event, EventTarget, CustomEvent and MessageEvent.
-  // MouseEvent is part of the browser DOM rather than deno_web, so the Blitz
-  // bridge adds only that DOM-specific subclass.
-  class MouseEvent extends Event {
-    constructor(type, init = {}) {
-      super(type, { bubbles: true, cancelable: true, ...init });
-      this.clientX = Number(init.clientX) || 0;
-      this.clientY = Number(init.clientY) || 0;
-      this.screenX = Number(init.screenX) || this.clientX;
-      this.screenY = Number(init.screenY) || this.clientY;
-      this.button = Number(init.button) || 0;
-      this.buttons = Number(init.buttons) || 0;
-      this.ctrlKey = Boolean(init.ctrlKey);
-      this.shiftKey = Boolean(init.shiftKey);
-      this.altKey = Boolean(init.altKey);
-      this.metaKey = Boolean(init.metaKey);
-    }
-
-    get x() {
-      return this.clientX;
-    }
-
-    get y() {
-      return this.clientY;
-    }
-  }
-
-  class KeyboardEvent extends Event {
-    constructor(type, init = {}) {
-      super(type, { bubbles: true, cancelable: true, ...init });
-      this.key = String(init.key || "");
-      this.code = String(init.code || "");
-      this.repeat = Boolean(init.repeat);
-      this.altKey = Boolean(init.altKey);
-      this.ctrlKey = Boolean(init.ctrlKey);
-      this.shiftKey = Boolean(init.shiftKey);
-      this.metaKey = Boolean(init.metaKey);
-    }
   }
 
   class DOMTokenList {
@@ -986,339 +909,19 @@
   let dimensions = { width: 0, height: 0 };
   const windowObject = globalThis;
 
-  const Emulator = new EventTarget();
-  let activeInstance = null;
-  const snowglassInput = new EventTarget();
-  let inputConfiguration = Object.freeze({
-    revision: 0,
-    ports: Object.freeze([]),
-  });
-  let inputLayouts = Object.freeze([]);
-  let inputControllers = Object.freeze([]);
-  let inputPriority = "foreground";
-  let inputTimestamp = 0;
-  let nextInputRequest = 1;
-  const pendingInputRequests = new Map();
-
-  Object.defineProperties(snowglassInput, {
-    configuration: { get: () => inputConfiguration },
-    revision: { get: () => Number(inputConfiguration.revision) || 0 },
-    ports: {
-      get: () => inputConfiguration.ports || Object.freeze([]),
-    },
-    layouts: { get: () => inputLayouts },
-    controllers: { get: () => inputControllers },
-    priority: { get: () => inputPriority },
-    getGamepads: {
-      value: () => {
-        const devices = inputControllers.filter(
-          (device) => device && typeof device === "object",
-        );
-        const result = Array(
-          devices.reduce(
-            (length, device) => Math.max(length, Number(device.index) + 1),
-            0,
-          ),
-        ).fill(null);
-        for (const device of devices) {
-          const visible = (mapped) => inputPriority === "foreground" || !mapped;
-          result[device.index] = Object.freeze({
-            index: device.index,
-            deviceId: device.deviceId,
-            id: `${device.name} (${device.guid})`,
-            connected: true,
-            mapping: "standard",
-            timestamp: inputTimestamp,
-            assignedPorts: Object.freeze([...(device.assignedPorts || [])]),
-            buttons: Object.freeze(
-              device.buttons.map((button) => {
-                const pressed = visible(button.mapped) && button.pressed;
-                return Object.freeze({
-                  pressed,
-                  touched: pressed,
-                  value: pressed ? 1 : 0,
-                });
-              }),
-            ),
-            axes: Object.freeze(
-              device.axes.map((axis) =>
-                visible(axis.mapped)
-                  ? Math.max(-1, Math.min(1, axis.value / 32767))
-                  : 0,
-              ),
-            ),
-            metadata: Object.freeze({
-              guid: device.guid,
-              vendor: device.vendor,
-              product: device.product,
-            }),
-          });
-        }
-        return Object.freeze(result);
-      },
-    },
-    getControllerLayout: {
-      value: (id) => inputLayouts.find((layout) => layout?.id === id) || null,
-    },
-    configure: {
-      value: (transaction) => {
-        if (!transaction || typeof transaction !== "object") {
-          return Promise.reject(new TypeError("input transaction must be an object"));
-        }
-        const id = nextInputRequest++;
-        const wire = {
-          ...transaction,
-          expectedRevision:
-            transaction.expectedRevision ?? inputConfiguration.revision ?? 0,
-        };
-        return new Promise((resolve, reject) => {
-          pendingInputRequests.set(id, { resolve, reject });
-          ops.op_input_configure(id, wire);
-        });
-      },
-    },
-  });
-
-  function setInputConfiguration(configuration, layouts) {
-    inputConfiguration = Object.freeze({ ...configuration });
-    inputLayouts = Object.freeze([...(layouts || [])]);
-    snowglassInput.dispatchEvent(
-      new CustomEvent("configurationchange", { detail: inputConfiguration }),
-    );
-  }
-
-  function setInputState(controllers, priority) {
-    inputControllers = Object.freeze([...(controllers || [])]);
-    inputPriority = priority === "game" ? "game" : "foreground";
-    inputTimestamp = performance.now();
-    snowglassInput.dispatchEvent(
-      new CustomEvent("inputstatechange", { detail: inputControllers }),
-    );
-  }
-
-  function inputConfigurationResult(id, result) {
-    const pending = pendingInputRequests.get(Number(id));
-    if (!pending) return;
-    pendingInputRequests.delete(Number(id));
-    if (!result?.ok || !result.configuration) {
-      pending.reject(new Error(result?.error || "Input configuration failed"));
-      return;
-    }
-    inputConfiguration = Object.freeze({ ...result.configuration });
-    pending.resolve(inputConfiguration);
-  }
-
-  function publishActiveInstance(instance) {
-    if (activeInstance === instance) return;
-    activeInstance = instance;
-    Emulator.dispatchEvent(
-      new CustomEvent("activeinstancechange", { detail: instance }),
-    );
-  }
-
-  class EmulatorInstance {
-    #listeners = new Map();
-    #state = "starting";
-    #error = null;
-
-    constructor(id, requested) {
-      this.id = id;
-      this.requested = Object.freeze([...requested]);
-      this.surfaces = Object.freeze([]);
-      this.audio = Object.freeze({
-        available: false,
-        volume: 1,
-        muted: false,
-      });
-    }
-
-    get state() {
-      return this.#state;
-    }
-
-    get error() {
-      return this.#error;
-    }
-
-    #canControl() {
-      return this.#state !== "closing" && this.#state !== "closed";
-    }
-
-    on(eventName, callback) {
-      if (typeof callback !== "function") throw new TypeError("event callback must be a function");
-      const listeners = this.#listeners.get(String(eventName)) || new Set();
-      listeners.add(callback);
-      this.#listeners.set(String(eventName), listeners);
-    }
-
-    off(eventName, callback) {
-      const listeners = this.#listeners.get(String(eventName));
-      if (!listeners) return;
-      listeners.delete(callback);
-      if (listeners.size === 0) this.#listeners.delete(String(eventName));
-    }
-
-    send(name, args) {
-      if (this.#canControl()) {
-        ops.op_emulator_message(this.id, String(name), args ?? null);
-      }
-    }
-
-    setVolume(volume) {
-      volume = Number(volume);
-      if (!Number.isFinite(volume)) {
-        throw new TypeError("Emulator volume must be a finite number");
-      }
-      if (this.#canControl()) {
-        ops.op_emulator_set_volume(this.id, Math.max(0, Math.min(1, volume)));
-      }
-    }
-
-    setMuted(muted) {
-      if (this.#canControl()) ops.op_emulator_set_muted(this.id, Boolean(muted));
-    }
-
-    activateInput() {
-      if (this.#canControl()) ops.op_emulator_input(this.id, true);
-    }
-
-    deactivateInput() {
-      if (this.#canControl()) ops.op_emulator_input(this.id, false);
-    }
-
-    close() {
-      if (!this.#canControl()) return;
-      this.#state = "closing";
-      ops.op_emulator_close(this.id);
-    }
-
-    __nativeEvent(eventName, payload) {
-      if (eventName === "start") {
-        this.#state = "starting";
-      } else if (eventName === "ready") {
-        this.#state = "ready";
-      } else if (eventName === "surfacesChanged") {
-        const connected = new Map(
-          Array.isArray(payload) ? payload.map((surface) => [surface.index, surface]) : [],
-        );
-        this.surfaces = Object.freeze(
-          this.requested.filter((surface) => connected.has(surface.index)),
-        );
-        for (const surface of this.requested) {
-          const native = connected.get(surface.index);
-          if (!native) continue;
-          surface.attach.dataset.connection = String(native.connection);
-          surface.attach.dataset.index = String(native.index);
-          surface.attach.dataset.preferredWidth = String(native.width);
-          surface.attach.dataset.preferredHeight = String(native.height);
-          surface.attach.style.setProperty("--preferred-width", `${native.width}px`);
-          surface.attach.style.setProperty("--preferred-height", `${native.height}px`);
-          surface.attach.style.setProperty(
-            "--preferred-aspect-ratio",
-            native.width && native.height ? String(native.width / native.height) : "auto",
-          );
-        }
-      } else if (eventName === "audioChanged") {
-        this.audio = Object.freeze({
-          available: Boolean(payload?.available),
-          volume: Math.max(0, Math.min(1, Number(payload?.volume) || 0)),
-          muted: Boolean(payload?.muted),
-        });
-      } else if (eventName === "error") {
-        const error = new Error(payload?.message || "Emulator instance failed");
-        this.#error = error;
-        this.#state = "error";
-      } else if (eventName === "closed") {
-        this.#state = "closed";
-        this.surfaces = Object.freeze([]);
-        if (activeInstance === this) publishActiveInstance(null);
-      }
-      for (const callback of this.#listeners.get(eventName) || []) {
-        try {
-          callback(payload);
-        } catch (error) {
-          console.error(`EmulatorInstance '${eventName}' handler failed`, error);
-        }
-      }
-    }
-  }
-
-  function launchEmulator(options) {
-    if (activeInstance) return null;
-    try {
-      if (!options || !Array.isArray(options.surfaces)) {
-        throw new TypeError("Emulator launch requires tracked surfaces");
-      }
-      for (const surface of options.surfaces) {
-        if (!(surface.attach instanceof HTMLTrackedSurfaceElement)) {
-          throw new TypeError(
-            `surface ${surface.index} must attach to an HTMLTrackedSurfaceElement`,
-          );
-        }
-        if (!surface.attach.isConnected) {
-          throw new TypeError(`surface ${surface.index} attachment is not connected`);
-        }
-      }
-      const wire = {
-        command: options.command,
-        arguments: [...(options.arguments || [])],
-        isolated: Boolean(options.isolated),
-        hook: [...options.hook],
-        surfaces: options.surfaces.map((surface) => ({
-          index: surface.index,
-          rotation: surface.rotation || 0,
-          selector: surface.selector,
-          attach: surface.attach.__id,
-          webrtc: Boolean(surface.webrtc),
-        })),
-        gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
-          ...mapping,
-          mapping: { ...(mapping.mapping || {}) },
-        })),
-        machine: options.machine,
-        webrtcBind: options.webrtcBind,
-      };
-      const id = ops.op_emulator_launch(wire);
-      const instance = new EmulatorInstance(id, options.surfaces);
-      publishActiveInstance(instance);
-      return instance;
-    } catch (error) {
-      console.error("Emulator launch failed", error);
-      return null;
-    }
-  }
-
-  function dispatchEmulatorEvent(event) {
-    if (activeInstance?.id === Number(event.instanceId)) {
-      activeInstance.__nativeEvent(event.eventName, event.payload);
-    }
-  }
-
-  Object.defineProperties(Emulator, {
-    activeInstance: {
-      get: () => activeInstance,
-      configurable: false,
-    },
-    launch: {
-      value: launchEmulator,
-      writable: false,
-      configurable: false,
-    },
-  });
-
-  function dispatch(target, event) {
-    let handled = false;
-    for (let current = target; current; current = current.parentNode) {
-      if (listenerCount(current, event.type) > 0) {
-        handled = true;
-        break;
-      }
-    }
-    dispatchNativeEvent(target, event);
-    eventResult = { handled, defaultPrevented: event.defaultPrevented };
-    ops.op_event_result(eventResult.handled, eventResult.defaultPrevented);
-  }
-
+  const inputFacade = globalThis.__snowglassCreateInputFacade(ops);
+  delete globalThis.__snowglassCreateInputFacade;
+  const { snowglassInput } = inputFacade;
+  const setInputConfiguration = inputFacade.setConfiguration;
+  const setInputState = inputFacade.setState;
+  const inputConfigurationResult = inputFacade.settleConfiguration;
+  const emulatorFacade = globalThis.__snowglassCreateEmulatorFacade(
+    ops,
+    HTMLTrackedSurfaceElement,
+  );
+  delete globalThis.__snowglassCreateEmulatorFacade;
+  const { Emulator } = emulatorFacade;
+  const dispatchEmulatorEvent = emulatorFacade.dispatch;
   function makeNode(snapshot) {
     if (snapshot.kind === "document") return new Document(snapshot);
     if (snapshot.kind === "text") return new Text(snapshot);
@@ -1343,7 +946,7 @@
 
   const foregroundChannel = new MessageChannel();
   foregroundChannel.port1.addEventListener("message", (event) => {
-    ops.op_post_message(event.data);
+    sendForegroundMessage(event.data);
   });
   foregroundChannel.port1.start();
 
@@ -1412,4 +1015,16 @@
     inputConfigurationResult,
     proxyRequest,
   });
+  if (sharedBus) {
+    sharedBus.subscribe(
+      bridgeRoutes.BRIDGE_MESSAGE,
+      bridgeRoutes.BACKGROUND,
+      (message) => globalThis.__snowglassDom.dispatchMessage(message),
+    );
+    sharedBus.subscribe(
+      bridgeRoutes.BRIDGE_PROXY,
+      bridgeRoutes.BACKGROUND,
+      (request) => globalThis.__snowglassDom.proxyRequest(request),
+    );
+  }
 })();

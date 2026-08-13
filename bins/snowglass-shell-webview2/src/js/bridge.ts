@@ -1,5 +1,28 @@
 interface Window {
   ipc: { postMessage(message: string): void };
+  readonly __snowglassSharedBus: {
+    send(kind: number, target: number, value: unknown, path?: string): bigint;
+    subscribe(
+      kind: number,
+      target: number,
+      listener: (value: unknown) => void,
+    ): () => void;
+    readonly routes: {
+      readonly BRIDGE_MESSAGE: number;
+      readonly BRIDGE_PROXY: number;
+      readonly SHELL_COMMAND: number;
+      readonly FOREGROUND: number;
+      readonly BACKGROUND: number;
+      readonly NATIVE: number;
+    };
+  };
+  readonly __snowglassCreateRemoteValueCodec: (adapters: {
+    encodeReference(value: object, reason: string): WireValue;
+    decodeReference(value: WireValue): unknown;
+  }) => {
+    encode(value: unknown): WireValue;
+    decode(value: WireValue): unknown;
+  };
   readonly gameLayer: EventTarget & {
     readonly contentWindow: BackgroundWindowProxy;
     readonly ready: boolean;
@@ -39,6 +62,11 @@ type ForegroundHitRegion = {
   width: number;
   height: number;
 };
+
+function sendShellCommand(command: unknown): void {
+  const { SHELL_COMMAND, NATIVE } = window.__snowglassSharedBus.routes;
+  window.__snowglassSharedBus.send(SHELL_COMMAND, NATIVE, command);
+}
 
 interface HTMLLinkElement {
   readonly contentWindow: BackgroundWindowProxy | null;
@@ -199,7 +227,7 @@ window.__snowglassInputConfigurationResult = (id, result) => {
   pending.resolve(inputConfiguration);
 };
 
-let publishedForegroundHitRegions = "";
+let publishedForegroundHitRegions: ForegroundHitRegion[] | null = null;
 let foregroundHitRegionFrame = 0;
 const foregroundHitRegionElements = new Set<Element>();
 const foregroundHitRegionResizeObserver = new ResizeObserver(() => {
@@ -241,12 +269,22 @@ function collectForegroundHitRegions(): ForegroundHitRegion[] {
 function publishForegroundHitRegions(): void {
   foregroundHitRegionFrame = 0;
   const regions = collectForegroundHitRegions();
-  const serialized = JSON.stringify(regions);
-  if (serialized !== publishedForegroundHitRegions) {
-    publishedForegroundHitRegions = serialized;
-    window.ipc.postMessage(
-      JSON.stringify({ type: "foregroundHitRegions", regions }),
-    );
+  const changed =
+    publishedForegroundHitRegions === null ||
+    regions.length !== publishedForegroundHitRegions.length ||
+    regions.some((region, index) => {
+      const previous = publishedForegroundHitRegions?.[index];
+      return (
+        !previous ||
+        region.x !== previous.x ||
+        region.y !== previous.y ||
+        region.width !== previous.width ||
+        region.height !== previous.height
+      );
+    });
+  if (changed) {
+    publishedForegroundHitRegions = regions;
+    sendShellCommand({ type: "foregroundHitRegions", regions });
   }
 
   const current = new Set(
@@ -323,9 +361,7 @@ Object.defineProperties(snowglassInputTarget, {
       };
       return new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
         pendingInputRequests.set(id, { resolve, reject });
-        window.ipc.postMessage(
-          JSON.stringify({ type: "inputConfigure", id, transaction: wire }),
-        );
+        sendShellCommand({ type: "inputConfigure", id, transaction: wire });
       });
     },
   },
@@ -358,19 +394,17 @@ Object.defineProperties(snowglassLauncherTarget, {
   },
   open: {
     value: (path: string, emulator?: string) => {
-      window.ipc.postMessage(
-        JSON.stringify({ type: "launcherOpen", path, emulator }),
-      );
+      sendShellCommand({ type: "launcherOpen", path, emulator });
     },
   },
   start: {
     value: (request: Record<string, unknown>) => {
-      window.ipc.postMessage(JSON.stringify({ type: "launcherStart", request }));
+      sendShellCommand({ type: "launcherStart", request });
     },
   },
   cancel: {
     value: () => {
-      window.ipc.postMessage(JSON.stringify({ type: "launcherCancel" }));
+      sendShellCommand({ type: "launcherCancel" });
     },
   },
 });
@@ -391,35 +425,29 @@ let nextProxyRequest = 1;
 let nextForegroundCallback = 1;
 
 function postToBackground(message: unknown): void {
-  window.ipc.postMessage(JSON.stringify({ type: "gameLayerMessage", message }));
+  const { BRIDGE_MESSAGE, BACKGROUND } = window.__snowglassSharedBus.routes;
+  window.__snowglassSharedBus.send(BRIDGE_MESSAGE, BACKGROUND, message);
 }
 
-function encodeWireValue(value: unknown, seen = new Set<object>()): WireValue {
-  if (value === undefined) return { kind: "undefined" };
-  if (typeof value === "bigint") {
-    return { kind: "bigint", value: value.toString() };
-  }
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return { kind: "value", value };
-  }
-
-  const reference = (
-    value as { [remoteReference]?: { handle: number; path: string[] } }
-  )[remoteReference];
-  if (reference) {
-    return {
-      kind: "backgroundReference",
-      handle: reference.handle,
-      path: reference.path,
-    };
-  }
-
-  if (typeof value === "function") {
+const remoteValueCodec = window.__snowglassCreateRemoteValueCodec({
+  encodeReference(value, reason) {
+    const reference = (
+      value as { [remoteReference]?: { handle: number; path: string[] } }
+    )[remoteReference];
+    if (reference) {
+      return {
+        kind: "backgroundReference",
+        handle: reference.handle,
+        path: reference.path,
+      };
+    }
+    if (typeof value !== "function") {
+      throw new TypeError(
+        reason === "cycle"
+          ? "Cannot send a cyclic object to the background"
+          : "Cannot send a non-plain object to the background",
+      );
+    }
     let handle = foregroundCallbackIds.get(
       value as (...args: never[]) => unknown,
     );
@@ -429,57 +457,16 @@ function encodeWireValue(value: unknown, seen = new Set<object>()): WireValue {
       foregroundCallbacks.set(handle, value as (...args: unknown[]) => unknown);
     }
     return { kind: "foregroundCallback", handle };
-  }
-
-  if (typeof value !== "object") {
-    throw new TypeError(`Cannot send a ${typeof value} to the background`);
-  }
-  if (seen.has(value)) {
-    throw new TypeError("Cannot send a cyclic object to the background");
-  }
-  seen.add(value);
-  try {
-    if (Array.isArray(value)) {
-      return {
-        kind: "array",
-        value: value.map((item) => encodeWireValue(item, seen)),
-      };
-    }
-    return {
-      kind: "object",
-      value: Object.fromEntries(
-        Object.entries(value).map(([key, item]) => [
-          key,
-          encodeWireValue(item, seen),
-        ]),
-      ),
-    };
-  } finally {
-    seen.delete(value);
-  }
-}
-
-function decodeWireValue(value: WireValue): unknown {
-  switch (value.kind) {
-    case "undefined":
-      return undefined;
-    case "bigint":
-      return BigInt(value.value);
-    case "array":
-      return value.value.map(decodeWireValue);
-    case "object":
-      return Object.fromEntries(
-        Object.entries(value.value).map(([key, item]) => [
-          key,
-          decodeWireValue(item),
-        ]),
-      );
-    case "backgroundReference":
+  },
+  decodeReference(value) {
+    if (value.kind === "backgroundReference") {
       return createBackgroundProxy(value.handle, value.path || []);
-    case "value":
-      return value.value;
-  }
-}
+    }
+    throw new TypeError("Invalid background proxy value");
+  },
+});
+const encodeWireValue = remoteValueCodec.encode;
+const decodeWireValue = remoteValueCodec.decode;
 
 function requestBackground(
   operation: "get" | "apply" | "set" | "delete",
@@ -491,12 +478,14 @@ function requestBackground(
   const promise = new Promise<unknown>((resolve, reject) => {
     pendingProxyRequests.set(id, { resolve, reject });
   });
-  window.ipc.postMessage(
-    JSON.stringify({
-      type: "gameLayerProxy",
-      request: { id, operation, handle, path, ...payload },
-    }),
-  );
+  const { BRIDGE_PROXY, BACKGROUND } = window.__snowglassSharedBus.routes;
+  window.__snowglassSharedBus.send(BRIDGE_PROXY, BACKGROUND, {
+    id,
+    operation,
+    handle,
+    path,
+    ...payload,
+  });
   return promise;
 }
 
@@ -615,6 +604,76 @@ window.__snowglassGameLayerProxyMessage = (message) => {
   }
 };
 
+function receiveShellCommand(value: unknown): void {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError("invalid native shell command");
+  }
+  const command = value as Record<string, unknown>;
+  switch (command.type) {
+    case "launcherState":
+      window.__snowglassSetLauncherState(
+        command.state as Record<string, unknown>,
+      );
+      break;
+    case "inputConfiguration":
+      window.__snowglassSetInputConfiguration(
+        command.configuration as Record<string, unknown>,
+        command.layouts as unknown[],
+      );
+      break;
+    case "inputConfigurationResult":
+      window.__snowglassInputConfigurationResult(
+        Number(command.id),
+        command.result as {
+          ok: boolean;
+          configuration?: Record<string, unknown>;
+          error?: string;
+        },
+      );
+      break;
+    case "gameLayerReady":
+      window.__snowglassGameLayerReady();
+      break;
+    case "inputPriority":
+      window.__snowglassSetInputPriority(
+        command.priority as "game" | "foreground",
+      );
+      break;
+    case "inputState":
+      window.__snowglassSetInputState(
+        command.controllers as unknown[],
+        command.routed as unknown[],
+      );
+      break;
+    case "keyboardInput":
+      window.__snowglassKeyboardInput(command.event);
+      break;
+    default:
+      throw new TypeError(
+        `unsupported native shell command ${String(command.type)}`,
+      );
+  }
+}
+{
+  const { BRIDGE_MESSAGE, BRIDGE_PROXY, SHELL_COMMAND, FOREGROUND } =
+    window.__snowglassSharedBus.routes;
+  window.__snowglassSharedBus.subscribe(
+    BRIDGE_MESSAGE,
+    FOREGROUND,
+    window.__snowglassGameLayerMessage,
+  );
+  window.__snowglassSharedBus.subscribe(
+    BRIDGE_PROXY,
+    FOREGROUND,
+    (message) => window.__snowglassGameLayerProxyMessage(message as ProxyMessage),
+  );
+  window.__snowglassSharedBus.subscribe(
+    SHELL_COMMAND,
+    FOREGROUND,
+    receiveShellCommand,
+  );
+}
+
 Object.defineProperty(HTMLLinkElement.prototype, "contentWindow", {
   get() {
     return this.relList.contains("background") ? backgroundWindowProxy : null;
@@ -656,7 +715,7 @@ async function announceFrontendReady(): Promise<void> {
       message.backgroundError = `${link.href}: ${String(error)}`;
     }
   }
-  window.ipc.postMessage(JSON.stringify(message));
+  sendShellCommand(message);
 }
 
 if (document.readyState === "loading") {

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::OnceLock;
 
 use blitz_dom::BaseDocument;
-use deno_core::ModuleSpecifier;
+use deno_core::{ModuleSpecifier, OpState, op2};
 use serde_json::Value;
 
 use super::dom::{
@@ -22,9 +21,26 @@ use super::modules::{BrowserModuleLoader, document_scripts, execute_document_scr
 use super::state::{BridgeState, op_post_message, op_proxy_message};
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
+const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
+const INPUT_FACADE: &str = include_str!("input_facade.js");
+const EMULATOR_FACADE: &str = include_str!("emulator_facade.js");
+const SHARED_BUS_CLIENT: &str =
+    include_str!("../../../../../crates/runtime/snowglass-pluginhost/bus_client.js");
+const PLUGIN_FACADE: &str = include_str!("../../js/plugin_facade.js");
+const REMOTE_VALUE_CODEC: &str = include_str!("../../js/remote_value_codec.js");
+
+#[derive(Default)]
+struct SharedBusBridge(Option<crate::shared_bus::BackgroundBusEndpoint>);
+
+#[op2(fast)]
+fn op_shared_bus_doorbell(state: &mut OpState) {
+    if let Some(endpoint) = state.borrow::<SharedBusBridge>().0.as_ref() {
+        endpoint.wake_native();
+    }
+}
 
 deno_core::extension!(
-    snowglass_game_layer,
+    snowglass_background_runtime,
     ops = [
         op_dom_create_element,
         op_dom_create_text,
@@ -45,9 +61,10 @@ deno_core::extension!(
         op_emulator_message,
         op_emulator_input,
         op_input_configure,
+        op_shared_bus_doorbell,
     ],
-    esm_entry_point = "ext:snowglass_game_layer/bootstrap.js",
-    esm = ["ext:snowglass_game_layer/bootstrap.js" = {
+    esm_entry_point = "ext:snowglass_background_runtime/bootstrap.js",
+    esm = ["ext:snowglass_background_runtime/bootstrap.js" = {
         source = r#"
                 import { core } from "ext:core/mod.js";
                 import {
@@ -70,6 +87,7 @@ deno_core::extension!(
                   op_emulator_set_volume,
                   op_post_message,
                   op_proxy_message,
+                  op_shared_bus_doorbell,
                 } from "ext:core/ops";
                 const webEvents = core.loadExtScript("ext:deno_web/02_event.js");
                 Object.defineProperty(globalThis, "__snowglassRuntime", {
@@ -99,11 +117,16 @@ deno_core::extension!(
                   }),
                   configurable: true,
                 });
+                Object.defineProperty(globalThis, "__snowglassSharedBusDoorbell", {
+                  value: op_shared_bus_doorbell,
+                  configurable: false,
+                });
             "#
     },],
     state = |state| {
         state.put(BridgeState::default());
         state.put(EmulatorBridge::default());
+        state.put(SharedBusBridge::default());
     },
 );
 
@@ -120,19 +143,83 @@ impl Runtime {
         width: u32,
         height: u32,
         emulator_commands: EmulatorCommandSink,
-        plugin_host: snowglass_pluginhost::PluginHost,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_snapshot(
             Self::serialized_snapshot(document, width, height)?,
             html.to_owned(),
             source_name.to_owned(),
             emulator_commands,
-            plugin_host,
+            None,
         )
         .await
     }
 
-    pub(in crate::game_layer) fn serialized_snapshot(
+    #[cfg(test)]
+    pub async fn evaluate_for_test(
+        &mut self,
+        source: &'static str,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let promise = self
+            .worker
+            .js_runtime_mut()
+            .execute_script("snowglass:test/evaluate.js", source)?;
+        #[allow(deprecated)]
+        let result = self.worker.js_runtime_mut().resolve_value(promise).await?;
+        deno_core::scope!(scope, self.worker.js_runtime_mut());
+        let result = deno_core::v8::Local::new(scope, result);
+        Ok(deno_core::serde_v8::from_v8(scope, result)?)
+    }
+
+    #[cfg(test)]
+    pub fn install_shared_bus_client_for_test(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.worker.js_runtime_mut().execute_script(
+            "snowglass:test/shared-bus-adapter.js",
+            r#"
+              const __testLaneCapacity = 4096;
+              const __testBusBuffer = new SharedArrayBuffer(4 * (64 + __testLaneCapacity));
+              for (let lane = 0; lane < 4; lane++) {
+                const base = lane * (64 + __testLaneCapacity);
+                const view = new DataView(__testBusBuffer, base, 64);
+                view.setUint32(0, 0x31424753, true);
+                view.setUint16(4, 1, true);
+                view.setUint16(6, lane, true);
+                view.setUint32(8, 1, true);
+                view.setUint32(12, __testLaneCapacity, true);
+              }
+              const __testBusListeners = { sharedbufferreceived: [], message: [] };
+              Object.defineProperty(globalThis, "chrome", {
+                value: { webview: Object.freeze({
+                  addEventListener(type, listener) { __testBusListeners[type]?.push(listener); },
+                  releaseBuffer() {},
+                }) },
+                configurable: true,
+              });
+              Object.defineProperty(globalThis, "ipc", {
+                value: Object.freeze({ postMessage() {} }),
+                configurable: true,
+              });
+              Object.defineProperty(globalThis, "__snowglassBusLanes", {
+                value: [2, 3], configurable: true,
+              });
+              Object.defineProperty(globalThis, "__attachTestBus", {
+                value() {
+                  for (const listener of __testBusListeners.sharedbufferreceived) {
+                    listener({ getBuffer() { return __testBusBuffer; } });
+                  }
+                },
+              });
+            "#,
+        )?;
+        self.worker
+            .js_runtime_mut()
+            .execute_script("snowglass:test/shared-bus-client.js", SHARED_BUS_CLIENT)?;
+        self.worker
+            .js_runtime_mut()
+            .execute_script("snowglass:test/shared-bus-attach.js", "__attachTestBus();")?;
+        Ok(())
+    }
+
+    pub(in crate::background_runtime) fn serialized_snapshot(
         document: &BaseDocument,
         width: u32,
         height: u32,
@@ -140,12 +227,12 @@ impl Runtime {
         serde_json::to_string(&snapshot(document, width, height, None))
     }
 
-    pub(in crate::game_layer) async fn from_snapshot(
+    pub(in crate::background_runtime) async fn from_snapshot(
         initial_snapshot: String,
         html: String,
         source_name: String,
         emulator_commands: EmulatorCommandSink,
-        plugin_host: snowglass_pluginhost::PluginHost,
+        background_bus: Option<crate::shared_bus::BackgroundBusEndpoint>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
@@ -154,24 +241,67 @@ impl Runtime {
         let document_url = ModuleSpecifier::parse(&source_name)?;
         start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
-        let module_loader = Rc::new(snowglass_pluginhost::PluginModuleRouter::new(
-            plugin_host,
-            browser_loader.clone(),
-        ));
         let storage_dir = std::env::var_os("LOCALAPPDATA")
             .map(std::path::PathBuf::from)
             .map(|path| path.join("Snowglass").join("webstorage"));
         let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
             main_module: document_url.clone(),
-            module_loader,
-            extensions: vec![
-                snowglass_pluginhost::deno::extension(),
-                snowglass_game_layer::init(),
-            ],
+            module_loader: browser_loader.clone(),
+            extensions: vec![snowglass_background_runtime::init()],
             user_agent: format!("Snowglass/{}", env!("CARGO_PKG_VERSION")),
             storage_dir,
             inspect: true,
         });
+        if let Some(background_bus) = background_bus {
+            background_bus
+                .install(worker.js_runtime_mut())
+                .map_err(std::io::Error::other)?;
+            worker
+                .js_runtime_mut()
+                .op_state()
+                .borrow_mut()
+                .borrow_mut::<SharedBusBridge>()
+                .0 = Some(background_bus);
+            worker.js_runtime_mut().execute_script(
+                "snowglass:shared-bus/deno-adapter.js",
+                r#"
+                  const __snowglassBusListeners = { sharedbufferreceived: [], message: [] };
+                  Object.defineProperty(globalThis, "chrome", {
+                    value: { webview: Object.freeze({
+                      addEventListener(type, listener) { __snowglassBusListeners[type]?.push(listener); },
+                      releaseBuffer() {},
+                    }) },
+                  });
+                  Object.defineProperty(globalThis, "ipc", {
+                    value: Object.freeze({ postMessage() { __snowglassSharedBusDoorbell(); } }),
+                  });
+                  Object.defineProperty(globalThis, "__snowglassBusLanes", { value: [2, 3] });
+                  Object.defineProperty(globalThis, "__snowglassDispatchBusBuffer", {
+                    value() {
+                      for (const listener of __snowglassBusListeners.sharedbufferreceived) {
+                        listener({ getBuffer() { return __snowglassBusBuffer; } });
+                      }
+                    },
+                  });
+                "#,
+            )?;
+            worker
+                .js_runtime_mut()
+                .execute_script("snowglass:shared-bus/client.js", SHARED_BUS_CLIENT)?;
+            worker.js_runtime_mut().execute_script(
+                "snowglass:shared-bus/attach.js",
+                "__snowglassDispatchBusBuffer();",
+            )?;
+        }
+        worker
+            .js_runtime_mut()
+            .execute_script("snowglass:pluginhost/facade.js", PLUGIN_FACADE)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("snowglass:bridge/remote-value-codec.js", REMOTE_VALUE_CODEC)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("snowglass:background/event-dispatch.js", EVENT_DISPATCH)?;
         worker
             .js_runtime_mut()
             .op_state()
@@ -180,9 +310,15 @@ impl Runtime {
             .command_sink = emulator_commands;
         worker
             .js_runtime_mut()
-            .execute_script("snowglass:game-layer/deno/runtime.js", BOOTSTRAP)?;
+            .execute_script("snowglass:background/input-facade.js", INPUT_FACADE)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("snowglass:background/emulator-facade.js", EMULATOR_FACADE)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("snowglass:background/runtime.js", BOOTSTRAP)?;
         worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/document.js",
+            "snowglass:background/document.js",
             format!("__snowglassDom.install({initial_snapshot});"),
         )?;
         for (index, script) in document_scripts(&html).enumerate() {
@@ -197,7 +333,7 @@ impl Runtime {
             if let Err(error) = result {
                 // A browser reports an individual script error without
                 // discarding the document's realm or preventing later scripts.
-                tracing::error!("snowglass: game-layer script {index} failed: {error}");
+                tracing::error!("snowglass: background script {index} failed: {error}");
             }
         }
         worker.run_up_to_duration(std::time::Duration::ZERO).await?;
@@ -213,7 +349,7 @@ impl Runtime {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = serde_json::to_string(&snapshot(document, width, height, Some(node_ids)))?;
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/sync.js",
+            "snowglass:background/sync.js",
             format!("__snowglassDom.sync({snapshot});"),
         )?;
         Ok(())
@@ -221,7 +357,7 @@ impl Runtime {
 
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/resize.js",
+            "snowglass:background/resize.js",
             format!("__snowglassDom.resize({width}, {height});"),
         )?;
         Ok(())
@@ -241,7 +377,7 @@ impl Runtime {
             .event = EventResult::default();
         let init = serde_json::to_string(&mouse)?;
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/mouse-event.js",
+            "snowglass:background/mouse-event.js",
             format!(
                 "__snowglassDom.dispatchMouse({}, {target}, {init});",
                 serde_json::to_string(kind)?
@@ -269,7 +405,7 @@ impl Runtime {
             .event = EventResult::default();
         let init = serde_json::to_string(&keyboard)?;
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/keyboard-event.js",
+            "snowglass:background/keyboard-event.js",
             format!(
                 "__snowglassDom.dispatchKeyboard({}, {init});",
                 serde_json::to_string(kind)?
@@ -286,7 +422,7 @@ impl Runtime {
 
     pub fn post_message(&mut self, message: &Value) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/message-event.js",
+            "snowglass:background/message-event.js",
             format!(
                 "__snowglassDom.dispatchMessage({});",
                 serde_json::to_string(message)?
@@ -295,9 +431,10 @@ impl Runtime {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn proxy_request(&mut self, request: &Value) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/proxy-request.js",
+            "snowglass:test/proxy-request.js",
             format!(
                 "__snowglassDom.proxyRequest({});",
                 serde_json::to_string(request)?
@@ -311,7 +448,7 @@ impl Runtime {
         event: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/emulator-event.js",
+            "snowglass:background/emulator-event.js",
             format!(
                 "__snowglassDom.dispatchEmulatorEvent({});",
                 serde_json::to_string(event)?
@@ -326,7 +463,7 @@ impl Runtime {
         layouts: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/input-configuration.js",
+            "snowglass:background/input-configuration.js",
             format!(
                 "__snowglassDom.setInputConfiguration({}, {});",
                 serde_json::to_string(configuration)?,
@@ -342,7 +479,7 @@ impl Runtime {
         priority: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/input-state.js",
+            "snowglass:background/input-state.js",
             format!(
                 "__snowglassDom.setInputState({}, {});",
                 serde_json::to_string(controllers)?,
@@ -358,7 +495,7 @@ impl Runtime {
         result: &Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
-            "snowglass:game-layer/deno/input-configuration-result.js",
+            "snowglass:background/input-configuration-result.js",
             format!(
                 "__snowglassDom.inputConfigurationResult({request_id}, {});",
                 serde_json::to_string(result)?
@@ -373,6 +510,20 @@ impl Runtime {
     /// indefinitely. The shell's event loop calls this regularly so those
     /// tasks progress without blocking the window thread.
     pub async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self
+            .worker
+            .js_runtime()
+            .op_state()
+            .borrow()
+            .borrow::<SharedBusBridge>()
+            .0
+            .is_some()
+        {
+            self.worker.js_runtime_mut().execute_script(
+                "snowglass:shared-bus/doorbell.js",
+                "__snowglassSharedBusNotify?.();",
+            )?;
+        }
         self.worker
             .run_up_to_duration(std::time::Duration::ZERO)
             .await?;
@@ -391,6 +542,7 @@ impl Runtime {
         )
     }
 
+    #[cfg(test)]
     pub fn take_messages(&mut self) -> Vec<Value> {
         std::mem::take(
             &mut self
@@ -403,6 +555,7 @@ impl Runtime {
         )
     }
 
+    #[cfg(test)]
     pub fn take_proxy_messages(&mut self) -> Vec<Value> {
         std::mem::take(
             &mut self
@@ -413,27 +566,6 @@ impl Runtime {
                 .borrow_mut::<BridgeState>()
                 .proxy_messages,
         )
-    }
-
-    /// Invokes a registered emulator capability in this shell-owned Deno
-    /// instance. Module routing follows the plugin module's referrer.
-    pub async fn run_emulator_plugin(
-        &mut self,
-        plugin: Arc<dyn snowglass_pluginhost::EmulatorPluginInstance>,
-        arguments: serde_json::Value,
-        configuration: snowglass_config::ast::ConfigurationInstance,
-    ) -> Result<
-        snowglass_pluginhost::EmulatorLaunchArguments,
-        snowglass_pluginhost::EmulatorHostError,
-    > {
-        let mut launch = snowglass_pluginhost::EmulatorLaunch::attach(self.worker.js_runtime_mut());
-        launch
-            .execute(snowglass_pluginhost::EmulatorSetupInvocation {
-                plugin,
-                arguments,
-                configuration,
-            })
-            .await
     }
 }
 
@@ -454,8 +586,8 @@ fn start_inspector_server() -> Result<(), Box<dyn std::error::Error>> {
             },
         )
         .map_err(|error| error.to_string())?;
-        tracing::error!(
-            "snowglass: game-layer DevTools targets: http://{}/json",
+        tracing::info!(
+            "snowglass: background DevTools targets: http://{}/json",
             server.host
         );
         Ok(server.host)

@@ -19,7 +19,7 @@ type SetupLaunchArgs = {
     emulatorConfig: Configuration
 }
 
-const setupLaunch = (args: SetupLaunchArgs) => {
+export const setupLaunch = (args: SetupLaunchArgs) => {
     const executable = new URL(config.plugin.config.cemu_path);
     args.emulatorConfig.options().content.open_pad = true;
 

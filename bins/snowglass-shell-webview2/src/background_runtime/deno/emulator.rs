@@ -4,7 +4,7 @@ use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use serde_json::Value;
 
-use crate::api::LaunchOptions;
+use crate::launch::AttachedLaunchPlan;
 use snowglass_input::hub::InputTransaction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -15,7 +15,7 @@ pub struct InstanceToken(pub u32);
 pub enum EmulatorCommand {
     Launch {
         token: InstanceToken,
-        options: LaunchOptions,
+        options: AttachedLaunchPlan,
     },
     Close(InstanceToken),
     SetVolume {
@@ -77,7 +77,7 @@ impl Default for EmulatorBridge {
 #[op2]
 pub(super) fn op_emulator_launch(
     state: &mut OpState,
-    #[serde] options: LaunchOptions,
+    #[serde] options: AttachedLaunchPlan,
 ) -> Result<u32, JsErrorBox> {
     options.validate().map_err(JsErrorBox::type_error)?;
     let emulator = state.borrow_mut::<EmulatorBridge>();

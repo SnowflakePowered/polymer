@@ -52,11 +52,11 @@ impl RegisteredPlugin {
 }
 
 #[derive(Clone, Default)]
-pub struct PluginHost {
+pub struct PluginRegistry {
     plugins: Arc<RwLock<HashMap<String, RegisteredPlugin>>>,
 }
 
-impl PluginHost {
+impl PluginRegistry {
     pub fn new() -> Self {
         Self::default()
     }
