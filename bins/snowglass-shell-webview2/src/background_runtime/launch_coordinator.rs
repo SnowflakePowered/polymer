@@ -2,7 +2,7 @@ use crate::cli::GameLaunchRequest;
 use crate::launch::{EmulatorLaunchArguments, UnattachedLaunchPlan, plugin_launch_options};
 use crate::launcher;
 use snowglass_renderer::cli::ViewerOptions;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 pub(crate) enum LaunchCoordinatorEvent {
     GameDetected {
@@ -78,7 +78,12 @@ impl BackgroundLaunchCoordinator {
         };
         let sink = Arc::clone(&self.event_sink);
         tokio::task::spawn_local(async move {
+            let started = Instant::now();
             let result = launcher::detect_game(path, request.emulator).await;
+            tracing::info!(
+                elapsed_ms = started.elapsed().as_millis(),
+                "snowglass: game detection task completed"
+            );
             sink(LaunchCoordinatorEvent::GameDetected { generation, result });
         });
     }

@@ -170,19 +170,54 @@ GAMECUBE_BINDINGS = {
 # mapping a backend onto hooks — and rejecting one that maps to nothing — is the
 # TS module's job. It is reported so the author knows which names to cover.
 SUPPORTED_BACKENDS = ("Vulkan", "D3D", "D3D12", "OGL")
+BACKEND_LABELS = {
+    "Vulkan": "Vulkan",
+    "D3D": "Direct3D 11",
+    "D3D12": "Direct3D 12",
+    "OGL": "OpenGL",
+}
 GFX_BACKEND_KEY = ("Main", "Core", "GFXBackend")
 SPLIT_SUBSECTION_SYSTEMS = {"GFX"}
+
+# SDL exposes pointer coordinates as the two legacy axes after its six standard
+# gamepad axes. Motion controls are named by SDLGamepad's sensor prefix and the
+# direction strings in SDL_AXES_ACCELEROMETER / SDL_AXES_GYRO.
+SDL_POINTER_AND_MOTION_MAPPING = {
+    "pointer.x-": "Axis 6-",
+    "pointer.x+": "Axis 6+",
+    "pointer.y-": "Axis 7-",
+    "pointer.y+": "Axis 7+",
+    "analog.accelerometer.x-": "Accel Left",
+    "analog.accelerometer.x+": "Accel Right",
+    "analog.accelerometer.y-": "Accel Backward",
+    "analog.accelerometer.y+": "Accel Forward",
+    "analog.accelerometer.z-": "Accel Down",
+    "analog.accelerometer.z+": "Accel Up",
+    "analog.gyroscope.x-": "Gyro Roll Left",
+    "analog.gyroscope.x+": "Gyro Roll Right",
+    "analog.gyroscope.y-": "Gyro Pitch Down",
+    "analog.gyroscope.y+": "Gyro Pitch Up",
+    "analog.gyroscope.z-": "Gyro Yaw Left",
+    "analog.gyroscope.z+": "Gyro Yaw Right",
+    "analog.accelerometer.left.x-": "Accel L Left",
+    "analog.accelerometer.left.x+": "Accel L Right",
+    "analog.accelerometer.left.y-": "Accel L Backward",
+    "analog.accelerometer.left.y+": "Accel L Forward",
+    "analog.accelerometer.left.z-": "Accel L Down",
+    "analog.accelerometer.left.z+": "Accel L Up",
+    "analog.accelerometer.right.x-": "Accel R Left",
+    "analog.accelerometer.right.x+": "Accel R Right",
+    "analog.accelerometer.right.y-": "Accel R Backward",
+    "analog.accelerometer.right.y+": "Accel R Forward",
+    "analog.accelerometer.right.z-": "Accel R Down",
+    "analog.accelerometer.right.z+": "Accel R Up",
+}
 
 # Config systems that describe controllers rather than settings. input.toml owns
 # their files and their port keys, so the definition document leaves them alone —
 # otherwise both documents declare a root for GCPadNew.ini and both write
 # `Wiimote1/Source`, which lowering rejects as duplicates.
 INPUT_SYSTEMS = ("GCPad", "WiiPad", "GCKeyboard")
-
-# Resolver export the generated document points at for the backend option. The
-# set of video backends depends on the installed build, so it cannot come from
-# the source tree; the script checks that the plugin's module exports this name.
-GFX_BACKEND_RESOLVER = "resolveGraphicsBackend"
 
 # Dolphin writes booleans through `ValueToString(bool)` in Common/StringUtil.cpp,
 # which is `value ? "True" : "False"` for every key. The document declares that
@@ -475,52 +510,27 @@ def parse_video_backends(root: Path, report: Report) -> list[str]:
 
 
 def build_gfx_backend_option(option: dict, backends: list[str], report: Report) -> dict:
-    """Turn GFXBackend into a resolver-backed select.
+    """Turn GFXBackend into a select over the backends in this Dolphin build.
 
     Which backends a Dolphin build actually ships is a property of the install —
     D3D is Windows-only, Metal is macOS-only, and any of them can be compiled
-    out — and upstream computes the default at startup rather than storing it as
-    a constant. Both are therefore resolved at realize time, with the set parsed
-    out of the source tree serving as the static fallback.
+    out — while upstream computes the default at startup rather than storing it
+    as a constant. The generator already reads the concrete build's backend
+    sources, so expose that set directly and let setupLaunch choose one.
     """
     supported = [name for name in backends if name in SUPPORTED_BACKENDS]
     if not supported:
         raise Bail("no Dolphin video backend has a snowglass capture hook")
     option["type"] = "select"
-    # No fallback and no default: the resolver is authoritative, and its first
-    # choice is the default.
-    option["domain"] = {"source": f"resolver:{GFX_BACKEND_RESOLVER}"}
+    option["domain"] = [
+        {"key": name, "label": BACKEND_LABELS[name], "value": name}
+        for name in supported
+    ]
     option.pop("default", None)
     report.note(f"backends: {len(backends)} in the source tree "
                 f"({', '.join(backends)}); {len(supported)} capturable "
                 f"({', '.join(supported)}); the TS module maps these onto hooks")
-    check_resolver_export(GFX_BACKEND_RESOLVER, report)
     return option
-
-
-def check_resolver_export(name: str, report: Report) -> None:
-    """Verify the plugin's resolver module exports the name the document names."""
-    manifest = Path(__file__).resolve().parent.parent / "plugin.toml"
-    if not manifest.is_file():
-        report.warn(f"no plugin.toml beside this script; cannot verify `{name}` exists")
-        return
-    declared = re.search(r"^\s*resolver\s*=\s*\"([^\"]+)\"",
-                         manifest.read_text(encoding="utf-8"), re.M)
-    if not declared:
-        report.error(f"plugin.toml declares no `resolver`, but the document needs `{name}`")
-        return
-    module = manifest.parent / declared.group(1)
-    if not module.is_file():
-        report.error(f"plugin.toml points at {declared.group(1)}, which does not exist")
-        return
-    text = module.read_text(encoding="utf-8")
-    exported = (re.search(rf"\bexport\s+(?:const|let|var|function|class)\s+{re.escape(name)}\b", text)
-                or re.search(rf"\bexport\s*\{{[^}}]*\b{re.escape(name)}\b[^}}]*\}}", text))
-    if exported:
-        report.note(f"{declared.group(1)} exports `{name}`")
-    else:
-        report.error(f"{declared.group(1)} does not export `{name}`, "
-                     "which the definition document references")
 
 
 def build_definition(infos: list[InfoDef], systems: dict[str, str], titles: dict[str, str],
@@ -1381,11 +1391,12 @@ def build_sdl_mapping(root: Path, report: Report) -> list[str]:
     buttons = sdlpad.named(source, "s_sdl_button_names")
     axes = sdlpad.named(source, "s_sdl_axis_names")
     entries = sdlpad.compose(buttons, axes, sign_first=False, raw_sdl=False)
+    entries.extend(SDL_POINTER_AND_MOTION_MAPPING.items())
     missing = [key for key in sdlpad.BUTTONS.values()
                if key not in {entry for entry, _ in entries}]
     if missing:
         report.note(f"input: {'Dolphin'} names no SDL control for {', '.join(missing)}")
-    report.note(f"input: {len(entries)} SDL controls paired by constant")
+    report.note(f"input: {len(entries)} SDL controls paired by constant and sensor name")
     return sdlpad.emit_mapping((key, f"`{value}`") for key, value in entries)
 
 def main(argv: list[str] | None = None) -> int:

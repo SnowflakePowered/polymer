@@ -415,7 +415,7 @@ emit = { key = "GCIFolderBPathOverride" }
 key = "gfx_backend"
 title = "Gfx Backend"
 type = "select"
-domain = { source = "resolver:resolveGraphicsBackend" }
+domain = [{ key = "D3D", label = "Direct3D 11", value = "D3D" }, { key = "OGL", label = "OpenGL", value = "OGL" }]
 emit = { key = "GFXBackend" }
 
 [[sections.main.core.options]]

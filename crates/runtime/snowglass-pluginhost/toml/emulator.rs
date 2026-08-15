@@ -263,3 +263,38 @@ impl EmulatorPluginInstance for EmulatorPlugin {
         self.materialize(console, assignments)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::configuration::{ConfigurationInstances, serialize};
+
+    #[test]
+    fn dolphin_wii_remote_configuration_serializes_pointer_and_motion() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("plugins/dolphin");
+        let plugin = EmulatorPlugin::load(&package).unwrap();
+        let assignments = plugin
+            .port_assignments("NINTENDO_WII", ["WII_REMOTE_CONTROLLER"])
+            .unwrap();
+        let configuration = plugin.materialize("NINTENDO_WII", assignments).unwrap();
+        let mut instances = ConfigurationInstances::default();
+        let id = instances.insert(configuration);
+        instances
+            .set(id, "main.core.gfx_backend", serde_json::json!("D3D"))
+            .unwrap();
+
+        let files = serialize(instances.take(id).unwrap()).unwrap();
+        let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
+        assert!(wiimote.contains("IR/Left=`Axis 6-`"), "{wiimote}");
+        assert!(
+            wiimote.contains("IMUAccelerometer/Left=`Accel Left`"),
+            "{wiimote}"
+        );
+        assert!(
+            wiimote.contains("IMUGyroscope/Yaw Right=`Gyro Yaw Right`"),
+            "{wiimote}"
+        );
+    }
+}
