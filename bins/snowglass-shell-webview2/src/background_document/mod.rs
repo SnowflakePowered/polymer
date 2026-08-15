@@ -425,7 +425,7 @@ impl BackgroundDocument {
     /// Forces the next paint even when the document itself did not change.
     ///
     /// This is also needed after the merged compositor moves to another GPU,
-    /// because that device must open fresh shared chrome textures.
+    /// because the replacement device must create fresh local chrome textures.
     pub fn invalidate(&mut self) {
         self.dirty = true;
     }

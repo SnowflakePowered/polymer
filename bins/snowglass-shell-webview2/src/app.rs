@@ -5,145 +5,33 @@ use crate::background_runtime::{
     LaunchCoordinatorEvent,
 };
 use crate::cli::{GameLaunchRequest, ShellOptions};
+use crate::commands::{BackgroundDocumentSource, RuntimeCommand, decode_foreground_command};
 use crate::foreground_dom::ForegroundDom;
 use crate::game_host::{BackgroundRasterizer, GameHost, GameHostCaptureEvent, GameHostCommand};
 use crate::input::{
     DomPointerKind, InputCommand, InputPriority, InputRouter, InputTransport, KeyboardTarget,
     PointerTarget,
 };
+use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
+use crate::metrics::{TurnPhase, TurnProfile};
 use crate::shared_bus::{SharedBusBroker, SharedBusRequest};
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellWindowEvent, WindowBootstrap,
     WindowCommand, WindowManager,
 };
 use crate::{cli, launcher};
-use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
-use snowglass_input::{
-    hub::InputTransaction, layout::SdlButton, mouse::PointerPhase, provider::sdl3::Sdl3Provider,
-};
+use snowglass_input::{hub::InputTransaction, mouse::PointerPhase};
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_renderer::{CompositingPlan, Extent, cli::ViewerApi};
 use snowglass_statistics::RecorderHandle;
 use std::{
-    collections::HashMap,
     error::Error,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Debug)]
-pub(crate) enum UserEvent {
-    Window(WindowCommand),
-    Runtime(RuntimeCommand),
-    GameHost(GameHostCommand),
-    Input(InputCommand),
-}
-
-#[derive(Debug)]
-pub(crate) enum RuntimeCommand {
-    FrontendReady {
-        background: Option<BackgroundDocumentSource>,
-        background_error: Option<String>,
-    },
-    ForegroundNavigation,
-    SharedBusDoorbell,
-    SharedBusSettlement {
-        generation: u32,
-        request_id: u64,
-        response_lane: usize,
-        result: Result<Vec<u8>, snowglass_pluginhost::PluginInvocationError>,
-    },
-    LauncherOpen(GameLaunchRequest),
-    LauncherStart(launcher::LauncherStartRequest),
-    LauncherCancel,
-    GameDetected {
-        generation: u64,
-        result: Result<launcher::DetectedGame, String>,
-    },
-}
-
-#[derive(Debug)]
-pub(crate) struct BackgroundDocumentSource {
-    html: String,
-    base_url: String,
-}
-
-fn decode_foreground_command(message: serde_json::Value) -> Result<UserEvent, String> {
-    let kind = message
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "foreground shell command is missing its type".to_owned())?;
-    match kind {
-        "frontendReady" => {
-            let background = message.get("background").and_then(|background| {
-                Some(BackgroundDocumentSource {
-                    html: background.get("html")?.as_str()?.to_owned(),
-                    base_url: background.get("url")?.as_str()?.to_owned(),
-                })
-            });
-            let background_error = message
-                .get("backgroundError")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            Ok(UserEvent::Runtime(RuntimeCommand::FrontendReady {
-                background,
-                background_error,
-            }))
-        }
-        "foregroundHitRegions" => {
-            let regions = message
-                .get("regions")
-                .cloned()
-                .ok_or_else(|| "foreground hit-region command is missing regions".to_owned())?;
-            serde_json::from_value(regions)
-                .map(|regions| UserEvent::Input(InputCommand::ForegroundHitRegions(regions)))
-                .map_err(|error| format!("invalid WebView2 foreground hit regions: {error}"))
-        }
-        "inputConfigure" => {
-            let request_id = message
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or_else(|| "input configuration command has an invalid ID".to_owned())?;
-            let transaction = message.get("transaction").cloned().ok_or_else(|| {
-                "input configuration command is missing its transaction".to_owned()
-            })?;
-            serde_json::from_value(transaction)
-                .map(|transaction| {
-                    UserEvent::Input(InputCommand::Configure {
-                        request_id,
-                        transaction,
-                    })
-                })
-                .map_err(|error| format!("invalid input configuration transaction: {error}"))
-        }
-        "launcherOpen" => {
-            let game = message
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "launcher-open command is missing its path".to_owned())?
-                .into();
-            let emulator = message
-                .get("emulator")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            Ok(UserEvent::Runtime(RuntimeCommand::LauncherOpen(
-                GameLaunchRequest { game, emulator },
-            )))
-        }
-        "launcherStart" => {
-            let request = message
-                .get("request")
-                .cloned()
-                .ok_or_else(|| "launcher-start command is missing its request".to_owned())?;
-            serde_json::from_value(request)
-                .map(|request| UserEvent::Runtime(RuntimeCommand::LauncherStart(request)))
-                .map_err(|error| format!("invalid frontend launch request: {error}"))
-        }
-        "launcherCancel" => Ok(UserEvent::Runtime(RuntimeCommand::LauncherCancel)),
-        other => Err(format!("unsupported foreground shell command '{other}'")),
-    }
-}
+pub(crate) use crate::commands::UserEvent;
 
 // Capture can produce events much faster than the window message queue when
 // several streams are active. Keep each dispatch small so native window input
@@ -169,128 +57,6 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
 /// event loop, and the WebView2 host that shares this thread with it.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
-
-/// Where an event-loop turn's wall time goes.
-///
-/// The shell runs WebView2, Vello, capture intake, and every present on one
-/// thread. A turn that runs long does not surface as an obviously slow
-/// function: it surfaces as coalesced compositor ticks and a present rate below
-/// the display's, which reads identically to a pacing bug. Attributing the time
-/// is what separates the two.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TurnPhase {
-    Capture,
-    Present,
-    Background,
-    Input,
-    Overlay,
-}
-
-impl TurnPhase {
-    const ALL: [Self; 5] = [
-        Self::Capture,
-        Self::Present,
-        Self::Background,
-        Self::Input,
-        Self::Overlay,
-    ];
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Capture => "capture",
-            Self::Present => "present",
-            Self::Background => "background",
-            Self::Input => "input",
-            Self::Overlay => "overlay",
-        }
-    }
-
-    const fn index(self) -> usize {
-        self as usize
-    }
-}
-
-/// An open phase measurement, holding the enclosing phase's nested total so it
-/// can be restored when this one closes.
-#[derive(Clone, Copy, Debug)]
-struct PhaseEntry {
-    started: Instant,
-    outer_nested: Duration,
-}
-
-#[derive(Debug, Default)]
-struct TurnProfile {
-    spans: [Duration; TurnPhase::ALL.len()],
-    /// Time already attributed to phases nested inside the one currently open.
-    nested: Duration,
-    turns: u64,
-    started: Option<Instant>,
-    report: String,
-}
-
-impl TurnProfile {
-    /// Opens a phase. Phases nest — draining capture presents, and presenting
-    /// repaints chrome — so each reports the time it spent on its own work
-    /// rather than the time its callees spent. Otherwise the enclosing phase
-    /// always looks like the expensive one and names the wrong thing to cut.
-    fn enter(&mut self) -> PhaseEntry {
-        PhaseEntry {
-            started: Instant::now(),
-            outer_nested: std::mem::take(&mut self.nested),
-        }
-    }
-
-    fn record(&mut self, phase: TurnPhase, entry: PhaseEntry) {
-        let total = entry.started.elapsed();
-        self.spans[phase.index()] += total.saturating_sub(self.nested);
-        self.nested = entry.outer_nested + total;
-    }
-
-    /// Closes a turn, refreshing the report once a sampling window elapses.
-    ///
-    /// Costs are reported as milliseconds spent per second of wall clock, so a
-    /// phase reading 400 is eating 40% of the loop and a turn rate below the
-    /// refresh rate cannot be fixed by scheduling presents differently.
-    fn finish_turn(&mut self, now: Instant) {
-        self.turns += 1;
-        self.nested = Duration::ZERO;
-        let started = *self.started.get_or_insert(now);
-        let elapsed = now.saturating_duration_since(started);
-        if elapsed < snowglass_statistics::SAMPLE_INTERVAL {
-            return;
-        }
-        let seconds = elapsed.as_secs_f64();
-        let mut phases = TurnPhase::ALL;
-        // Costliest first: the point of the line is to name what to cut.
-        phases.sort_by(|left, right| self.spans[right.index()].cmp(&self.spans[left.index()]));
-        let costs = phases
-            .iter()
-            .map(|phase| {
-                format!(
-                    "{} {:.0}",
-                    phase.label(),
-                    self.spans[phase.index()].as_secs_f64() * 1000.0 / seconds
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" · ");
-        self.report = format!(
-            "Loop {:.1} turns/s · {costs} ms/s",
-            self.turns as f64 / seconds
-        );
-        self.spans = <[Duration; TurnPhase::ALL.len()]>::default();
-        self.turns = 0;
-        self.started = Some(now);
-    }
-}
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebRenderTarget {
-    connection: String,
-    index: u32,
-    width: u32,
-    height: u32,
-}
 
 struct ShellServices {
     session: String,
@@ -468,13 +234,10 @@ impl ShellCoordinator {
     }
 
     fn publish_launcher_state(&mut self) {
-        let Ok(state) = serde_json::to_value(self.launch.state()) else {
+        let Some(command) = crate::commands::launcher_state(self.launch.state()) else {
             return;
         };
-        self.send_foreground_command(serde_json::json!({
-            "type": "launcherState",
-            "state": state,
-        }));
+        self.send_foreground_command(command);
     }
 
     async fn deliver_cli_launch(&mut self) {
@@ -490,13 +253,10 @@ impl ShellCoordinator {
                 return;
             }
         };
-        let Ok(options) = serde_json::to_value(&options) else {
+        let Some(message) = crate::commands::cli_launch(&options) else {
             return;
         };
-        if !self.background_dom.post_message(&serde_json::json!({
-            "type": "snowglass-cli-launch",
-            "options": options,
-        })) {
+        if !self.background_dom.post_message(&message) {
             let message = "CLI launch requires a linked game layer".to_owned();
             tracing::error!("snowglass: {message}");
             self.launch.set_error(message);
@@ -538,10 +298,6 @@ impl ShellCoordinator {
         self.game_host.is_active(token)
     }
 
-    fn input_provider(&self) -> Option<&Sdl3Provider> {
-        self.input.provider()
-    }
-
     fn configure_input(
         &mut self,
         request_id: u64,
@@ -567,18 +323,10 @@ impl ShellCoordinator {
     }
 
     fn publish_input_configuration(&mut self) {
-        let configuration = self.input.configuration_snapshot();
-        let layouts = self.input.layouts();
-        let configuration_value =
-            serde_json::to_value(&configuration).unwrap_or(serde_json::Value::Null);
-        let layouts_value = serde_json::to_value(&layouts).unwrap_or(serde_json::Value::Null);
+        let publication = self.input.configuration_publication();
         self.background_dom
-            .set_input_configuration(&configuration_value, &layouts_value);
-        self.send_foreground_command(serde_json::json!({
-            "type": "inputConfiguration",
-            "configuration": configuration_value,
-            "layouts": layouts_value,
-        }));
+            .set_input_configuration(&publication.configuration, &publication.layouts);
+        self.send_foreground_command(publication.command);
     }
 
     fn send_input_configuration_result(
@@ -587,26 +335,13 @@ impl ShellCoordinator {
         result: Result<snowglass_input::hub::InputConfiguration, String>,
         background: bool,
     ) {
-        let result = match result {
-            Ok(configuration) => serde_json::json!({
-                "ok": true,
-                "configuration": configuration,
-            }),
-            Err(error) => serde_json::json!({
-                "ok": false,
-                "error": error,
-            }),
-        };
+        let (result, command) = InputRouter::configuration_result(request_id, result);
         if background {
             self.background_dom
                 .input_configuration_result(request_id, &result);
             return;
         }
-        self.send_foreground_command(serde_json::json!({
-            "type": "inputConfigurationResult",
-            "id": request_id,
-            "result": result,
-        }));
+        self.send_foreground_command(command);
     }
 
     async fn frontend_ready(
@@ -656,7 +391,7 @@ impl ShellCoordinator {
                 return;
             }
             self.refresh_background();
-            self.send_foreground_command(serde_json::json!({ "type": "gameLayerReady" }));
+            self.send_foreground_command(crate::commands::game_layer_ready());
             tracing::error!(
                 "snowglass: using game layer discovered at {}",
                 background.base_url
@@ -684,12 +419,100 @@ impl ShellCoordinator {
         self.bus_broker.flush(self.foreground_dom.shared_bus_mut());
     }
 
+    fn handle_compositor_tick(&mut self) {
+        self.window.clear_clock_tick();
+        self.window.record_clock();
+        self.refresh_pending_background();
+        self.present_pending_surfaces(PRESENT_PERMIT_WAIT);
+    }
+
+    fn handle_foreground_navigation(&mut self) {
+        self.launch.plugin_runtime_handle().cancel_all();
+        self.bus_broker.reset();
+        self.foreground_dom.next_bus_generation();
+        self.foreground_bus_attached = false;
+        self.input.clear_foreground_hit_regions();
+        self.background_dom.reset();
+        self.game_host.clear_background();
+    }
+
+    fn handle_shared_bus_doorbell(&mut self) {
+        if !self.foreground_bus_attached {
+            match self.foreground_dom.attach_shared_bus() {
+                Ok(()) => self.foreground_bus_attached = true,
+                Err(error) => {
+                    tracing::error!(
+                        "snowglass: attaching the foreground shared bus failed: {error}"
+                    );
+                    return;
+                }
+            }
+        }
+        self.flush_shared_bus_responses();
+        for request in self.drain_shared_bus_requests() {
+            match request {
+                SharedBusRequest::Plugin(request) => {
+                    let runtime = self.launch.plugin_runtime_handle();
+                    let proxy = self.services.proxy.clone();
+                    tokio::task::spawn_local(async move {
+                        let result = runtime
+                            .invoke_encoded_with_cancellation(
+                                &request.plugin,
+                                &request.path,
+                                request.encoded_arguments,
+                                request.cancellation,
+                            )
+                            .await;
+                        let _ = proxy.send_event(UserEvent::Runtime(
+                            RuntimeCommand::SharedBusSettlement {
+                                generation: request.generation,
+                                request_id: request.request_id,
+                                response_lane: request.response_lane,
+                                result,
+                            },
+                        ));
+                    });
+                }
+                SharedBusRequest::ShellCommand(command) => {
+                    match decode_foreground_command(command) {
+                        Ok(event) => {
+                            let _ = self.services.proxy.send_event(event);
+                        }
+                        Err(error) => tracing::error!("snowglass: {error}"),
+                    }
+                }
+            }
+        }
+    }
+
+    fn settle_shared_bus(
+        &mut self,
+        generation: u32,
+        request_id: u64,
+        response_lane: usize,
+        result: Result<Vec<u8>, snowglass_pluginhost::PluginInvocationError>,
+    ) {
+        let foreground = self.bus_broker.settle_plugin(
+            self.foreground_dom.shared_bus(),
+            generation,
+            request_id,
+            response_lane,
+            result,
+        );
+        self.flush_shared_bus_responses();
+        if foreground && let Err(error) = self.foreground_dom.ring_bus_doorbell() {
+            tracing::error!(
+                "snowglass: ringing the foreground shared-bus doorbell failed: {error}"
+            );
+        }
+    }
+
     fn launch_game(&mut self, token: InstanceToken, options: AttachedLaunchPlan) {
         if self.game_host.has_active_game() {
             self.emit_instance_event(
                 token,
                 "error",
-                &serde_json::json!({ "message": "another emulator instance is active" }),
+                &instance_events::error("another emulator instance is active"),
             );
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
@@ -699,11 +522,9 @@ impl ShellCoordinator {
             self.emit_instance_event(
                 token,
                 "error",
-                &serde_json::json!({
-                    "message": format!(
-                        "surface {index} does not attach to its background tracked-surface"
-                    )
-                }),
+                &instance_events::error(format!(
+                    "surface {index} does not attach to its background tracked-surface"
+                )),
             );
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
@@ -713,7 +534,7 @@ impl ShellCoordinator {
             .input
             .configure_launch(&options.machine, &options.gamepad_mapping)
         {
-            self.emit_instance_event(token, "error", &serde_json::json!({ "message": error }));
+            self.emit_instance_event(token, "error", &instance_events::error(error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
         }
@@ -737,11 +558,7 @@ impl ShellCoordinator {
                 self.publish_audio_state(true);
             }
             Err(error) => {
-                self.emit_instance_event(
-                    token,
-                    "error",
-                    &serde_json::json!({ "message": error.to_string() }),
-                );
+                self.emit_instance_event(token, "error", &instance_events::error(error));
                 self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             }
         }
@@ -773,11 +590,7 @@ impl ShellCoordinator {
 
     fn game_message(&mut self, token: InstanceToken, name: &str, args: serde_json::Value) {
         if self.is_active(token) {
-            self.emit_instance_event(
-                token,
-                "message",
-                &serde_json::json!({ "name": name, "args": args }),
-            );
+            self.emit_instance_event(token, "message", &instance_events::message(name, args));
         }
     }
 
@@ -797,15 +610,7 @@ impl ShellCoordinator {
         let Some((token, audio)) = self.game_host.audio_change(force) else {
             return;
         };
-        self.emit_instance_event(
-            token,
-            "audioChanged",
-            &serde_json::json!({
-                "available": audio.available,
-                "volume": audio.volume.get(),
-                "muted": audio.muted,
-            }),
-        );
+        self.emit_instance_event(token, "audioChanged", &instance_events::audio(audio));
     }
 
     fn emit_instance_event(
@@ -814,11 +619,7 @@ impl ShellCoordinator {
         event_name: &str,
         payload: &serde_json::Value,
     ) {
-        let event = serde_json::json!({
-            "instanceId": token,
-            "eventName": event_name,
-            "payload": payload,
-        });
+        let event = instance_events::envelope(token, event_name, payload);
         let background_changed = self.background_dom.dispatch_emulator_event(&event);
         if background_changed {
             self.refresh_background();
@@ -944,12 +745,13 @@ impl ShellCoordinator {
     /// for DXGI to hand back a present slot.
     fn present_pending_surfaces(&mut self, permit_wait: Duration) {
         let entered = self.profile.enter();
-        self.present_pending_surfaces_inner(permit_wait);
+        let size = self.window.size();
+        match self.game_host.draw(size.width, size.height, permit_wait) {
+            Ok(Some(carried_new_frame)) => self.window.record_present(carried_new_frame),
+            Ok(None) => {}
+            Err(error) => tracing::error!("snowglass: rendering merged surfaces failed: {error}"),
+        }
         self.profile.record(TurnPhase::Present, entered);
-    }
-
-    fn present_pending_surfaces_inner(&mut self, permit_wait: Duration) {
-        self.draw_merged(permit_wait);
     }
 
     fn has_pending_surfaces(&self) -> bool {
@@ -958,22 +760,6 @@ impl ShellCoordinator {
         // DirectComposition retains the last buffer, so only new content or
         // chrome needs another present.
         self.game_host.has_pending_frame()
-    }
-
-    /// Draws every stream and the game layer's chrome into the shared
-    /// swapchain when either has changed.
-    ///
-    /// Every stream keeps its newest frame independently. A draw samples all of
-    /// those newest frames, so one stream delivering does not make the others
-    /// wait for another producer frame, while an unchanged composition remains
-    /// resident in DirectComposition without redundant presents.
-    fn draw_merged(&mut self, permit_wait: Duration) {
-        let size = self.window.size();
-        match self.game_host.draw(size.width, size.height, permit_wait) {
-            Ok(Some(carried_new_frame)) => self.window.record_present(carried_new_frame),
-            Ok(None) => {}
-            Err(error) => tracing::error!("snowglass: rendering merged surfaces failed: {error}"),
-        }
     }
 
     /// Re-lays out the game layer and moves the compositor to match.
@@ -1127,13 +913,7 @@ impl ShellCoordinator {
             }
             InputPriority::Game => self.focus_game_input(),
         }
-        self.send_foreground_command(serde_json::json!({
-            "type": "inputPriority",
-            "priority": match priority {
-                InputPriority::Game => "game",
-                InputPriority::Foreground => "foreground",
-            },
-        }));
+        self.send_foreground_command(crate::input::priority_command(priority));
     }
 
     fn focus_game_input(&self) {
@@ -1158,258 +938,203 @@ impl ShellCoordinator {
         let _ = self.foreground_dom.send_pointer_event(event);
     }
 
+    fn handle_dropped_file(&mut self, path: std::path::PathBuf) {
+        if self.game_host.has_active_game() {
+            self.launch
+                .set_error("Close the active game before launching another one.");
+            self.publish_launcher_state();
+        } else {
+            self.queue_game(GameLaunchRequest {
+                game: path,
+                emulator: None,
+            });
+        }
+    }
+
+    fn synchronize_foreground(&mut self) {
+        let size = self.window.size();
+        if let Err(error) = self.foreground_dom.synchronize(size.width, size.height) {
+            tracing::error!("snowglass: synchronizing foreground WebView2 failed: {error}");
+        }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        if let Err(error) = self.foreground_dom.synchronize(width, height) {
+            tracing::error!("snowglass: resizing foreground WebView2 failed: {error}");
+        }
+        if let Err(error) = self.window.resize_overlay() {
+            tracing::error!("snowglass: resizing egui composition overlay failed: {error}");
+        }
+        if self.background_dom.resize(width, height) {
+            self.refresh_background();
+        }
+        let render_window = self.window.surface(width, height);
+        if let Err(error) = self.game_host.resize_compositor(&render_window) {
+            tracing::error!("snowglass: resizing the shared swapchain failed: {error}");
+        }
+        self.window.request_redraw();
+    }
+
+    fn handle_focus_lost(&mut self) {
+        if let Some(connection) = self.input.captured_connection() {
+            self.cancel_pointer_connection(connection);
+        }
+        let cursor = self.input.cursor();
+        for (button, _) in self.input.focus_lost_buttons() {
+            self.background_mouse(
+                "mouseup",
+                cursor.x as f32,
+                cursor.y as f32,
+                button,
+                Some(false),
+            );
+        }
+        self.input.finish_focus_lost();
+    }
+
+    fn route_keyboard_to_game(&mut self, key: Option<String>, pressed: bool, repeat: bool) {
+        let Some(key) = key else { return };
+        if !self.input.route_game_key(&key, pressed) {
+            self.publish_keyboard_input(&key, pressed, repeat);
+        }
+    }
+
+    fn handle_cursor_moved(&mut self, x: f64, y: f64, consumed: bool) {
+        self.input.set_cursor(x, y);
+        let background_hit = self.background_dom.hit_test(x as f32, y as f32).is_some();
+        match self.input.pointer_target(consumed, true, background_hit) {
+            PointerTarget::Overlay => return,
+            PointerTarget::Foreground => {
+                self.route_foreground_mouse(DomPointerKind::Move);
+                return;
+            }
+            PointerTarget::Background => {
+                self.route_foreground_mouse(DomPointerKind::Move);
+                if self.background_mouse("mousemove", x as f32, y as f32, 0, None) {
+                    return;
+                }
+            }
+            PointerTarget::Game => self.route_foreground_mouse(DomPointerKind::Move),
+        }
+        self.route_pointer(PointerPhase::Move, 0, 0, 0);
+    }
+
+    fn handle_mouse_button(&mut self, button: Option<u16>, pressed: bool, consumed: bool) {
+        let Some(button) = button else { return };
+        let dom_button = match button {
+            1 => 0,
+            2 => 2,
+            3 => 1,
+            value => value.saturating_sub(1),
+        };
+        let foreground_hit = self.input.foreground_region_claims(consumed, true);
+        let cursor = self.input.cursor();
+        let background_hit = self
+            .background_dom
+            .hit_test(cursor.x as f32, cursor.y as f32)
+            .is_some();
+        match self.input.pointer_target(consumed, true, background_hit) {
+            PointerTarget::Overlay => return,
+            PointerTarget::Foreground => {
+                if pressed && foreground_hit {
+                    self.input.set_foreground_mouse_capture(true);
+                }
+                self.route_foreground_mouse(DomPointerKind::Button { button, pressed });
+                if !pressed && !self.input.foreground_buttons_active() {
+                    self.input.set_foreground_mouse_capture(false);
+                }
+                return;
+            }
+            PointerTarget::Background => {
+                let kind = if pressed { "mousedown" } else { "mouseup" };
+                if self.background_mouse(
+                    kind,
+                    cursor.x as f32,
+                    cursor.y as f32,
+                    dom_button,
+                    Some(pressed),
+                ) {
+                    return;
+                }
+            }
+            PointerTarget::Game => {}
+        }
+        self.route_pointer(
+            if pressed {
+                PointerPhase::ButtonDown
+            } else {
+                PointerPhase::ButtonUp
+            },
+            u32::from(button),
+            0,
+            0,
+        );
+    }
+
+    fn handle_mouse_wheel(&mut self, horizontal: i32, vertical: i32) {
+        match self.input.pointer_target(false, false, false) {
+            PointerTarget::Foreground => {
+                if horizontal != 0 {
+                    self.route_foreground_mouse(DomPointerKind::Wheel {
+                        horizontal: true,
+                        delta: horizontal,
+                    });
+                }
+                if vertical != 0 {
+                    self.route_foreground_mouse(DomPointerKind::Wheel {
+                        horizontal: false,
+                        delta: vertical,
+                    });
+                }
+            }
+            PointerTarget::Overlay => {}
+            PointerTarget::Background | PointerTarget::Game => {
+                self.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
+            }
+        }
+    }
+
+    fn draw_overlay(&mut self) {
+        let entered = self.profile.enter();
+        if let Err(error) = self.window.draw_overlay() {
+            tracing::error!("snowglass: drawing egui composition overlay failed: {error}");
+        }
+        self.profile.record(TurnPhase::Overlay, entered);
+    }
+
     fn publish_input_state(&mut self) {
         if !self.input.publication_due(Instant::now()) {
             return;
         }
-        let states = self
-            .input_provider()
-            .map(Sdl3Provider::states)
-            .unwrap_or_default();
-        let physical_devices = self.input.devices();
-        let guide_pressed = physical_devices
-            .iter()
-            .any(|device| device.buttons.contains(&(SdlButton::Guide, true)));
-        if self.input.observe_guide_button(guide_pressed)
-            && self.input.priority() == InputPriority::Game
-        {
+        if self.input.guide_button_pressed() && self.input.priority() == InputPriority::Game {
             self.set_input_priority(InputPriority::Foreground);
         }
-        self.window.set_input_diagnostics(InputDiagnostics {
-            active: self.input.priority() == InputPriority::Game
-                && self.game_host.has_active_game(),
-            slots: self
-                .game_host
-                .gamepad_mapping()
-                .iter()
-                .map(|config| {
-                    let Some(state) = states.get(config.slot).and_then(Option::as_ref) else {
-                        return InputSlotDiagnostics {
-                            slot: config.slot,
-                            layout: config.layout.clone(),
-                            ..InputSlotDiagnostics::default()
-                        };
-                    };
-                    InputSlotDiagnostics {
-                        slot: config.slot,
-                        layout: state.layout_id.clone(),
-                        connected: true,
-                        name: state.name.clone(),
-                        guid: state.guid.clone(),
-                        pressed: state
-                            .buttons
-                            .iter()
-                            .filter(|(_, pressed)| *pressed)
-                            .map(|(button, _)| format!("{button:?}"))
-                            .collect(),
-                        axes: state
-                            .axes
-                            .iter()
-                            .map(|(axis, value)| InputAxisDiagnostics {
-                                name: format!("{axis:?}"),
-                                value: *value,
-                            })
-                            .collect(),
-                        mapped_buttons: state.mapped.buttons,
-                        left_stick: state.mapped.left_stick,
-                        right_stick: state.mapped.right_stick,
-                        left_trigger: state.mapped.left_trigger,
-                        right_trigger: state.mapped.right_trigger,
-                        pointer: state.mapped.pointer,
-                        accelerometer: state.mapped.accelerometer,
-                        gyroscope: state.mapped.gyroscope,
-                    }
-                })
-                .collect(),
-        });
-        let mut devices = Vec::new();
-        let mut next_controls = HashMap::new();
-        let foreground_priority = self.input.priority() == InputPriority::Foreground;
-        for device in physical_devices {
-            let assigned = states
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, state)| {
-                    state
-                        .as_ref()
-                        .is_some_and(|state| state.device_id == device.device_id)
-                        .then_some(slot)
-                })
-                .collect::<Vec<_>>();
-            let mapped_states = assigned
-                .iter()
-                .filter_map(|&slot| states.get(slot).and_then(Option::as_ref))
-                .collect::<Vec<_>>();
-            let primary = mapped_states.first().copied();
-            let buttons = device
-                .buttons
-                .iter()
-                .map(|&(button, pressed)| {
-                    let name = format!("{button:?}");
-                    let global = button == SdlButton::Guide;
-                    let consumed = global
-                        || mapped_states
-                            .iter()
-                            .any(|state| state.mapped_buttons.contains(&button));
-                    if foreground_priority || !consumed {
-                        if !global {
-                            next_controls.insert(
-                                format!("{}:button:{name}", device.device_id),
-                                i32::from(pressed),
-                            );
-                        }
-                    }
-                    serde_json::json!({
-                        "button": name,
-                        "pressed": pressed,
-                        "mapped": consumed,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let axes = device
-                .axes
-                .iter()
-                .map(|&(axis, value)| {
-                    let name = format!("{axis:?}");
-                    let consumed = mapped_states
-                        .iter()
-                        .any(|state| state.mapped_axes.contains(&axis));
-                    if foreground_priority || !consumed {
-                        next_controls.insert(
-                            format!("{}:axis:{name}", device.device_id),
-                            i32::from(value),
-                        );
-                    }
-                    serde_json::json!({
-                        "axis": name,
-                        "value": value,
-                        "mapped": consumed,
-                    })
-                })
-                .collect::<Vec<_>>();
-            devices.push(serde_json::json!({
-                "index": device.enumeration_index,
-                "slot": device.enumeration_index,
-                "deviceId": device.device_id,
-                "name": device.name,
-                "guid": device.guid,
-                "vendor": device.vendor,
-                "product": device.product,
-                "assignedPorts": assigned,
-                "layout": primary.map(|state| state.layout_id.as_str()),
-                "buttons": buttons,
-                "axes": axes,
-                "mapped": {
-                    "buttons": primary.map_or(0, |state| state.mapped.buttons),
-                    "leftStick": primary.map_or([0; 2], |state| state.mapped.left_stick),
-                    "rightStick": primary.map_or([0; 2], |state| state.mapped.right_stick),
-                    "leftTrigger": primary.map_or(0, |state| state.mapped.left_trigger),
-                    "rightTrigger": primary.map_or(0, |state| state.mapped.right_trigger),
-                    "pointer": primary.map_or([0; 2], |state| state.mapped.pointer),
-                    "accelerometer": primary.map_or([0.0; 3], |state| state.mapped.accelerometer),
-                    "gyroscope": primary.map_or([0.0; 3], |state| state.mapped.gyroscope),
-                }
-            }));
-        }
-        for (slot, state) in states.iter().enumerate().filter_map(|(slot, state)| {
-            state
-                .as_ref()
-                .filter(|state| state.device_id == "keyboard-mouse")
-                .map(|state| (slot, state))
-        }) {
-            devices.push(serde_json::json!({
-                "index": devices.len(),
-                "slot": devices.len(),
-                "deviceId": state.device_id,
-                "name": state.name,
-                "guid": state.guid,
-                "vendor": state.vendor,
-                "product": state.product,
-                "assignedPorts": [slot],
-                "layout": state.layout_id,
-                "buttons": state.buttons.iter().map(|(button, pressed)| serde_json::json!({
-                    "button": format!("{button:?}"),
-                    "pressed": pressed,
-                    "mapped": true,
-                })).collect::<Vec<_>>(),
-                "axes": state.axes.iter().map(|(axis, value)| serde_json::json!({
-                    "axis": format!("{axis:?}"),
-                    "value": value,
-                    "mapped": true,
-                })).collect::<Vec<_>>(),
-                "mapped": {
-                    "buttons": state.mapped.buttons,
-                    "leftStick": state.mapped.left_stick,
-                    "rightStick": state.mapped.right_stick,
-                    "leftTrigger": state.mapped.left_trigger,
-                    "rightTrigger": state.mapped.right_trigger,
-                    "pointer": state.mapped.pointer,
-                    "accelerometer": state.mapped.accelerometer,
-                    "gyroscope": state.mapped.gyroscope,
-                }
-            }));
-        }
-        let routed = self
-            .input
-            .route_ui_controls(next_controls)
-            .into_iter()
-            .map(|(key, value)| control_event(&key, value))
-            .collect::<Vec<_>>();
-        let controllers = serde_json::Value::Array(devices.clone());
-        self.background_dom.set_input_state(
-            &controllers,
-            if foreground_priority {
-                "foreground"
-            } else {
-                "game"
-            },
+        let publication = self.input.build_publication(
+            self.game_host.gamepad_mapping(),
+            self.game_host.has_active_game(),
         );
-        let Ok(json) = serde_json::to_string(&devices) else {
+        self.window.set_input_diagnostics(publication.diagnostics);
+        self.background_dom
+            .set_input_state(&publication.controllers, publication.priority);
+        let Some(state_changed) = publication.state_changed else {
             return;
         };
-        let state_changed = self.input.observe_published_state(&json);
-        if !state_changed && routed.is_empty() {
+        if !state_changed && publication.routed.is_empty() {
             return;
         }
         self.window.request_overlay_repaint();
-        self.send_foreground_command(serde_json::json!({
-            "type": "inputState",
-            "controllers": devices,
-            "routed": routed,
-        }));
+        self.send_foreground_command(crate::input::state_command(
+            publication.controllers,
+            publication.routed,
+        ));
     }
 
     fn publish_keyboard_input(&mut self, key: &str, pressed: bool, repeat: bool) {
-        let event = serde_json::json!({
-            "device": "keyboard",
-            "controlType": "key",
-            "control": key,
-            "value": i32::from(pressed),
-            "pressed": pressed,
-            "repeat": repeat,
-        });
-        self.send_foreground_command(serde_json::json!({
-            "type": "keyboardInput",
-            "event": event,
-        }));
+        self.send_foreground_command(crate::input::keyboard_command(key, pressed, repeat));
     }
 
     fn publish_targets_for(&mut self, token: InstanceToken) {
-        let mut targets = self
-            .game_host
-            .surface_targets()
-            .into_iter()
-            .map(|surface| WebRenderTarget {
-                connection: surface.connection.to_string(),
-                index: surface.index,
-                width: surface.width,
-                height: surface.height,
-            })
-            .collect::<Vec<_>>();
-        targets.sort_by_key(|target| target.index);
-        let Ok(payload) = serde_json::to_value(&targets) else {
-            return;
-        };
+        let payload = instance_events::surfaces(self.game_host.surface_targets());
         self.emit_instance_event(token, "surfacesChanged", &payload);
     }
 
@@ -1552,18 +1277,7 @@ impl ShellApplication {
             // captures. `process_capture` is bounded, and carries any overflow
             // into `about_to_wait`.
             UserEvent::Window(WindowCommand::WakeCapture) => state.process_capture(),
-            UserEvent::Window(WindowCommand::CompositorTick) => {
-                state.window.clear_clock_tick();
-                state.window.record_clock();
-                // Mouse input can run several times faster than the display.
-                // Paint its latest position once for this scanout rather than
-                // blocking on a Vello repaint for every intermediate event.
-                state.refresh_pending_background();
-                // Present here, in phase with DWM, rather than when a guest
-                // frame happened to arrive. The chrome refreshed just above
-                // rides the same present.
-                state.present_pending_surfaces(PRESENT_PERMIT_WAIT);
-            }
+            UserEvent::Window(WindowCommand::CompositorTick) => state.handle_compositor_tick(),
             UserEvent::Runtime(RuntimeCommand::FrontendReady {
                 background,
                 background_error,
@@ -1571,87 +1285,20 @@ impl ShellApplication {
                 self.pending_frontend_ready = Some((background, background_error));
             }
             UserEvent::Runtime(RuntimeCommand::ForegroundNavigation) => {
-                state.launch.plugin_runtime_handle().cancel_all();
-                state.bus_broker.reset();
-                state.foreground_dom.next_bus_generation();
-                state.foreground_bus_attached = false;
-                state.input.clear_foreground_hit_regions();
-                state.background_dom.reset();
-                state.game_host.clear_background();
+                state.handle_foreground_navigation()
             }
             UserEvent::Input(InputCommand::ForegroundHitRegions(regions)) => {
                 state.input.replace_foreground_hit_regions(regions);
             }
             UserEvent::Runtime(RuntimeCommand::SharedBusDoorbell) => {
-                if !state.foreground_bus_attached {
-                    match state.foreground_dom.attach_shared_bus() {
-                        Ok(()) => state.foreground_bus_attached = true,
-                        Err(error) => {
-                            tracing::error!(
-                                "snowglass: attaching the foreground shared bus failed: {error}"
-                            );
-                            return;
-                        }
-                    }
-                }
-                state.flush_shared_bus_responses();
-                for request in state.drain_shared_bus_requests() {
-                    match request {
-                        SharedBusRequest::Plugin(request) => {
-                            let runtime = state.launch.plugin_runtime_handle();
-                            let proxy = state.services.proxy.clone();
-                            tokio::task::spawn_local(async move {
-                                let result = runtime
-                                    .invoke_encoded_with_cancellation(
-                                        &request.plugin,
-                                        &request.path,
-                                        request.encoded_arguments,
-                                        request.cancellation,
-                                    )
-                                    .await;
-                                let _ = proxy.send_event(UserEvent::Runtime(
-                                    RuntimeCommand::SharedBusSettlement {
-                                        generation: request.generation,
-                                        request_id: request.request_id,
-                                        response_lane: request.response_lane,
-                                        result,
-                                    },
-                                ));
-                            });
-                        }
-                        SharedBusRequest::ShellCommand(command) => {
-                            match decode_foreground_command(command) {
-                                Ok(event) => {
-                                    let _ = state.services.proxy.send_event(event);
-                                }
-                                Err(error) => {
-                                    tracing::error!("snowglass: {error}");
-                                }
-                            }
-                        }
-                    }
-                }
+                state.handle_shared_bus_doorbell()
             }
             UserEvent::Runtime(RuntimeCommand::SharedBusSettlement {
                 generation,
                 request_id,
                 response_lane,
                 result,
-            }) => {
-                let foreground = state.bus_broker.settle_plugin(
-                    state.foreground_dom.shared_bus(),
-                    generation,
-                    request_id,
-                    response_lane,
-                    result,
-                );
-                state.flush_shared_bus_responses();
-                if foreground && let Err(error) = state.foreground_dom.ring_bus_doorbell() {
-                    tracing::error!(
-                        "snowglass: ringing the foreground shared-bus doorbell failed: {error}"
-                    );
-                }
-            }
+            }) => state.settle_shared_bus(generation, request_id, response_lane, result),
             UserEvent::Input(InputCommand::Configure {
                 request_id,
                 transaction,
@@ -1718,59 +1365,12 @@ impl ShellApplication {
         }
         match event {
             ShellWindowEvent::CloseRequested => return true,
-            ShellWindowEvent::DroppedFile(path) => {
-                if state.game_host.has_active_game() {
-                    state
-                        .launch
-                        .set_error("Close the active game before launching another one.");
-                    state.publish_launcher_state();
-                } else {
-                    state.queue_game(GameLaunchRequest {
-                        game: path,
-                        emulator: None,
-                    });
-                }
-            }
-            ShellWindowEvent::Moved => {
-                let size = state.window.size();
-                if let Err(error) = state.foreground_dom.synchronize(size.width, size.height) {
-                    tracing::error!("snowglass: synchronizing foreground WebView2 failed: {error}");
-                }
-            }
+            ShellWindowEvent::DroppedFile(path) => state.handle_dropped_file(path),
+            ShellWindowEvent::Moved => state.synchronize_foreground(),
             ShellWindowEvent::Resized { width, height } if width != 0 && height != 0 => {
-                if let Err(error) = state.foreground_dom.synchronize(width, height) {
-                    tracing::error!("snowglass: resizing foreground WebView2 failed: {error}");
-                }
-                if let Err(error) = state.window.resize_overlay() {
-                    tracing::error!("snowglass: resizing egui composition overlay failed: {error}");
-                }
-                if state.background_dom.resize(width, height) {
-                    state.refresh_background();
-                }
-                // The shared swapchain and the background both cover the whole
-                // window, so the window is what resizes them, not a DOM box.
-                let render_window = state.window.surface(width, height);
-                if let Err(error) = state.game_host.resize_compositor(&render_window) {
-                    tracing::error!("snowglass: resizing the shared swapchain failed: {error}");
-                }
-                state.window.request_redraw();
+                state.resize(width, height);
             }
-            ShellWindowEvent::FocusLost => {
-                if let Some(connection) = state.input.captured_connection() {
-                    state.cancel_pointer_connection(connection);
-                }
-                let cursor = state.input.cursor();
-                for (button, _) in state.input.focus_lost_buttons() {
-                    state.background_mouse(
-                        "mouseup",
-                        cursor.x as f32,
-                        cursor.y as f32,
-                        button,
-                        Some(false),
-                    );
-                }
-                state.input.finish_focus_lost();
-            }
+            ShellWindowEvent::FocusLost => state.handle_focus_lost(),
             ShellWindowEvent::Keyboard {
                 physical_key,
                 pressed,
@@ -1781,11 +1381,7 @@ impl ShellApplication {
                 .keyboard_target(overlay_consumed, background_prevented)
                 == KeyboardTarget::Game =>
             {
-                if let Some(key) = physical_key {
-                    if !state.input.route_game_key(&key, pressed) {
-                        state.publish_keyboard_input(&key, pressed, repeat);
-                    }
-                }
+                state.route_keyboard_to_game(physical_key, pressed, repeat);
             }
             ShellWindowEvent::Modifiers {
                 alt,
@@ -1797,114 +1393,20 @@ impl ShellApplication {
             ShellWindowEvent::CursorMoved { x, y }
                 if !consumed || state.input.has_active_pointer_sequence() =>
             {
-                state.input.set_cursor(x, y);
-                let background_hit = state.background_dom.hit_test(x as f32, y as f32).is_some();
-                match state.input.pointer_target(consumed, true, background_hit) {
-                    PointerTarget::Overlay => return false,
-                    PointerTarget::Foreground => {
-                        state.route_foreground_mouse(DomPointerKind::Move);
-                        return false;
-                    }
-                    PointerTarget::Background => {
-                        // WebView2 still needs the move when the pointer leaves
-                        // a foreground region so CSS hover state can clear.
-                        state.route_foreground_mouse(DomPointerKind::Move);
-                        if state.background_mouse("mousemove", x as f32, y as f32, 0, None) {
-                            return false;
-                        }
-                    }
-                    PointerTarget::Game => {
-                        state.route_foreground_mouse(DomPointerKind::Move);
-                    }
-                }
-                state.route_pointer(PointerPhase::Move, 0, 0, 0);
+                state.handle_cursor_moved(x, y, consumed);
             }
             ShellWindowEvent::MouseInput { button, pressed }
                 if !consumed || state.input.has_active_pointer_sequence() =>
             {
-                if let Some(button) = button {
-                    let dom_button = match button {
-                        1 => 0,
-                        2 => 2,
-                        3 => 1,
-                        value => value.saturating_sub(1),
-                    };
-                    let foreground_hit = state.input.foreground_region_claims(consumed, true);
-                    let background_hit = state
-                        .background_dom
-                        .hit_test(state.input.cursor().x as f32, state.input.cursor().y as f32)
-                        .is_some();
-                    match state.input.pointer_target(consumed, true, background_hit) {
-                        PointerTarget::Overlay => return false,
-                        PointerTarget::Foreground => {
-                            if pressed && foreground_hit {
-                                state.input.set_foreground_mouse_capture(true);
-                            }
-                            state
-                                .route_foreground_mouse(DomPointerKind::Button { button, pressed });
-                            if !pressed && !state.input.foreground_buttons_active() {
-                                state.input.set_foreground_mouse_capture(false);
-                            }
-                            return false;
-                        }
-                        PointerTarget::Background => {
-                            let background_kind = if pressed { "mousedown" } else { "mouseup" };
-                            if state.background_mouse(
-                                background_kind,
-                                state.input.cursor().x as f32,
-                                state.input.cursor().y as f32,
-                                dom_button,
-                                Some(pressed),
-                            ) {
-                                return false;
-                            }
-                        }
-                        PointerTarget::Game => {}
-                    }
-                    state.route_pointer(
-                        if pressed {
-                            PointerPhase::ButtonDown
-                        } else {
-                            PointerPhase::ButtonUp
-                        },
-                        u32::from(button),
-                        0,
-                        0,
-                    );
-                }
+                state.handle_mouse_button(button, pressed, consumed);
             }
             ShellWindowEvent::MouseWheel {
                 horizontal,
                 vertical,
             } if !consumed => {
-                match state.input.pointer_target(false, false, false) {
-                    PointerTarget::Foreground => {
-                        if horizontal != 0 {
-                            state.route_foreground_mouse(DomPointerKind::Wheel {
-                                horizontal: true,
-                                delta: horizontal,
-                            });
-                        }
-                        if vertical != 0 {
-                            state.route_foreground_mouse(DomPointerKind::Wheel {
-                                horizontal: false,
-                                delta: vertical,
-                            });
-                        }
-                        return false;
-                    }
-                    PointerTarget::Overlay => return false,
-                    PointerTarget::Background | PointerTarget::Game => {}
-                }
-                state.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
+                state.handle_mouse_wheel(horizontal, vertical);
             }
-            ShellWindowEvent::RedrawRequested => {
-                let entered = state.profile.enter();
-                if let Err(error) = state.window.draw_overlay() {
-                    tracing::error!("snowglass: drawing egui composition overlay failed: {error}");
-                }
-                state.profile.record(TurnPhase::Overlay, entered);
-            }
+            ShellWindowEvent::RedrawRequested => state.draw_overlay(),
             _ => {}
         }
         false
@@ -1956,9 +1458,7 @@ impl ShellApplication {
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
             state.profile.finish_turn(Instant::now());
-            let report = std::mem::take(&mut state.profile.report);
-            state.window.set_overlay_note(&report);
-            state.profile.report = report;
+            state.window.set_overlay_note(state.profile.report());
         }
         LoopDirective::WaitUntil(deadline)
     }
@@ -1970,124 +1470,4 @@ fn unique_session() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("snowglass-{}-{nonce:x}", std::process::id())
-}
-
-fn control_event(key: &str, value: i32) -> serde_json::Value {
-    let mut fields = key.splitn(3, ':');
-    let slot = fields
-        .next()
-        .and_then(|slot| slot.parse::<usize>().ok())
-        .unwrap_or_default();
-    let control_type = fields.next().unwrap_or_default();
-    let control = fields.next().unwrap_or_default();
-    serde_json::json!({
-        "slot": slot,
-        "controlType": control_type,
-        "control": control,
-        "value": value,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::background_document::GameViewStyle;
-    use crate::game_host::fit_surface_content;
-    use snowglass_input::mouse::layout::Rect;
-    use snowglass_renderer::SurfacePlacement;
-    use style::{
-        properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
-        values::computed::{LengthPercentage, Percentage, position::Position},
-    };
-
-    fn game_view_style(object_fit: ObjectFit, x: f32, y: f32) -> GameViewStyle {
-        GameViewStyle {
-            object_fit,
-            object_position: Position::new(
-                LengthPercentage::new_percent(Percentage(x)),
-                LengthPercentage::new_percent(Percentage(y)),
-            ),
-        }
-    }
-
-    #[test]
-    fn launcher_start_accepts_safe_integers_after_shared_bus_round_trip() {
-        let command = serde_json::json!({
-            "type": "launcherStart",
-            "request": {
-                "generation": 1,
-                "emulator": "cemu",
-                "groups": [{
-                    "name": "controller",
-                    "ports": [{ "index": 0, "layout": "WIIU_PRO_CONTROLLER", "device": "K" }]
-                }],
-                "settings": { "content-graphic.override_gamma_value": 2.2 }
-            }
-        });
-        let command = snowglass_pluginhost::bus::StructuredValue::from_json(&command)
-            .unwrap()
-            .to_json()
-            .unwrap();
-
-        let event = decode_foreground_command(command).unwrap();
-        let UserEvent::Runtime(RuntimeCommand::LauncherStart(request)) = event else {
-            panic!("launcher command decoded to the wrong event");
-        };
-        assert_eq!(request.generation, 1);
-        assert_eq!(request.groups[0].ports[0].index, 0);
-        assert_eq!(
-            request.settings["content-graphic.override_gamma_value"].as_f64(),
-            Some(2.2)
-        );
-    }
-
-    #[test]
-    fn cover_crops_the_source_without_changing_the_layout_box() {
-        let rectangle = Rect::new(10, 20, 200, 200);
-        let style = game_view_style(ObjectFit::Cover, 0.5, 0.5);
-        let content = fit_surface_content(rectangle, Extent::new(400, 200), Some(&style), 0.35);
-
-        assert_eq!(content.destination, [10.0, 20.0, 210.0, 220.0]);
-        assert_eq!(content.source, [0.25, 0.0, 0.75, 1.0]);
-        assert!((content.opacity - 0.35).abs() < f32::EPSILON);
-        let placement = SurfacePlacement {
-            connection: 1,
-            surface_id: 2,
-            rectangle,
-            content,
-            corner_radius: 0.0,
-        };
-        assert_eq!(
-            CompositingPlan::new([0.0; 4], vec![placement]).rectangle(1, 2),
-            Some(rectangle)
-        );
-    }
-
-    #[test]
-    fn contain_and_object_position_move_only_the_draw_quad() {
-        let style = game_view_style(ObjectFit::Contain, 1.0, 1.0);
-        let content = fit_surface_content(
-            Rect::new(10, 20, 200, 200),
-            Extent::new(400, 200),
-            Some(&style),
-            1.0,
-        );
-
-        assert_eq!(content.destination, [10.0, 120.0, 210.0, 220.0]);
-        assert_eq!(content.source, [0.0, 0.0, 1.0, 1.0]);
-    }
-
-    #[test]
-    fn none_is_clipped_at_the_object_position() {
-        let style = game_view_style(ObjectFit::None, 1.0, 1.0);
-        let content = fit_surface_content(
-            Rect::new(0, 0, 200, 100),
-            Extent::new(400, 200),
-            Some(&style),
-            1.0,
-        );
-
-        assert_eq!(content.destination, [0.0, 0.0, 200.0, 100.0]);
-        assert_eq!(content.source, [0.5, 0.5, 1.0, 1.0]);
-    }
 }

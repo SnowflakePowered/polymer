@@ -5,6 +5,7 @@
 
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
+use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use snowglass_input::provider::sdl3::{DeviceSelector, ProviderConfig, Sdl3Provider, SlotConfig};
 use snowglass_input::{
     gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
@@ -33,6 +34,57 @@ const DOM_MK_XBUTTON1: u32 = 0x0020;
 const DOM_MK_XBUTTON2: u32 = 0x0040;
 const DOM_MOUSE_BUTTONS: u32 =
     DOM_MK_LBUTTON | DOM_MK_RBUTTON | DOM_MK_MBUTTON | DOM_MK_XBUTTON1 | DOM_MK_XBUTTON2;
+
+fn control_event(key: &str, value: i32) -> serde_json::Value {
+    let mut parts = key.splitn(3, ':');
+    let slot = parts
+        .next()
+        .and_then(|slot| slot.parse::<usize>().ok())
+        .unwrap_or_default();
+    let control_type = parts.next().unwrap_or_default();
+    let control = parts.next().unwrap_or_default();
+    serde_json::json!({
+        "slot": slot,
+        "controlType": control_type,
+        "control": control,
+        "value": value,
+    })
+}
+
+pub(crate) fn priority_command(priority: InputPriority) -> serde_json::Value {
+    serde_json::json!({
+        "type": "inputPriority",
+        "priority": match priority {
+            InputPriority::Game => "game",
+            InputPriority::Foreground => "foreground",
+        },
+    })
+}
+
+pub(crate) fn state_command(
+    controllers: serde_json::Value,
+    routed: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "inputState",
+        "controllers": controllers,
+        "routed": routed,
+    })
+}
+
+pub(crate) fn keyboard_command(key: &str, pressed: bool, repeat: bool) -> serde_json::Value {
+    serde_json::json!({
+        "type": "keyboardInput",
+        "event": {
+            "device": "keyboard",
+            "controlType": "key",
+            "control": key,
+            "value": i32::from(pressed),
+            "pressed": pressed,
+            "repeat": repeat,
+        },
+    })
+}
 
 #[derive(Debug)]
 pub(crate) enum InputCommand {
@@ -133,6 +185,20 @@ pub(crate) struct InputRouter {
     guide_chord_held: bool,
 }
 
+pub(crate) struct InputPublication {
+    pub diagnostics: InputDiagnostics,
+    pub controllers: serde_json::Value,
+    pub routed: Vec<serde_json::Value>,
+    pub state_changed: Option<bool>,
+    pub priority: &'static str,
+}
+
+pub(crate) struct InputConfigurationPublication {
+    pub configuration: serde_json::Value,
+    pub layouts: serde_json::Value,
+    pub command: serde_json::Value,
+}
+
 impl InputRouter {
     pub fn new(transport: InputTransport, direct_input: DirectInputForwarder) -> Self {
         Self {
@@ -165,6 +231,44 @@ impl InputRouter {
         self.transport.hub().layouts()
     }
 
+    pub fn configuration_publication(&self) -> InputConfigurationPublication {
+        let configuration =
+            serde_json::to_value(self.configuration_snapshot()).unwrap_or(serde_json::Value::Null);
+        let layouts = serde_json::to_value(self.layouts()).unwrap_or(serde_json::Value::Null);
+        let command = serde_json::json!({
+            "type": "inputConfiguration",
+            "configuration": configuration,
+            "layouts": layouts,
+        });
+        InputConfigurationPublication {
+            configuration,
+            layouts,
+            command,
+        }
+    }
+
+    pub fn configuration_result(
+        request_id: u64,
+        result: Result<InputConfiguration, String>,
+    ) -> (serde_json::Value, serde_json::Value) {
+        let result = match result {
+            Ok(configuration) => serde_json::json!({
+                "ok": true,
+                "configuration": configuration,
+            }),
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "error": error,
+            }),
+        };
+        let command = serde_json::json!({
+            "type": "inputConfigurationResult",
+            "id": request_id,
+            "result": result,
+        });
+        (result, command)
+    }
+
     pub fn attach(&self, endpoint: GameInputEndpoint) {
         self.transport.attach(endpoint);
     }
@@ -175,6 +279,214 @@ impl InputRouter {
 
     pub fn devices(&self) -> Vec<snowglass_input::provider::sdl3::PhysicalDeviceState> {
         self.transport.devices()
+    }
+
+    pub fn guide_button_pressed(&mut self) -> bool {
+        let pressed = self
+            .devices()
+            .iter()
+            .any(|device| device.buttons.contains(&(SdlButton::Guide, true)));
+        self.observe_guide_button(pressed)
+    }
+
+    pub fn build_publication(
+        &mut self,
+        mappings: &[GamepadMapping],
+        game_active: bool,
+    ) -> InputPublication {
+        let states = self
+            .provider()
+            .map(Sdl3Provider::states)
+            .unwrap_or_default();
+        let physical_devices = self.devices();
+        let foreground_priority = self.priority == InputPriority::Foreground;
+        let diagnostics = InputDiagnostics {
+            active: self.priority == InputPriority::Game && game_active,
+            slots: mappings
+                .iter()
+                .map(|config| {
+                    let Some(state) = states.get(config.slot).and_then(Option::as_ref) else {
+                        return InputSlotDiagnostics {
+                            slot: config.slot,
+                            layout: config.layout.clone(),
+                            ..InputSlotDiagnostics::default()
+                        };
+                    };
+                    InputSlotDiagnostics {
+                        slot: config.slot,
+                        layout: state.layout_id.clone(),
+                        connected: true,
+                        name: state.name.clone(),
+                        guid: state.guid.clone(),
+                        pressed: state
+                            .buttons
+                            .iter()
+                            .filter(|(_, pressed)| *pressed)
+                            .map(|(button, _)| format!("{button:?}"))
+                            .collect(),
+                        axes: state
+                            .axes
+                            .iter()
+                            .map(|(axis, value)| InputAxisDiagnostics {
+                                name: format!("{axis:?}"),
+                                value: *value,
+                            })
+                            .collect(),
+                        mapped_buttons: state.mapped.buttons,
+                        left_stick: state.mapped.left_stick,
+                        right_stick: state.mapped.right_stick,
+                        left_trigger: state.mapped.left_trigger,
+                        right_trigger: state.mapped.right_trigger,
+                        pointer: state.mapped.pointer,
+                        accelerometer: state.mapped.accelerometer,
+                        gyroscope: state.mapped.gyroscope,
+                    }
+                })
+                .collect(),
+        };
+        let mut devices = Vec::new();
+        let mut next_controls = HashMap::new();
+        for device in physical_devices {
+            let assigned = states
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, state)| {
+                    state
+                        .as_ref()
+                        .is_some_and(|state| state.device_id == device.device_id)
+                        .then_some(slot)
+                })
+                .collect::<Vec<_>>();
+            let mapped_states = assigned
+                .iter()
+                .filter_map(|&slot| states.get(slot).and_then(Option::as_ref))
+                .collect::<Vec<_>>();
+            let primary = mapped_states.first().copied();
+            let buttons = device
+                .buttons
+                .iter()
+                .map(|&(button, pressed)| {
+                    let name = format!("{button:?}");
+                    let global = button == SdlButton::Guide;
+                    let consumed = global
+                        || mapped_states
+                            .iter()
+                            .any(|state| state.mapped_buttons.contains(&button));
+                    if (foreground_priority || !consumed) && !global {
+                        next_controls.insert(
+                            format!("{}:button:{name}", device.device_id),
+                            i32::from(pressed),
+                        );
+                    }
+                    serde_json::json!({
+                        "button": name,
+                        "pressed": pressed,
+                        "mapped": consumed,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let axes = device
+                .axes
+                .iter()
+                .map(|&(axis, value)| {
+                    let name = format!("{axis:?}");
+                    let consumed = mapped_states
+                        .iter()
+                        .any(|state| state.mapped_axes.contains(&axis));
+                    if foreground_priority || !consumed {
+                        next_controls.insert(
+                            format!("{}:axis:{name}", device.device_id),
+                            i32::from(value),
+                        );
+                    }
+                    serde_json::json!({
+                        "axis": name,
+                        "value": value,
+                        "mapped": consumed,
+                    })
+                })
+                .collect::<Vec<_>>();
+            devices.push(serde_json::json!({
+                "index": device.enumeration_index,
+                "slot": device.enumeration_index,
+                "deviceId": device.device_id,
+                "name": device.name,
+                "guid": device.guid,
+                "vendor": device.vendor,
+                "product": device.product,
+                "assignedPorts": assigned,
+                "layout": primary.map(|state| state.layout_id.as_str()),
+                "buttons": buttons,
+                "axes": axes,
+                "mapped": {
+                    "buttons": primary.map_or(0, |state| state.mapped.buttons),
+                    "leftStick": primary.map_or([0; 2], |state| state.mapped.left_stick),
+                    "rightStick": primary.map_or([0; 2], |state| state.mapped.right_stick),
+                    "leftTrigger": primary.map_or(0, |state| state.mapped.left_trigger),
+                    "rightTrigger": primary.map_or(0, |state| state.mapped.right_trigger),
+                    "pointer": primary.map_or([0; 2], |state| state.mapped.pointer),
+                    "accelerometer": primary.map_or([0.0; 3], |state| state.mapped.accelerometer),
+                    "gyroscope": primary.map_or([0.0; 3], |state| state.mapped.gyroscope),
+                }
+            }));
+        }
+        for (slot, state) in states.iter().enumerate().filter_map(|(slot, state)| {
+            state
+                .as_ref()
+                .filter(|state| state.device_id == "keyboard-mouse")
+                .map(|state| (slot, state))
+        }) {
+            devices.push(serde_json::json!({
+                "index": devices.len(),
+                "slot": devices.len(),
+                "deviceId": state.device_id,
+                "name": state.name,
+                "guid": state.guid,
+                "vendor": state.vendor,
+                "product": state.product,
+                "assignedPorts": [slot],
+                "layout": state.layout_id,
+                "buttons": state.buttons.iter().map(|(button, pressed)| serde_json::json!({
+                    "button": format!("{button:?}"),
+                    "pressed": pressed,
+                    "mapped": true,
+                })).collect::<Vec<_>>(),
+                "axes": state.axes.iter().map(|(axis, value)| serde_json::json!({
+                    "axis": format!("{axis:?}"),
+                    "value": value,
+                    "mapped": true,
+                })).collect::<Vec<_>>(),
+                "mapped": {
+                    "buttons": state.mapped.buttons,
+                    "leftStick": state.mapped.left_stick,
+                    "rightStick": state.mapped.right_stick,
+                    "leftTrigger": state.mapped.left_trigger,
+                    "rightTrigger": state.mapped.right_trigger,
+                    "pointer": state.mapped.pointer,
+                    "accelerometer": state.mapped.accelerometer,
+                    "gyroscope": state.mapped.gyroscope,
+                }
+            }));
+        }
+        let routed = self
+            .route_ui_controls(next_controls)
+            .into_iter()
+            .map(|(key, value)| control_event(&key, value))
+            .collect::<Vec<_>>();
+        let state_changed = serde_json::to_string(&devices)
+            .ok()
+            .map(|json| self.observe_published_state(&json));
+        InputPublication {
+            diagnostics,
+            controllers: serde_json::Value::Array(devices),
+            routed,
+            state_changed,
+            priority: if foreground_priority {
+                "foreground"
+            } else {
+                "game"
+            },
+        }
     }
 
     pub fn add_mouse_delta(&self, delta_x: f64, delta_y: f64) {

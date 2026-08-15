@@ -56,6 +56,13 @@ split along the following boundaries:
   the shell window, composition root, frame pacing, and egui overlay. Its
   `EventLoopApplication` is the only raw winit handler and translates events
   into neutral shell values before calling `app.rs`.
+- `game_host` owns one `RenderDevice` for the active DXGI adapter. Its Vello
+  renderer, native chrome textures, D3D12 compositor, swapchain, and imported
+  hook textures all use the same D3D12 device and direct queue. Chrome crosses
+  the wgpu/compositor crate-version boundary as a retained COM reference, not
+  a shared handle. Hook textures remain foreign shared resources. An offer
+  from another adapter transactionally constructs and installs a complete
+  replacement `RenderDevice`, then invalidates chrome for repaint.
 - `snowglass-pluginhost` separates `PluginRegistry` from `PluginRuntime` and
   `PluginRuntimeHandle`. It also owns the shared structured-value codec and
   four-lane FIFO protocol. Windows/WebView2 mapping and V8 external-memory

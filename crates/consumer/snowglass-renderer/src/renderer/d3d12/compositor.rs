@@ -279,44 +279,55 @@ impl DisplayLatency {
 struct ChromeLayer {
     resource: ID3D12Resource,
     descriptor: u32,
-    source: ChromeSource,
+    identity: usize,
 }
 
-/// Identity of the shared texture supplied for one chrome band.
-///
-/// Win32 is allowed to reuse a closed handle value immediately. The game
-/// layer recreates its full-window textures on a resize, so the numeric handle
-/// alone cannot distinguish the replacement from the old-sized resource the
-/// compositor still has open.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ChromeSource {
-    handle: isize,
-    width: u32,
-    height: u32,
+    resource: ID3D12Resource,
+    identity: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChromeOpenAction {
+    KeepPending,
+    CancelPending,
+    ReplacePending,
+}
+
+impl ChromeOpenAction {
+    fn for_identities(identity: usize, held: Option<usize>, pending: Option<usize>) -> Self {
+        if pending == Some(identity) {
+            Self::KeepPending
+        } else if held == Some(identity) {
+            Self::CancelPending
+        } else {
+            Self::ReplacePending
+        }
+    }
 }
 
 impl ChromeSource {
     fn queue_open(
         self,
         id: u64,
-        held: Option<Self>,
+        held: Option<usize>,
         opens: &mut Vec<(u64, Self)>,
         removals: &mut Vec<u64>,
     ) {
-        if opens
+        let pending = opens
             .iter()
-            .any(|(pending_id, pending)| *pending_id == id && *pending == self)
-        {
-            return;
+            .find_map(|(pending_id, source)| (*pending_id == id).then_some(source.identity));
+        match ChromeOpenAction::for_identities(self.identity, held, pending) {
+            ChromeOpenAction::KeepPending => return,
+            ChromeOpenAction::CancelPending => {
+                opens.retain(|(pending_id, _)| *pending_id != id);
+            }
+            ChromeOpenAction::ReplacePending => {
+                opens.retain(|(pending_id, _)| *pending_id != id);
+                opens.push((id, self));
+            }
         }
-        // The latest paint wins. In particular, resizing A -> B -> A before
-        // the next draw must cancel the queued B texture instead of reopening
-        // it after the layer has already returned to A.
-        opens.retain(|(pending_id, _)| *pending_id != id);
         removals.retain(|pending_id| *pending_id != id);
-        if held != Some(self) {
-            opens.push((id, self));
-        }
     }
 }
 
@@ -351,9 +362,9 @@ pub struct D3d12Compositor {
     // command list executes too late to release the mutex promptly.
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     chrome: HashMap<u64, ChromeLayer>,
-    /// Chrome handed over since the last frame. Opening a shared texture takes
-    /// a descriptor slot, and a slot cannot be reused while an in-flight frame
-    /// still refers to it, so the work waits for the start of a frame.
+    /// Chrome handed over since the last frame. Creating its descriptor waits
+    /// for the start of a frame because a slot cannot be reused while an
+    /// in-flight frame still refers to it.
     chrome_opens: Vec<(u64, ChromeSource)>,
     chrome_removals: Vec<u64>,
     free_descriptors: Vec<u32>,
@@ -537,16 +548,24 @@ impl D3d12Compositor {
         )
     }
 
-    /// Creates one adapter-specific composition swapchain that composites every
-    /// imported stream. A single visual gives the display one plane to promote
-    /// instead of asking it to promote one per stream.
-    pub fn new_for_shared_composition(
+    /// Creates a composition compositor on a retained device and queue owned
+    /// by the caller's graphics context. The references passed here transfer
+    /// into the compositor, so all local rendering and presentation use one
+    /// D3D12 device domain.
+    ///
+    /// # Safety
+    ///
+    /// See [`D3d12ConsumerDevice::from_external`].
+    pub unsafe fn new_for_shared_composition_from_external(
         window: &impl RenderWindow,
         adapter: AdapterLuid,
+        device: *mut c_void,
+        queue: *mut c_void,
     ) -> Result<Self, Box<dyn Error>> {
+        let consumer = unsafe { D3d12ConsumerDevice::from_external(adapter, device, queue)? };
         Self::with_consumer(
             window,
-            D3d12ConsumerDevice::new(adapter)?,
+            consumer,
             SwapchainTarget::Composition {
                 transparent: false,
                 sync_interval: 1,
@@ -1028,6 +1047,16 @@ impl D3d12Compositor {
         }
 
         self.upload_chrome(frame_index)?;
+        unsafe {
+            for layer in self.chrome.values() {
+                transition(
+                    &self.command_list,
+                    &layer.resource,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                );
+            }
+        }
 
         let mut release_values = Vec::new();
         let mut video_captures = Vec::new();
@@ -1144,6 +1173,14 @@ impl D3d12Compositor {
         let backbuffer = self.backbuffers[frame_index].clone();
         let clear_color = plan.clear_color();
         unsafe {
+            for layer in self.chrome.values() {
+                transition(
+                    &self.command_list,
+                    &layer.resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                );
+            }
             transition(
                 &self.command_list,
                 &backbuffer,
@@ -1417,32 +1454,31 @@ impl D3d12Compositor {
         Ok(())
     }
 
-    /// Hands the compositor a texture to draw wherever a plan places
-    /// [`PlanLayer::Chrome`] with this `id`.
+    /// Hands the compositor an owned reference to a device-local texture drawn
+    /// wherever a plan places [`PlanLayer::Chrome`] with this `id`.
     ///
-    /// `handle` is a Win32 shared handle to Vello's straight-alpha RGBA texture
-    /// on this adapter, which the compositor opens on its own device. The pixel
-    /// shader premultiplies it before blending. Pixels never leave the GPU.
+    /// # Safety
     ///
-    /// The caller must have finished writing the texture before calling, since
-    /// nothing here waits on the device that produced it.
-    pub fn set_chrome_layer(&mut self, id: u64, handle: isize, width: u32, height: u32) {
-        if width == 0 || height == 0 || handle == 0 {
+    /// `resource` must carry one owned, ABI-compatible `ID3D12Resource` COM
+    /// reference created on this compositor's device. Ownership transfers to
+    /// the compositor.
+    pub unsafe fn set_chrome_layer_resource(
+        &mut self,
+        id: u64,
+        resource: *mut c_void,
+        width: u32,
+        height: u32,
+    ) {
+        if width == 0 || height == 0 || resource.is_null() {
             return;
         }
         let source = ChromeSource {
-            handle,
-            width,
-            height,
+            resource: unsafe { ID3D12Resource::from_raw(resource) },
+            identity: resource as usize,
         };
-        // Reopening the same live texture would allocate a second view of the
-        // same pixels for nothing; the shell normally repaints it in place.
-        // Include its extent in the identity because a resize closes the old
-        // handle before allocating the replacement, and Win32 may give that
-        // replacement the same numeric handle.
         source.queue_open(
             id,
-            self.chrome.get(&id).map(|held| held.source),
+            self.chrome.get(&id).map(|held| held.identity),
             &mut self.chrome_opens,
             &mut self.chrome_removals,
         );
@@ -1462,13 +1498,11 @@ impl D3d12Compositor {
         !self.chrome.is_empty() || !self.chrome_opens.is_empty()
     }
 
-    /// Waits until the compositor no longer reads any shared chrome texture.
+    /// Waits until the compositor no longer reads any chrome texture.
     ///
-    /// The shell's Vello device and this compositor use separate D3D12 queues.
-    /// A producer wait before [`set_chrome_layer`](Self::set_chrome_layer)
-    /// orders a completed write before the next read, but it cannot protect a
-    /// texture from being rewritten while an earlier compositor frame still
-    /// samples it. Call this before modifying a previously supplied texture.
+    /// Call this before modifying a previously supplied texture. Even though
+    /// Vello and composition share one device and queue, an earlier presented
+    /// frame may still sample the texture.
     pub fn synchronize_chrome_update(&mut self) -> Result<(), Box<dyn Error>> {
         self.wait_idle()?;
         Ok(())
@@ -1488,15 +1522,7 @@ impl D3d12Compositor {
                 .free_descriptors
                 .pop()
                 .ok_or("descriptor heap exhausted opening chrome")?;
-            // SAFETY: the handle names a texture the shell created on this
-            // adapter and keeps alive; opening it yields our own reference.
-            let mut opened: Option<ID3D12Resource> = None;
-            unsafe {
-                self.receiver
-                    .device()
-                    .OpenSharedHandle(HANDLE(source.handle as *mut c_void), &mut opened)?;
-            }
-            let resource = opened.ok_or("opening a shared chrome texture returned nothing")?;
+            let resource = source.resource;
             // SAFETY: the descriptor slot is free and the resource outlives it.
             unsafe {
                 create_srv(
@@ -1512,7 +1538,7 @@ impl D3d12Compositor {
                 ChromeLayer {
                     resource,
                     descriptor,
-                    source,
+                    identity: source.identity,
                 },
             ) {
                 self.frame_descriptors[frame_index].push(old.descriptor);
@@ -2058,50 +2084,25 @@ fn as_bytes<T>(items: &[T]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChromeSource, DisplayLatency, UploadArena, compile, compositor_shader, quad};
+    use super::{ChromeOpenAction, DisplayLatency, UploadArena, compile, compositor_shader, quad};
 
     /// One tick of the QPC clock per millisecond, so latencies read directly.
     const TEST_FREQUENCY: f64 = 1000.0;
 
     #[test]
-    fn resized_chrome_is_not_deduplicated_when_windows_reuses_its_handle() {
-        let before = ChromeSource {
-            handle: 42,
-            width: 1280,
-            height: 720,
-        };
-        let resized = ChromeSource {
-            handle: 42,
-            width: 1920,
-            height: 1080,
-        };
-        let mut opens = Vec::new();
-        let mut removals = vec![0];
-
-        resized.queue_open(0, Some(before), &mut opens, &mut removals);
-
-        assert_eq!(opens, [(0, resized)]);
-        assert!(removals.is_empty());
-    }
-
-    #[test]
-    fn latest_chrome_size_wins_when_resizes_coalesce_before_a_draw() {
-        let held = ChromeSource {
-            handle: 42,
-            width: 1280,
-            height: 720,
-        };
-        let intermediate = ChromeSource {
-            handle: 42,
-            width: 1920,
-            height: 1080,
-        };
-        let mut opens = vec![(0, intermediate)];
-        let mut removals = Vec::new();
-
-        held.queue_open(0, Some(held), &mut opens, &mut removals);
-
-        assert!(opens.is_empty());
+    fn chrome_open_action_coalesces_by_resource_identity() {
+        assert_eq!(
+            ChromeOpenAction::for_identities(2, Some(1), Some(2)),
+            ChromeOpenAction::KeepPending
+        );
+        assert_eq!(
+            ChromeOpenAction::for_identities(1, Some(1), Some(2)),
+            ChromeOpenAction::CancelPending
+        );
+        assert_eq!(
+            ChromeOpenAction::for_identities(3, Some(1), Some(2)),
+            ChromeOpenAction::ReplacePending
+        );
     }
 
     #[test]

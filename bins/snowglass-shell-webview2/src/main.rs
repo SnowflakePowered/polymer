@@ -5,11 +5,14 @@ mod background_document;
 mod background_dom;
 mod background_runtime;
 mod cli;
+mod commands;
 mod foreground_dom;
 mod game_host;
 mod input;
+mod instance_events;
 mod launch;
 mod launcher;
+mod metrics;
 mod shared_bus;
 mod window_manager;
 

@@ -18,6 +18,7 @@ egui = "0.29.1"
 egui-winit = "0.29.1"
 kurbo = "0.13.1"
 parking_lot.workspace = true
+pollster = "0.4"
 peniko = "0.6.1"
 raw-window-handle.workspace = true
 regex.workspace = true

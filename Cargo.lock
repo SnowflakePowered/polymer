@@ -9924,6 +9924,7 @@ dependencies = [
  "kurbo",
  "parking_lot",
  "peniko",
+ "pollster",
  "raw-window-handle",
  "regex",
  "reqwest",

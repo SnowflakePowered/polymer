@@ -5,8 +5,10 @@ import config from "pkg:plugin.toml";
 // returns the same object to pluginhost, which alone drives serialization.
 type Configuration = {
     options(): {
-        content: {
-            open_pad: boolean,
+        main: {
+            core: {
+                gfx_backend: string,
+            },
         },
     },
 }
@@ -21,13 +23,14 @@ type SetupLaunchArgs = {
 
 export const setupLaunch = (args: SetupLaunchArgs) => {
     const executable = new URL(config.plugin.config.dolphin_path);
+    args.emulatorConfig.options().main.core.gfx_backend = "D3D";
 
     return {
         command: executable.href,
-        argv: [args.launchPath],
+        argv: ["-b", "-e", args.launchPath],
         configRoot: new URL(".", executable).href,
         isolate: true,
-        hooks: ["opengl"],
+        hooks: ["d3d11"],
         config: args.emulatorConfig,
         surfaces: [
             { index: 0, pattern: "Dolphin" },

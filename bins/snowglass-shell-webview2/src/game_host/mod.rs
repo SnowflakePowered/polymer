@@ -3,14 +3,14 @@
 //! Validated launch-plan adaptation, process lifecycle, and captured-surface
 //! models are contained here; the shell coordinator only forwards commands.
 
-mod shared;
+mod chrome;
 
 use crate::{
     background_document::GameViewStyle,
     background_dom::{BackgroundFrame, TrackedSurfaceLayout},
     launch::AttachedLaunchPlan,
 };
-use shared::{SharedChrome, SharedTexture};
+use chrome::ChromeTexture;
 use snowglass_input::mouse::layout::Rect;
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
@@ -30,16 +30,11 @@ use windows::core::IUnknown;
 
 /// Vello GPU state owned by the native game host.
 pub(crate) struct BackgroundRasterizer {
-    gpu: BackgroundGpu,
-    adapter_luid: AdapterLuid,
-    alternate_gpus: Vec<(AdapterLuid, BackgroundGpu)>,
-    targets: Vec<Option<SharedTexture>>,
-}
-
-struct BackgroundGpu {
     renderer: VelloRenderer,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    adapter_luid: AdapterLuid,
+    targets: Vec<Option<ChromeTexture>>,
 }
 
 fn background_instance_options() -> wgpu::InstanceDescriptor {
@@ -62,8 +57,19 @@ fn adapter_luid(adapter: &wgpu::Adapter) -> Option<AdapterLuid> {
     })
 }
 
-impl BackgroundGpu {
-    async fn new(adapter: &wgpu::Adapter) -> Result<Self, Box<dyn Error>> {
+impl BackgroundRasterizer {
+    async fn from_adapter(adapter: &wgpu::Adapter) -> Result<Self, Box<dyn Error>> {
+        let adapter_info = adapter.get_info();
+        let use_cpu_stages = matches!(
+            adapter_info.device_type,
+            wgpu::DeviceType::VirtualGpu | wgpu::DeviceType::Cpu
+        );
+        if use_cpu_stages {
+            tracing::info!(
+                adapter = %adapter_info.name,
+                "snowglass: using Vello CPU geometry stages on a virtual/software D3D12 adapter"
+            );
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("snowglass background chrome"),
@@ -75,109 +81,93 @@ impl BackgroundGpu {
             })
             .await
             .map_err(|error| format!("background chrome could not open a D3D12 device: {error}"))?;
-        let mut renderer = VelloRenderer::new(
+        let renderer = VelloRenderer::new(
             &device,
             RendererOptions {
-                use_cpu: false,
+                // The final fine raster still writes the compositor-owned GPU
+                // texture. Only Vello's compute-heavy geometry stages move to
+                // the CPU on virtual adapters whose WARP path cannot run them.
+                use_cpu: use_cpu_stages,
                 num_init_threads: None,
                 antialiasing_support: AaSupport::area_only(),
                 pipeline_cache: None,
             },
         )
         .map_err(|error| format!("background chrome could not start Vello: {error}"))?;
-        // Vello creates part of its D3D12 work lazily on the first render.
-        // Force that work to finish before WebView2 starts Chromium's WARP
-        // device; doing the first render afterwards can fault in d3d10warp.
-        let warmup = SharedTexture::new(&device, 1, 1)?;
-        renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                &vello::Scene::new(),
-                &warmup.view,
-                &RenderParams {
-                    base_color: vello::peniko::Color::TRANSPARENT,
-                    width: 1,
-                    height: 1,
-                    antialiasing_method: AaConfig::Area,
-                },
-            )
-            .map_err(|error| format!("background chrome could not warm up Vello: {error}"))?;
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|error| format!("background chrome warmup did not finish: {error}"))?;
+        let adapter_luid = adapter_luid(adapter)
+            .ok_or("the selected D3D12 adapter did not expose an adapter LUID")?;
         Ok(Self {
             renderer,
             device,
             queue,
-        })
-    }
-}
-
-impl BackgroundRasterizer {
-    /// Prepares every adapter before Chromium starts, avoiding late D3D12
-    /// pipeline creation in Chromium's renderer context.
-    pub async fn new() -> Result<Self, Box<dyn Error>> {
-        let instance = wgpu::Instance::new(background_instance_options());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|error| format!("background chrome found no D3D12 adapter: {error}"))?;
-        let default_luid = adapter_luid(&adapter)
-            .ok_or("the default D3D12 adapter did not expose an adapter LUID")?;
-        let gpu = BackgroundGpu::new(&adapter).await?;
-        let mut alternate_gpus = Vec::new();
-        for adapter in instance.enumerate_adapters(wgpu::Backends::DX12).await {
-            let Some(luid) = adapter_luid(&adapter) else {
-                continue;
-            };
-            if luid == default_luid {
-                continue;
-            }
-            match BackgroundGpu::new(&adapter).await {
-                Ok(gpu) => alternate_gpus.push((luid, gpu)),
-                Err(error) => tracing::error!(
-                    "snowglass: preparing background-chrome adapter {luid:?} failed: {error}"
-                ),
-            }
-        }
-        Ok(Self {
-            gpu,
-            adapter_luid: default_luid,
-            alternate_gpus,
+            adapter_luid,
             targets: Vec::new(),
         })
+    }
+    /// Prepares the initial adapter before Chromium starts. A later foreign
+    /// adapter causes the complete RenderDevice to be recreated on demand.
+    pub async fn new() -> Result<Self, Box<dyn Error>> {
+        Self::new_for_adapter(None).await
+    }
+
+    async fn new_for_adapter(desired: Option<AdapterLuid>) -> Result<Self, Box<dyn Error>> {
+        let instance = wgpu::Instance::new(background_instance_options());
+        let adapter = if let Some(desired) = desired {
+            let mut selected = None;
+            let mut available = Vec::new();
+            for adapter in instance.enumerate_adapters(wgpu::Backends::DX12).await {
+                let luid = adapter_luid(&adapter);
+                available.push(format!("{} ({luid:?})", adapter.get_info().name));
+                if luid == Some(desired) {
+                    selected = Some(adapter);
+                    break;
+                }
+            }
+            selected.ok_or_else(|| {
+                format!(
+                    "background chrome could not find requested D3D12 adapter {desired:?}; available: {}",
+                    available.join(", ")
+                )
+            })?
+        } else {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                })
+                .await
+                .map_err(|error| format!("background chrome found no D3D12 adapter: {error}"))?
+        };
+        Self::from_adapter(&adapter).await
     }
 
     pub const fn adapter_luid(&self) -> AdapterLuid {
         self.adapter_luid
     }
 
-    pub fn switch_adapter(&mut self, desired: AdapterLuid) -> Result<bool, Box<dyn Error>> {
-        if self.adapter_luid == desired {
-            return Ok(false);
+    fn retained_device_context(
+        &self,
+    ) -> Result<(*mut std::ffi::c_void, *mut std::ffi::c_void), Box<dyn Error>> {
+        use windows_wgpu::core::Interface as _;
+        // SAFETY: the returned COM clones each transfer one owned reference to
+        // the compositor constructor.
+        unsafe {
+            let hal = self
+                .device
+                .as_hal::<wgpu_hal::api::Dx12>()
+                .ok_or("the background renderer is not using D3D12")?;
+            Ok((
+                hal.raw_device().clone().into_raw(),
+                hal.raw_queue().clone().into_raw(),
+            ))
         }
-        let index = self
-            .alternate_gpus
-            .iter()
-            .position(|(luid, _)| *luid == desired)
-            .ok_or("no background renderer was prepared for the stream adapter")?;
-        let (next_luid, mut next) = self.alternate_gpus.remove(index);
-        std::mem::swap(&mut self.gpu, &mut next);
-        self.alternate_gpus.push((self.adapter_luid, next));
-        self.adapter_luid = next_luid;
-        self.targets.clear();
-        Ok(true)
     }
 
     fn rasterize_frame(
         &mut self,
         frame: &BackgroundFrame,
-        mut band: impl FnMut(usize, SharedChrome),
+        mut band: impl FnMut(usize, &ChromeTexture),
     ) {
         if !frame.dirty {
             return;
@@ -195,13 +185,10 @@ impl BackgroundRasterizer {
                 self.targets.resize_with(index + 1, || None);
             }
             let target = match &mut self.targets[index] {
-                Some(target)
-                    if (target.shared.width, target.shared.height)
-                        == (frame.width, frame.height) =>
-                {
+                Some(target) if (target.width, target.height) == (frame.width, frame.height) => {
                     target
                 }
-                slot => match SharedTexture::new(&self.gpu.device, frame.width, frame.height) {
+                slot => match ChromeTexture::new(&self.device, frame.width, frame.height) {
                     Ok(target) => slot.insert(target),
                     Err(error) => {
                         tracing::error!(
@@ -211,9 +198,9 @@ impl BackgroundRasterizer {
                     }
                 },
             };
-            if let Err(error) = self.gpu.renderer.render_to_texture(
-                &self.gpu.device,
-                &self.gpu.queue,
+            if let Err(error) = self.renderer.render_to_texture(
+                &self.device,
+                &self.queue,
                 scene,
                 &target.view,
                 &parameters,
@@ -221,13 +208,15 @@ impl BackgroundRasterizer {
                 tracing::error!("snowglass: rasterizing background band {index} failed: {error}");
                 continue;
             }
-            drawn.push((index, target.shared));
+            drawn.push(index);
         }
-        if let Err(error) = self.gpu.device.poll(wgpu::PollType::wait_indefinitely()) {
+        if let Err(error) = self.device.poll(wgpu::PollType::wait_indefinitely()) {
             tracing::error!("snowglass: waiting for background chrome failed: {error}");
         }
-        for (index, shared) in drawn {
-            band(index, shared);
+        for index in drawn {
+            if let Some(Some(target)) = self.targets.get(index) {
+                band(index, target);
+            }
         }
         if std::env::var_os("SNOWGLASS_GAME_LAYER_TIMING").is_some() {
             tracing::error!(
@@ -238,6 +227,67 @@ impl BackgroundRasterizer {
                 frame.chrome_bands.len(),
             );
         }
+    }
+}
+
+/// All renderer state local to one D3D12 adapter. Replacing this value moves
+/// composition, Vello, chrome, and foreign imports as one device domain.
+struct RenderDevice {
+    compositor: D3d12Compositor,
+    background: BackgroundRasterizer,
+}
+
+impl RenderDevice {
+    fn new(
+        window: &impl snowglass_renderer::RenderWindow,
+        background: BackgroundRasterizer,
+    ) -> Result<Self, Box<dyn Error>> {
+        let adapter = background.adapter_luid();
+        let (device, queue) = background.retained_device_context()?;
+        // SAFETY: the background context supplied retained references to its
+        // exact D3D12 device and presentation queue.
+        let compositor = unsafe {
+            D3d12Compositor::new_for_shared_composition_from_external(
+                window, adapter, device, queue,
+            )?
+        };
+        Ok(Self {
+            compositor,
+            background,
+        })
+    }
+
+    fn recreate(
+        window: &impl snowglass_renderer::RenderWindow,
+        adapter: AdapterLuid,
+    ) -> Result<Self, Box<dyn Error>> {
+        let background = pollster::block_on(BackgroundRasterizer::new_for_adapter(Some(adapter)))?;
+        Self::new(window, background)
+    }
+
+    fn adapter_luid(&self) -> AdapterLuid {
+        self.compositor.adapter_luid()
+    }
+
+    fn render_background(&mut self, frame: &BackgroundFrame) -> Result<usize, String> {
+        self.compositor
+            .synchronize_chrome_update()
+            .map_err(|error| error.to_string())?;
+        let mut bands = 0;
+        self.background.rasterize_frame(frame, |band, chrome| {
+            bands = band + 1;
+            // SAFETY: this retained resource belongs to the exact device and
+            // queue used by the compositor in this RenderDevice.
+            unsafe {
+                self.compositor.set_chrome_layer_resource(
+                    band as u64,
+                    chrome.retained_abi_reference(),
+                    chrome.width,
+                    chrome.height,
+                );
+            }
+        });
+        Ok(bands)
     }
 }
 
@@ -320,14 +370,14 @@ pub(crate) struct GameHost {
     dirty: Arc<AtomicBool>,
     work_pending: bool,
     surfaces: HashMap<u64, CapturedSurface>,
-    /// One window-spanning opaque swapchain shared by every captured stream.
-    compositor: Option<D3d12Compositor>,
+    /// One adapter-local device domain shared by native chrome, composition,
+    /// and every imported captured stream.
+    render_device: RenderDevice,
     composition_content_dirty: bool,
     compositor_dirty: bool,
     chrome_bands: Vec<usize>,
     chrome_dirty: bool,
     background_refresh_pending: bool,
-    rasterizer: BackgroundRasterizer,
 }
 
 impl GameHost {
@@ -337,8 +387,7 @@ impl GameHost {
     ) -> Result<Self, Box<dyn Error>> {
         let capture = SurfaceCapture::default();
         let pointer = capture.pointer_sender();
-        let compositor =
-            D3d12Compositor::new_for_shared_composition(window, rasterizer.adapter_luid())?;
+        let render_device = RenderDevice::new(window, rasterizer)?;
         Ok(Self {
             active: None,
             capture,
@@ -347,21 +396,20 @@ impl GameHost {
             dirty: Arc::new(AtomicBool::new(false)),
             work_pending: false,
             surfaces: HashMap::new(),
-            compositor: Some(compositor),
+            render_device,
             composition_content_dirty: false,
             compositor_dirty: true,
             chrome_bands: Vec::new(),
             chrome_dirty: false,
             background_refresh_pending: false,
-            rasterizer,
         })
     }
 
     pub fn composition_content(&self) -> Result<IUnknown, Box<dyn Error>> {
-        let Some(compositor) = self.compositor.as_ref() else {
-            return Err("the game host compositor is unavailable".into());
-        };
-        compositor.composition_content().map_err(Into::into)
+        self.render_device
+            .compositor
+            .composition_content()
+            .map_err(Into::into)
     }
 
     /// Publishes a replacement swapchain to the window visual slot exactly
@@ -388,10 +436,6 @@ impl GameHost {
 
     pub fn has_active_game(&self) -> bool {
         self.active.is_some()
-    }
-
-    pub fn compositor_adapter_luid(&self) -> Option<AdapterLuid> {
-        self.compositor.as_ref().map(D3d12Compositor::adapter_luid)
     }
 
     pub fn has_connected_surfaces(&self) -> bool {
@@ -434,16 +478,10 @@ impl GameHost {
             .collect::<Vec<_>>();
         surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.z_index));
         for (&connection, surface) in surfaces {
-            let received_surfaces = self
-                .compositor
-                .as_ref()
-                .map(|compositor| {
-                    Renderer::received_surfaces(compositor)
-                        .into_iter()
-                        .filter(|received| received.connection == connection)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let received_surfaces = Renderer::received_surfaces(&self.render_device.compositor)
+                .into_iter()
+                .filter(|received| received.connection == connection)
+                .collect::<Vec<_>>();
             for mut received_surface in received_surfaces {
                 received_surface.frame.presentation_transform = normalize_pointer_transform(
                     received_surface.frame.presentation_transform,
@@ -510,11 +548,8 @@ impl GameHost {
         &mut self,
         window: &impl snowglass_renderer::RenderWindow,
     ) -> Result<bool, String> {
-        let Some(compositor) = self.compositor.as_mut() else {
-            return Ok(false);
-        };
-        let changed =
-            Renderer::recreate_swapchain(compositor, window).map_err(|error| error.to_string())?;
+        let changed = Renderer::recreate_swapchain(&mut self.render_device.compositor, window)
+            .map_err(|error| error.to_string())?;
         self.compositor_dirty |= changed;
         Ok(changed)
     }
@@ -721,10 +756,12 @@ impl GameHost {
             return Ok(AcceptedSurface { surface: None });
         };
         let desired_adapter = offer.stream().adapter_luid;
-        self.ensure_compositor_adapter(window, desired_adapter)?;
+        let recreated = self.ensure_render_device(window, desired_adapter)?;
         let connection = offer.connection_id();
         let surface_id = offer.stream().surface_id.0;
-        let replaced_connection = offer.replaced_connection_id();
+        let replaced_connection = (!recreated)
+            .then(|| offer.replaced_connection_id())
+            .flatten();
         if replaced_connection.is_none() && self.surfaces.len() >= surface_capacity {
             self.capture.reject(offer);
             return Ok(AcceptedSurface { surface: None });
@@ -766,20 +803,16 @@ impl GameHost {
             )
         };
         let backend = format!("{:?}", offer.stream().image_kind);
-        let compositor = self
-            .compositor
-            .as_mut()
-            .ok_or("the game host compositor is unavailable")?;
-        Renderer::import_surface_offer(compositor, &offer, quarter_turns)?;
+        Renderer::import_surface_offer(&mut self.render_device.compositor, &offer, quarter_turns)?;
         if let Err(error) = self.capture.accept(offer) {
-            let _ = Renderer::disconnect_stream(compositor, connection);
+            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
             return Err(error.into());
         }
 
         self.surfaces.insert(connection, surface);
         if let Some(previous) = replaced_connection {
             self.surfaces.remove(&previous);
-            let _ = Renderer::disconnect_stream(compositor, previous);
+            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, previous);
             if let Some(publisher) = self
                 .active
                 .as_ref()
@@ -800,26 +833,37 @@ impl GameHost {
         })
     }
 
-    fn ensure_compositor_adapter(
+    fn ensure_render_device(
         &mut self,
         window: &impl snowglass_renderer::RenderWindow,
         desired: AdapterLuid,
-    ) -> Result<(), Box<dyn Error>> {
-        if self.compositor_adapter_luid() == Some(desired) {
-            return Ok(());
-        }
-        if self.has_connected_surfaces() {
-            return Err(
-                "captured streams from multiple adapters cannot share one swapchain".into(),
-            );
+    ) -> Result<bool, Box<dyn Error>> {
+        if self.render_device.adapter_luid() == desired {
+            return Ok(false);
         }
 
-        let replacement = D3d12Compositor::new_for_shared_composition(window, desired)?;
-        self.rasterizer.switch_adapter(desired)?;
-        self.compositor = Some(replacement);
+        // Construct the complete replacement before disturbing the active
+        // device domain. A failure leaves the old compositor usable.
+        let replacement = RenderDevice::recreate(window, desired)?;
+        self.render_device = replacement;
+        let stale_connections = self.surfaces.keys().copied().collect::<Vec<_>>();
+        for connection in stale_connections {
+            self.capture.revoke(connection);
+            if let Some(publisher) = self
+                .active
+                .as_ref()
+                .and_then(|active| active.webrtc.as_ref())
+            {
+                publisher.remove_stream(connection);
+            }
+        }
+        self.surfaces.clear();
         self.composition_content_dirty = true;
         self.compositor_dirty = true;
-        Ok(())
+        self.chrome_bands.clear();
+        self.chrome_dirty = true;
+        self.background_refresh_pending = true;
+        Ok(true)
     }
 
     fn update_surface_frame(
@@ -840,9 +884,7 @@ impl GameHost {
             surface.preferred_width = width;
             surface.preferred_height = height;
         }
-        if let Some(compositor) = self.compositor.as_mut() {
-            Renderer::set_latest(compositor, connection, frame);
-        }
+        Renderer::set_latest(&mut self.render_device.compositor, connection, frame);
         Some((frame, dimensions_changed))
     }
 
@@ -856,9 +898,7 @@ impl GameHost {
         }
         let removed = self.surfaces.remove(&connection).is_some();
         if removed {
-            if let Some(compositor) = self.compositor.as_mut() {
-                let _ = Renderer::disconnect_stream(compositor, connection);
-            }
+            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
             self.compositor_dirty = true;
         }
         removed
@@ -872,9 +912,7 @@ impl GameHost {
                 publisher.remove_stream(connection);
             }
             self.capture.revoke(connection);
-            if let Some(compositor) = self.compositor.as_mut() {
-                let _ = Renderer::disconnect_stream(compositor, connection);
-            }
+            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
         }
         self.capture.detach();
         self.surfaces.clear();
@@ -901,16 +939,13 @@ impl GameHost {
     }
 
     pub fn has_pending_frame(&self) -> bool {
-        self.compositor.as_ref().is_some_and(|compositor| {
-            Renderer::has_pending_frame(compositor) || self.compositor_dirty || self.chrome_dirty
-        })
+        Renderer::has_pending_frame(&self.render_device.compositor)
+            || self.compositor_dirty
+            || self.chrome_dirty
     }
 
     pub fn compositing_plan(&self, width: u32, height: u32) -> CompositingPlan {
-        let Some(compositor) = self.compositor.as_ref() else {
-            return CompositingPlan::new([0.0, 0.0, 0.0, 1.0], Vec::new());
-        };
-        let mut ordered = Renderer::received_surfaces(compositor)
+        let mut ordered = Renderer::received_surfaces(&self.render_device.compositor)
             .into_iter()
             .filter_map(|received| {
                 let surface = self.surfaces.get(&received.connection)?;
@@ -958,9 +993,7 @@ impl GameHost {
         permit_wait: Duration,
     ) -> Result<Option<bool>, String> {
         let plan = self.compositing_plan(width, height);
-        let Some(compositor) = self.compositor.as_mut() else {
-            return Ok(None);
-        };
+        let compositor = &mut self.render_device.compositor;
         let carried_new_frame = Renderer::has_pending_frame(compositor);
         if !compositor.begin_frame_within(permit_wait) {
             return Ok(None);
@@ -977,33 +1010,20 @@ impl GameHost {
         if !frame.dirty {
             return Ok(false);
         }
-        let Some(compositor) = self.compositor.as_mut() else {
-            return Ok(false);
-        };
-        compositor
-            .synchronize_chrome_update()
-            .map_err(|error| error.to_string())?;
-        let mut bands = 0;
-        self.rasterizer.rasterize_frame(frame, |band, chrome| {
-            bands = band + 1;
-            compositor.set_chrome_layer(band as u64, chrome.handle, chrome.width, chrome.height);
-        });
+        let device = &mut self.render_device;
+        let bands = device.render_background(frame)?;
         let previous_bands = self.chrome_bands.len();
         self.chrome_bands = (0..bands).collect();
         self.chrome_dirty = true;
         for band in bands..previous_bands {
-            compositor.drop_chrome_layer(band as u64);
+            device.compositor.drop_chrome_layer(band as u64);
         }
         Ok(true)
     }
 
     pub fn clear_background(&mut self) {
-        if let Some(compositor) = self.compositor.as_mut() {
-            for band in self.chrome_bands.drain(..) {
-                compositor.drop_chrome_layer(band as u64);
-            }
-        } else {
-            self.chrome_bands.clear();
+        for band in self.chrome_bands.drain(..) {
+            self.render_device.compositor.drop_chrome_layer(band as u64);
         }
         self.chrome_dirty = true;
         self.apply_tracked_layout(&[]);
@@ -1322,7 +1342,72 @@ fn normalize_pointer_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snowglass_renderer::SurfacePlacement;
     use std::collections::BTreeMap;
+    use style::{
+        properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
+        values::computed::{LengthPercentage, Percentage, position::Position},
+    };
+
+    fn game_view_style(object_fit: ObjectFit, x: f32, y: f32) -> GameViewStyle {
+        GameViewStyle {
+            object_fit,
+            object_position: Position::new(
+                LengthPercentage::new_percent(Percentage(x)),
+                LengthPercentage::new_percent(Percentage(y)),
+            ),
+        }
+    }
+
+    #[test]
+    fn cover_crops_the_source_without_changing_the_layout_box() {
+        let rectangle = Rect::new(10, 20, 200, 200);
+        let style = game_view_style(ObjectFit::Cover, 0.5, 0.5);
+        let content = fit_surface_content(rectangle, Extent::new(400, 200), Some(&style), 0.35);
+
+        assert_eq!(content.destination, [10.0, 20.0, 210.0, 220.0]);
+        assert_eq!(content.source, [0.25, 0.0, 0.75, 1.0]);
+        assert!((content.opacity - 0.35).abs() < f32::EPSILON);
+        let placement = SurfacePlacement {
+            connection: 1,
+            surface_id: 2,
+            rectangle,
+            content,
+            corner_radius: 0.0,
+        };
+        assert_eq!(
+            CompositingPlan::new([0.0; 4], vec![placement]).rectangle(1, 2),
+            Some(rectangle)
+        );
+    }
+
+    #[test]
+    fn contain_and_object_position_move_only_the_draw_quad() {
+        let style = game_view_style(ObjectFit::Contain, 1.0, 1.0);
+        let content = fit_surface_content(
+            Rect::new(10, 20, 200, 200),
+            Extent::new(400, 200),
+            Some(&style),
+            1.0,
+        );
+
+        assert_eq!(content.destination, [10.0, 120.0, 210.0, 220.0]);
+        assert_eq!(content.source, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn none_is_clipped_at_the_object_position() {
+        let style = game_view_style(ObjectFit::None, 1.0, 1.0);
+        let content = fit_surface_content(
+            Rect::new(0, 0, 200, 100),
+            Extent::new(400, 200),
+            Some(&style),
+            1.0,
+        );
+
+        assert_eq!(content.destination, [0.0, 0.0, 200.0, 100.0]);
+        assert_eq!(content.source, [0.5, 0.5, 1.0, 1.0]);
+    }
 
     #[test]
     fn background_renderer_uses_the_self_contained_d3d12_shader_compiler() {
