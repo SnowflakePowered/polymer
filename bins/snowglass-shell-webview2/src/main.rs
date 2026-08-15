@@ -63,6 +63,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 application.run_async_tasks().await;
+                // `pump_app_events` and the background runtime can both
+                // complete synchronously while WebView2 is busy. Yield once
+                // per turn so locally spawned work such as game detection is
+                // not starved on this current-thread Tokio runtime.
+                tokio::task::yield_now().await;
             }
             application.into_result()
         })
