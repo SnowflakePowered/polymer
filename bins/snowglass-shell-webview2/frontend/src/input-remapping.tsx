@@ -34,7 +34,7 @@ function bindingLabel(binding?: Binding) {
 }
 
 export function InputRemapping(props: { onClose(): void }) {
-  const api = window.snowglassInput as InputApi;
+  const api = window.Snowglass.input as InputApi;
   const [configuration, setConfiguration] = createSignal<Configuration>(api.configuration || { revision: 0, machine: null, ports: [] });
   const [controllers, setControllers] = createSignal<Controller[]>(api.controllers || []);
   const [selected, setSelected] = createSignal(configuration().ports[0]?.port || "");

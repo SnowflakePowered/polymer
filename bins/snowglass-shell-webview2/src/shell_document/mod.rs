@@ -716,6 +716,7 @@ impl ShellDocumentFactory {
         width: u32,
         height: u32,
         emulator_commands: EmulatorCommandSink,
+        webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
         launcher_commands: LauncherCommandSink,
         initial_launcher_state: serde_json::Value,
     ) -> Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>> {
@@ -751,6 +752,7 @@ impl ShellDocumentFactory {
             views,
             (width, height),
             emulator_commands,
+            webrtc_commands,
             launcher_commands,
             initial_launcher_state,
         )
@@ -768,6 +770,7 @@ impl ShellDocumentFactory {
         views: usize,
         viewport: (u32, u32),
         emulator_commands: EmulatorCommandSink,
+        webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
         launcher_commands: LauncherCommandSink,
         initial_launcher_state: serde_json::Value,
     ) -> Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>> {
@@ -809,8 +812,10 @@ impl ShellDocumentFactory {
             html.to_owned(),
             source_name.to_owned(),
             emulator_commands,
+            webrtc_commands,
             launcher_commands,
             initial_launcher_state,
+            self.plugin_runtime.clone(),
         )
         .await?;
         layer.apply_script_mutations(&mut runtime);
@@ -2284,8 +2289,13 @@ mod tests {
                     html.to_owned(),
                     "snowglass:///native-click-test.html".to_owned(),
                     deno::EmulatorCommandSink::default(),
+                    deno::WebRtcCommandSink::default(),
                     LauncherCommandSink::default(),
                     serde_json::json!({ "kind": "idle" }),
+                    Arc::new(snowglass_pluginhost::PluginRuntime::new(
+                        snowglass_pluginhost::PluginRegistry::new(),
+                        snowglass_pluginhost::PluginRuntimeOptions::default(),
+                    )),
                 )
                 .await
                 .unwrap();

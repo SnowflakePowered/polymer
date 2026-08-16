@@ -76,7 +76,41 @@ export interface EmulatorInstance {
 
 export interface EmulatorApi extends EventTarget {
   readonly activeInstance: EmulatorInstance | null;
-  launch(options: LaunchOptions): EmulatorInstance | null;
+  launch(options: LaunchOptions): Promise<EmulatorInstance>;
+}
+
+export interface PluginExport {
+  (...args: unknown[]): Promise<unknown>;
+  readonly [property: string]: PluginExport;
+}
+
+export interface PluginApi {
+  open(id: string): PluginExport;
+}
+
+export type WebRtcPublicationState =
+  | "starting"
+  | "active"
+  | "closing"
+  | "closed"
+  | "error";
+
+export interface WebRtcPublication extends EventTarget {
+  readonly instance: EmulatorInstance;
+  readonly bind: string;
+  readonly targets: readonly number[];
+  readonly state: WebRtcPublicationState;
+  readonly error: Error | null;
+  close(): Promise<void>;
+}
+
+export interface WebRtcApi extends EventTarget {
+  readonly activePublication: WebRtcPublication | null;
+  start(options: {
+    instance: EmulatorInstance;
+    bind?: string;
+    targets: number[];
+  }): Promise<WebRtcPublication>;
 }
 
 export type LauncherOption = {
@@ -146,15 +180,19 @@ export interface LauncherApi extends EventTarget {
 
 declare global {
   interface Window {
-    readonly Emulator: EmulatorApi;
-    readonly snowglassLauncher: LauncherApi;
-    readonly snowglassInput: EventTarget & {
-      readonly configuration: unknown;
-      readonly layouts: unknown;
-      readonly controllers: unknown;
-      readonly priority: "ui" | "game";
-      configure(transaction: unknown): Promise<unknown>;
-    };
+    readonly Snowglass: Readonly<{
+      readonly emulator: EmulatorApi;
+      readonly launcher: LauncherApi;
+      readonly plugin: PluginApi;
+      readonly webrtc: WebRtcApi;
+      readonly input: EventTarget & {
+        readonly configuration: unknown;
+        readonly layouts: unknown;
+        readonly controllers: unknown;
+        readonly priority: "ui" | "game";
+        configure(transaction: unknown): Promise<unknown>;
+      };
+    }>;
   }
 
   interface HTMLElementTagNameMap {

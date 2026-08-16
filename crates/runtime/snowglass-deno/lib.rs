@@ -27,8 +27,14 @@ fn op_snowglass_user_agent(state: &mut OpState) -> String {
     state.borrow::<UserAgent>().0.clone()
 }
 
+#[op2]
+#[string]
+fn op_snowglass_location(state: &mut OpState) -> String {
+    state.borrow::<deno_web::Location>().0.to_string()
+}
+
 deno_core::extension!(snowglass_web_runtime,
-    ops = [op_snowglass_user_agent],
+    ops = [op_snowglass_location, op_snowglass_user_agent],
     esm_entry_point = "ext:snowglass_web_runtime/bootstrap.js",
     esm = [dir ".", "bootstrap.js"],
     options = {
@@ -272,6 +278,10 @@ mod tests {
                   return JSON.stringify({
                     event: typeof EventTarget === "function" && dispatched,
                     url: new URL("child", "https://example.com/root/").href,
+                    location: location instanceof Location &&
+                      location.href === "https://snowglass.invalid/runtime.js" &&
+                      location.origin === "https://snowglass.invalid" &&
+                      location.pathname === "/runtime.js",
                     channel: typeof MessageChannel === "function",
                     timer: typeof setTimeout === "function",
                     fetch: typeof fetch === "function",
@@ -291,7 +301,7 @@ mod tests {
         let value = value.to_rust_string_lossy(scope);
         assert_eq!(
             value,
-            r#"{"event":true,"url":"https://example.com/root/child","channel":true,"timer":true,"fetch":true,"websocket":true,"navigator":true,"storage":true,"deno":"undefined","process":"undefined","crypto":"undefined"}"#
+            r#"{"event":true,"url":"https://example.com/root/child","location":true,"channel":true,"timer":true,"fetch":true,"websocket":true,"navigator":true,"storage":true,"deno":"undefined","process":"undefined","crypto":"undefined"}"#
         );
     }
 

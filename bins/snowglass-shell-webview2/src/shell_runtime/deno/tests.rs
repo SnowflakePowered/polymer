@@ -1,7 +1,9 @@
 use blitz_dom::DocumentConfig;
 use std::sync::{Arc, Mutex};
 
-use super::{EmulatorCommand, EmulatorCommandSink, Mutation, Runtime};
+use super::{
+    EmulatorCommand, EmulatorCommandSink, Mutation, Runtime, WebRtcCommand, WebRtcCommandSink,
+};
 
 #[tokio::test]
 async fn pluginhost_executes_the_cemu_package_with_realized_configuration() {
@@ -130,7 +132,7 @@ async fn shell_input_api_sends_revisioned_transactions_and_resolves_results() {
     let html = r##"
         <html><body>
           <script>
-            snowglassInput.configure({
+            Snowglass.input.configure({
               operations: [{ type: "resetPortOverrides", port: "controller.0" }]
             }).then((configuration) => {
               postMessage({
@@ -187,6 +189,449 @@ async fn shell_input_api_sends_revisioned_transactions_and_resolves_results() {
             "revision": 1,
         })]
     );
+}
+
+#[tokio::test]
+async fn snowglass_is_the_only_public_native_namespace() {
+    let html = r##"
+        <html><body><script>
+          postMessage({
+            keys: Object.keys(Snowglass).sort(),
+            frozen: Object.isFrozen(Snowglass),
+            readonly: Object.getOwnPropertyDescriptor(globalThis, "Snowglass").writable === false,
+            legacy: [typeof Emulator, typeof snowglassInput, typeof snowglassLauncher, typeof snowglass],
+          });
+        </script></body></html>
+    "##;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///namespace-test.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "keys": ["emulator", "input", "launcher", "plugin", "webrtc"],
+            "frozen": true,
+            "readonly": true,
+            "legacy": ["undefined", "undefined", "undefined", "undefined"],
+        })]
+    );
+}
+
+#[tokio::test]
+async fn location_reflects_the_shell_document_url() {
+    let html = r#"
+        <html><body><script>
+          postMessage({
+            same: window.location === location,
+            constructor: location instanceof Location,
+            href: location.href,
+            origin: location.origin,
+            pathname: location.pathname,
+            search: location.search,
+            hash: location.hash,
+          });
+        </script></body></html>
+    "#;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "https://example.invalid/app/index.html?mode=test#shell",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "same": true,
+            "constructor": true,
+            "href": "https://example.invalid/app/index.html?mode=test#shell",
+            "origin": "https://example.invalid",
+            "pathname": "/app/index.html",
+            "search": "?mode=test",
+            "hash": "#shell",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn emulator_launch_is_acknowledged_asynchronously() {
+    let html = r##"
+        <html><body>
+          <tracked-surface id="game"></tracked-surface>
+          <script>
+            const before = Snowglass.emulator.launch({
+              command: "emulator.exe",
+              arguments: [],
+              isolated: false,
+              hook: ["d3d12"],
+              surfaces: [{ index: 0, rotation: 0, attach: document.querySelector("#game"), webrtc: false }],
+              gamepadMapping: [],
+              machine: "TEST",
+            });
+            postMessage({ type: "pending", promise: before instanceof Promise });
+            before.then(instance => postMessage({ type: "launched", id: instance.id }));
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let sink = EmulatorCommandSink::new(|command| {
+        let EmulatorCommand::Launch { result, .. } = command else {
+            panic!("unexpected emulator command")
+        };
+        result.send(Ok(())).unwrap();
+    });
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///launch-test.html",
+        800,
+        600,
+        sink,
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [
+            serde_json::json!({ "type": "pending", "promise": true }),
+            serde_json::json!({ "type": "launched", "id": 1 }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn emulator_launch_rejects_and_clears_the_provisional_instance() {
+    let html = r##"
+        <html><body>
+          <tracked-surface id="game"></tracked-surface>
+          <script>
+            Snowglass.emulator.launch({
+              command: "emulator.exe",
+              arguments: [],
+              isolated: false,
+              hook: ["d3d12"],
+              surfaces: [{ index: 0, rotation: 0, attach: document.querySelector("#game"), webrtc: false }],
+              gamepadMapping: [],
+              machine: "TEST",
+            }).catch(error => postMessage({
+              message: error.message,
+              active: Snowglass.emulator.activeInstance !== null,
+            }));
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let sink = EmulatorCommandSink::new(|command| {
+        let EmulatorCommand::Launch { result, .. } = command else {
+            panic!("unexpected emulator command")
+        };
+        result.send(Err("native launch failed".to_owned())).unwrap();
+    });
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///launch-failure-test.html",
+        800,
+        600,
+        sink,
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "message": "native launch failed",
+            "active": false,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn webrtc_facade_owns_publication_lifecycle_through_async_ops() {
+    let html = r##"
+        <html><body>
+          <tracked-surface id="game"></tracked-surface>
+          <script>
+            (async () => {
+              const instance = await Snowglass.emulator.launch({
+                command: "emulator.exe",
+                arguments: [],
+                isolated: false,
+                hook: ["d3d12"],
+                surfaces: [{ index: 0, rotation: 0, attach: document.querySelector("#game"), webrtc: false }],
+                gamepadMapping: [],
+                machine: "TEST",
+              });
+              const publication = await Snowglass.webrtc.start({
+                instance,
+                bind: "127.0.0.1:9090",
+                targets: [0],
+              });
+              postMessage({
+                type: "started",
+                state: publication.state,
+                active: Snowglass.webrtc.activePublication === publication,
+              });
+              await publication.close();
+              postMessage({
+                type: "stopped",
+                state: publication.state,
+                active: Snowglass.webrtc.activePublication !== null,
+              });
+            })();
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let emulator_sink = EmulatorCommandSink::new(|command| {
+        let EmulatorCommand::Launch { result, .. } = command else {
+            panic!("unexpected emulator command")
+        };
+        result.send(Ok(())).unwrap();
+    });
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
+    let webrtc_sink = WebRtcCommandSink::new(move |command| match command {
+        WebRtcCommand::Start {
+            token,
+            bind,
+            targets,
+            result,
+        } => {
+            recorded.lock().unwrap().push(serde_json::json!({
+                "type": "start",
+                "token": token.0,
+                "bind": bind.to_string(),
+                "targets": targets,
+            }));
+            result.send(Ok(())).unwrap();
+        }
+        WebRtcCommand::Stop { token, result } => {
+            recorded.lock().unwrap().push(serde_json::json!({
+                "type": "stop",
+                "token": token.0,
+            }));
+            result.send(Ok(())).unwrap();
+        }
+    });
+    let plugin_runtime = Arc::new(snowglass_pluginhost::PluginRuntime::new(
+        snowglass_pluginhost::PluginRegistry::new(),
+        snowglass_pluginhost::PluginRuntimeOptions::default(),
+    ));
+    let mut runtime = Runtime::new_with_command_sinks(
+        document.as_ref(),
+        html,
+        "snowglass:///webrtc-test.html",
+        800,
+        600,
+        emulator_sink,
+        webrtc_sink,
+        plugin_runtime,
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [
+            serde_json::json!({ "type": "started", "state": "active", "active": true }),
+            serde_json::json!({ "type": "stopped", "state": "closed", "active": false }),
+        ]
+    );
+    assert_eq!(
+        *commands.lock().unwrap(),
+        [
+            serde_json::json!({
+                "type": "start",
+                "token": 1,
+                "bind": "127.0.0.1:9090",
+                "targets": [0],
+            }),
+            serde_json::json!({ "type": "stop", "token": 1 }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
+    let html = r##"
+        <html><body>
+          <tracked-surface id="game"></tracked-surface>
+          <script>
+            Snowglass.emulator.launch({
+              command: "emulator.exe",
+              arguments: [],
+              isolated: false,
+              hook: ["d3d12"],
+              surfaces: [{ index: 3, rotation: 0, attach: document.querySelector("#game"), webrtc: true }],
+              gamepadMapping: [],
+              machine: "TEST",
+              webrtcBind: "127.0.0.1:9191",
+            }).then(instance => postMessage({
+              instance: instance.id,
+              publicationState: Snowglass.webrtc.activePublication.state,
+              targets: Snowglass.webrtc.activePublication.targets,
+            }));
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let emulator_sink = EmulatorCommandSink::new(|command| {
+        let EmulatorCommand::Launch {
+            options, result, ..
+        } = command
+        else {
+            panic!("unexpected emulator command")
+        };
+        assert_eq!(options.surfaces[0].index, 3);
+        result.send(Ok(())).unwrap();
+    });
+    let webrtc_sink = WebRtcCommandSink::new(|command| {
+        let WebRtcCommand::Start {
+            token,
+            bind,
+            targets,
+            result,
+        } = command
+        else {
+            panic!("unexpected WebRTC command")
+        };
+        assert_eq!(token.0, 1);
+        assert_eq!(bind.to_string(), "127.0.0.1:9191");
+        assert_eq!(targets, [3]);
+        result.send(Ok(())).unwrap();
+    });
+    let plugin_runtime = Arc::new(snowglass_pluginhost::PluginRuntime::new(
+        snowglass_pluginhost::PluginRegistry::new(),
+        snowglass_pluginhost::PluginRuntimeOptions::default(),
+    ));
+    let mut runtime = Runtime::new_with_command_sinks(
+        document.as_ref(),
+        html,
+        "snowglass:///webrtc-launch-test.html",
+        800,
+        600,
+        emulator_sink,
+        webrtc_sink,
+        plugin_runtime,
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "instance": 1,
+            "publicationState": "active",
+            "targets": [3],
+        })]
+    );
+}
+
+#[tokio::test]
+async fn plugin_facade_rejects_non_json_arguments_before_invocation() {
+    let html = r#"
+        <html><body><script>
+          Snowglass.plugin.open("missing").call(1n)
+            .catch(error => postMessage({ name: error.name, message: error.message }));
+        </script></body></html>
+    "#;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///plugin-json-test.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "name": "TypeError",
+            "message": "plugin arguments must contain only JSON-compatible values",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn plugin_facade_invokes_a_fresh_worker_through_the_direct_op() {
+    let plugins = snowglass_pluginhost::PluginRegistry::new();
+    plugins
+        .load(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("plugins")
+                .join("cemu")
+                .join("plugin.toml"),
+        )
+        .unwrap();
+    let plugin_runtime = Arc::new(snowglass_pluginhost::PluginRuntime::new(
+        plugins,
+        snowglass_pluginhost::PluginRuntimeOptions::default(),
+    ));
+    let html = r#"
+        <html><body><script>
+          Snowglass.plugin.open("cemu").setupLaunch({
+            launchPath: "E:/games/U-King.rpx",
+            console: "NINTENDO_WIIU",
+            portAssignments: { gamepad: ["WIIU_DRC_CONTROLLER"] },
+          }).then(plan => postMessage({ command: plan.command, hook: plan.hooks[0] }));
+        </script></body></html>
+    "#;
+    let document = document(html);
+    let mut runtime = Runtime::new_with_plugin_runtime(
+        document.as_ref(),
+        html,
+        "snowglass:///plugin-test.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+        plugin_runtime,
+    )
+    .await
+    .unwrap();
+    let mut messages = Vec::new();
+    for _ in 0..1_000 {
+        runtime.poll_event_loop().await.unwrap();
+        messages = runtime.take_messages();
+        if !messages.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        messages.len(),
+        1,
+        "plugin result was not delivered: {messages:?}"
+    );
+    assert!(
+        messages[0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("/Cemu.exe")
+    );
+    assert_eq!(messages[0]["hook"], "vulkan");
 }
 
 #[tokio::test]

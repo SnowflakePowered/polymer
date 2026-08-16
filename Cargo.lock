@@ -9366,6 +9366,7 @@ dependencies = [
  "crossfire",
  "dashmap",
  "parking_lot",
+ "serde",
  "serde_json",
  "snowglass-hook",
  "snowglass-input",
@@ -9375,6 +9376,7 @@ dependencies = [
  "snowglass-statistics",
  "tempfile",
  "tracing",
+ "url",
  "watchable",
 ]
 

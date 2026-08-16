@@ -990,13 +990,19 @@
   const setInputConfiguration = inputFacade.setConfiguration;
   const setInputState = inputFacade.setState;
   const inputConfigurationResult = inputFacade.settleConfiguration;
+  const webrtcFacade = globalThis.__snowglassCreateWebRtcFacade(ops);
+  delete globalThis.__snowglassCreateWebRtcFacade;
+  const { WebRTC } = webrtcFacade;
   const emulatorFacade = globalThis.__snowglassCreateEmulatorFacade(
     ops,
     HTMLTrackedSurfaceElement,
+    webrtcFacade,
   );
   delete globalThis.__snowglassCreateEmulatorFacade;
   const { Emulator } = emulatorFacade;
   const dispatchEmulatorEvent = emulatorFacade.dispatch;
+  const snowglassPlugin = globalThis.__snowglassCreatePluginFacade(ops);
+  delete globalThis.__snowglassCreatePluginFacade;
   let launcherState = Object.freeze({ kind: "idle" });
   let launcherDropActive = false;
   let launcherPendingLaunch = null;
@@ -1009,6 +1015,13 @@
     start: { value(request) { ops.op_launcher_start(request); } },
     cancel: { value() { ops.op_launcher_cancel(); } },
     settleLaunch: { value(id, error) { ops.op_launcher_settle(BigInt(id), error == null ? null : String(error)); } },
+  });
+  const Snowglass = Object.freeze({
+    input: snowglassInput,
+    plugin: snowglassPlugin,
+    emulator: Emulator,
+    webrtc: WebRTC,
+    launcher: snowglassLauncher,
   });
   function makeNode(snapshot) {
     if (snapshot.kind === "document") return new Document(snapshot);
@@ -1127,9 +1140,12 @@
       get opacity() { return element.style.opacity || "1"; },
     }),
     postMessage: shellChannel.port2.postMessage.bind(shellChannel.port2),
-    Emulator,
-    snowglassInput,
-    snowglassLauncher,
+  });
+  Object.defineProperty(globalThis, "Snowglass", {
+    value: Snowglass,
+    enumerable: true,
+    configurable: false,
+    writable: false,
   });
 
   Object.defineProperties(globalThis, {

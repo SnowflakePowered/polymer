@@ -8,6 +8,7 @@ license.workspace = true
 crossfire.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
@@ -17,6 +18,7 @@ snowglass-protocol.workspace = true
 snowglass-statistics.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+url = "2"
 watchable.workspace = true
 
 [lints]

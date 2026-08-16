@@ -9,7 +9,7 @@ use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent, Shel
 use crate::shell_dom::ShellDomCoordinator;
 use crate::shell_runtime::{
     EmulatorCommand, EmulatorCommandSink, InstanceToken, LaunchCoordinatorEvent, LauncherCommand,
-    LauncherCommandSink, ShellLaunchCoordinator,
+    LauncherCommandSink, ShellLaunchCoordinator, WebRtcCommand, WebRtcCommandSink,
 };
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
@@ -222,7 +222,13 @@ impl ShellCoordinator {
 
     fn apply_emulator_command(&mut self, command: EmulatorCommand) {
         match command {
-            EmulatorCommand::Launch { token, options } => self.launch_game(token, options),
+            EmulatorCommand::Launch {
+                token,
+                options,
+                result,
+            } => {
+                let _ = result.send(self.launch_game(token, options));
+            }
             EmulatorCommand::Close(token) => self.close_game(token),
             EmulatorCommand::SetVolume { token, volume } => self.set_game_volume(token, volume),
             EmulatorCommand::SetMuted { token, muted } => self.set_game_muted(token, muted),
@@ -239,6 +245,27 @@ impl ShellCoordinator {
                 request_id,
                 transaction,
             } => self.configure_input(u64::from(request_id), transaction),
+        }
+    }
+
+    fn apply_webrtc_command(&mut self, command: WebRtcCommand) {
+        match command {
+            WebRtcCommand::Start {
+                token,
+                bind,
+                targets,
+                result,
+            } => {
+                let _ = result.send(self.game_host.start_webrtc(token, bind, &targets));
+            }
+            WebRtcCommand::Stop { token, result } => {
+                let stopped = self.game_host.stop_webrtc(token);
+                let _ = result.send(if stopped {
+                    Ok(())
+                } else {
+                    Err("the WebRTC publication is not active".to_owned())
+                });
+            }
         }
     }
 
@@ -288,6 +315,7 @@ impl ShellCoordinator {
         if let Some(shell_source) = source {
             let size = self.window.size();
             let command_proxy = self.services.proxy.clone();
+            let webrtc_proxy = self.services.proxy.clone();
             let launcher_proxy = self.services.proxy.clone();
             let html = shell_source.html.clone();
             let base_url = shell_source.base_url.clone();
@@ -303,6 +331,14 @@ impl ShellCoordinator {
                             tracing::error!(
                                 "snowglass: emulator command event loop is unavailable"
                             );
+                        }
+                    });
+                    let webrtc_commands = WebRtcCommandSink::new(move |command| {
+                        if webrtc_proxy
+                            .send_event(UserEvent::GameHost(GameHostCommand::WebRtc(command)))
+                            .is_err()
+                        {
+                            tracing::error!("snowglass: WebRTC command event loop is unavailable");
                         }
                     });
                     let launcher_commands = LauncherCommandSink::new(move |command| {
@@ -326,6 +362,7 @@ impl ShellCoordinator {
                             size.width,
                             size.height,
                             emulator_commands,
+                            webrtc_commands,
                             launcher_commands,
                             initial_launcher_state,
                         )
@@ -373,37 +410,33 @@ impl ShellCoordinator {
         self.window.set_clock_active(self.has_pending_surfaces());
     }
 
-    fn launch_game(&mut self, token: InstanceToken, options: AttachedLaunchPlan) {
+    fn launch_game(
+        &mut self,
+        token: InstanceToken,
+        options: AttachedLaunchPlan,
+    ) -> Result<(), String> {
         if self.game_host.has_active_game() {
-            self.emit_instance_event(
-                token,
-                "error",
-                &instance_events::error("another emulator instance is active"),
-            );
+            let error = "another emulator instance is active".to_owned();
+            self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-            return;
+            return Err(error);
         }
         self.shell_dom.flush_script_mutations();
         let invalid_shell_attachment = self.shell_dom.invalid_attachment(&options);
         if let Some(index) = invalid_shell_attachment {
-            self.emit_instance_event(
-                token,
-                "error",
-                &instance_events::error(format!(
-                    "surface {index} does not attach to its shell tracked-surface"
-                )),
-            );
+            let error = format!("surface {index} does not attach to its shell tracked-surface");
+            self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-            return;
+            return Err(error);
         }
         self.emit_instance_event(token, "start", &serde_json::Value::Null);
         if let Err(error) = self
             .input
             .configure_launch(&options.machine, &options.gamepad_mapping)
         {
-            self.emit_instance_event(token, "error", &instance_events::error(error));
+            self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-            return;
+            return Err(error);
         }
         self.publish_input_configuration();
         let wake_proxy = self.services.proxy.clone();
@@ -423,10 +456,12 @@ impl ShellCoordinator {
                 self.set_input_priority(InputPriority::Game);
                 self.emit_instance_event(token, "ready", &serde_json::Value::Null);
                 self.publish_audio_state(true);
+                Ok(())
             }
             Err(error) => {
-                self.emit_instance_event(token, "error", &instance_events::error(error));
+                self.emit_instance_event(token, "error", &instance_events::error(&error));
                 self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                Err(error)
             }
         }
     }
@@ -1185,6 +1220,9 @@ impl ShellApplication {
             }) => state.window.set_ime_cursor_area(x, y, width, height),
             UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
                 state.apply_emulator_command(command)
+            }
+            UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
+                state.apply_webrtc_command(command)
             }
             UserEvent::Runtime(RuntimeCommand::LauncherOpen(request)) => state.queue_game(request),
             UserEvent::Runtime(RuntimeCommand::LauncherStart(request)) => {

@@ -20,8 +20,8 @@ cargo run --bin snowglass-shell-webview2 -- --url http://127.0.0.1:5173/index.ht
 For a built frontend, pass an absolute `file:` URL for `dist/index.html`.
 Assets are intentionally not embedded in the executable.
 
-The app uses same-realm `snowglassLauncher`, `Emulator`, `snowglassInput`, and
-`HTMLTrackedSurfaceElement` interfaces. Solid Router uses memory history, and
+The app uses `Snowglass.launcher`, `Snowglass.emulator`, `Snowglass.webrtc`,
+`Snowglass.input`, and the `HTMLTrackedSurfaceElement` DOM interface. Solid Router uses memory history, and
 the persistent `/game` parent retains tracked-surface identity across launching,
 play, and remapping. Ark UI is headless and Tailwind emits static CSS.
 
