@@ -1,4 +1,6 @@
-use crate::{EmulatorPlugin, EmulatorPluginInstance, PackageError, PluginModuleLoader};
+use crate::{
+    EmulatorPlugin, EmulatorPluginInstance, PackageError, PluginModuleLoader, PluginResource,
+};
 use serde::Deserialize;
 use std::{
     any::{Any, TypeId},
@@ -15,6 +17,9 @@ pub trait PluginInstance: Send + Sync + 'static {
     fn version(&self) -> &str;
     fn class(&self) -> &str;
     fn module_loader(&self) -> &PluginModuleLoader;
+    fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
+        Ok(Vec::new())
+    }
 }
 
 struct RegisteredPlugin {

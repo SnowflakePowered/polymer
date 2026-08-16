@@ -61,6 +61,7 @@ export function createEmulator(webrtc) {
       })),
       machine: options.machine,
       generatedConfiguration: options.generatedConfiguration,
+      preparedFilesystem: options.preparedFilesystem,
     };
   }
 

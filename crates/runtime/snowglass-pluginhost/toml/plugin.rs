@@ -1,5 +1,7 @@
 use serde::{Deserialize, de::DeserializeOwned};
+use snowglass_vfs::Permissions;
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -13,6 +15,34 @@ struct PluginBlock {
     class: String,
     #[serde(default)]
     config: toml::Table,
+    #[serde(default)]
+    resources: Vec<ResourceBlock>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginResourceFormat {
+    Directory,
+    Asar,
+    File,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceBlock {
+    name: String,
+    source: String,
+    format: PluginResourceFormat,
+    mode: String,
+    #[serde(default)]
+    target: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginResource {
+    pub name: String,
+    pub path: PathBuf,
+    pub format: PluginResourceFormat,
+    pub permissions: Permissions,
 }
 
 /// Generic data shared by every loaded plugin package. `B` is the root block
@@ -40,6 +70,7 @@ impl<B: DeserializeOwned> PluginPackage<B> {
         {
             return Err(PackageError::InvalidPluginId(plugin.id));
         }
+        validate_resources(&root, &plugin.resources)?;
         let class = plugin.class.clone();
         let block: B = manifest
             .remove(&class)
@@ -78,9 +109,116 @@ impl<B> PluginPackage<B> {
         &self.block
     }
 
+    pub fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
+        let target = current_target();
+        let mut names = BTreeSet::new();
+        let mut selected = Vec::new();
+        for resource in self
+            .plugin
+            .resources
+            .iter()
+            .filter(|resource| resource.target.as_deref() == Some(target.as_str()))
+        {
+            names.insert(resource.name.clone());
+            selected.push(materialize_resource(&self.root, resource)?);
+        }
+        for resource in self
+            .plugin
+            .resources
+            .iter()
+            .filter(|resource| resource.target.is_none() && !names.contains(&resource.name))
+        {
+            selected.push(materialize_resource(&self.root, resource)?);
+        }
+        Ok(selected)
+    }
+
     pub fn module_loader(&self) -> crate::PluginModuleLoader {
         crate::PluginModuleLoader::new(self.id(), self.root.clone())
     }
+}
+
+fn validate_resources(root: &Path, resources: &[ResourceBlock]) -> Result<(), PackageError> {
+    let mut keys = BTreeSet::new();
+    for resource in resources {
+        if resource.name.is_empty()
+            || !resource
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(PackageError::InvalidResourceName(resource.name.clone()));
+        }
+        if !keys.insert((resource.name.clone(), resource.target.clone())) {
+            return Err(PackageError::DuplicateResource {
+                name: resource.name.clone(),
+                target: resource.target.clone(),
+            });
+        }
+        let parsed = materialize_resource(root, resource)?;
+        match parsed.format {
+            PluginResourceFormat::Directory if !parsed.path.is_dir() => {
+                return Err(PackageError::InvalidResourceType(resource.name.clone()));
+            }
+            PluginResourceFormat::Asar | PluginResourceFormat::File if !parsed.path.is_file() => {
+                return Err(PackageError::InvalidResourceType(resource.name.clone()));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn materialize_resource(
+    root: &Path,
+    resource: &ResourceBlock,
+) -> Result<PluginResource, PackageError> {
+    let source = resource
+        .source
+        .strip_prefix("pkg:")
+        .ok_or_else(|| PackageError::InvalidResourceSource(resource.source.clone()))?;
+    let relative = Path::new(source);
+    if source.is_empty()
+        || source.starts_with('/')
+        || source.contains(['\\', '?', '#'])
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(PackageError::InvalidResourceSource(resource.source.clone()));
+    }
+    let permissions = resource.mode.parse()?;
+    let authority: Permissions = "rx".parse().expect("canonical permission constant");
+    if !authority.contains(permissions) {
+        return Err(PackageError::Vfs(
+            snowglass_vfs::VfsError::AuthorityExceeded {
+                authority,
+                requested: permissions,
+            },
+        ));
+    }
+    Ok(PluginResource {
+        name: resource.name.clone(),
+        path: confined_path(root, relative)?,
+        format: resource.format,
+        permissions,
+    })
+}
+
+fn current_target() -> String {
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => other,
+    };
+    let suffix = if cfg!(target_os = "windows") {
+        "pc-windows-msvc"
+    } else if cfg!(target_os = "linux") {
+        "unknown-linux-gnu"
+    } else {
+        std::env::consts::OS
+    };
+    format!("{architecture}-{suffix}")
 }
 
 pub(super) fn confined_path(root: &Path, path: impl AsRef<Path>) -> Result<PathBuf, PackageError> {
@@ -128,6 +266,19 @@ pub enum PackageError {
     },
     #[error("plugin module specifier: {0}")]
     ModuleSpecifier(String),
+    #[error(transparent)]
+    Vfs(#[from] snowglass_vfs::VfsError),
+    #[error("invalid plugin resource name '{0}'")]
+    InvalidResourceName(String),
+    #[error("duplicate plugin resource '{name}' for target {target:?}")]
+    DuplicateResource {
+        name: String,
+        target: Option<String>,
+    },
+    #[error("plugin resource source must be a confined pkg: URL: {0}")]
+    InvalidResourceSource(String),
+    #[error("plugin resource '{0}' does not match its declared format")]
+    InvalidResourceType(String),
     #[error(
         "layout '{layout}' does not identify one next port on '{console}' (candidates: {candidates:?})"
     )]

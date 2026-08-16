@@ -6,6 +6,13 @@ class = "emulator"
 [plugin.config]
 dolphin_path = "file:///D:/emulators/dolphin/Dolphin-x64/Dolphin.exe"
 
+[[plugin.resources]]
+name = "runtime"
+target = "x86_64-pc-windows-msvc"
+source = "pkg:bin/win-x64"
+format = "directory"
+mode = "rx"
+
 [emulator]
 platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
 main = "dolphin.ts"

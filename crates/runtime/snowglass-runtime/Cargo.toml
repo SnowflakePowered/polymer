@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# pin to force prebuild nasm feature
+aws-lc-rs = { version = "=1.16.3", features = ["prebuilt-nasm"] }
 crossfire.workspace = true
 dashmap.workspace = true
 gumshoe.workspace = true

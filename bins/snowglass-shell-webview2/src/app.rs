@@ -71,6 +71,7 @@ struct ShellCoordinator {
     notifications: Option<SnowglassNotificationSender>,
     startup_request: Option<serde_json::Value>,
     viewer: snowglass_renderer::cli::ViewerOptions,
+    plugin_runtime: snowglass_pluginhost::PluginRuntimeHandle,
 }
 
 impl ShellCoordinator {
@@ -114,6 +115,7 @@ impl ShellCoordinator {
         window.set_merged_content(&merged_content)?;
         window.commit()?;
         let session = unique_session();
+        let plugin_runtime = shell_factory.plugin_runtime_handle();
         let shell_dom = ShellDomCoordinator::new(shell_factory);
 
         let input = InputTransport::runtime().map_err(std::io::Error::other)?;
@@ -133,6 +135,7 @@ impl ShellCoordinator {
             notifications: None,
             startup_request,
             viewer: options,
+            plugin_runtime,
         };
         Ok(state)
     }
@@ -364,6 +367,17 @@ impl ShellCoordinator {
         token: InstanceToken,
         options: AttachedLaunchPlan,
     ) -> Result<(), String> {
+        if let Some(handle) = options.prepared_filesystem.as_deref() {
+            let prepared = self
+                .plugin_runtime
+                .take_prepared_filesystem(handle)
+                .map_err(|error| error.to_string())?;
+            drop(prepared);
+            let error = "the plugin prepared a virtual filesystem, but no WinFSP/FUSE mount host is installed".to_owned();
+            self.emit_instance_event(token, "error", &instance_events::error(&error));
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+            return Err(error);
+        }
         if self.game_host.has_active_game() {
             let error = "another emulator instance is active".to_owned();
             self.emit_instance_event(token, "error", &instance_events::error(&error));

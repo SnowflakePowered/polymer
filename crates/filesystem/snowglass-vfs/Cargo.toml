@@ -1,0 +1,24 @@
+[package]
+name = "snowglass-vfs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+asar.workspace = true
+bstr = "1"
+memmap2.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+widestring = "1"
+
+[dev-dependencies]
+asar = "0.3.0"
+
+[lints]
+workspace = true

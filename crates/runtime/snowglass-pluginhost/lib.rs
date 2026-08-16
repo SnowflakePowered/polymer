@@ -25,7 +25,7 @@ pub use plugin_runtime::{
     PluginRuntimeOptions,
 };
 pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError};
-pub use toml::{EmulatorPlugin, PackageError, PluginPackage};
+pub use toml::{EmulatorPlugin, PackageError, PluginPackage, PluginResource, PluginResourceFormat};
 
 #[cfg(test)]
 mod tests {

@@ -57,6 +57,21 @@ fn op_configuration_entries(
         .map_err(|error| JsErrorBox::generic(error.to_string()))
 }
 
+#[op2]
+#[serde]
+fn op_configuration_render(
+    state: &mut OpState,
+    id: ConfigurationId,
+) -> Result<std::collections::BTreeMap<String, ByteBuf>, JsErrorBox> {
+    Ok(state
+        .borrow_mut::<ConfigurationInstances>()
+        .render(id)
+        .map_err(|error| JsErrorBox::generic(error.to_string()))?
+        .into_iter()
+        .map(|(path, bytes)| (path, ByteBuf::from(bytes)))
+        .collect())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConfigurationLookup {
@@ -70,6 +85,7 @@ deno_core::extension!(
         op_configuration_get,
         op_configuration_set,
         op_configuration_entries,
+        op_configuration_render,
     ],
     esm_entry_point = "ext:snowglass_pluginhost_deno/configuration.js",
     esm = [dir "js", "configuration.js"],
@@ -103,7 +119,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         let configuration = self
             .take_pending_configuration(&pending)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-        let serialized = configuration::serialize(configuration)?;
+        let serialized = configuration::serialize(&configuration)?;
         self.finish(pending, serialized)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))
     }
@@ -166,6 +182,9 @@ impl<'runtime> EmulatorWorker<'runtime> {
                     const args = {arguments};
                     const configuration = __snowglassPluginHost.configuration({configuration_id});
                     args.configuration = configuration;
+                    args.filesystem = __snowglassFilesystem.filesystem;
+                    args.resources = __snowglassFilesystem.resources;
+                    if (__snowglassFilesystem.game !== undefined) args.game = __snowglassFilesystem.game;
                     return {{
                       result: await Reflect.apply(setupLaunch, receiver, [args]),
                       configuration,
@@ -217,10 +236,19 @@ impl<'runtime> EmulatorWorker<'runtime> {
         launch: PendingDenoLaunch,
         configuration: SerializedConfiguration,
     ) -> Result<EmulatorLaunchArguments, DenoPluginError> {
-        deno_core::scope!(scope, self.runtime);
-        let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
-        let value = property(scope, wrapper, "result")?;
-        let plan: EmulatorLaunchPlan = serde_v8::from_v8(scope, value)?;
+        let plan: EmulatorLaunchPlan = {
+            deno_core::scope!(scope, self.runtime);
+            let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+            let value = property(scope, wrapper, "result")?;
+            serde_v8::from_v8(scope, value)?
+        };
+        let filesystem = snowglass_deno::filesystem::take_prepared(self.runtime)
+            .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
+        if let Some(filesystem) = &filesystem {
+            filesystem
+                .validate_command(&plan.command)
+                .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
+        }
         Ok(EmulatorLaunchArguments {
             command: plan.command,
             argv: plan.argv,
@@ -232,6 +260,8 @@ impl<'runtime> EmulatorWorker<'runtime> {
             isolate: plan.isolate,
             hooks: plan.hooks,
             surfaces: plan.surfaces,
+            prepared_filesystem: None,
+            filesystem,
         })
     }
 }
