@@ -65,7 +65,7 @@ impl BrowserModuleLoader {
                 }
                 scheme => {
                     return Err(ModuleLoaderError::type_error(format!(
-                        "Game-layer modules cannot be loaded from the {scheme}: scheme"
+                        "Shell modules cannot be loaded from the {scheme}: scheme"
                     )));
                 }
             }
@@ -133,7 +133,7 @@ pub(super) enum DocumentScript {
 }
 
 pub(super) fn document_scripts(html: &str) -> impl Iterator<Item = DocumentScript> {
-    // The background is already a trusted document selected by the frontend.
+    // The shell is already a trusted document selected by the frontend.
     // Script elements are collected after Blitz has parsed the complete
     // document, matching the deferred execution model used by this layer.
     let expression =

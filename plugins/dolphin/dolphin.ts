@@ -9,6 +9,9 @@ type Configuration = {
             core: {
                 gfx_backend: string,
             },
+            input: {
+                background_input: boolean,
+            },
         },
     },
 }
@@ -24,11 +27,19 @@ type SetupLaunchArgs = {
 export const setupLaunch = (args: SetupLaunchArgs) => {
     const executable = new URL(config.plugin.config.dolphin_path);
     args.emulatorConfig.options().main.core.gfx_backend = "D3D";
+    // Snowglass owns the focused host window while Dolphin renders through an
+    // isolated capture surface. Dolphin must continue polling the injected
+    // virtual controller while its own hidden window is not foreground.
+    args.emulatorConfig.options().main.input.background_input = true;
 
     return {
         command: executable.href,
         argv: ["-b", "-e", args.launchPath],
-        configRoot: new URL(".", executable).href,
+        // Dolphin's portable distribution keeps its writable INI hierarchy in
+        // `User/`. Pointing at the executable directory writes a parallel
+        // `Config/` tree that Dolphin never reads, leaving its old direct-input
+        // mappings active instead of the Snowglass virtual controller.
+        configRoot: new URL("User/", executable).href,
         isolate: true,
         hooks: ["d3d11"],
         config: args.emulatorConfig,

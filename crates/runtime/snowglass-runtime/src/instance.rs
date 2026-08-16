@@ -1267,13 +1267,17 @@ impl InstanceLifecycle {
             return;
         }
         self.state.replace(InstanceState::Closing);
+        // End the producer before waiting for capture/audio transports to
+        // shut down. Those workers can be blocked in target-owned IPC while
+        // the emulator is alive, which previously prevented close() from ever
+        // reaching the process termination step.
+        if let Some(process) = self.process.lock().take() {
+            let _ = process.terminate_tree_and_wait();
+        }
         self.surfaces.shutdown();
         self.input.shutdown();
         self.ui.shutdown();
         self.audio.shutdown();
-        if let Some(process) = self.process.lock().take() {
-            let _ = process.terminate_tree_and_wait();
-        }
         self.state.replace(InstanceState::Exited(exit));
         self.state.shutdown();
     }

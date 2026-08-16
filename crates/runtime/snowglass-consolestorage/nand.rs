@@ -1,12 +1,12 @@
+use crate::Storage;
 use crate::installable::Artifact;
 use crate::savegame::{SaveGame, TreeSaveGame};
-use crate::Storage;
 
 pub enum NandCompletion {
     /// The NAND is complete as far as minimally
     Minimal,
     Full,
-    Verified
+    Verified,
 }
 
 pub trait VirtualNand<S: TreeSaveGame, A: Artifact> {
@@ -27,5 +27,3 @@ pub trait VirtualNand<S: TreeSaveGame, A: Artifact> {
     /// Clone the base, ignoring save games.
     fn clone_base<St: Storage>(&self, storage: &St) -> Self;
 }
-
-

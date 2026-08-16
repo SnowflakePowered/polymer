@@ -58,7 +58,7 @@ impl Drop for TimerResolution {
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::{Key, PhysicalKey},
     window::{Window, WindowId},
@@ -72,6 +72,16 @@ pub(crate) use winit::{
 pub(crate) enum WindowCommand {
     WakeCapture,
     CompositorTick,
+    RedrawShell,
+    SetCursor(Option<cursor_icon::CursorIcon>),
+    SetTitle(String),
+    SetImeEnabled(bool),
+    SetImeCursorArea {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    },
 }
 
 pub(crate) enum LoopDirective {
@@ -110,9 +120,8 @@ impl EventLoopApplication {
 
 impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // WebView2 spins a nested Win32 loop during controller construction,
-        // so this callback creates only the native window. The coordinator
-        // consumes it after this event-pump turn returns.
+        // Keep native-window creation in the resume callback. The coordinator
+        // consumes it after this event-pump turn returns and starts the UI.
         if self.creating_window || !self.inner.wants_native_window() {
             return;
         }
@@ -178,6 +187,7 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
 pub(crate) enum ShellWindowEvent {
     CloseRequested,
     DroppedFile(PathBuf),
+    FileHover(bool),
     Moved,
     Resized {
         width: u32,
@@ -199,6 +209,7 @@ pub(crate) enum ShellWindowEvent {
         x: f64,
         y: f64,
     },
+    CursorLeft,
     MouseInput {
         button: Option<u16>,
         pressed: bool,
@@ -207,8 +218,17 @@ pub(crate) enum ShellWindowEvent {
         horizontal: i32,
         vertical: i32,
     },
+    Ime(ShellImeEvent),
     RedrawRequested,
     Other,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ShellImeEvent {
+    Enabled,
+    Preedit(String, Option<(usize, usize)>),
+    Commit(String),
+    Disabled,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -231,6 +251,8 @@ pub(crate) fn translate_window_event(event: WindowEvent) -> ShellWindowEvent {
     match event {
         WindowEvent::CloseRequested | WindowEvent::Destroyed => ShellWindowEvent::CloseRequested,
         WindowEvent::DroppedFile(path) => ShellWindowEvent::DroppedFile(path),
+        WindowEvent::HoveredFile(_) => ShellWindowEvent::FileHover(true),
+        WindowEvent::HoveredFileCancelled => ShellWindowEvent::FileHover(false),
         WindowEvent::Moved(_) => ShellWindowEvent::Moved,
         WindowEvent::Resized(size) => ShellWindowEvent::Resized {
             width: size.width,
@@ -265,6 +287,7 @@ pub(crate) fn translate_window_event(event: WindowEvent) -> ShellWindowEvent {
             x: position.x,
             y: position.y,
         },
+        WindowEvent::CursorLeft { .. } => ShellWindowEvent::CursorLeft,
         WindowEvent::MouseInput { state, button, .. } => ShellWindowEvent::MouseInput {
             button: neutral_mouse_button(button),
             pressed: state == ElementState::Pressed,
@@ -281,6 +304,12 @@ pub(crate) fn translate_window_event(event: WindowEvent) -> ShellWindowEvent {
                 vertical,
             }
         }
+        WindowEvent::Ime(event) => ShellWindowEvent::Ime(match event {
+            Ime::Enabled => ShellImeEvent::Enabled,
+            Ime::Preedit(value, range) => ShellImeEvent::Preedit(value, range),
+            Ime::Commit(value) => ShellImeEvent::Commit(value),
+            Ime::Disabled => ShellImeEvent::Disabled,
+        }),
         WindowEvent::RedrawRequested => ShellWindowEvent::RedrawRequested,
         _ => ShellWindowEvent::Other,
     }
@@ -671,8 +700,24 @@ impl WindowManager {
         self.window.request_redraw();
     }
 
-    pub fn foreground_visual(&self) -> windows::core::Result<IUnknown> {
-        self.composition.foreground_visual()
+    pub fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>) {
+        self.window.set_cursor(icon.unwrap_or_default());
+        self.window.set_cursor_visible(icon.is_some());
+    }
+
+    pub fn set_title(&self, title: &str) {
+        self.window.set_title(title);
+    }
+
+    pub fn set_ime_enabled(&self, enabled: bool) {
+        self.window.set_ime_allowed(enabled);
+    }
+
+    pub fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32) {
+        self.window.set_ime_cursor_area(
+            winit::dpi::LogicalPosition::new(x, y),
+            winit::dpi::LogicalSize::new(width, height),
+        );
     }
 
     pub fn set_merged_content(&mut self, content: &IUnknown) -> windows::core::Result<()> {
@@ -771,7 +816,6 @@ struct CompositionTree {
     device: IDCompositionDevice,
     _target: IDCompositionTarget,
     root: IDCompositionVisual,
-    foreground: IDCompositionVisual,
     overlay: IDCompositionVisual,
     game: Option<IDCompositionVisual>,
 }
@@ -784,7 +828,7 @@ impl WindowTarget {
     fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
         match window.window_handle()?.as_raw() {
             RawWindowHandle::Win32(handle) => Ok(Self(HWND(handle.hwnd.get() as *mut c_void))),
-            _ => Err("WebView2 composition requires a Win32 window".into()),
+            _ => Err("Snowglass composition requires a Win32 window".into()),
         }
     }
 
@@ -802,8 +846,7 @@ impl CompositionTree {
         // SAFETY: the DirectComposition device, target, and visuals are
         // retained by this tree for at least as long as the host HWND.
         unsafe {
-            // Game surfaces and chrome are already merged by D3D12. This
-            // device only hosts that swapchain below WebView2.
+            // Game surfaces and shell chrome are already merged by D3D12.
             let mut d3d11_device = None;
             D3D11CreateDevice(
                 None,
@@ -821,13 +864,8 @@ impl CompositionTree {
             let device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
             let target = device.CreateTargetForHwnd(host.0, true)?;
             let root = device.CreateVisual()?;
-            let foreground_webview = device.CreateVisual()?;
             let egui_overlay = device.CreateVisual()?;
-            // The game layer's chrome and the streams are inserted beneath
-            // these two as they appear, so the foreground page and the debug
-            // overlay always stay on top.
-            root.AddVisual(&foreground_webview, true, None::<&IDCompositionVisual>)?;
-            root.AddVisual(&egui_overlay, true, &foreground_webview)?;
+            root.AddVisual(&egui_overlay, true, None::<&IDCompositionVisual>)?;
             target.SetRoot(&root)?;
             device.Commit()?;
 
@@ -836,15 +874,10 @@ impl CompositionTree {
                 device,
                 _target: target,
                 root,
-                foreground: foreground_webview,
                 overlay: egui_overlay,
                 game: None,
             })
         }
-    }
-
-    pub fn foreground_visual(&self) -> Result<IUnknown, windows::core::Error> {
-        self.foreground.cast()
     }
 
     pub fn focus_host(&self) {
@@ -857,7 +890,7 @@ impl CompositionTree {
         unsafe { self.overlay.SetContent(content) }
     }
 
-    /// Attaches the one window-spanning game swapchain below WebView2.
+    /// Attaches the one window-spanning shell/game swapchain below diagnostics.
     pub fn set_merged_content(&mut self, content: &IUnknown) -> Result<(), windows::core::Error> {
         // SAFETY: the content is a composition swapchain, and the visual and
         // content remain retained by the tree and merged compositor.
@@ -865,7 +898,7 @@ impl CompositionTree {
             let visual = self.device.CreateVisual()?;
             visual.SetContent(content)?;
             // With no reference visual, `insert_above = true` inserts at the
-            // bottom of the child list, beneath WebView2 and the egui overlay.
+            // bottom of the child list, beneath the egui overlay.
             self.root
                 .AddVisual(&visual, true, None::<&IDCompositionVisual>)?;
             if let Some(previous) = self.game.replace(visual) {

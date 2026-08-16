@@ -1,17 +1,12 @@
-import { fileURLToPath, URL } from "node:url";
-import react from "@vitejs/plugin-react";
+import solid from "vite-plugin-solid";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   base: "./",
-  plugins: [react()],
-  build: {
-    modulePreload: { polyfill: false },
-    rollupOptions: {
-      input: {
-        shell: fileURLToPath(new URL("./shell.html", import.meta.url)),
-        gameLayer: fileURLToPath(new URL("./game-layer.html", import.meta.url)),
-      },
-    },
+  plugins: [solid(), tailwindcss()],
+  resolve: {
+    dedupe: ["solid-js"],
   },
+  build: { modulePreload: { polyfill: false } },
 });

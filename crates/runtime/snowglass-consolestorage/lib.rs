@@ -1,9 +1,7 @@
-mod memorycard;
-mod savegame;
-mod nand;
 mod error;
 pub mod installable;
+mod memorycard;
+mod nand;
+mod savegame;
 
-pub trait Storage {
-    
-}
+pub trait Storage {}

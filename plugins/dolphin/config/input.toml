@@ -138,9 +138,9 @@ emit = { key = "Options/Always Connected", bool_style = "upper" }
 "analog.gyroscope.y+" = "IMUGyroscope/Pitch Up"
 "analog.gyroscope.z+" = "IMUGyroscope/Yaw Right"
 "pointer.x-" = "IR/Left"
-"pointer.y-" = "IR/Down"
+"pointer.y-" = "IR/Up"
 "pointer.x+" = "IR/Right"
-"pointer.y+" = "IR/Up"
+"pointer.y+" = "IR/Down"
 
 [[input.layouts.WII_REMOTE_CONTROLLER.options]]
 key = "attach_motion_plus"
@@ -210,9 +210,9 @@ emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
 "analog.accelerometer.left.y+" = "Nunchuk/IMUAccelerometer/Forward"
 "analog.accelerometer.left.z+" = "Nunchuk/IMUAccelerometer/Up"
 "pointer.x-" = "IR/Left"
-"pointer.y-" = "IR/Down"
+"pointer.y-" = "IR/Up"
 "pointer.x+" = "IR/Right"
-"pointer.y+" = "IR/Up"
+"pointer.y+" = "IR/Down"
 "analog.accelerometer.right.x-" = "IMUAccelerometer/Left"
 "analog.accelerometer.right.y-" = "IMUAccelerometer/Backward"
 "analog.accelerometer.right.z-" = "IMUAccelerometer/Down"

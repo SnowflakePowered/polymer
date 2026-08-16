@@ -1,11 +1,11 @@
-// Promise-based background input facade. Installed before the DOM bootstrap
+// Promise-based shell input facade. Installed before the DOM bootstrap
 // and instantiated with the runtime's native op table.
 globalThis.__snowglassCreateInputFacade = (ops) => {
   const snowglassInput = new EventTarget();
   let inputConfiguration = Object.freeze({ revision: 0, ports: Object.freeze([]) });
   let inputLayouts = Object.freeze([]);
   let inputControllers = Object.freeze([]);
-  let inputPriority = "foreground";
+  let inputPriority = "ui";
   let inputTimestamp = 0;
   let nextInputRequest = 1;
   const pendingInputRequests = new Map();
@@ -29,7 +29,7 @@ globalThis.__snowglassCreateInputFacade = (ops) => {
           ),
         ).fill(null);
         for (const device of devices) {
-          const visible = (mapped) => inputPriority === "foreground" || !mapped;
+          const visible = (mapped) => inputPriority === "ui" || !mapped;
           result[device.index] = Object.freeze({
             index: device.index,
             deviceId: device.deviceId,
@@ -98,7 +98,7 @@ globalThis.__snowglassCreateInputFacade = (ops) => {
     },
     setState(controllers, priority) {
       inputControllers = Object.freeze([...(controllers || [])]);
-      inputPriority = priority === "game" ? "game" : "foreground";
+      inputPriority = priority === "game" ? "game" : "ui";
       inputTimestamp = performance.now();
       snowglassInput.dispatchEvent(
         new CustomEvent("inputstatechange", { detail: inputControllers }),

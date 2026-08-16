@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 pub(crate) enum TurnPhase {
     Capture,
     Present,
-    Background,
+    Shell,
     Input,
     Overlay,
 }
@@ -15,7 +15,7 @@ impl TurnPhase {
     const ALL: [Self; 5] = [
         Self::Capture,
         Self::Present,
-        Self::Background,
+        Self::Shell,
         Self::Input,
         Self::Overlay,
     ];
@@ -24,7 +24,7 @@ impl TurnPhase {
         match self {
             Self::Capture => "capture",
             Self::Present => "present",
-            Self::Background => "background",
+            Self::Shell => "shell",
             Self::Input => "input",
             Self::Overlay => "overlay",
         }
@@ -94,6 +94,9 @@ impl TurnProfile {
             "Loop {:.1} turns/s · {costs} ms/s",
             self.turns as f64 / seconds
         );
+        if std::env::var_os("SNOWGLASS_GAME_LAYER_TIMING").is_some() {
+            tracing::error!("snowglass: {}", self.report);
+        }
         self.spans = <[Duration; TurnPhase::ALL.len()]>::default();
         self.turns = 0;
         self.started = Some(now);

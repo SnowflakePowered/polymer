@@ -34,6 +34,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Keep keyboard, mouse, and physical-pad latency below a display frame without
+/// monopolizing a CPU core when no SDL events are waiting.
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
     pub slots: Vec<SlotConfig>,
@@ -914,10 +918,11 @@ fn run(
             }
         }
         drop(snapshots);
-        // Do not impose a fixed polling interval on physical input. Yielding
-        // lets another ready thread run while making this provider eligible to
-        // resume immediately instead of waiting for a timer quantum.
-        thread::yield_now();
+        // `yield_now` immediately resumes when no equal-priority thread is
+        // runnable and therefore busy-spins on Windows. A one-millisecond wait
+        // is still comfortably below a display interval while letting an idle
+        // provider consume negligible CPU.
+        thread::sleep(INPUT_POLL_INTERVAL);
     }
 
     for (slot, pad) in pads.iter_mut().enumerate() {

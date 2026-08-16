@@ -168,7 +168,7 @@ impl UnattachedLaunchPlan {
     }
 }
 
-/// Launch plan accepted only after the background DOM has resolved every
+/// Launch plan accepted only after the shell DOM has resolved every
 /// plugin surface selector to a live tracked-surface node.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -195,7 +195,7 @@ pub struct AttachedTrackedSurface {
     #[serde(default)]
     pub rotation: i32,
     pub selector: Option<String>,
-    /// Blitz node ID validated by the background DOM at attachment time.
+    /// Blitz node ID validated by the shell DOM at attachment time.
     pub attach: usize,
     #[serde(default)]
     pub webrtc: bool,
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_background_launch_options() {
+    fn validates_shell_launch_options() {
         let launch: AttachedLaunchPlan = serde_json::from_str(
             r#"{
                 "command": "game.exe",

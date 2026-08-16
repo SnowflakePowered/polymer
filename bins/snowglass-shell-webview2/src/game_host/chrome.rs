@@ -22,7 +22,7 @@ pub struct ChromeTexture {
     resource: ID3D12Resource,
     pub width: u32,
     pub height: u32,
-    _texture: wgpu::Texture,
+    pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 }
 
@@ -78,7 +78,9 @@ impl ChromeTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         };
         // SAFETY: the resource was created to match `descriptor` exactly, and
@@ -100,7 +102,7 @@ impl ChromeTexture {
             resource,
             width,
             height,
-            _texture: texture,
+            texture,
             view,
         })
     }

@@ -1,19 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod background_document;
-mod background_dom;
-mod background_runtime;
 mod cli;
 mod commands;
-mod foreground_dom;
 mod game_host;
 mod input;
 mod instance_events;
 mod launch;
 mod launcher;
 mod metrics;
-mod shared_bus;
+mod shell_document;
+mod shell_dom;
+mod shell_runtime;
 mod window_manager;
 
 #[tokio::main(flavor = "current_thread")]
@@ -21,13 +19,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
     use window_manager::{EventLoop, EventLoopExtPumpEvents, PumpStatus, TimerResolution};
 
-    // ReactDOM's production bundle has enough nested generated code to exceed
-    // V8's conservative default JavaScript stack during module evaluation.
-    // Keep this below Rust/Tokio's worker stack while giving both the
-    // background document and fresh plugin isolates a consistent budget.
+    // The generated Solid/Ark bundle has enough nested module code to exceed
+    // V8's conservative default JavaScript stack during evaluation.
+    // Keep this below the executable's 8 MiB stack while giving Deno's
+    // primordials, the shell document, and fresh plugin isolates enough room.
     let v8_program = "snowglass-shell-webview2".to_owned();
     let unknown_v8_flags =
-        deno_core::v8_set_flags(vec![v8_program.clone(), "--stack-size=1536".to_owned()]);
+        deno_core::v8_set_flags(vec![v8_program.clone(), "--stack-size=4096".to_owned()]);
     debug_assert_eq!(unknown_v8_flags, [v8_program], "unknown V8 flags");
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -36,21 +34,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let statistics_recorder = snowglass_statistics::install()?;
     let options = cli::parse()?;
-    // Prepare native chrome renderers before WebView2 starts Chromium.
-    let background_rasterizer = game_host::BackgroundRasterizer::new().await?;
-    let background_factory =
-        background_document::BackgroundDocumentFactory::new(options.plugins.clone());
-    tracing::debug!("snowglass: background renderers are ready");
+    // Prepare native renderers before the shell document starts.
+    let shell_rasterizer = game_host::ShellRasterizer::new().await?;
     let _timer_resolution = TimerResolution::raise();
     let mut event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
+    let shell_factory =
+        shell_document::ShellDocumentFactory::new(options.plugins.clone(), proxy.clone());
+    tracing::debug!("snowglass: shell renderers are ready");
     let mut application = Box::new(window_manager::EventLoopApplication::new(
         app::ShellApplication::new(
             proxy,
             options,
             statistics_recorder,
-            background_factory,
-            background_rasterizer,
+            shell_factory,
+            shell_rasterizer,
         ),
     ));
     let tasks = tokio::task::LocalSet::new();
@@ -63,11 +61,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
                 application.run_async_tasks().await;
-                // `pump_app_events` and the background runtime can both
-                // complete synchronously while WebView2 is busy. Yield once
-                // per turn so locally spawned work such as game detection is
-                // not starved on this current-thread Tokio runtime.
-                tokio::task::yield_now().await;
+                // Winit's pumped-event extension can return immediately after
+                // `AboutToWait` even when that callback selects a future
+                // `WaitUntil` deadline. A plain Tokio yield therefore spins
+                // this outer loop tens of thousands of times per second while
+                // idle. The process raises Windows timer resolution above, so
+                // a one-millisecond quantum preserves low-latency input and
+                // capture delivery without burning a core between messages.
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
             application.into_result()
         })

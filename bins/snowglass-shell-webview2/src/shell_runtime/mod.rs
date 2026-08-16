@@ -1,7 +1,7 @@
-//! Long-lived Deno runtime that drives the background Blitz document.
+//! Long-lived Deno runtime that drives the sole Blitz shell document.
 //!
-//! Plugin packages never enter this isolate. Its plugin facade is a client of
-//! the shared bus; pluginhost creates a separate worker isolate for each call.
+//! Plugin packages never enter this isolate. Pluginhost creates a separate
+//! worker isolate for each native invocation.
 
 pub(crate) mod deno;
 mod launch_coordinator;
@@ -12,13 +12,14 @@ use serde_json::Value;
 use std::{collections::HashMap, error::Error};
 
 pub(crate) use deno::{EmulatorCommand, InstanceToken};
-pub(crate) use launch_coordinator::{BackgroundLaunchCoordinator, LaunchCoordinatorEvent};
+pub(crate) use deno::{LauncherCommand, LauncherCommandSink};
+pub(crate) use launch_coordinator::{LaunchCoordinatorEvent, ShellLaunchCoordinator};
 
-pub(crate) struct BackgroundRuntime {
+pub(crate) struct ShellRuntime {
     runtime: Option<deno::Runtime>,
 }
 
-impl BackgroundRuntime {
+impl ShellRuntime {
     pub async fn start(
         document: &BaseDocument,
         width: u32,
@@ -26,68 +27,76 @@ impl BackgroundRuntime {
         html: String,
         source_name: String,
         emulator_commands: EmulatorCommandSink,
-        background_bus: Option<crate::shared_bus::BackgroundBusEndpoint>,
-    ) -> Self {
+        launcher_commands: LauncherCommandSink,
+        initial_launcher_state: Value,
+    ) -> Result<Self, Box<dyn Error>> {
         let result = match deno::Runtime::serialized_snapshot(document, width, height) {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
                 initial_snapshot,
                 html,
                 source_name,
                 emulator_commands,
-                background_bus,
+                launcher_commands,
+                initial_launcher_state,
             ))
             .await
             .unwrap_or_else(|error| Err(Box::new(error))),
             Err(error) => Err(Box::new(error) as Box<dyn Error>),
         };
-        match result {
-            Ok(runtime) => Self {
-                runtime: Some(runtime),
-            },
-            Err(error) => {
-                tracing::error!("snowglass: starting background JavaScript failed: {error}");
-                Self { runtime: None }
-            }
-        }
+        result.map(|runtime| Self {
+            runtime: Some(runtime),
+        })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.resize(width, height)
         {
-            tracing::error!("snowglass: resizing the background window failed: {error}");
+            tracing::error!("snowglass: resizing the shell window failed: {error}");
         }
     }
 
-    pub fn dispatch_mouse(&mut self, kind: &str, target: usize, event: MouseEvent) -> EventResult {
+    pub fn dispatch_dom(
+        &mut self,
+        kind: &str,
+        target: usize,
+        event_class: &str,
+        init: &Value,
+        bubbles: bool,
+        cancelable: bool,
+    ) -> EventResult {
         let Some(runtime) = self.runtime.as_mut() else {
             return EventResult::default();
         };
         runtime
-            .dispatch_mouse(kind, target, event)
+            .dispatch_dom(kind, target, event_class, init, bubbles, cancelable)
             .unwrap_or_else(|error| {
-                tracing::error!("snowglass: dispatching background {kind} failed: {error}");
+                tracing::error!("snowglass: dispatching shell {kind} failed: {error}");
                 EventResult::default()
             })
     }
 
-    pub fn dispatch_keyboard(&mut self, kind: &str, event: KeyboardEvent) -> EventResult {
-        let Some(runtime) = self.runtime.as_mut() else {
-            return EventResult::default();
-        };
-        runtime
-            .dispatch_keyboard(kind, event)
-            .unwrap_or_else(|error| {
-                tracing::error!("snowglass: dispatching background {kind} failed: {error}");
-                EventResult::default()
-            })
-    }
-
-    pub fn post_message(&mut self, message: &Value) {
+    pub fn set_launcher_state(&mut self, state: &Value) {
         if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.post_message(message)
+            && let Err(error) = runtime.set_launcher_state(state)
         {
-            tracing::error!("snowglass: delivering a background message failed: {error}");
+            tracing::error!("snowglass: publishing launcher state failed: {error}");
+        }
+    }
+
+    pub fn set_launch_plan(&mut self, plan: Option<&Value>) {
+        if let Some(runtime) = self.runtime.as_mut()
+            && let Err(error) = runtime.set_launch_plan(plan)
+        {
+            tracing::error!("snowglass: publishing launch plan failed: {error}");
+        }
+    }
+
+    pub fn set_drop_active(&mut self, active: bool) {
+        if let Some(runtime) = self.runtime.as_mut()
+            && let Err(error) = runtime.set_drop_active(active)
+        {
+            tracing::error!("snowglass: publishing file-hover state failed: {error}");
         }
     }
 
@@ -95,7 +104,7 @@ impl BackgroundRuntime {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.set_input_configuration(configuration, layouts)
         {
-            tracing::error!("snowglass: publishing background input configuration failed: {error}");
+            tracing::error!("snowglass: publishing shell input configuration failed: {error}");
         }
     }
 
@@ -103,7 +112,7 @@ impl BackgroundRuntime {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.input_configuration_result(request_id, result)
         {
-            tracing::error!("snowglass: returning background input result failed: {error}");
+            tracing::error!("snowglass: returning shell input result failed: {error}");
         }
     }
 
@@ -111,7 +120,7 @@ impl BackgroundRuntime {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.set_input_state(controllers, priority)
         {
-            tracing::error!("snowglass: publishing background input state failed: {error}");
+            tracing::error!("snowglass: publishing shell input state failed: {error}");
         }
     }
 
@@ -119,7 +128,7 @@ impl BackgroundRuntime {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.dispatch_emulator_event(event)
         {
-            tracing::error!("snowglass: dispatching a background emulator event failed: {error}");
+            tracing::error!("snowglass: dispatching a shell emulator event failed: {error}");
         }
     }
 
@@ -128,7 +137,7 @@ impl BackgroundRuntime {
             return false;
         };
         if let Err(error) = runtime.poll_event_loop().await {
-            tracing::error!("snowglass: polling background JavaScript failed: {error}");
+            tracing::error!("snowglass: polling shell JavaScript failed: {error}");
         }
         true
     }
@@ -139,11 +148,12 @@ impl BackgroundRuntime {
         width: u32,
         height: u32,
         node_ids: &HashMap<usize, usize>,
+        roots: Option<&[usize]>,
     ) {
         if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.sync(document, width, height, node_ids)
+            && let Err(error) = runtime.sync(document, width, height, node_ids, roots)
         {
-            tracing::error!("snowglass: synchronizing the background DOM failed: {error}");
+            tracing::error!("snowglass: synchronizing the shell DOM failed: {error}");
         }
     }
 
@@ -155,4 +165,4 @@ impl BackgroundRuntime {
     }
 }
 
-pub(crate) use deno::{EmulatorCommandSink, KeyboardEvent, MouseEvent, Mutation};
+pub(crate) use deno::{EmulatorCommandSink, Mutation};

@@ -43,6 +43,48 @@
       }
     }
 
+    class PointerEvent extends MouseEvent {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.pointerId = Number(init.pointerId) || 1;
+        this.pointerType = String(init.pointerType || "mouse");
+        this.isPrimary = init.isPrimary !== false;
+        this.pressure = Number(init.pressure) || 0;
+      }
+    }
+
+    class WheelEvent extends MouseEvent {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.deltaX = Number(init.deltaX) || 0;
+        this.deltaY = Number(init.deltaY) || 0;
+        this.deltaMode = Number(init.deltaMode) || 0;
+      }
+    }
+
+    class FocusEvent extends Event {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.relatedTarget = init.relatedTarget || null;
+      }
+    }
+
+    class InputEvent extends Event {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.data = init.data == null ? null : String(init.data);
+        this.inputType = String(init.inputType || "insertText");
+        this.isComposing = Boolean(init.isComposing);
+      }
+    }
+
+    class CompositionEvent extends Event {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.data = String(init.data || "");
+      }
+    }
+
     function dispatch(target, event) {
       let handled = false;
       for (let current = target; current; current = current.parentNode) {
@@ -51,13 +93,22 @@
           break;
         }
       }
-      dispatchNativeEvent(target, event);
-      ops.op_event_result(handled, event.defaultPrevented);
+      // Go through the Node override. Calling deno_web's low-level dispatcher
+      // directly here bypasses the DOM target's dispatch path after native
+      // retargeting (notably pointer capture), so listeners on the captured
+      // node never run even though listenerCount sees them.
+      target.dispatchEvent(event);
+      ops.op_event_result(handled, event.defaultPrevented, Boolean(event.cancelBubble));
     }
 
     return Object.freeze({
       MouseEvent,
+      PointerEvent,
+      WheelEvent,
       KeyboardEvent,
+      FocusEvent,
+      InputEvent,
+      CompositionEvent,
       dispatch,
       dispatchNativeEvent,
     });

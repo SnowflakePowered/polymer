@@ -44,6 +44,18 @@ impl KillOnCloseJob {
         .map_err(|_| std::io::Error::last_os_error())
     }
 
+    /// Immediately terminates every process assigned to this job.
+    ///
+    /// Kill-on-close remains the crash-safety fallback, but an intentional
+    /// emulator shutdown must not depend on this process owning the last job
+    /// handle before it waits for the target to exit.
+    pub fn terminate(&self, exit_code: u32) -> std::io::Result<()> {
+        use windows::Win32::System::JobObjects::TerminateJobObject;
+
+        unsafe { TerminateJobObject(self.raw_handle(), exit_code) }
+            .map_err(|_| std::io::Error::last_os_error())
+    }
+
     fn raw_handle(&self) -> windows::Win32::Foundation::HANDLE {
         use std::os::windows::io::AsRawHandle;
         windows::Win32::Foundation::HANDLE(self.handle.as_raw_handle())

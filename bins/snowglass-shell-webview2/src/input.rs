@@ -25,15 +25,8 @@ use std::{
     time::Instant,
 };
 
-const DOM_MK_LBUTTON: u32 = 0x0001;
-const DOM_MK_RBUTTON: u32 = 0x0002;
 const DOM_MK_SHIFT: u32 = 0x0004;
 const DOM_MK_CONTROL: u32 = 0x0008;
-const DOM_MK_MBUTTON: u32 = 0x0010;
-const DOM_MK_XBUTTON1: u32 = 0x0020;
-const DOM_MK_XBUTTON2: u32 = 0x0040;
-const DOM_MOUSE_BUTTONS: u32 =
-    DOM_MK_LBUTTON | DOM_MK_RBUTTON | DOM_MK_MBUTTON | DOM_MK_XBUTTON1 | DOM_MK_XBUTTON2;
 
 fn control_event(key: &str, value: i32) -> serde_json::Value {
     let mut parts = key.splitn(3, ':');
@@ -51,69 +44,16 @@ fn control_event(key: &str, value: i32) -> serde_json::Value {
     })
 }
 
-pub(crate) fn priority_command(priority: InputPriority) -> serde_json::Value {
-    serde_json::json!({
-        "type": "inputPriority",
-        "priority": match priority {
-            InputPriority::Game => "game",
-            InputPriority::Foreground => "foreground",
-        },
-    })
-}
-
-pub(crate) fn state_command(
-    controllers: serde_json::Value,
-    routed: Vec<serde_json::Value>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "type": "inputState",
-        "controllers": controllers,
-        "routed": routed,
-    })
-}
-
-pub(crate) fn keyboard_command(key: &str, pressed: bool, repeat: bool) -> serde_json::Value {
-    serde_json::json!({
-        "type": "keyboardInput",
-        "event": {
-            "device": "keyboard",
-            "controlType": "key",
-            "control": key,
-            "value": i32::from(pressed),
-            "pressed": pressed,
-            "repeat": repeat,
-        },
-    })
-}
-
-#[derive(Debug)]
-pub(crate) enum InputCommand {
-    ForegroundHitRegions(Vec<ForegroundHitRegion>),
-    Configure {
-        request_id: u64,
-        transaction: snowglass_input::hub::InputTransaction,
-    },
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InputPriority {
     Game,
-    Foreground,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PointerTarget {
-    Overlay,
-    Foreground,
-    Background,
-    Game,
+    Ui,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KeyboardTarget {
     Overlay,
-    Background,
-    Foreground,
+    Ui,
     Game,
 }
 
@@ -121,26 +61,6 @@ pub(crate) enum KeyboardTarget {
 pub(crate) struct PointerPosition {
     pub x: i32,
     pub y: i32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DomPointerKind {
-    Move,
-    Button { button: u16, pressed: bool },
-    Wheel { horizontal: bool, delta: i32 },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DomPointerEvent {
-    pub kind: DomPointerKind,
-    pub position: PointerPosition,
-    pub left: bool,
-    pub right: bool,
-    pub middle: bool,
-    pub back: bool,
-    pub forward: bool,
-    pub shift: bool,
-    pub control: bool,
 }
 
 /// Opaque input capabilities exported by an active game host. The input
@@ -159,15 +79,6 @@ impl GameInputEndpoint {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ForegroundHitRegion {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
 pub(crate) struct InputRouter {
     transport: InputTransport,
     mouse_buttons: u8,
@@ -177,8 +88,6 @@ pub(crate) struct InputRouter {
     cursor: PointerPosition,
     dom_mouse_keys: u32,
     dom_alt_key: bool,
-    foreground_hit_regions: Vec<ForegroundHitRegion>,
-    foreground_mouse_capture: bool,
     last_published_state: String,
     ui_controls: HashMap<String, i32>,
     next_publish: Instant,
@@ -196,7 +105,6 @@ pub(crate) struct InputPublication {
 pub(crate) struct InputConfigurationPublication {
     pub configuration: serde_json::Value,
     pub layouts: serde_json::Value,
-    pub command: serde_json::Value,
 }
 
 impl InputRouter {
@@ -206,12 +114,10 @@ impl InputRouter {
             mouse_buttons: 0,
             pointer_routing: PointerRoutingState::new(Instant::now()),
             direct_input,
-            priority: InputPriority::Foreground,
+            priority: InputPriority::Ui,
             cursor: PointerPosition::default(),
             dom_mouse_keys: 0,
             dom_alt_key: false,
-            foreground_hit_regions: Vec::new(),
-            foreground_mouse_capture: false,
             last_published_state: String::new(),
             ui_controls: HashMap::new(),
             next_publish: Instant::now(),
@@ -235,15 +141,9 @@ impl InputRouter {
         let configuration =
             serde_json::to_value(self.configuration_snapshot()).unwrap_or(serde_json::Value::Null);
         let layouts = serde_json::to_value(self.layouts()).unwrap_or(serde_json::Value::Null);
-        let command = serde_json::json!({
-            "type": "inputConfiguration",
-            "configuration": configuration,
-            "layouts": layouts,
-        });
         InputConfigurationPublication {
             configuration,
             layouts,
-            command,
         }
     }
 
@@ -299,7 +199,7 @@ impl InputRouter {
             .map(Sdl3Provider::states)
             .unwrap_or_default();
         let physical_devices = self.devices();
-        let foreground_priority = self.priority == InputPriority::Foreground;
+        let ui_priority = self.priority == InputPriority::Ui;
         let diagnostics = InputDiagnostics {
             active: self.priority == InputPriority::Game && game_active,
             slots: mappings
@@ -372,7 +272,7 @@ impl InputRouter {
                         || mapped_states
                             .iter()
                             .any(|state| state.mapped_buttons.contains(&button));
-                    if (foreground_priority || !consumed) && !global {
+                    if (ui_priority || !consumed) && !global {
                         next_controls.insert(
                             format!("{}:button:{name}", device.device_id),
                             i32::from(pressed),
@@ -393,7 +293,7 @@ impl InputRouter {
                     let consumed = mapped_states
                         .iter()
                         .any(|state| state.mapped_axes.contains(&axis));
-                    if foreground_priority || !consumed {
+                    if ui_priority || !consumed {
                         next_controls.insert(
                             format!("{}:axis:{name}", device.device_id),
                             i32::from(value),
@@ -481,11 +381,7 @@ impl InputRouter {
             controllers: serde_json::Value::Array(devices),
             routed,
             state_changed,
-            priority: if foreground_priority {
-                "foreground"
-            } else {
-                "game"
-            },
+            priority: if ui_priority { "ui" } else { "game" },
         }
     }
 
@@ -517,24 +413,6 @@ impl InputRouter {
 
     pub fn replace_priority(&mut self, priority: InputPriority) -> InputPriority {
         std::mem::replace(&mut self.priority, priority)
-    }
-
-    pub fn replace_foreground_hit_regions(&mut self, regions: Vec<ForegroundHitRegion>) {
-        self.foreground_hit_regions = regions
-            .into_iter()
-            .filter(|region| {
-                region.x.is_finite()
-                    && region.y.is_finite()
-                    && region.width.is_finite()
-                    && region.height.is_finite()
-                    && region.width > 0.0
-                    && region.height > 0.0
-            })
-            .collect();
-    }
-
-    pub fn clear_foreground_hit_regions(&mut self) {
-        self.foreground_hit_regions.clear();
     }
 
     pub const fn cursor(&self) -> PointerPosition {
@@ -575,16 +453,8 @@ impl InputRouter {
         set_flag(&mut self.dom_mouse_keys, DOM_MK_CONTROL, control);
     }
 
-    pub fn foreground_pointer_event(&mut self, kind: DomPointerKind) -> DomPointerEvent {
-        foreground_pointer_event(&mut self.dom_mouse_keys, self.cursor, kind)
-    }
-
-    pub fn foreground_buttons_active(&self) -> bool {
-        self.dom_mouse_keys & DOM_MOUSE_BUTTONS != 0
-    }
-
-    pub fn set_foreground_mouse_capture(&mut self, captured: bool) {
-        self.foreground_mouse_capture = captured;
+    pub fn ui_buttons_active(&self) -> bool {
+        self.mouse_buttons != 0
     }
 
     pub fn captured_connection(&self) -> Option<u64> {
@@ -592,9 +462,7 @@ impl InputRouter {
     }
 
     pub fn has_active_pointer_sequence(&self) -> bool {
-        self.captured_connection().is_some()
-            || self.foreground_buttons_active()
-            || self.foreground_mouse_capture
+        self.captured_connection().is_some() || self.ui_buttons_active()
     }
 
     pub fn route_game_pointer(
@@ -699,7 +567,6 @@ impl InputRouter {
             &mut self.mouse_buttons,
             &mut self.dom_mouse_keys,
             &mut self.dom_alt_key,
-            &mut self.foreground_mouse_capture,
             &mut self.guide_chord_held,
         );
         if let Some(provider) = self.provider() {
@@ -757,77 +624,17 @@ impl InputRouter {
         previous
     }
 
-    pub fn foreground_hit_test(&self) -> bool {
-        let x = f64::from(self.cursor.x);
-        let y = f64::from(self.cursor.y);
-        self.foreground_hit_regions.iter().any(|region| {
-            x >= region.x
-                && x < region.x + region.width
-                && y >= region.y
-                && y < region.y + region.height
-        })
-    }
-
-    pub fn foreground_owns_pointer(
-        &self,
-        overlay_consumed: bool,
-        require_idle_mouse: bool,
-    ) -> bool {
-        self.priority == InputPriority::Foreground
-            || self.foreground_mouse_capture
-            || self.foreground_region_claims(overlay_consumed, require_idle_mouse)
-    }
-
-    pub fn foreground_region_claims(
-        &self,
-        overlay_consumed: bool,
-        require_idle_mouse: bool,
-    ) -> bool {
-        !overlay_consumed
-            && self.pointer_routing.captured_connection().is_none()
-            && (!require_idle_mouse || self.mouse_buttons == 0)
-            && self.foreground_hit_test()
-    }
-
-    /// Chooses the first subsystem offered a pointer event. A background DOM
-    /// handler may decline it, in which case the coordinator continues to the
-    /// game surface beneath it.
-    pub fn pointer_target(
-        &self,
-        overlay_consumed: bool,
-        require_idle_mouse: bool,
-        background_hit: bool,
-    ) -> PointerTarget {
-        if overlay_consumed
-            && !self.foreground_mouse_capture
-            && self.pointer_routing.captured_connection().is_none()
-        {
-            return PointerTarget::Overlay;
-        }
-        if self.foreground_owns_pointer(overlay_consumed, require_idle_mouse) {
-            PointerTarget::Foreground
-        } else if background_hit {
-            PointerTarget::Background
-        } else {
-            PointerTarget::Game
-        }
-    }
-
-    /// Keyboard events are offered to the background document for shortcuts
+    /// Keyboard events are offered to the shell document for shortcuts
     /// before falling through to the priority owner.
-    pub fn keyboard_target(
-        &self,
-        overlay_consumed: bool,
-        background_prevented: bool,
-    ) -> KeyboardTarget {
-        if background_prevented {
-            KeyboardTarget::Background
-        } else if overlay_consumed && self.priority == InputPriority::Foreground {
+    pub fn keyboard_target(&self, overlay_consumed: bool, ui_prevented: bool) -> KeyboardTarget {
+        if ui_prevented {
+            KeyboardTarget::Ui
+        } else if overlay_consumed && self.priority == InputPriority::Ui {
             KeyboardTarget::Overlay
         } else if self.priority == InputPriority::Game {
             KeyboardTarget::Game
         } else {
-            KeyboardTarget::Foreground
+            KeyboardTarget::Ui
         }
     }
 
@@ -982,13 +789,11 @@ fn reset_focus_state(
     mouse_buttons: &mut u8,
     dom_mouse_keys: &mut u32,
     dom_alt_key: &mut bool,
-    foreground_mouse_capture: &mut bool,
     guide_chord_held: &mut bool,
 ) {
     *mouse_buttons = 0;
     *dom_mouse_keys = 0;
     *dom_alt_key = false;
-    *foreground_mouse_capture = false;
     *guide_chord_held = false;
 }
 
@@ -997,35 +802,6 @@ fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
         *flags |= flag;
     } else {
         *flags &= !flag;
-    }
-}
-
-fn foreground_pointer_event(
-    keys: &mut u32,
-    position: PointerPosition,
-    kind: DomPointerKind,
-) -> DomPointerEvent {
-    if let DomPointerKind::Button { button, pressed } = kind {
-        let flag = match button {
-            1 => DOM_MK_LBUTTON,
-            2 => DOM_MK_RBUTTON,
-            3 => DOM_MK_MBUTTON,
-            4 => DOM_MK_XBUTTON1,
-            5 => DOM_MK_XBUTTON2,
-            _ => 0,
-        };
-        set_flag(keys, flag, pressed);
-    }
-    DomPointerEvent {
-        kind,
-        position,
-        left: *keys & DOM_MK_LBUTTON != 0,
-        right: *keys & DOM_MK_RBUTTON != 0,
-        middle: *keys & DOM_MK_MBUTTON != 0,
-        back: *keys & DOM_MK_XBUTTON1 != 0,
-        forward: *keys & DOM_MK_XBUTTON2 != 0,
-        shift: *keys & DOM_MK_SHIFT != 0,
-        control: *keys & DOM_MK_CONTROL != 0,
     }
 }
 
@@ -1516,116 +1292,22 @@ mod tests {
     }
 
     #[test]
-    fn pointer_policy_respects_priority_capture_overlay_and_hit_regions() {
-        let transport = InputTransport::runtime().unwrap();
-        let direct = DirectInputForwarder::new(transport.control_sender());
-        let mut router = InputRouter::new(transport, direct);
-        router.foreground_hit_regions = vec![ForegroundHitRegion {
-            x: 10.0,
-            y: 20.0,
-            width: 30.0,
-            height: 40.0,
-        }];
-        router.cursor = PointerPosition { x: 15, y: 25 };
-        router.priority = InputPriority::Game;
-        assert!(router.foreground_owns_pointer(false, true));
-        assert!(!router.foreground_owns_pointer(true, true));
-        assert_eq!(
-            router.pointer_target(false, true, true),
-            PointerTarget::Foreground
-        );
-        assert_eq!(
-            router.pointer_target(true, true, true),
-            PointerTarget::Overlay
-        );
-        router.cursor = PointerPosition { x: 100, y: 100 };
-        assert!(!router.foreground_owns_pointer(false, true));
-        assert_eq!(
-            router.pointer_target(false, true, true),
-            PointerTarget::Background
-        );
-        assert_eq!(
-            router.pointer_target(false, true, false),
-            PointerTarget::Game
-        );
-        router.foreground_mouse_capture = true;
-        assert!(router.foreground_owns_pointer(true, true));
-        assert_eq!(
-            router.pointer_target(true, true, true),
-            PointerTarget::Foreground
-        );
-        router.foreground_mouse_capture = false;
-        router.priority = InputPriority::Foreground;
-        assert!(router.foreground_owns_pointer(true, true));
-        assert_eq!(router.keyboard_target(true, false), KeyboardTarget::Overlay);
-        router.priority = InputPriority::Game;
-        assert_eq!(router.keyboard_target(true, false), KeyboardTarget::Game);
-        assert_eq!(
-            router.keyboard_target(false, true),
-            KeyboardTarget::Background
-        );
-    }
-
-    #[test]
-    fn foreground_hit_regions_deserialize_as_neutral_input_snapshots() {
-        let region: ForegroundHitRegion =
-            serde_json::from_str(r#"{"x": 400.25, "y": 300.5, "width": 716.75, "height": 380.0}"#)
-                .unwrap();
-        assert_eq!((region.x, region.y), (400.25, 300.5));
-        assert_eq!((region.width, region.height), (716.75, 380.0));
-    }
-
-    #[test]
-    fn foreground_pointer_events_are_neutral_snapshots_of_router_state() {
-        let mut keys = DOM_MK_SHIFT;
-        let position = PointerPosition { x: 12, y: 46 };
-
-        let pressed = foreground_pointer_event(
-            &mut keys,
-            position,
-            DomPointerKind::Button {
-                button: 1,
-                pressed: true,
-            },
-        );
-        assert_eq!(pressed.position, position);
-        assert!(pressed.left);
-        assert!(pressed.shift);
-        assert!(!pressed.control);
-        assert_ne!(keys & DOM_MOUSE_BUTTONS, 0);
-
-        let released = foreground_pointer_event(
-            &mut keys,
-            position,
-            DomPointerKind::Button {
-                button: 1,
-                pressed: false,
-            },
-        );
-        assert!(!released.left);
-        assert_eq!(keys & DOM_MOUSE_BUTTONS, 0);
-    }
-
-    #[test]
-    fn focus_loss_clears_buttons_modifiers_capture_and_guide_chord() {
+    fn focus_loss_clears_buttons_modifiers_and_guide_chord() {
         let mut mouse_buttons = 0b1_1111;
-        let mut dom_mouse_keys = DOM_MOUSE_BUTTONS | DOM_MK_SHIFT | DOM_MK_CONTROL;
+        let mut dom_mouse_keys = DOM_MK_SHIFT | DOM_MK_CONTROL;
         let mut alt = true;
-        let mut foreground_capture = true;
         let mut guide_chord = true;
 
         reset_focus_state(
             &mut mouse_buttons,
             &mut dom_mouse_keys,
             &mut alt,
-            &mut foreground_capture,
             &mut guide_chord,
         );
 
         assert_eq!(mouse_buttons, 0);
         assert_eq!(dom_mouse_keys, 0);
         assert!(!alt);
-        assert!(!foreground_capture);
         assert!(!guide_chord);
     }
 }
