@@ -7,7 +7,13 @@ use snowglass_config::ast::{
 use snowglass_input::provider::sdl3::DeviceSelector;
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use snowglass_renderer::cli::{GamepadArgument, ViewerOptions};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
+
+use crate::input::GamepadMapping;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +109,98 @@ pub struct LaunchPortRequest {
 pub struct ConfiguredSelection {
     pub viewer: ViewerOptions,
     pub port_assignments: PortAssignments,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreparedConfiguration {
+    plugin: String,
+    arguments: serde_json::Value,
+    gamepad_mapping: Vec<GamepadMapping>,
+    machine: String,
+    webrtc_bind: Option<String>,
+    webrtc_targets: Vec<u32>,
+}
+
+pub fn describe_api(
+    plugins: snowglass_pluginhost::PluginRegistry,
+    viewer: ViewerOptions,
+    package: serde_json::Value,
+    preferred_emulator: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let package: snowglass_runtime::ScrapedPackage =
+        serde_json::from_value(package).map_err(|error| error.to_string())?;
+    let descriptor = PreparedGame::new(
+        DetectedGame {
+            path: package.path,
+            platform: package.platform,
+            preferred_emulator,
+        },
+        plugins.plugins::<dyn EmulatorPluginInstance>(),
+        viewer,
+    )?
+    .descriptor()
+    .clone();
+    serde_json::to_value(descriptor).map_err(|error| error.to_string())
+}
+
+pub fn prepare_api(
+    plugins: snowglass_pluginhost::PluginRegistry,
+    viewer: ViewerOptions,
+    package: serde_json::Value,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let package: snowglass_runtime::ScrapedPackage =
+        serde_json::from_value(package).map_err(|error| error.to_string())?;
+    let request: ConfigurationRequest =
+        serde_json::from_value(request).map_err(|error| error.to_string())?;
+    let settings = request.settings.clone();
+    let emulator = request.emulator.clone();
+    let prepared = PreparedGame::new(
+        DetectedGame {
+            path: package.path.clone(),
+            platform: package.platform.clone(),
+            preferred_emulator: Some(emulator.clone()),
+        },
+        plugins.plugins::<dyn EmulatorPluginInstance>(),
+        viewer,
+    )?
+    .prepare(request)?;
+    let port_assignments = prepared
+        .port_assignments
+        .iter()
+        .map(|(group, layouts)| {
+            (
+                group.to_string(),
+                layouts.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let webrtc_targets = prepared.viewer.webrtc.clone().unwrap_or_default();
+    serde_json::to_value(PreparedConfiguration {
+        plugin: emulator,
+        arguments: serde_json::json!({
+            "launchPath": package.path.to_string_lossy(),
+            "package": package,
+            "console": prepared.viewer.machine,
+            "portAssignments": port_assignments,
+            "settings": settings,
+        }),
+        gamepad_mapping: prepared
+            .viewer
+            .gamepads
+            .iter()
+            .map(GamepadMapping::from)
+            .collect(),
+        machine: prepared.viewer.machine,
+        webrtc_bind: prepared
+            .viewer
+            .webrtc
+            .as_ref()
+            .map(|_| prepared.viewer.bind_webrtc.to_string()),
+        webrtc_targets,
+    })
+    .map_err(|error| error.to_string())
 }
 
 impl PreparedGame {

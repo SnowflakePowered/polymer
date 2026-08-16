@@ -10,8 +10,10 @@ use deno::EventResult;
 use serde_json::Value;
 use std::{collections::HashMap, error::Error};
 
-pub(crate) use deno::{EmulatorCommand, InstanceToken};
-pub(crate) use deno::{WebRtcCommand, WebRtcCommandSink};
+pub(crate) use deno::{
+    EmulatorCommand, InputCommand, InstanceToken, WebRtcCommand, WebRtcCommandSink,
+};
+pub(crate) use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
 
 pub(crate) struct ShellRuntime {
     runtime: Option<deno::Runtime>,
@@ -25,17 +27,19 @@ impl ShellRuntime {
         html: String,
         source_name: String,
         emulator_commands: EmulatorCommandSink,
+        input_commands: deno::InputCommandSink,
         webrtc_commands: WebRtcCommandSink,
         startup_request: Option<Value>,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
         viewer: Option<snowglass_renderer::cli::ViewerOptions>,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<(Self, SnowglassNotificationSender), Box<dyn Error>> {
         let result = match deno::Runtime::serialized_snapshot(document, width, height) {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
                 initial_snapshot,
                 html,
                 source_name,
                 emulator_commands,
+                input_commands,
                 webrtc_commands,
                 startup_request,
                 plugin_runtime,
@@ -45,8 +49,13 @@ impl ShellRuntime {
             .unwrap_or_else(|error| Err(Box::new(error))),
             Err(error) => Err(Box::new(error) as Box<dyn Error>),
         };
-        result.map(|runtime| Self {
-            runtime: Some(runtime),
+        result.map(|(runtime, notifications)| {
+            (
+                Self {
+                    runtime: Some(runtime),
+                },
+                notifications,
+            )
         })
     }
 
@@ -76,54 +85,6 @@ impl ShellRuntime {
                 tracing::error!("snowglass: dispatching shell {kind} failed: {error}");
                 EventResult::default()
             })
-    }
-
-    pub fn set_drop_active(&mut self, active: bool) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.set_drop_active(active)
-        {
-            tracing::error!("snowglass: publishing file-hover state failed: {error}");
-        }
-    }
-
-    pub fn request_package(&mut self, request: &Value) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.request_package(request)
-        {
-            tracing::error!("snowglass: dispatching package request failed: {error}");
-        }
-    }
-
-    pub fn set_input_configuration(&mut self, configuration: &Value, layouts: &Value) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.set_input_configuration(configuration, layouts)
-        {
-            tracing::error!("snowglass: publishing shell input configuration failed: {error}");
-        }
-    }
-
-    pub fn input_configuration_result(&mut self, request_id: u64, result: &Value) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.input_configuration_result(request_id, result)
-        {
-            tracing::error!("snowglass: returning shell input result failed: {error}");
-        }
-    }
-
-    pub fn set_input_state(&mut self, controllers: &Value, priority: &str) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.set_input_state(controllers, priority)
-        {
-            tracing::error!("snowglass: publishing shell input state failed: {error}");
-        }
-    }
-
-    pub fn dispatch_emulator_event(&mut self, event: &Value) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.dispatch_emulator_event(event)
-        {
-            tracing::error!("snowglass: dispatching a shell emulator event failed: {error}");
-        }
     }
 
     pub async fn poll_event_loop(&mut self) -> bool {
@@ -159,4 +120,4 @@ impl ShellRuntime {
     }
 }
 
-pub(crate) use deno::{EmulatorCommandSink, Mutation};
+pub(crate) use deno::{EmulatorCommandSink, InputCommandSink, Mutation};

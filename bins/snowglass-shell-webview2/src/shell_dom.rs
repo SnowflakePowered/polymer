@@ -10,7 +10,6 @@ use crate::shell_document::{
 };
 use crate::shell_runtime::ShellRuntime;
 use kurbo::Rect;
-use serde_json::Value;
 use std::future::Future;
 
 /// Paint output published by Blitz without exposing its document or renderer.
@@ -115,21 +114,33 @@ impl ShellDomCoordinator {
         }
     }
 
-    pub async fn activate<F, Fut>(&mut self, create: F) -> Result<bool, Box<dyn std::error::Error>>
+    pub async fn activate<F, Fut>(
+        &mut self,
+        create: F,
+    ) -> Result<Option<crate::shell_runtime::SnowglassNotificationSender>, Box<dyn std::error::Error>>
     where
         F: FnOnce(ShellDocumentFactory) -> Fut,
-        Fut: Future<Output = Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>>>,
+        Fut: Future<
+            Output = Result<
+                (
+                    ShellDocument,
+                    ShellRuntime,
+                    crate::shell_runtime::SnowglassNotificationSender,
+                ),
+                Box<dyn std::error::Error>,
+            >,
+        >,
     {
         let slot = std::mem::replace(&mut self.slot, ShellDocumentSlot::Disabled);
         match slot {
             ShellDocumentSlot::Awaiting(factory) => {
-                let (document, runtime) = create(factory).await?;
+                let (document, runtime, notifications) = create(factory).await?;
                 self.slot = ShellDocumentSlot::Active(ActiveShellDocument { document, runtime });
-                Ok(true)
+                Ok(Some(notifications))
             }
             slot => {
                 self.slot = slot;
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -173,18 +184,6 @@ impl ShellDomCoordinator {
         Some(active.document.produce_frame(&mut active.runtime))
     }
 
-    pub fn set_drop_active(&mut self, active: bool) {
-        if let ShellDocumentSlot::Active(document) = &mut self.slot {
-            document.runtime.set_drop_active(active);
-        }
-    }
-
-    pub fn request_package(&mut self, request: &Value) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active.runtime.request_package(request);
-        }
-    }
-
     pub async fn poll_runtime(&mut self) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
@@ -192,28 +191,6 @@ impl ShellDomCoordinator {
         let polled = active.runtime.poll_event_loop().await;
         active.document.apply_script_mutations(&mut active.runtime);
         polled
-    }
-
-    pub fn set_input_configuration(&mut self, configuration: &Value, layouts: &Value) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active
-                .runtime
-                .set_input_configuration(configuration, layouts);
-        }
-    }
-
-    pub fn input_configuration_result(&mut self, request_id: u64, result: &Value) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active
-                .runtime
-                .input_configuration_result(request_id, result);
-        }
-    }
-
-    pub fn set_input_state(&mut self, controllers: &Value, priority: &str) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active.runtime.set_input_state(controllers, priority);
-        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) -> bool {
@@ -259,14 +236,5 @@ impl ShellDomCoordinator {
         if let ShellDocumentSlot::Active(active) = &mut self.slot {
             active.document.ime_event(&mut active.runtime, event);
         }
-    }
-
-    pub fn dispatch_emulator_event(&mut self, event: &Value) -> bool {
-        let ShellDocumentSlot::Active(active) = &mut self.slot else {
-            return false;
-        };
-        active.runtime.dispatch_emulator_event(event);
-        active.document.apply_script_mutations(&mut active.runtime);
-        active.document.needs_paint()
     }
 }

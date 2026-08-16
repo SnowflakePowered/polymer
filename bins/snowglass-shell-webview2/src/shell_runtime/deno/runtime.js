@@ -2,6 +2,7 @@
   "use strict";
 
   const { ops, webEvents } = globalThis.__snowglassRuntime;
+  const registerSnowglassSurface = globalThis.__snowglassApi.registerSurface;
   const { defineEventHandler } = webEvents;
   const eventDispatch = globalThis.__snowglassCreateEventDispatch(webEvents, ops);
   delete globalThis.__snowglassCreateEventDispatch;
@@ -984,42 +985,15 @@
   let activeElement = null;
   const windowObject = globalThis;
 
-  const inputFacade = globalThis.__snowglassCreateInputFacade(ops);
-  delete globalThis.__snowglassCreateInputFacade;
-  const { snowglassInput } = inputFacade;
-  const setInputConfiguration = inputFacade.setConfiguration;
-  const setInputState = inputFacade.setState;
-  const inputConfigurationResult = inputFacade.settleConfiguration;
-  const webrtcFacade = globalThis.__snowglassCreateWebRtcFacade(ops);
-  delete globalThis.__snowglassCreateWebRtcFacade;
-  const { WebRTC } = webrtcFacade;
-  const emulatorFacade = globalThis.__snowglassCreateEmulatorFacade(
-    ops,
-    HTMLTrackedSurfaceElement,
-    webrtcFacade,
-  );
-  delete globalThis.__snowglassCreateEmulatorFacade;
-  const { Emulator } = emulatorFacade;
-  const dispatchEmulatorEvent = emulatorFacade.dispatch;
-  const snowglassPlugin = globalThis.__snowglassCreatePluginFacade(ops);
-  delete globalThis.__snowglassCreatePluginFacade;
-  const scrapingFacade = globalThis.__snowglassCreateScrapingFacade(ops);
-  delete globalThis.__snowglassCreateScrapingFacade;
-  const snowglassConfiguration = globalThis.__snowglassCreateConfigurationFacade(ops, scrapingFacade);
-  delete globalThis.__snowglassCreateConfigurationFacade;
-  const Snowglass = Object.freeze({
-    input: snowglassInput,
-    plugin: snowglassPlugin,
-    emulator: Emulator,
-    webrtc: WebRTC,
-    scraping: scrapingFacade.Scraping,
-    configuration: snowglassConfiguration,
-  });
   function makeNode(snapshot) {
     if (snapshot.kind === "document") return new Document(snapshot);
     if (snapshot.kind === "text") return new Text(snapshot);
     if (snapshot.kind === "comment") return new Comment(snapshot);
-    if (snapshot.tag === "tracked-surface") return new HTMLTrackedSurfaceElement(snapshot);
+    if (snapshot.tag === "tracked-surface") {
+      const surface = new HTMLTrackedSurfaceElement(snapshot);
+      registerSnowglassSurface(surface, snapshot.id);
+      return surface;
+    }
     return new HTMLElement(snapshot);
   }
 
@@ -1133,13 +1107,6 @@
     }),
     postMessage: shellChannel.port2.postMessage.bind(shellChannel.port2),
   });
-  Object.defineProperty(globalThis, "Snowglass", {
-    value: Snowglass,
-    enumerable: true,
-    configurable: false,
-    writable: false,
-  });
-
   Object.defineProperties(globalThis, {
     innerWidth: { get: () => dimensions.width },
     innerHeight: { get: () => dimensions.height },
@@ -1195,15 +1162,5 @@
         if (pointerCaptures.get(pointerId) === target) pointerCaptures.delete(pointerId);
       }
     },
-    dispatchEmulatorEvent(event) {
-      dispatchEmulatorEvent(event);
-    },
-    setInputConfiguration,
-    setInputState,
-    inputConfigurationResult,
-    setDropActive(active) {
-      scrapingFacade.setDropActive(active);
-    },
-    requestPackage(detail) { scrapingFacade.request(detail); },
   });
 })();

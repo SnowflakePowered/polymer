@@ -9,7 +9,8 @@ use crate::metrics::{TurnPhase, TurnProfile};
 use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent, ShellDocumentFactory};
 use crate::shell_dom::ShellDomCoordinator;
 use crate::shell_runtime::{
-    EmulatorCommand, EmulatorCommandSink, InstanceToken, WebRtcCommand, WebRtcCommandSink,
+    EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, InstanceToken,
+    SnowglassNotification, SnowglassNotificationSender, WebRtcCommand, WebRtcCommandSink,
 };
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
@@ -50,9 +51,9 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
 /// event loop and Deno UI isolate that share this thread.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
-/// Native input and emulator events dispatch into JavaScript
-/// synchronously. Poll the browser's asynchronous work once per UI frame
-/// instead of once per cursor, capture, and compositor event.
+/// Native notifications enter JavaScript through the Snowglass inbox. Poll
+/// the browser's asynchronous work once per UI frame instead of once per
+/// cursor, capture, and compositor event.
 const SHELL_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 struct ShellServices {
@@ -67,6 +68,7 @@ struct ShellCoordinator {
     services: ShellServices,
     game_host: GameHost,
     input: InputRouter,
+    notifications: Option<SnowglassNotificationSender>,
     startup_request: Option<serde_json::Value>,
     viewer: snowglass_renderer::cli::ViewerOptions,
 }
@@ -128,6 +130,7 @@ impl ShellCoordinator {
             services: ShellServices { session, proxy },
             game_host,
             input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
+            notifications: None,
             startup_request,
             viewer: options,
         };
@@ -140,6 +143,15 @@ impl ShellCoordinator {
         }
     }
 
+    fn notify_snowglass(&self, notification: SnowglassNotification) {
+        let Some(notifications) = &self.notifications else {
+            return;
+        };
+        if let Err(error) = notifications.send(notification) {
+            tracing::error!("snowglass: publishing notification failed: {error}");
+        }
+    }
+
     fn apply_emulator_command(&mut self, command: EmulatorCommand) {
         match command {
             EmulatorCommand::Launch {
@@ -147,7 +159,14 @@ impl ShellCoordinator {
                 options,
                 result,
             } => {
-                let _ = result.send(self.launch_game(token, options));
+                let options = serde_json::from_value::<AttachedLaunchPlan>(options)
+                    .map_err(|error| format!("invalid emulator launch options: {error}"))
+                    .and_then(|options| {
+                        options.validate()?;
+                        Ok(options)
+                    });
+                let launched = options.and_then(|options| self.launch_game(token, options));
+                let _ = result.send(launched);
             }
             EmulatorCommand::Close(token) => self.close_game(token),
             EmulatorCommand::SetVolume { token, volume } => self.set_game_volume(token, volume),
@@ -161,10 +180,21 @@ impl ShellCoordinator {
                 });
             }
             EmulatorCommand::Input { .. } => {}
-            EmulatorCommand::ConfigureInput {
+        }
+    }
+
+    fn apply_input_command(&mut self, command: InputCommand) {
+        match command {
+            InputCommand::Configure {
                 request_id,
                 transaction,
-            } => self.configure_input(u64::from(request_id), transaction),
+            } => match serde_json::from_value::<InputTransaction>(transaction) {
+                Ok(transaction) => self.configure_input(u64::from(request_id), transaction),
+                Err(error) => self.send_input_configuration_result(
+                    u64::from(request_id),
+                    Err(format!("invalid input transaction: {error}")),
+                ),
+            },
         }
     }
 
@@ -210,8 +240,10 @@ impl ShellCoordinator {
 
     fn publish_input_configuration(&mut self) {
         let publication = self.input.configuration_publication();
-        self.shell_dom
-            .set_input_configuration(&publication.configuration, &publication.layouts);
+        self.notify_snowglass(SnowglassNotification::InputConfigurationChanged {
+            configuration: publication.configuration,
+            layouts: publication.layouts,
+        });
     }
 
     fn send_input_configuration_result(
@@ -220,8 +252,10 @@ impl ShellCoordinator {
         result: Result<snowglass_input::hub::InputConfiguration, String>,
     ) {
         let (result, _) = InputRouter::configuration_result(request_id, result);
-        self.shell_dom
-            .input_configuration_result(request_id, &result);
+        self.notify_snowglass(SnowglassNotification::InputConfigurationSettled {
+            request_id,
+            result,
+        });
     }
 
     async fn activate_shell(
@@ -235,12 +269,13 @@ impl ShellCoordinator {
         if let Some(shell_source) = source {
             let size = self.window.size();
             let command_proxy = self.services.proxy.clone();
+            let input_proxy = self.services.proxy.clone();
             let webrtc_proxy = self.services.proxy.clone();
             let html = shell_source.html.clone();
             let base_url = shell_source.base_url.clone();
             let viewer = self.viewer.clone();
             let startup_request = self.startup_request.take();
-            let activated = match self
+            let notifications = match self
                 .shell_dom
                 .activate(|factory| async move {
                     let emulator_commands = EmulatorCommandSink::new(move |command| {
@@ -251,6 +286,14 @@ impl ShellCoordinator {
                             tracing::error!(
                                 "snowglass: emulator command event loop is unavailable"
                             );
+                        }
+                    });
+                    let input_commands = InputCommandSink::new(move |command| {
+                        if input_proxy
+                            .send_event(UserEvent::GameHost(GameHostCommand::Input(command)))
+                            .is_err()
+                        {
+                            tracing::error!("snowglass: input command event loop is unavailable");
                         }
                     });
                     let webrtc_commands = WebRtcCommandSink::new(move |command| {
@@ -269,6 +312,7 @@ impl ShellCoordinator {
                             size.width,
                             size.height,
                             emulator_commands,
+                            input_commands,
                             webrtc_commands,
                             startup_request,
                             viewer,
@@ -277,19 +321,20 @@ impl ShellCoordinator {
                 })
                 .await
             {
-                Ok(activated) => activated,
+                Ok(notifications) => notifications,
                 Err(error) => {
                     self.shell_dom.disable();
                     return Err(error);
                 }
             };
-            if !activated {
+            let Some(notifications) = notifications else {
                 tracing::error!(
                     "snowglass: ignoring a second shell document at {}",
                     shell_source.base_url
                 );
                 return Ok(());
-            }
+            };
+            self.notifications = Some(notifications);
             self.refresh_shell();
             tracing::error!(
                 "snowglass: using shell document at {}",
@@ -425,10 +470,7 @@ impl ShellCoordinator {
         payload: &serde_json::Value,
     ) {
         let event = instance_events::envelope(token, event_name, payload);
-        let shell_changed = self.shell_dom.dispatch_emulator_event(&event);
-        if shell_changed {
-            self.refresh_shell();
-        }
+        self.notify_snowglass(SnowglassNotification::EmulatorInstance(event));
     }
 
     fn process_capture(&mut self) {
@@ -770,11 +812,10 @@ impl ShellCoordinator {
     }
 
     fn handle_dropped_file(&mut self, path: std::path::PathBuf) {
-        self.shell_dom.request_package(&serde_json::json!({
+        self.notify_snowglass(SnowglassNotification::OpenRequested(serde_json::json!({
             "kind": "package",
             "path": path.to_string_lossy(),
-        }));
-        self.refresh_after_shell_script();
+        })));
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -924,8 +965,10 @@ impl ShellCoordinator {
             self.game_host.has_active_game(),
         );
         self.window.set_input_diagnostics(publication.diagnostics);
-        self.shell_dom
-            .set_input_state(&publication.controllers, publication.priority);
+        self.notify_snowglass(SnowglassNotification::InputStateChanged {
+            controllers: publication.controllers,
+            priority: publication.priority.to_owned(),
+        });
         let Some(state_changed) = publication.state_changed else {
             return;
         };
@@ -1114,6 +1157,9 @@ impl ShellApplication {
             UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
                 state.apply_emulator_command(command)
             }
+            UserEvent::GameHost(GameHostCommand::Input(command)) => {
+                state.apply_input_command(command)
+            }
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
                 state.apply_webrtc_command(command)
             }
@@ -1169,10 +1215,12 @@ impl ShellApplication {
         match event {
             ShellWindowEvent::CloseRequested => return true,
             ShellWindowEvent::DroppedFile(path) => {
-                state.shell_dom.set_drop_active(false);
+                state.notify_snowglass(SnowglassNotification::DropActiveChanged(false));
                 state.handle_dropped_file(path);
             }
-            ShellWindowEvent::FileHover(active) => state.shell_dom.set_drop_active(active),
+            ShellWindowEvent::FileHover(active) => {
+                state.notify_snowglass(SnowglassNotification::DropActiveChanged(active))
+            }
             ShellWindowEvent::Moved => {}
             ShellWindowEvent::Resized { width, height } if width != 0 && height != 0 => {
                 state.resize(width, height);

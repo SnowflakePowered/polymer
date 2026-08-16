@@ -1,6 +1,8 @@
+import { op_plugin_invoke } from "ext:core/ops";
+
 // Same-realm plugin facade. Calls cross only the Deno op boundary; pluginhost
 // keeps each package invocation in its own fresh worker isolate.
-globalThis.__snowglassCreatePluginFacade = (ops) => {
+export function createPlugin() {
   const errorFrom = (wire) => {
     const error = new Error(String(wire?.message ?? "plugin invocation failed"));
     error.name = String(wire?.name ?? "Error");
@@ -33,7 +35,7 @@ globalThis.__snowglassCreatePluginFacade = (ops) => {
 
   const invoke = async (plugin, path, args) => {
     assertJson(args);
-    const result = await ops.op_plugin_invoke(plugin, path, args);
+    const result = await op_plugin_invoke(plugin, path, args);
     if (!result?.ok) throw errorFrom(result?.error);
     return result.value;
   };
@@ -65,4 +67,4 @@ globalThis.__snowglassCreatePluginFacade = (ops) => {
       return callable(id);
     },
   });
-};
+}

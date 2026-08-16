@@ -5,22 +5,21 @@
 //! JavaScript and queued back to Blitz through Deno ops. Keeping the bridge
 //! command-based avoids borrowing the document from inside V8 callbacks.
 
-mod configuration;
 mod dom;
-mod emulator;
 mod input;
 mod modules;
-mod plugin;
 mod runtime;
-mod scraping;
 mod state;
-mod webrtc;
 
 pub use dom::Mutation;
-pub use emulator::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
 pub use input::EventResult;
 pub use runtime::Runtime;
-pub use webrtc::{WebRtcCommand, WebRtcCommandSink};
+#[cfg(test)]
+pub use snowglass_deno::snowglass::SnowglassNotification;
+pub use snowglass_deno::snowglass::{
+    EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, InstanceToken,
+    WebRtcCommand, WebRtcCommandSink,
+};
 
 #[cfg(test)]
 mod tests;

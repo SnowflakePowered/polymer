@@ -1,0 +1,447 @@
+//! Optional user-facing Snowglass APIs for a host-owned Deno isolate.
+//!
+//! The base [`crate::Runtime`] deliberately does not install this extension.
+//! Plugin workers therefore retain the curated web platform without gaining
+//! access to the application-facing `Snowglass` global.
+
+use deno_core::{OpState, op2};
+use deno_error::JsErrorBox;
+use serde_json::Value;
+use std::{
+    cell::RefCell,
+    collections::HashSet,
+    future::{Future, poll_fn},
+    net::SocketAddr,
+    pin::Pin,
+    rc::Rc,
+    sync::Arc,
+};
+
+pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
+pub type ScrapeCallback = Arc<dyn Fn(String) -> ApiFuture<Result<Value, String>> + Send + Sync>;
+pub type ConfigurationDescribeCallback =
+    Arc<dyn Fn(Value, Option<String>) -> Result<Value, String> + Send + Sync>;
+pub type ConfigurationPrepareCallback =
+    Arc<dyn Fn(Value, Value) -> Result<Value, String> + Send + Sync>;
+pub type PluginInvokeCallback =
+    Arc<dyn Fn(String, Vec<String>, Vec<Value>) -> ApiFuture<Value> + Send + Sync>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct InstanceToken(pub u32);
+
+#[derive(Debug)]
+pub enum EmulatorCommand {
+    Launch {
+        token: InstanceToken,
+        options: Value,
+        result: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    Close(InstanceToken),
+    SetVolume {
+        token: InstanceToken,
+        volume: f64,
+    },
+    SetMuted {
+        token: InstanceToken,
+        muted: bool,
+    },
+    Message {
+        token: InstanceToken,
+        name: String,
+        args: Value,
+    },
+    Input {
+        token: InstanceToken,
+        active: bool,
+    },
+}
+
+#[derive(Debug)]
+pub enum InputCommand {
+    Configure { request_id: u32, transaction: Value },
+}
+
+#[derive(Debug)]
+pub enum WebRtcCommand {
+    Start {
+        token: InstanceToken,
+        bind: SocketAddr,
+        targets: Vec<u32>,
+        result: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    Stop {
+        token: InstanceToken,
+        result: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+}
+
+pub struct CommandSink<T>(Arc<dyn Fn(T) + Send + Sync>);
+
+impl<T> Clone for CommandSink<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> CommandSink<T> {
+    pub fn new(send: impl Fn(T) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(send))
+    }
+
+    fn send(&self, command: T) {
+        (self.0)(command);
+    }
+}
+
+impl<T> Default for CommandSink<T> {
+    fn default() -> Self {
+        Self::new(|_| {})
+    }
+}
+
+pub type EmulatorCommandSink = CommandSink<EmulatorCommand>;
+pub type InputCommandSink = CommandSink<InputCommand>;
+pub type WebRtcCommandSink = CommandSink<WebRtcCommand>;
+
+#[derive(Clone)]
+pub struct SnowglassOptions {
+    pub scrape: ScrapeCallback,
+    pub describe_configuration: ConfigurationDescribeCallback,
+    pub prepare_configuration: ConfigurationPrepareCallback,
+    pub invoke_plugin: PluginInvokeCallback,
+    pub emulator_commands: EmulatorCommandSink,
+    pub input_commands: InputCommandSink,
+    pub webrtc_commands: WebRtcCommandSink,
+}
+
+impl Default for SnowglassOptions {
+    fn default() -> Self {
+        Self {
+            scrape: Arc::new(|_| Box::pin(async { Err("scraping service is unavailable".into()) })),
+            describe_configuration: Arc::new(|_, _| {
+                Err("configuration service is unavailable".into())
+            }),
+            prepare_configuration: Arc::new(|_, _| {
+                Err("configuration service is unavailable".into())
+            }),
+            invoke_plugin: Arc::new(|_, _, _| {
+                Box::pin(async {
+                    serde_json::json!({
+                        "ok": false,
+                        "error": {
+                            "name": "NotSupportedError",
+                            "code": "PLUGIN_SERVICE_UNAVAILABLE",
+                            "message": "plugin service is unavailable"
+                        }
+                    })
+                })
+            }),
+            emulator_commands: EmulatorCommandSink::default(),
+            input_commands: InputCommandSink::default(),
+            webrtc_commands: WebRtcCommandSink::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(
+    tag = "type",
+    content = "detail",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SnowglassNotification {
+    OpenRequested(Value),
+    DropActiveChanged(bool),
+    InputConfigurationChanged {
+        configuration: Value,
+        layouts: Value,
+    },
+    InputStateChanged {
+        controllers: Value,
+        priority: String,
+    },
+    InputConfigurationSettled {
+        request_id: u64,
+        result: Value,
+    },
+    EmulatorInstance(Value),
+}
+
+/// Cloneable native-to-JavaScript notification endpoint.
+///
+/// The receiver lives entirely inside the Deno extension. Native feature
+/// producers retain this sender instead of reaching through the shell's DOM
+/// and runtime ownership layers.
+pub type SnowglassNotificationSender = tokio::sync::mpsc::UnboundedSender<SnowglassNotification>;
+
+struct SnowglassNotificationInbox {
+    receiver: RefCell<tokio::sync::mpsc::UnboundedReceiver<SnowglassNotification>>,
+}
+
+fn notification_channel() -> (SnowglassNotificationSender, SnowglassNotificationInbox) {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    (
+        sender,
+        SnowglassNotificationInbox {
+            receiver: RefCell::new(receiver),
+        },
+    )
+}
+
+#[op2]
+#[serde]
+async fn op_snowglass_next_notification(
+    state: Rc<RefCell<OpState>>,
+) -> Option<SnowglassNotification> {
+    let inbox = state
+        .borrow()
+        .borrow::<Rc<SnowglassNotificationInbox>>()
+        .clone();
+    poll_fn(|context| inbox.receiver.borrow_mut().poll_recv(context)).await
+}
+
+#[op2]
+#[serde]
+async fn op_scraping_package_from_path(
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let callback = state.borrow().borrow::<SnowglassOptions>().scrape.clone();
+    callback(path).await.map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+fn op_configuration_describe(
+    state: &mut OpState,
+    #[serde] package: serde_json::Value,
+    #[string] preferred_emulator: Option<String>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    (state.borrow::<SnowglassOptions>().describe_configuration)(package, preferred_emulator)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+fn op_configuration_prepare(
+    state: &mut OpState,
+    #[serde] package: serde_json::Value,
+    #[serde] request: serde_json::Value,
+) -> Result<serde_json::Value, JsErrorBox> {
+    (state.borrow::<SnowglassOptions>().prepare_configuration)(package, request)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+async fn op_plugin_invoke(
+    state: Rc<RefCell<OpState>>,
+    #[string] plugin: String,
+    #[serde] path: Vec<String>,
+    #[serde] arguments: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let callback = state
+        .borrow()
+        .borrow::<SnowglassOptions>()
+        .invoke_plugin
+        .clone();
+    callback(plugin, path, arguments).await
+}
+
+#[op2]
+async fn op_emulator_launch(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    #[serde] options: serde_json::Value,
+) -> Result<(), JsErrorBox> {
+    let sink = state
+        .borrow()
+        .borrow::<SnowglassOptions>()
+        .emulator_commands
+        .clone();
+    let (result, response) = tokio::sync::oneshot::channel();
+    sink.send(EmulatorCommand::Launch {
+        token: InstanceToken(token),
+        options,
+        result,
+    });
+    response
+        .await
+        .map_err(|_| JsErrorBox::generic("emulator host is unavailable"))?
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+fn op_emulator_close(state: &mut OpState, token: u32) {
+    state
+        .borrow::<SnowglassOptions>()
+        .emulator_commands
+        .send(EmulatorCommand::Close(InstanceToken(token)));
+}
+
+#[op2(fast)]
+fn op_emulator_set_volume(state: &mut OpState, token: u32, volume: f64) {
+    state
+        .borrow::<SnowglassOptions>()
+        .emulator_commands
+        .send(EmulatorCommand::SetVolume {
+            token: InstanceToken(token),
+            volume,
+        });
+}
+
+#[op2(fast)]
+fn op_emulator_set_muted(state: &mut OpState, token: u32, muted: bool) {
+    state
+        .borrow::<SnowglassOptions>()
+        .emulator_commands
+        .send(EmulatorCommand::SetMuted {
+            token: InstanceToken(token),
+            muted,
+        });
+}
+
+#[op2]
+fn op_emulator_message(
+    state: &mut OpState,
+    token: u32,
+    #[string] name: String,
+    #[serde] args: serde_json::Value,
+) {
+    state
+        .borrow::<SnowglassOptions>()
+        .emulator_commands
+        .send(EmulatorCommand::Message {
+            token: InstanceToken(token),
+            name,
+            args,
+        });
+}
+
+#[op2(fast)]
+fn op_emulator_input(state: &mut OpState, token: u32, active: bool) {
+    state
+        .borrow::<SnowglassOptions>()
+        .emulator_commands
+        .send(EmulatorCommand::Input {
+            token: InstanceToken(token),
+            active,
+        });
+}
+
+#[op2]
+fn op_input_configure(
+    state: &mut OpState,
+    request_id: u32,
+    #[serde] transaction: serde_json::Value,
+) {
+    state
+        .borrow::<SnowglassOptions>()
+        .input_commands
+        .send(InputCommand::Configure {
+            request_id,
+            transaction,
+        });
+}
+
+#[op2]
+async fn op_webrtc_start(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    #[string] bind: String,
+    #[serde] targets: Vec<u32>,
+) -> Result<(), JsErrorBox> {
+    let bind = bind
+        .parse::<SocketAddr>()
+        .map_err(|error| JsErrorBox::type_error(format!("invalid WebRTC bind address: {error}")))?;
+    if targets.is_empty() {
+        return Err(JsErrorBox::type_error(
+            "WebRTC publication requires at least one render target",
+        ));
+    }
+    if targets.iter().copied().collect::<HashSet<_>>().len() != targets.len() {
+        return Err(JsErrorBox::type_error(
+            "WebRTC render-target indices must be unique",
+        ));
+    }
+    let sink = state
+        .borrow()
+        .borrow::<SnowglassOptions>()
+        .webrtc_commands
+        .clone();
+    let (result, response) = tokio::sync::oneshot::channel();
+    sink.send(WebRtcCommand::Start {
+        token: InstanceToken(token),
+        bind,
+        targets,
+        result,
+    });
+    response
+        .await
+        .map_err(|_| JsErrorBox::generic("WebRTC host is unavailable"))?
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+async fn op_webrtc_stop(state: Rc<RefCell<OpState>>, token: u32) -> Result<(), JsErrorBox> {
+    let sink = state
+        .borrow()
+        .borrow::<SnowglassOptions>()
+        .webrtc_commands
+        .clone();
+    let (result, response) = tokio::sync::oneshot::channel();
+    sink.send(WebRtcCommand::Stop {
+        token: InstanceToken(token),
+        result,
+    });
+    response
+        .await
+        .map_err(|_| JsErrorBox::generic("WebRTC host is unavailable"))?
+        .map_err(JsErrorBox::generic)
+}
+
+deno_core::extension!(
+    snowglass_api,
+    ops = [
+        op_scraping_package_from_path,
+        op_configuration_describe,
+        op_configuration_prepare,
+        op_plugin_invoke,
+        op_emulator_launch,
+        op_emulator_close,
+        op_emulator_set_volume,
+        op_emulator_set_muted,
+        op_emulator_message,
+        op_emulator_input,
+        op_input_configure,
+        op_webrtc_start,
+        op_webrtc_stop,
+        op_snowglass_next_notification,
+    ],
+    esm_entry_point = "ext:snowglass_api/99_main.js",
+    esm = [dir "js",
+        "00_infra.js",
+        "01_scraping.js",
+        "02_plugin.js",
+        "03_configuration.js",
+        "04_input.js",
+        "05_webrtc.js",
+        "06_emulator.js",
+        "99_main.js",
+    ],
+    options = {
+        options: SnowglassOptions,
+        notifications: SnowglassNotificationInbox,
+    },
+    state = |state, options| {
+        state.put(options.options);
+        state.put(Rc::new(options.notifications));
+    },
+);
+
+pub fn init(options: SnowglassOptions) -> (deno_core::Extension, SnowglassNotificationSender) {
+    let (sender, inbox) = notification_channel();
+    (snowglass_api::init(options, inbox), sender)
+}

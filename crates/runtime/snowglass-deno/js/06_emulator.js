@@ -1,6 +1,16 @@
+import {
+  op_emulator_close,
+  op_emulator_input,
+  op_emulator_launch,
+  op_emulator_message,
+  op_emulator_set_muted,
+  op_emulator_set_volume,
+} from "ext:core/ops";
+import { attachmentFor } from "./00_infra.js";
+
 // Deno owns launch object identity and lifecycle. Native code owns process,
 // input, audio, capture, and compositor state behind the op boundary.
-globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, webrtc) => {
+export function createEmulator(webrtc) {
   const Emulator = new EventTarget();
   let activeLaunch = null;
   let nextLaunchId = 0;
@@ -26,9 +36,7 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
       throw new TypeError("Emulator launch requires tracked surfaces");
     }
     for (const surface of options.surfaces) {
-      if (!(surface.attach instanceof HTMLTrackedSurfaceElement)) {
-        throw new TypeError(`surface ${surface.index} must attach to an HTMLTrackedSurfaceElement`);
-      }
+      attachmentFor(surface.attach);
       if (!surface.attach.isConnected) {
         throw new TypeError(`surface ${surface.index} attachment is not connected`);
       }
@@ -45,7 +53,7 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
         index: surface.index,
         rotation: surface.rotation || 0,
         selector: surface.selector,
-        attach: surface.attach.__id,
+        attach: attachmentFor(surface.attach),
       })),
       gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
         ...mapping,
@@ -105,11 +113,11 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
 
     async __start(wire) {
       try {
-        await ops.op_emulator_launch(this.id, wire);
+        await op_emulator_launch(this.id, wire);
         this.#nativeStarted = true;
         if (this.#state === "pending") this.#state = "starting";
         if (this.#closeRequested) {
-          ops.op_emulator_close(this.id);
+          op_emulator_close(this.id);
           return;
         }
         const targets = this.request.surfaces
@@ -123,7 +131,7 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
         }
       } catch (value) {
         const error = value instanceof Error ? value : new Error(String(value));
-        if (this.#nativeStarted) ops.op_emulator_close(this.id);
+        if (this.#nativeStarted) op_emulator_close(this.id);
         this.__fail(error);
       }
     }
@@ -138,25 +146,25 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
     }
 
     send(name, args) {
-      if (this.#canControl()) ops.op_emulator_message(this.id, String(name), args ?? null);
+      if (this.#canControl()) op_emulator_message(this.id, String(name), args ?? null);
     }
 
     setVolume(volume) {
       volume = Number(volume);
       if (!Number.isFinite(volume)) throw new TypeError("Emulator volume must be a finite number");
-      if (this.#canControl()) ops.op_emulator_set_volume(this.id, Math.max(0, Math.min(1, volume)));
+      if (this.#canControl()) op_emulator_set_volume(this.id, Math.max(0, Math.min(1, volume)));
     }
 
     setMuted(muted) {
-      if (this.#canControl()) ops.op_emulator_set_muted(this.id, Boolean(muted));
+      if (this.#canControl()) op_emulator_set_muted(this.id, Boolean(muted));
     }
 
     activateInput() {
-      if (this.#canControl()) ops.op_emulator_input(this.id, true);
+      if (this.#canControl()) op_emulator_input(this.id, true);
     }
 
     deactivateInput() {
-      if (this.#canControl()) ops.op_emulator_input(this.id, false);
+      if (this.#canControl()) op_emulator_input(this.id, false);
     }
 
     close() {
@@ -164,7 +172,7 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
       this.#closeRequested = true;
       this.#state = "closing";
       this.#rejectReady(new DOMException("The launch was closed", "AbortError"));
-      if (this.#nativeStarted) ops.op_emulator_close(this.id);
+      if (this.#nativeStarted) op_emulator_close(this.id);
     }
 
     __nativeEvent(eventName, payload) {
@@ -172,7 +180,7 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
         if (this.#state === "pending") this.#state = "starting";
       } else if (eventName === "ready") {
         if (this.#closeRequested) {
-          if (this.#nativeStarted) ops.op_emulator_close(this.id);
+          if (this.#nativeStarted) op_emulator_close(this.id);
           return;
         }
         this.#state = "ready";
@@ -248,4 +256,4 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
       }
     },
   });
-};
+}

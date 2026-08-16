@@ -1,17 +1,22 @@
-globalThis.__snowglassCreateConfigurationFacade = (ops, scraping) => {
+import {
+  op_configuration_describe,
+  op_configuration_prepare,
+} from "ext:core/ops";
+
+export function createConfiguration(scraping, pluginApi) {
   const Configuration = Object.freeze({
     describe(packageValue, options = undefined) {
-      return ops.op_configuration_describe(
+      return op_configuration_describe(
         scraping.serialize(packageValue),
         options?.emulator == null ? null : String(options.emulator),
       );
     },
     prepare(packageValue, selection) {
-      return ops.op_configuration_prepare(scraping.serialize(packageValue), selection);
+      return op_configuration_prepare(scraping.serialize(packageValue), selection);
     },
     async setupLaunch(packageValue, selection) {
       const prepared = await Configuration.prepare(packageValue, selection);
-      const plugin = await globalThis.Snowglass.plugin.open(prepared.plugin).setupLaunch(prepared.arguments);
+      const plugin = await pluginApi.open(prepared.plugin).setupLaunch(prepared.arguments);
       const targets = new Set(prepared.webrtcTargets || []);
       return Object.freeze({
         command: plugin.command,
@@ -35,4 +40,4 @@ globalThis.__snowglassCreateConfigurationFacade = (ops, scraping) => {
     },
   });
   return Configuration;
-};
+}
