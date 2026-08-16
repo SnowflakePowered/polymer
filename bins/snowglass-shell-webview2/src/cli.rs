@@ -18,7 +18,7 @@ pub struct GameLaunchRequest {
 
 pub struct ShellOptions {
     pub viewer: ViewerOptions,
-    pub foreground_url: String,
+    pub ui_url: String,
     pub plugins: PluginRegistry,
     pub game_launch: Option<GameLaunchRequest>,
 }
@@ -35,7 +35,7 @@ pub fn launch_from_viewer(options: &ViewerOptions) -> Result<Option<UnattachedLa
             HookBackend::Vulkan => Ok(GraphicsHook::Vulkan),
             HookBackend::D3d11 => Ok(GraphicsHook::D3d11),
             HookBackend::D3d12 => Ok(GraphicsHook::D3d12),
-            HookBackend::Gdi => Err("the WebView2 emulator API does not expose GDI".to_owned()),
+            HookBackend::Gdi => Err("the shell emulator API does not expose GDI".to_owned()),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let tracked = options.track_render_targets.clone().unwrap_or_else(|| {
@@ -80,7 +80,7 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
                 .long("url")
                 .required(true)
                 .value_name("URL")
-                .help("Foreground React application URL"),
+                .help("URL of the single Solid application document"),
         )
         .arg(
             Arg::new("emulator")
@@ -154,7 +154,7 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
         .or_else(|| game_launch.as_ref().map(|_| String::new()));
     Ok(ShellOptions {
         viewer: viewer_options_from_matches_with_default_machine(&matches, default_machine)?,
-        foreground_url: matches
+        ui_url: matches
             .get_one::<String>("url")
             .expect("required URL is present")
             .to_owned(),

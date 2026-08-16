@@ -1498,16 +1498,6 @@ impl D3d12Compositor {
         !self.chrome.is_empty() || !self.chrome_opens.is_empty()
     }
 
-    /// Waits until the compositor no longer reads any chrome texture.
-    ///
-    /// Call this before modifying a previously supplied texture. Even though
-    /// Vello and composition share one device and queue, an earlier presented
-    /// frame may still sample the texture.
-    pub fn synchronize_chrome_update(&mut self) -> Result<(), Box<dyn Error>> {
-        self.wait_idle()?;
-        Ok(())
-    }
-
     fn upload_chrome(&mut self, frame_index: usize) -> Result<(), Box<dyn Error>> {
         for id in std::mem::take(&mut self.chrome_removals) {
             if let Some(layer) = self.chrome.remove(&id) {

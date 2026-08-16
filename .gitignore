@@ -8,3 +8,4 @@
 *.exp
 
 *.pyc
+.smoke-artifacts/

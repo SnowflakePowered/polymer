@@ -221,11 +221,21 @@ impl TargetProcess {
             architecture: _,
             retained,
         } = self;
+        let job_termination = job.terminate(0);
+        // Some emulator launch configurations keep an additional job handle
+        // alive, so terminating the job alone is not a sufficient guarantee
+        // that its root process has observed shutdown. Terminate the root via
+        // its owned process handle as well before entering the blocking wait.
+        let process_termination = child.kill();
         drop(job);
         let result = child.wait();
         drop(desktop);
         drop(retained);
-        result
+        if job_termination.is_err() && process_termination.is_err() {
+            job_termination.and(process_termination).and(result)
+        } else {
+            result
+        }
     }
 }
 
@@ -364,5 +374,33 @@ mod tests {
         wait.wait().unwrap();
         assert!(process.try_wait().unwrap().is_some());
         process.terminate_tree_and_wait().unwrap();
+    }
+
+    #[test]
+    fn terminates_a_running_target_before_waiting() {
+        let command = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+            .join("cmd.exe");
+        let target = vec![
+            command.to_string_lossy().into_owned(),
+            "/d".to_owned(),
+            "/c".to_owned(),
+            "ping".to_owned(),
+            "127.0.0.1".to_owned(),
+            "-n".to_owned(),
+            "30".to_owned(),
+            ">nul".to_owned(),
+        ];
+        let artifact_root = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let process = TargetProcess::launch(&target, &artifact_root, &[], None, &[]).unwrap();
+        let started = std::time::Instant::now();
+        process.terminate_tree_and_wait().unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

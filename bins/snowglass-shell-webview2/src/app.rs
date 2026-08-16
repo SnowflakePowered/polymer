@@ -1,24 +1,19 @@
-use crate::background_document::{BackgroundDocumentFactory, DomKeyboardEvent, DomMouseEvent};
-use crate::background_dom::BackgroundDomCoordinator;
-use crate::background_runtime::{
-    BackgroundLaunchCoordinator, EmulatorCommand, EmulatorCommandSink, InstanceToken,
-    LaunchCoordinatorEvent,
-};
 use crate::cli::{GameLaunchRequest, ShellOptions};
-use crate::commands::{BackgroundDocumentSource, RuntimeCommand, decode_foreground_command};
-use crate::foreground_dom::ForegroundDom;
-use crate::game_host::{BackgroundRasterizer, GameHost, GameHostCaptureEvent, GameHostCommand};
-use crate::input::{
-    DomPointerKind, InputCommand, InputPriority, InputRouter, InputTransport, KeyboardTarget,
-    PointerTarget,
-};
+use crate::commands::{RuntimeCommand, ShellDocumentSource};
+use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand, ShellRasterizer};
+use crate::input::{InputPriority, InputRouter, InputTransport, KeyboardTarget};
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
-use crate::shared_bus::{SharedBusBroker, SharedBusRequest};
+use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent, ShellDocumentFactory};
+use crate::shell_dom::ShellDomCoordinator;
+use crate::shell_runtime::{
+    EmulatorCommand, EmulatorCommandSink, InstanceToken, LaunchCoordinatorEvent, LauncherCommand,
+    LauncherCommandSink, ShellLaunchCoordinator,
+};
 use crate::window_manager::{
-    EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellWindowEvent, WindowBootstrap,
-    WindowCommand, WindowManager,
+    EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
+    WindowBootstrap, WindowCommand, WindowManager,
 };
 use crate::{cli, launcher};
 use snowglass_input::{hub::InputTransaction, mouse::PointerPhase};
@@ -45,7 +40,7 @@ const MAX_CAPTURE_EVENTS_PER_TURN: usize = 32;
 /// count. Overshooting costs a command buffer each and nothing per frame, so it
 /// is set well above what a console layout needs rather than derived from the
 /// document, which can change under us.
-const BACKGROUND_SURFACE_CAPACITY: usize = 8;
+const SHELL_SURFACE_CAPACITY: usize = 8;
 const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 
 /// How long a compositor-clock tick waits for DXGI to return a present slot.
@@ -55,8 +50,12 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// misses it by a hair and defers the present a whole interval, which is the
 /// judder this budget exists to close. Expected waits are a fraction of a
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
-/// event loop, and the WebView2 host that shares this thread with it.
+/// event loop and Deno UI isolate that share this thread.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
+/// Native input, launcher, and emulator events dispatch into JavaScript
+/// synchronously. Poll the browser's asynchronous work once per UI frame
+/// instead of once per cursor, capture, and compositor event.
+const SHELL_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 struct ShellServices {
     session: String,
@@ -64,17 +63,15 @@ struct ShellServices {
 }
 
 struct ShellCoordinator {
-    // Drop WebView2 and its COM host before tearing down their visual tree.
-    foreground_dom: ForegroundDom,
-    background_dom: BackgroundDomCoordinator,
-    bus_broker: SharedBusBroker,
-    foreground_bus_attached: bool,
+    shell_dom: ShellDomCoordinator,
     window: WindowManager,
     profile: TurnProfile,
     services: ShellServices,
-    launch: BackgroundLaunchCoordinator,
+    launch: ShellLaunchCoordinator,
     game_host: GameHost,
     input: InputRouter,
+    next_launch_id: u64,
+    pending_launch_id: Option<u64>,
 }
 
 impl ShellCoordinator {
@@ -83,12 +80,12 @@ impl ShellCoordinator {
         proxy: EventLoopProxy<UserEvent>,
         options: ShellOptions,
         statistics_recorder: RecorderHandle,
-        background_factory: BackgroundDocumentFactory,
-        background_rasterizer: BackgroundRasterizer,
+        shell_factory: ShellDocumentFactory,
+        shell_rasterizer: ShellRasterizer,
     ) -> Result<Self, Box<dyn Error>> {
         let ShellOptions {
             viewer: options,
-            foreground_url,
+            ui_url: _,
             plugins,
             game_launch,
         } = options;
@@ -106,25 +103,19 @@ impl ShellCoordinator {
         let mut window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
         let size = window.size();
         let render_window = window.surface(size.width.max(1), size.height.max(1));
-        // Prepare Vello before building WebView2. Initializing its D3D12 state
-        // after Chromium has started WARP faults inside d3d10warp.dll on this
-        // system. The factory chooses the initial adapter, and the merged
-        // compositor must use the same device so it can import Vello's shared
-        // game-layer textures before a captured stream supplies an adapter.
-        let game_host = GameHost::new(&render_window, background_rasterizer)?;
+        // Prepare the retained Vello renderer before the first shell frame.
+        let game_host = GameHost::new(&render_window, shell_rasterizer)?;
         let merged_content = game_host.composition_content()?;
         drop(render_window);
         window.set_merged_content(&merged_content)?;
         window.commit()?;
         let session = unique_session();
-        // The foreground page opts into a composed game layer with
-        // `<link rel="background">`. Its initialization bridge discovers and
-        // fetches that document before announcing that the frontend is ready;
-        // document discovery itself remains deferred to the page.
-        let plugin_runtime = background_factory.plugin_runtime();
+        // Plugin realization stays native; only immutable launcher state and
+        // launch plans enter the shell isolate.
+        let plugin_runtime = shell_factory.plugin_runtime();
         let launch_proxy = proxy.clone();
         let launch =
-            BackgroundLaunchCoordinator::new(
+            ShellLaunchCoordinator::new(
                 pending_cli_launch,
                 plugins,
                 Arc::clone(&plugin_runtime),
@@ -137,61 +128,25 @@ impl ShellCoordinator {
                     }
                 },
             );
-        let mut background_dom = BackgroundDomCoordinator::new(background_factory);
-        let foreground_visual = window.foreground_visual()?;
-        let foreground_proxy = proxy.clone();
-        let navigation_proxy = proxy.clone();
-        let bridge_script = include_str!(concat!(env!("OUT_DIR"), "/bridge.js"));
-        let render_window = window.surface(size.width.max(1), size.height.max(1));
-        let foreground_dom = ForegroundDom::new(
-            &render_window,
-            size.width,
-            size.height,
-            foreground_visual,
-            bridge_script,
-            &foreground_url,
-            move |request| {
-                if request.body().is_empty() {
-                    let _ = foreground_proxy
-                        .send_event(UserEvent::Runtime(RuntimeCommand::SharedBusDoorbell));
-                } else {
-                    tracing::error!("snowglass: WebView2 IPC carried a forbidden payload");
-                }
-            },
-            move |_| {
-                let _ = navigation_proxy
-                    .send_event(UserEvent::Runtime(RuntimeCommand::ForegroundNavigation));
-            },
-        )?;
-        // Assigning WebView2's RootVisualTarget mutates this DirectComposition
-        // device after the tree's initial commit. Publish that mutation before
-        // entering the event loop or the controller renders into a detached
-        // visual while the game and overlay swapchains remain visible.
-        window.commit()?;
-        let background_proxy = proxy.clone();
-        background_dom.attach_shared_bus(foreground_dom.background_bus_endpoint(move || {
-            let _ =
-                background_proxy.send_event(UserEvent::Runtime(RuntimeCommand::SharedBusDoorbell));
-        }));
+        let shell_dom = ShellDomCoordinator::new(shell_factory);
 
         let input = InputTransport::runtime().map_err(std::io::Error::other)?;
         let control_sender = input.control_sender();
         // Merging composites every stream into one opaque window-covering
-        // swapchain. A game layer supplies the chrome that swapchain draws
+        // swapchain. The shell document supplies the chrome that it draws
         // around the streams, which is what lets it stay opaque and so stay
         // eligible for a hardware overlay plane.
 
         let mut state = Self {
-            foreground_dom,
-            background_dom,
-            bus_broker: SharedBusBroker::default(),
-            foreground_bus_attached: false,
+            shell_dom,
             window,
             profile: TurnProfile::default(),
             services: ShellServices { session, proxy },
             launch,
             game_host,
             input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
+            next_launch_id: 0,
+            pending_launch_id: None,
         };
         if let Some(request) = game_launch {
             state.queue_game(request);
@@ -220,24 +175,10 @@ impl ShellCoordinator {
         self.publish_launcher_state();
     }
 
-    fn send_foreground_command(&mut self, command: serde_json::Value) {
-        if let Err(error) = self.bus_broker.queue_foreground_command(&command) {
-            tracing::error!("snowglass: encoding foreground command failed: {error}");
-            return;
-        }
-        self.flush_shared_bus_responses();
-        if self.foreground_bus_attached
-            && let Err(error) = self.foreground_dom.ring_bus_doorbell()
-        {
-            tracing::error!("snowglass: ringing the foreground command doorbell failed: {error}");
-        }
-    }
-
     fn publish_launcher_state(&mut self) {
-        let Some(command) = crate::commands::launcher_state(self.launch.state()) else {
-            return;
-        };
-        self.send_foreground_command(command);
+        if let Ok(state) = serde_json::to_value(self.launch.state()) {
+            self.shell_dom.set_launcher_state(&state);
+        }
     }
 
     async fn deliver_cli_launch(&mut self) {
@@ -253,22 +194,29 @@ impl ShellCoordinator {
                 return;
             }
         };
-        let Some(message) = crate::commands::cli_launch(&options) else {
-            return;
-        };
-        if !self.background_dom.post_message(&message) {
-            let message = "CLI launch requires a linked game layer".to_owned();
-            tracing::error!("snowglass: {message}");
-            self.launch.set_error(message);
-            self.publish_launcher_state();
-            return;
-        }
-        self.refresh_after_background_script();
+        self.next_launch_id = self.next_launch_id.wrapping_add(1).max(1);
+        let id = self.next_launch_id;
+        self.pending_launch_id = Some(id);
+        let plan = serde_json::json!({ "id": id, "options": options });
+        self.shell_dom.set_launch_plan(Some(&plan));
+        self.refresh_after_shell_script();
     }
 
-    fn refresh_after_background_script(&mut self) {
-        if self.background_dom.needs_paint() {
-            self.refresh_background();
+    fn settle_launch(&mut self, id: u64, error: Option<String>) {
+        if self.pending_launch_id != Some(id) {
+            return;
+        }
+        self.pending_launch_id = None;
+        self.shell_dom.set_launch_plan(None);
+        if let Some(error) = error {
+            self.launch.set_error(error);
+            self.publish_launcher_state();
+        }
+    }
+
+    fn refresh_after_shell_script(&mut self) {
+        if self.shell_dom.needs_paint() {
+            self.refresh_shell();
         }
     }
 
@@ -283,14 +231,14 @@ impl ShellCoordinator {
                 self.set_input_priority(if active {
                     InputPriority::Game
                 } else {
-                    InputPriority::Foreground
+                    InputPriority::Ui
                 });
             }
             EmulatorCommand::Input { .. } => {}
             EmulatorCommand::ConfigureInput {
                 request_id,
                 transaction,
-            } => self.configure_input(u64::from(request_id), transaction, true),
+            } => self.configure_input(u64::from(request_id), transaction),
         }
     }
 
@@ -298,67 +246,54 @@ impl ShellCoordinator {
         self.game_host.is_active(token)
     }
 
-    fn configure_input(
-        &mut self,
-        request_id: u64,
-        transaction: InputTransaction,
-        background: bool,
-    ) {
+    fn configure_input(&mut self, request_id: u64, transaction: InputTransaction) {
         match self
             .input
             .apply_configuration_transaction(transaction, self.game_host.has_active_game())
         {
             Ok(configuration) => {
                 self.publish_input_configuration();
-                self.send_input_configuration_result(request_id, Ok(configuration), background);
+                self.send_input_configuration_result(request_id, Ok(configuration));
             }
             Err(error) => {
-                self.send_input_configuration_result(
-                    request_id,
-                    Err(error.to_string()),
-                    background,
-                );
+                self.send_input_configuration_result(request_id, Err(error.to_string()));
             }
         }
     }
 
     fn publish_input_configuration(&mut self) {
         let publication = self.input.configuration_publication();
-        self.background_dom
+        self.shell_dom
             .set_input_configuration(&publication.configuration, &publication.layouts);
-        self.send_foreground_command(publication.command);
     }
 
     fn send_input_configuration_result(
         &mut self,
         request_id: u64,
         result: Result<snowglass_input::hub::InputConfiguration, String>,
-        background: bool,
     ) {
-        let (result, command) = InputRouter::configuration_result(request_id, result);
-        if background {
-            self.background_dom
-                .input_configuration_result(request_id, &result);
-            return;
-        }
-        self.send_foreground_command(command);
+        let (result, _) = InputRouter::configuration_result(request_id, result);
+        self.shell_dom
+            .input_configuration_result(request_id, &result);
     }
 
-    async fn frontend_ready(
+    async fn activate_shell(
         &mut self,
-        background: Option<BackgroundDocumentSource>,
-        background_error: Option<String>,
-    ) {
-        if let Some(error) = background_error {
-            tracing::error!("snowglass: loading the linked game layer failed: {error}");
+        source: Option<ShellDocumentSource>,
+        source_error: Option<String>,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Some(error) = source_error {
+            tracing::error!("snowglass: loading the shell document failed: {error}");
         }
-        if let Some(background) = background {
+        if let Some(shell_source) = source {
             let size = self.window.size();
             let command_proxy = self.services.proxy.clone();
-            let html = background.html.clone();
-            let base_url = background.base_url.clone();
-            let activated = self
-                .background_dom
+            let launcher_proxy = self.services.proxy.clone();
+            let html = shell_source.html.clone();
+            let base_url = shell_source.base_url.clone();
+            let initial_launcher_state = serde_json::to_value(self.launch.state())?;
+            let activated = match self
+                .shell_dom
                 .activate(|factory| async move {
                     let emulator_commands = EmulatorCommandSink::new(move |command| {
                         if command_proxy
@@ -370,141 +305,72 @@ impl ShellCoordinator {
                             );
                         }
                     });
+                    let launcher_commands = LauncherCommandSink::new(move |command| {
+                        let command = match command {
+                            LauncherCommand::Open(request) => RuntimeCommand::LauncherOpen(request),
+                            LauncherCommand::Start(request) => {
+                                RuntimeCommand::LauncherStart(request)
+                            }
+                            LauncherCommand::Cancel => RuntimeCommand::LauncherCancel,
+                            LauncherCommand::Settle { id, error } => {
+                                RuntimeCommand::LauncherSettle { id, error }
+                            }
+                        };
+                        let _ = launcher_proxy.send_event(UserEvent::Runtime(command));
+                    });
                     factory
                         .create(
                             &html,
                             base_url,
-                            BACKGROUND_SURFACE_CAPACITY,
+                            SHELL_SURFACE_CAPACITY,
                             size.width,
                             size.height,
                             emulator_commands,
+                            launcher_commands,
+                            initial_launcher_state,
                         )
                         .await
                 })
-                .await;
+                .await
+            {
+                Ok(activated) => activated,
+                Err(error) => {
+                    self.shell_dom.disable();
+                    return Err(error);
+                }
+            };
             if !activated {
                 tracing::error!(
-                    "snowglass: ignoring a second game layer discovered at {}",
-                    background.base_url
+                    "snowglass: ignoring a second shell document at {}",
+                    shell_source.base_url
                 );
                 self.deliver_cli_launch().await;
-                return;
+                return Ok(());
             }
-            self.refresh_background();
-            self.send_foreground_command(crate::commands::game_layer_ready());
+            self.refresh_shell();
             tracing::error!(
-                "snowglass: using game layer discovered at {}",
-                background.base_url
+                "snowglass: using shell document at {}",
+                shell_source.base_url
             );
         } else {
-            // A page without the link does not use composed chrome and should
-            // not retain the renderer that was prepared solely for it.
-            self.background_dom.disable();
+            // Failed/absent documents do not retain an inactive DOM slot.
+            self.shell_dom.disable();
         }
         self.publish_input_configuration();
         self.publish_launcher_state();
         self.deliver_cli_launch().await;
-    }
-
-    fn drain_shared_bus_requests(&mut self) -> Vec<SharedBusRequest> {
-        let runtime = self.launch.plugin_runtime_handle();
-        let requests = self
-            .bus_broker
-            .drain_requests(self.foreground_dom.shared_bus_mut(), &runtime);
-        let _ = self.foreground_dom.ring_bus_doorbell();
-        requests
-    }
-
-    fn flush_shared_bus_responses(&mut self) {
-        self.bus_broker.flush(self.foreground_dom.shared_bus_mut());
+        Ok(())
     }
 
     fn handle_compositor_tick(&mut self) {
         self.window.clear_clock_tick();
         self.window.record_clock();
-        self.refresh_pending_background();
+        self.refresh_pending_shell();
         self.present_pending_surfaces(PRESENT_PERMIT_WAIT);
-    }
-
-    fn handle_foreground_navigation(&mut self) {
-        self.launch.plugin_runtime_handle().cancel_all();
-        self.bus_broker.reset();
-        self.foreground_dom.next_bus_generation();
-        self.foreground_bus_attached = false;
-        self.input.clear_foreground_hit_regions();
-        self.background_dom.reset();
-        self.game_host.clear_background();
-    }
-
-    fn handle_shared_bus_doorbell(&mut self) {
-        if !self.foreground_bus_attached {
-            match self.foreground_dom.attach_shared_bus() {
-                Ok(()) => self.foreground_bus_attached = true,
-                Err(error) => {
-                    tracing::error!(
-                        "snowglass: attaching the foreground shared bus failed: {error}"
-                    );
-                    return;
-                }
-            }
-        }
-        self.flush_shared_bus_responses();
-        for request in self.drain_shared_bus_requests() {
-            match request {
-                SharedBusRequest::Plugin(request) => {
-                    let runtime = self.launch.plugin_runtime_handle();
-                    let proxy = self.services.proxy.clone();
-                    tokio::task::spawn_local(async move {
-                        let result = runtime
-                            .invoke_encoded_with_cancellation(
-                                &request.plugin,
-                                &request.path,
-                                request.encoded_arguments,
-                                request.cancellation,
-                            )
-                            .await;
-                        let _ = proxy.send_event(UserEvent::Runtime(
-                            RuntimeCommand::SharedBusSettlement {
-                                generation: request.generation,
-                                request_id: request.request_id,
-                                response_lane: request.response_lane,
-                                result,
-                            },
-                        ));
-                    });
-                }
-                SharedBusRequest::ShellCommand(command) => {
-                    match decode_foreground_command(command) {
-                        Ok(event) => {
-                            let _ = self.services.proxy.send_event(event);
-                        }
-                        Err(error) => tracing::error!("snowglass: {error}"),
-                    }
-                }
-            }
-        }
-    }
-
-    fn settle_shared_bus(
-        &mut self,
-        generation: u32,
-        request_id: u64,
-        response_lane: usize,
-        result: Result<Vec<u8>, snowglass_pluginhost::PluginInvocationError>,
-    ) {
-        let foreground = self.bus_broker.settle_plugin(
-            self.foreground_dom.shared_bus(),
-            generation,
-            request_id,
-            response_lane,
-            result,
-        );
-        self.flush_shared_bus_responses();
-        if foreground && let Err(error) = self.foreground_dom.ring_bus_doorbell() {
-            tracing::error!(
-                "snowglass: ringing the foreground shared-bus doorbell failed: {error}"
-            );
-        }
+        // A DXGI latency handle can remain signalled after the available frame
+        // has been consumed. Stop waiting until capture publishes more work so
+        // the clock thread cannot flood the UI loop with empty ticks.
+        self.window.set_clock_active(self.has_pending_surfaces());
     }
 
     fn launch_game(&mut self, token: InstanceToken, options: AttachedLaunchPlan) {
@@ -517,13 +383,14 @@ impl ShellCoordinator {
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return;
         }
-        let invalid_background_attachment = self.background_dom.invalid_attachment(&options);
-        if let Some(index) = invalid_background_attachment {
+        self.shell_dom.flush_script_mutations();
+        let invalid_shell_attachment = self.shell_dom.invalid_attachment(&options);
+        if let Some(index) = invalid_shell_attachment {
             self.emit_instance_event(
                 token,
                 "error",
                 &instance_events::error(format!(
-                    "surface {index} does not attach to its background tracked-surface"
+                    "surface {index} does not attach to its shell tracked-surface"
                 )),
             );
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
@@ -582,8 +449,7 @@ impl ShellCoordinator {
             self.window.remove_target(connection);
         }
         let _ = self.window.commit();
-        self.set_input_priority(InputPriority::Foreground);
-        self.input.clear_foreground_hit_regions();
+        self.set_input_priority(InputPriority::Ui);
         self.publish_targets_for(finished.token);
         self.emit_instance_event(finished.token, "closed", &serde_json::Value::Null);
     }
@@ -620,9 +486,9 @@ impl ShellCoordinator {
         payload: &serde_json::Value,
     ) {
         let event = instance_events::envelope(token, event_name, payload);
-        let background_changed = self.background_dom.dispatch_emulator_event(&event);
-        if background_changed {
-            self.refresh_background();
+        let shell_changed = self.shell_dom.dispatch_emulator_event(&event);
+        if shell_changed {
+            self.refresh_shell();
         }
     }
 
@@ -660,7 +526,7 @@ impl ShellCoordinator {
                             "snowglass: committing replacement game compositor failed: {error}"
                         );
                     }
-                    self.background_dom.invalidate();
+                    self.shell_dom.invalidate();
                 }
                 Ok(None) => {}
                 Err(error) => tracing::error!(
@@ -682,7 +548,7 @@ impl ShellCoordinator {
                         surface.surface_id,
                         surface.target_index,
                     );
-                    self.refresh_background();
+                    self.refresh_shell();
                     changed = true;
                 }
                 GameHostCaptureEvent::Rejected { connection, error } => {
@@ -745,11 +611,29 @@ impl ShellCoordinator {
     /// for DXGI to hand back a present slot.
     fn present_pending_surfaces(&mut self, permit_wait: Duration) {
         let entered = self.profile.enter();
+        let timing = std::env::var_os("SNOWGLASS_GAME_LAYER_TIMING")
+            .is_some()
+            .then(std::time::Instant::now);
         let size = self.window.size();
-        match self.game_host.draw(size.width, size.height, permit_wait) {
-            Ok(Some(carried_new_frame)) => self.window.record_present(carried_new_frame),
-            Ok(None) => {}
-            Err(error) => tracing::error!("snowglass: rendering merged surfaces failed: {error}"),
+        let presented = match self.game_host.draw(size.width, size.height, permit_wait) {
+            Ok(Some(carried_new_frame)) => {
+                self.window.record_present(carried_new_frame);
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                tracing::error!("snowglass: rendering merged surfaces failed: {error}");
+                false
+            }
+        };
+        if let Some(started) = timing {
+            let elapsed = started.elapsed();
+            tracing::error!(
+                "snowglass: compositor {} in {:.2}ms (permit wait {:.2}ms)",
+                if presented { "presented" } else { "deferred" },
+                elapsed.as_secs_f64() * 1000.0,
+                permit_wait.as_secs_f64() * 1000.0,
+            );
         }
         self.profile.record(TurnPhase::Present, entered);
     }
@@ -762,7 +646,7 @@ impl ShellCoordinator {
         self.game_host.has_pending_frame()
     }
 
-    /// Re-lays out the game layer and moves the compositor to match.
+    /// Re-lays out the shell document and moves the compositor to match.
     ///
     /// The chrome is uploaded band by band and the game views are placed
     /// between them, so a document whose bezel sits over a fullscreen view
@@ -771,28 +655,28 @@ impl ShellCoordinator {
     /// Before a stream connects, chrome can be shown in temporary
     /// DirectComposition surfaces. Once the opaque merged swapchain exists,
     /// chrome goes inside it or it would be hidden.
-    fn refresh_background(&mut self) {
+    fn refresh_shell(&mut self) {
         let entered = self.profile.enter();
-        self.refresh_background_inner();
-        self.profile.record(TurnPhase::Background, entered);
+        self.refresh_shell_inner();
+        self.profile.record(TurnPhase::Shell, entered);
     }
 
-    fn refresh_background_inner(&mut self) {
-        self.game_host.clear_background_refresh_request();
-        let Some(frame) = self.background_dom.produce_frame() else {
+    fn refresh_shell_inner(&mut self) {
+        self.game_host.clear_shell_refresh_request();
+        let Some(frame) = self.shell_dom.produce_frame() else {
             return;
         };
-        if let Err(error) = self.game_host.rasterize_background(&frame) {
-            tracing::error!("snowglass: rasterizing background chrome failed: {error}");
+        if let Err(error) = self.game_host.rasterize_shell(&frame) {
+            tracing::error!("snowglass: rasterizing shell chrome failed: {error}");
             return;
         }
-        let placements = self.background_dom.tracked_surface_layout();
+        let placements = self.shell_dom.tracked_surface_layout();
         self.game_host.apply_tracked_layout(&placements);
     }
 
-    /// Dispatches a regular DOM mouse event to the Deno-backed game layer.
+    /// Dispatches a regular DOM mouse event to the Deno-backed shell.
     /// Script claims the pointer from the guest by cancelling the event.
-    fn background_mouse(
+    fn shell_mouse(
         &mut self,
         kind: &str,
         x: f32,
@@ -800,6 +684,9 @@ impl ShellCoordinator {
         button: u16,
         pressed: Option<bool>,
     ) -> bool {
+        let timing = std::env::var_os("SNOWGLASS_GAME_LAYER_TIMING")
+            .is_some()
+            .then(std::time::Instant::now);
         let flag = match button {
             0 => 1,
             1 => 4,
@@ -812,11 +699,12 @@ impl ShellCoordinator {
             .map(|pressed| self.input.set_mouse_button(flag, pressed))
             .unwrap_or(self.input.mouse_buttons());
         let buttons = self.input.mouse_buttons();
-        let Some(hit) = self.background_dom.hit_test(x, y) else {
+        let Some(hit) = self.shell_dom.hit_test(x, y) else {
             self.input.restore_mouse_buttons(previous_buttons);
             return false;
         };
-        let prevented = self.background_dom.mouse_event(
+        let hit_elapsed = timing.map(|started| started.elapsed());
+        let prevented = self.shell_dom.mouse_event(
             hit,
             DomMouseEvent {
                 kind,
@@ -828,23 +716,41 @@ impl ShellCoordinator {
                 shift_key: self.input.dom_shift_key(),
             },
         );
-        let needs_paint = self.background_dom.needs_paint();
+        let dispatch_elapsed = timing.map(|started| started.elapsed());
+        let needs_paint = self.shell_dom.needs_paint();
         if !prevented {
             self.input.restore_mouse_buttons(previous_buttons);
         }
         if needs_paint {
-            if self.window.is_pacing() {
-                self.game_host.request_background_refresh();
-            } else {
-                self.refresh_background();
-            }
+            // Pointer-driven chrome must follow the input sample that produced
+            // it. The DirectComposition clock can be throttled well below the
+            // monitor refresh rate while the composition tree is otherwise
+            // stable, so deferring Ark drag/resize mutations to that clock
+            // turns inexpensive DOM updates into visibly stale 15 Hz motion.
+            //
+            // Raster now and make a zero-wait present attempt. If DXGI has no
+            // permit, `chrome_dirty` remains set and the ordinary compositor
+            // clock retries it without ever blocking the input handler.
+            self.refresh_shell();
+            self.draw_pending_surfaces();
         }
-        self.refresh_after_background_script();
+        self.refresh_after_shell_script();
+        if kind == "mousemove"
+            && let (Some(started), Some(hit_elapsed), Some(dispatch_elapsed)) =
+                (timing, hit_elapsed, dispatch_elapsed)
+        {
+            tracing::error!(
+                "snowglass: mousemove hit {:.2}ms dispatch {:.2}ms total {:.2}ms",
+                hit_elapsed.as_secs_f64() * 1000.0,
+                (dispatch_elapsed - hit_elapsed).as_secs_f64() * 1000.0,
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
         prevented
     }
 
-    fn background_keyboard(&mut self, kind: &str, key: String, code: String, repeat: bool) -> bool {
-        let prevented = self.background_dom.keyboard_event(DomKeyboardEvent {
+    fn shell_keyboard(&mut self, kind: &str, key: String, code: String, repeat: bool) -> bool {
+        let prevented = self.shell_dom.keyboard_event(DomKeyboardEvent {
             kind,
             key,
             code,
@@ -853,16 +759,16 @@ impl ShellCoordinator {
             ctrl_key: self.input.dom_control_key(),
             shift_key: self.input.dom_shift_key(),
         });
-        if self.background_dom.needs_paint() {
-            self.refresh_background();
+        if self.shell_dom.needs_paint() {
+            self.refresh_shell();
         }
-        self.refresh_after_background_script();
+        self.refresh_after_shell_script();
         prevented
     }
 
-    fn refresh_pending_background(&mut self) {
-        if self.game_host.take_background_refresh_request() {
-            self.refresh_background();
+    fn refresh_pending_shell(&mut self) {
+        if self.game_host.take_shell_refresh_request() {
+            self.refresh_shell();
         }
     }
 
@@ -887,13 +793,13 @@ impl ShellCoordinator {
 
     fn set_input_priority(&mut self, priority: InputPriority) {
         let priority = if priority == InputPriority::Game && !self.game_host.has_active_game() {
-            InputPriority::Foreground
+            InputPriority::Ui
         } else {
             priority
         };
         if self.input.priority() == priority {
-            // A foreground pointer interaction moves focus into WebView2
-            // without changing the logical priority. Re-activating game input
+            // A UI pointer interaction changes DOM focus without changing the
+            // logical priority. Re-activating game input
             // must still return keyboard focus to the native shell window.
             if priority == InputPriority::Game {
                 self.focus_game_input();
@@ -907,13 +813,7 @@ impl ShellCoordinator {
         self.input
             .set_provider_enabled(priority == InputPriority::Game);
         self.input.replace_priority(priority);
-        match priority {
-            InputPriority::Foreground => {
-                let _ = self.foreground_dom.focus();
-            }
-            InputPriority::Game => self.focus_game_input(),
-        }
-        self.send_foreground_command(crate::input::priority_command(priority));
+        self.focus_game_input();
     }
 
     fn focus_game_input(&self) {
@@ -930,14 +830,6 @@ impl ShellCoordinator {
         );
     }
 
-    fn route_foreground_mouse(&mut self, kind: DomPointerKind) {
-        if matches!(kind, DomPointerKind::Button { pressed: true, .. }) {
-            let _ = self.foreground_dom.focus();
-        }
-        let event = self.input.foreground_pointer_event(kind);
-        let _ = self.foreground_dom.send_pointer_event(event);
-    }
-
     fn handle_dropped_file(&mut self, path: std::path::PathBuf) {
         if self.game_host.has_active_game() {
             self.launch
@@ -951,22 +843,12 @@ impl ShellCoordinator {
         }
     }
 
-    fn synchronize_foreground(&mut self) {
-        let size = self.window.size();
-        if let Err(error) = self.foreground_dom.synchronize(size.width, size.height) {
-            tracing::error!("snowglass: synchronizing foreground WebView2 failed: {error}");
-        }
-    }
-
     fn resize(&mut self, width: u32, height: u32) {
-        if let Err(error) = self.foreground_dom.synchronize(width, height) {
-            tracing::error!("snowglass: resizing foreground WebView2 failed: {error}");
-        }
         if let Err(error) = self.window.resize_overlay() {
             tracing::error!("snowglass: resizing egui composition overlay failed: {error}");
         }
-        if self.background_dom.resize(width, height) {
-            self.refresh_background();
+        if self.shell_dom.resize(width, height) {
+            self.refresh_shell();
         }
         let render_window = self.window.surface(width, height);
         if let Err(error) = self.game_host.resize_compositor(&render_window) {
@@ -981,7 +863,7 @@ impl ShellCoordinator {
         }
         let cursor = self.input.cursor();
         for (button, _) in self.input.focus_lost_buttons() {
-            self.background_mouse(
+            self.shell_mouse(
                 "mouseup",
                 cursor.x as f32,
                 cursor.y as f32,
@@ -1001,20 +883,15 @@ impl ShellCoordinator {
 
     fn handle_cursor_moved(&mut self, x: f64, y: f64, consumed: bool) {
         self.input.set_cursor(x, y);
-        let background_hit = self.background_dom.hit_test(x as f32, y as f32).is_some();
-        match self.input.pointer_target(consumed, true, background_hit) {
-            PointerTarget::Overlay => return,
-            PointerTarget::Foreground => {
-                self.route_foreground_mouse(DomPointerKind::Move);
-                return;
-            }
-            PointerTarget::Background => {
-                self.route_foreground_mouse(DomPointerKind::Move);
-                if self.background_mouse("mousemove", x as f32, y as f32, 0, None) {
-                    return;
-                }
-            }
-            PointerTarget::Game => self.route_foreground_mouse(DomPointerKind::Move),
+        if consumed {
+            return;
+        }
+        let Some(hit) = self.shell_dom.hit_test(x as f32, y as f32) else {
+            return;
+        };
+        let prevented = self.shell_mouse("mousemove", x as f32, y as f32, 0, None);
+        if prevented || !hit.over_tracked_surface {
+            return;
         }
         self.route_pointer(PointerPhase::Move, 0, 0, 0);
     }
@@ -1027,37 +904,23 @@ impl ShellCoordinator {
             3 => 1,
             value => value.saturating_sub(1),
         };
-        let foreground_hit = self.input.foreground_region_claims(consumed, true);
         let cursor = self.input.cursor();
-        let background_hit = self
-            .background_dom
-            .hit_test(cursor.x as f32, cursor.y as f32)
-            .is_some();
-        match self.input.pointer_target(consumed, true, background_hit) {
-            PointerTarget::Overlay => return,
-            PointerTarget::Foreground => {
-                if pressed && foreground_hit {
-                    self.input.set_foreground_mouse_capture(true);
-                }
-                self.route_foreground_mouse(DomPointerKind::Button { button, pressed });
-                if !pressed && !self.input.foreground_buttons_active() {
-                    self.input.set_foreground_mouse_capture(false);
-                }
-                return;
-            }
-            PointerTarget::Background => {
-                let kind = if pressed { "mousedown" } else { "mouseup" };
-                if self.background_mouse(
-                    kind,
-                    cursor.x as f32,
-                    cursor.y as f32,
-                    dom_button,
-                    Some(pressed),
-                ) {
-                    return;
-                }
-            }
-            PointerTarget::Game => {}
+        if consumed {
+            return;
+        }
+        let Some(hit) = self.shell_dom.hit_test(cursor.x as f32, cursor.y as f32) else {
+            return;
+        };
+        let kind = if pressed { "mousedown" } else { "mouseup" };
+        let prevented = self.shell_mouse(
+            kind,
+            cursor.x as f32,
+            cursor.y as f32,
+            dom_button,
+            Some(pressed),
+        );
+        if prevented || !hit.over_tracked_surface {
+            return;
         }
         self.route_pointer(
             if pressed {
@@ -1072,26 +935,39 @@ impl ShellCoordinator {
     }
 
     fn handle_mouse_wheel(&mut self, horizontal: i32, vertical: i32) {
-        match self.input.pointer_target(false, false, false) {
-            PointerTarget::Foreground => {
-                if horizontal != 0 {
-                    self.route_foreground_mouse(DomPointerKind::Wheel {
-                        horizontal: true,
-                        delta: horizontal,
-                    });
-                }
-                if vertical != 0 {
-                    self.route_foreground_mouse(DomPointerKind::Wheel {
-                        horizontal: false,
-                        delta: vertical,
-                    });
-                }
-            }
-            PointerTarget::Overlay => {}
-            PointerTarget::Background | PointerTarget::Game => {
-                self.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
-            }
+        let cursor = self.input.cursor();
+        let Some(hit) = self.shell_dom.hit_test(cursor.x as f32, cursor.y as f32) else {
+            return;
+        };
+        let claimed = self.shell_dom.wheel_event(
+            hit,
+            DomWheelEvent {
+                x: cursor.x as f32,
+                y: cursor.y as f32,
+                horizontal: f64::from(horizontal),
+                vertical: f64::from(vertical),
+                ctrl_key: self.input.dom_control_key(),
+                shift_key: self.input.dom_shift_key(),
+                alt_key: self.input.dom_alt_key(),
+            },
+        );
+        self.refresh_after_shell_script();
+        if !claimed && hit.over_tracked_surface {
+            self.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
         }
+    }
+
+    fn handle_ime(&mut self, event: ShellImeEvent) {
+        let event = match event {
+            ShellImeEvent::Enabled => blitz_traits::events::BlitzImeEvent::Enabled,
+            ShellImeEvent::Preedit(value, range) => {
+                blitz_traits::events::BlitzImeEvent::Preedit(value, range)
+            }
+            ShellImeEvent::Commit(value) => blitz_traits::events::BlitzImeEvent::Commit(value),
+            ShellImeEvent::Disabled => blitz_traits::events::BlitzImeEvent::Disabled,
+        };
+        self.shell_dom.ime_event(event);
+        self.refresh_after_shell_script();
     }
 
     fn draw_overlay(&mut self) {
@@ -1107,14 +983,14 @@ impl ShellCoordinator {
             return;
         }
         if self.input.guide_button_pressed() && self.input.priority() == InputPriority::Game {
-            self.set_input_priority(InputPriority::Foreground);
+            self.set_input_priority(InputPriority::Ui);
         }
         let publication = self.input.build_publication(
             self.game_host.gamepad_mapping(),
             self.game_host.has_active_game(),
         );
         self.window.set_input_diagnostics(publication.diagnostics);
-        self.background_dom
+        self.shell_dom
             .set_input_state(&publication.controllers, publication.priority);
         let Some(state_changed) = publication.state_changed else {
             return;
@@ -1123,14 +999,11 @@ impl ShellCoordinator {
             return;
         }
         self.window.request_overlay_repaint();
-        self.send_foreground_command(crate::input::state_command(
-            publication.controllers,
-            publication.routed,
-        ));
+        let _ = publication.routed;
     }
 
     fn publish_keyboard_input(&mut self, key: &str, pressed: bool, repeat: bool) {
-        self.send_foreground_command(crate::input::keyboard_command(key, pressed, repeat));
+        let _ = (key, pressed, repeat);
     }
 
     fn publish_targets_for(&mut self, token: InstanceToken) {
@@ -1156,12 +1029,12 @@ pub(crate) struct ShellApplication {
     proxy: EventLoopProxy<UserEvent>,
     options: Option<ShellOptions>,
     statistics_recorder: Option<RecorderHandle>,
-    background_factory: Option<BackgroundDocumentFactory>,
-    background_rasterizer: Option<BackgroundRasterizer>,
-    pending_frontend_ready: Option<(Option<BackgroundDocumentSource>, Option<String>)>,
+    shell_factory: Option<ShellDocumentFactory>,
+    shell_rasterizer: Option<ShellRasterizer>,
     pending_window: Option<WindowBootstrap>,
     state: Option<ShellCoordinator>,
     error: Option<Box<dyn Error>>,
+    next_runtime_poll: Instant,
 }
 
 impl ShellApplication {
@@ -1169,23 +1042,26 @@ impl ShellApplication {
         proxy: EventLoopProxy<UserEvent>,
         options: ShellOptions,
         statistics_recorder: RecorderHandle,
-        background_factory: BackgroundDocumentFactory,
-        background_rasterizer: BackgroundRasterizer,
+        shell_factory: ShellDocumentFactory,
+        shell_rasterizer: ShellRasterizer,
     ) -> Self {
         Self {
             proxy,
             options: Some(options),
             statistics_recorder: Some(statistics_recorder),
-            background_factory: Some(background_factory),
-            background_rasterizer: Some(background_rasterizer),
-            pending_frontend_ready: None,
+            shell_factory: Some(shell_factory),
+            shell_rasterizer: Some(shell_rasterizer),
             pending_window: None,
             state: None,
             error: None,
+            next_runtime_poll: Instant::now(),
         }
     }
 
     pub(crate) async fn run_async_tasks(&mut self) {
+        let timing = std::env::var_os("SNOWGLASS_GAME_LAYER_TIMING")
+            .is_some()
+            .then(std::time::Instant::now);
         if self.state.is_none()
             && self.error.is_none()
             && let Some(window) = self.pending_window.take()
@@ -1194,50 +1070,67 @@ impl ShellApplication {
                 .options
                 .take()
                 .expect("shell options are consumed exactly once");
+            let shell_document = load_shell_document(&options.ui_url).await;
             let statistics_recorder = self
                 .statistics_recorder
                 .take()
                 .expect("statistics recorder is consumed exactly once");
-            let background_factory = self
-                .background_factory
+            let shell_factory = self
+                .shell_factory
                 .take()
-                .expect("the game-layer renderer is consumed exactly once");
-            let background_rasterizer = self
-                .background_rasterizer
+                .expect("the shell document factory is consumed exactly once");
+            let shell_rasterizer = self
+                .shell_rasterizer
                 .take()
-                .expect("the background rasterizer is consumed exactly once");
+                .expect("the shell rasterizer is consumed exactly once");
             match ShellCoordinator::new(
                 window,
                 self.proxy.clone(),
                 options,
                 statistics_recorder,
-                background_factory,
-                background_rasterizer,
+                shell_factory,
+                shell_rasterizer,
             ) {
-                Ok(state) => self.state = Some(state),
+                Ok(mut state) => match shell_document {
+                    Ok(document) => match state.activate_shell(Some(document), None).await {
+                        Ok(()) => self.state = Some(state),
+                        Err(error) => self.error = Some(error),
+                    },
+                    Err(error) => self.error = Some(error),
+                },
                 Err(error) => self.error = Some(error),
             }
         }
-        if let Some((background, background_error)) = self.pending_frontend_ready.take()
-            && let Some(state) = self.state.as_mut()
-        {
-            state.frontend_ready(background, background_error).await;
+        let now = Instant::now();
+        let poll_runtime = now >= self.next_runtime_poll;
+        if poll_runtime {
+            self.next_runtime_poll = now + SHELL_RUNTIME_POLL_INTERVAL;
         }
-        if let Some(state) = self.state.as_mut()
-            && state.background_dom.poll_runtime().await
+        if poll_runtime
+            && let Some(state) = self.state.as_mut()
+            && state.shell_dom.poll_runtime().await
         {
-            // Timers, promises, fetches, and WebSockets can mutate the
-            // background DOM without a Winit event. Polling applies those
-            // mutations and marks the layer dirty; repaint it here so async
-            // UI changes (including the launch fade) reach the compositor.
-            if state.background_dom.needs_paint() {
-                state.refresh_background();
+            if let Some(started) = timing {
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(2) {
+                    tracing::error!(
+                        "snowglass: async runtime poll took {:.2}ms",
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                }
             }
-            state.refresh_after_background_script();
+            // Timers, promises, fetches, and WebSockets can mutate the
+            // shell DOM without a Winit event. Polling applies those mutations
+            // and marks the scene dirty; repaint it here so async
+            // UI changes (including the launch fade) reach the compositor.
+            if state.shell_dom.needs_paint() {
+                state.refresh_shell();
+            }
+            state.refresh_after_shell_script();
         }
         if let Some(state) = self.state.as_mut()
             && state.launch.has_pending_launch()
-            && state.background_dom.is_active()
+            && state.shell_dom.is_active()
         {
             state.deliver_cli_launch().await;
         }
@@ -1278,31 +1171,18 @@ impl ShellApplication {
             // into `about_to_wait`.
             UserEvent::Window(WindowCommand::WakeCapture) => state.process_capture(),
             UserEvent::Window(WindowCommand::CompositorTick) => state.handle_compositor_tick(),
-            UserEvent::Runtime(RuntimeCommand::FrontendReady {
-                background,
-                background_error,
-            }) => {
-                self.pending_frontend_ready = Some((background, background_error));
+            UserEvent::Window(WindowCommand::RedrawShell) => state.refresh_shell(),
+            UserEvent::Window(WindowCommand::SetCursor(icon)) => state.window.set_cursor(icon),
+            UserEvent::Window(WindowCommand::SetTitle(title)) => state.window.set_title(&title),
+            UserEvent::Window(WindowCommand::SetImeEnabled(enabled)) => {
+                state.window.set_ime_enabled(enabled);
             }
-            UserEvent::Runtime(RuntimeCommand::ForegroundNavigation) => {
-                state.handle_foreground_navigation()
-            }
-            UserEvent::Input(InputCommand::ForegroundHitRegions(regions)) => {
-                state.input.replace_foreground_hit_regions(regions);
-            }
-            UserEvent::Runtime(RuntimeCommand::SharedBusDoorbell) => {
-                state.handle_shared_bus_doorbell()
-            }
-            UserEvent::Runtime(RuntimeCommand::SharedBusSettlement {
-                generation,
-                request_id,
-                response_lane,
-                result,
-            }) => state.settle_shared_bus(generation, request_id, response_lane, result),
-            UserEvent::Input(InputCommand::Configure {
-                request_id,
-                transaction,
-            }) => state.configure_input(request_id, transaction, false),
+            UserEvent::Window(WindowCommand::SetImeCursorArea {
+                x,
+                y,
+                width,
+                height,
+            }) => state.window.set_ime_cursor_area(x, y, width, height),
             UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
                 state.apply_emulator_command(command)
             }
@@ -1311,6 +1191,9 @@ impl ShellApplication {
                 state.start_prepared_game(request)
             }
             UserEvent::Runtime(RuntimeCommand::LauncherCancel) => state.cancel_launcher(),
+            UserEvent::Runtime(RuntimeCommand::LauncherSettle { id, error }) => {
+                state.settle_launch(id, error)
+            }
             UserEvent::Runtime(RuntimeCommand::GameDetected { generation, result }) => {
                 state.game_detected(generation, result)
             }
@@ -1341,7 +1224,7 @@ impl ShellApplication {
         let keyboard_owned_by_game = matches!(&event, ShellWindowEvent::Keyboard { .. })
             && state.input.priority() == InputPriority::Game;
         let mut consumed = overlay_consumed && !keyboard_owned_by_game;
-        let mut background_prevented = false;
+        let mut ui_prevented = false;
         if consumed {
             // egui took this event, so it is being interacted with and gets to
             // set its own repaint rate until the interaction settles.
@@ -1355,18 +1238,22 @@ impl ShellApplication {
                 repeat,
             } = &event
         {
-            background_prevented = state.background_keyboard(
+            ui_prevented = state.shell_keyboard(
                 if *pressed { "keydown" } else { "keyup" },
                 logical_key.clone(),
                 code.clone(),
                 *repeat,
             );
-            consumed = background_prevented;
+            consumed = ui_prevented;
         }
         match event {
             ShellWindowEvent::CloseRequested => return true,
-            ShellWindowEvent::DroppedFile(path) => state.handle_dropped_file(path),
-            ShellWindowEvent::Moved => state.synchronize_foreground(),
+            ShellWindowEvent::DroppedFile(path) => {
+                state.shell_dom.set_drop_active(false);
+                state.handle_dropped_file(path);
+            }
+            ShellWindowEvent::FileHover(active) => state.shell_dom.set_drop_active(active),
+            ShellWindowEvent::Moved => {}
             ShellWindowEvent::Resized { width, height } if width != 0 && height != 0 => {
                 state.resize(width, height);
             }
@@ -1376,9 +1263,7 @@ impl ShellApplication {
                 pressed,
                 repeat,
                 ..
-            } if state
-                .input
-                .keyboard_target(overlay_consumed, background_prevented)
+            } if state.input.keyboard_target(overlay_consumed, ui_prevented)
                 == KeyboardTarget::Game =>
             {
                 state.route_keyboard_to_game(physical_key, pressed, repeat);
@@ -1395,6 +1280,11 @@ impl ShellApplication {
             {
                 state.handle_cursor_moved(x, y, consumed);
             }
+            ShellWindowEvent::CursorLeft => {
+                if state.shell_dom.clear_pointer_hover() {
+                    state.refresh_shell();
+                }
+            }
             ShellWindowEvent::MouseInput { button, pressed }
                 if !consumed || state.input.has_active_pointer_sequence() =>
             {
@@ -1406,6 +1296,7 @@ impl ShellApplication {
             } if !consumed => {
                 state.handle_mouse_wheel(horizontal, vertical);
             }
+            ShellWindowEvent::Ime(event) if !consumed => state.handle_ime(event),
             ShellWindowEvent::RedrawRequested => state.draw_overlay(),
             _ => {}
         }
@@ -1439,7 +1330,11 @@ impl ShellApplication {
             state.publish_input_state();
             state.profile.record(TurnPhase::Input, entered);
             state.poll_target();
-            if state.background_dom.is_active() {
+            if state.shell_dom.needs_paint() {
+                state.refresh_shell();
+                deadline = deadline.min(now + Duration::from_millis(16));
+            }
+            if state.shell_dom.is_active() {
                 // Deno owns browser timers, fetch, WebSockets, promises, and
                 // inspector traffic. Return to the Tokio loop regularly so it
                 // can advance them even when the window is otherwise idle.
@@ -1447,13 +1342,20 @@ impl ShellApplication {
             }
             if state.window.overlay_repaint_due(now) {
                 state.window.request_redraw();
+                // `next_overlay_repaint` remains in the past until Winit
+                // delivers RedrawRequested and the overlay advances it. Do not
+                // feed that expired instant back into ControlFlow::WaitUntil,
+                // or the outer pump spins thousands of empty turns while the
+                // redraw request is pending.
+                deadline = deadline.min(now + Duration::from_millis(16));
+            } else {
+                deadline = deadline.min(state.window.next_overlay_repaint());
             }
-            deadline = deadline.min(state.window.next_overlay_repaint());
-            // Cheap enough to reconcile every turn, which keeps pacing correct
-            // no matter which path added or dropped a stream.
-            state
-                .window
-                .set_clock_active(state.game_host.has_connected_surfaces());
+            // The clock is useful only while a new captured frame is waiting
+            // for a present permit. Keeping it active for an idle connected
+            // stream makes a signalled DXGI handle continuously wake the main
+            // thread without displaying anything.
+            state.window.set_clock_active(state.has_pending_surfaces());
             if state.game_host.has_capture_work() {
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
@@ -1470,4 +1372,24 @@ fn unique_session() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("snowglass-{}-{nonce:x}", std::process::id())
+}
+
+async fn load_shell_document(url: &str) -> Result<ShellDocumentSource, Box<dyn Error>> {
+    let specifier = deno_core::ModuleSpecifier::parse(url)?;
+    let html = if specifier.scheme() == "file" {
+        let path = specifier
+            .to_file_path()
+            .map_err(|_| format!("invalid shell file URL: {url}"))?;
+        tokio::fs::read_to_string(path).await?
+    } else {
+        reqwest::get(specifier.clone())
+            .await?
+            .error_for_status()?
+            .text()
+            .await?
+    };
+    Ok(ShellDocumentSource {
+        html,
+        base_url: specifier.to_string(),
+    })
 }

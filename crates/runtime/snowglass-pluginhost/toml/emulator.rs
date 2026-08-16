@@ -288,6 +288,8 @@ mod tests {
         let files = serialize(instances.take(id).unwrap()).unwrap();
         let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
         assert!(wiimote.contains("IR/Left=`Axis 6-`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Up=`Axis 7-`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Down=`Axis 7+`"), "{wiimote}");
         assert!(
             wiimote.contains("IMUAccelerometer/Left=`Accel Left`"),
             "{wiimote}"

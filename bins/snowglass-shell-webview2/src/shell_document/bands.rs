@@ -1,6 +1,6 @@
 //! Splits a painted document into chrome bands and game-view placements.
 //!
-//! Blitz lays the game layer out, but guest frames must not go through a 2D
+//! Blitz lays the shell document out, but guest frames must not go through a 2D
 //! renderer: they are already GPU textures and the compositor samples them
 //! directly. So the paint pass forwards everything to real scenes except the
 //! nodes standing in for game views, which are recorded as rectangles instead.

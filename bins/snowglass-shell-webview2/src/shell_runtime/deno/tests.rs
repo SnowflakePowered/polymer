@@ -1,0 +1,488 @@
+use blitz_dom::DocumentConfig;
+use std::sync::{Arc, Mutex};
+
+use super::{EmulatorCommand, EmulatorCommandSink, Mutation, Runtime};
+
+#[tokio::test]
+async fn pluginhost_executes_the_cemu_package_with_realized_configuration() {
+    let plugins = snowglass_pluginhost::PluginRegistry::new();
+    plugins
+        .load(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("plugins")
+                .join("cemu")
+                .join("plugin.toml"),
+        )
+        .unwrap();
+    let plugin = plugins
+        .plugin::<dyn snowglass_pluginhost::EmulatorPluginInstance>("cemu")
+        .unwrap();
+    let assignments = plugin
+        .port_assignments("NINTENDO_WIIU", &["WIIU_DRC_CONTROLLER".to_owned()])
+        .unwrap();
+    let configuration = plugin.materialize("NINTENDO_WIIU", assignments).unwrap();
+    let runtime = snowglass_pluginhost::PluginRuntime::new(
+        plugins,
+        snowglass_pluginhost::PluginRuntimeOptions::default(),
+    );
+    let plan = runtime
+        .handle()
+        .setup_emulator(snowglass_pluginhost::EmulatorSetupInvocation {
+            plugin,
+            arguments: serde_json::json!({
+                "launchPath": "E:/games/U-King.rpx",
+                "console": "NINTENDO_WIIU",
+                "portAssignments": { "gamepad": ["WIIU_DRC_CONTROLLER"] },
+            }),
+            configuration,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(plan.argv, ["-g", "E:/games/U-King.rpx"]);
+    assert!(plan.command.ends_with("/Cemu.exe"), "{}", plan.command);
+    assert_eq!(plan.surfaces[0].index, 0);
+    assert_eq!(plan.surfaces[0].rotation, 0);
+    assert_eq!(plan.surfaces[0].pattern.as_deref(), Some("Cemu+"));
+    assert!(plan.config.contains_key("settings.xml"));
+    assert!(
+        plan.config
+            .contains_key("controllerProfiles/controller0.xml")
+    );
+    let settings = std::str::from_utf8(&plan.config["settings.xml"]).unwrap();
+    assert!(
+        settings.contains("<open_pad>true</open_pad>"),
+        "cemu.ts did not mutate content.open_pad before host serialization:\n{settings}"
+    );
+}
+
+fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
+    (
+        EmulatorCommandSink::new(move |command| recorded.lock().unwrap().push(command)),
+        commands,
+    )
+}
+
+fn drain_recorded_commands(commands: &Mutex<Vec<EmulatorCommand>>) -> Vec<EmulatorCommand> {
+    std::mem::take(&mut *commands.lock().unwrap())
+}
+
+fn document(html: &str) -> blitz_html::HtmlDocument {
+    let mut document = blitz_html::HtmlDocument::from_html(html, DocumentConfig::default());
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            800,
+            600,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(1.0);
+    document
+}
+
+#[tokio::test]
+async fn node_dispatch_event_reaches_delegated_ancestors() {
+    let html = r##"
+        <html><body>
+          <button id="drag-handle">drag</button>
+          <script>
+            document.addEventListener("dragstart", event => {
+              event.preventDefault();
+              postMessage({ type: "delegated", target: event.target.id });
+            });
+            const accepted = document.querySelector("#drag-handle").dispatchEvent(
+              new CustomEvent("dragstart", { bubbles: true, cancelable: true })
+            );
+            postMessage({ type: "dispatch-result", accepted });
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let (command_sink, _) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///delegated-event-test.html",
+        800,
+        600,
+        command_sink,
+    )
+    .await
+    .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+
+    assert_eq!(
+        runtime.take_messages(),
+        [
+            serde_json::json!({ "type": "delegated", "target": "drag-handle" }),
+            serde_json::json!({ "type": "dispatch-result", "accepted": false }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn shell_input_api_sends_revisioned_transactions_and_resolves_results() {
+    let html = r##"
+        <html><body>
+          <script>
+            snowglassInput.configure({
+              operations: [{ type: "resetPortOverrides", port: "controller.0" }]
+            }).then((configuration) => {
+              postMessage({
+                type: "input-configured",
+                revision: configuration.revision
+              });
+            });
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let (command_sink, commands) = command_recorder();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///input-test.html",
+        800,
+        600,
+        command_sink,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        drain_recorded_commands(&commands).as_slice(),
+        [EmulatorCommand::ConfigureInput {
+            request_id: 1,
+            transaction,
+        }] if transaction.expected_revision == 0
+            && matches!(
+                transaction.operations.as_slice(),
+                [snowglass_input::hub::InputOperation::ResetPortOverrides { port }]
+                    if port.to_string() == "controller.0"
+            )
+    ));
+
+    runtime
+        .input_configuration_result(
+            1,
+            &serde_json::json!({
+                "ok": true,
+                "configuration": {
+                    "revision": 1,
+                    "ports": []
+                }
+            }),
+        )
+        .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "input-configured",
+            "revision": 1,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn runs_inline_modules_with_relative_imports() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("dependency.js"),
+        "window.__dependencyUsedWindow = true; export const answer = 42;",
+    )
+    .unwrap();
+    let document_url =
+        deno_core::ModuleSpecifier::from_file_path(directory.path().join("shell.html")).unwrap();
+    let html = r#"
+        <html><body>
+          <script type="module">
+            import { answer } from "./dependency.js";
+            const fetched = await (await fetch("data:text/plain,ready")).text();
+            postMessage({
+              type: "module-ran",
+              answer,
+              fetched,
+              nativeEvent: typeof Event.prototype.composedPath === "function",
+              nativeFetch: typeof Response === "function",
+              dependencyUsedWindow: window.__dependencyUsedWindow,
+              browserGlobals:
+                window === globalThis &&
+                self === globalThis &&
+                parent === globalThis &&
+                top === globalThis,
+              windowScroll:
+                typeof window.scrollTo === "function" &&
+                typeof window.scrollBy === "function" &&
+                window.scrollX === 0 &&
+                window.scrollY === 0,
+              observers:
+                typeof ResizeObserver === "function" &&
+                typeof IntersectionObserver === "function",
+            });
+            setTimeout(() => postMessage({ type: "timer-ran" }), 50);
+          </script>
+        </body></html>
+    "#;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        document_url.as_str(),
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "module-ran",
+            "answer": 42,
+            "fetched": "ready",
+            "nativeEvent": true,
+            "nativeFetch": true,
+            "dependencyUsedWindow": true,
+            "browserGlobals": true,
+            "windowScroll": true,
+            "observers": true,
+        })]
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    runtime.poll_event_loop().await.unwrap();
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({ "type": "timer-ran" })]
+    );
+}
+
+#[tokio::test]
+async fn queues_dynamic_dom_tree_mutations() {
+    let html = r##"
+        <html><body><div id="root"></div>
+          <script>
+            const section = document.createElement("section");
+            section.className = "surface-stage";
+            const surface = document.createElement("tracked-surface");
+            surface.setAttribute("src", "0");
+            const label = document.createTextNode("screen");
+            section.append(surface, label);
+            const input = document.createElement("input");
+            section.append(input);
+            document.querySelector("#root").appendChild(section);
+            input.focus();
+            postMessage({
+                type: "dynamic-tree",
+                surface: document.querySelector("tracked-surface").getAttribute("src"),
+                label: section.textContent,
+                focused: document.activeElement === input,
+            });
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///dynamic.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+    let mutations = runtime.take_mutations();
+
+    assert!(
+        mutations.iter().any(
+            |mutation| matches!(mutation, Mutation::CreateElement { tag, .. } if tag == "tracked-surface")
+        ),
+        "the tracked surface was not created: {mutations:?}"
+    );
+    assert!(
+        mutations
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::Focus { .. })),
+        "programmatic focus was not transported: {mutations:?}"
+    );
+    assert!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, Mutation::AppendChild { .. }))
+            .count()
+            >= 3,
+        "the dynamic tree was not connected: {mutations:?}"
+    );
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "dynamic-tree",
+            "surface": "0",
+            "label": "screen",
+            "focused": true,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn bounding_client_rect_reflects_standard_inline_transform_synchronously() {
+    let html = r##"
+        <html><body>
+          <div id="panel" style="position:fixed;top:0;left:0;width:200px;height:100px">
+            <div id="handle" style="width:50px;height:20px"></div>
+          </div>
+          <script>
+            const panel = document.querySelector("#panel");
+            const handle = document.querySelector("#handle");
+            panel.style.setProperty("transform", "translate(125px, 75px)");
+            const panelRect = panel.getBoundingClientRect();
+            const handleRect = handle.getBoundingClientRect();
+            postMessage({
+              type: "translated-geometry",
+              panel: [panelRect.x, panelRect.y, panelRect.width, panelRect.height],
+              handle: [handleRect.x, handleRect.y],
+            });
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///translated-geometry.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "translated-geometry",
+            // The document's default 8px body margin remains part of layout;
+            // the inline translation is added to it just as it is in a browser.
+            "panel": [133, 83, 200, 100],
+            "handle": [133, 83],
+        })]
+    );
+}
+
+#[tokio::test]
+async fn pointer_capture_retargets_native_pointer_moves() {
+    let html = r##"
+        <html><body>
+          <div id="capture"></div><div id="native-hit"></div>
+          <script>
+            const capture = document.querySelector("#capture");
+            capture.addEventListener("pointermove", () => postMessage({ type: "captured-move" }));
+            capture.setPointerCapture(1);
+            postMessage({ type: "capture-state", captured: capture.hasPointerCapture(1) });
+          </script>
+        </body></html>
+    "##;
+    let document = document(html);
+    let native_hit = document
+        .as_ref()
+        .tree()
+        .iter()
+        .find_map(|(id, node)| {
+            (node.attr(blitz_dom::local_name!("id")) == Some("native-hit")).then_some(id)
+        })
+        .unwrap();
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///pointer-capture.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+
+    runtime
+        .dispatch_dom(
+            "pointermove",
+            native_hit,
+            "pointer",
+            &serde_json::json!({ "pointerId": 1, "clientX": 20, "clientY": 30 }),
+            true,
+            true,
+        )
+        .unwrap();
+    runtime.poll_event_loop().await.unwrap();
+
+    assert_eq!(
+        runtime.take_messages(),
+        [
+            serde_json::json!({
+                "type": "capture-state",
+                "captured": true,
+            }),
+            serde_json::json!({
+                "type": "captured-move",
+            })
+        ]
+    );
+}
+
+#[tokio::test]
+async fn parses_clones_and_mounts_solid_style_html_and_svg_templates() {
+    let html = r##"
+        <html><body><script>
+          const template = document.createElement("template");
+          template.innerHTML = `<section class="card"><span>Ready</span><svg viewBox="0 0 8 8"><path d="M0 0h8v8z"></path></svg></section>`;
+          const clone = template.content.cloneNode(true);
+          document.body.append(clone);
+          const section = document.querySelector(".card");
+          const svg = section.querySelector("svg");
+          postMessage({
+            type: "template",
+            text: section.textContent,
+            childCount: section.children.length,
+            svgNamespace: svg.namespaceURI,
+            connected: section.isConnected,
+          });
+        </script></body></html>
+    "##;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///template.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+    let mutations = runtime.take_mutations();
+
+    assert!(
+        mutations.iter().any(|mutation| matches!(
+            mutation,
+            Mutation::CreateElement { tag, namespace: Some(namespace), .. }
+                if tag == "svg" && namespace == "http://www.w3.org/2000/svg"
+        )),
+        "the SVG template did not retain its namespace: {mutations:?}"
+    );
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "type": "template",
+            "text": "Ready",
+            "childCount": 2,
+            "svgNamespace": "http://www.w3.org/2000/svg",
+            "connected": true,
+        })]
+    );
+}

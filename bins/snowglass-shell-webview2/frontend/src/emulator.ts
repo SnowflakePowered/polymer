@@ -79,21 +79,6 @@ export interface EmulatorApi extends EventTarget {
   launch(options: LaunchOptions): EmulatorInstance | null;
 }
 
-/**
- * An asynchronous reference into the background Deno realm.
- *
- * Chained property reads and method calls are sent to the background. Await
- * the final read or call to obtain its value.
- */
-export type BackgroundRemoteValue = {
-  (...args: unknown[]): Promise<unknown>;
-  readonly [property: string]: BackgroundRemoteValue;
-};
-
-export type BackgroundWindowProxy = BackgroundRemoteValue & {
-  postMessage(message: unknown): void;
-};
-
 export type LauncherOption = {
   path: string;
   title: string;
@@ -151,24 +136,25 @@ export type LauncherStartRequest = {
 
 export interface LauncherApi extends EventTarget {
   readonly state: LauncherState;
+  readonly dropActive: boolean;
+  readonly pendingLaunch: { id: number; options: LaunchRequest } | null;
   open(path: string, emulator?: string): void;
   start(request: LauncherStartRequest): void;
   cancel(): void;
+  settleLaunch(id: number, error?: string): void;
 }
 
 declare global {
   interface Window {
     readonly Emulator: EmulatorApi;
-    readonly gameLayer: EventTarget & {
-      readonly contentWindow: BackgroundWindowProxy;
-      readonly ready: boolean;
-      postMessage(message: unknown): void;
-    };
     readonly snowglassLauncher: LauncherApi;
-  }
-
-  interface HTMLLinkElement {
-    readonly contentWindow: BackgroundWindowProxy | null;
+    readonly snowglassInput: EventTarget & {
+      readonly configuration: unknown;
+      readonly layouts: unknown;
+      readonly controllers: unknown;
+      readonly priority: "ui" | "game";
+      configure(transaction: unknown): Promise<unknown>;
+    };
   }
 
   interface HTMLElementTagNameMap {

@@ -17,9 +17,9 @@ enum PendingLaunch {
 }
 
 /// Owns launcher state, game detection, and plugin-backed launch preparation
-/// for the long-lived background runtime. The shell only publishes immutable
+/// for the long-lived shell runtime. The shell only publishes immutable
 /// state snapshots and forwards the resulting native launch plan.
-pub(crate) struct BackgroundLaunchCoordinator {
+pub(crate) struct ShellLaunchCoordinator {
     pending: Option<PendingLaunch>,
     plugins: snowglass_pluginhost::PluginRegistry,
     plugin_runtime: Arc<snowglass_pluginhost::PluginRuntime>,
@@ -30,7 +30,7 @@ pub(crate) struct BackgroundLaunchCoordinator {
     event_sink: Arc<dyn Fn(LaunchCoordinatorEvent) + Send + Sync>,
 }
 
-impl BackgroundLaunchCoordinator {
+impl ShellLaunchCoordinator {
     pub fn new(
         pending: Option<UnattachedLaunchPlan>,
         plugins: snowglass_pluginhost::PluginRegistry,
@@ -52,10 +52,6 @@ impl BackgroundLaunchCoordinator {
 
     pub fn state(&self) -> &launcher::LauncherState {
         &self.state
-    }
-
-    pub fn plugin_runtime_handle(&self) -> snowglass_pluginhost::PluginRuntimeHandle {
-        self.plugin_runtime.handle()
     }
 
     pub fn has_pending_launch(&self) -> bool {

@@ -1,4 +1,4 @@
-// Background Emulator lifecycle facade. The native op table remains the only
+// Shell Emulator lifecycle facade. The native op table remains the only
 // authority for process, input, audio, and capture state.
 globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement) => {
   const Emulator = new EventTarget();

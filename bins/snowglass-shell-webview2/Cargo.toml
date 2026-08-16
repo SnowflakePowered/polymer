@@ -7,16 +7,20 @@ license.workspace = true
 [dependencies]
 anyrender = "0.11.1"
 anyrender_vello = "0.11.0"
-blitz-dom = { version = "0.3.0-beta.1", features = ["custom-widget"] }
+blitz-dom = { version = "0.3.0-beta.1", features = ["custom-widget", "incremental"] }
 blitz-html = "0.3.0-beta.1"
+blitz-net = "0.3.0-beta.1"
 blitz-paint = { version = "0.3.0-beta.1", features = ["custom-widget"] }
 blitz-traits = "0.3.0-beta.1"
+arboard = "3.6.1"
 clap = "4.6.1"
 consolespec.workspace = true
 gumshoe.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"
 kurbo = "0.13.1"
+cursor-icon = "1.2.0"
+keyboard-types = "0.7.0"
 parking_lot.workspace = true
 pollster = "0.4"
 peniko = "0.6.1"
@@ -38,7 +42,6 @@ snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
 snowglass-egui.workspace = true
 snowglass-statistics.workspace = true
 tempfile.workspace = true
-webview2-com = "0.38"
 windows = { workspace = true, features = [
     "Foundation",
     "Graphics_Capture",
@@ -49,15 +52,12 @@ windows = { workspace = true, features = [
     "Win32_System_Com",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_Ole",
-    "Win32_System_Variant",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 windows-core.workspace = true
 winit = "0.30.13"
-wry = { git = "https://github.com/chyyran/wry", branch = "snowglass", default-features = false, features = ["os-webview", "transparent"] }
 vello = "0.9"
+vello_encoding = "0.9"
 # Vello rasterises through wgpu, but the compositor samples plain D3D12. The
 # HAL is how the texture Vello draws into is also a resource we can share.
 wgpu-hal = { version = "29", features = ["dx12"] }
@@ -77,11 +77,6 @@ snowglass-deno = { path = "../../crates/runtime/snowglass-deno" }
 tokio = { version = "1.53.0", features = ["full"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[build-dependencies]
-serde_json.workspace = true
-swc = { version = "72.0.1", default-features = false }
-swc_common = "24.0.0"
 
 [lints]
 workspace = true
