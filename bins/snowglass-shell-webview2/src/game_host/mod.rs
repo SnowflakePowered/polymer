@@ -533,6 +533,7 @@ impl RenderDevice {
 #[derive(Debug)]
 pub(crate) enum GameHostCommand {
     Emulator(crate::shell_runtime::EmulatorCommand),
+    Input(crate::shell_runtime::InputCommand),
     WebRtc(crate::shell_runtime::WebRtcCommand),
 }
 

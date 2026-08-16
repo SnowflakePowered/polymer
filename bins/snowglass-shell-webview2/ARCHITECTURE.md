@@ -18,8 +18,9 @@ and fonts. Its waker posts a shell redraw event when a resource arrives.
 
 - `ShellDocument` owns Blitz parsing, Stylo layout, the tracked-surface custom
   widget, banded painting, hit testing, and script/DOM identity maps.
-- `ShellRuntime` owns the sole Deno UI realm and the browser compatibility
-  wrappers used by Solid and Ark UI.
+- `ShellRuntime` owns the sole Deno UI realm and the DOM compatibility wrappers
+  used by Solid and Ark UI. The optional `snowglass-deno` extension owns the
+  non-DOM `Snowglass` facades, their ops, and a typed notification inbox.
 - `ShellDomCoordinator` pairs those objects and publishes immutable paint and
   layout snapshots to the compositor.
 - `Snowglass.scraping.Package` delegates package identification to Gumshoe in
@@ -29,8 +30,7 @@ and fonts. Its waker posts a shell redraw event when a resource arrives.
   visual, and the egui diagnostics overlay.
 
 There is no foreground proxy, linked document, shared UI bus, or structured
-remote-value codec. `Snowglass.input`, `Snowglass.plugin`,
-`Snowglass.input`, `Snowglass.plugin`, `Snowglass.scraping`,
+remote-value codec. `Snowglass.input`, `Snowglass.plugin`, `Snowglass.scraping`,
 `Snowglass.configuration`, `Snowglass.emulator`, and `Snowglass.webrtc` are
 same-realm APIs. `Snowglass.emulator.launch()` synchronously returns a
 `LaunchInstance`; its promises and events own pending, ready, error, and closed
@@ -39,6 +39,15 @@ invocation cross asynchronous Deno op boundaries. Deno owns WebRTC lifecycle
 and launch association; `snowglass-renderer` keeps signaling, peer sessions,
 GPU composition, encoding, and frame publication together in the native data
 plane.
+
+Native feature producers send owned `SnowglassNotification` values directly
+to the inbox. A single pending Deno op feeds those values to the JavaScript
+facades, so adding a notification does not add forwarding methods to
+`ShellDomCoordinator`, `ShellRuntime`, or its Deno runtime.
+
+The base `snowglass-deno::Runtime` does not install this optional extension.
+Plugin workers therefore keep their isolated web platform and never receive
+the application-facing `Snowglass` global.
 
 ## DOM and events
 

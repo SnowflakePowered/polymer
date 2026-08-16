@@ -12,7 +12,7 @@
 mod bands;
 
 use crate::shell_dom::{ShellFrame, ShellHitSnapshot};
-use crate::shell_runtime::{EmulatorCommandSink, Mutation, ShellRuntime};
+use crate::shell_runtime::{EmulatorCommandSink, InputCommandSink, Mutation, ShellRuntime};
 use anyrender::PaintScene as _;
 use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
@@ -714,10 +714,18 @@ impl ShellDocumentFactory {
         width: u32,
         height: u32,
         emulator_commands: EmulatorCommandSink,
+        input_commands: InputCommandSink,
         webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
         startup_request: Option<serde_json::Value>,
         viewer: snowglass_renderer::cli::ViewerOptions,
-    ) -> Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (
+            ShellDocument,
+            ShellRuntime,
+            crate::shell_runtime::SnowglassNotificationSender,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let (sender, arrivals) = channel();
         let proxy = self.event_proxy.clone();
         let waker: Arc<dyn NetWaker> = Arc::new(move |_| {
@@ -750,6 +758,7 @@ impl ShellDocumentFactory {
             views,
             (width, height),
             emulator_commands,
+            input_commands,
             webrtc_commands,
             startup_request,
             viewer,
@@ -768,10 +777,18 @@ impl ShellDocumentFactory {
         views: usize,
         viewport: (u32, u32),
         emulator_commands: EmulatorCommandSink,
+        input_commands: InputCommandSink,
         webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
         startup_request: Option<serde_json::Value>,
         viewer: snowglass_renderer::cli::ViewerOptions,
-    ) -> Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (
+            ShellDocument,
+            ShellRuntime,
+            crate::shell_runtime::SnowglassNotificationSender,
+        ),
+        Box<dyn std::error::Error>,
+    > {
         let (width, height) = viewport;
         let script_to_dom = document
             .as_ref()
@@ -803,13 +820,14 @@ impl ShellDocumentFactory {
         // document scripts. Resolve once first so geometry APIs have useful
         // values during initialisation.
         layer.document.as_mut().resolve(0.0);
-        let mut runtime = ShellRuntime::start(
+        let (mut runtime, notifications) = ShellRuntime::start(
             layer.document.as_ref(),
             layer.width,
             layer.height,
             html.to_owned(),
             source_name.to_owned(),
             emulator_commands,
+            input_commands,
             webrtc_commands,
             startup_request,
             self.plugin_runtime.clone(),
@@ -817,7 +835,7 @@ impl ShellDocumentFactory {
         )
         .await?;
         layer.apply_script_mutations(&mut runtime);
-        Ok((layer, runtime))
+        Ok((layer, runtime, notifications))
     }
 }
 
@@ -2280,13 +2298,14 @@ mod tests {
                     dom_to_script,
                     pointer_hover_path: Vec::new(),
                 };
-                let mut runtime = ShellRuntime::start(
+                let (mut runtime, _notifications) = ShellRuntime::start(
                     layer.document.as_ref(),
                     800,
                     600,
                     html.to_owned(),
                     "snowglass:///native-click-test.html".to_owned(),
                     deno::EmulatorCommandSink::default(),
+                    deno::InputCommandSink::default(),
                     deno::WebRtcCommandSink::default(),
                     None,
                     Arc::new(snowglass_pluginhost::PluginRuntime::new(

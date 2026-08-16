@@ -8957,6 +8957,8 @@ dependencies = [
  "deno_webidl",
  "deno_websocket",
  "deno_webstorage",
+ "serde",
+ "serde_json",
  "sys_traits",
  "tokio",
 ]

@@ -17,6 +17,8 @@ use std::{
     time::Duration,
 };
 
+pub mod snowglass;
+
 pub use deno_inspector_server::{InspectPublishUid, InspectorServerError, create_inspector_server};
 
 struct UserAgent(String);
@@ -35,8 +37,8 @@ fn op_snowglass_location(state: &mut OpState) -> String {
 
 deno_core::extension!(snowglass_web_runtime,
     ops = [op_snowglass_location, op_snowglass_user_agent],
-    esm_entry_point = "ext:snowglass_web_runtime/bootstrap.js",
-    esm = [dir ".", "bootstrap.js"],
+    esm_entry_point = "ext:snowglass_web_runtime/98_web_runtime.js",
+    esm = [dir "js", "98_web_runtime.js"],
     options = {
         user_agent: String,
     },

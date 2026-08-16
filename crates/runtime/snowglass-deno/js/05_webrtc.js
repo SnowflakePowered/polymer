@@ -1,7 +1,9 @@
-// WebRTC control plane for the shell realm. Native renderer code owns GPU
+import { op_webrtc_start, op_webrtc_stop } from "ext:core/ops";
+
+// WebRTC control plane for the Snowglass realm. Native renderer code owns GPU
 // frames, encoding, peer connections, and signaling; JavaScript owns the
 // publication lifecycle and its association with emulator instances.
-globalThis.__snowglassCreateWebRtcFacade = (ops) => {
+export function createWebRtc() {
   const WebRTC = new EventTarget();
   let activePublication = null;
 
@@ -69,7 +71,7 @@ globalThis.__snowglassCreateWebRtcFacade = (ops) => {
       this.#state = "closing";
       this.dispatchEvent(new Event("statechange"));
       try {
-        await ops.op_webrtc_stop(this.instance.id);
+        await op_webrtc_stop(this.instance.id);
       } finally {
         this.__close();
       }
@@ -91,7 +93,7 @@ globalThis.__snowglassCreateWebRtcFacade = (ops) => {
     const publication = new WebRtcPublication(instance, bind, targets);
     publishActive(publication);
     try {
-      await ops.op_webrtc_start(instance.id, bind, targets);
+      await op_webrtc_start(instance.id, bind, targets);
       if (!publication.__activate()) {
         throw new DOMException("the emulator instance closed while starting WebRTC", "InvalidStateError");
       }
@@ -121,4 +123,4 @@ globalThis.__snowglassCreateWebRtcFacade = (ops) => {
       if (activePublication?.instance === instance) activePublication.__close();
     },
   });
-};
+}

@@ -1,5 +1,7 @@
+import { op_scraping_package_from_path } from "ext:core/ops";
+
 // Gumshoe-backed package values live in the UI realm as immutable branded objects.
-globalThis.__snowglassCreateScrapingFacade = (ops) => {
+export function createScraping() {
   const packageData = new WeakMap();
   const internal = Symbol("Snowglass.scraping.Package");
 
@@ -13,7 +15,7 @@ globalThis.__snowglassCreateScrapingFacade = (ops) => {
     static async fromPath(path, options = undefined) {
       const signal = options?.signal;
       if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
-      const pending = ops.op_scraping_package_from_path(String(path));
+      const pending = op_scraping_package_from_path(String(path));
       if (!signal) return new Package(internal, await pending);
       const aborted = new Promise((_, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError")), { once: true });
@@ -50,4 +52,4 @@ globalThis.__snowglassCreateScrapingFacade = (ops) => {
       Scraping.dispatchEvent(new CustomEvent("dropactivechange", { detail: active }));
     },
   });
-};
+}

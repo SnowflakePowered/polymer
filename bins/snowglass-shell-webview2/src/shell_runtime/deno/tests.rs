@@ -2,7 +2,8 @@ use blitz_dom::DocumentConfig;
 use std::sync::{Arc, Mutex};
 
 use super::{
-    EmulatorCommand, EmulatorCommandSink, Mutation, Runtime, WebRtcCommand, WebRtcCommandSink,
+    EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, Mutation, Runtime,
+    SnowglassNotification, WebRtcCommand, WebRtcCommandSink,
 };
 
 #[tokio::test]
@@ -69,7 +70,16 @@ fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>)
     )
 }
 
-fn drain_recorded_commands(commands: &Mutex<Vec<EmulatorCommand>>) -> Vec<EmulatorCommand> {
+fn input_command_recorder() -> (InputCommandSink, Arc<Mutex<Vec<InputCommand>>>) {
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
+    (
+        InputCommandSink::new(move |command| recorded.lock().unwrap().push(command)),
+        commands,
+    )
+}
+
+fn drain_input_commands(commands: &Mutex<Vec<InputCommand>>) -> Vec<InputCommand> {
     std::mem::take(&mut *commands.lock().unwrap())
 }
 
@@ -144,42 +154,47 @@ async fn shell_input_api_sends_revisioned_transactions_and_resolves_results() {
         </body></html>
     "##;
     let document = document(html);
-    let (command_sink, commands) = command_recorder();
-    let mut runtime = Runtime::new(
+    let (command_sink, _) = command_recorder();
+    let (input_sink, commands) = input_command_recorder();
+    let plugin_runtime = Arc::new(snowglass_pluginhost::PluginRuntime::new(
+        snowglass_pluginhost::PluginRegistry::new(),
+        snowglass_pluginhost::PluginRuntimeOptions::default(),
+    ));
+    let (mut runtime, notifications) = Runtime::new_with_command_sinks_and_notifications(
         document.as_ref(),
         html,
         "snowglass:///input-test.html",
         800,
         600,
         command_sink,
+        input_sink,
+        WebRtcCommandSink::default(),
+        plugin_runtime,
     )
     .await
     .unwrap();
 
     assert!(matches!(
-        drain_recorded_commands(&commands).as_slice(),
-        [EmulatorCommand::ConfigureInput {
+        drain_input_commands(&commands).as_slice(),
+        [InputCommand::Configure {
             request_id: 1,
             transaction,
-        }] if transaction.expected_revision == 0
-            && matches!(
-                transaction.operations.as_slice(),
-                [snowglass_input::hub::InputOperation::ResetPortOverrides { port }]
-                    if port.to_string() == "controller.0"
-            )
+        }] if transaction["expectedRevision"] == 0
+            && transaction["operations"][0]["type"] == "resetPortOverrides"
+            && transaction["operations"][0]["port"] == "controller.0"
     ));
 
-    runtime
-        .input_configuration_result(
-            1,
-            &serde_json::json!({
+    notifications
+        .send(SnowglassNotification::InputConfigurationSettled {
+            request_id: 1,
+            result: serde_json::json!({
                 "ok": true,
                 "configuration": {
                     "revision": 1,
                     "ports": []
                 }
             }),
-        )
+        })
         .unwrap();
     runtime.poll_event_loop().await.unwrap();
     assert_eq!(
@@ -448,6 +463,7 @@ async fn webrtc_facade_owns_publication_lifecycle_through_async_ops() {
         800,
         600,
         emulator_sink,
+        InputCommandSink::default(),
         webrtc_sink,
         plugin_runtime,
     )
@@ -481,7 +497,7 @@ async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
         <html><body>
           <tracked-surface id="game"></tracked-surface>
           <script>
-            Snowglass.emulator.launch({
+            const instance = Snowglass.emulator.launch({
               command: "emulator.exe",
               arguments: [],
               isolated: false,
@@ -490,11 +506,14 @@ async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
               gamepadMapping: [],
               machine: "TEST",
               webrtcBind: "127.0.0.1:9191",
-            }).then(instance => postMessage({
-              instance: instance.id,
-              publicationState: Snowglass.webrtc.activePublication.state,
-              targets: Snowglass.webrtc.activePublication.targets,
-            }));
+            });
+            Snowglass.webrtc.addEventListener("activepublicationchange", event => {
+              event.detail.addEventListener("statechange", () => postMessage({
+                instance: instance.id,
+                publicationState: event.detail.state,
+                targets: event.detail.targets,
+              }), { once: true });
+            }, { once: true });
           </script>
         </body></html>
     "##;
@@ -506,7 +525,7 @@ async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
         else {
             panic!("unexpected emulator command")
         };
-        assert_eq!(options.surfaces[0].index, 3);
+        assert_eq!(options["surfaces"][0]["index"], 3);
         result.send(Ok(())).unwrap();
     });
     let webrtc_sink = WebRtcCommandSink::new(|command| {
@@ -535,6 +554,7 @@ async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
         800,
         600,
         emulator_sink,
+        InputCommandSink::default(),
         webrtc_sink,
         plugin_runtime,
     )

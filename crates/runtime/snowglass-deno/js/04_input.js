@@ -1,6 +1,7 @@
-// Promise-based shell input facade. Installed before the DOM bootstrap
-// and instantiated with the runtime's native op table.
-globalThis.__snowglassCreateInputFacade = (ops) => {
+import { op_input_configure } from "ext:core/ops";
+
+// Promise-based Snowglass input facade.
+export function createInput() {
   const snowglassInput = new EventTarget();
   let inputConfiguration = Object.freeze({ revision: 0, ports: Object.freeze([]) });
   let inputLayouts = Object.freeze([]);
@@ -81,7 +82,7 @@ globalThis.__snowglassCreateInputFacade = (ops) => {
         };
         return new Promise((resolve, reject) => {
           pendingInputRequests.set(id, { resolve, reject });
-          ops.op_input_configure(id, wire);
+          op_input_configure(id, wire);
         });
       },
     },
@@ -116,4 +117,4 @@ globalThis.__snowglassCreateInputFacade = (ops) => {
       pending.resolve(inputConfiguration);
     },
   });
-};
+}
