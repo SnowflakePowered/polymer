@@ -13,6 +13,7 @@ use std::{collections::HashMap, error::Error};
 
 pub(crate) use deno::{EmulatorCommand, InstanceToken};
 pub(crate) use deno::{LauncherCommand, LauncherCommandSink};
+pub(crate) use deno::{WebRtcCommand, WebRtcCommandSink};
 pub(crate) use launch_coordinator::{LaunchCoordinatorEvent, ShellLaunchCoordinator};
 
 pub(crate) struct ShellRuntime {
@@ -27,8 +28,10 @@ impl ShellRuntime {
         html: String,
         source_name: String,
         emulator_commands: EmulatorCommandSink,
+        webrtc_commands: WebRtcCommandSink,
         launcher_commands: LauncherCommandSink,
         initial_launcher_state: Value,
+        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     ) -> Result<Self, Box<dyn Error>> {
         let result = match deno::Runtime::serialized_snapshot(document, width, height) {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
@@ -36,8 +39,10 @@ impl ShellRuntime {
                 html,
                 source_name,
                 emulator_commands,
+                webrtc_commands,
                 launcher_commands,
                 initial_launcher_state,
+                plugin_runtime,
             ))
             .await
             .unwrap_or_else(|error| Err(Box::new(error))),

@@ -23,12 +23,16 @@ use super::launcher::{
     op_launcher_start,
 };
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
+use super::plugin::{PluginBridge, op_plugin_invoke};
 use super::state::{BridgeState, op_post_message};
+use super::webrtc::{WebRtcBridge, WebRtcCommandSink, op_webrtc_start, op_webrtc_stop};
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
 const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
 const INPUT_FACADE: &str = include_str!("input_facade.js");
 const EMULATOR_FACADE: &str = include_str!("emulator_facade.js");
+const PLUGIN_FACADE: &str = include_str!("plugin_facade.js");
+const WEBRTC_FACADE: &str = include_str!("webrtc_facade.js");
 deno_core::extension!(
     snowglass_shell_runtime,
     ops = [
@@ -57,6 +61,9 @@ deno_core::extension!(
         op_launcher_start,
         op_launcher_cancel,
         op_launcher_settle,
+        op_plugin_invoke,
+        op_webrtc_start,
+        op_webrtc_stop,
     ],
     esm_entry_point = "ext:snowglass_shell_runtime/bootstrap.js",
     esm = ["ext:snowglass_shell_runtime/bootstrap.js" = {
@@ -88,6 +95,9 @@ deno_core::extension!(
                   op_emulator_set_muted,
                   op_emulator_set_volume,
                   op_post_message,
+                  op_plugin_invoke,
+                  op_webrtc_start,
+                  op_webrtc_stop,
                 } from "ext:core/ops";
                 const webEvents = core.loadExtScript("ext:deno_web/02_event.js");
                 Object.defineProperty(globalThis, "__snowglassRuntime", {
@@ -118,6 +128,9 @@ deno_core::extension!(
                       op_emulator_set_muted,
                       op_emulator_set_volume,
                       op_post_message,
+                      op_plugin_invoke,
+                      op_webrtc_start,
+                      op_webrtc_stop,
                     }),
                     webEvents,
                   }),
@@ -129,11 +142,13 @@ deno_core::extension!(
         state.put(BridgeState::default());
         state.put(EmulatorBridge::default());
         state.put(LauncherBridge::default());
+        state.put(WebRtcBridge::default());
     },
 );
 
 pub struct Runtime {
     worker: snowglass_deno::Runtime,
+    _plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     layout_cache: HashMap<usize, [f32; 4]>,
     layout_view_state: Option<(Option<usize>, u32, u32)>,
 }
@@ -148,13 +163,65 @@ impl Runtime {
         height: u32,
         emulator_commands: EmulatorCommandSink,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let plugin_runtime = std::sync::Arc::new(snowglass_pluginhost::PluginRuntime::new(
+            snowglass_pluginhost::PluginRegistry::new(),
+            snowglass_pluginhost::PluginRuntimeOptions::default(),
+        ));
+        Self::new_with_plugin_runtime(
+            document,
+            html,
+            source_name,
+            width,
+            height,
+            emulator_commands,
+            plugin_runtime,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn new_with_plugin_runtime(
+        document: &BaseDocument,
+        html: &str,
+        source_name: &str,
+        width: u32,
+        height: u32,
+        emulator_commands: EmulatorCommandSink,
+        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_command_sinks(
+            document,
+            html,
+            source_name,
+            width,
+            height,
+            emulator_commands,
+            WebRtcCommandSink::default(),
+            plugin_runtime,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn new_with_command_sinks(
+        document: &BaseDocument,
+        html: &str,
+        source_name: &str,
+        width: u32,
+        height: u32,
+        emulator_commands: EmulatorCommandSink,
+        webrtc_commands: WebRtcCommandSink,
+        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_snapshot(
             Self::serialized_snapshot(document, width, height)?,
             html.to_owned(),
             source_name.to_owned(),
             emulator_commands,
+            webrtc_commands,
             LauncherCommandSink::default(),
             serde_json::json!({ "kind": "idle" }),
+            plugin_runtime,
         )
         .await
     }
@@ -172,8 +239,10 @@ impl Runtime {
         html: String,
         source_name: String,
         emulator_commands: EmulatorCommandSink,
+        webrtc_commands: WebRtcCommandSink,
         launcher_commands: LauncherCommandSink,
         initial_launcher_state: Value,
+        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
@@ -206,14 +275,31 @@ impl Runtime {
             .js_runtime_mut()
             .op_state()
             .borrow_mut()
+            .borrow_mut::<WebRtcBridge>()
+            .command_sink = webrtc_commands;
+        worker
+            .js_runtime_mut()
+            .op_state()
+            .borrow_mut()
             .borrow_mut::<LauncherBridge>()
             .0 = launcher_commands;
+        worker
+            .js_runtime_mut()
+            .op_state()
+            .borrow_mut()
+            .put(PluginBridge(plugin_runtime.handle()));
         worker
             .js_runtime_mut()
             .execute_script("snowglass:shell/input-facade.js", INPUT_FACADE)?;
         worker
             .js_runtime_mut()
+            .execute_script("snowglass:shell/webrtc-facade.js", WEBRTC_FACADE)?;
+        worker
+            .js_runtime_mut()
             .execute_script("snowglass:shell/emulator-facade.js", EMULATOR_FACADE)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("snowglass:shell/plugin-facade.js", PLUGIN_FACADE)?;
         worker
             .js_runtime_mut()
             .execute_script("snowglass:shell/runtime.js", BOOTSTRAP)?;
@@ -246,6 +332,7 @@ impl Runtime {
         worker.run_up_to_duration(std::time::Duration::ZERO).await?;
         Ok(Self {
             worker,
+            _plugin_runtime: plugin_runtime,
             layout_cache: HashMap::new(),
             layout_view_state: None,
         })

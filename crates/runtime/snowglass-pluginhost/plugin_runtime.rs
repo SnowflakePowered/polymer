@@ -1,6 +1,5 @@
 use crate::{
     EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorSetupInvocation, PluginRegistry,
-    bus::StructuredValue,
 };
 use deno_core::{serde_v8, v8};
 use serde::{Deserialize, Serialize};
@@ -167,7 +166,7 @@ impl Drop for PluginRuntime {
     }
 }
 
-/// Cloneable entry point used by native coordinators and shared-bus brokers.
+/// Cloneable entry point used by native coordinators and Deno op adapters.
 #[derive(Clone)]
 pub struct PluginRuntimeHandle {
     state: Arc<RuntimeState>,
@@ -282,98 +281,6 @@ impl PluginRuntimeHandle {
             run_worker(entrypoint, loader, control, move |runtime| async move {
                 let mut runtime = runtime;
                 invoke_export(
-                    runtime.js_runtime_mut(),
-                    &invocation_entrypoint,
-                    &path,
-                    arguments,
-                )
-                .await
-            })
-        })
-        .await
-    }
-
-    /// Invokes a callable export with the shared-bus structured-clone wire
-    /// representation. Arguments are decoded inside the fresh worker and the
-    /// result is encoded there, so no JSON intermediate loses JS value kinds
-    /// or object-graph identity.
-    pub async fn invoke_encoded(
-        &self,
-        plugin_id: &str,
-        export_path: &[String],
-        arguments: Vec<u8>,
-    ) -> Result<Vec<u8>, PluginInvocationError> {
-        let cancellation = self.cancellation_token();
-        self.invoke_encoded_with_cancellation(plugin_id, export_path, arguments, cancellation)
-            .await
-    }
-
-    pub async fn invoke_encoded_with_cancellation(
-        &self,
-        plugin_id: &str,
-        export_path: &[String],
-        arguments: Vec<u8>,
-        cancellation: PluginCancellationToken,
-    ) -> Result<Vec<u8>, PluginInvocationError> {
-        let structured = StructuredValue::decode(&arguments).map_err(|error| {
-            PluginInvocationError::new(
-                "TypeError",
-                "INVALID_ARGUMENTS",
-                format!("invalid structured plugin arguments: {error}"),
-            )
-        })?;
-        if !structured.is_array() {
-            return Err(PluginInvocationError::new(
-                "TypeError",
-                "INVALID_ARGUMENTS",
-                "plugin invocation payload must be an argument array",
-            ));
-        }
-        if is_setup_launch(export_path) {
-            let serde_json::Value::Array(arguments) = structured.to_json().map_err(|error| {
-                PluginInvocationError::new(
-                    "TypeError",
-                    "INVALID_ARGUMENTS",
-                    format!("setupLaunch arguments must be JSON-compatible: {error}"),
-                )
-            })?
-            else {
-                unreachable!("the structured root was validated as an array")
-            };
-            let result = self
-                .invoke_with_cancellation(plugin_id, export_path, arguments, cancellation)
-                .await?;
-            return StructuredValue::from_json(&result)
-                .and_then(|value| value.encode())
-                .map_err(PluginInvocationError::worker);
-        }
-
-        let plugin = self
-            .state
-            .registry
-            .plugin::<dyn EmulatorPluginInstance>(plugin_id)
-            .ok_or_else(|| {
-                PluginInvocationError::new(
-                    "NotFoundError",
-                    "UNKNOWN_PLUGIN",
-                    format!("unknown plugin '{plugin_id}'"),
-                )
-            })?;
-        if export_path.is_empty() || export_path.iter().any(|segment| segment.is_empty()) {
-            return Err(PluginInvocationError::new(
-                "TypeError",
-                "INVALID_EXPORT_PATH",
-                "plugin export path must contain non-empty property names",
-            ));
-        }
-        let entrypoint = plugin.entrypoint().to_string();
-        let invocation_entrypoint = entrypoint.clone();
-        let loader = plugin.module_loader().clone();
-        let path = export_path.to_vec();
-        self.run_with_control(cancellation.control, move |control| {
-            run_worker(entrypoint, loader, control, move |runtime| async move {
-                let mut runtime = runtime;
-                invoke_export_encoded(
                     runtime.js_runtime_mut(),
                     &invocation_entrypoint,
                     &path,
@@ -504,11 +411,6 @@ impl PluginRuntimeHandle {
     }
 }
 
-fn is_setup_launch(export_path: &[String]) -> bool {
-    matches!(export_path, [name] if name == "setupLaunch")
-        || matches!(export_path, [default, name] if default == "default" && name == "setupLaunch")
-}
-
 struct ActiveCallGuard {
     state: Arc<RuntimeState>,
     call_id: u64,
@@ -550,13 +452,6 @@ where
             storage_dir: None,
             inspect: false,
         });
-        runtime
-            .js_runtime_mut()
-            .execute_script(
-                "snowglass:pluginhost/structured-codec.js",
-                include_str!("bus_client.js"),
-            )
-            .map_err(PluginInvocationError::worker)?;
         let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
         if control.install_isolate(isolate) {
             return Err(PluginInvocationError::cancelled());
@@ -609,72 +504,6 @@ async fn invoke_export(
     deno_core::scope!(scope, runtime);
     let value = v8::Local::new(scope, resolved);
     serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)
-}
-
-async fn invoke_export_encoded(
-    runtime: &mut deno_core::JsRuntime,
-    entrypoint: &str,
-    export_path: &[String],
-    arguments: Vec<u8>,
-) -> Result<Vec<u8>, PluginInvocationError> {
-    {
-        deno_core::scope!(scope, runtime);
-        let key = v8::String::new(scope, "__snowglassPluginArguments")
-            .ok_or_else(|| PluginInvocationError::worker("cannot allocate argument key"))?;
-        let bytes = serde_v8::to_v8(scope, serde_bytes::ByteBuf::from(arguments))
-            .map_err(PluginInvocationError::worker)?;
-        if !scope
-            .get_current_context()
-            .global(scope)
-            .set(scope, key.into(), bytes)
-            .unwrap_or(false)
-        {
-            return Err(PluginInvocationError::worker(
-                "cannot install plugin arguments",
-            ));
-        }
-    }
-    let entrypoint = serde_json::to_string(entrypoint).map_err(PluginInvocationError::worker)?;
-    let path = serde_json::to_string(export_path).map_err(PluginInvocationError::worker)?;
-    let script = format!(
-        r#"(async () => {{
-          const namespace = await import({entrypoint});
-          const path = {path};
-          const encodedArguments = globalThis.__snowglassPluginArguments;
-          delete globalThis.__snowglassPluginArguments;
-          const arguments = globalThis.__snowglassStructuredCodec.decode(encodedArguments);
-          let receiver;
-          let value;
-          if (path[0] === "default") {{
-            value = namespace.default;
-            receiver = namespace;
-            for (const segment of path.slice(1)) {{ receiver = value; value = value?.[segment]; }}
-          }} else {{
-            value = namespace[path[0]];
-            receiver = namespace;
-            if (value === undefined) {{ receiver = namespace.default; value = receiver?.[path[0]]; }}
-            for (const segment of path.slice(1)) {{ receiver = value; value = value?.[segment]; }}
-          }}
-          if (typeof value !== "function") {{
-            throw new TypeError(`plugin export '${{path.join(".")}}' is not a function`);
-          }}
-          const result = await Reflect.apply(value, receiver, arguments);
-          return globalThis.__snowglassStructuredCodec.encode(result);
-        }})()"#
-    );
-    let promise = runtime
-        .execute_script("snowglass:pluginhost/invoke-encoded.js", script)
-        .map_err(PluginInvocationError::worker)?;
-    #[allow(deprecated)]
-    let resolved = runtime
-        .resolve_value(promise)
-        .await
-        .map_err(PluginInvocationError::worker)?;
-    deno_core::scope!(scope, runtime);
-    let value = v8::Local::new(scope, resolved);
-    serde_v8::from_v8::<serde_bytes::ByteBuf>(scope, value)
-        .map(serde_bytes::ByteBuf::into_vec)
-        .map_err(PluginInvocationError::worker)
 }
 
 #[cfg(test)]
@@ -908,62 +737,6 @@ mod tests {
                 .is_some_and(|stack| stack.contains("throwsError"))
         );
         assert_eq!(handle.active_call_count(), 0);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn encoded_invocation_preserves_rich_values_and_cycles() {
-        use crate::bus::{Node, StructuredValue, TypedArrayKind, Value as WireValue};
-
-        let (_root, registry) = package();
-        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
-        let arguments = StructuredValue {
-            root: WireValue::Ref(0),
-            nodes: vec![
-                Node::Array(vec![WireValue::Ref(1)]),
-                Node::Object(vec![
-                    ("self".to_owned(), WireValue::Ref(1)),
-                    ("bigint".to_owned(), WireValue::BigInt("41".to_owned())),
-                    ("date".to_owned(), WireValue::Ref(2)),
-                    ("map".to_owned(), WireValue::Ref(3)),
-                    ("typed".to_owned(), WireValue::Ref(4)),
-                ]),
-                Node::Date(1_725_000_000_000.0),
-                Node::Map(vec![(
-                    WireValue::String("key".to_owned()),
-                    WireValue::String("value".to_owned()),
-                )]),
-                Node::TypedArray {
-                    kind: TypedArrayKind::Uint8,
-                    bytes: vec![7, 9],
-                },
-            ],
-        }
-        .encode()
-        .unwrap();
-        let encoded = runtime
-            .handle()
-            .invoke_encoded("worker-test", &["structured".to_owned()], arguments)
-            .await
-            .unwrap();
-        let result = StructuredValue::decode(&encoded).unwrap();
-        let WireValue::Ref(root) = result.root else {
-            panic!("encoded result should be an array")
-        };
-        let Node::Array(values) = &result.nodes[root as usize] else {
-            panic!("encoded result should be an array")
-        };
-        assert_eq!(values[0], WireValue::Bool(true));
-        assert_eq!(values[1], WireValue::BigInt("42".to_owned()));
-        assert_eq!(values[2], WireValue::Number(1_725_000_000_000.0));
-        assert_eq!(values[3], WireValue::String("value".to_owned()));
-        assert_eq!(values[4], WireValue::Number(9.0));
-        let WireValue::Ref(object) = &values[5] else {
-            panic!("returned object should retain its structure")
-        };
-        let Node::Object(entries) = &result.nodes[*object as usize] else {
-            panic!("returned object should retain its structure")
-        };
-        assert!(entries.contains(&("self".to_owned(), WireValue::Ref(*object))));
     }
 
     #[tokio::test(flavor = "current_thread")]

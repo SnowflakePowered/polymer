@@ -31,18 +31,18 @@ type AudioState = { available: boolean; volume: number; muted: boolean };
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
-let readableLauncherState = window.snowglassLauncher.state;
-let readableLaunchPlan = window.snowglassLauncher.pendingLaunch;
+let readableLauncherState = window.Snowglass.launcher.state;
+let readableLaunchPlan = window.Snowglass.launcher.pendingLaunch;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
 const launchPlanListeners = new Set<(plan: typeof readableLaunchPlan) => void>();
-window.snowglassLauncher.addEventListener("statechange", (event: Event) => {
+window.Snowglass.launcher.addEventListener("statechange", (event: Event) => {
   readableLauncherState = (event as CustomEvent<LauncherState>).detail;
   if (readableLauncherState.kind === "configure") navigateMemory("/configure", true);
   else if (readableLauncherState.kind === "launching") navigateMemory("/game/launching", true);
   else if (readableLauncherState.kind === "idle" || readableLauncherState.kind === "error") navigateMemory("/", true);
 });
-window.snowglassLauncher.addEventListener("launchplanchange", () => {
-  readableLaunchPlan = window.snowglassLauncher.pendingLaunch;
+window.Snowglass.launcher.addEventListener("launchplanchange", () => {
+  readableLaunchPlan = window.Snowglass.launcher.pendingLaunch;
   for (const listener of launchPlanListeners) listener(readableLaunchPlan);
 });
 
@@ -101,7 +101,7 @@ function ShellProvider(props: ParentProps) {
     draft: initial.kind === "configure" ? cloneGame(initial.game) : null,
     plan: readableLaunchPlan,
     surfaces: readableLaunchPlan?.options.surfaces || [],
-    instance: window.Emulator.activeInstance,
+    instance: window.Snowglass.emulator.activeInstance,
     audio: DEFAULT_AUDIO,
     error: initial.kind === "error" ? initial.message : "",
     recent: readRecent(),
@@ -123,8 +123,8 @@ function ShellProvider(props: ParentProps) {
       if (state.kind === "configure") setModel("draft", cloneGame(state.game));
       if (state.kind === "error") setModel("error", state.message);
     };
-    window.snowglassLauncher.addEventListener("statechange", stateChanged);
-    onCleanup(() => window.snowglassLauncher.removeEventListener("statechange", stateChanged));
+    window.Snowglass.launcher.addEventListener("statechange", stateChanged);
+    onCleanup(() => window.Snowglass.launcher.removeEventListener("statechange", stateChanged));
   });
 
   createEffect(() => localStorage.setItem(RECENT_KEY, JSON.stringify({ version: 2, entries: model.recent })));
@@ -142,7 +142,7 @@ function ShellProvider(props: ParentProps) {
       })),
       settings: Object.fromEntries(emulator.options.filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
-    window.snowglassLauncher.start(request);
+    window.Snowglass.launcher.start(request);
   };
   const close = () => model.instance?.close();
 
@@ -186,11 +186,11 @@ function OptionControl(props: { option: LauncherOption; onChange(value: unknown)
 
 function LibraryPage() {
   const shell = useShell();
-  const [dropActive, setDropActive] = createSignal(window.snowglassLauncher.dropActive);
+  const [dropActive, setDropActive] = createSignal(window.Snowglass.launcher.dropActive);
   onMount(() => {
     const changed = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
-    window.snowglassLauncher.addEventListener("dropactivechange", changed);
-    onCleanup(() => window.snowglassLauncher.removeEventListener("dropactivechange", changed));
+    window.Snowglass.launcher.addEventListener("dropactivechange", changed);
+    onCleanup(() => window.Snowglass.launcher.removeEventListener("dropactivechange", changed));
   });
   return <main class="min-h-screen bg-snow-950 p-10 text-snow-100">
     <header class="mb-8"><p class="text-ice-300"><span class="symbol-glyph">◇</span> Snowglass</p><h1 class="text-4xl font-semibold">Your games, one drop away.</h1></header>
@@ -199,7 +199,7 @@ function LibraryPage() {
     </section>
     <Show when={shell.model.error}><p role="alert" class="mt-5 rounded-lg bg-error-500 p-3">{shell.model.error}</p></Show>
     <section class="mt-10"><div class="flex justify-between"><h2 class="text-2xl">Recently played</h2><Show when={shell.model.recent.length}><button onClick={() => shell.setModel("recent", [])}>Clear</button></Show></div>
-      <div class="mt-4 grid grid-cols-4 gap-4"><For each={shell.model.recent}>{(game) => <button class="rounded-xl bg-snow-900 p-4 text-left" onClick={() => window.snowglassLauncher.open(game.path, game.emulator)}><strong>{game.name}</strong><small class="block text-snow-300">{friendly(game.platform)}</small></button>}</For></div>
+      <div class="mt-4 grid grid-cols-4 gap-4"><For each={shell.model.recent}>{(game) => <button class="rounded-xl bg-snow-900 p-4 text-left" onClick={() => window.Snowglass.launcher.open(game.path, game.emulator)}><strong>{game.name}</strong><small class="block text-snow-300">{friendly(game.platform)}</small></button>}</For></div>
     </section>
   </main>;
 }
@@ -213,7 +213,7 @@ function ConfigurePage() {
   };
   return <Show when={game()}>{(current) => <main class="configuration-page">
     <header class="configuration-header">
-      <button class="configuration-back symbol-glyph" onClick={() => window.snowglassLauncher.cancel()} aria-label="Return to library">←</button>
+      <button class="configuration-back symbol-glyph" onClick={() => window.Snowglass.launcher.cancel()} aria-label="Return to library">←</button>
       <div class="configuration-title"><p>{friendly(current().platform)}</p><h1>{current().name}</h1></div>
       <button class="configuration-start" onClick={shell.start}>Start <span class="symbol-glyph" aria-hidden="true">▶</span></button>
     </header>
@@ -294,9 +294,12 @@ function GameLayout(props: ParentProps) {
     };
     const audio = (value: unknown) => shell.setModel("audio", value as AudioState);
     const failed = (value: unknown) => { shell.setModel("error", String((value as { message?: string })?.message || "Game launch failed")); shell.setModel("surfaces", []); shell.navigate("/"); };
-    const closed = () => { shell.setModel("instance", null); shell.setModel("audio", { ...DEFAULT_AUDIO }); shell.setModel("surfaces", []); window.snowglassLauncher.cancel(); shell.navigate("/"); };
+    const closed = () => { shell.setModel("instance", null); shell.setModel("audio", { ...DEFAULT_AUDIO }); shell.setModel("surfaces", []); window.Snowglass.launcher.cancel(); shell.navigate("/"); };
     instance.on("ready", ready); instance.on("audioChanged", audio); instance.on("error", failed); instance.on("closed", closed);
     unbindInstance = () => { instance.off("ready", ready); instance.off("audioChanged", audio); instance.off("error", failed); instance.off("closed", closed); };
+    if (instance.state === "ready") ready();
+    else if (instance.state === "error") failed({ message: instance.error?.message });
+    else if (instance.state === "closed") closed();
   };
   createEffect(() => {
     const plan = shell.model.plan;
@@ -306,7 +309,7 @@ function GameLayout(props: ParentProps) {
       if (sequence !== launchSequence || shell.model.plan?.id !== plan.id) return;
       if (!stage?.isConnected) {
         if (framesRemaining > 0) waitForConnectedLayout(framesRemaining - 1);
-        else window.snowglassLauncher.settleLaunch(plan.id, "The game layout did not become connected");
+        else window.Snowglass.launcher.settleLaunch(plan.id, "The game layout did not become connected");
         return;
       }
       try {
@@ -327,16 +330,15 @@ function GameLayout(props: ParentProps) {
           }
           return { ...surface, attach };
         });
-        const launch = () => {
+        const launch = async () => {
           if (sequence !== launchSequence || shell.model.plan?.id !== plan.id) return;
           try {
-            const instance = window.Emulator.launch({ ...unwrap(plan.options), surfaces } as LaunchOptions);
-            if (!instance) throw new Error("The emulator rejected the launch");
-            shell.setModel("instance", instance); bindInstance(instance); window.snowglassLauncher.settleLaunch(plan.id);
-          } catch (error) { window.snowglassLauncher.settleLaunch(plan.id, error instanceof Error ? error.message : String(error)); }
+            const instance = await window.Snowglass.emulator.launch({ ...unwrap(plan.options), surfaces } as LaunchOptions);
+            shell.setModel("instance", instance); bindInstance(instance); window.Snowglass.launcher.settleLaunch(plan.id);
+          } catch (error) { window.Snowglass.launcher.settleLaunch(plan.id, error instanceof Error ? error.message : String(error)); }
         };
         if (appendedSurface) requestAnimationFrame(launch); else launch();
-      } catch (error) { window.snowglassLauncher.settleLaunch(plan.id, error instanceof Error ? error.message : String(error)); }
+      } catch (error) { window.Snowglass.launcher.settleLaunch(plan.id, error instanceof Error ? error.message : String(error)); }
     });
     waitForConnectedLayout(180);
   });
@@ -403,9 +405,9 @@ function RemapPage() {
 
 function NotFound() { navigateMemory("/", true); return null; }
 
-const initialRoute = window.snowglassLauncher.state.kind === "configure"
+const initialRoute = window.Snowglass.launcher.state.kind === "configure"
   ? "/configure"
-  : window.snowglassLauncher.state.kind === "launching"
+  : window.Snowglass.launcher.state.kind === "launching"
     ? "/game/launching"
     : "/";
 const shellHistory = createMemoryHistory();

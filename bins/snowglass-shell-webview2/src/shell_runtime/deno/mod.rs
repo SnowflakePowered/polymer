@@ -10,14 +10,17 @@ mod emulator;
 mod input;
 mod launcher;
 mod modules;
+mod plugin;
 mod runtime;
 mod state;
+mod webrtc;
 
 pub use dom::Mutation;
 pub use emulator::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
 pub use input::EventResult;
 pub use launcher::{LauncherCommand, LauncherCommandSink};
 pub use runtime::Runtime;
+pub use webrtc::{WebRtcCommand, WebRtcCommandSink};
 
 #[cfg(test)]
 mod tests;

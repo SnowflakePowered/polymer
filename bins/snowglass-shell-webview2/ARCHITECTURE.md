@@ -28,8 +28,13 @@ and fonts. Its waker posts a shell redraw event when a resource arrives.
   visual, and the egui diagnostics overlay.
 
 There is no foreground proxy, linked document, shared UI bus, or structured
-remote-value codec. `Emulator`, `snowglassInput`, `snowglassLauncher`, and
-`HTMLTrackedSurfaceElement` are synchronous objects in the Solid realm.
+remote-value codec. `Snowglass.input`, `Snowglass.plugin`,
+`Snowglass.emulator`, `Snowglass.webrtc`, and `Snowglass.launcher` are
+same-realm APIs. Emulator launch, WebRTC publication control, and plugin
+invocation cross asynchronous Deno op boundaries. Deno owns WebRTC lifecycle
+and instance association; `snowglass-renderer` keeps signaling, peer sessions,
+GPU composition, encoding, and frame publication together in the native data
+plane.
 
 ## DOM and events
 

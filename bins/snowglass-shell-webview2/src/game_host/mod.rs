@@ -18,7 +18,6 @@ use snowglass_renderer::{
     SurfaceCaptureEvent, SurfaceContent, SurfacePlacement, SurfacePointerSender,
 };
 use std::error::Error;
-use std::path::{Component, Path};
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
@@ -534,6 +533,7 @@ impl RenderDevice {
 #[derive(Debug)]
 pub(crate) enum GameHostCommand {
     Emulator(crate::shell_runtime::EmulatorCommand),
+    WebRtc(crate::shell_runtime::WebRtcCommand),
 }
 
 #[derive(Clone)]
@@ -557,7 +557,7 @@ struct ActiveEmulator {
     token: crate::shell_runtime::InstanceToken,
     runtime: snowglass_runtime::EmulatorInstance,
     options: AttachedLaunchPlan,
-    webrtc: Option<snowglass_renderer::webrtc::Publisher>,
+    webrtc: Option<snowglass_renderer::webrtc::Publication>,
     audio: snowglass_runtime::AudioState,
 }
 
@@ -804,17 +804,12 @@ impl GameHost {
             .ok()
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
             .ok_or_else(|| "shell executable has no parent directory".to_owned())?;
-        if let Some(configuration) = &options.generated_configuration {
-            install_generated_configuration(configuration)?;
-        }
-        let command = std::iter::once(file_url_or_path(&options.command)?)
-            .chain(options.arguments.iter().cloned())
-            .collect();
         let mut gamepad_layouts = options.gamepad_mapping.iter().collect::<Vec<_>>();
         gamepad_layouts.sort_by_key(|mapping| mapping.slot);
-        let config = snowglass_runtime::EmulatorConfig {
+        let config = snowglass_runtime::EmulatorLaunchConfig {
             session,
-            command,
+            command: options.command.clone(),
+            arguments: options.arguments.clone(),
             artifact_root,
             hooks: options.hook.iter().copied().map(hook_backend).collect(),
             consumer: snowglass_runtime::ConsumerPreference::D3d12,
@@ -836,30 +831,11 @@ impl GameHost {
                 .into_iter()
                 .map(|mapping| mapping.layout.clone())
                 .collect(),
-        };
-        let webrtc_targets = options
-            .surfaces
-            .iter()
-            .filter(|surface| surface.webrtc)
-            .map(|surface| surface.index)
-            .collect::<Vec<_>>();
-        let publisher = if webrtc_targets.is_empty() {
-            None
-        } else {
-            let bind = options
-                .webrtc_bind
-                .as_deref()
-                .unwrap_or("127.0.0.1:8080")
-                .parse()
-                .map_err(|error| format!("invalid WebRTC bind address: {error}"))?;
-            Some(
-                snowglass_renderer::webrtc::Publisher::start(bind, &webrtc_targets)
-                    .map_err(|error| error.to_string())?,
-            )
+            generated_configuration: options.generated_configuration.clone(),
         };
         let dirty = self.dirty.clone();
         let wake_pending = self.wake_pending.clone();
-        let runtime = snowglass_runtime::EmulatorInstance::spawn_with_waker(config, move || {
+        let runtime = snowglass_runtime::EmulatorInstance::launch_with_waker(config, move || {
             dirty.store(true, std::sync::atomic::Ordering::Release);
             if !wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) && !wake_window() {
                 wake_pending.store(false, std::sync::atomic::Ordering::Release);
@@ -872,10 +848,56 @@ impl GameHost {
             token,
             runtime,
             options,
-            webrtc: publisher,
+            webrtc: None,
             audio,
         });
         Ok(())
+    }
+
+    pub fn start_webrtc(
+        &mut self,
+        token: crate::shell_runtime::InstanceToken,
+        bind: std::net::SocketAddr,
+        targets: &[u32],
+    ) -> Result<(), String> {
+        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
+            return Err("the emulator instance is not active".to_owned());
+        };
+        if active.webrtc.is_some() {
+            return Err("the emulator instance already has a WebRTC publication".to_owned());
+        }
+        if let Some(target) = targets.iter().find(|target| {
+            !active
+                .options
+                .surfaces
+                .iter()
+                .any(|surface| surface.index == **target)
+        }) {
+            return Err(format!(
+                "WebRTC render target {target} is not part of the emulator launch"
+            ));
+        }
+        let mut publication = snowglass_renderer::webrtc::Publication::start_d3d12(
+            bind,
+            targets,
+            &self.render_device.compositor,
+        )
+        .map_err(|error| error.to_string())?;
+        for (&connection, surface) in &self.surfaces {
+            publication
+                .add_stream(connection, surface.index)
+                .map_err(|error| error.to_string())?;
+        }
+        active.webrtc = Some(publication);
+        self.compositor_dirty = true;
+        Ok(())
+    }
+
+    pub fn stop_webrtc(&mut self, token: crate::shell_runtime::InstanceToken) -> bool {
+        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
+            return false;
+        };
+        active.webrtc.take().is_some()
     }
 
     pub fn input_endpoint(&self) -> Option<crate::input::GameInputEndpoint> {
@@ -1045,16 +1067,27 @@ impl GameHost {
             return Err(error.into());
         }
 
+        if let Some(publication) = self
+            .active
+            .as_mut()
+            .and_then(|active| active.webrtc.as_mut())
+        {
+            if let Err(error) = publication.add_stream(connection, target_index) {
+                self.capture.revoke(connection);
+                let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
+                return Err(error);
+            }
+        }
         self.surfaces.insert(connection, surface);
         if let Some(previous) = replaced_connection {
             self.surfaces.remove(&previous);
             let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, previous);
-            if let Some(publisher) = self
+            if let Some(publication) = self
                 .active
-                .as_ref()
-                .and_then(|active| active.webrtc.as_ref())
+                .as_mut()
+                .and_then(|active| active.webrtc.as_mut())
             {
-                publisher.remove_stream(previous);
+                publication.remove_stream(previous);
             }
         }
         self.compositor_dirty = true;
@@ -1081,16 +1114,23 @@ impl GameHost {
         // Construct the complete replacement before disturbing the active
         // device domain. A failure leaves the old compositor usable.
         let replacement = RenderDevice::recreate(window, desired)?;
+        if let Some(publication) = self
+            .active
+            .as_mut()
+            .and_then(|active| active.webrtc.as_mut())
+        {
+            publication.reattach_d3d12(&replacement.compositor)?;
+        }
         self.render_device = replacement;
         let stale_connections = self.surfaces.keys().copied().collect::<Vec<_>>();
         for connection in stale_connections {
             self.capture.revoke(connection);
-            if let Some(publisher) = self
+            if let Some(publication) = self
                 .active
-                .as_ref()
-                .and_then(|active| active.webrtc.as_ref())
+                .as_mut()
+                .and_then(|active| active.webrtc.as_mut())
             {
-                publisher.remove_stream(connection);
+                publication.remove_stream(connection);
             }
         }
         self.surfaces.clear();
@@ -1125,12 +1165,12 @@ impl GameHost {
     }
 
     fn remove_surface(&mut self, connection: u64) -> bool {
-        if let Some(publisher) = self
+        if let Some(publication) = self
             .active
-            .as_ref()
-            .and_then(|active| active.webrtc.as_ref())
+            .as_mut()
+            .and_then(|active| active.webrtc.as_mut())
         {
-            publisher.remove_stream(connection);
+            publication.remove_stream(connection);
         }
         let removed = self.surfaces.remove(&connection).is_some();
         if removed {
@@ -1141,11 +1181,11 @@ impl GameHost {
     }
 
     pub fn finish_active_game(&mut self) -> Option<FinishedGame> {
-        let active = self.active.take()?;
+        let mut active = self.active.take()?;
         let connections = self.surfaces.keys().copied().collect::<Vec<_>>();
         for &connection in &connections {
-            if let Some(publisher) = &active.webrtc {
-                publisher.remove_stream(connection);
+            if let Some(publication) = &mut active.webrtc {
+                publication.remove_stream(connection);
             }
             self.capture.revoke(connection);
             let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
@@ -1234,9 +1274,19 @@ impl GameHost {
         if !compositor.begin_frame_within(permit_wait) {
             return Ok(None);
         }
-        compositor
-            .present_with_webrtc(&plan, None)
-            .map_err(|error| error.to_string())?;
+        if let Some(publication) = self
+            .active
+            .as_mut()
+            .and_then(|active| active.webrtc.as_mut())
+        {
+            publication
+                .present_d3d12(compositor, &plan)
+                .map_err(|error| error.to_string())?;
+        } else {
+            compositor
+                .present_with_webrtc(&plan, None)
+                .map_err(|error| error.to_string())?;
+        }
         self.compositor_dirty = false;
         self.chrome_dirty = false;
         Ok(Some(carried_new_frame))
@@ -1330,93 +1380,6 @@ fn hook_backend(hook: snowglass_pluginhost::GraphicsHook) -> snowglass_runtime::
         snowglass_pluginhost::GraphicsHook::D3d11 => snowglass_runtime::HookBackend::D3d11,
         snowglass_pluginhost::GraphicsHook::D3d12 => snowglass_runtime::HookBackend::D3d12,
     }
-}
-
-fn file_url_or_path(value: &str) -> Result<String, String> {
-    if !value.starts_with("file:") {
-        return Ok(value.to_owned());
-    }
-    let url = deno_core::ModuleSpecifier::parse(value)
-        .map_err(|error| format!("invalid file URL '{value}': {error}"))?;
-    url.to_file_path()
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(|()| format!("file URL is not a local path: {value}"))
-}
-
-fn install_generated_configuration(
-    configuration: &crate::launch::GeneratedConfiguration,
-) -> Result<(), String> {
-    let root = std::path::PathBuf::from(file_url_or_path(&configuration.root)?);
-    if !root.is_dir() {
-        return Err(format!(
-            "plugin config root does not exist: {}",
-            root.display()
-        ));
-    }
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("cannot resolve config root {}: {error}", root.display()))?;
-    let mut written = 0usize;
-    for (relative, bytes) in &configuration.files {
-        let relative = Path::new(relative);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(format!(
-                "plugin config path must stay beneath its root: {}",
-                relative.display()
-            ));
-        }
-        let target = root.join(relative);
-        if target.exists() {
-            let resolved_target = target.canonicalize().map_err(|error| {
-                format!(
-                    "cannot resolve existing config {}: {error}",
-                    target.display()
-                )
-            })?;
-            if !resolved_target.starts_with(&root) {
-                return Err(format!(
-                    "plugin config path escapes its root through a link: {}",
-                    target.display()
-                ));
-            }
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "cannot create config directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-            let resolved_parent = parent.canonicalize().map_err(|error| {
-                format!(
-                    "cannot resolve config directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-            if !resolved_parent.starts_with(&root) {
-                return Err(format!(
-                    "plugin config path escapes its root through a link: {}",
-                    target.display()
-                ));
-            }
-        }
-        std::fs::write(&target, bytes).map_err(|error| {
-            format!(
-                "cannot write generated config {}: {error}",
-                target.display()
-            )
-        })?;
-        written += 1;
-    }
-    tracing::info!(
-        "snowglass: plugin configuration realized: {written} file(s) written under {}",
-        root.display()
-    );
-    Ok(())
 }
 
 struct SurfaceGeometry {
@@ -1571,7 +1534,6 @@ fn normalize_pointer_transform(
 mod tests {
     use super::*;
     use snowglass_renderer::SurfacePlacement;
-    use std::collections::BTreeMap;
     use style::{
         properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
         values::computed::{LengthPercentage, Percentage, position::Position},
@@ -1683,20 +1645,5 @@ mod tests {
         assert_eq!(rotated_extent(854, 480, 1), (480, 854));
         assert_eq!(rotated_extent(854, 480, 2), (854, 480));
         assert_eq!(rotated_extent(854, 480, 3), (480, 854));
-    }
-
-    #[test]
-    fn game_host_installs_generated_configuration_at_launch_boundary() {
-        let root = tempfile::tempdir().unwrap();
-        let settings = root.path().join("settings.xml");
-        std::fs::write(&settings, b"old").unwrap();
-        let configuration = crate::launch::GeneratedConfiguration {
-            root: root.path().to_string_lossy().into_owned(),
-            files: BTreeMap::from([("settings.xml".to_owned(), b"generated".to_vec())]),
-        };
-
-        install_generated_configuration(&configuration).unwrap();
-
-        assert_eq!(std::fs::read(settings).unwrap(), b"generated");
     }
 }

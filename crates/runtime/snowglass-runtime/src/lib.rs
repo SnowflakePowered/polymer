@@ -12,11 +12,11 @@ pub use capture::ConsumerPreference;
 #[doc(hidden)]
 pub use input::ProtocolInputSender;
 pub use instance::{
-    AudioState, EmulatorConfig, EmulatorInstance, HotkeyChord, HotkeyKey, InstanceExit,
-    InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken, ResizeDimensions,
-    SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver, SurfaceFrameUpdate,
-    SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig, TrackedSurfaceHandle,
-    TrackedSurfaceId,
+    AudioState, EmulatorInstance, EmulatorLaunchConfig, GeneratedConfiguration, HotkeyChord,
+    HotkeyKey, InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,
+    ResizeDimensions, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
+    SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
+    TrackedSurfaceHandle, TrackedSurfaceId,
 };
 pub use ui::{UiRequest, UiRequestReceiver};
 
@@ -30,7 +30,7 @@ pub enum RuntimeState {
 
 /// A graphics capture backend installed into the target process.
 ///
-/// Ordering in [`EmulatorConfig::hooks`] is also the preference order used
+/// Ordering in [`EmulatorLaunchConfig::hooks`] is also the preference order used
 /// when multiple hooks expose the same logical surface.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HookBackend {

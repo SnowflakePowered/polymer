@@ -15,6 +15,8 @@ const consoleModule = core.loadExtScript("ext:deno_web/01_console.js");
 const abortSignal = core.loadExtScript("ext:deno_web/03_abort_signal.js");
 const file = core.loadExtScript("ext:deno_web/09_file.js");
 const domException = core.loadExtScript("ext:deno_web/01_dom_exception.js");
+const locationModule = core.loadExtScript("ext:deno_web/12_location.js");
+locationModule.setLocationHref(ops.op_snowglass_location());
 
 let streams;
 const loadStreams = () =>
@@ -125,6 +127,8 @@ Object.defineProperties(globalThis, {
     get: () => loadWebStorage().localStorage(),
     set() {},
   },
+  Location: locationModule.locationConstructorDescriptor,
+  location: locationModule.locationDescriptor,
   navigator: { value: navigator, configurable: true },
   reportError: { value: event.reportError, configurable: true, writable: true },
   removeEventListener: { value: event.EventTarget.prototype.removeEventListener, configurable: true, writable: true },

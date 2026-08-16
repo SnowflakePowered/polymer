@@ -19,9 +19,9 @@ use snowglass_platform_windows::{
 };
 use snowglass_protocol::{ExternalImageKind, FrameReady};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fmt,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -45,9 +45,10 @@ pub struct TrackedSurfaceConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct EmulatorConfig {
+pub struct EmulatorLaunchConfig {
     pub session: String,
-    pub command: Vec<String>,
+    pub command: String,
+    pub arguments: Vec<String>,
     pub artifact_root: PathBuf,
     pub hooks: Vec<HookBackend>,
     pub consumer: ConsumerPreference,
@@ -58,16 +59,48 @@ pub struct EmulatorConfig {
     pub graph_tracking: bool,
     pub force_keyed_mutex: bool,
     pub gamepad_layouts: Vec<String>,
+    pub generated_configuration: Option<GeneratedConfiguration>,
 }
 
-impl EmulatorConfig {
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedConfiguration {
+    pub root: String,
+    pub files: BTreeMap<String, Vec<u8>>,
+}
+
+impl GeneratedConfiguration {
+    fn validate(&self) -> Result<(), LaunchError> {
+        if self.root.trim().is_empty() {
+            return Err(LaunchError::InvalidConfig(
+                "generated configuration root must not be empty".to_owned(),
+            ));
+        }
+        for relative in self.files.keys() {
+            let relative = Path::new(relative);
+            if relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                return Err(LaunchError::InvalidConfig(format!(
+                    "generated configuration path must stay beneath its root: {}",
+                    relative.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl EmulatorLaunchConfig {
     fn validate(&self) -> Result<(), LaunchError> {
         if self.session.is_empty() || self.session.contains(['/', '\\']) {
             return Err(LaunchError::InvalidConfig(
                 "session must be a non-empty socket name".to_owned(),
             ));
         }
-        if self.command.is_empty() {
+        if self.command.trim().is_empty() {
             return Err(LaunchError::InvalidConfig(
                 "target command must not be empty".to_owned(),
             ));
@@ -86,6 +119,9 @@ impl EmulatorConfig {
             return Err(LaunchError::InvalidConfig(
                 "tracked surface ids must be unique".to_owned(),
             ));
+        }
+        if let Some(configuration) = &self.generated_configuration {
+            configuration.validate()?;
         }
         Ok(())
     }
@@ -540,15 +576,16 @@ pub struct EmulatorInstance {
 }
 
 impl EmulatorInstance {
-    pub fn spawn(config: EmulatorConfig) -> Result<Self, LaunchError> {
-        Self::spawn_with_waker(config, || {})
+    pub fn launch(config: EmulatorLaunchConfig) -> Result<Self, LaunchError> {
+        Self::launch_with_waker(config, || {})
     }
 
-    pub fn spawn_with_waker(
-        config: EmulatorConfig,
+    pub fn launch_with_waker(
+        config: EmulatorLaunchConfig,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, LaunchError> {
         config.validate()?;
+        crate::launch::install_generated_configuration(config.generated_configuration.as_ref())?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
         let input = InputTransport::bind(&config.session)?;
         let (ui, ui_requests) = match UiTransport::bind(&config.session, wake.clone()) {
@@ -776,7 +813,11 @@ pub(crate) struct SurfaceManager {
 }
 
 impl SurfaceManager {
-    fn new(config: &EmulatorConfig, input: InputTransport, events: SurfaceEventSender) -> Self {
+    fn new(
+        config: &EmulatorLaunchConfig,
+        input: InputTransport,
+        events: SurfaceEventSender,
+    ) -> Self {
         Self {
             hooks: Arc::from(config.hooks.clone()),
             tracked_surfaces: Arc::from(config.tracked_surfaces.clone()),
@@ -1335,10 +1376,11 @@ fn stream_backend(kind: ExternalImageKind) -> HookBackend {
 mod tests {
     use super::*;
 
-    fn config() -> EmulatorConfig {
-        EmulatorConfig {
+    fn config() -> EmulatorLaunchConfig {
+        EmulatorLaunchConfig {
             session: "runtime-test".to_owned(),
-            command: vec!["emulator.exe".to_owned()],
+            command: "emulator.exe".to_owned(),
+            arguments: Vec::new(),
             artifact_root: PathBuf::from("."),
             hooks: vec![HookBackend::D3d12],
             consumer: ConsumerPreference::D3d12,
@@ -1353,6 +1395,7 @@ mod tests {
             graph_tracking: false,
             force_keyed_mutex: false,
             gamepad_layouts: Vec::new(),
+            generated_configuration: None,
         }
     }
 
@@ -1362,6 +1405,16 @@ mod tests {
 
         let mut invalid = config();
         invalid.command.clear();
+        assert!(matches!(
+            invalid.validate(),
+            Err(LaunchError::InvalidConfig(_))
+        ));
+
+        let mut invalid = config();
+        invalid.generated_configuration = Some(GeneratedConfiguration {
+            root: ".".to_owned(),
+            files: BTreeMap::from([("../settings.ini".to_owned(), Vec::new())]),
+        });
         assert!(matches!(
             invalid.validate(),
             Err(LaunchError::InvalidConfig(_))

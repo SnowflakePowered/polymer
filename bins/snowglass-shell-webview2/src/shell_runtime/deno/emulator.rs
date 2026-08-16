@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
@@ -16,6 +16,7 @@ pub enum EmulatorCommand {
     Launch {
         token: InstanceToken,
         options: AttachedLaunchPlan,
+        result: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     Close(InstanceToken),
     SetVolume {
@@ -62,31 +63,38 @@ impl Default for EmulatorCommandSink {
 
 pub(super) struct EmulatorBridge {
     pub command_sink: EmulatorCommandSink,
-    next_token: u32,
 }
 
 impl Default for EmulatorBridge {
     fn default() -> Self {
         Self {
             command_sink: EmulatorCommandSink::default(),
-            next_token: 0,
         }
     }
 }
 
 #[op2]
-pub(super) fn op_emulator_launch(
-    state: &mut OpState,
+pub(super) async fn op_emulator_launch(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
     #[serde] options: AttachedLaunchPlan,
-) -> Result<u32, JsErrorBox> {
+) -> Result<(), JsErrorBox> {
     options.validate().map_err(JsErrorBox::type_error)?;
-    let emulator = state.borrow_mut::<EmulatorBridge>();
-    emulator.next_token = emulator.next_token.wrapping_add(1).max(1);
-    let token = InstanceToken(emulator.next_token);
-    emulator
+    let command_sink = state
+        .borrow()
+        .borrow::<EmulatorBridge>()
         .command_sink
-        .send(EmulatorCommand::Launch { token, options });
-    Ok(token.0)
+        .clone();
+    let (result, response) = tokio::sync::oneshot::channel();
+    command_sink.send(EmulatorCommand::Launch {
+        token: InstanceToken(token),
+        options,
+        result,
+    });
+    response
+        .await
+        .map_err(|_| JsErrorBox::generic("emulator launch coordinator is unavailable"))?
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]

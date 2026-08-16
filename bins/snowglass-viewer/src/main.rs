@@ -1457,9 +1457,10 @@ fn start_target_session(
                 .collect()
         });
     let mut instance =
-        snowglass_runtime::EmulatorInstance::spawn(snowglass_runtime::EmulatorConfig {
+        snowglass_runtime::EmulatorInstance::launch(snowglass_runtime::EmulatorLaunchConfig {
             session: session.to_owned(),
-            command: target,
+            command: target[0].clone(),
+            arguments: target[1..].to_vec(),
             artifact_root: executable_dir.to_path_buf(),
             hooks: launcher.hooks.clone(),
             consumer: match viewer_api {
@@ -1473,6 +1474,7 @@ fn start_target_session(
             graph_tracking,
             force_keyed_mutex,
             gamepad_layouts: layouts.iter().map(|layout| layout.id.clone()).collect(),
+            generated_configuration: None,
         })?;
     let provider = Sdl3Provider::start(
         Sdl3ProviderConfig {

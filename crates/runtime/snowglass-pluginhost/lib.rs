@@ -6,7 +6,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod bus;
 mod configuration;
 mod deno;
 mod emulator;

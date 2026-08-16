@@ -1,8 +1,9 @@
 // Shell Emulator lifecycle facade. The native op table remains the only
 // authority for process, input, audio, and capture state.
-globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement) => {
+globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, webrtc) => {
   const Emulator = new EventTarget();
   let activeInstance = null;
+  let nextInstanceId = 0;
 
   function publishActiveInstance(instance) {
     if (activeInstance === instance) return;
@@ -107,6 +108,7 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement) =>
       } else if (eventName === "closed") {
         this.#state = "closed";
         this.surfaces = Object.freeze([]);
+        webrtc.instanceClosed(this);
         if (activeInstance === this) publishActiveInstance(null);
       }
       for (const callback of this.#listeners.get(eventName) || []) {
@@ -116,8 +118,9 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement) =>
     }
   }
 
-  function launch(options) {
-    if (activeInstance) return null;
+  async function launch(options) {
+    if (activeInstance) throw new DOMException("another emulator instance is active", "InvalidStateError");
+    let nativeStarted = false;
     try {
       if (!options || !Array.isArray(options.surfaces)) {
         throw new TypeError("Emulator launch requires tracked surfaces");
@@ -142,22 +145,36 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement) =>
           rotation: surface.rotation || 0,
           selector: surface.selector,
           attach: surface.attach.__id,
-          webrtc: Boolean(surface.webrtc),
         })),
         gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
           ...mapping,
           mapping: { ...(mapping.mapping || {}) },
         })),
         machine: options.machine,
-        webrtcBind: options.webrtcBind,
         generatedConfiguration: options.generatedConfiguration,
       };
-      const instance = new EmulatorInstance(ops.op_emulator_launch(wire), options.surfaces);
+      const id = nextInstanceId = (nextInstanceId + 1) >>> 0 || 1;
+      const instance = new EmulatorInstance(id, options.surfaces);
       publishActiveInstance(instance);
+      await ops.op_emulator_launch(id, wire);
+      nativeStarted = true;
+      const webrtcTargets = options.surfaces
+        .filter((surface) => surface.webrtc)
+        .map((surface) => surface.index);
+      if (webrtcTargets.length > 0) {
+        await webrtc.startForInstance(instance, {
+          bind: options.webrtcBind,
+          targets: webrtcTargets,
+        });
+      }
       return instance;
     } catch (error) {
-      console.error("Emulator launch failed", error);
-      return null;
+      if (nativeStarted && activeInstance) ops.op_emulator_close(activeInstance.id);
+      if (activeInstance && activeInstance.state !== "closed") {
+        activeInstance.__nativeEvent("error", { message: error instanceof Error ? error.message : String(error) });
+        activeInstance.__nativeEvent("closed", null);
+      }
+      throw error;
     }
   }
 

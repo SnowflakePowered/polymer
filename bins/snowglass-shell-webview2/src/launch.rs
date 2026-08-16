@@ -1,11 +1,8 @@
 use crate::input::{GamepadMapping, parse_input_binding};
 pub use snowglass_pluginhost::{EmulatorLaunchArguments, GraphicsHook};
 use snowglass_renderer::cli::ViewerOptions;
-use std::{
-    collections::{BTreeMap, HashSet},
-    net::SocketAddr,
-    path::{Component, Path},
-};
+pub use snowglass_runtime::GeneratedConfiguration;
+use std::{collections::HashSet, net::SocketAddr};
 
 // Native game-host launch contracts and their shell adapters.
 
@@ -71,35 +68,6 @@ pub struct UnattachedLaunchPlan {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GeneratedConfiguration {
-    pub root: String,
-    pub files: BTreeMap<String, Vec<u8>>,
-}
-
-impl GeneratedConfiguration {
-    fn validate(&self) -> Result<(), String> {
-        if self.root.trim().is_empty() {
-            return Err("generated configuration root must not be empty".to_owned());
-        }
-        for relative in self.files.keys() {
-            let relative = Path::new(relative);
-            if relative.is_absolute()
-                || relative
-                    .components()
-                    .any(|component| !matches!(component, Component::Normal(_)))
-            {
-                return Err(format!(
-                    "plugin config path must stay beneath its root: {}",
-                    relative.display()
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UnattachedTrackedSurface {
     pub index: u32,
     #[serde(default)]
@@ -161,9 +129,6 @@ impl UnattachedLaunchPlan {
                 parse_input_binding(source)?;
             }
         }
-        if let Some(configuration) = &self.generated_configuration {
-            configuration.validate()?;
-        }
         Ok(())
     }
 }
@@ -183,7 +148,6 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub gamepad_mapping: Vec<GamepadMapping>,
     pub machine: String,
-    pub webrtc_bind: Option<String>,
     #[serde(default)]
     pub generated_configuration: Option<GeneratedConfiguration>,
 }
@@ -197,8 +161,6 @@ pub struct AttachedTrackedSurface {
     pub selector: Option<String>,
     /// Blitz node ID validated by the shell DOM at attachment time.
     pub attach: usize,
-    #[serde(default)]
-    pub webrtc: bool,
 }
 
 impl AttachedLaunchPlan {
@@ -241,20 +203,10 @@ impl AttachedLaunchPlan {
         {
             return Err("gamepad slots must be unique and contiguous from zero".to_owned());
         }
-        if self.webrtc_bind.is_some() && !self.surfaces.iter().any(|surface| surface.webrtc) {
-            return Err("webrtcBind requires at least one WebRTC surface".to_owned());
-        }
-        if let Some(bind) = &self.webrtc_bind {
-            bind.parse::<SocketAddr>()
-                .map_err(|error| format!("invalid WebRTC bind address '{bind}': {error}"))?;
-        }
         for mapping in &self.gamepad_mapping {
             for source in mapping.mapping.values() {
                 parse_input_binding(source)?;
             }
-        }
-        if let Some(configuration) = &self.generated_configuration {
-            configuration.validate()?;
         }
         Ok(())
     }
@@ -264,22 +216,6 @@ impl AttachedLaunchPlan {
 mod tests {
     use super::*;
     use snowglass_input::layout::{InputBinding, SdlAxis, SdlButton};
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn generated_configuration_paths_are_structurally_validated() {
-        let valid = GeneratedConfiguration {
-            root: "file:///config".to_owned(),
-            files: BTreeMap::from([("nested/settings.xml".to_owned(), vec![1, 2, 3])]),
-        };
-        valid.validate().unwrap();
-
-        let escaping = GeneratedConfiguration {
-            root: "file:///config".to_owned(),
-            files: BTreeMap::from([("../settings.xml".to_owned(), vec![])]),
-        };
-        assert!(escaping.validate().is_err());
-    }
 
     #[test]
     fn validates_shell_launch_options() {
@@ -293,8 +229,7 @@ mod tests {
                     "index": 0,
                     "rotation": 0,
                     "selector": "Game",
-                    "attach": 4,
-                    "webrtc": false
+                    "attach": 4
                 }],
                 "gamepadMapping": [],
                 "machine": "MICROSOFT_XBOX"
