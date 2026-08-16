@@ -19,6 +19,7 @@ repository = "https://github.com/snowglass/snowglass"
 rust-version = "1.94"
 
 [workspace.dependencies]
+asar = { version = "0.3.0", default-features = false }
 ash = { version = "0.38.0", default-features = false, features = ["loaded", "std"] }
 ash-window = "0.13.0"
 bcast = "0.0.29"
@@ -37,6 +38,7 @@ serde_json = "1.0"
 toml = "0.9"
 ib-hook = { version = "0.2.2", default-features = false, features = ["inline"] }
 memmap2 = "0.9.8"
+rand = "0.10.0"
 tempfile = "3.20"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
@@ -104,6 +106,7 @@ gumshoe = { git = "https://github.com/SnowflakePowered/gumshoe", rev = "ba129274
 phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
+snowglass-vfs = { path = "crates/filesystem/snowglass-vfs" }
 
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 

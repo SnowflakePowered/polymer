@@ -373,8 +373,40 @@ mod packages {
     #[toml(FromToml)]
     struct Manifest<'de> {
         #[expect(dead_code)]
-        plugin: BTreeMap<&'de str, &'de str>,
+        plugin: ManifestPlugin<'de>,
         emulator: ManifestEmulator<'de>,
+    }
+
+    #[derive(Toml)]
+    #[toml(FromToml)]
+    struct ManifestPlugin<'de> {
+        #[expect(dead_code)]
+        id: &'de str,
+        #[expect(dead_code)]
+        version: &'de str,
+        #[expect(dead_code)]
+        class: &'de str,
+        #[toml(default)]
+        #[expect(dead_code)]
+        config: BTreeMap<&'de str, &'de str>,
+        #[toml(default)]
+        #[expect(dead_code)]
+        resources: Vec<ManifestResource<'de>>,
+    }
+
+    #[derive(Toml)]
+    #[toml(FromToml)]
+    struct ManifestResource<'de> {
+        #[expect(dead_code)]
+        name: &'de str,
+        #[expect(dead_code)]
+        target: Option<&'de str>,
+        #[expect(dead_code)]
+        source: &'de str,
+        #[expect(dead_code)]
+        format: &'de str,
+        #[expect(dead_code)]
+        mode: &'de str,
     }
 
     #[derive(Toml)]
@@ -382,6 +414,8 @@ mod packages {
     struct ManifestEmulator<'de> {
         #[expect(dead_code)]
         platforms: Vec<&'de str>,
+        #[expect(dead_code)]
+        main: Option<&'de str>,
         configuration: ManifestConfiguration<'de>,
     }
 

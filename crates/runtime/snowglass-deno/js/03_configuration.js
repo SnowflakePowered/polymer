@@ -1,7 +1,12 @@
 import {
   op_configuration_describe,
   op_configuration_prepare,
+  op_prepared_filesystem_release,
 } from "ext:core/ops";
+
+const preparedFilesystemFinalizer = new FinalizationRegistry((token) => {
+  op_prepared_filesystem_release(token);
+});
 
 export function createConfiguration(scraping, pluginApi) {
   const Configuration = Object.freeze({
@@ -18,7 +23,7 @@ export function createConfiguration(scraping, pluginApi) {
       const prepared = await Configuration.prepare(packageValue, selection);
       const plugin = await pluginApi.open(prepared.plugin).setupLaunch(prepared.arguments);
       const targets = new Set(prepared.webrtcTargets || []);
-      return Object.freeze({
+      const launch = Object.freeze({
         command: plugin.command,
         arguments: [...(plugin.argv || [])],
         isolated: Boolean(plugin.isolate),
@@ -36,7 +41,12 @@ export function createConfiguration(scraping, pluginApi) {
           root: plugin.configRoot,
           files: plugin.config,
         },
+        preparedFilesystem: plugin.preparedFilesystem,
       });
+      if (plugin.preparedFilesystem !== undefined) {
+        preparedFilesystemFinalizer.register(launch, plugin.preparedFilesystem);
+      }
+      return launch;
     },
   });
   return Configuration;

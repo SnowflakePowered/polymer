@@ -34,6 +34,7 @@ export type LaunchOptions = {
     root: string;
     files: Record<string, number[]>;
   };
+  preparedFilesystem?: string;
 };
 
 export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {

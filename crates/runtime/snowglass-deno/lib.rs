@@ -17,9 +17,12 @@ use std::{
     time::Duration,
 };
 
+pub mod filesystem;
+pub mod handle;
 pub mod snowglass;
 
 pub use deno_inspector_server::{InspectPublishUid, InspectorServerError, create_inspector_server};
+pub use handle::Handle;
 
 struct UserAgent(String);
 
@@ -121,6 +124,10 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(mut options: RuntimeOptions) -> Self {
+        // A workspace embedder can unify rustls dependencies that select both
+        // built-in providers. Pick the provider used by Deno's networking
+        // extensions before they lazily construct a TLS client.
+        let _ = deno_tls::rustls::crypto::aws_lc_rs::default_provider().install_default();
         let location = options.main_module.clone();
         let user_agent = options.user_agent;
         let mut extensions = vec![

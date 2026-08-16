@@ -24,6 +24,8 @@ pub struct UnattachedLaunchPlan {
     pub webrtc_bind: Option<String>,
     #[serde(default)]
     pub generated_configuration: Option<GeneratedConfiguration>,
+    #[serde(default)]
+    pub prepared_filesystem: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -110,6 +112,8 @@ pub struct AttachedLaunchPlan {
     pub machine: String,
     #[serde(default)]
     pub generated_configuration: Option<GeneratedConfiguration>,
+    #[serde(default)]
+    pub prepared_filesystem: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

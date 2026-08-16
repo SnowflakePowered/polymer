@@ -19,6 +19,10 @@ pub struct EmulatorLaunchArguments {
     pub isolate: bool,
     pub hooks: Vec<GraphicsHook>,
     pub surfaces: Vec<TrackedSurface>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_filesystem: Option<String>,
+    #[serde(skip)]
+    pub filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]

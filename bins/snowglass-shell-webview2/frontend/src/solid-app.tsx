@@ -210,7 +210,7 @@ function Choice(props: { label: string; value: string; items: Array<{ value: str
     <Select.Root collection={collection()} value={[props.value]} onValueChange={(details: any) => props.onChange(details.value[0] || "")} positioning={{ sameWidth: true }}>
       <Select.Label class="text-xs text-snow-300">{props.label}</Select.Label>
       <Select.Control><Select.Trigger class="mt-1 flex w-full items-center justify-between rounded-lg border border-snow-300 px-3 py-2"><Select.ValueText /><Select.Indicator class="symbol-glyph">⌄</Select.Indicator></Select.Trigger></Select.Control>
-      <Select.Positioner><Select.Content class="z-50 rounded-lg border border-snow-300 bg-snow-900 p-1">
+      <Select.Positioner class="select-positioner"><Select.Content class="rounded-lg border border-snow-300 bg-snow-900 p-1">
         <For each={props.items}>{(item) => <Select.Item item={item} class="cursor-pointer rounded px-3 py-2 data-[highlighted]:bg-snow-800"><Select.ItemText>{item.label}</Select.ItemText><Select.ItemIndicator class="symbol-glyph">✓</Select.ItemIndicator></Select.Item>}</For>
       </Select.Content></Select.Positioner>
     </Select.Root>

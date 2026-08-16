@@ -126,6 +126,7 @@ struct RuntimeState {
     permits: Arc<Semaphore>,
     next_call: AtomicU64,
     active: Mutex<HashMap<u64, Arc<InvocationControl>>>,
+    prepared_filesystems: Mutex<HashMap<u64, snowglass_vfs::PreparedFilesystemLaunch>>,
     shutdown: AtomicBool,
 }
 
@@ -147,6 +148,7 @@ impl PluginRuntime {
                     permits: Arc::new(Semaphore::new(options.max_concurrent_calls)),
                     next_call: AtomicU64::new(1),
                     active: Mutex::new(HashMap::new()),
+                    prepared_filesystems: Mutex::new(HashMap::new()),
                     shutdown: AtomicBool::new(false),
                 }),
             },
@@ -162,6 +164,12 @@ impl Drop for PluginRuntime {
     fn drop(&mut self) {
         self.handle.state.shutdown.store(true, Ordering::Release);
         self.handle.cancel_all();
+        self.handle
+            .state
+            .prepared_filesystems
+            .lock()
+            .unwrap()
+            .clear();
         self.handle.state.permits.close();
     }
 }
@@ -282,7 +290,7 @@ impl PluginRuntimeHandle {
                 .as_object_mut()
                 .expect("validated setupLaunch arguments remain an object")
                 .remove("settings");
-            let result = self
+            let mut result = self
                 .setup_emulator_export_with_cancellation(
                     EmulatorSetupInvocation {
                         plugin,
@@ -293,23 +301,35 @@ impl PluginRuntimeHandle {
                     matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
                 )
                 .await?;
+            if let Some(filesystem) = result.filesystem.take() {
+                let handle = self.store_prepared_filesystem(filesystem);
+                result.prepared_filesystem = Some(handle.to_string());
+            }
             return serde_json::to_value(result).map_err(PluginInvocationError::worker);
         }
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
+        let filesystem =
+            filesystem_options(plugin.as_ref(), None).map_err(PluginInvocationError::worker)?;
         let path = export_path.to_vec();
         self.run_with_control(cancellation.control, move |control| {
-            run_worker(entrypoint, loader, control, move |runtime| async move {
-                let mut runtime = runtime;
-                invoke_export(
-                    runtime.js_runtime_mut(),
-                    &invocation_entrypoint,
-                    &path,
-                    arguments,
-                )
-                .await
-            })
+            run_worker(
+                entrypoint,
+                loader,
+                filesystem,
+                control,
+                move |runtime| async move {
+                    let mut runtime = runtime;
+                    invoke_export(
+                        runtime.js_runtime_mut(),
+                        &invocation_entrypoint,
+                        &path,
+                        arguments,
+                    )
+                    .await
+                },
+            )
         })
         .await
     }
@@ -342,16 +362,29 @@ impl PluginRuntimeHandle {
     ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
         let entrypoint = invocation.plugin.entrypoint().to_string();
         let loader = invocation.plugin.module_loader().clone();
+        let game = invocation
+            .arguments
+            .get("launchPath")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from);
+        let filesystem = filesystem_options(invocation.plugin.as_ref(), game)
+            .map_err(PluginInvocationError::worker)?;
         self.run_with_control(cancellation.control, move |control| {
-            run_worker(entrypoint, loader, control, move |mut runtime| async move {
-                crate::deno::execute_emulator(
-                    runtime.js_runtime_mut(),
-                    invocation,
-                    explicit_default,
-                )
-                .await
-                .map_err(PluginInvocationError::worker)
-            })
+            run_worker(
+                entrypoint,
+                loader,
+                filesystem,
+                control,
+                move |mut runtime| async move {
+                    crate::deno::execute_emulator(
+                        runtime.js_runtime_mut(),
+                        invocation,
+                        explicit_default,
+                    )
+                    .await
+                    .map_err(PluginInvocationError::worker)
+                },
+            )
         })
         .await
     }
@@ -362,6 +395,54 @@ impl PluginRuntimeHandle {
         for control in self.state.active.lock().unwrap().values() {
             control.cancel();
         }
+    }
+
+    pub fn take_prepared_filesystem(
+        &self,
+        token: &str,
+    ) -> Result<snowglass_vfs::PreparedFilesystemLaunch, PluginInvocationError> {
+        let token = u64::from_str_radix(token, 16).map_err(|_| {
+            PluginInvocationError::new(
+                "TypeError",
+                "INVALID_FILESYSTEM_HANDLE",
+                "invalid prepared filesystem handle",
+            )
+        })?;
+        self.state
+            .prepared_filesystems
+            .lock()
+            .unwrap()
+            .remove(&token)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "NotFoundError",
+                    "UNKNOWN_FILESYSTEM_HANDLE",
+                    "prepared filesystem handle is unknown or was already consumed",
+                )
+            })
+    }
+
+    pub fn release_prepared_filesystem(&self, token: &str) -> bool {
+        u64::from_str_radix(token, 16)
+            .ok()
+            .and_then(|token| {
+                self.state
+                    .prepared_filesystems
+                    .lock()
+                    .unwrap()
+                    .remove(&token)
+            })
+            .is_some()
+    }
+
+    fn store_prepared_filesystem(
+        &self,
+        filesystem: snowglass_vfs::PreparedFilesystemLaunch,
+    ) -> snowglass_deno::Handle<snowglass_vfs::PreparedFilesystemLaunch> {
+        let mut prepared = self.state.prepared_filesystems.lock().unwrap();
+        let handle = snowglass_deno::Handle::new();
+        prepared.insert(handle.as_raw(), filesystem);
+        handle
     }
 
     #[cfg(test)]
@@ -452,6 +533,7 @@ impl Drop for ActiveCallGuard {
 fn run_worker<T, F, Fut>(
     entrypoint: String,
     loader: crate::PluginModuleLoader,
+    filesystem: snowglass_deno::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
     operation: F,
 ) -> Result<T, PluginInvocationError>
@@ -469,7 +551,10 @@ where
         let mut runtime = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
             main_module,
             module_loader: Rc::new(loader),
-            extensions: vec![crate::deno::extension()],
+            extensions: vec![
+                crate::deno::extension(),
+                snowglass_deno::filesystem::extension(filesystem),
+            ],
             user_agent: format!("SnowglassPluginHost/{}", env!("CARGO_PKG_VERSION")),
             storage_dir: None,
             inspect: false,
@@ -480,6 +565,37 @@ where
         }
         operation(runtime).await
     })
+}
+
+fn filesystem_options(
+    plugin: &dyn EmulatorPluginInstance,
+    game_file: Option<std::path::PathBuf>,
+) -> Result<snowglass_deno::filesystem::FilesystemOptions, crate::PackageError> {
+    let mut options = snowglass_deno::filesystem::FilesystemOptions::new(
+        plugin.module_loader().root().to_owned(),
+    );
+    options.game_file = game_file;
+    options.resources = plugin
+        .resources()?
+        .into_iter()
+        .map(|resource| snowglass_deno::filesystem::NamedResource {
+            name: resource.name,
+            path: resource.path,
+            kind: match resource.format {
+                crate::PluginResourceFormat::Directory => {
+                    snowglass_deno::filesystem::NamedResourceKind::Directory
+                }
+                crate::PluginResourceFormat::Asar => {
+                    snowglass_deno::filesystem::NamedResourceKind::Asar
+                }
+                crate::PluginResourceFormat::File => {
+                    snowglass_deno::filesystem::NamedResourceKind::File
+                }
+            },
+            permissions: resource.permissions,
+        })
+        .collect();
+    Ok(options)
 }
 
 use std::future::Future;
@@ -552,6 +668,12 @@ mod tests {
                 version = "1"
                 class = "emulator"
 
+                [[plugin.resources]]
+                name = "runtime"
+                source = "pkg:runtime"
+                format = "directory"
+                mode = "rx"
+
                 [emulator]
                 platforms = ["TEST"]
                 main = "plugin.js"
@@ -561,6 +683,9 @@ mod tests {
             "#,
         )
         .unwrap();
+        std::fs::create_dir(root.path().join("runtime")).unwrap();
+        std::fs::write(root.path().join("runtime/emulator.exe"), b"emulator").unwrap();
+        std::fs::write(root.path().join("game.iso"), b"game").unwrap();
         std::fs::write(
             root.path().join("config.toml"),
             r#"
@@ -609,9 +734,29 @@ mod tests {
                 export const notCallable = 17;
                 export function setupLaunch(args) {
                   args.configuration.options().general.enabled = true;
+                  let command = "emulator.exe";
+                  let argv = [];
+                  if (args.virtualize) {
+                    const firstRender = args.configuration.render();
+                    const secondRender = args.configuration.render();
+                    if (firstRender === secondRender || firstRender["settings.ini"] === secondRender["settings.ini"]) {
+                      throw new Error("configuration.render() did not return fresh values");
+                    }
+                    args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
+                    args.filesystem.mountFile("/Emulator/runtime-copy.exe", new URL("pkg:runtime/emulator.exe"), { mode: "r" });
+                    for (const [name, bytes] of Object.entries(firstRender)) {
+                      args.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
+                    }
+                    args.filesystem.mountFile("/Game/game.iso", args.game, { mode: "r" });
+                    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "memory" });
+                    args.filesystem.setWorkingDirectory("/Emulator");
+                    args.filesystem.setProfile({ home: "/User", temp: "/User" });
+                    command = args.filesystem.path("/Emulator/emulator.exe");
+                    argv.push(args.filesystem.path("/Game/game.iso"));
+                  }
                   return {
-                    command: "emulator.exe",
-                    argv: [],
+                    command,
+                    argv,
                     configRoot: ".",
                     config: args.configuration,
                     hooks: ["vulkan"],
@@ -817,7 +962,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn realizes_configuration_before_discarding_the_worker() {
-        let (_root, registry) = package();
+        let (root, registry) = package();
         let plugin = registry
             .plugin::<dyn EmulatorPluginInstance>("worker-test")
             .unwrap();
@@ -826,7 +971,10 @@ mod tests {
             .handle()
             .setup_emulator(EmulatorSetupInvocation {
                 plugin,
-                arguments: serde_json::json!({ "launchPath": "game" }),
+                arguments: serde_json::json!({
+                    "launchPath": root.path().join("game.iso"),
+                    "virtualize": true
+                }),
                 configuration: configuration(),
             })
             .await
@@ -836,6 +984,13 @@ mod tests {
                 .unwrap()
                 .contains("Enabled=true")
         );
+        let filesystem = result
+            .filesystem
+            .as_ref()
+            .expect("plugin populated a VFS plan");
+        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 5);
+        assert!(result.command.starts_with(r"\\Snowglass."));
+        assert!(result.argv[0].ends_with(r"\Game\game.iso"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -872,6 +1027,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(explicit_default["command"], "emulator.exe");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepared_filesystem_handles_are_typed_single_use_capabilities() {
+        let (root, registry) = package();
+        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+        let handle = runtime.handle();
+        let result = handle
+            .invoke(
+                "worker-test",
+                &["setupLaunch".to_owned()],
+                vec![serde_json::json!({
+                    "launchPath": root.path().join("game.iso"),
+                    "console": "TEST",
+                    "portAssignments": {},
+                    "virtualize": true,
+                })],
+            )
+            .await
+            .unwrap();
+        let token = result["preparedFilesystem"].as_str().unwrap();
+        let filesystem = handle.take_prepared_filesystem(token).unwrap();
+        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 5);
+        assert!(handle.take_prepared_filesystem(token).is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

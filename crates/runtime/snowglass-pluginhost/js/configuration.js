@@ -1,6 +1,7 @@
 import {
   op_configuration_entries,
   op_configuration_get,
+  op_configuration_render,
   op_configuration_set,
 } from "ext:core/ops";
 
@@ -39,6 +40,10 @@ function configuration(id) {
     options,
     entries() {
       return op_configuration_entries(id);
+    },
+    render() {
+      const rendered = op_configuration_render(id);
+      return Object.freeze(rendered);
     },
   });
 }

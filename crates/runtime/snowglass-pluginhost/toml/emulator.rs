@@ -232,6 +232,10 @@ impl PluginInstance for EmulatorPlugin {
     fn module_loader(&self) -> &PluginModuleLoader {
         self.module_loader()
     }
+
+    fn resources(&self) -> Result<Vec<crate::PluginResource>, PackageError> {
+        self.package.resources()
+    }
 }
 
 impl EmulatorPluginInstance for EmulatorPlugin {
@@ -285,7 +289,8 @@ mod tests {
             .set(id, "main.core.gfx_backend", serde_json::json!("D3D"))
             .unwrap();
 
-        let files = serialize(instances.take(id).unwrap()).unwrap();
+        let instance = instances.take(id).unwrap();
+        let files = serialize(&instance).unwrap();
         let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
         assert!(wiimote.contains("IR/Left=`Axis 6-`"), "{wiimote}");
         assert!(wiimote.contains("IR/Up=`Axis 7-`"), "{wiimote}");

@@ -25,6 +25,7 @@ pub type ConfigurationPrepareCallback =
     Arc<dyn Fn(Value, Value) -> Result<Value, String> + Send + Sync>;
 pub type PluginInvokeCallback =
     Arc<dyn Fn(String, Vec<String>, Vec<Value>) -> ApiFuture<Value> + Send + Sync>;
+pub type PreparedFilesystemReleaseCallback = Arc<dyn Fn(String) -> bool + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
@@ -110,6 +111,7 @@ pub struct SnowglassOptions {
     pub describe_configuration: ConfigurationDescribeCallback,
     pub prepare_configuration: ConfigurationPrepareCallback,
     pub invoke_plugin: PluginInvokeCallback,
+    pub release_prepared_filesystem: PreparedFilesystemReleaseCallback,
     pub emulator_commands: EmulatorCommandSink,
     pub input_commands: InputCommandSink,
     pub webrtc_commands: WebRtcCommandSink,
@@ -137,6 +139,7 @@ impl Default for SnowglassOptions {
                     })
                 })
             }),
+            release_prepared_filesystem: Arc::new(|_| false),
             emulator_commands: EmulatorCommandSink::default(),
             input_commands: InputCommandSink::default(),
             webrtc_commands: WebRtcCommandSink::default(),
@@ -248,6 +251,13 @@ async fn op_plugin_invoke(
         .invoke_plugin
         .clone();
     callback(plugin, path, arguments).await
+}
+
+#[op2(fast)]
+fn op_prepared_filesystem_release(state: &mut OpState, #[string] token: String) -> bool {
+    (state
+        .borrow::<SnowglassOptions>()
+        .release_prepared_filesystem)(token)
 }
 
 #[op2]
@@ -409,6 +419,7 @@ deno_core::extension!(
         op_configuration_describe,
         op_configuration_prepare,
         op_plugin_invoke,
+        op_prepared_filesystem_release,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,

@@ -37,6 +37,13 @@ body,
   display: none !important;
 }
 
+/* Ark positions each select through a transformed wrapper.  That wrapper is
+   the stacking context, so raising only its content still lets controls later
+   in document order paint over the menu. */
+.select-positioner {
+  z-index: 50;
+}
+
 button,
 input {
   font: inherit;

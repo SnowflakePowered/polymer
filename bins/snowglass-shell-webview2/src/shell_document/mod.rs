@@ -689,6 +689,10 @@ pub struct ShellDocumentFactory {
 }
 
 impl ShellDocumentFactory {
+    pub fn plugin_runtime_handle(&self) -> snowglass_pluginhost::PluginRuntimeHandle {
+        self.plugin_runtime.handle()
+    }
+
     pub fn new(
         plugin_registry: snowglass_pluginhost::PluginRegistry,
         event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,

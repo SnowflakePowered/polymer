@@ -15,6 +15,8 @@ pub(crate) type ConfigurationId = u32;
 pub(crate) struct ConfigurationInstances {
     next_id: ConfigurationId,
     instances: BTreeMap<ConfigurationId, ConfigurationInstance>,
+    versions: BTreeMap<ConfigurationId, u64>,
+    rendered: BTreeMap<ConfigurationId, (u64, SerializedConfiguration)>,
 }
 
 impl ConfigurationInstances {
@@ -29,6 +31,7 @@ impl ConfigurationInstances {
             }
         };
         self.instances.insert(id, instance);
+        self.versions.insert(id, 0);
         id
     }
 
@@ -54,7 +57,11 @@ impl ConfigurationInstances {
             .instances
             .get_mut(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        set_value(instance, path, value)
+        set_value(instance, path, value)?;
+        let version = self.versions.entry(id).or_default();
+        *version = version.wrapping_add(1);
+        self.rendered.remove(&id);
+        Ok(())
     }
 
     pub(crate) fn entries(
@@ -80,6 +87,8 @@ impl ConfigurationInstances {
         &mut self,
         id: ConfigurationId,
     ) -> Result<ConfigurationInstance, ConfigurationAccessError> {
+        self.versions.remove(&id);
+        self.rendered.remove(&id);
         self.instances
             .remove(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))
@@ -87,13 +96,37 @@ impl ConfigurationInstances {
 
     pub(crate) fn discard(&mut self, id: ConfigurationId) {
         self.instances.remove(&id);
+        self.versions.remove(&id);
+        self.rendered.remove(&id);
+    }
+
+    pub(crate) fn render(
+        &mut self,
+        id: ConfigurationId,
+    ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
+        let version = *self
+            .versions
+            .get(&id)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
+        if let Some((cached_version, files)) = self.rendered.get(&id)
+            && *cached_version == version
+        {
+            return Ok(files.clone());
+        }
+        let instance = self
+            .instances
+            .get(&id)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
+        let files = serialize(instance)?;
+        self.rendered.insert(id, (version, files.clone()));
+        Ok(files)
     }
 }
 
 pub(crate) fn serialize(
-    instance: ConfigurationInstance,
+    instance: &ConfigurationInstance,
 ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
-    let serializer = Serializer::new(&instance)?;
+    let serializer = Serializer::new(instance)?;
     let files = serializer.serialize(emitter_for)?;
     Ok(files
         .into_iter()
