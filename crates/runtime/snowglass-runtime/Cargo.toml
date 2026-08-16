@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 crossfire.workspace = true
 dashmap.workspace = true
+gumshoe.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,6 +18,7 @@ snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
 snowglass-statistics.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 url = "2"
 watchable.workspace = true

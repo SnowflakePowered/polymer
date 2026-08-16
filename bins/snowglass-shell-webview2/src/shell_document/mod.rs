@@ -12,7 +12,7 @@
 mod bands;
 
 use crate::shell_dom::{ShellFrame, ShellHitSnapshot};
-use crate::shell_runtime::{EmulatorCommandSink, LauncherCommandSink, Mutation, ShellRuntime};
+use crate::shell_runtime::{EmulatorCommandSink, Mutation, ShellRuntime};
 use anyrender::PaintScene as _;
 use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
@@ -289,12 +289,14 @@ fn painted_pointer_target_is_valid(
     if !clips_overflow || node.transform.is_some() {
         return true;
     }
-    document.get_client_bounding_rect(node_id).is_some_and(|rect| {
-        f64::from(x) >= rect.x
-            && f64::from(x) <= rect.x + rect.width
-            && f64::from(y) >= rect.y
-            && f64::from(y) <= rect.y + rect.height
-    })
+    document
+        .get_client_bounding_rect(node_id)
+        .is_some_and(|rect| {
+            f64::from(x) >= rect.x
+                && f64::from(x) <= rect.x + rect.width
+                && f64::from(y) >= rect.y
+                && f64::from(y) <= rect.y + rect.height
+        })
 }
 
 fn node_is_within_tracked_surface(document: &blitz_dom::BaseDocument, node_id: usize) -> bool {
@@ -700,10 +702,6 @@ impl ShellDocumentFactory {
         }
     }
 
-    pub fn plugin_runtime(&self) -> Arc<snowglass_pluginhost::PluginRuntime> {
-        self.plugin_runtime.clone()
-    }
-
     /// `views` is how many game views the document can show; it fixes the
     /// number of chrome bands, which is one more than that. The document names
     /// each one by its `<tracked-surface src>`, so this is a capacity, not a
@@ -717,8 +715,8 @@ impl ShellDocumentFactory {
         height: u32,
         emulator_commands: EmulatorCommandSink,
         webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
-        launcher_commands: LauncherCommandSink,
-        initial_launcher_state: serde_json::Value,
+        startup_request: Option<serde_json::Value>,
+        viewer: snowglass_renderer::cli::ViewerOptions,
     ) -> Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>> {
         let (sender, arrivals) = channel();
         let proxy = self.event_proxy.clone();
@@ -753,8 +751,8 @@ impl ShellDocumentFactory {
             (width, height),
             emulator_commands,
             webrtc_commands,
-            launcher_commands,
-            initial_launcher_state,
+            startup_request,
+            viewer,
         )
         .await
     }
@@ -771,8 +769,8 @@ impl ShellDocumentFactory {
         viewport: (u32, u32),
         emulator_commands: EmulatorCommandSink,
         webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
-        launcher_commands: LauncherCommandSink,
-        initial_launcher_state: serde_json::Value,
+        startup_request: Option<serde_json::Value>,
+        viewer: snowglass_renderer::cli::ViewerOptions,
     ) -> Result<(ShellDocument, ShellRuntime), Box<dyn std::error::Error>> {
         let (width, height) = viewport;
         let script_to_dom = document
@@ -813,9 +811,9 @@ impl ShellDocumentFactory {
             source_name.to_owned(),
             emulator_commands,
             webrtc_commands,
-            launcher_commands,
-            initial_launcher_state,
+            startup_request,
             self.plugin_runtime.clone(),
+            Some(viewer),
         )
         .await?;
         layer.apply_script_mutations(&mut runtime);
@@ -2290,12 +2288,12 @@ mod tests {
                     "snowglass:///native-click-test.html".to_owned(),
                     deno::EmulatorCommandSink::default(),
                     deno::WebRtcCommandSink::default(),
-                    LauncherCommandSink::default(),
-                    serde_json::json!({ "kind": "idle" }),
+                    None,
                     Arc::new(snowglass_pluginhost::PluginRuntime::new(
                         snowglass_pluginhost::PluginRegistry::new(),
                         snowglass_pluginhost::PluginRuntimeOptions::default(),
                     )),
+                    None,
                 )
                 .await
                 .unwrap();

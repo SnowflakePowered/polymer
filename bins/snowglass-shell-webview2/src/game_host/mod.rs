@@ -768,10 +768,6 @@ impl GameHost {
         self.work_pending
     }
 
-    pub fn request_shell_refresh(&mut self) {
-        self.shell_refresh_pending = true;
-    }
-
     pub fn take_shell_refresh_request(&mut self) -> bool {
         std::mem::take(&mut self.shell_refresh_pending)
     }

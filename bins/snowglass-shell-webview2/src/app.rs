@@ -1,5 +1,6 @@
-use crate::cli::{GameLaunchRequest, ShellOptions};
-use crate::commands::{RuntimeCommand, ShellDocumentSource};
+use crate::cli;
+use crate::cli::ShellOptions;
+use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand, ShellRasterizer};
 use crate::input::{InputPriority, InputRouter, InputTransport, KeyboardTarget};
 use crate::instance_events;
@@ -8,21 +9,18 @@ use crate::metrics::{TurnPhase, TurnProfile};
 use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent, ShellDocumentFactory};
 use crate::shell_dom::ShellDomCoordinator;
 use crate::shell_runtime::{
-    EmulatorCommand, EmulatorCommandSink, InstanceToken, LaunchCoordinatorEvent, LauncherCommand,
-    LauncherCommandSink, ShellLaunchCoordinator, WebRtcCommand, WebRtcCommandSink,
+    EmulatorCommand, EmulatorCommandSink, InstanceToken, WebRtcCommand, WebRtcCommandSink,
 };
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
     WindowBootstrap, WindowCommand, WindowManager,
 };
-use crate::{cli, launcher};
 use snowglass_input::{hub::InputTransaction, mouse::PointerPhase};
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_renderer::{CompositingPlan, Extent, cli::ViewerApi};
 use snowglass_statistics::RecorderHandle;
 use std::{
     error::Error,
-    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -52,7 +50,7 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
 /// event loop and Deno UI isolate that share this thread.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
-/// Native input, launcher, and emulator events dispatch into JavaScript
+/// Native input and emulator events dispatch into JavaScript
 /// synchronously. Poll the browser's asynchronous work once per UI frame
 /// instead of once per cursor, capture, and compositor event.
 const SHELL_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(16);
@@ -67,11 +65,10 @@ struct ShellCoordinator {
     window: WindowManager,
     profile: TurnProfile,
     services: ShellServices,
-    launch: ShellLaunchCoordinator,
     game_host: GameHost,
     input: InputRouter,
-    next_launch_id: u64,
-    pending_launch_id: Option<u64>,
+    startup_request: Option<serde_json::Value>,
+    viewer: snowglass_renderer::cli::ViewerOptions,
 }
 
 impl ShellCoordinator {
@@ -86,7 +83,7 @@ impl ShellCoordinator {
         let ShellOptions {
             viewer: options,
             ui_url: _,
-            plugins,
+            plugins: _,
             game_launch,
         } = options;
         if options.api != ViewerApi::D3d12 {
@@ -94,10 +91,15 @@ impl ShellCoordinator {
                 "snowglass-shell-webview2 requires `--api d3d12` for DirectComposition".into(),
             );
         }
-        let pending_cli_launch = if game_launch.is_none() {
-            cli::launch_from_viewer(&options).map_err(std::io::Error::other)?
-        } else {
-            None
+        let startup_request = match game_launch {
+            Some(request) => Some(serde_json::json!({
+                "kind": "package",
+                "path": request.game.to_string_lossy(),
+                "emulator": request.emulator,
+            })),
+            None => cli::launch_from_viewer(&options)
+                .map_err(std::io::Error::other)?
+                .map(|options| serde_json::json!({ "kind": "launch", "options": options })),
         };
 
         let mut window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
@@ -110,24 +112,6 @@ impl ShellCoordinator {
         window.set_merged_content(&merged_content)?;
         window.commit()?;
         let session = unique_session();
-        // Plugin realization stays native; only immutable launcher state and
-        // launch plans enter the shell isolate.
-        let plugin_runtime = shell_factory.plugin_runtime();
-        let launch_proxy = proxy.clone();
-        let launch =
-            ShellLaunchCoordinator::new(
-                pending_cli_launch,
-                plugins,
-                Arc::clone(&plugin_runtime),
-                options.clone(),
-                move |event| match event {
-                    LaunchCoordinatorEvent::GameDetected { generation, result } => {
-                        let _ = launch_proxy.send_event(UserEvent::Runtime(
-                            RuntimeCommand::GameDetected { generation, result },
-                        ));
-                    }
-                },
-            );
         let shell_dom = ShellDomCoordinator::new(shell_factory);
 
         let input = InputTransport::runtime().map_err(std::io::Error::other)?;
@@ -137,81 +121,17 @@ impl ShellCoordinator {
         // around the streams, which is what lets it stay opaque and so stay
         // eligible for a hardware overlay plane.
 
-        let mut state = Self {
+        let state = Self {
             shell_dom,
             window,
             profile: TurnProfile::default(),
             services: ShellServices { session, proxy },
-            launch,
             game_host,
             input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
-            next_launch_id: 0,
-            pending_launch_id: None,
+            startup_request,
+            viewer: options,
         };
-        if let Some(request) = game_launch {
-            state.queue_game(request);
-        }
         Ok(state)
-    }
-
-    fn queue_game(&mut self, request: GameLaunchRequest) {
-        self.launch.queue_game(request);
-        self.publish_launcher_state();
-    }
-
-    fn game_detected(&mut self, generation: u64, result: Result<launcher::DetectedGame, String>) {
-        self.launch.game_detected(generation, result);
-        self.publish_launcher_state();
-    }
-
-    fn start_prepared_game(&mut self, request: launcher::LauncherStartRequest) {
-        self.launch
-            .start_prepared_game(request, self.game_host.has_active_game());
-        self.publish_launcher_state();
-    }
-
-    fn cancel_launcher(&mut self) {
-        self.launch.cancel();
-        self.publish_launcher_state();
-    }
-
-    fn publish_launcher_state(&mut self) {
-        if let Ok(state) = serde_json::to_value(self.launch.state()) {
-            self.shell_dom.set_launcher_state(&state);
-        }
-    }
-
-    async fn deliver_cli_launch(&mut self) {
-        let Some(result) = self.launch.resolve_pending_launch().await else {
-            return;
-        };
-        let options = match result {
-            Ok(options) => options,
-            Err(error) => {
-                tracing::error!("snowglass: emulator plugin launch failed: {error}");
-                self.launch.set_error(error);
-                self.publish_launcher_state();
-                return;
-            }
-        };
-        self.next_launch_id = self.next_launch_id.wrapping_add(1).max(1);
-        let id = self.next_launch_id;
-        self.pending_launch_id = Some(id);
-        let plan = serde_json::json!({ "id": id, "options": options });
-        self.shell_dom.set_launch_plan(Some(&plan));
-        self.refresh_after_shell_script();
-    }
-
-    fn settle_launch(&mut self, id: u64, error: Option<String>) {
-        if self.pending_launch_id != Some(id) {
-            return;
-        }
-        self.pending_launch_id = None;
-        self.shell_dom.set_launch_plan(None);
-        if let Some(error) = error {
-            self.launch.set_error(error);
-            self.publish_launcher_state();
-        }
     }
 
     fn refresh_after_shell_script(&mut self) {
@@ -316,10 +236,10 @@ impl ShellCoordinator {
             let size = self.window.size();
             let command_proxy = self.services.proxy.clone();
             let webrtc_proxy = self.services.proxy.clone();
-            let launcher_proxy = self.services.proxy.clone();
             let html = shell_source.html.clone();
             let base_url = shell_source.base_url.clone();
-            let initial_launcher_state = serde_json::to_value(self.launch.state())?;
+            let viewer = self.viewer.clone();
+            let startup_request = self.startup_request.take();
             let activated = match self
                 .shell_dom
                 .activate(|factory| async move {
@@ -341,19 +261,6 @@ impl ShellCoordinator {
                             tracing::error!("snowglass: WebRTC command event loop is unavailable");
                         }
                     });
-                    let launcher_commands = LauncherCommandSink::new(move |command| {
-                        let command = match command {
-                            LauncherCommand::Open(request) => RuntimeCommand::LauncherOpen(request),
-                            LauncherCommand::Start(request) => {
-                                RuntimeCommand::LauncherStart(request)
-                            }
-                            LauncherCommand::Cancel => RuntimeCommand::LauncherCancel,
-                            LauncherCommand::Settle { id, error } => {
-                                RuntimeCommand::LauncherSettle { id, error }
-                            }
-                        };
-                        let _ = launcher_proxy.send_event(UserEvent::Runtime(command));
-                    });
                     factory
                         .create(
                             &html,
@@ -363,8 +270,8 @@ impl ShellCoordinator {
                             size.height,
                             emulator_commands,
                             webrtc_commands,
-                            launcher_commands,
-                            initial_launcher_state,
+                            startup_request,
+                            viewer,
                         )
                         .await
                 })
@@ -381,7 +288,6 @@ impl ShellCoordinator {
                     "snowglass: ignoring a second shell document at {}",
                     shell_source.base_url
                 );
-                self.deliver_cli_launch().await;
                 return Ok(());
             }
             self.refresh_shell();
@@ -394,8 +300,6 @@ impl ShellCoordinator {
             self.shell_dom.disable();
         }
         self.publish_input_configuration();
-        self.publish_launcher_state();
-        self.deliver_cli_launch().await;
         Ok(())
     }
 
@@ -866,16 +770,11 @@ impl ShellCoordinator {
     }
 
     fn handle_dropped_file(&mut self, path: std::path::PathBuf) {
-        if self.game_host.has_active_game() {
-            self.launch
-                .set_error("Close the active game before launching another one.");
-            self.publish_launcher_state();
-        } else {
-            self.queue_game(GameLaunchRequest {
-                game: path,
-                emulator: None,
-            });
-        }
+        self.shell_dom.request_package(&serde_json::json!({
+            "kind": "package",
+            "path": path.to_string_lossy(),
+        }));
+        self.refresh_after_shell_script();
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -1163,12 +1062,6 @@ impl ShellApplication {
             }
             state.refresh_after_shell_script();
         }
-        if let Some(state) = self.state.as_mut()
-            && state.launch.has_pending_launch()
-            && state.shell_dom.is_active()
-        {
-            state.deliver_cli_launch().await;
-        }
     }
 
     pub(crate) fn into_result(self) -> Result<(), Box<dyn Error>> {
@@ -1223,17 +1116,6 @@ impl ShellApplication {
             }
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
                 state.apply_webrtc_command(command)
-            }
-            UserEvent::Runtime(RuntimeCommand::LauncherOpen(request)) => state.queue_game(request),
-            UserEvent::Runtime(RuntimeCommand::LauncherStart(request)) => {
-                state.start_prepared_game(request)
-            }
-            UserEvent::Runtime(RuntimeCommand::LauncherCancel) => state.cancel_launcher(),
-            UserEvent::Runtime(RuntimeCommand::LauncherSettle { id, error }) => {
-                state.settle_launch(id, error)
-            }
-            UserEvent::Runtime(RuntimeCommand::GameDetected { generation, result }) => {
-                state.game_detected(generation, result)
             }
         }
     }

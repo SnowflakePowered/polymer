@@ -6,6 +6,7 @@ mod capture;
 mod input;
 mod instance;
 mod launch;
+mod scraping;
 mod ui;
 
 pub use capture::ConsumerPreference;
@@ -18,6 +19,7 @@ pub use instance::{
     SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
     TrackedSurfaceHandle, TrackedSurfaceId,
 };
+pub use scraping::{ScrapedPackage, ScrapingError};
 pub use ui::{UiRequest, UiRequestReceiver};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

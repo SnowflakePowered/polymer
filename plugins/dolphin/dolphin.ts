@@ -21,16 +21,16 @@ type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     portAssignments: { [group: string]: string[] },
-    emulatorConfig: Configuration
+    configuration: Configuration
 }
 
 export const setupLaunch = (args: SetupLaunchArgs) => {
     const executable = new URL(config.plugin.config.dolphin_path);
-    args.emulatorConfig.options().main.core.gfx_backend = "D3D";
+    args.configuration.options().main.core.gfx_backend = "D3D";
     // Snowglass owns the focused host window while Dolphin renders through an
     // isolated capture surface. Dolphin must continue polling the injected
     // virtual controller while its own hidden window is not foreground.
-    args.emulatorConfig.options().main.input.background_input = true;
+    args.configuration.options().main.input.background_input = true;
 
     return {
         command: executable.href,
@@ -42,7 +42,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
         configRoot: new URL("User/", executable).href,
         isolate: true,
         hooks: ["d3d11"],
-        config: args.emulatorConfig,
+        config: args.configuration,
         surfaces: [
             { index: 0, pattern: "Dolphin" },
         ]

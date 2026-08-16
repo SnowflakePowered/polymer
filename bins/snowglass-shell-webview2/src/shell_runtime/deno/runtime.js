@@ -1003,25 +1003,17 @@
   const dispatchEmulatorEvent = emulatorFacade.dispatch;
   const snowglassPlugin = globalThis.__snowglassCreatePluginFacade(ops);
   delete globalThis.__snowglassCreatePluginFacade;
-  let launcherState = Object.freeze({ kind: "idle" });
-  let launcherDropActive = false;
-  let launcherPendingLaunch = null;
-  const snowglassLauncher = new EventTarget();
-  Object.defineProperties(snowglassLauncher, {
-    state: { get: () => launcherState },
-    dropActive: { get: () => launcherDropActive },
-    pendingLaunch: { get: () => launcherPendingLaunch },
-    open: { value(path, emulator) { ops.op_launcher_open(String(path), emulator == null ? null : String(emulator)); } },
-    start: { value(request) { ops.op_launcher_start(request); } },
-    cancel: { value() { ops.op_launcher_cancel(); } },
-    settleLaunch: { value(id, error) { ops.op_launcher_settle(BigInt(id), error == null ? null : String(error)); } },
-  });
+  const scrapingFacade = globalThis.__snowglassCreateScrapingFacade(ops);
+  delete globalThis.__snowglassCreateScrapingFacade;
+  const snowglassConfiguration = globalThis.__snowglassCreateConfigurationFacade(ops, scrapingFacade);
+  delete globalThis.__snowglassCreateConfigurationFacade;
   const Snowglass = Object.freeze({
     input: snowglassInput,
     plugin: snowglassPlugin,
     emulator: Emulator,
     webrtc: WebRTC,
-    launcher: snowglassLauncher,
+    scraping: scrapingFacade.Scraping,
+    configuration: snowglassConfiguration,
   });
   function makeNode(snapshot) {
     if (snapshot.kind === "document") return new Document(snapshot);
@@ -1209,19 +1201,9 @@
     setInputConfiguration,
     setInputState,
     inputConfigurationResult,
-    setLauncherState(state) {
-      launcherState = Object.freeze(state);
-      snowglassLauncher.dispatchEvent(new CustomEvent("statechange", { detail: launcherState }));
-    },
     setDropActive(active) {
-      active = Boolean(active);
-      if (launcherDropActive === active) return;
-      launcherDropActive = active;
-      snowglassLauncher.dispatchEvent(new CustomEvent("dropactivechange", { detail: active }));
+      scrapingFacade.setDropActive(active);
     },
-    setLaunchPlan(plan) {
-      launcherPendingLaunch = plan == null ? null : Object.freeze(plan);
-      snowglassLauncher.dispatchEvent(new CustomEvent("launchplanchange", { detail: launcherPendingLaunch }));
-    },
+    requestPackage(detail) { scrapingFacade.request(detail); },
   });
 })();

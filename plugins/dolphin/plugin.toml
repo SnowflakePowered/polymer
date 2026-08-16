@@ -4,7 +4,6 @@ version = "0.0.1"
 class = "emulator"
 
 [plugin.config]
-# todo: make this path relative to package (i.e pkg://runtime/Cemu.exe)
 dolphin_path = "file:///D:/emulators/dolphin/Dolphin-x64/Dolphin.exe"
 
 [emulator]

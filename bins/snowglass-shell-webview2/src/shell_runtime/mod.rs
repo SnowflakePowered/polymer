@@ -4,7 +4,6 @@
 //! worker isolate for each native invocation.
 
 pub(crate) mod deno;
-mod launch_coordinator;
 
 use blitz_dom::BaseDocument;
 use deno::EventResult;
@@ -12,9 +11,7 @@ use serde_json::Value;
 use std::{collections::HashMap, error::Error};
 
 pub(crate) use deno::{EmulatorCommand, InstanceToken};
-pub(crate) use deno::{LauncherCommand, LauncherCommandSink};
 pub(crate) use deno::{WebRtcCommand, WebRtcCommandSink};
-pub(crate) use launch_coordinator::{LaunchCoordinatorEvent, ShellLaunchCoordinator};
 
 pub(crate) struct ShellRuntime {
     runtime: Option<deno::Runtime>,
@@ -29,9 +26,9 @@ impl ShellRuntime {
         source_name: String,
         emulator_commands: EmulatorCommandSink,
         webrtc_commands: WebRtcCommandSink,
-        launcher_commands: LauncherCommandSink,
-        initial_launcher_state: Value,
+        startup_request: Option<Value>,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+        viewer: Option<snowglass_renderer::cli::ViewerOptions>,
     ) -> Result<Self, Box<dyn Error>> {
         let result = match deno::Runtime::serialized_snapshot(document, width, height) {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
@@ -40,9 +37,9 @@ impl ShellRuntime {
                 source_name,
                 emulator_commands,
                 webrtc_commands,
-                launcher_commands,
-                initial_launcher_state,
+                startup_request,
                 plugin_runtime,
+                viewer,
             ))
             .await
             .unwrap_or_else(|error| Err(Box::new(error))),
@@ -81,27 +78,19 @@ impl ShellRuntime {
             })
     }
 
-    pub fn set_launcher_state(&mut self, state: &Value) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.set_launcher_state(state)
-        {
-            tracing::error!("snowglass: publishing launcher state failed: {error}");
-        }
-    }
-
-    pub fn set_launch_plan(&mut self, plan: Option<&Value>) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.set_launch_plan(plan)
-        {
-            tracing::error!("snowglass: publishing launch plan failed: {error}");
-        }
-    }
-
     pub fn set_drop_active(&mut self, active: bool) {
         if let Some(runtime) = self.runtime.as_mut()
             && let Err(error) = runtime.set_drop_active(active)
         {
             tracing::error!("snowglass: publishing file-hover state failed: {error}");
+        }
+    }
+
+    pub fn request_package(&mut self, request: &Value) {
+        if let Some(runtime) = self.runtime.as_mut()
+            && let Err(error) = runtime.request_package(request)
+        {
+            tracing::error!("snowglass: dispatching package request failed: {error}");
         }
     }
 

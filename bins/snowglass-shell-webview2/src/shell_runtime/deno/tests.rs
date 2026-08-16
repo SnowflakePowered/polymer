@@ -218,7 +218,7 @@ async fn snowglass_is_the_only_public_native_namespace() {
     assert_eq!(
         runtime.take_messages(),
         [serde_json::json!({
-            "keys": ["emulator", "input", "launcher", "plugin", "webrtc"],
+            "keys": ["configuration", "emulator", "input", "plugin", "scraping", "webrtc"],
             "frozen": true,
             "readonly": true,
             "legacy": ["undefined", "undefined", "undefined", "undefined"],
@@ -282,8 +282,12 @@ async fn emulator_launch_is_acknowledged_asynchronously() {
               gamepadMapping: [],
               machine: "TEST",
             });
-            postMessage({ type: "pending", promise: before instanceof Promise });
-            before.then(instance => postMessage({ type: "launched", id: instance.id }));
+            postMessage({
+              type: "pending",
+              promise: before instanceof Promise,
+              id: before.id,
+              state: before.state,
+            });
           </script>
         </body></html>
     "##;
@@ -307,10 +311,12 @@ async fn emulator_launch_is_acknowledged_asynchronously() {
     runtime.poll_event_loop().await.unwrap();
     assert_eq!(
         runtime.take_messages(),
-        [
-            serde_json::json!({ "type": "pending", "promise": true }),
-            serde_json::json!({ "type": "launched", "id": 1 }),
-        ]
+        [serde_json::json!({
+            "type": "pending",
+            "promise": false,
+            "id": 1,
+            "state": "pending",
+        })]
     );
 }
 
@@ -320,7 +326,7 @@ async fn emulator_launch_rejects_and_clears_the_provisional_instance() {
         <html><body>
           <tracked-surface id="game"></tracked-surface>
           <script>
-            Snowglass.emulator.launch({
+            const launch = Snowglass.emulator.launch({
               command: "emulator.exe",
               arguments: [],
               isolated: false,
@@ -328,9 +334,10 @@ async fn emulator_launch_rejects_and_clears_the_provisional_instance() {
               surfaces: [{ index: 0, rotation: 0, attach: document.querySelector("#game"), webrtc: false }],
               gamepadMapping: [],
               machine: "TEST",
-            }).catch(error => postMessage({
+            });
+            launch.ready.catch(error => postMessage({
               message: error.message,
-              active: Snowglass.emulator.activeInstance !== null,
+              active: Snowglass.emulator.activeLaunch !== null,
             }));
           </script>
         </body></html>

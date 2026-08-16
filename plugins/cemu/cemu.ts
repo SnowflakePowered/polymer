@@ -16,12 +16,12 @@ type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     portAssignments: { [group: string]: string[] },
-    emulatorConfig: Configuration
+    configuration: Configuration
 }
 
 export const setupLaunch = (args: SetupLaunchArgs) => {
     const executable = new URL(config.plugin.config.cemu_path);
-    args.emulatorConfig.options().content.open_pad = true;
+    args.configuration.options().content.open_pad = true;
 
     return {
         command: executable.href,
@@ -30,7 +30,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
         isolate: true,
         hooks: ["vulkan", "opengl"],
         // pluginhost unwraps and serializes this after setupLaunch returns.
-        config: args.emulatorConfig,
+        config: args.configuration,
         surfaces: [
             { index: 0, pattern: "Cemu+" },
             { index: 1, pattern: "GamePad+" }

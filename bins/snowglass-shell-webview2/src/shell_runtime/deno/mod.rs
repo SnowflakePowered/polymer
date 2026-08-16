@@ -5,20 +5,20 @@
 //! JavaScript and queued back to Blitz through Deno ops. Keeping the bridge
 //! command-based avoids borrowing the document from inside V8 callbacks.
 
+mod configuration;
 mod dom;
 mod emulator;
 mod input;
-mod launcher;
 mod modules;
 mod plugin;
 mod runtime;
+mod scraping;
 mod state;
 mod webrtc;
 
 pub use dom::Mutation;
 pub use emulator::{EmulatorCommand, EmulatorCommandSink, InstanceToken};
 pub use input::EventResult;
-pub use launcher::{LauncherCommand, LauncherCommandSink};
 pub use runtime::Runtime;
 pub use webrtc::{WebRtcCommand, WebRtcCommandSink};
 
