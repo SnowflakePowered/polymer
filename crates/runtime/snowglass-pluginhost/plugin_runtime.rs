@@ -257,14 +257,36 @@ impl PluginRuntimeHandle {
                     format!("invalid setupLaunch portAssignments: {error}"),
                 )
             })?;
-            let configuration = plugin
+            let mut configuration = plugin
                 .materialize(console, assignments)
                 .map_err(PluginInvocationError::worker)?;
+            let settings = arguments
+                .get("settings")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}))
+                .as_object()
+                .cloned()
+                .ok_or_else(|| {
+                    PluginInvocationError::new(
+                        "TypeError",
+                        "INVALID_ARGUMENTS",
+                        "setupLaunch settings must be an object",
+                    )
+                })?;
+            for (path, value) in settings {
+                crate::configuration::set_value(&mut configuration, &path, value)
+                    .map_err(PluginInvocationError::worker)?;
+            }
+            let mut plugin_arguments = arguments.clone();
+            plugin_arguments
+                .as_object_mut()
+                .expect("validated setupLaunch arguments remain an object")
+                .remove("settings");
             let result = self
                 .setup_emulator_export_with_cancellation(
                     EmulatorSetupInvocation {
                         plugin,
-                        arguments: arguments.clone(),
+                        arguments: plugin_arguments,
                         configuration,
                     },
                     cancellation,
@@ -586,12 +608,12 @@ mod tests {
                 }
                 export const notCallable = 17;
                 export function setupLaunch(args) {
-                  args.emulatorConfig.options().general.enabled = true;
+                  args.configuration.options().general.enabled = true;
                   return {
                     command: "emulator.exe",
                     argv: [],
                     configRoot: ".",
-                    config: args.emulatorConfig,
+                    config: args.configuration,
                     hooks: ["vulkan"],
                     surfaces: [{ index: 0 }],
                   };

@@ -173,21 +173,15 @@ impl ShellDomCoordinator {
         Some(active.document.produce_frame(&mut active.runtime))
     }
 
-    pub fn set_launcher_state(&mut self, state: &Value) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active.runtime.set_launcher_state(state);
-        }
-    }
-
-    pub fn set_launch_plan(&mut self, plan: Option<&Value>) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active.runtime.set_launch_plan(plan);
-        }
-    }
-
     pub fn set_drop_active(&mut self, active: bool) {
         if let ShellDocumentSlot::Active(document) = &mut self.slot {
             document.runtime.set_drop_active(active);
+        }
+    }
+
+    pub fn request_package(&mut self, request: &Value) {
+        if let ShellDocumentSlot::Active(active) = &mut self.slot {
+            active.runtime.request_package(request);
         }
     }
 

@@ -165,7 +165,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                     }}
                     const args = {arguments};
                     const configuration = __snowglassPluginHost.configuration({configuration_id});
-                    args.emulatorConfig = configuration;
+                    args.configuration = configuration;
                     return {{
                       result: await Reflect.apply(setupLaunch, receiver, [args]),
                       configuration,

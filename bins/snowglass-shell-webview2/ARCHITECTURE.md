@@ -22,17 +22,21 @@ and fonts. Its waker posts a shell redraw event when a resource arrives.
   wrappers used by Solid and Ark UI.
 - `ShellDomCoordinator` pairs those objects and publishes immutable paint and
   layout snapshots to the compositor.
-- `ShellLaunchCoordinator` validates launcher state and calls pluginhost
-  directly. Plugin invocation workers remain separate from the UI isolate.
+- `Snowglass.scraping.Package` delegates package identification to Gumshoe in
+  `snowglass-runtime`; `Snowglass.configuration` describes and validates launch
+  selections. Plugin invocation workers remain isolated from the UI realm.
 - `WindowManager` owns the Winit window, merged shell/game DirectComposition
   visual, and the egui diagnostics overlay.
 
 There is no foreground proxy, linked document, shared UI bus, or structured
 remote-value codec. `Snowglass.input`, `Snowglass.plugin`,
-`Snowglass.emulator`, `Snowglass.webrtc`, and `Snowglass.launcher` are
-same-realm APIs. Emulator launch, WebRTC publication control, and plugin
+`Snowglass.input`, `Snowglass.plugin`, `Snowglass.scraping`,
+`Snowglass.configuration`, `Snowglass.emulator`, and `Snowglass.webrtc` are
+same-realm APIs. `Snowglass.emulator.launch()` synchronously returns a
+`LaunchInstance`; its promises and events own pending, ready, error, and closed
+lifecycle state. Emulator launch, WebRTC publication control, and plugin
 invocation cross asynchronous Deno op boundaries. Deno owns WebRTC lifecycle
-and instance association; `snowglass-renderer` keeps signaling, peer sessions,
+and launch association; `snowglass-renderer` keeps signaling, peer sessions,
 GPU composition, encoding, and frame publication together in the native data
 plane.
 

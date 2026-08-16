@@ -9365,6 +9365,7 @@ version = "0.1.0"
 dependencies = [
  "crossfire",
  "dashmap",
+ "gumshoe",
  "parking_lot",
  "serde",
  "serde_json",
@@ -9375,6 +9376,7 @@ dependencies = [
  "snowglass-protocol",
  "snowglass-statistics",
  "tempfile",
+ "thiserror 2.0.18",
  "tracing",
  "url",
  "watchable",
@@ -9399,7 +9401,6 @@ dependencies = [
  "deno_error",
  "egui",
  "egui-winit",
- "gumshoe",
  "keyboard-types",
  "kurbo",
  "parking_lot",

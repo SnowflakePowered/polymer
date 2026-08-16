@@ -1,46 +1,140 @@
-// Shell Emulator lifecycle facade. The native op table remains the only
-// authority for process, input, audio, and capture state.
+// Deno owns launch object identity and lifecycle. Native code owns process,
+// input, audio, capture, and compositor state behind the op boundary.
 globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, webrtc) => {
   const Emulator = new EventTarget();
-  let activeInstance = null;
-  let nextInstanceId = 0;
+  let activeLaunch = null;
+  let nextLaunchId = 0;
 
-  function publishActiveInstance(instance) {
-    if (activeInstance === instance) return;
-    activeInstance = instance;
-    Emulator.dispatchEvent(
-      new CustomEvent("activeinstancechange", { detail: instance }),
-    );
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((accept, decline) => {
+      resolve = accept;
+      reject = decline;
+    });
+    return { promise, resolve, reject };
   }
 
-  class EmulatorInstance {
-    #listeners = new Map();
-    #state = "starting";
-    #error = null;
+  function publishActiveLaunch(launch) {
+    if (activeLaunch === launch) return;
+    activeLaunch = launch;
+    Emulator.dispatchEvent(new CustomEvent("activelaunchchange", { detail: launch }));
+  }
 
-    constructor(id, requested) {
+  function validate(options) {
+    if (!options || !Array.isArray(options.surfaces)) {
+      throw new TypeError("Emulator launch requires tracked surfaces");
+    }
+    for (const surface of options.surfaces) {
+      if (!(surface.attach instanceof HTMLTrackedSurfaceElement)) {
+        throw new TypeError(`surface ${surface.index} must attach to an HTMLTrackedSurfaceElement`);
+      }
+      if (!surface.attach.isConnected) {
+        throw new TypeError(`surface ${surface.index} attachment is not connected`);
+      }
+    }
+  }
+
+  function wireOptions(options) {
+    return {
+      command: options.command,
+      arguments: [...(options.arguments || [])],
+      isolated: Boolean(options.isolated),
+      hook: [...options.hook],
+      surfaces: options.surfaces.map((surface) => ({
+        index: surface.index,
+        rotation: surface.rotation || 0,
+        selector: surface.selector,
+        attach: surface.attach.__id,
+      })),
+      gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
+        ...mapping,
+        mapping: { ...(mapping.mapping || {}) },
+      })),
+      machine: options.machine,
+      generatedConfiguration: options.generatedConfiguration,
+    };
+  }
+
+  class LaunchInstance extends EventTarget {
+    #state = "pending";
+    #error = null;
+    #ready = deferred();
+    #closed = deferred();
+    #nativeStarted = false;
+    #closeRequested = false;
+    #readySettled = false;
+    #closedSettled = false;
+
+    constructor(id, options) {
+      super();
       this.id = id;
-      this.requested = Object.freeze([...requested]);
+      this.request = Object.freeze(options);
+      this.requested = Object.freeze([...options.surfaces]);
       this.surfaces = Object.freeze([]);
       this.audio = Object.freeze({ available: false, volume: 1, muted: false });
+      this.ready = this.#ready.promise;
+      this.closed = this.#closed.promise;
     }
 
     get state() { return this.#state; }
     get error() { return this.#error; }
     #canControl() { return this.#state !== "closing" && this.#state !== "closed"; }
 
-    on(eventName, callback) {
-      if (typeof callback !== "function") throw new TypeError("event callback must be a function");
-      const listeners = this.#listeners.get(String(eventName)) || new Set();
-      listeners.add(callback);
-      this.#listeners.set(String(eventName), listeners);
+    #publish(type, detail = undefined) {
+      this.dispatchEvent(new CustomEvent(type, { detail }));
     }
 
-    off(eventName, callback) {
-      const listeners = this.#listeners.get(String(eventName));
-      if (!listeners) return;
-      listeners.delete(callback);
-      if (listeners.size === 0) this.#listeners.delete(String(eventName));
+    #rejectReady(error) {
+      if (this.#readySettled) return;
+      this.#readySettled = true;
+      this.#ready.reject(error);
+    }
+
+    #resolveReady() {
+      if (this.#readySettled) return;
+      this.#readySettled = true;
+      this.#ready.resolve();
+    }
+
+    #resolveClosed() {
+      if (this.#closedSettled) return;
+      this.#closedSettled = true;
+      this.#closed.resolve();
+    }
+
+    async __start(wire) {
+      try {
+        await ops.op_emulator_launch(this.id, wire);
+        this.#nativeStarted = true;
+        if (this.#state === "pending") this.#state = "starting";
+        if (this.#closeRequested) {
+          ops.op_emulator_close(this.id);
+          return;
+        }
+        const targets = this.request.surfaces
+          .filter((surface) => surface.webrtc)
+          .map((surface) => surface.index);
+        if (targets.length > 0) {
+          await webrtc.startForInstance(this, {
+            bind: this.request.webrtcBind,
+            targets,
+          });
+        }
+      } catch (value) {
+        const error = value instanceof Error ? value : new Error(String(value));
+        if (this.#nativeStarted) ops.op_emulator_close(this.id);
+        this.__fail(error);
+      }
+    }
+
+    __fail(error) {
+      if (this.#state === "closed") return;
+      this.#error = error;
+      this.#state = "error";
+      this.#rejectReady(error);
+      this.#publish("error", error);
+      this.__nativeEvent("closed", null);
     }
 
     send(name, args) {
@@ -50,31 +144,39 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
     setVolume(volume) {
       volume = Number(volume);
       if (!Number.isFinite(volume)) throw new TypeError("Emulator volume must be a finite number");
-      if (this.#canControl()) {
-        ops.op_emulator_set_volume(this.id, Math.max(0, Math.min(1, volume)));
-      }
+      if (this.#canControl()) ops.op_emulator_set_volume(this.id, Math.max(0, Math.min(1, volume)));
     }
 
     setMuted(muted) {
       if (this.#canControl()) ops.op_emulator_set_muted(this.id, Boolean(muted));
     }
+
     activateInput() {
       if (this.#canControl()) ops.op_emulator_input(this.id, true);
     }
+
     deactivateInput() {
       if (this.#canControl()) ops.op_emulator_input(this.id, false);
     }
+
     close() {
       if (!this.#canControl()) return;
+      this.#closeRequested = true;
       this.#state = "closing";
-      ops.op_emulator_close(this.id);
+      this.#rejectReady(new DOMException("The launch was closed", "AbortError"));
+      if (this.#nativeStarted) ops.op_emulator_close(this.id);
     }
 
     __nativeEvent(eventName, payload) {
       if (eventName === "start") {
-        this.#state = "starting";
+        if (this.#state === "pending") this.#state = "starting";
       } else if (eventName === "ready") {
+        if (this.#closeRequested) {
+          if (this.#nativeStarted) ops.op_emulator_close(this.id);
+          return;
+        }
         this.#state = "ready";
+        this.#resolveReady();
       } else if (eventName === "surfacesChanged") {
         const connected = new Map(
           Array.isArray(payload) ? payload.map((surface) => [surface.index, surface]) : [],
@@ -103,91 +205,46 @@ globalThis.__snowglassCreateEmulatorFacade = (ops, HTMLTrackedSurfaceElement, we
           muted: Boolean(payload?.muted),
         });
       } else if (eventName === "error") {
-        this.#error = new Error(payload?.message || "Emulator instance failed");
+        const error = new Error(payload?.message || "Emulator launch failed");
+        this.#error = error;
         this.#state = "error";
+        this.#rejectReady(error);
+        payload = error;
       } else if (eventName === "closed") {
+        if (!this.#readySettled) {
+          this.#rejectReady(this.#error || new Error("Emulator closed before becoming ready"));
+        }
         this.#state = "closed";
         this.surfaces = Object.freeze([]);
         webrtc.instanceClosed(this);
-        if (activeInstance === this) publishActiveInstance(null);
+        if (activeLaunch === this) publishActiveLaunch(null);
+        this.#resolveClosed();
       }
-      for (const callback of this.#listeners.get(eventName) || []) {
-        try { callback(payload); }
-        catch (error) { console.error(`EmulatorInstance '${eventName}' handler failed`, error); }
-      }
+      this.#publish(eventName, payload);
     }
   }
 
-  async function launch(options) {
-    if (activeInstance) throw new DOMException("another emulator instance is active", "InvalidStateError");
-    let nativeStarted = false;
-    try {
-      if (!options || !Array.isArray(options.surfaces)) {
-        throw new TypeError("Emulator launch requires tracked surfaces");
-      }
-      for (const surface of options.surfaces) {
-        if (!(surface.attach instanceof HTMLTrackedSurfaceElement)) {
-          throw new TypeError(
-            `surface ${surface.index} must attach to an HTMLTrackedSurfaceElement`,
-          );
-        }
-        if (!surface.attach.isConnected) {
-          throw new TypeError(`surface ${surface.index} attachment is not connected`);
-        }
-      }
-      const wire = {
-        command: options.command,
-        arguments: [...(options.arguments || [])],
-        isolated: Boolean(options.isolated),
-        hook: [...options.hook],
-        surfaces: options.surfaces.map((surface) => ({
-          index: surface.index,
-          rotation: surface.rotation || 0,
-          selector: surface.selector,
-          attach: surface.attach.__id,
-        })),
-        gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
-          ...mapping,
-          mapping: { ...(mapping.mapping || {}) },
-        })),
-        machine: options.machine,
-        generatedConfiguration: options.generatedConfiguration,
-      };
-      const id = nextInstanceId = (nextInstanceId + 1) >>> 0 || 1;
-      const instance = new EmulatorInstance(id, options.surfaces);
-      publishActiveInstance(instance);
-      await ops.op_emulator_launch(id, wire);
-      nativeStarted = true;
-      const webrtcTargets = options.surfaces
-        .filter((surface) => surface.webrtc)
-        .map((surface) => surface.index);
-      if (webrtcTargets.length > 0) {
-        await webrtc.startForInstance(instance, {
-          bind: options.webrtcBind,
-          targets: webrtcTargets,
-        });
-      }
-      return instance;
-    } catch (error) {
-      if (nativeStarted && activeInstance) ops.op_emulator_close(activeInstance.id);
-      if (activeInstance && activeInstance.state !== "closed") {
-        activeInstance.__nativeEvent("error", { message: error instanceof Error ? error.message : String(error) });
-        activeInstance.__nativeEvent("closed", null);
-      }
-      throw error;
-    }
+  function launch(options) {
+    if (activeLaunch) throw new DOMException("another emulator launch is active", "InvalidStateError");
+    validate(options);
+    const id = nextLaunchId = (nextLaunchId + 1) >>> 0 || 1;
+    const instance = new LaunchInstance(id, options);
+    publishActiveLaunch(instance);
+    void instance.__start(wireOptions(options));
+    return instance;
   }
 
   Object.defineProperties(Emulator, {
-    activeInstance: { get: () => activeInstance, configurable: false },
-    launch: { value: launch, writable: false, configurable: false },
+    LaunchInstance: { value: LaunchInstance },
+    activeLaunch: { get: () => activeLaunch },
+    launch: { value: launch },
   });
 
   return Object.freeze({
     Emulator,
     dispatch(event) {
-      if (activeInstance?.id === Number(event.instanceId)) {
-        activeInstance.__nativeEvent(event.eventName, event.payload);
+      if (activeLaunch?.id === Number(event.instanceId)) {
+        activeLaunch.__nativeEvent(event.eventName, event.payload);
       }
     },
   });

@@ -54,16 +54,7 @@ impl ConfigurationInstances {
             .instances
             .get_mut(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        let option = instance
-            .setting(path)
-            .ok_or_else(|| ConfigurationAccessError::UnknownSetting(path.to_owned()))?
-            .option;
-        let value = value_from_json(instance, path, option, value)?;
-        let setting = instance
-            .get_mut(path)
-            .ok_or_else(|| ConfigurationAccessError::UnknownSetting(path.to_owned()))?;
-        *setting = value;
-        Ok(())
+        set_value(instance, path, value)
     }
 
     pub(crate) fn entries(
@@ -108,6 +99,23 @@ pub(crate) fn serialize(
         .into_iter()
         .map(|(path, bytes)| (path.into(), bytes))
         .collect())
+}
+
+pub(crate) fn set_value(
+    instance: &mut ConfigurationInstance,
+    path: &str,
+    value: serde_json::Value,
+) -> Result<(), ConfigurationAccessError> {
+    let option = instance
+        .setting(path)
+        .ok_or_else(|| ConfigurationAccessError::UnknownSetting(path.to_owned()))?
+        .option;
+    let value = value_from_json(instance, path, option, value)?;
+    let setting = instance
+        .get_mut(path)
+        .ok_or_else(|| ConfigurationAccessError::UnknownSetting(path.to_owned()))?;
+    *setting = value;
+    Ok(())
 }
 
 fn emitter_for(format: &str) -> Option<Box<dyn Emitter>> {

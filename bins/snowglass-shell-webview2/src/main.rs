@@ -3,11 +3,11 @@
 mod app;
 mod cli;
 mod commands;
+mod configuration;
 mod game_host;
 mod input;
 mod instance_events;
 mod launch;
-mod launcher;
 mod metrics;
 mod shell_document;
 mod shell_dom;

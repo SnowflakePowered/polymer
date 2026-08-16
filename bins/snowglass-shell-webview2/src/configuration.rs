@@ -1,4 +1,5 @@
-use gumshoe::{GeneralIdentifier, IdentifyPackage, PlatformIdentifier};
+//! Native backing for `Snowglass.configuration`.
+
 use serde::{Deserialize, Serialize};
 use snowglass_config::ast::{
     ConfigurationInstance, OptionRange, PortAssignments, Value, ValueKind,
@@ -8,55 +9,17 @@ use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use snowglass_renderer::cli::{GamepadArgument, ViewerOptions};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DetectedGame {
     pub path: PathBuf,
     pub platform: String,
     pub preferred_emulator: Option<String>,
 }
 
-pub async fn detect_game(
-    path: PathBuf,
-    preferred_emulator: Option<String>,
-) -> Result<DetectedGame, String> {
-    tokio::task::spawn_blocking(move || {
-        let path = path
-            .canonicalize()
-            .map_err(|error| format!("cannot open game path {}: {error}", path.display()))?;
-        let package = GeneralIdentifier
-            .identify_path(&path)
-            .map_err(|error| format!("could not identify {}: {error}", path.display()))?;
-        let platform = consolespec_platform(package.platform()).ok_or_else(|| {
-            format!(
-                "{} was identified as {:?}, which Snowglass does not map to a consolespec platform",
-                path.display(),
-                package.platform()
-            )
-        })?;
-        Ok(DetectedGame {
-            path,
-            platform: platform.to_owned(),
-            preferred_emulator,
-        })
-    })
-    .await
-    .map_err(|error| format!("game detection task failed: {error}"))?
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum LauncherState {
-    Idle,
-    Detecting { path: String, name: String },
-    Configure { game: GameDescriptor },
-    Launching { name: String },
-    Error { message: String },
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameDescriptor {
-    pub generation: u64,
     pub path: String,
     pub name: String,
     pub platform: String,
@@ -112,19 +75,12 @@ pub struct ChoiceDescriptor {
 
 pub struct PreparedGame {
     descriptor: GameDescriptor,
-    candidates: Vec<PreparedEmulator>,
     viewer: ViewerOptions,
-    path: PathBuf,
-}
-
-struct PreparedEmulator {
-    plugin: Arc<dyn EmulatorPluginInstance>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LauncherStartRequest {
-    pub generation: u64,
+pub struct ConfigurationRequest {
     pub emulator: String,
     pub groups: Vec<LaunchGroupRequest>,
     #[serde(default)]
@@ -144,16 +100,13 @@ pub struct LaunchPortRequest {
     pub device: String,
 }
 
-pub struct ConfiguredGameLaunch {
-    pub plugin: Arc<dyn EmulatorPluginInstance>,
-    pub game: PathBuf,
+pub struct ConfiguredSelection {
     pub viewer: ViewerOptions,
-    pub configuration: ConfigurationInstance,
+    pub port_assignments: PortAssignments,
 }
 
 impl PreparedGame {
     pub fn new(
-        generation: u64,
         detected: DetectedGame,
         plugins: impl IntoIterator<Item = Arc<dyn EmulatorPluginInstance>>,
         viewer: ViewerOptions,
@@ -178,19 +131,17 @@ impl PreparedGame {
             ));
         }
 
-        let mut candidates = Vec::new();
         let mut descriptors = Vec::new();
         let mut errors = Vec::new();
         for plugin in plugins {
             match describe_emulator(plugin.as_ref(), &detected.platform, &viewer) {
                 Ok(descriptor) => {
                     descriptors.push(descriptor);
-                    candidates.push(PreparedEmulator { plugin });
                 }
                 Err(error) => errors.push(format!("{}: {error}", plugin.id())),
             }
         }
-        if candidates.is_empty() {
+        if descriptors.is_empty() {
             return Err(format!(
                 "No compatible emulator could be configured for {}: {}",
                 detected.platform,
@@ -202,16 +153,13 @@ impl PreparedGame {
         let selected_emulator = descriptors[0].id.clone();
         Ok(Self {
             descriptor: GameDescriptor {
-                generation,
                 path: detected.path.to_string_lossy().into_owned(),
                 name,
                 platform: detected.platform,
                 selected_emulator,
                 candidates: descriptors,
             },
-            candidates,
             viewer,
-            path: detected.path,
         })
     }
 
@@ -219,10 +167,7 @@ impl PreparedGame {
         &self.descriptor
     }
 
-    pub fn start(&self, request: LauncherStartRequest) -> Result<ConfiguredGameLaunch, String> {
-        if request.generation != self.descriptor.generation {
-            return Err("This game selection has been replaced by a newer one.".to_owned());
-        }
+    pub fn prepare(&self, request: ConfigurationRequest) -> Result<ConfiguredSelection, String> {
         let candidate_index = self
             .descriptor
             .candidates
@@ -234,21 +179,14 @@ impl PreparedGame {
                     request.emulator
                 )
             })?;
-        let plugin = self.candidates[candidate_index].plugin.clone();
         let descriptor = &self.descriptor.candidates[candidate_index];
         let (assignments, gamepads) = validate_assignments(descriptor, request.groups)?;
-        let mut configuration = plugin
-            .materialize(&self.descriptor.platform, assignments)
-            .map_err(|error| error.to_string())?;
-        apply_settings(&mut configuration, request.settings)?;
         let mut viewer = self.viewer.clone();
         viewer.machine.clone_from(&self.descriptor.platform);
         viewer.gamepads = gamepads;
-        Ok(ConfiguredGameLaunch {
-            plugin,
-            game: self.path.clone(),
+        Ok(ConfiguredSelection {
             viewer,
-            configuration,
+            port_assignments: assignments,
         })
     }
 }
@@ -502,73 +440,6 @@ fn validate_assignments(
     Ok((assignments, gamepads))
 }
 
-fn apply_settings(
-    configuration: &mut ConfigurationInstance,
-    settings: BTreeMap<String, serde_json::Value>,
-) -> Result<(), String> {
-    for (path, json) in settings {
-        let setting = configuration
-            .setting(&path)
-            .ok_or_else(|| format!("Emulator option '{path}' is not available."))?;
-        let option = configuration.definition().option(setting.option);
-        let value = match &option.definition.value.kind {
-            ValueKind::Boolean => json
-                .as_bool()
-                .map(Value::Boolean)
-                .ok_or_else(|| format!("'{path}' expects a boolean."))?,
-            ValueKind::Integer { range } => {
-                let value = json
-                    .as_i64()
-                    .ok_or_else(|| format!("'{path}' expects an integer."))?;
-                if let Some(OptionRange::Integer { min, max }) = range
-                    && !(*min..=*max).contains(&value)
-                {
-                    return Err(format!("'{path}' must be between {min} and {max}."));
-                }
-                Value::Integer(value)
-            }
-            ValueKind::Float { range } => {
-                let value = json
-                    .as_f64()
-                    .filter(|value| value.is_finite())
-                    .ok_or_else(|| format!("'{path}' expects a finite number."))?;
-                if let Some(OptionRange::Float { min, max }) = range
-                    && !(*min..=*max).contains(&value)
-                {
-                    return Err(format!("'{path}' must be between {min} and {max}."));
-                }
-                Value::Float(value)
-            }
-            ValueKind::String => Value::String(
-                json.as_str()
-                    .ok_or_else(|| format!("'{path}' expects text."))?
-                    .into(),
-            ),
-            ValueKind::Path => Value::Path(PathBuf::from(
-                json.as_str()
-                    .ok_or_else(|| format!("'{path}' expects a path."))?,
-            )),
-            ValueKind::Select { .. } => {
-                let key = json
-                    .as_str()
-                    .ok_or_else(|| format!("'{path}' expects a choice."))?;
-                if !configuration
-                    .definition()
-                    .choices(setting.option)
-                    .is_some_and(|choices| choices.iter().any(|choice| choice.key.as_str() == key))
-                {
-                    return Err(format!("'{path}' has no choice '{key}'."));
-                }
-                Value::Choice(key.into())
-            }
-        };
-        *configuration
-            .get_mut(&path)
-            .expect("validated setting remains present") = value;
-    }
-    Ok(())
-}
-
 fn selector_text(gamepad: &GamepadArgument) -> String {
     match &gamepad.selector {
         DeviceSelector::Keyboard => "K".to_owned(),
@@ -613,66 +484,6 @@ fn display_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn consolespec_platform(platform: PlatformIdentifier) -> Option<&'static str> {
-    use PlatformIdentifier::*;
-    Some(match platform {
-        Atari2600 => "ATARI_2600",
-        Atari5200 => "ATARI_5200",
-        Atari7800 => "ATARI_7800",
-        AtariLynx => "ATARI_LYNX",
-        AtariJaguar => "ATARI_JAGUAR",
-        BandaiWonderSwan => "BANDAI_WS",
-        BandaiWonderSwanColor => "BANDAI_WSC",
-        BandaiSuFamiTurbo => "BANDAI_SUFAMI_TURBO",
-        ColecoVision => "COLECO_CV",
-        Intellivision => "MATTEL_INTELLIVISION",
-        MagnavoxOdyssey2 => "MAGNAVOX_ODYSSEY2",
-        GceVectrex => "GCE_VECTREX",
-        MicrosoftXbox => "MICROSOFT_XBOX",
-        MicrosoftXbox360 => "MICROSOFT_XBOX360",
-        NecPcEngine => "NEC_TG16",
-        NintendoGameBoy => "NINTENDO_GB",
-        NintendoGameBoyColor => "NINTENDO_GBC",
-        NintendoGameBoyAdvance => "NINTENDO_GBA",
-        NintendoDS => "NINTENDO_DS",
-        NintendoDSi => "NINTENDO_DSI",
-        Nintendo3DS => "NINTENDO_3DS",
-        NintendoNew3DS => "NINTENDO_NEW_3DS",
-        NintendoNES => "NINTENDO_NES",
-        NintendoFamicomDiskSystem => "NINTENDO_FDS",
-        NintendoSuperNES => "NINTENDO_SNES",
-        NintendoSatellaview => "NINTENDO_SATELLAVIEW",
-        Nintendo64 => "NINTENDO_N64",
-        Nintendo64DD => "NINTENDO_N64DD",
-        NintendoVirtualBoy => "NINTENDO_VB",
-        NintendoGameCube => "NINTENDO_GCN",
-        NintendoWii => "NINTENDO_WII",
-        NintendoWiiU => "NINTENDO_WIIU",
-        NintendoSwitch => "NINTENDO_SWITCH",
-        SegaGameGear => "SEGA_GG",
-        SegaMasterSystem => "SEGA_SMS",
-        SegaSG1000 => "SEGA_SG1000",
-        SegaGenesis => "SEGA_GEN",
-        SegaCD => "SEGA_CD",
-        Sega32X => "SEGA_32X",
-        Sega32XCD => "SEGA_32X_CD",
-        SegaSaturn => "SEGA_SAT",
-        SegaDreamcast => "SEGA_DC",
-        SonyPlayStation => "SONY_PSX",
-        SonyPlayStation2 => "SONY_PS2",
-        SonyPlayStation3 => "SONY_PS3",
-        SonyPlayStationPortable => "SONY_PSP",
-        SonyPlayStationVita => "SONY_PSVITA",
-        PhilipsCDi => "PHILIPS_CDI",
-        SnkNeoGeoPocket => "SNK_NGP",
-        SnkNeoGeoPocketColor => "SNK_NGPC",
-        SnkNeoGeoCD => "SNK_NGCD",
-        ThreeDO => "PANASONIC_3DO",
-        WataraSupervision => "WATARA_SUPERVISION",
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,21 +510,5 @@ mod tests {
             "K"
         );
         assert_eq!(source_slot, 1);
-    }
-
-    #[test]
-    fn maps_platform_ids_used_by_the_loaded_plugins() {
-        assert_eq!(
-            consolespec_platform(PlatformIdentifier::NintendoWiiU),
-            Some("NINTENDO_WIIU")
-        );
-        assert_eq!(
-            consolespec_platform(PlatformIdentifier::NintendoGameCube),
-            Some("NINTENDO_GCN")
-        );
-        assert_eq!(
-            consolespec_platform(PlatformIdentifier::SonyPlayStation),
-            Some("SONY_PSX")
-        );
     }
 }

@@ -7,6 +7,9 @@ use blitz_dom::BaseDocument;
 use deno_core::ModuleSpecifier;
 use serde_json::Value;
 
+use super::configuration::{
+    ConfigurationBridge, ConfigurationContext, op_configuration_describe, op_configuration_prepare,
+};
 use super::dom::{
     Mutation, layout_snapshot, op_dom_append_child, op_dom_create_comment, op_dom_create_element,
     op_dom_create_text, op_dom_focus, op_dom_insert_before, op_dom_parse_fragment,
@@ -18,12 +21,9 @@ use super::emulator::{
     op_emulator_message, op_emulator_set_muted, op_emulator_set_volume, op_input_configure,
 };
 use super::input::{EventResult, op_event_result};
-use super::launcher::{
-    LauncherBridge, LauncherCommandSink, op_launcher_cancel, op_launcher_open, op_launcher_settle,
-    op_launcher_start,
-};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::plugin::{PluginBridge, op_plugin_invoke};
+use super::scraping::op_scraping_package_from_path;
 use super::state::{BridgeState, op_post_message};
 use super::webrtc::{WebRtcBridge, WebRtcCommandSink, op_webrtc_start, op_webrtc_stop};
 
@@ -32,6 +32,8 @@ const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
 const INPUT_FACADE: &str = include_str!("input_facade.js");
 const EMULATOR_FACADE: &str = include_str!("emulator_facade.js");
 const PLUGIN_FACADE: &str = include_str!("plugin_facade.js");
+const SCRAPING_FACADE: &str = include_str!("scraping_facade.js");
+const CONFIGURATION_FACADE: &str = include_str!("configuration_facade.js");
 const WEBRTC_FACADE: &str = include_str!("webrtc_facade.js");
 deno_core::extension!(
     snowglass_shell_runtime,
@@ -57,11 +59,10 @@ deno_core::extension!(
         op_emulator_message,
         op_emulator_input,
         op_input_configure,
-        op_launcher_open,
-        op_launcher_start,
-        op_launcher_cancel,
-        op_launcher_settle,
         op_plugin_invoke,
+        op_scraping_package_from_path,
+        op_configuration_describe,
+        op_configuration_prepare,
         op_webrtc_start,
         op_webrtc_stop,
     ],
@@ -86,16 +87,15 @@ deno_core::extension!(
                   op_emulator_close,
                   op_emulator_input,
                   op_input_configure,
-                  op_launcher_open,
-                  op_launcher_start,
-                  op_launcher_cancel,
-                  op_launcher_settle,
                   op_emulator_launch,
                   op_emulator_message,
                   op_emulator_set_muted,
                   op_emulator_set_volume,
                   op_post_message,
                   op_plugin_invoke,
+                  op_scraping_package_from_path,
+                  op_configuration_describe,
+                  op_configuration_prepare,
                   op_webrtc_start,
                   op_webrtc_stop,
                 } from "ext:core/ops";
@@ -119,16 +119,15 @@ deno_core::extension!(
                       op_emulator_close,
                       op_emulator_input,
                       op_input_configure,
-                      op_launcher_open,
-                      op_launcher_start,
-                      op_launcher_cancel,
-                      op_launcher_settle,
                       op_emulator_launch,
                       op_emulator_message,
                       op_emulator_set_muted,
                       op_emulator_set_volume,
                       op_post_message,
                       op_plugin_invoke,
+                      op_scraping_package_from_path,
+                      op_configuration_describe,
+                      op_configuration_prepare,
                       op_webrtc_start,
                       op_webrtc_stop,
                     }),
@@ -141,8 +140,8 @@ deno_core::extension!(
     state = |state| {
         state.put(BridgeState::default());
         state.put(EmulatorBridge::default());
-        state.put(LauncherBridge::default());
         state.put(WebRtcBridge::default());
+        state.put(ConfigurationBridge::default());
     },
 );
 
@@ -219,9 +218,9 @@ impl Runtime {
             source_name.to_owned(),
             emulator_commands,
             webrtc_commands,
-            LauncherCommandSink::default(),
-            serde_json::json!({ "kind": "idle" }),
+            None,
             plugin_runtime,
+            None,
         )
         .await
     }
@@ -240,9 +239,9 @@ impl Runtime {
         source_name: String,
         emulator_commands: EmulatorCommandSink,
         webrtc_commands: WebRtcCommandSink,
-        launcher_commands: LauncherCommandSink,
-        initial_launcher_state: Value,
+        startup_request: Option<Value>,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+        viewer: Option<snowglass_renderer::cli::ViewerOptions>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
@@ -281,13 +280,15 @@ impl Runtime {
             .js_runtime_mut()
             .op_state()
             .borrow_mut()
-            .borrow_mut::<LauncherBridge>()
-            .0 = launcher_commands;
-        worker
-            .js_runtime_mut()
-            .op_state()
-            .borrow_mut()
             .put(PluginBridge(plugin_runtime.handle()));
+        if let Some(viewer) = viewer {
+            let op_state = worker.js_runtime_mut().op_state();
+            op_state.borrow_mut().borrow_mut::<ConfigurationBridge>().0 =
+                Some(ConfigurationContext {
+                    plugins: plugin_runtime.handle().registry().clone(),
+                    viewer,
+                });
+        }
         worker
             .js_runtime_mut()
             .execute_script("snowglass:shell/input-facade.js", INPUT_FACADE)?;
@@ -302,17 +303,17 @@ impl Runtime {
             .execute_script("snowglass:shell/plugin-facade.js", PLUGIN_FACADE)?;
         worker
             .js_runtime_mut()
+            .execute_script("snowglass:shell/scraping-facade.js", SCRAPING_FACADE)?;
+        worker.js_runtime_mut().execute_script(
+            "snowglass:shell/configuration-facade.js",
+            CONFIGURATION_FACADE,
+        )?;
+        worker
+            .js_runtime_mut()
             .execute_script("snowglass:shell/runtime.js", BOOTSTRAP)?;
         worker.js_runtime_mut().execute_script(
             "snowglass:shell/document.js",
             format!("__snowglassDom.install({initial_snapshot});"),
-        )?;
-        worker.js_runtime_mut().execute_script(
-            "snowglass:shell/initial-launcher-state.js",
-            format!(
-                "__snowglassDom.setLauncherState({});",
-                serde_json::to_string(&initial_launcher_state)?
-            ),
         )?;
         for (index, script) in document_scripts(&html).enumerate() {
             let result = execute_document_script(
@@ -328,6 +329,15 @@ impl Runtime {
                 // discarding the document's realm or preventing later scripts.
                 tracing::error!("snowglass: shell script {index} failed: {error}");
             }
+        }
+        if let Some(request) = startup_request {
+            worker.js_runtime_mut().execute_script(
+                "snowglass:shell/startup-request.js",
+                format!(
+                    "__snowglassDom.requestPackage({});",
+                    serde_json::to_string(&request)?
+                ),
+            )?;
         }
         worker.run_up_to_duration(std::time::Duration::ZERO).await?;
         Ok(Self {
@@ -412,36 +422,21 @@ impl Runtime {
             .event)
     }
 
-    pub fn set_launcher_state(&mut self, state: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime_mut().execute_script(
-            "snowglass:shell/launcher-state.js",
-            format!(
-                "__snowglassDom.setLauncherState({});",
-                serde_json::to_string(state)?
-            ),
-        )?;
-        Ok(())
-    }
-
-    pub fn set_launch_plan(
-        &mut self,
-        plan: Option<&Value>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let plan = plan
-            .map(serde_json::to_string)
-            .transpose()?
-            .unwrap_or_else(|| "null".into());
-        self.worker.js_runtime_mut().execute_script(
-            "snowglass:shell/launch-plan.js",
-            format!("__snowglassDom.setLaunchPlan({plan});"),
-        )?;
-        Ok(())
-    }
-
     pub fn set_drop_active(&mut self, active: bool) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
             "snowglass:shell/drop-active.js",
             format!("__snowglassDom.setDropActive({active});"),
+        )?;
+        Ok(())
+    }
+
+    pub fn request_package(&mut self, request: &Value) -> Result<(), Box<dyn std::error::Error>> {
+        self.worker.js_runtime_mut().execute_script(
+            "snowglass:shell/package-request.js",
+            format!(
+                "__snowglassDom.requestPackage({});",
+                serde_json::to_string(request)?
+            ),
         )?;
         Ok(())
     }

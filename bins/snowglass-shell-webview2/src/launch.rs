@@ -1,49 +1,9 @@
 use crate::input::{GamepadMapping, parse_input_binding};
-pub use snowglass_pluginhost::{EmulatorLaunchArguments, GraphicsHook};
-use snowglass_renderer::cli::ViewerOptions;
+pub use snowglass_pluginhost::GraphicsHook;
 pub use snowglass_runtime::GeneratedConfiguration;
 use std::{collections::HashSet, net::SocketAddr};
 
 // Native game-host launch contracts and their shell adapters.
-
-pub fn plugin_launch_options(
-    plan: EmulatorLaunchArguments,
-    viewer: &ViewerOptions,
-) -> Result<UnattachedLaunchPlan, String> {
-    let webrtc = viewer.webrtc.as_deref().unwrap_or_default();
-    let launch = UnattachedLaunchPlan {
-        command: plan.command,
-        arguments: plan.argv,
-        isolated: plan.isolate,
-        hook: plan.hooks,
-        surfaces: plan
-            .surfaces
-            .into_iter()
-            .map(|surface| UnattachedTrackedSurface {
-                index: surface.index,
-                rotation: surface.rotation,
-                selector: surface.pattern,
-                webrtc: webrtc.contains(&surface.index),
-            })
-            .collect(),
-        gamepad_mapping: viewer.gamepads.iter().map(GamepadMapping::from).collect(),
-        machine: viewer.machine.clone(),
-        webrtc_bind: viewer
-            .webrtc
-            .as_ref()
-            .map(|_| viewer.bind_webrtc.to_string()),
-        generated_configuration: Some(GeneratedConfiguration {
-            root: plan.config_root,
-            files: plan
-                .config
-                .into_iter()
-                .map(|(path, bytes)| (path, bytes.into_vec()))
-                .collect(),
-        }),
-    };
-    launch.validate()?;
-    Ok(launch)
-}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -15,11 +15,7 @@ export type TrackedSurface = {
 export type GamePadMapping = {
   gamepadId: number | "K" | string;
   mouse: boolean;
-  // The virtual pad this drives, dense from zero.
   slot: number;
-  // The emulator-facing port it stands in for, e.g. "controller.0". Optional:
-  // when the machine has exactly one group accepting `layout` — which is true
-  // of every machinespec today — the host resolves it.
   port?: string;
   layout: string;
   mapping: Record<string, string>;
@@ -32,9 +28,6 @@ export type LaunchOptions = {
   hook: GraphicsHook[];
   surfaces: TrackedSurface[];
   gamepadMapping: GamePadMapping[];
-  // The consolespec machine being emulated. Its machinespec is what decides
-  // which ports exist and which layouts may occupy them, so a launch cannot
-  // describe its input without naming it.
   machine: string;
   webrtcBind?: string;
   generatedConfiguration?: {
@@ -47,25 +40,17 @@ export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {
   surfaces: Array<Omit<TrackedSurface, "attach">>;
 };
 
-export type EmulatorState =
-  | "starting"
-  | "ready"
-  | "closing"
-  | "closed"
-  | "error";
+export type LaunchState = "pending" | "starting" | "ready" | "closing" | "closed" | "error";
 
-export interface EmulatorInstance {
+export interface LaunchInstance extends EventTarget {
   readonly id: number;
-  readonly state: EmulatorState;
+  readonly state: LaunchState;
   readonly error: Error | null;
-  on(eventName: string, callback: (event: unknown) => void): void;
-  off(eventName: string, callback: (event: unknown) => void): void;
+  readonly request: Readonly<LaunchOptions>;
+  readonly ready: Promise<void>;
+  readonly closed: Promise<void>;
   readonly surfaces: readonly TrackedSurface[];
-  readonly audio: Readonly<{
-    available: boolean;
-    volume: number;
-    muted: boolean;
-  }>;
+  readonly audio: Readonly<{ available: boolean; volume: number; muted: boolean }>;
   send(messageName: string, args?: unknown): void;
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
@@ -75,12 +60,13 @@ export interface EmulatorInstance {
 }
 
 export interface EmulatorApi extends EventTarget {
-  readonly activeInstance: EmulatorInstance | null;
-  launch(options: LaunchOptions): Promise<EmulatorInstance>;
+  readonly activeLaunch: LaunchInstance | null;
+  readonly LaunchInstance: { prototype: LaunchInstance };
+  launch(options: LaunchOptions): LaunchInstance;
 }
 
 export interface PluginExport {
-  (...args: unknown[]): Promise<unknown>;
+  (...args: unknown[]): Promise<any>;
   readonly [property: string]: PluginExport;
 }
 
@@ -88,15 +74,77 @@ export interface PluginApi {
   open(id: string): PluginExport;
 }
 
-export type WebRtcPublicationState =
-  | "starting"
-  | "active"
-  | "closing"
-  | "closed"
-  | "error";
+export interface ScrapedPackage {
+  readonly path: string;
+  readonly name: string;
+  readonly platform: string;
+  toJSON(): Readonly<{ path: string; name: string; platform: string }>;
+}
+
+export interface ScrapingApi extends EventTarget {
+  readonly Package: {
+    readonly prototype: ScrapedPackage;
+    fromPath(path: string, options?: { signal?: AbortSignal }): Promise<ScrapedPackage>;
+  };
+  readonly dropActive: boolean;
+}
+
+export type ConfigurationOption = {
+  path: string;
+  title: string;
+  kind: "boolean" | "integer" | "float" | "string" | "path" | "select";
+  value: unknown;
+  min?: number;
+  max?: number;
+  choices?: Array<{ key: string; label: string }>;
+};
+
+export type ConfigurationPort = {
+  index: number;
+  layouts: string[];
+  selectedLayout: string;
+  selectedDevice: string;
+};
+
+export type ConfigurationPortGroup = {
+  name: string;
+  connected: number;
+  ports: ConfigurationPort[];
+};
+
+export type EmulatorConfiguration = {
+  id: string;
+  groups: ConfigurationPortGroup[];
+  options: ConfigurationOption[];
+};
+
+export type PackageConfiguration = {
+  path: string;
+  name: string;
+  platform: string;
+  selectedEmulator: string;
+  candidates: EmulatorConfiguration[];
+};
+
+export type ConfigurationSelection = {
+  emulator: string;
+  groups: Array<{
+    name: string;
+    ports: Array<{ index: number; layout: string; device: string }>;
+  }>;
+  settings: Record<string, unknown>;
+};
+
+export interface ConfigurationApi {
+  describe(packageValue: ScrapedPackage, options?: { emulator?: string }): Promise<PackageConfiguration>;
+  prepare(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<unknown>;
+  setupLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
+}
+
+export type WebRtcPublicationState = "starting" | "active" | "closing" | "closed" | "error";
 
 export interface WebRtcPublication extends EventTarget {
-  readonly instance: EmulatorInstance;
+  readonly instance: LaunchInstance;
   readonly bind: string;
   readonly targets: readonly number[];
   readonly state: WebRtcPublicationState;
@@ -107,82 +155,18 @@ export interface WebRtcPublication extends EventTarget {
 export interface WebRtcApi extends EventTarget {
   readonly activePublication: WebRtcPublication | null;
   start(options: {
-    instance: EmulatorInstance;
+    instance: LaunchInstance;
     bind?: string;
     targets: number[];
   }): Promise<WebRtcPublication>;
 }
 
-export type LauncherOption = {
-  path: string;
-  title: string;
-  kind: "boolean" | "integer" | "float" | "string" | "path" | "select";
-  value: unknown;
-  min?: number;
-  max?: number;
-  choices?: Array<{ key: string; label: string }>;
-};
-
-export type LauncherPort = {
-  index: number;
-  layouts: string[];
-  selectedLayout: string;
-  selectedDevice: string;
-};
-
-export type LauncherPortGroup = {
-  name: string;
-  connected: number;
-  ports: LauncherPort[];
-};
-
-export type LauncherEmulator = {
-  id: string;
-  groups: LauncherPortGroup[];
-  options: LauncherOption[];
-};
-
-export type LauncherGame = {
-  generation: number;
-  path: string;
-  name: string;
-  platform: string;
-  selectedEmulator: string;
-  candidates: LauncherEmulator[];
-};
-
-export type LauncherState =
-  | { kind: "idle" }
-  | { kind: "detecting"; path: string; name: string }
-  | { kind: "configure"; game: LauncherGame }
-  | { kind: "launching"; name: string }
-  | { kind: "error"; message: string };
-
-export type LauncherStartRequest = {
-  generation: number;
-  emulator: string;
-  groups: Array<{
-    name: string;
-    ports: Array<{ index: number; layout: string; device: string }>;
-  }>;
-  settings: Record<string, unknown>;
-};
-
-export interface LauncherApi extends EventTarget {
-  readonly state: LauncherState;
-  readonly dropActive: boolean;
-  readonly pendingLaunch: { id: number; options: LaunchRequest } | null;
-  open(path: string, emulator?: string): void;
-  start(request: LauncherStartRequest): void;
-  cancel(): void;
-  settleLaunch(id: number, error?: string): void;
-}
-
 declare global {
   interface Window {
     readonly Snowglass: Readonly<{
+      readonly scraping: ScrapingApi;
+      readonly configuration: ConfigurationApi;
       readonly emulator: EmulatorApi;
-      readonly launcher: LauncherApi;
       readonly plugin: PluginApi;
       readonly webrtc: WebRtcApi;
       readonly input: EventTarget & {

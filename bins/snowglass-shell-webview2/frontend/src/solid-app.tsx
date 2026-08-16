@@ -15,14 +15,14 @@ import {
 } from "solid-js";
 import { createStore, unwrap } from "solid-js/store";
 import type {
-  EmulatorInstance,
-  LauncherEmulator,
-  LauncherGame,
-  LauncherOption,
-  LauncherStartRequest,
-  LauncherState,
+  ConfigurationOption,
+  ConfigurationSelection,
+  EmulatorConfiguration,
+  LaunchInstance,
   LaunchOptions,
   LaunchRequest,
+  PackageConfiguration,
+  ScrapedPackage,
 } from "./emulator";
 import { InputRemapping } from "./input-remapping";
 
@@ -31,19 +31,15 @@ type AudioState = { available: boolean; volume: number; muted: boolean };
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
-let readableLauncherState = window.Snowglass.launcher.state;
-let readableLaunchPlan = window.Snowglass.launcher.pendingLaunch;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
-const launchPlanListeners = new Set<(plan: typeof readableLaunchPlan) => void>();
-window.Snowglass.launcher.addEventListener("statechange", (event: Event) => {
-  readableLauncherState = (event as CustomEvent<LauncherState>).detail;
-  if (readableLauncherState.kind === "configure") navigateMemory("/configure", true);
-  else if (readableLauncherState.kind === "launching") navigateMemory("/game/launching", true);
-  else if (readableLauncherState.kind === "idle" || readableLauncherState.kind === "error") navigateMemory("/", true);
-});
-window.Snowglass.launcher.addEventListener("launchplanchange", () => {
-  readableLaunchPlan = window.Snowglass.launcher.pendingLaunch;
-  for (const listener of launchPlanListeners) listener(readableLaunchPlan);
+type StartupRequest =
+  | { kind: "package"; path: string; emulator?: string }
+  | { kind: "launch"; options: LaunchRequest };
+let startupHandler: ((request: StartupRequest) => void) | null = null;
+const queuedStartup: StartupRequest[] = [];
+window.Snowglass.scraping.addEventListener("request", (event: Event) => {
+  const request = (event as CustomEvent<StartupRequest>).detail;
+  if (startupHandler) startupHandler(request); else queuedStartup.push(request);
 });
 
 function navigateMemory(path: string, replace: boolean) {
@@ -63,14 +59,22 @@ function friendly(value: string) {
     .replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).replace(/Wiiu/g, "Wii U");
 }
 
-function cloneGame(game: LauncherGame) { return structuredClone(game); }
+function cloneGame(game: PackageConfiguration) { return structuredClone(game); }
+
+type LauncherUiState =
+  | { kind: "idle" }
+  | { kind: "detecting"; path: string; name: string }
+  | { kind: "configure" }
+  | { kind: "launching"; name: string }
+  | { kind: "error"; message: string };
 
 type ShellModel = {
-  launcher: LauncherState;
-  draft: LauncherGame | null;
-  plan: { id: number; options: LaunchRequest } | null;
+  launcher: LauncherUiState;
+  package: ScrapedPackage | null;
+  draft: PackageConfiguration | null;
+  request: LaunchRequest | null;
   surfaces: LaunchRequest["surfaces"];
-  instance: EmulatorInstance | null;
+  launch: LaunchInstance | null;
   audio: AudioState;
   error: string;
   recent: RecentGame[];
@@ -81,7 +85,9 @@ type ShellContextValue = {
   model: ShellModel;
   setModel: (...path: any[]) => void;
   navigate(path: string): void;
+  open(path: string, emulator?: string): void;
   start(): void;
+  cancel(): void;
   close(): void;
 };
 const ShellContext = createContext<ShellContextValue>();
@@ -95,46 +101,80 @@ function ShellProvider(props: ParentProps) {
   const navigate = useNavigate();
   memoryNavigate = navigate;
   onCleanup(() => { if (memoryNavigate === navigate) memoryNavigate = null; });
-  const initial = readableLauncherState;
   const [model, updateModel] = createStore<ShellModel>({
-    launcher: initial,
-    draft: initial.kind === "configure" ? cloneGame(initial.game) : null,
-    plan: readableLaunchPlan,
-    surfaces: readableLaunchPlan?.options.surfaces || [],
-    instance: window.Snowglass.emulator.activeInstance,
+    launcher: { kind: "idle" },
+    package: null,
+    draft: null,
+    request: null,
+    surfaces: [],
+    launch: window.Snowglass.emulator.activeLaunch,
     audio: DEFAULT_AUDIO,
-    error: initial.kind === "error" ? initial.message : "",
+    error: "",
     recent: readRecent(),
     gamepadOpen: false,
   });
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
 
-  const planChanged = (plan: typeof readableLaunchPlan) => {
-    setModel("plan", plan);
-    if (plan) setModel("surfaces", structuredClone(plan.options.surfaces));
-  };
-  launchPlanListeners.add(planChanged);
-  onCleanup(() => launchPlanListeners.delete(planChanged));
+  let detection: AbortController | null = null;
 
-  onMount(() => {
-    const stateChanged = (event: Event) => {
-      const state = (event as CustomEvent<LauncherState>).detail;
-      setModel("launcher", state);
-      if (state.kind === "configure") setModel("draft", cloneGame(state.game));
-      if (state.kind === "error") setModel("error", state.message);
-    };
-    window.Snowglass.launcher.addEventListener("statechange", stateChanged);
-    onCleanup(() => window.Snowglass.launcher.removeEventListener("statechange", stateChanged));
+  const fail = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    setModel("error", message);
+    setModel("launcher", { kind: "error", message });
+    navigateMemory("/", true);
+  };
+
+  const open = (path: string, emulator?: string) => {
+    if (window.Snowglass.emulator.activeLaunch) {
+      fail(new DOMException("Close the active game before opening another one", "InvalidStateError"));
+      return;
+    }
+    detection?.abort();
+    detection = new AbortController();
+    const signal = detection.signal;
+    setModel("error", "");
+    setModel("launcher", { kind: "detecting", path, name: path.split(/[\\/]/).pop() || path });
+    navigateMemory("/", true);
+    void (async () => {
+      try {
+        const packageValue = await window.Snowglass.scraping.Package.fromPath(path, { signal });
+        const description = await window.Snowglass.configuration.describe(packageValue, { emulator });
+        if (signal.aborted) return;
+        setModel("package", packageValue);
+        setModel("draft", cloneGame(description));
+        setModel("launcher", { kind: "configure" });
+        navigateMemory("/configure", true);
+      } catch (error) {
+        if (!signal.aborted) fail(error);
+      }
+    })();
+  };
+
+  const acceptStartup = (request: StartupRequest) => {
+    if (request.kind === "package") {
+      open(request.path, request.emulator);
+      return;
+    }
+    setModel("request", request.options);
+    setModel("surfaces", structuredClone(request.options.surfaces));
+    setModel("launcher", { kind: "launching", name: request.options.command });
+    navigateMemory("/game/launching", true);
+  };
+  startupHandler = acceptStartup;
+  for (const request of queuedStartup.splice(0)) acceptStartup(request);
+  onCleanup(() => {
+    detection?.abort();
+    if (startupHandler === acceptStartup) startupHandler = null;
   });
 
   createEffect(() => localStorage.setItem(RECENT_KEY, JSON.stringify({ version: 2, entries: model.recent })));
 
   const start = () => {
     const game = model.draft;
-    if (!game) return;
+    const packageValue = model.package;
+    if (!game || !packageValue) return;
     const emulator = game.candidates.find((item) => item.id === game.selectedEmulator) || game.candidates[0];
-    const request: LauncherStartRequest = {
-      generation: game.generation,
+    const selection: ConfigurationSelection = {
       emulator: emulator.id,
       groups: emulator.groups.map((group) => ({
         name: group.name,
@@ -142,11 +182,26 @@ function ShellProvider(props: ParentProps) {
       })),
       settings: Object.fromEntries(emulator.options.filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
-    window.Snowglass.launcher.start(request);
+    setModel("launcher", { kind: "launching", name: game.name });
+    void window.Snowglass.configuration.setupLaunch(packageValue, selection).then((request) => {
+      setModel("request", request);
+      setModel("surfaces", structuredClone(request.surfaces));
+      navigateMemory("/game/launching", true);
+    }, fail);
   };
-  const close = () => model.instance?.close();
+  const cancel = () => {
+    detection?.abort();
+    setModel("launcher", { kind: "idle" });
+    setModel("package", null);
+    setModel("draft", null);
+    setModel("request", null);
+    setModel("surfaces", []);
+    setModel("error", "");
+    navigateMemory("/", true);
+  };
+  const close = () => model.launch?.close();
 
-  return <ShellContext.Provider value={{ model, setModel, navigate: (path: string) => navigateMemory(path, false), start, close }}>{props.children}</ShellContext.Provider>;
+  return <ShellContext.Provider value={{ model, setModel, navigate: (path: string) => navigateMemory(path, false), open, start, cancel, close }}>{props.children}</ShellContext.Provider>;
 }
 
 function Choice(props: { label: string; value: string; items: Array<{ value: string; label: string }>; onChange(value: string): void }) {
@@ -162,7 +217,7 @@ function Choice(props: { label: string; value: string; items: Array<{ value: str
   );
 }
 
-function OptionControl(props: { option: LauncherOption; onChange(value: unknown): void }) {
+function OptionControl(props: { option: ConfigurationOption; onChange(value: unknown): void }) {
   return (
     <Show when={props.option.kind !== "boolean"} fallback={
       <Switch.Root checked={Boolean(props.option.value)} onCheckedChange={(details: any) => props.onChange(details.checked)} class="flex items-center justify-between py-2">
@@ -186,11 +241,11 @@ function OptionControl(props: { option: LauncherOption; onChange(value: unknown)
 
 function LibraryPage() {
   const shell = useShell();
-  const [dropActive, setDropActive] = createSignal(window.Snowglass.launcher.dropActive);
+  const [dropActive, setDropActive] = createSignal(window.Snowglass.scraping.dropActive);
   onMount(() => {
     const changed = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
-    window.Snowglass.launcher.addEventListener("dropactivechange", changed);
-    onCleanup(() => window.Snowglass.launcher.removeEventListener("dropactivechange", changed));
+    window.Snowglass.scraping.addEventListener("dropactivechange", changed);
+    onCleanup(() => window.Snowglass.scraping.removeEventListener("dropactivechange", changed));
   });
   return <main class="min-h-screen bg-snow-950 p-10 text-snow-100">
     <header class="mb-8"><p class="text-ice-300"><span class="symbol-glyph">◇</span> Snowglass</p><h1 class="text-4xl font-semibold">Your games, one drop away.</h1></header>
@@ -199,7 +254,7 @@ function LibraryPage() {
     </section>
     <Show when={shell.model.error}><p role="alert" class="mt-5 rounded-lg bg-error-500 p-3">{shell.model.error}</p></Show>
     <section class="mt-10"><div class="flex justify-between"><h2 class="text-2xl">Recently played</h2><Show when={shell.model.recent.length}><button onClick={() => shell.setModel("recent", [])}>Clear</button></Show></div>
-      <div class="mt-4 grid grid-cols-4 gap-4"><For each={shell.model.recent}>{(game) => <button class="rounded-xl bg-snow-900 p-4 text-left" onClick={() => window.Snowglass.launcher.open(game.path, game.emulator)}><strong>{game.name}</strong><small class="block text-snow-300">{friendly(game.platform)}</small></button>}</For></div>
+      <div class="mt-4 grid grid-cols-4 gap-4"><For each={shell.model.recent}>{(game) => <button class="rounded-xl bg-snow-900 p-4 text-left" onClick={() => shell.open(game.path, game.emulator)}><strong>{game.name}</strong><small class="block text-snow-300">{friendly(game.platform)}</small></button>}</For></div>
     </section>
   </main>;
 }
@@ -208,12 +263,12 @@ function ConfigurePage() {
   const shell = useShell();
   const game = () => shell.model.draft;
   const emulator = () => game()?.candidates.find((item) => item.id === game()?.selectedEmulator) || game()?.candidates[0];
-  const updateEmulator = (update: (target: LauncherEmulator) => void) => {
+  const updateEmulator = (update: (target: EmulatorConfiguration) => void) => {
     const next = cloneGame(game()!); const target = next.candidates.find((item) => item.id === next.selectedEmulator) || next.candidates[0]; update(target); shell.setModel("draft", next);
   };
   return <Show when={game()}>{(current) => <main class="configuration-page">
     <header class="configuration-header">
-      <button class="configuration-back symbol-glyph" onClick={() => window.Snowglass.launcher.cancel()} aria-label="Return to library">←</button>
+      <button class="configuration-back symbol-glyph" onClick={shell.cancel} aria-label="Return to library">←</button>
       <div class="configuration-title"><p>{friendly(current().platform)}</p><h1>{current().name}</h1></div>
       <button class="configuration-start" onClick={shell.start}>Start <span class="symbol-glyph" aria-hidden="true">▶</span></button>
     </header>
@@ -280,8 +335,9 @@ function GameLayout(props: ParentProps) {
       window.removeEventListener("keyup", handleGamepadShortcut);
     });
   });
-  const bindInstance = (instance: EmulatorInstance) => {
+  const bindInstance = (instance: LaunchInstance) => {
     unbindInstance();
+    void instance.ready.catch(() => {});
     const ready = () => {
       shell.setModel("error", "");
       const game = shell.model.draft;
@@ -292,29 +348,29 @@ function GameLayout(props: ParentProps) {
       }
       shell.navigate("/game/play");
     };
-    const audio = (value: unknown) => shell.setModel("audio", value as AudioState);
-    const failed = (value: unknown) => { shell.setModel("error", String((value as { message?: string })?.message || "Game launch failed")); shell.setModel("surfaces", []); shell.navigate("/"); };
-    const closed = () => { shell.setModel("instance", null); shell.setModel("audio", { ...DEFAULT_AUDIO }); shell.setModel("surfaces", []); window.Snowglass.launcher.cancel(); shell.navigate("/"); };
-    instance.on("ready", ready); instance.on("audioChanged", audio); instance.on("error", failed); instance.on("closed", closed);
-    unbindInstance = () => { instance.off("ready", ready); instance.off("audioChanged", audio); instance.off("error", failed); instance.off("closed", closed); };
+    const audio = (event: Event) => shell.setModel("audio", (event as CustomEvent<AudioState>).detail);
+    const failed = (event: Event) => { const error = (event as CustomEvent<Error>).detail; shell.setModel("error", error?.message || "Game launch failed"); shell.setModel("surfaces", []); shell.navigate("/"); };
+    const closed = () => { shell.setModel("launch", null); shell.setModel("request", null); shell.setModel("audio", { ...DEFAULT_AUDIO }); shell.setModel("surfaces", []); shell.setModel("launcher", { kind: "idle" }); shell.navigate("/"); };
+    instance.addEventListener("ready", ready); instance.addEventListener("audioChanged", audio); instance.addEventListener("error", failed); instance.addEventListener("closed", closed);
+    unbindInstance = () => { instance.removeEventListener("ready", ready); instance.removeEventListener("audioChanged", audio); instance.removeEventListener("error", failed); instance.removeEventListener("closed", closed); };
     if (instance.state === "ready") ready();
-    else if (instance.state === "error") failed({ message: instance.error?.message });
+    else if (instance.state === "error") failed(new CustomEvent("error", { detail: instance.error }));
     else if (instance.state === "closed") closed();
   };
   createEffect(() => {
-    const plan = shell.model.plan;
+    const request = shell.model.request;
     const sequence = ++launchSequence;
-    if (!plan || shell.model.instance) return;
+    if (!request || shell.model.launch) return;
     const waitForConnectedLayout = (framesRemaining: number) => requestAnimationFrame(() => {
-      if (sequence !== launchSequence || shell.model.plan?.id !== plan.id) return;
+      if (sequence !== launchSequence || shell.model.request !== request) return;
       if (!stage?.isConnected) {
         if (framesRemaining > 0) waitForConnectedLayout(framesRemaining - 1);
-        else window.Snowglass.launcher.settleLaunch(plan.id, "The game layout did not become connected");
+        else { shell.setModel("error", "The game layout did not become connected"); shell.navigate("/"); }
         return;
       }
       try {
         let appendedSurface = false;
-        const surfaces = plan.options.surfaces.map((surface) => {
+        const surfaces = request.surfaces.map((surface) => {
           let attach = surfaceElements.get(surface.index);
           if (!(attach instanceof HTMLElement) || attach.localName !== "tracked-surface") throw new Error(`Surface ${surface.index} did not mount`);
           attach.setAttribute("src", String(surface.index));
@@ -330,15 +386,15 @@ function GameLayout(props: ParentProps) {
           }
           return { ...surface, attach };
         });
-        const launch = async () => {
-          if (sequence !== launchSequence || shell.model.plan?.id !== plan.id) return;
+        const launch = () => {
+          if (sequence !== launchSequence || shell.model.request !== request) return;
           try {
-            const instance = await window.Snowglass.emulator.launch({ ...unwrap(plan.options), surfaces } as LaunchOptions);
-            shell.setModel("instance", instance); bindInstance(instance); window.Snowglass.launcher.settleLaunch(plan.id);
-          } catch (error) { window.Snowglass.launcher.settleLaunch(plan.id, error instanceof Error ? error.message : String(error)); }
+            const instance = window.Snowglass.emulator.launch({ ...unwrap(request), surfaces } as LaunchOptions);
+            shell.setModel("launch", instance); bindInstance(instance);
+          } catch (error) { shell.setModel("error", error instanceof Error ? error.message : String(error)); shell.navigate("/"); }
         };
         if (appendedSurface) requestAnimationFrame(launch); else launch();
-      } catch (error) { window.Snowglass.launcher.settleLaunch(plan.id, error instanceof Error ? error.message : String(error)); }
+      } catch (error) { shell.setModel("error", error instanceof Error ? error.message : String(error)); shell.navigate("/"); }
     });
     waitForConnectedLayout(180);
   });
@@ -371,7 +427,7 @@ function LaunchingPage() {
 
 function PlayPage() {
   const shell = useShell(); const [confirm, setConfirm] = createSignal(false);
-  const toggleMuted = () => shell.setModel("audio", "muted", (value: boolean) => { shell.model.instance?.setMuted(!value); return !value; });
+  const toggleMuted = () => shell.setModel("audio", "muted", (value: boolean) => { shell.model.launch?.setMuted(!value); return !value; });
   return <>
     <div class="game-controls-layer">
       <div class="game-hotbar-trigger">
@@ -382,7 +438,7 @@ function PlayPage() {
           <button class="hotbar-button" type="button" aria-label={shell.model.gamepadOpen ? "Hide gamepad" : "Show gamepad"} aria-pressed={shell.model.gamepadOpen} title={shell.model.gamepadOpen ? "Hide gamepad" : "Show gamepad"} onClick={() => shell.setModel("gamepadOpen", (value: boolean) => !value)}><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#ffffff" d="M7.5 7h9a5.5 5.5 0 0 1 5.14 3.54l1.15 3.02a4 4 0 0 1-6.39 4.35L14.35 16h-4.7L7.6 17.91a4 4 0 0 1-6.39-4.35l1.15-3.02A5.5 5.5 0 0 1 7.5 7Z" /><path fill="#222326" d="M7 10h2v2h2v2H9v2H7v-2H5v-2h2v-2Zm9.5 1a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Zm3 2.5a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Z" /></svg></button>
           <span class="hotbar-divider" />
           <button class="hotbar-button hotbar-audio" type="button" aria-label={shell.model.audio.muted ? "Unmute game" : "Mute game"} aria-pressed={shell.model.audio.muted} title={shell.model.audio.muted ? "Unmute" : "Mute"} onClick={toggleMuted}><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#ffffff" d="M3 9v6h4l5 5V4L7 9H3Z" class="speaker-body" /><Show when={shell.model.audio.muted || shell.model.audio.volume === 0} fallback={<><path fill="#ffffff" d="M14.5 8.1v2.05a2.5 2.5 0 0 1 0 3.7v2.05a4.5 4.5 0 0 0 0-7.8Z" /><Show when={shell.model.audio.volume > 0.55}><path fill="#ffffff" d="M17 5.55v2.18a6 6 0 0 1 0 8.54v2.18A8 8 0 0 0 17 5.55Z" /></Show></>}><path fill="#ffffff" d="m15.3 8 2.7 2.7L20.7 8 22 9.3 19.3 12l2.7 2.7-1.3 1.3-2.7-2.7-2.7 2.7-1.3-1.3 2.7-2.7L14 9.3 15.3 8Z" /></Show></svg></button>
-          <Slider.Root min={0} max={1} step={0.01} value={[shell.model.audio.volume]} onValueChange={(details: any) => { const value = details.value[0]; shell.setModel("audio", "volume", value); shell.model.instance?.setVolume(value); }} class="hotbar-volume"><Slider.Control class="hotbar-volume-control"><Slider.Track class="hotbar-volume-track"><Slider.Range class="hotbar-volume-range" /></Slider.Track><Slider.Thumb index={0} class="hotbar-volume-thumb" /></Slider.Control></Slider.Root>
+          <Slider.Root min={0} max={1} step={0.01} value={[shell.model.audio.volume]} onValueChange={(details: any) => { const value = details.value[0]; shell.setModel("audio", "volume", value); shell.model.launch?.setVolume(value); }} class="hotbar-volume"><Slider.Control class="hotbar-volume-control"><Slider.Track class="hotbar-volume-track"><Slider.Range class="hotbar-volume-range" /></Slider.Track><Slider.Thumb index={0} class="hotbar-volume-thumb" /></Slider.Control></Slider.Root>
         </div>}>
           <Dialog.Root open onOpenChange={(details: any) => setConfirm(details.open)} modal={false} preventScroll={false}>
             <Dialog.Content class="game-hotbar close-confirm-hotbar">
@@ -399,19 +455,14 @@ function PlayPage() {
 
 function RemapPage() {
   const shell = useShell();
-  onMount(() => { shell.model.instance?.deactivateInput(); onCleanup(() => shell.model.instance?.activateInput()); });
+  onMount(() => { shell.model.launch?.deactivateInput(); onCleanup(() => shell.model.launch?.activateInput()); });
   return <Dialog.Root open modal={false} closeOnEscape={false}><Dialog.Positioner class="absolute inset-y-0 right-0 w-[34rem]"><Dialog.Content class="remap-dialog-content bg-snow-900 p-6"><Dialog.Title class="text-2xl">Controller remapping</Dialog.Title><Dialog.Description class="mt-2 text-snow-300">Choose a control, then press or move its replacement.</Dialog.Description><InputRemapping onClose={() => shell.navigate("/game/play")} /></Dialog.Content></Dialog.Positioner></Dialog.Root>;
 }
 
 function NotFound() { navigateMemory("/", true); return null; }
 
-const initialRoute = window.Snowglass.launcher.state.kind === "configure"
-  ? "/configure"
-  : window.Snowglass.launcher.state.kind === "launching"
-    ? "/game/launching"
-    : "/";
 const shellHistory = createMemoryHistory();
-shellHistory.set({ value: initialRoute, replace: true, scroll: false });
+shellHistory.set({ value: "/", replace: true, scroll: false });
 
 export function ShellRouter() {
   return <MemoryRouter history={shellHistory} root={(props) => <ShellProvider>{props.children}</ShellProvider>}>
