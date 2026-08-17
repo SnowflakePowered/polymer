@@ -26,6 +26,22 @@ pub struct ChromeTexture {
     pub view: wgpu::TextureView,
 }
 
+/// An owned reference to a rasterized band resource that can cross from the
+/// Vello worker to the presentation thread without copying its pixels.
+pub struct ChromeResource {
+    resource: ID3D12Resource,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ChromeResource {
+    /// Transfers the retained COM reference into the compositor's windows
+    /// crate version.
+    pub fn into_abi_reference(self) -> *mut c_void {
+        self.resource.into_raw()
+    }
+}
+
 impl ChromeTexture {
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self, Box<dyn Error>> {
         let (width, height) = (width.max(1), height.max(1));
@@ -107,9 +123,11 @@ impl ChromeTexture {
         })
     }
 
-    /// Transfers one retained COM reference across the `windows` crate-version
-    /// boundary to the compositor.
-    pub fn retained_abi_reference(&self) -> *mut c_void {
-        self.resource.clone().into_raw()
+    pub fn retained_resource(&self) -> ChromeResource {
+        ChromeResource {
+            resource: self.resource.clone(),
+            width: self.width,
+            height: self.height,
+        }
     }
 }

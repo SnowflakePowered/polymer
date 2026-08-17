@@ -345,6 +345,10 @@ tracked-surface {
 .gamepad-panel-close:focus { background: rgb(255 255 255 / 12%); }
 .gamepad-panel-body { position: relative; height: calc(100% - 2rem); }
 
+.remap-positioner {
+  z-index: 30;
+}
+
 .remap-dialog-content {
   display: flex;
   height: 100%;

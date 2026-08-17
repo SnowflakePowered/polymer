@@ -35,9 +35,13 @@ impl ShellCoordinator {
                 break;
             };
             processed += 1;
-            match self.game_host.take_composition_content_update() {
+            let size = self.window.size();
+            match self
+                .game_host
+                .take_composition_content_update(size.width, size.height)
+            {
                 Ok(Some(content)) => {
-                    if let Err(error) = self.window.set_merged_content(&content) {
+                    if let Err(error) = self.window.set_shell_layers(&content.layers) {
                         tracing::error!(
                             "snowglass: attaching replacement game compositor failed: {error}"
                         );
@@ -77,9 +81,11 @@ impl ShellCoordinator {
                 GameHostCaptureEvent::Frame {
                     connection,
                     frame,
+                    observed_qpc,
                     dimensions_changed,
                 } => {
-                    self.window.observe_frame(connection, frame);
+                    self.window
+                        .observe_frame_at(connection, frame, observed_qpc);
                     if dimensions_changed {
                         changed = true;
                     }
@@ -166,6 +172,37 @@ impl ShellCoordinator {
         self.game_host.has_pending_frame()
     }
 
+    pub(super) fn draw_pending_chrome(&mut self) {
+        let size = self.window.size();
+        let result = {
+            let render_window = self.window.surface(size.width.max(1), size.height.max(1));
+            self.game_host.draw_chrome(&render_window)
+        };
+        match result {
+            Ok(true) => {}
+            Ok(false) => self.window.request_redraw(),
+            Err(error) => tracing::error!("snowglass: presenting shell chrome failed: {error}"),
+        }
+        self.sync_shell_visuals(size.width, size.height);
+    }
+
+    fn sync_shell_visuals(&mut self, width: u32, height: u32) {
+        match self
+            .game_host
+            .take_composition_content_update(width, height)
+        {
+            Ok(Some(content)) => {
+                if let Err(error) = self.window.set_shell_layers(&content.layers) {
+                    tracing::error!("snowglass: reconciling shell visuals failed: {error}");
+                } else if let Err(error) = self.window.commit() {
+                    tracing::error!("snowglass: committing shell visuals failed: {error}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => tracing::error!("snowglass: obtaining shell visuals failed: {error}"),
+        }
+    }
+
     /// Re-lays out the shell document and moves the compositor to match.
     ///
     /// The chrome is uploaded band by band and the game views are placed
@@ -186,11 +223,14 @@ impl ShellCoordinator {
         let Some(frame) = self.shell_dom.produce_frame() else {
             return;
         };
-        if let Err(error) = self.game_host.rasterize_shell(&frame) {
+        let size = self.window.size();
+        if let Err(error) = self.game_host.rasterize_shell(frame) {
             tracing::error!("snowglass: rasterizing shell chrome failed: {error}");
             return;
         }
         let placements = self.shell_dom.tracked_surface_layout();
         self.game_host.apply_tracked_layout(&placements);
+        self.sync_shell_visuals(size.width, size.height);
+        self.draw_pending_chrome();
     }
 }

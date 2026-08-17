@@ -45,17 +45,25 @@ snowglass-statistics.workspace = true
 tempfile.workspace = true
 windows = { workspace = true, features = [
     "Foundation",
+    "Foundation_Numerics",
     "Graphics_Capture",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
+    "System",
+    "UI_Composition",
+    "UI_Composition_Core",
+    "UI_Composition_Desktop",
     "Win32_Graphics_DirectComposition",
     "Win32_Media",
     "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Composition",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 windows-core.workspace = true
+windows-numerics = "0.2.0"
 winit = "0.30.13"
 vello = "0.9"
 vello_encoding = "0.9"

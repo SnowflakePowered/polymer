@@ -445,7 +445,10 @@ function GameLayout(props: ParentProps) {
         <FloatingPanel.Positioner class="gamepad-panel-positioner" data-open={shell.model.gamepadOpen} style={`position: fixed; top: 0px; left: 0px; width: ${gamepadSize().width}px; height: ${gamepadSize().height}px; transform: translate(${gamepadPosition().x}px, ${gamepadPosition().y}px);`}>
           <FloatingPanel.Content class="gamepad-panel-content" style="width: 100%; height: 100%;">
             <FloatingPanel.Header class="gamepad-panel-header">
-              <FloatingPanel.DragTrigger class="gamepad-panel-drag">Gamepad display</FloatingPanel.DragTrigger>
+              <FloatingPanel.DragTrigger
+                class="gamepad-panel-drag"
+                onDblClick={(event: MouseEvent) => event.preventDefault()}
+              >Gamepad display</FloatingPanel.DragTrigger>
               <FloatingPanel.CloseTrigger class="gamepad-panel-close symbol-glyph" data-no-drag aria-label="Hide gamepad">×</FloatingPanel.CloseTrigger>
             </FloatingPanel.Header>
             <FloatingPanel.Body class="gamepad-panel-body">
@@ -496,7 +499,7 @@ function PlayPage() {
 function RemapPage() {
   const shell = useShell();
   onMount(() => { shell.model.launch?.deactivateInput(); onCleanup(() => shell.model.launch?.activateInput()); });
-  return <Dialog.Root open modal={false} closeOnEscape={false}><Dialog.Positioner class="absolute inset-y-0 right-0 w-[34rem]"><Dialog.Content class="remap-dialog-content bg-snow-900 p-6"><Dialog.Title class="text-2xl">Controller remapping</Dialog.Title><Dialog.Description class="mt-2 text-snow-300">Choose a control, then press or move its replacement.</Dialog.Description><InputRemapping onClose={() => shell.navigate("/game/play")} /></Dialog.Content></Dialog.Positioner></Dialog.Root>;
+  return <Dialog.Root open modal={false} closeOnEscape={false}><Dialog.Positioner class="remap-positioner absolute inset-y-0 right-0 w-[34rem]"><Dialog.Content class="remap-dialog-content bg-snow-900 p-6"><Dialog.Title class="text-2xl">Controller remapping</Dialog.Title><Dialog.Description class="mt-2 text-snow-300">Choose a control, then press or move its replacement.</Dialog.Description><InputRemapping onClose={() => shell.navigate("/game/play")} /></Dialog.Content></Dialog.Positioner></Dialog.Root>;
 }
 
 function NotFound() { navigateMemory("/", true); return null; }

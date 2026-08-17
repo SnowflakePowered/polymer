@@ -223,7 +223,7 @@ impl ShellDocument {
         // Blitz may return generated paint/layout elements which have no
         // identity-preserving JavaScript wrapper. Dispatching one of those
         // nodes makes the Deno bridge fall back to `document`, so delegated
-        // Solid/Ark handlers never see the button underneath. Browser event
+        // DOM handlers never see the button underneath. Browser event
         // targets are DOM nodes: promote the paint hit to the nearest mapped
         // DOM ancestor before handing it to the event driver.
         let target = std::iter::successors(Some(painted), |node| {
