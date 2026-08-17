@@ -59,7 +59,7 @@ function friendly(value: string) {
     .replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()).replace(/Wiiu/g, "Wii U");
 }
 
-function cloneGame(game: PackageConfiguration) { return structuredClone(game); }
+function cloneGame(game: PackageConfiguration) { return structuredClone(unwrap(game)); }
 
 type LauncherUiState =
   | { kind: "idle" }
@@ -293,6 +293,45 @@ function ConfigurePage() {
   </main>}</Show>;
 }
 
+const CLASSIC_DOT_RADIUS = 2.4;
+const CLASSIC_DOT_PITCH = 12;
+
+function createClassicDotPath(width: number, height: number) {
+  const commands: string[] = [];
+  const diameter = CLASSIC_DOT_RADIUS * 2;
+  for (let row = 0, y = CLASSIC_DOT_RADIUS; y < height + CLASSIC_DOT_RADIUS; row++, y += CLASSIC_DOT_PITCH / 2) {
+    const offset = row % 2 ? CLASSIC_DOT_PITCH / 2 : 0;
+    for (let x = CLASSIC_DOT_RADIUS + offset; x < width + CLASSIC_DOT_RADIUS; x += CLASSIC_DOT_PITCH) {
+      commands.push(`M ${x - CLASSIC_DOT_RADIUS} ${y} a ${CLASSIC_DOT_RADIUS} ${CLASSIC_DOT_RADIUS} 0 1 0 ${diameter} 0 a ${CLASSIC_DOT_RADIUS} ${CLASSIC_DOT_RADIUS} 0 1 0 -${diameter} 0`);
+    }
+  }
+  return commands.join(" ");
+}
+
+function ClassicSurfaceBackdrop() {
+  let backdrop!: HTMLDivElement;
+  const [dimensions, setDimensions] = createSignal({ width: 0, height: 0 });
+  const dotPath = createMemo(() => createClassicDotPath(dimensions().width, dimensions().height));
+
+  onMount(() => {
+    const updateDimensions = () => {
+      const bounds = backdrop.getBoundingClientRect();
+      const next = { width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) };
+      setDimensions((current) => current.width === next.width && current.height === next.height ? current : next);
+    };
+    const observer = new ResizeObserver(updateDimensions);
+    observer.observe(backdrop);
+    updateDimensions();
+    onCleanup(() => observer.disconnect());
+  });
+
+  return <div ref={backdrop} class="classic-surface-backdrop" aria-hidden="true">
+    <svg>
+      <path d={dotPath()} fill="#000000" fill-opacity="0.92" />
+    </svg>
+  </div>;
+}
+
 function GameLayout(props: ParentProps) {
   const shell = useShell();
   const [gamepadPosition, setGamepadPosition] = createSignal({ x: 300, y: 100 });
@@ -400,7 +439,7 @@ function GameLayout(props: ParentProps) {
   });
   return <main ref={stage} class="relative h-screen w-screen overflow-hidden bg-black text-snow-100">
     <For each={displayedSurfaces()}>{(surface, index) => <Show when={index() > 0} fallback={
-      <tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="absolute inset-0 h-full w-full" />
+      <><ClassicSurfaceBackdrop /><tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="game-surface absolute inset-0 h-full w-full" /></>
     }>
       <FloatingPanel.Root open={shell.model.gamepadOpen} onOpenChange={(details: any) => shell.setModel("gamepadOpen", details.open)} position={gamepadPosition()} onPositionChange={(details: any) => setGamepadPosition(details.position)} size={gamepadSize()} onSizeChange={(details: any) => setGamepadSize(details.size)} minSize={{ width: 240, height: 180 }} lockAspectRatio persistRect closeOnEscape={false}>
         <FloatingPanel.Positioner class="gamepad-panel-positioner" data-open={shell.model.gamepadOpen} style={`position: fixed; top: 0px; left: 0px; width: ${gamepadSize().width}px; height: ${gamepadSize().height}px; transform: translate(${gamepadPosition().x}px, ${gamepadPosition().y}px);`}>
@@ -410,7 +449,8 @@ function GameLayout(props: ParentProps) {
               <FloatingPanel.CloseTrigger class="gamepad-panel-close symbol-glyph" data-no-drag aria-label="Hide gamepad">×</FloatingPanel.CloseTrigger>
             </FloatingPanel.Header>
             <FloatingPanel.Body class="gamepad-panel-body">
-              <tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="absolute inset-0 h-full w-full" />
+              <ClassicSurfaceBackdrop />
+              <tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="game-surface absolute inset-0 h-full w-full" />
             </FloatingPanel.Body>
             <FloatingPanel.ResizeTrigger axis="se" class="absolute bottom-0 right-0 h-5 w-5 cursor-se-resize border-b-2 border-r-2 border-ice-500" />
           </FloatingPanel.Content>
