@@ -263,6 +263,9 @@ impl<S: PathSemantics> VfsPath<S> {
         if units.first() != Some(&separator) {
             return Err(VfsError::invalid_path::<S>(units, "path must be absolute"));
         }
+        if units.len() == 1 {
+            return Ok(());
+        }
         if units.len() > 1 && units.last() == Some(&separator) {
             return Err(VfsError::invalid_path::<S>(
                 units,
@@ -477,6 +480,14 @@ mod tests {
 
     #[test]
     fn paths_are_absolute_and_canonical() {
+        assert_eq!(
+            VfsPathBuf::<PosixPathSemantics>::new("/").unwrap(),
+            VfsPathBuf::root()
+        );
+        assert_eq!(
+            VfsPathBuf::<WindowsPathSemantics>::new("/").unwrap(),
+            VfsPathBuf::root()
+        );
         for invalid in ["Dolphin", "/Dolphin/", "/Dolphin//Config", "/./x", "/../x"] {
             assert!(VfsPathBuf::<PosixPathSemantics>::new(invalid).is_err());
             assert!(VfsPathBuf::<WindowsPathSemantics>::new(invalid).is_err());

@@ -1,0 +1,845 @@
+use crate::{
+    CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode, Metadata,
+    MetadataChanges, Node, OpenFile, OpenOptions, RemoveKind, VfsComponent, VfsError, VfsPath,
+    VfsPathBuf, VfsResult, Volume,
+};
+use parking_lot::Mutex;
+use std::{
+    fs::File,
+    mem::{offset_of, size_of, size_of_val},
+    os::windows::{fs::MetadataExt, io::AsRawHandle, io::FromRawHandle},
+    path::Path,
+    ptr,
+    sync::Arc,
+};
+use windows::{
+    Wdk::{
+        Foundation::OBJECT_ATTRIBUTES,
+        Storage::FileSystem::{
+            FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+            FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
+            FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation,
+            NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile,
+            NtSetInformationFile, RtlNtStatusToDosErrorNoTeb,
+        },
+    },
+    Win32::{
+        Foundation::{
+            ERROR_NO_MORE_FILES, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, NTSTATUS,
+            OBJ_CASE_INSENSITIVE, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
+            STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+        },
+        Storage::FileSystem::{
+            CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+            FILE_DISPOSITION_INFO, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
+            FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO, FILE_SHARE_DELETE, FILE_SHARE_MODE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
+            FileEndOfFileInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
+            GetFileInformationByHandleEx, OPEN_EXISTING, ReOpenFile, SetFileInformationByHandle,
+        },
+        System::IO::IO_STATUS_BLOCK,
+    },
+    core::{HSTRING, PWSTR},
+};
+
+const SHARE_ALL: FILE_SHARE_MODE =
+    FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0);
+
+pub(super) struct HostFile {
+    handle: Arc<File>,
+    writable: bool,
+}
+
+impl HostFile {
+    pub(super) fn new(path: &Path, writable: bool) -> VfsResult<Self> {
+        let handle = open_root(path, writable, false)?;
+        require_regular_file(&handle)?;
+        Ok(Self {
+            handle: Arc::new(handle),
+            writable,
+        })
+    }
+}
+
+impl FileNode for HostFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        metadata_for(&self.handle, self.writable)
+    }
+
+    fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
+        set_handle_metadata(&self.handle, self.writable, changes, false)
+    }
+
+    fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
+        open_captured(&self.handle, self.writable, options)
+    }
+}
+
+struct HostOpen {
+    file: File,
+}
+
+impl OpenFile for HostOpen {
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+        use std::os::windows::fs::FileExt;
+        Ok(self.file.seek_read(buffer, offset)?)
+    }
+
+    fn write_at(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+        use std::os::windows::fs::FileExt;
+        Ok(self.file.seek_write(buffer, offset)?)
+    }
+
+    fn set_len(&self, len: u64) -> VfsResult<()> {
+        self.file.set_len(len)?;
+        Ok(())
+    }
+
+    fn flush(&self) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn sync(&self) -> VfsResult<()> {
+        self.file.sync_all()?;
+        Ok(())
+    }
+}
+
+pub(super) struct HostVolume {
+    inner: Arc<HostVolumeInner>,
+}
+
+struct HostVolumeInner {
+    root: Arc<File>,
+    writable: bool,
+}
+
+struct HostDirectory {
+    volume: Arc<HostVolumeInner>,
+    handle: Arc<File>,
+    enumeration: Mutex<()>,
+}
+
+struct HostTreeFile {
+    volume: Arc<HostVolumeInner>,
+    handle: Arc<File>,
+}
+
+struct CapturedNode {
+    handle: Arc<File>,
+    kind: FileKind,
+}
+
+impl HostVolume {
+    pub(super) fn new(root: &Path, writable: bool) -> VfsResult<Self> {
+        let root = open_root(root, writable, true)?;
+        require_directory(&root)?;
+        Ok(Self {
+            inner: Arc::new(HostVolumeInner {
+                root: Arc::new(root),
+                writable,
+            }),
+        })
+    }
+
+    fn component(path: &VfsPath) -> VfsResult<VfsComponent> {
+        path.components()
+            .next_back()
+            .map(|name| VfsComponent::from_units(crate::PathStr::as_slice(name).to_vec()))
+            .transpose()?
+            .ok_or_else(|| VfsError::Unsupported("the volume root has no name".into()))
+    }
+}
+
+impl HostVolumeInner {
+    fn node(self: &Arc<Self>, handle: File) -> VfsResult<Node> {
+        reject_reparse_point(&handle)?;
+        let metadata = handle.metadata()?;
+        let handle = Arc::new(handle);
+        if metadata.is_dir() {
+            Ok(Node::Directory(Arc::new(HostDirectory {
+                volume: self.clone(),
+                handle,
+                enumeration: Mutex::new(()),
+            })))
+        } else if metadata.is_file() {
+            Ok(Node::File(Arc::new(HostTreeFile {
+                volume: self.clone(),
+                handle,
+            })))
+        } else {
+            Err(VfsError::Unsupported(
+                "host volume exposes only files and directories".into(),
+            ))
+        }
+    }
+
+    fn open_child(self: &Arc<Self>, parent: &File, name: &VfsComponent) -> VfsResult<Option<Node>> {
+        match nt_open_relative(
+            parent,
+            name.as_slice(),
+            desired_access(self.writable),
+            FILE_OPEN,
+            FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        ) {
+            Ok(handle) => self.node(handle).map(Some),
+            Err(status)
+                if status == STATUS_OBJECT_NAME_NOT_FOUND
+                    || status == STATUS_OBJECT_PATH_NOT_FOUND =>
+            {
+                Ok(None)
+            }
+            Err(status) => Err(nt_error(status)),
+        }
+    }
+
+    fn resolve(self: &Arc<Self>, path: &VfsPath) -> VfsResult<CapturedNode> {
+        let mut current = CapturedNode {
+            handle: self.root.clone(),
+            kind: FileKind::Directory,
+        };
+        for component in path.components() {
+            if current.kind != FileKind::Directory {
+                return Err(VfsError::NotDirectory(VfsPathBuf::root()));
+            }
+            let name: VfsComponent =
+                VfsComponent::from_units(crate::PathStr::as_slice(component).to_vec())?;
+            let handle = match nt_open_relative(
+                &current.handle,
+                name.as_slice(),
+                desired_access(self.writable),
+                FILE_OPEN,
+                FILE_OPEN_FOR_BACKUP_INTENT
+                    | FILE_OPEN_REPARSE_POINT
+                    | FILE_SYNCHRONOUS_IO_NONALERT,
+            ) {
+                Ok(handle) => handle,
+                Err(status)
+                    if status == STATUS_OBJECT_NAME_NOT_FOUND
+                        || status == STATUS_OBJECT_PATH_NOT_FOUND =>
+                {
+                    return Err(VfsError::NotFound(path.to_owned()));
+                }
+                Err(status) => return Err(nt_error(status)),
+            };
+            reject_reparse_point(&handle)?;
+            let metadata = handle.metadata()?;
+            let kind = if metadata.is_dir() {
+                FileKind::Directory
+            } else if metadata.is_file() {
+                FileKind::File
+            } else {
+                return Err(VfsError::Unsupported(
+                    "host volume exposes only files and directories".into(),
+                ));
+            };
+            current = CapturedNode {
+                handle: Arc::new(handle),
+                kind,
+            };
+        }
+        Ok(current)
+    }
+}
+
+impl Volume for HostVolume {
+    fn root(&self) -> VfsResult<Arc<dyn DirectoryNode>> {
+        Ok(Arc::new(HostDirectory {
+            volume: self.inner.clone(),
+            handle: self.inner.root.clone(),
+            enumeration: Mutex::new(()),
+        }))
+    }
+
+    fn rename(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        VfsError::require_writable(self.inner.writable)?;
+        let source = self.inner.resolve(source)?;
+        let target_parent = target
+            .parent()
+            .ok_or_else(|| VfsError::Unsupported("the volume root cannot be replaced".into()))?;
+        let target_parent = self.inner.resolve(target_parent.as_path())?;
+        if target_parent.kind != FileKind::Directory {
+            return Err(VfsError::NotDirectory(VfsPathBuf::root()));
+        }
+        rename_handle(
+            &source.handle,
+            &target_parent.handle,
+            &Self::component(target)?,
+        )
+    }
+}
+
+impl DirectoryNode for HostDirectory {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            kind: FileKind::Directory,
+            len: 0,
+            readonly: !self.volume.writable,
+        })
+    }
+
+    fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
+        set_handle_metadata(&self.handle, self.volume.writable, changes, true)
+    }
+
+    fn lookup(&self, name: &VfsComponent) -> VfsResult<Option<Node>> {
+        self.volume.open_child(&self.handle, name)
+    }
+
+    fn read_dir(&self) -> VfsResult<Box<DirectoryIterator>> {
+        let _enumeration = self.enumeration.lock();
+        let names = directory_names(&self.handle)?;
+        let entries = names
+            .into_iter()
+            .map(|name| {
+                let node = self
+                    .volume
+                    .open_child(&self.handle, &name)?
+                    .ok_or_else(|| VfsError::NotFound(VfsPathBuf::root()))?;
+                Ok(DirectoryEntry { name, node })
+            })
+            .collect::<Vec<_>>();
+        Ok(Box::new(entries.into_iter()))
+    }
+
+    fn create_file(
+        &self,
+        name: &VfsComponent,
+        options: CreateOptions,
+    ) -> VfsResult<Arc<dyn FileNode>> {
+        VfsError::require_writable(self.volume.writable)?;
+        let disposition = if options.exclusive {
+            FILE_CREATE
+        } else {
+            FILE_OPEN_IF
+        };
+        let handle = match nt_open_relative(
+            &self.handle,
+            name.as_slice(),
+            desired_access(true),
+            disposition,
+            FILE_NON_DIRECTORY_FILE
+                | FILE_OPEN_FOR_BACKUP_INTENT
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT,
+        ) {
+            Ok(handle) => handle,
+            Err(status) if status == STATUS_OBJECT_NAME_COLLISION => {
+                return Err(VfsError::AlreadyExists(VfsPathBuf::root()));
+            }
+            Err(status) => return Err(nt_error(status)),
+        };
+        reject_reparse_point(&handle)?;
+        require_regular_file(&handle)?;
+        Ok(Arc::new(HostTreeFile {
+            volume: self.volume.clone(),
+            handle: Arc::new(handle),
+        }))
+    }
+
+    fn create_dir(&self, name: &VfsComponent) -> VfsResult<Arc<dyn DirectoryNode>> {
+        VfsError::require_writable(self.volume.writable)?;
+        let handle = match nt_open_relative(
+            &self.handle,
+            name.as_slice(),
+            desired_access(true),
+            FILE_CREATE,
+            FILE_DIRECTORY_FILE
+                | FILE_OPEN_FOR_BACKUP_INTENT
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT,
+        ) {
+            Ok(handle) => handle,
+            Err(status) if status == STATUS_OBJECT_NAME_COLLISION => {
+                return Err(VfsError::AlreadyExists(VfsPathBuf::root()));
+            }
+            Err(status) => return Err(nt_error(status)),
+        };
+        reject_reparse_point(&handle)?;
+        require_directory(&handle)?;
+        Ok(Arc::new(HostDirectory {
+            volume: self.volume.clone(),
+            handle: Arc::new(handle),
+            enumeration: Mutex::new(()),
+        }))
+    }
+
+    fn remove(&self, name: &VfsComponent, kind: RemoveKind) -> VfsResult<()> {
+        VfsError::require_writable(self.volume.writable)?;
+        let handle = match nt_open_relative(
+            &self.handle,
+            name.as_slice(),
+            desired_access(true),
+            FILE_OPEN,
+            FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        ) {
+            Ok(handle) => handle,
+            Err(status)
+                if status == STATUS_OBJECT_NAME_NOT_FOUND
+                    || status == STATUS_OBJECT_PATH_NOT_FOUND =>
+            {
+                return Err(VfsError::NotFound(VfsPathBuf::root()));
+            }
+            Err(status) => return Err(nt_error(status)),
+        };
+        reject_reparse_point(&handle)?;
+        let metadata = handle.metadata()?;
+        let actual_kind = if metadata.is_dir() {
+            FileKind::Directory
+        } else {
+            FileKind::File
+        };
+        if actual_kind
+            != match kind {
+                RemoveKind::File => FileKind::File,
+                RemoveKind::Directory => FileKind::Directory,
+            }
+        {
+            return match kind {
+                RemoveKind::File => Err(VfsError::IsDirectory(VfsPathBuf::root())),
+                RemoveKind::Directory => Err(VfsError::NotDirectory(VfsPathBuf::root())),
+            };
+        }
+        delete_handle(&handle)
+    }
+}
+
+impl FileNode for HostTreeFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        metadata_for(&self.handle, self.volume.writable)
+    }
+
+    fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
+        set_handle_metadata(&self.handle, self.volume.writable, changes, false)
+    }
+
+    fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
+        open_captured(&self.handle, self.volume.writable, options)
+    }
+}
+
+fn open_root(path: &Path, writable: bool, directory: bool) -> VfsResult<File> {
+    let path = HSTRING::from(path.as_os_str());
+    let access = GENERIC_READ.0 | if writable { GENERIC_WRITE.0 } else { 0 };
+    let flags = FILE_FLAG_OPEN_REPARSE_POINT
+        | if directory {
+            FILE_FLAG_BACKUP_SEMANTICS
+        } else {
+            FILE_FLAGS_AND_ATTRIBUTES(0)
+        };
+    let handle = unsafe { CreateFileW(&path, access, SHARE_ALL, None, OPEN_EXISTING, flags, None) }
+        .map_err(|_| std::io::Error::last_os_error())?;
+    let file = unsafe { File::from_raw_handle(handle.0) };
+    reject_reparse_point(&file)?;
+    Ok(file)
+}
+
+fn nt_open_relative(
+    parent: &File,
+    name: &[u16],
+    desired_access: FILE_ACCESS_RIGHTS,
+    disposition: NTCREATEFILE_CREATE_DISPOSITION,
+    options: NTCREATEFILE_CREATE_OPTIONS,
+) -> Result<File, NTSTATUS> {
+    let byte_len = u16::try_from(name.len().saturating_mul(size_of::<u16>()))
+        .map_err(|_| windows::Win32::Foundation::STATUS_NAME_TOO_LONG)?;
+    let unicode = UNICODE_STRING {
+        Length: byte_len,
+        MaximumLength: byte_len,
+        Buffer: PWSTR(name.as_ptr().cast_mut()),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: raw_handle(parent),
+        ObjectName: &unicode,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: ptr::null(),
+        SecurityQualityOfService: ptr::null(),
+    };
+    let mut handle = HANDLE::default();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &attributes,
+            &mut io_status,
+            None,
+            FILE_ATTRIBUTE_NORMAL,
+            SHARE_ALL,
+            disposition,
+            options,
+            None,
+            0,
+        )
+    };
+    if status.is_err() {
+        return Err(status);
+    }
+    Ok(unsafe { File::from_raw_handle(handle.0) })
+}
+
+fn desired_access(writable: bool) -> FILE_ACCESS_RIGHTS {
+    FILE_ACCESS_RIGHTS(
+        FILE_GENERIC_READ.0
+            | if writable {
+                FILE_GENERIC_WRITE.0 | DELETE.0
+            } else {
+                0
+            },
+    )
+}
+
+fn open_captured(
+    source: &File,
+    writable: bool,
+    options: OpenOptions,
+) -> VfsResult<Box<dyn OpenFile>> {
+    if options.write || options.truncate {
+        VfsError::require_writable(writable)?;
+    }
+    let access = if options.read || !options.write {
+        GENERIC_READ.0
+    } else {
+        0
+    } | if options.write { GENERIC_WRITE.0 } else { 0 };
+    let handle = unsafe {
+        ReOpenFile(
+            raw_handle(source),
+            access,
+            SHARE_ALL,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+        )
+    }
+    .map_err(|_| std::io::Error::last_os_error())?;
+    let file = unsafe { File::from_raw_handle(handle.0) };
+    if options.truncate {
+        file.set_len(0)?;
+    }
+    Ok(Box::new(HostOpen { file }))
+}
+
+fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(VfsError::Unsupported(
+            "host volume exposes only files and directories".into(),
+        ));
+    }
+    Ok(Metadata {
+        kind: FileKind::File,
+        len: metadata.len(),
+        readonly: !writable,
+    })
+}
+
+fn set_handle_metadata(
+    file: &File,
+    writable: bool,
+    changes: MetadataChanges,
+    directory: bool,
+) -> VfsResult<()> {
+    VfsError::require_writable(writable)?;
+    if let Some(len) = changes.len {
+        if directory {
+            return Err(VfsError::IsDirectory(VfsPathBuf::root()));
+        }
+        let info = FILE_END_OF_FILE_INFO {
+            EndOfFile: i64::try_from(len)
+                .map_err(|_| VfsError::Unsupported("file length exceeds i64".into()))?,
+        };
+        set_file_information(file, FileEndOfFileInfo, &info)?;
+    }
+    if let Some(readonly) = changes.readonly {
+        let mut info = FILE_BASIC_INFO::default();
+        get_file_information(file, FileBasicInfo, &mut info)?;
+        if readonly {
+            info.FileAttributes |= FILE_ATTRIBUTE_READONLY.0;
+        } else {
+            info.FileAttributes &= !FILE_ATTRIBUTE_READONLY.0;
+            if info.FileAttributes == 0 {
+                info.FileAttributes = FILE_ATTRIBUTE_NORMAL.0;
+            }
+        }
+        set_file_information(file, FileBasicInfo, &info)?;
+    }
+    Ok(())
+}
+
+fn require_regular_file(file: &File) -> VfsResult<()> {
+    reject_reparse_point(file)?;
+    if !file.metadata()?.is_file() {
+        return Err(VfsError::IsDirectory(VfsPathBuf::root()));
+    }
+    Ok(())
+}
+
+fn require_directory(file: &File) -> VfsResult<()> {
+    reject_reparse_point(file)?;
+    if !file.metadata()?.is_dir() {
+        return Err(VfsError::NotDirectory(VfsPathBuf::root()));
+    }
+    Ok(())
+}
+
+fn reject_reparse_point(file: &File) -> VfsResult<()> {
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(VfsError::Unsupported(
+            "links are not exposed by confined host volumes".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn directory_names(directory: &File) -> VfsResult<Vec<VfsComponent>> {
+    const BUFFER_SIZE: usize = 64 * 1024;
+    let mut storage = vec![0_u64; BUFFER_SIZE / size_of::<u64>()];
+    let mut restart = true;
+    let mut names = Vec::new();
+    loop {
+        storage.fill(0);
+        let class = if restart {
+            FileIdBothDirectoryRestartInfo
+        } else {
+            FileIdBothDirectoryInfo
+        };
+        let result = unsafe {
+            GetFileInformationByHandleEx(
+                raw_handle(directory),
+                class,
+                storage.as_mut_ptr().cast(),
+                BUFFER_SIZE as u32,
+            )
+        };
+        if result.is_err() {
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_MORE_FILES {
+                break;
+            }
+            return Err(std::io::Error::from_raw_os_error(error.0 as i32).into());
+        }
+        restart = false;
+        let bytes = storage.as_ptr().cast::<u8>();
+        let mut offset = 0_usize;
+        loop {
+            if offset + offset_of!(FILE_ID_BOTH_DIR_INFO, FileName) > BUFFER_SIZE {
+                return Err(VfsError::Unsupported(
+                    "invalid directory information returned by Windows".into(),
+                ));
+            }
+            let entry = unsafe { &*bytes.add(offset).cast::<FILE_ID_BOTH_DIR_INFO>() };
+            let name_len = entry.FileNameLength as usize / size_of::<u16>();
+            let name_end =
+                offset + offset_of!(FILE_ID_BOTH_DIR_INFO, FileName) + name_len * size_of::<u16>();
+            if name_end > BUFFER_SIZE {
+                return Err(VfsError::Unsupported(
+                    "invalid directory name returned by Windows".into(),
+                ));
+            }
+            if entry.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+                return Err(VfsError::Unsupported(
+                    "links are not exposed by confined host volumes".into(),
+                ));
+            }
+            let name = unsafe {
+                std::slice::from_raw_parts(ptr::addr_of!(entry.FileName).cast::<u16>(), name_len)
+            };
+            if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
+                names.push(VfsComponent::from_units(name.to_vec())?);
+            }
+            if entry.NextEntryOffset == 0 {
+                break;
+            }
+            offset = offset
+                .checked_add(entry.NextEntryOffset as usize)
+                .ok_or_else(|| {
+                    VfsError::Unsupported("directory information offset overflowed".into())
+                })?;
+        }
+    }
+    Ok(names)
+}
+
+fn rename_handle(source: &File, target_parent: &File, name: &VfsComponent) -> VfsResult<()> {
+    let name_bytes = size_of_val(name.as_slice());
+    let total = size_of::<FILE_RENAME_INFORMATION>() + name_bytes;
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).RootDirectory = raw_handle(target_parent);
+        (*info).FileNameLength = name_bytes as u32;
+        ptr::addr_of_mut!((*info).FileName)
+            .cast::<u16>()
+            .copy_from_nonoverlapping(name.as_slice().as_ptr(), name.as_slice().len());
+        let status = NtSetInformationFile(
+            raw_handle(source),
+            &mut io_status,
+            info.cast(),
+            total as u32,
+            FileRenameInformation,
+        );
+        if status.is_err() {
+            return Err(nt_error(status));
+        }
+    }
+    Ok(())
+}
+
+fn delete_handle(file: &File) -> VfsResult<()> {
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    set_file_information(file, FileDispositionInfo, &info)
+}
+
+fn get_file_information<T>(
+    file: &File,
+    class: windows::Win32::Storage::FileSystem::FILE_INFO_BY_HANDLE_CLASS,
+    output: &mut T,
+) -> VfsResult<()> {
+    unsafe {
+        GetFileInformationByHandleEx(
+            raw_handle(file),
+            class,
+            ptr::from_mut(output).cast(),
+            size_of::<T>() as u32,
+        )
+    }
+    .map_err(|_| std::io::Error::last_os_error())?;
+    Ok(())
+}
+
+fn set_file_information<T>(
+    file: &File,
+    class: windows::Win32::Storage::FileSystem::FILE_INFO_BY_HANDLE_CLASS,
+    input: &T,
+) -> VfsResult<()> {
+    unsafe {
+        SetFileInformationByHandle(
+            raw_handle(file),
+            class,
+            ptr::from_ref(input).cast(),
+            size_of::<T>() as u32,
+        )
+    }
+    .map_err(|_| std::io::Error::last_os_error())?;
+    Ok(())
+}
+
+fn raw_handle(file: &File) -> HANDLE {
+    HANDLE(file.as_raw_handle())
+}
+
+fn nt_error(status: NTSTATUS) -> VfsError {
+    let error = unsafe { RtlNtStatusToDosErrorNoTeb(status) };
+    std::io::Error::from_raw_os_error(error as i32).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn component(name: &str) -> VfsComponent {
+        VfsComponent::from_units(name.encode_utf16().collect()).unwrap()
+    }
+
+    #[test]
+    fn relative_handles_cover_directory_and_file_mutations() {
+        let temporary = tempfile::tempdir().unwrap();
+        let volume = HostVolume::new(temporary.path(), true).unwrap();
+        let root = volume.root().unwrap();
+        let directory = root.create_dir(&component("directory")).unwrap();
+        let file = directory
+            .create_file(&component("source.bin"), CreateOptions { exclusive: true })
+            .unwrap();
+        let open = file
+            .open(OpenOptions {
+                read: true,
+                write: true,
+                truncate: false,
+            })
+            .unwrap();
+        open.write_at(0, b"relative handle").unwrap();
+        let mut bytes = [0; 15];
+        open.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"relative handle");
+        drop(open);
+        drop(file);
+
+        let names = directory
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().name.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["source.bin"]);
+
+        volume
+            .rename(
+                VfsPathBuf::new("/directory/source.bin").unwrap().as_path(),
+                VfsPathBuf::new("/directory/renamed.bin").unwrap().as_path(),
+            )
+            .unwrap();
+        assert!(
+            directory
+                .lookup(&component("source.bin"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            directory
+                .lookup(&component("renamed.bin"))
+                .unwrap()
+                .is_some()
+        );
+
+        directory
+            .remove(&component("renamed.bin"), RemoveKind::File)
+            .unwrap();
+        drop(directory);
+        root.remove(&component("directory"), RemoveKind::Directory)
+            .unwrap();
+        assert!(root.lookup(&component("directory")).unwrap().is_none());
+    }
+
+    #[test]
+    fn individual_file_keeps_its_identity_after_path_replacement() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("game.bin");
+        let moved = temporary.path().join("moved.bin");
+        std::fs::write(&source, b"captured").unwrap();
+        let file = HostFile::new(&source, false).unwrap();
+
+        std::fs::rename(&source, &moved).unwrap();
+        std::fs::write(&source, b"replacement").unwrap();
+
+        let open = file
+            .open(OpenOptions {
+                read: true,
+                write: false,
+                truncate: false,
+            })
+            .unwrap();
+        let mut bytes = [0; 8];
+        open.read_at(0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"captured");
+    }
+
+    #[test]
+    fn relative_lookup_rejects_reparse_points() {
+        let temporary = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = temporary.path().join("outside");
+        if std::os::windows::fs::symlink_dir(outside.path(), &link).is_err() {
+            return;
+        }
+        let volume = HostVolume::new(temporary.path(), false).unwrap();
+        let error = volume
+            .root()
+            .unwrap()
+            .lookup(&component("outside"))
+            .unwrap_err();
+        assert!(matches!(error, VfsError::Unsupported(_)));
+    }
+}

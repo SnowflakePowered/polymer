@@ -1,4 +1,5 @@
 use super::*;
+use snowglass_vfs::FilesystemHost;
 
 impl ShellCoordinator {
     pub(super) fn launch_game(
@@ -6,17 +7,29 @@ impl ShellCoordinator {
         token: InstanceToken,
         options: AttachedLaunchPlan,
     ) -> Result<(), String> {
-        if let Some(handle) = options.prepared_filesystem.as_deref() {
+        let mounted_filesystem = if let Some(handle) = options.prepared_filesystem.as_deref() {
             let prepared = self
                 .plugin_runtime
                 .take_prepared_filesystem(handle)
                 .map_err(|error| error.to_string())?;
-            drop(prepared);
-            let error = "the plugin prepared a virtual filesystem, but no WinFSP/FUSE mount host is installed".to_owned();
-            self.emit_instance_event(token, "error", &instance_events::error(&error));
-            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-            return Err(error);
-        }
+            prepared
+                .validate_command(&options.command)
+                .map_err(|error| error.to_string())?;
+            let host = snowglass_vfs_winfsp::WinFspFilesystemHost::default();
+            if !host.supported() {
+                let error = "the plugin prepared a virtual filesystem, but WinFSP is unavailable"
+                    .to_owned();
+                self.emit_instance_event(token, "error", &instance_events::error(&error));
+                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                return Err(error);
+            }
+            Some(
+                host.mount(prepared.endpoint().clone(), prepared.filesystem().clone())
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
         if self.game_host.has_active_game() {
             let error = "another emulator instance is active".to_owned();
             self.emit_instance_event(token, "error", &instance_events::error(&error));
@@ -42,13 +55,17 @@ impl ShellCoordinator {
         }
         self.publish_input_configuration();
         let wake_proxy = self.proxy.clone();
-        match self
-            .game_host
-            .launch(token, options, self.session.clone(), move || {
+        match self.game_host.launch(
+            token,
+            options,
+            mounted_filesystem,
+            self.session.clone(),
+            move || {
                 wake_proxy
                     .send_event(UserEvent::Window(WindowCommand::WakeCapture))
                     .is_ok()
-            }) {
+            },
+        ) {
             Ok(()) => {
                 self.input.attach(
                     self.game_host

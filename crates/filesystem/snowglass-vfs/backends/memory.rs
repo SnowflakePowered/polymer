@@ -470,7 +470,7 @@ impl DirectoryNode for MemoryDirectory {
         };
         match (&state.nodes.get(&child).expect("child exists").kind, kind) {
             (MemoryKind::Directory(children), RemoveKind::Directory) if !children.is_empty() => {
-                return Err(VfsError::Unsupported("directory is not empty".into()));
+                return Err(VfsError::DirectoryNotEmpty(VfsPathBuf::root()));
             }
             (MemoryKind::Directory(_), RemoveKind::File) => {
                 return Err(VfsError::IsDirectory(VfsPathBuf::root()));

@@ -37,7 +37,6 @@ pub struct NamedResource {
 pub struct FilesystemOptions {
     pub package_root: PathBuf,
     pub resources: Vec<NamedResource>,
-    pub game_file: Option<PathBuf>,
 }
 
 impl FilesystemOptions {
@@ -45,7 +44,6 @@ impl FilesystemOptions {
         Self {
             package_root,
             resources: Vec::new(),
-            game_file: None,
         }
     }
 }
@@ -69,7 +67,6 @@ struct FilesystemState {
         Arc<Resource<dyn snowglass_vfs::FileNode>>,
     >,
     named: BTreeMap<String, ResourceHandle>,
-    game: Option<ResourceHandle>,
     used: bool,
     working_directory_set: bool,
     profile_set: bool,
@@ -86,7 +83,6 @@ impl FilesystemState {
             volumes: HashMap::new(),
             files: HashMap::new(),
             named: BTreeMap::new(),
-            game: None,
             used: false,
             working_directory_set: false,
             profile_set: false,
@@ -101,14 +97,6 @@ impl FilesystemState {
             let handle =
                 state.insert_path_resource(resource.path, resource.kind, resource.permissions)?;
             state.named.insert(resource.name, handle);
-        }
-        if let Some(path) = options.game_file {
-            let resource = Resource::new(
-                Arc::new(HostFileFactory::new(path, false)),
-                Permissions::READ,
-                ResourceOrigin::HostFile,
-            );
-            state.game = Some(ResourceHandle::File(state.insert_file(resource)));
         }
         Ok(state)
     }
@@ -289,13 +277,80 @@ fn op_vfs_resources(state: &mut OpState) -> Vec<JsResource> {
         .collect()
 }
 
-#[op2]
-#[serde]
-fn op_vfs_game(state: &mut OpState) -> Option<JsResource> {
-    state
-        .borrow::<FilesystemState>()
-        .game
-        .map(|handle| JsResource::new(None, handle))
+#[op2(fast)]
+fn op_vfs_mount_host_tree(
+    state: &mut OpState,
+    #[string] target: String,
+    #[string] source: String,
+    #[string] mode: String,
+) -> Result<(), JsErrorBox> {
+    let permissions = Permissions::from_str(&mode).map_err(js_error)?;
+    let authority = Permissions::from_str("rx").expect("canonical permission constant");
+    if !authority.contains(permissions) {
+        return Err(js_error(VfsError::AuthorityExceeded {
+            authority,
+            requested: permissions,
+        }));
+    }
+    let path = PathBuf::from(source);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(js_error(
+            "mountHostTree source must be an absolute host directory path",
+        ));
+    }
+    let vfs = state.borrow_mut::<FilesystemState>();
+    let resource = Resource::new(
+        Arc::new(PackageDirectoryFactory::new(path)),
+        authority,
+        ResourceOrigin::HostFile,
+    );
+    let handle = vfs.insert_volume(resource);
+    let resource = vfs.volume(handle).map_err(js_error)?;
+    vfs.plan.mount_tree(
+        VfsPathBuf::new(target).map_err(js_error)?,
+        resource,
+        permissions,
+    );
+    vfs.used = true;
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_vfs_mount_host_file(
+    state: &mut OpState,
+    #[string] target: String,
+    #[string] source: String,
+    #[string] mode: String,
+) -> Result<(), JsErrorBox> {
+    let permissions = Permissions::from_str(&mode).map_err(js_error)?;
+    let authority = Permissions::from_str("rx").expect("canonical permission constant");
+    if !authority.contains(permissions) {
+        return Err(js_error(VfsError::AuthorityExceeded {
+            authority,
+            requested: permissions,
+        }));
+    }
+    let path = PathBuf::from(source);
+    if !path.is_absolute() || !path.is_file() {
+        return Err(js_error(
+            "mountHostFile source must be an absolute host file path",
+        ));
+    }
+    let vfs = state.borrow_mut::<FilesystemState>();
+    let resource = Resource::new(
+        Arc::new(HostFileFactory::new(path, false)),
+        authority,
+        ResourceOrigin::HostFile,
+    );
+    let handle = vfs.insert_file(resource);
+    let resource = vfs.file(handle).map_err(js_error)?;
+    vfs.plan.mount_file(
+        VfsPathBuf::new(target).map_err(js_error)?,
+        resource,
+        permissions,
+    );
+    vfs.used = true;
+    Ok(())
 }
 
 #[op2(fast)]
@@ -564,10 +619,11 @@ fn op_vfs_set_profile(state: &mut OpState, #[serde] profile: JsProfile) -> Resul
 
 deno_core::extension!(snowglass_filesystem,
     ops = [
-        op_vfs_resources, op_vfs_game, op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource,
-        op_vfs_mount_file_pkg, op_vfs_mount_file_text, op_vfs_mount_file_bytes,
-        op_vfs_mount_file_resource, op_vfs_mount_scratch, op_vfs_path,
-        op_vfs_set_working_directory, op_vfs_set_profile,
+        op_vfs_resources, op_vfs_mount_host_tree, op_vfs_mount_host_file,
+        op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
+        op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
+        op_vfs_mount_scratch, op_vfs_path, op_vfs_set_working_directory,
+        op_vfs_set_profile,
     ],
     esm_entry_point = "ext:snowglass_filesystem/07_filesystem.js",
     esm = [dir "js", "07_filesystem.js"],

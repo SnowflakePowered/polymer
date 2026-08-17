@@ -71,9 +71,9 @@ impl FilesystemEndpoint {
                 .trim_start_matches('/')
                 .replace('/', "\\");
             if suffix.is_empty() {
-                format!(r"\\Snowglass.{}", self.nonce)
+                format!(r"\\Snowglass\{}", self.nonce)
             } else {
-                format!(r"\\Snowglass.{}\{}", self.nonce, suffix)
+                format!(r"\\Snowglass\{}\{}", self.nonce, suffix)
             }
         }
         #[cfg(unix)]
@@ -85,7 +85,7 @@ impl FilesystemEndpoint {
     pub fn unproject(&self, projected: &str) -> Option<crate::VfsPathBuf> {
         #[cfg(windows)]
         {
-            let root = format!(r"\\Snowglass.{}", self.nonce);
+            let root = format!(r"\\Snowglass\{}", self.nonce);
             let suffix = projected.strip_prefix(&root)?;
             if !suffix.is_empty() && !suffix.starts_with('\\') {
                 return None;
@@ -113,9 +113,22 @@ pub trait FilesystemHost: Send + Sync {
 pub struct MountedFilesystem {
     endpoint: FilesystemEndpoint,
     filesystem: Arc<PreparedFilesystem>,
+    backend: Option<Box<dyn Send>>,
 }
 
 impl MountedFilesystem {
+    pub fn new(
+        endpoint: FilesystemEndpoint,
+        filesystem: Arc<PreparedFilesystem>,
+        backend: impl Send + 'static,
+    ) -> Self {
+        Self {
+            endpoint,
+            filesystem,
+            backend: Some(Box::new(backend)),
+        }
+    }
+
     pub fn endpoint(&self) -> &FilesystemEndpoint {
         &self.endpoint
     }
@@ -124,13 +137,15 @@ impl MountedFilesystem {
         &self.filesystem
     }
 
-    pub fn finish(self, reason: FinalizationReason) {
+    pub fn finish(mut self, reason: FinalizationReason) {
+        self.backend.take();
         self.filesystem.finalize(reason);
     }
 }
 
 impl Drop for MountedFilesystem {
     fn drop(&mut self) {
+        self.backend.take();
         self.filesystem.finalize(FinalizationReason::Cancelled);
     }
 }
@@ -153,10 +168,7 @@ impl FilesystemHost for MockFilesystemHost {
         filesystem: Arc<PreparedFilesystem>,
     ) -> VfsResult<MountedFilesystem> {
         filesystem.materialize()?;
-        Ok(MountedFilesystem {
-            endpoint,
-            filesystem,
-        })
+        Ok(MountedFilesystem::new(endpoint, filesystem, ()))
     }
 }
 
@@ -180,5 +192,27 @@ impl FilesystemHost for UnsupportedFilesystemHost {
         Err(VfsError::Unsupported(
             "no FUSE or WinFSP filesystem host is installed".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VfsPathBuf;
+
+    #[test]
+    fn endpoint_projection_round_trips_virtual_paths() {
+        let endpoint = FilesystemEndpoint::random();
+        let root = VfsPathBuf::root();
+        let child = VfsPathBuf::new("/Dolphin/Config/settings.ini").unwrap();
+
+        assert_eq!(
+            endpoint.unproject(&endpoint.project(root.as_path())),
+            Some(root)
+        );
+        assert_eq!(
+            endpoint.unproject(&endpoint.project(child.as_path())),
+            Some(child)
+        );
     }
 }

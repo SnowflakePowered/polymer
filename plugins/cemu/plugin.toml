@@ -3,10 +3,6 @@ id = "cemu"
 version = "0.0.1"
 class = "emulator"
 
-[plugin.config]
-# todo: make this path relative to package (i.e pkg://runtime/Cemu.exe)
-cemu_path = "file://E:/Emulators/Cemu/Cemu.exe"
-
 [[plugin.resources]]
 name = "runtime"
 target = "x86_64-pc-windows-msvc"

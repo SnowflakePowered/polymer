@@ -89,7 +89,9 @@ pub(crate) fn install_generated_configuration(
             }
         }
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+            if !parent.is_dir() {
+                std::fs::create_dir_all(parent)?;
+            }
             let resolved = parent.canonicalize()?;
             if !resolved.starts_with(&root) {
                 return Err(LaunchError::InvalidConfig(format!(

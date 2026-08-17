@@ -311,7 +311,7 @@ impl PluginRuntimeHandle {
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
         let filesystem =
-            filesystem_options(plugin.as_ref(), None).map_err(PluginInvocationError::worker)?;
+            filesystem_options(plugin.as_ref()).map_err(PluginInvocationError::worker)?;
         let path = export_path.to_vec();
         self.run_with_control(cancellation.control, move |control| {
             run_worker(
@@ -362,12 +362,7 @@ impl PluginRuntimeHandle {
     ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
         let entrypoint = invocation.plugin.entrypoint().to_string();
         let loader = invocation.plugin.module_loader().clone();
-        let game = invocation
-            .arguments
-            .get("launchPath")
-            .and_then(Value::as_str)
-            .map(std::path::PathBuf::from);
-        let filesystem = filesystem_options(invocation.plugin.as_ref(), game)
+        let filesystem = filesystem_options(invocation.plugin.as_ref())
             .map_err(PluginInvocationError::worker)?;
         self.run_with_control(cancellation.control, move |control| {
             run_worker(
@@ -569,12 +564,10 @@ where
 
 fn filesystem_options(
     plugin: &dyn EmulatorPluginInstance,
-    game_file: Option<std::path::PathBuf>,
 ) -> Result<snowglass_deno::filesystem::FilesystemOptions, crate::PackageError> {
     let mut options = snowglass_deno::filesystem::FilesystemOptions::new(
         plugin.module_loader().root().to_owned(),
     );
-    options.game_file = game_file;
     options.resources = plugin
         .resources()?
         .into_iter()
@@ -747,7 +740,7 @@ mod tests {
                     for (const [name, bytes] of Object.entries(firstRender)) {
                       args.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
                     }
-                    args.filesystem.mountFile("/Game/game.iso", args.game, { mode: "r" });
+                    args.filesystem.mountHostFile("/Game/game.iso", args.launchPath, { mode: "r" });
                     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "memory" });
                     args.filesystem.setWorkingDirectory("/Emulator");
                     args.filesystem.setProfile({ home: "/User", temp: "/User" });
@@ -989,7 +982,7 @@ mod tests {
             .as_ref()
             .expect("plugin populated a VFS plan");
         assert_eq!(filesystem.filesystem().compiled().bindings().len(), 5);
-        assert!(result.command.starts_with(r"\\Snowglass."));
+        assert!(result.command.starts_with(r"\\Snowglass\"));
         assert!(result.argv[0].ends_with(r"\Game\game.iso"));
     }
 

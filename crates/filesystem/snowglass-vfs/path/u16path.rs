@@ -19,7 +19,7 @@ impl U16PathBuf {
         Self(U16String::from_vec(units))
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn from_utf8(value: &str) -> Self {
         Self(U16String::from_str(value))
     }
 
@@ -46,7 +46,7 @@ impl From<&U16Path> for U16PathBuf {
 
 impl From<&str> for U16PathBuf {
     fn from(value: &str) -> Self {
-        Self::from_str(value)
+        Self::from_utf8(value)
     }
 }
 
