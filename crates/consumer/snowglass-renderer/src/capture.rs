@@ -80,6 +80,17 @@ impl PointerEventSink for SurfacePointerSender {
     }
 }
 
+impl SurfacePointerSender {
+    /// Associates a producer frame with its runtime presentation token.
+    /// Dedicated presentation workers call this as soon as they drain a frame,
+    /// independently of the UI thread that later performs hit testing.
+    pub fn remember_frame(&self, connection: u64, update: SurfaceFrameUpdate) {
+        if let Some(mut target) = self.targets.get_mut(&connection) {
+            target.remember(update);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct SurfaceCapture {
     events: Option<SurfaceEventReceiver>,
@@ -146,12 +157,32 @@ impl SurfaceCapture {
     }
 
     pub fn accept(&mut self, offer: SurfaceOffer) -> Result<AcceptedSurface, SurfaceError> {
+        let (accepted, frames) = self.accept_inner(offer)?;
+        self.frames.insert(accepted.connection, frames);
+        Ok(accepted)
+    }
+
+    /// Accepts a surface while transferring its frame receiver to the caller.
+    /// Offers and removals remain owned by this capture object, but frame
+    /// draining can then continue on a presentation thread while the UI is
+    /// resolving or painting.
+    pub fn accept_detached(
+        &mut self,
+        offer: SurfaceOffer,
+    ) -> Result<(AcceptedSurface, SurfaceFrameReceiver), SurfaceError> {
+        self.accept_inner(offer)
+    }
+
+    fn accept_inner(
+        &mut self,
+        offer: SurfaceOffer,
+    ) -> Result<(AcceptedSurface, SurfaceFrameReceiver), SurfaceError> {
         let connection = offer.connection_id();
         let replaced_connection = offer.replaced_connection_id();
         let id = offer.id();
         let protocol_surface_id = offer.stream().surface_id.0;
         let surface = offer.accept()?;
-        self.frames.insert(connection, surface.subscribe_frames());
+        let frames = surface.subscribe_frames();
         self.pointer.targets.insert(
             connection,
             PointerTarget {
@@ -170,11 +201,14 @@ impl SurfaceCapture {
             self.frames.remove(&previous);
             self.pointer.targets.remove(&previous);
         }
-        Ok(AcceptedSurface {
-            surface,
-            connection,
-            replaced_connection,
-        })
+        Ok((
+            AcceptedSurface {
+                surface,
+                connection,
+                replaced_connection,
+            },
+            frames,
+        ))
     }
 
     pub fn reject(&self, offer: SurfaceOffer) {

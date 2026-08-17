@@ -111,14 +111,14 @@ impl ShellCoordinator {
 
         let mut window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
         let size = window.size();
-        let (game_host, merged_content) = {
+        let (game_host, composition_content) = {
             let render_window = window.surface(size.width.max(1), size.height.max(1));
             // Prepare the retained Vello renderer before the first shell frame.
             let game_host = GameHost::new(&render_window, shell_rasterizer)?;
-            let merged_content = game_host.composition_content()?;
-            (game_host, merged_content)
+            let composition_content = game_host.composition_content(size.width, size.height)?;
+            (game_host, composition_content)
         };
-        window.set_merged_content(&merged_content)?;
+        window.set_shell_layers(&composition_content.layers)?;
         window.commit()?;
         let session = unique_session();
         let plugin_runtime = shell_factory.plugin_runtime_handle();
@@ -126,10 +126,6 @@ impl ShellCoordinator {
 
         let input = InputTransport::runtime().map_err(std::io::Error::other)?;
         let control_sender = input.control_sender();
-        // Merging composites every stream into one opaque window-covering
-        // swapchain. The shell document supplies the chrome that it draws
-        // around the streams, which is what lets it stay opaque and so stay
-        // eligible for a hardware overlay plane.
 
         let state = Self {
             shell_dom,

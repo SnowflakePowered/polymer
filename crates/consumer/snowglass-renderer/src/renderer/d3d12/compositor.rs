@@ -373,6 +373,14 @@ pub struct D3d12Compositor {
     counter_frequency: f64,
 }
 
+// D3D12 devices, queues, resources, DXGI swapchains, fences, and Win32 event
+// handles are free-threaded. A compositor is never shared: native hosts may
+// transfer exclusive ownership to a presentation thread before that thread
+// begins using it. `windows::Win32::Foundation::HANDLE` is conservatively not
+// `Send` because it stores a raw pointer, so state that otherwise consists of
+// thread-safe Windows handles needs this explicit ownership guarantee.
+unsafe impl Send for D3d12Compositor {}
+
 /// Open D3D12 frame after game composition and before presentation.
 ///
 /// Viewer-owned renderers may append commands through this narrowly scoped
@@ -571,6 +579,78 @@ impl D3d12Compositor {
                 sync_interval: 1,
             },
             SwapchainMode::Shared,
+        )
+    }
+
+    /// Creates an adapter-specific composition swapchain dedicated to one
+    /// connection. Unlike the external-device constructor, this owns a
+    /// separate D3D12 queue so unrelated UI raster and presents cannot
+    /// serialize ahead of the guest frame.
+    pub fn new_for_stream_composition(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+        connection: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new(adapter)?,
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 0,
+            },
+            SwapchainMode::Dedicated(connection),
+        )
+    }
+
+    /// Creates a transparent composition swapchain on a retained device and
+    /// queue. This is intended for independently presented UI/chrome visuals:
+    /// transparent pixels expose lower Windows.UI.Composition visuals without
+    /// requiring the guest image to be copied into the UI swapchain.
+    ///
+    /// # Safety
+    ///
+    /// See [`D3d12ConsumerDevice::from_external`].
+    pub unsafe fn new_for_transparent_composition_from_external(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+        device: *mut c_void,
+        queue: *mut c_void,
+    ) -> Result<Self, Box<dyn Error>> {
+        let consumer = unsafe { D3d12ConsumerDevice::from_external(adapter, device, queue)? };
+        Self::with_consumer(
+            window,
+            consumer,
+            SwapchainTarget::Composition {
+                transparent: true,
+                sync_interval: 0,
+            },
+            SwapchainMode::Shared,
+        )
+    }
+
+    /// Creates an opaque composition swapchain dedicated to one captured
+    /// connection on a caller-owned D3D12 device and queue. The swapchain can
+    /// be attached directly to a Windows.UI.Composition visual.
+    ///
+    /// # Safety
+    ///
+    /// See [`D3d12ConsumerDevice::from_external`].
+    pub unsafe fn new_for_stream_composition_from_external(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+        device: *mut c_void,
+        queue: *mut c_void,
+        connection: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        let consumer = unsafe { D3d12ConsumerDevice::from_external(adapter, device, queue)? };
+        Self::with_consumer(
+            window,
+            consumer,
+            SwapchainTarget::Composition {
+                transparent: false,
+                sync_interval: 0,
+            },
+            SwapchainMode::Dedicated(connection),
         )
     }
 

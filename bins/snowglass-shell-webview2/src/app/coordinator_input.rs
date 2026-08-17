@@ -49,17 +49,14 @@ impl ShellCoordinator {
             self.input.restore_mouse_buttons(previous_buttons);
         }
         if needs_paint {
-            // Pointer-driven chrome must follow the input sample that produced
-            // it. The DirectComposition clock can be throttled well below the
-            // monitor refresh rate while the composition tree is otherwise
-            // stable, so deferring Ark drag/resize mutations to that clock
-            // turns inexpensive DOM updates into visibly stale 15 Hz motion.
-            //
-            // Raster now and make a zero-wait present attempt. If DXGI has no
-            // permit, `chrome_dirty` remains set and the ordinary compositor
-            // clock retries it without ever blocking the input handler.
-            self.refresh_shell();
-            self.draw_pending_surfaces();
+            // Winit coalesces redraw requests, which gives capture wakeups a
+            // chance to drain between pointer samples. Resolving and encoding
+            // the complete Blitz scene here used to hold the producer's export
+            // buffers for the duration of every mouse move and back-pressure
+            // the guest itself. The redraw path still applies DOM motion once
+            // per display frame, while guest capture/presentation remains
+            // independent of chrome work.
+            self.window.request_redraw();
         }
         if kind == "mousemove"
             && let (Some(started), Some(hit_elapsed), Some(dispatch_elapsed)) =
@@ -308,6 +305,9 @@ impl ShellCoordinator {
 
     pub(super) fn draw_overlay(&mut self) {
         let entered = self.profile.enter();
+        if self.game_host.has_pending_chrome() {
+            self.draw_pending_chrome();
+        }
         if let Err(error) = self.window.draw_overlay() {
             tracing::error!("snowglass: drawing egui composition overlay failed: {error}");
         }

@@ -17,9 +17,13 @@ mod window_manager;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
-    use window_manager::{EventLoop, EventLoopExtPumpEvents, PumpStatus, TimerResolution};
+    use window_manager::{
+        EventLoop, EventLoopExtPumpEvents, PumpStatus, TimerResolution, WinRtApartment,
+    };
 
-    // The generated Solid/Ark bundle has enough nested module code to exceed
+    let _winrt_apartment = WinRtApartment::initialize()?;
+
+    // The generated frontend bundle has enough nested module code to exceed
     // V8's conservative default JavaScript stack during evaluation.
     // Keep this below the executable's 8 MiB stack while giving Deno's
     // primordials, the shell document, and fresh plugin isolates enough room.

@@ -258,7 +258,18 @@ impl SurfaceFrameReceiver {
     }
 
     pub fn try_next_frame(&mut self) -> Result<Option<SurfaceFrameUpdate>, SurfaceError> {
-        match self.receiver.watch_timeout(Duration::ZERO) {
+        self.next_frame_timeout(Duration::ZERO)
+    }
+
+    /// Waits for the newest frame for at most `timeout`.
+    ///
+    /// Native consumers use this from a dedicated presentation thread so a
+    /// busy UI event loop cannot hold the producer's finite export slots.
+    pub fn next_frame_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<SurfaceFrameUpdate>, SurfaceError> {
+        match self.receiver.watch_timeout(timeout) {
             Ok(()) => Ok(self.receiver.get().map(|frame| SurfaceFrameUpdate {
                 generation: self.generation,
                 frame,

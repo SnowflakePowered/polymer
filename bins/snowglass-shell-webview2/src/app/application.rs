@@ -245,7 +245,7 @@ impl ShellApplication {
                 state.handle_cursor_moved(x, y, consumed);
             }
             ShellWindowEvent::CursorLeft if state.shell_dom.clear_pointer_hover() => {
-                state.refresh_shell();
+                state.window.request_redraw();
             }
             ShellWindowEvent::MouseInput { button, pressed }
                 if !consumed || state.input.has_active_pointer_sequence() =>
@@ -259,7 +259,13 @@ impl ShellApplication {
                 state.handle_mouse_wheel(horizontal, vertical);
             }
             ShellWindowEvent::Ime(event) if !consumed => state.handle_ime(event),
-            ShellWindowEvent::RedrawRequested => state.draw_overlay(),
+            ShellWindowEvent::RedrawRequested => {
+                // Paint shell chrome at most once for the pointer samples Winit
+                // coalesced into this redraw. This keeps expensive Blitz
+                // resolve/paint work out of the mouse-message hot path.
+                state.refresh_dirty_shell();
+                state.draw_overlay();
+            }
             _ => {}
         }
         false
@@ -286,6 +292,10 @@ impl ShellApplication {
             // itself unhealthy, which is what turns this fallback back on.
             if state.has_pending_surfaces() && !state.window.is_pacing() {
                 state.draw_pending_surfaces();
+                deadline = deadline.min(now + PENDING_SURFACE_RETRY);
+            }
+            if state.game_host.has_pending_chrome() {
+                state.draw_pending_chrome();
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
             let entered = state.profile.enter();

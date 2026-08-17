@@ -10,22 +10,33 @@ use crate::{
     shell_document::GameViewStyle,
     shell_dom::{ShellFrame, TrackedSurfaceLayout},
 };
-use chrome::ChromeTexture;
+use chrome::{ChromeResource, ChromeTexture};
+use parking_lot::Mutex;
+use raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+};
 use snowglass_input::mouse::layout::Rect;
+use snowglass_platform_windows::performance_counter;
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, Extent, PlanLayer, Renderer, SurfaceCapture,
     SurfaceCaptureEvent, SurfaceContent, SurfacePlacement, SurfacePointerSender,
 };
+use snowglass_runtime::{SurfaceFrameReceiver, SurfaceFrameUpdate};
 use std::error::Error;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
 };
 use vello::wgpu;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions};
-use windows::core::IUnknown;
+use windows::core::{IUnknown, Interface};
 
 /// Vello GPU state owned by the native game host.
 pub(crate) struct ShellRasterizer {
@@ -412,7 +423,7 @@ impl ShellRasterizer {
         // Vello and the compositor intentionally share this exact D3D12
         // command queue. The compositor's sampling submission is therefore
         // ordered after these raster submissions without a CPU wait. Blocking
-        // here serialized every FloatingPanel pointer move with the GPU and
+        // here serialized every DOM transform update with the GPU and
         // starved both input delivery and guest presentation while dragging.
         self.device.poll(wgpu::PollType::Poll).ok();
         let drawn_count = drawn.len();
@@ -460,11 +471,252 @@ impl ShellRasterizer {
     }
 }
 
+struct ShellRasterResult {
+    band_count: usize,
+    updates: Vec<(usize, ChromeResource)>,
+}
+
+#[derive(Default)]
+struct ShellRasterWorkerState {
+    pending: Option<ShellFrame>,
+    busy: bool,
+    ready: usize,
+    stopping: bool,
+}
+
+/// Latest-only Vello worker. DOM/layout stays on the UI thread, but shader
+/// dispatch, command encoding, and full-frame band raster no longer delay
+/// capture draining or a guest Present.
+struct ShellRasterWorker {
+    state: Arc<Mutex<ShellRasterWorkerState>>,
+    results: mpsc::Receiver<ShellRasterResult>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl ShellRasterWorker {
+    fn spawn(mut rasterizer: ShellRasterizer) -> Self {
+        let state = Arc::new(Mutex::new(ShellRasterWorkerState::default()));
+        let worker_state = Arc::clone(&state);
+        let (sender, results) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("snowglass-blitz-raster".to_owned())
+            .spawn(move || {
+                loop {
+                    let frame = {
+                        let mut state = worker_state.lock();
+                        if state.stopping {
+                            break;
+                        }
+                        state.pending.take()
+                    };
+                    let Some(frame) = frame else {
+                        thread::park();
+                        continue;
+                    };
+                    let mut updates = Vec::new();
+                    rasterizer.rasterize_frame(&frame, |band, texture| {
+                        updates.push((band, texture.retained_resource()));
+                    });
+                    {
+                        let mut state = worker_state.lock();
+                        state.ready += 1;
+                        if state.pending.is_none() {
+                            state.busy = false;
+                        }
+                    }
+                    if sender
+                        .send(ShellRasterResult {
+                            band_count: frame.chrome_bands.len(),
+                            updates,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .expect("failed to create the Blitz raster worker");
+        Self {
+            state,
+            results,
+            worker: Some(worker),
+        }
+    }
+
+    fn submit(&self, frame: ShellFrame) {
+        let mut state = self.state.lock();
+        state.pending = Some(frame);
+        state.busy = true;
+        if let Some(worker) = &self.worker {
+            worker.thread().unpark();
+        }
+    }
+
+    fn try_result(&self) -> Option<ShellRasterResult> {
+        let result = self.results.try_recv().ok()?;
+        let mut state = self.state.lock();
+        state.ready = state.ready.saturating_sub(1);
+        Some(result)
+    }
+
+    fn is_pending(&self) -> bool {
+        let state = self.state.lock();
+        state.busy || state.pending.is_some() || state.ready != 0
+    }
+}
+
+impl Drop for ShellRasterWorker {
+    fn drop(&mut self) {
+        {
+            let mut state = self.state.lock();
+            state.stopping = true;
+            state.pending = None;
+        }
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
 /// All renderer state local to one D3D12 adapter. Replacing this value moves
 /// composition, Vello, chrome, and foreign imports as one device domain.
 struct RenderDevice {
-    compositor: D3d12Compositor,
-    shell: ShellRasterizer,
+    adapter: AdapterLuid,
+    chrome_device: IUnknown,
+    chrome_queue: IUnknown,
+    shell_worker: ShellRasterWorker,
+    chrome_compositors: Vec<D3d12Compositor>,
+    surface_compositors: HashMap<u64, SurfaceCompositor>,
+}
+
+struct SurfaceCompositor {
+    compositor: Option<D3d12Compositor>,
+    content: Option<IUnknown>,
+    worker: Option<SurfacePresentationWorker>,
+    latest_frame: Option<snowglass_protocol::FrameReady>,
+    surface_id: u64,
+    target_window: i64,
+    quarter_turns: u8,
+    flip_y: bool,
+    width: u32,
+    height: u32,
+}
+
+struct SurfaceWorkerFrame {
+    connection: u64,
+    update: SurfaceFrameUpdate,
+    observed_qpc: u64,
+}
+
+/// Owns one captured stream and its opaque WUC swapchain on a presentation
+/// thread. The compositor copies a producer slot into its private cache and
+/// signals that slot's release without waiting for Blitz/Deno to finish a UI
+/// turn.
+struct SurfacePresentationWorker {
+    stopping: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl SurfacePresentationWorker {
+    #[expect(clippy::too_many_arguments)]
+    fn spawn(
+        mut compositor: D3d12Compositor,
+        mut frames: SurfaceFrameReceiver,
+        pointer: SurfacePointerSender,
+        events: mpsc::Sender<SurfaceWorkerFrame>,
+        connection: u64,
+        surface_id: u64,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let stopping = Arc::new(AtomicBool::new(false));
+        let worker_stopping = Arc::clone(&stopping);
+        let worker = thread::Builder::new()
+            .name(format!("snowglass-surface-{connection}"))
+            .spawn(move || {
+                let rectangle = Rect::new(0, 0, width.max(1), height.max(1));
+                let mut placement =
+                    SurfacePlacement::new(connection, surface_id, rectangle, 0.0);
+                placement.content = SurfaceContent::fill(rectangle);
+                let plan =
+                    CompositingPlan::new([0.0, 0.0, 0.0, 1.0], vec![placement]);
+
+                while !worker_stopping.load(Ordering::Acquire) {
+                    let timeout = if Renderer::has_pending_frame(&compositor) {
+                        Duration::from_millis(1)
+                    } else {
+                        Duration::from_millis(100)
+                    };
+                    match frames.next_frame_timeout(timeout) {
+                        Ok(Some(update)) => {
+                            pointer.remember_frame(connection, update);
+                            Renderer::set_latest(&mut compositor, connection, update.frame);
+                            let _ = events.send(SurfaceWorkerFrame {
+                                connection,
+                                update,
+                                observed_qpc: performance_counter()
+                                    .unwrap_or(update.frame.timestamp_qpc),
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(_) => break,
+                    }
+
+                    if Renderer::has_pending_frame(&compositor)
+                        && compositor.begin_frame_within(Duration::from_millis(2))
+                        && let Err(error) = compositor.present_with_webrtc(&plan, None)
+                    {
+                        tracing::error!(
+                            "snowglass: presenting surface {connection} on its worker failed: {error}"
+                        );
+                        break;
+                    }
+                }
+            })
+            .expect("failed to create a captured-surface presentation worker");
+        Self {
+            stopping,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for SurfacePresentationWorker {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// Delegates native handles while overriding only the composition swapchain
+/// extent. Tracked surfaces render in local coordinates and WUC owns their
+/// screen-space offset and size.
+struct LocalRenderWindow<'a, W> {
+    window: &'a W,
+    extent: Extent,
+}
+
+impl<W: HasWindowHandle> HasWindowHandle for LocalRenderWindow<'_, W> {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        self.window.window_handle()
+    }
+}
+
+impl<W: HasDisplayHandle> HasDisplayHandle for LocalRenderWindow<'_, W> {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        self.window.display_handle()
+    }
+}
+
+impl<W: snowglass_renderer::RenderWindow> snowglass_renderer::RenderWindow
+    for LocalRenderWindow<'_, W>
+{
+    fn render_extent(&self) -> Extent {
+        self.extent
+    }
 }
 
 impl RenderDevice {
@@ -474,14 +726,30 @@ impl RenderDevice {
     ) -> Result<Self, Box<dyn Error>> {
         let adapter = shell.adapter_luid();
         let (device, queue) = shell.retained_device_context()?;
-        // SAFETY: the shell context supplied retained references to its
-        // exact D3D12 device and presentation queue.
-        let compositor = unsafe {
-            D3d12Compositor::new_for_shared_composition_from_external(
-                window, adapter, device, queue,
+        // SAFETY: retained_device_context transfers one owned reference for
+        // each pointer. These anchors mint a fresh retained pair whenever a
+        // new band compositor is required.
+        let chrome_device = unsafe { IUnknown::from_raw(device) };
+        let chrome_queue = unsafe { IUnknown::from_raw(queue) };
+        // SAFETY: the shell context supplied retained references to its exact
+        // D3D12 device and queue. Band zero is always present, even for an
+        // empty document, and is the stable adapter anchor for WebRTC.
+        let chrome = unsafe {
+            D3d12Compositor::new_for_transparent_composition_from_external(
+                window,
+                adapter,
+                chrome_device.clone().into_raw(),
+                chrome_queue.clone().into_raw(),
             )?
         };
-        Ok(Self { compositor, shell })
+        Ok(Self {
+            adapter,
+            chrome_device,
+            chrome_queue,
+            shell_worker: ShellRasterWorker::spawn(shell),
+            chrome_compositors: vec![chrome],
+            surface_compositors: HashMap::new(),
+        })
     }
 
     fn recreate(
@@ -493,30 +761,94 @@ impl RenderDevice {
     }
 
     fn adapter_luid(&self) -> AdapterLuid {
-        self.compositor.adapter_luid()
+        self.adapter
     }
 
-    fn render_shell(&mut self, frame: &ShellFrame) -> Result<usize, String> {
-        // Vello submits these texture writes to the exact D3D12 command queue
-        // used by the compositor. Queue order already keeps the preceding
-        // sample, this write, and the following sample serialized on the GPU;
-        // waiting for the entire compositor here turned every pointer move
-        // into a 50-90ms CPU stall.
-        self.shell.rasterize_frame(frame, |band, chrome| {
-            // SAFETY: this retained resource belongs to the exact device and
-            // queue used by the compositor in this RenderDevice.
+    fn ensure_chrome_bands(
+        &mut self,
+        window: &impl snowglass_renderer::RenderWindow,
+        count: usize,
+    ) -> Result<bool, String> {
+        let mut changed = false;
+        while self.chrome_compositors.len() < count.max(1) {
+            // SAFETY: each call transfers its own retained references into a
+            // new transparent composition swapchain on the shell device.
+            let compositor = unsafe {
+                D3d12Compositor::new_for_transparent_composition_from_external(
+                    window,
+                    self.adapter,
+                    self.chrome_device.clone().into_raw(),
+                    self.chrome_queue.clone().into_raw(),
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            self.chrome_compositors.push(compositor);
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    fn submit_shell(&self, frame: ShellFrame) {
+        self.shell_worker.submit(frame);
+    }
+
+    fn apply_shell_result(
+        &mut self,
+        window: &impl snowglass_renderer::RenderWindow,
+        result: ShellRasterResult,
+    ) -> Result<(usize, Vec<usize>), String> {
+        self.ensure_chrome_bands(window, result.band_count)?;
+        let mut updated = Vec::with_capacity(result.updates.len());
+        for (band, resource) in result.updates {
+            let Some(compositor) = self.chrome_compositors.get_mut(band) else {
+                continue;
+            };
+            // SAFETY: the worker retained this exact device-local resource;
+            // queue submission order on the shared chrome queue makes the
+            // completed Vello write visible before this compositor samples it.
+            let (width, height) = (resource.width, resource.height);
             unsafe {
-                self.compositor.set_chrome_layer_resource(
+                compositor.set_chrome_layer_resource(
                     band as u64,
-                    chrome.retained_abi_reference(),
-                    chrome.width,
-                    chrome.height,
+                    resource.into_abi_reference(),
+                    width,
+                    height,
                 );
             }
-        });
-        // Unchanged bands retain their existing compositor resources. The
-        // logical band count is independent of how many textures were updated.
-        Ok(frame.chrome_bands.len())
+            updated.push(band);
+        }
+        Ok((result.band_count, updated))
+    }
+
+    fn create_surface(
+        &mut self,
+        window: &impl snowglass_renderer::RenderWindow,
+        connection: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<(), Box<dyn Error>> {
+        let local = LocalRenderWindow {
+            window,
+            extent: Extent::new(width.max(1), height.max(1)),
+        };
+        let compositor =
+            D3d12Compositor::new_for_stream_composition(&local, self.adapter, connection)?;
+        self.surface_compositors.insert(
+            connection,
+            SurfaceCompositor {
+                compositor: Some(compositor),
+                content: None,
+                worker: None,
+                latest_frame: None,
+                surface_id: 0,
+                target_window: 0,
+                quarter_turns: 0,
+                flip_y: false,
+                width: width.max(1),
+                height: height.max(1),
+            },
+        );
+        Ok(())
     }
 }
 
@@ -570,6 +902,7 @@ pub(crate) enum GameHostCaptureEvent {
     Frame {
         connection: u64,
         frame: snowglass_protocol::FrameReady,
+        observed_qpc: Option<u64>,
         dimensions_changed: bool,
     },
     Removed {
@@ -601,15 +934,45 @@ pub(crate) struct GameHost {
     wake_pending: Arc<AtomicBool>,
     dirty: Arc<AtomicBool>,
     work_pending: bool,
+    surface_worker_events: mpsc::Receiver<SurfaceWorkerFrame>,
+    surface_worker_sender: mpsc::Sender<SurfaceWorkerFrame>,
     surfaces: HashMap<u64, CapturedSurface>,
     /// One adapter-local device domain shared by native chrome, composition,
     /// and every imported captured stream.
     render_device: RenderDevice,
     composition_content_dirty: bool,
-    compositor_dirty: bool,
     chrome_bands: Vec<usize>,
-    chrome_dirty: bool,
+    chrome_dirty: HashSet<usize>,
     shell_refresh_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum CompositionLayerId {
+    Band(usize),
+    Surface(u64),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CompositionLayerStretch {
+    Fill,
+    UniformToFill,
+}
+
+pub(crate) struct CompositionLayer {
+    pub id: CompositionLayerId,
+    pub content: IUnknown,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub opacity: f32,
+    pub stretch: CompositionLayerStretch,
+    pub horizontal_alignment: f32,
+    pub vertical_alignment: f32,
+}
+
+pub(crate) struct CompositionContents {
+    pub layers: Vec<CompositionLayer>,
 }
 
 impl GameHost {
@@ -620,6 +983,7 @@ impl GameHost {
         let capture = SurfaceCapture::default();
         let pointer = capture.pointer_sender();
         let render_device = RenderDevice::new(window, rasterizer)?;
+        let (surface_worker_sender, surface_worker_events) = mpsc::channel();
         Ok(Self {
             active: None,
             capture,
@@ -627,31 +991,121 @@ impl GameHost {
             wake_pending: Arc::new(AtomicBool::new(false)),
             dirty: Arc::new(AtomicBool::new(false)),
             work_pending: false,
+            surface_worker_events,
+            surface_worker_sender,
             surfaces: HashMap::new(),
             render_device,
             composition_content_dirty: false,
-            compositor_dirty: true,
             chrome_bands: Vec::new(),
-            chrome_dirty: false,
+            chrome_dirty: HashSet::new(),
             shell_refresh_pending: false,
         })
     }
 
-    pub fn composition_content(&self) -> Result<IUnknown, Box<dyn Error>> {
-        self.render_device
-            .compositor
-            .composition_content()
-            .map_err(Into::into)
+    pub fn composition_content(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<CompositionContents, Box<dyn Error>> {
+        let mut ordered = Vec::new();
+        for &band in &self.chrome_bands {
+            let Some(compositor) = self.render_device.chrome_compositors.get(band) else {
+                continue;
+            };
+            ordered.push((
+                2 * band as i32,
+                CompositionLayer {
+                    id: CompositionLayerId::Band(band),
+                    content: compositor.composition_content()?,
+                    x: 0.0,
+                    y: 0.0,
+                    width: width as f32,
+                    height: height as f32,
+                    opacity: 1.0,
+                    stretch: CompositionLayerStretch::Fill,
+                    horizontal_alignment: 0.5,
+                    vertical_alignment: 0.5,
+                },
+            ));
+        }
+        for (&connection, surface) in &self.surfaces {
+            let Some(output) = self.render_device.surface_compositors.get(&connection) else {
+                continue;
+            };
+            let rectangle = Rect::new(
+                surface.viewport_x,
+                surface.viewport_y,
+                surface.viewport_width,
+                surface.viewport_height,
+            );
+            let source = Extent::new(
+                surface.preferred_width.max(1),
+                surface.preferred_height.max(1),
+            );
+            let fitted = fit_surface_content(
+                rectangle,
+                source,
+                surface.game_view_style.as_ref(),
+                surface.opacity,
+            );
+            let cropped_width = 1.0 - (fitted.source[0] + (1.0 - fitted.source[2]));
+            let cropped_height = 1.0 - (fitted.source[1] + (1.0 - fitted.source[3]));
+            let horizontal_alignment = if cropped_width < 1.0 {
+                (fitted.source[0] / (1.0 - cropped_width)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let vertical_alignment = if cropped_height < 1.0 {
+                (fitted.source[1] / (1.0 - cropped_height)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            ordered.push((
+                surface.z_index,
+                CompositionLayer {
+                    id: CompositionLayerId::Surface(connection),
+                    content: if let Some(content) = &output.content {
+                        content.clone()
+                    } else {
+                        output
+                            .compositor
+                            .as_ref()
+                            .ok_or("surface compositor has neither content nor an owner")?
+                            .composition_content()?
+                    },
+                    x: fitted.destination[0],
+                    y: fitted.destination[1],
+                    width: (fitted.destination[2] - fitted.destination[0]).max(0.0),
+                    height: (fitted.destination[3] - fitted.destination[1]).max(0.0),
+                    opacity: fitted.opacity,
+                    stretch: if fitted.source == [0.0, 0.0, 1.0, 1.0] {
+                        CompositionLayerStretch::Fill
+                    } else {
+                        CompositionLayerStretch::UniformToFill
+                    },
+                    horizontal_alignment,
+                    vertical_alignment,
+                },
+            ));
+        }
+        ordered.sort_by_key(|(z, _)| *z);
+        Ok(CompositionContents {
+            layers: ordered.into_iter().map(|(_, layer)| layer).collect(),
+        })
     }
 
     /// Publishes a replacement swapchain to the window visual slot exactly
     /// once, including when the capture offer that prompted the adapter switch
     /// is subsequently rejected.
-    pub fn take_composition_content_update(&mut self) -> Result<Option<IUnknown>, Box<dyn Error>> {
+    pub fn take_composition_content_update(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<CompositionContents>, Box<dyn Error>> {
         if !self.composition_content_dirty {
             return Ok(None);
         }
-        let content = self.composition_content()?;
+        let content = self.composition_content(width, height)?;
         self.composition_content_dirty = false;
         Ok(Some(content))
     }
@@ -706,10 +1160,28 @@ impl GameHost {
             .collect::<Vec<_>>();
         surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.z_index));
         for (&connection, surface) in surfaces {
-            let received_surfaces = Renderer::received_surfaces(&self.render_device.compositor)
-                .into_iter()
-                .filter(|received| received.connection == connection)
-                .collect::<Vec<_>>();
+            let received_surfaces = self
+                .render_device
+                .surface_compositors
+                .get(&connection)
+                .and_then(|output| {
+                    let frame = output.latest_frame?;
+                    let (width, height) = crate::game_host::rotated_extent(
+                        frame.render_width.max(1),
+                        frame.render_height.max(1),
+                        output.quarter_turns,
+                    );
+                    Some(vec![snowglass_renderer::ReceivedSurface {
+                        connection,
+                        surface_id: output.surface_id,
+                        target_window: output.target_window,
+                        image_extent: Extent::new(width, height),
+                        quarter_turns: output.quarter_turns,
+                        flip_y: output.flip_y,
+                        frame,
+                    }])
+                })
+                .unwrap_or_default();
             for mut received_surface in received_surfaces {
                 received_surface.frame.presentation_transform = normalize_pointer_transform(
                     received_surface.frame.presentation_transform,
@@ -772,9 +1244,16 @@ impl GameHost {
         &mut self,
         window: &impl snowglass_renderer::RenderWindow,
     ) -> Result<bool, String> {
-        let changed = Renderer::recreate_swapchain(&mut self.render_device.compositor, window)
-            .map_err(|error| error.to_string())?;
-        self.compositor_dirty |= changed;
+        let mut changed = false;
+        for (band, compositor) in self.render_device.chrome_compositors.iter_mut().enumerate() {
+            if Renderer::recreate_swapchain(compositor, window)
+                .map_err(|error| error.to_string())?
+            {
+                self.chrome_dirty.insert(band);
+                changed = true;
+            }
+        }
+        self.composition_content_dirty |= changed;
         Ok(changed)
     }
 
@@ -878,7 +1357,7 @@ impl GameHost {
         let mut publication = snowglass_renderer::webrtc::Publication::start_d3d12(
             bind,
             targets,
-            &self.render_device.compositor,
+            &self.render_device.chrome_compositors[0],
         )
         .map_err(|error| error.to_string())?;
         for (&connection, surface) in &self.surfaces {
@@ -887,7 +1366,6 @@ impl GameHost {
                 .map_err(|error| error.to_string())?;
         }
         active.webrtc = Some(publication);
-        self.compositor_dirty = true;
         Ok(())
     }
 
@@ -970,6 +1448,16 @@ impl GameHost {
         &mut self,
         window: &impl snowglass_renderer::RenderWindow,
     ) -> Option<GameHostCaptureEvent> {
+        if let Ok(worker) = self.surface_worker_events.try_recv() {
+            let (frame, dimensions_changed) =
+                self.update_surface_frame(worker.connection, worker.update)?;
+            return Some(GameHostCaptureEvent::Frame {
+                connection: worker.connection,
+                frame,
+                observed_qpc: Some(worker.observed_qpc),
+                dimensions_changed,
+            });
+        }
         Some(match self.capture.try_recv().ok()? {
             SurfaceCaptureEvent::Offered(offer) => {
                 let connection = offer.connection_id();
@@ -986,6 +1474,7 @@ impl GameHost {
                 GameHostCaptureEvent::Frame {
                     connection,
                     frame,
+                    observed_qpc: None,
                     dimensions_changed,
                 }
             }
@@ -1059,9 +1548,67 @@ impl GameHost {
             )
         };
         let backend = format!("{:?}", offer.stream().image_kind);
-        Renderer::import_surface_offer(&mut self.render_device.compositor, &offer, quarter_turns)?;
-        if let Err(error) = self.capture.accept(offer) {
-            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
+        let target_window = offer.stream().source_window;
+        let flip_y = offer.stream().bottom_up;
+        let (output_width, output_height) =
+            rotated_extent(offer.stream().width, offer.stream().height, quarter_turns);
+        self.render_device
+            .create_surface(window, connection, output_width, output_height)?;
+        {
+            let output = self
+                .render_device
+                .surface_compositors
+                .get_mut(&connection)
+                .ok_or("the dedicated surface compositor was not retained")?;
+            output.surface_id = surface_id;
+            output.target_window = target_window;
+            output.quarter_turns = quarter_turns;
+            output.flip_y = flip_y;
+            let compositor = output
+                .compositor
+                .as_mut()
+                .ok_or("the surface compositor was already transferred")?;
+            if let Err(error) = Renderer::import_surface_offer(compositor, &offer, quarter_turns) {
+                self.render_device.surface_compositors.remove(&connection);
+                return Err(error);
+            }
+        }
+
+        let use_worker = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.webrtc.is_none());
+        if use_worker {
+            let (_, frames) = match self.capture.accept_detached(offer) {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    self.render_device.surface_compositors.remove(&connection);
+                    return Err(error.into());
+                }
+            };
+            let output = self
+                .render_device
+                .surface_compositors
+                .get_mut(&connection)
+                .ok_or("the dedicated surface compositor was not retained")?;
+            let compositor = output
+                .compositor
+                .take()
+                .ok_or("the surface compositor was already transferred")?;
+            let content = compositor.composition_content()?;
+            output.content = Some(content);
+            output.worker = Some(SurfacePresentationWorker::spawn(
+                compositor,
+                frames,
+                self.pointer.clone(),
+                self.surface_worker_sender.clone(),
+                connection,
+                surface_id,
+                output.width,
+                output.height,
+            ));
+        } else if let Err(error) = self.capture.accept(offer) {
+            self.render_device.surface_compositors.remove(&connection);
             return Err(error.into());
         }
 
@@ -1072,14 +1619,14 @@ impl GameHost {
         {
             if let Err(error) = publication.add_stream(connection, target_index) {
                 self.capture.revoke(connection);
-                let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
+                self.render_device.surface_compositors.remove(&connection);
                 return Err(error);
             }
         }
         self.surfaces.insert(connection, surface);
         if let Some(previous) = replaced_connection {
             self.surfaces.remove(&previous);
-            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, previous);
+            self.render_device.surface_compositors.remove(&previous);
             if let Some(publication) = self
                 .active
                 .as_mut()
@@ -1088,7 +1635,7 @@ impl GameHost {
                 publication.remove_stream(previous);
             }
         }
-        self.compositor_dirty = true;
+        self.composition_content_dirty = true;
         Ok(AcceptedSurface {
             surface: Some(ConnectedSurface {
                 connection,
@@ -1117,7 +1664,7 @@ impl GameHost {
             .as_mut()
             .and_then(|active| active.webrtc.as_mut())
         {
-            publication.reattach_d3d12(&replacement.compositor)?;
+            publication.reattach_d3d12(&replacement.chrome_compositors[0])?;
         }
         self.render_device = replacement;
         let stale_connections = self.surfaces.keys().copied().collect::<Vec<_>>();
@@ -1133,9 +1680,8 @@ impl GameHost {
         }
         self.surfaces.clear();
         self.composition_content_dirty = true;
-        self.compositor_dirty = true;
         self.chrome_bands.clear();
-        self.chrome_dirty = true;
+        self.chrome_dirty.clear();
         self.shell_refresh_pending = true;
         Ok(true)
     }
@@ -1158,7 +1704,13 @@ impl GameHost {
             surface.preferred_width = width;
             surface.preferred_height = height;
         }
-        Renderer::set_latest(&mut self.render_device.compositor, connection, frame);
+        if let Some(output) = self.render_device.surface_compositors.get_mut(&connection) {
+            output.latest_frame = Some(frame);
+            if let Some(compositor) = output.compositor.as_mut() {
+                Renderer::set_latest(compositor, connection, frame);
+            }
+        }
+        self.composition_content_dirty |= dimensions_changed;
         Some((frame, dimensions_changed))
     }
 
@@ -1172,8 +1724,8 @@ impl GameHost {
         }
         let removed = self.surfaces.remove(&connection).is_some();
         if removed {
-            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
-            self.compositor_dirty = true;
+            self.render_device.surface_compositors.remove(&connection);
+            self.composition_content_dirty = true;
         }
         removed
     }
@@ -1186,11 +1738,11 @@ impl GameHost {
                 publication.remove_stream(connection);
             }
             self.capture.revoke(connection);
-            let _ = Renderer::disconnect_stream(&mut self.render_device.compositor, connection);
+            self.render_device.surface_compositors.remove(&connection);
         }
         self.capture.detach();
         self.surfaces.clear();
-        self.compositor_dirty = true;
+        self.composition_content_dirty = true;
         let token = active.token;
         let filesystem = active.filesystem.take();
         drop(active.runtime);
@@ -1216,92 +1768,124 @@ impl GameHost {
     }
 
     pub fn has_pending_frame(&self) -> bool {
-        Renderer::has_pending_frame(&self.render_device.compositor)
-            || self.compositor_dirty
-            || self.chrome_dirty
+        self.render_device
+            .surface_compositors
+            .values()
+            .filter_map(|output| output.compositor.as_ref())
+            .any(Renderer::has_pending_frame)
     }
 
-    pub fn compositing_plan(&self, width: u32, height: u32) -> CompositingPlan {
-        let mut ordered = Renderer::received_surfaces(&self.render_device.compositor)
-            .into_iter()
-            .filter_map(|received| {
-                let surface = self.surfaces.get(&received.connection)?;
-                let rectangle = Rect::new(
-                    surface.viewport_x,
-                    surface.viewport_y,
-                    surface.viewport_width,
-                    surface.viewport_height,
-                );
-                let mut placement = SurfacePlacement::new(
-                    received.connection,
-                    received.surface_id,
-                    rectangle,
-                    surface.corner_radius,
-                );
-                placement.content = fit_surface_content(
-                    rectangle,
-                    received.image_extent,
-                    surface.game_view_style.as_ref(),
-                    surface.opacity,
-                );
-                Some((surface.z_index, PlanLayer::Surface(placement)))
-            })
-            .collect::<Vec<_>>();
-        ordered.extend(self.chrome_bands.iter().map(|&band| {
-            (
-                2 * band as i32,
-                PlanLayer::Chrome {
-                    id: band as u64,
-                    rectangle: Rect::new(0, 0, width, height),
-                },
-            )
-        }));
-        ordered.sort_by_key(|(z_index, _)| *z_index);
-        CompositingPlan::layered(
-            [0.0, 0.0, 0.0, 1.0],
-            ordered.into_iter().map(|(_, layer)| layer).collect(),
-        )
+    pub fn has_pending_chrome(&self) -> bool {
+        !self.chrome_dirty.is_empty() || self.render_device.shell_worker.is_pending()
     }
 
     pub fn draw(
         &mut self,
-        width: u32,
-        height: u32,
+        _width: u32,
+        _height: u32,
         permit_wait: Duration,
     ) -> Result<Option<bool>, String> {
-        let plan = self.compositing_plan(width, height);
-        let compositor = &mut self.render_device.compositor;
-        let carried_new_frame = Renderer::has_pending_frame(compositor);
-        if !compositor.begin_frame_within(permit_wait) {
-            return Ok(None);
-        }
-        if let Some(publication) = self
+        let mut publication = self
             .active
             .as_mut()
-            .and_then(|active| active.webrtc.as_mut())
-        {
-            publication
-                .present_d3d12(compositor, &plan)
-                .map_err(|error| error.to_string())?;
+            .and_then(|active| active.webrtc.as_mut());
+        let mut presented = false;
+        let mut deferred = false;
+        for (&connection, output) in &mut self.render_device.surface_compositors {
+            let Some(compositor) = output.compositor.as_mut() else {
+                continue;
+            };
+            if !Renderer::has_pending_frame(compositor) {
+                continue;
+            }
+            if !compositor.begin_frame_within(permit_wait) {
+                deferred = true;
+                continue;
+            }
+            let Some(received) = Renderer::received_surfaces(compositor).into_iter().next() else {
+                continue;
+            };
+            let rectangle = Rect::new(0, 0, output.width, output.height);
+            let mut placement = SurfacePlacement::new(
+                connection,
+                received.surface_id,
+                rectangle,
+                self.surfaces
+                    .get(&connection)
+                    .map_or(0.0, |surface| surface.corner_radius),
+            );
+            placement.content = SurfaceContent::fill(rectangle);
+            let plan = CompositingPlan::new([0.0, 0.0, 0.0, 1.0], vec![placement]);
+            if let Some(publication) = publication.as_deref_mut() {
+                publication
+                    .present_d3d12(compositor, &plan)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                compositor
+                    .present_with_webrtc(&plan, None)
+                    .map_err(|error| error.to_string())?;
+            }
+            presented = true;
+        }
+        if presented {
+            Ok(Some(true))
+        } else if deferred {
+            Ok(None)
         } else {
+            // Worker-owned tracked surfaces present independently. No main
+            // compositor submission happened, so do not report a repeated
+            // present or keep the compositor clock active.
+            Ok(None)
+        }
+    }
+
+    /// Presents shell pixels into their independent transparent swapchain.
+    /// WUC retains the last chrome buffer, so this runs only after Blitz
+    /// changed a band and cannot consume the guest swapchain's latency permit.
+    pub fn draw_chrome(
+        &mut self,
+        window: &impl snowglass_renderer::RenderWindow,
+    ) -> Result<bool, String> {
+        while let Some(result) = self.render_device.shell_worker.try_result() {
+            let previous_bands = self.chrome_bands.len();
+            let (bands, updated) = self.render_device.apply_shell_result(window, result)?;
+            self.chrome_bands = (0..bands).collect();
+            self.chrome_dirty.extend(updated);
+            for band in bands..previous_bands {
+                if let Some(compositor) = self.render_device.chrome_compositors.get_mut(band) {
+                    compositor.drop_chrome_layer(band as u64);
+                }
+                self.chrome_dirty.remove(&band);
+            }
+            self.composition_content_dirty |= bands != previous_bands;
+        }
+        let extent = window.render_extent();
+        let dirty = self.chrome_dirty.iter().copied().collect::<Vec<_>>();
+        for band in dirty {
+            let Some(compositor) = self.render_device.chrome_compositors.get_mut(band) else {
+                self.chrome_dirty.remove(&band);
+                continue;
+            };
+            if !compositor.try_begin_frame() {
+                continue;
+            }
+            let plan = CompositingPlan::layered(
+                [0.0, 0.0, 0.0, 0.0],
+                vec![PlanLayer::Chrome {
+                    id: band as u64,
+                    rectangle: Rect::new(0, 0, extent.width, extent.height),
+                }],
+            );
             compositor
                 .present_with_webrtc(&plan, None)
                 .map_err(|error| error.to_string())?;
+            self.chrome_dirty.remove(&band);
         }
-        self.compositor_dirty = false;
-        self.chrome_dirty = false;
-        Ok(Some(carried_new_frame))
+        Ok(self.chrome_dirty.is_empty() && !self.render_device.shell_worker.is_pending())
     }
 
-    pub fn rasterize_shell(&mut self, frame: &ShellFrame) -> Result<bool, String> {
-        let device = &mut self.render_device;
-        let bands = device.render_shell(frame)?;
-        let previous_bands = self.chrome_bands.len();
-        self.chrome_bands = (0..bands).collect();
-        self.chrome_dirty = true;
-        for band in bands..previous_bands {
-            device.compositor.drop_chrome_layer(band as u64);
-        }
+    pub fn rasterize_shell(&mut self, frame: ShellFrame) -> Result<bool, String> {
+        self.render_device.submit_shell(frame);
         Ok(true)
     }
 
@@ -1366,7 +1950,7 @@ impl GameHost {
                 },
             );
         }
-        self.compositor_dirty |= changed;
+        self.composition_content_dirty |= changed;
         changed
     }
 }

@@ -1,7 +1,8 @@
-//! Window, native target, and DirectComposition ownership for the shell.
+//! Window, native target, and Windows.UI.Composition ownership for the shell.
 
 #![allow(unsafe_code)]
 
+use crate::game_host::{CompositionLayer, CompositionLayerId, CompositionLayerStretch};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_egui::{D3d12EguiPainter, DebugOverlayModel, InputDiagnostics, draw_debug_overlay};
 use snowglass_platform_windows::{performance_counter, performance_frequency};
@@ -19,22 +20,67 @@ use std::{
     time::{Duration, Instant},
 };
 use windows::{
+    System::DispatcherQueueController,
+    UI::Composition::{
+        CompositionStretch, CompositionSurfaceBrush, Compositor, ContainerVisual,
+        Core::CompositorController, Desktop::DesktopWindowTarget, SpriteVisual,
+    },
     Win32::{
-        Foundation::{CloseHandle, HANDLE, HMODULE, HWND, WAIT_FAILED, WAIT_OBJECT_0},
-        Graphics::{
-            Direct3D::D3D_DRIVER_TYPE_HARDWARE,
-            Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice},
-            DirectComposition::{
-                DCompositionCreateDevice, DCompositionWaitForCompositorClock, IDCompositionDevice,
-                IDCompositionTarget, IDCompositionVisual,
-            },
-            Dxgi::IDXGIDevice,
-        },
+        Foundation::{CloseHandle, HANDLE, HWND, WAIT_FAILED, WAIT_OBJECT_0},
+        Graphics::DirectComposition::DCompositionWaitForCompositorClock,
         Media::{TIMERR_NOERROR, timeBeginPeriod, timeEndPeriod},
-        System::Threading::{CreateEventW, INFINITE, SetEvent},
+        System::{
+            Threading::{CreateEventW, INFINITE, SetEvent},
+            WinRT::{
+                Composition::{ICompositorDesktopInterop, ICompositorInterop},
+                CreateDispatcherQueueController, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT,
+                DispatcherQueueOptions, RO_INIT_SINGLETHREADED, RoInitialize, RoUninitialize,
+            },
+        },
     },
     core::{IUnknown, Interface},
 };
+use windows_numerics::{Vector2, Vector3};
+
+/// Initialises the Windows Runtime apartment used by the desktop visual layer.
+/// The shell owns one current-thread apartment for its entire event loop.
+pub(crate) struct WinRtApartment {
+    _dispatcher: DispatcherQueueController,
+    _apartment: RoApartment,
+}
+
+struct RoApartment;
+
+impl WinRtApartment {
+    pub(crate) fn initialize() -> windows::core::Result<Self> {
+        // SAFETY: this is the first WinRT apartment initialization on the main
+        // thread and Drop balances every successful call, including S_FALSE.
+        // Winit enables OLE drag/drop on this thread, which requires the STA
+        // apartment. WUC objects used here are agile; initializing MTA first
+        // makes winit's later OleInitialize fail with RPC_E_CHANGED_MODE.
+        unsafe { RoInitialize(RO_INIT_SINGLETHREADED)? };
+        let apartment = RoApartment;
+        let options = DispatcherQueueOptions {
+            dwSize: std::mem::size_of::<DispatcherQueueOptions>() as u32,
+            threadType: DQTYPE_THREAD_CURRENT,
+            apartmentType: DQTAT_COM_STA,
+        };
+        // SAFETY: creates a queue for this already initialized STA thread. The
+        // retained controller keeps it alive through winit's entire event loop.
+        let dispatcher = unsafe { CreateDispatcherQueueController(options) }?;
+        Ok(Self {
+            _dispatcher: dispatcher,
+            _apartment: apartment,
+        })
+    }
+}
+
+impl Drop for RoApartment {
+    fn drop(&mut self) {
+        // SAFETY: balances the successful RoInitialize owned by this value.
+        unsafe { RoUninitialize() };
+    }
+}
 
 /// Holds the process timer resolution at 1ms for the lifetime of the event
 /// loop so frame-pacing deadlines are not rounded to the legacy 15.6ms tick.
@@ -508,8 +554,14 @@ impl EguiOverlay {
             .insert(connection, FrameMetrics::new(connection, surface, target));
     }
 
-    pub(crate) fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
-        let latency_ticks = performance_counter()
+    pub(crate) fn observe_frame_at(
+        &mut self,
+        connection: u64,
+        frame: snowglass_protocol::FrameReady,
+        observed_qpc: Option<u64>,
+    ) {
+        let latency_ticks = observed_qpc
+            .or_else(|| performance_counter().ok())
             .unwrap_or(frame.timestamp_qpc)
             .saturating_sub(frame.timestamp_qpc);
         if let Some(metrics) = self.frames.get_mut(&connection) {
@@ -720,8 +772,8 @@ impl WindowManager {
         );
     }
 
-    pub fn set_merged_content(&mut self, content: &IUnknown) -> windows::core::Result<()> {
-        self.composition.set_merged_content(content)
+    pub fn set_shell_layers(&mut self, layers: &[CompositionLayer]) -> windows::core::Result<()> {
+        self.composition.set_shell_layers(layers)
     }
 
     pub fn commit(&self) -> windows::core::Result<()> {
@@ -782,8 +834,14 @@ impl WindowManager {
         self.overlay.add_surface(connection, surface, target);
     }
 
-    pub fn observe_frame(&mut self, connection: u64, frame: snowglass_protocol::FrameReady) {
-        self.overlay.observe_frame(connection, frame);
+    pub fn observe_frame_at(
+        &mut self,
+        connection: u64,
+        frame: snowglass_protocol::FrameReady,
+        observed_qpc: Option<u64>,
+    ) {
+        self.overlay
+            .observe_frame_at(connection, frame, observed_qpc);
     }
 
     pub fn remove_target(&mut self, connection: u64) {
@@ -813,11 +871,18 @@ impl WindowManager {
 
 struct CompositionTree {
     host: WindowTarget,
-    device: IDCompositionDevice,
-    _target: IDCompositionTarget,
-    root: IDCompositionVisual,
-    overlay: IDCompositionVisual,
-    game: Option<IDCompositionVisual>,
+    controller: CompositorController,
+    compositor: Compositor,
+    _target: DesktopWindowTarget,
+    root: ContainerVisual,
+    overlay: SpriteVisual,
+    layers: HashMap<CompositionLayerId, CompositionVisual>,
+    layer_order: Vec<CompositionLayerId>,
+}
+
+struct CompositionVisual {
+    visual: SpriteVisual,
+    brush: CompositionSurfaceBrush,
 }
 
 /// Opaque native host-window target. Native handle extraction and operations
@@ -843,41 +908,31 @@ impl CompositionTree {
     fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
         let host = WindowTarget::new(window)?;
 
-        // SAFETY: the DirectComposition device, target, and visuals are
-        // retained by this tree for at least as long as the host HWND.
-        unsafe {
-            // Game surfaces and shell chrome are already merged by D3D12.
-            let mut d3d11_device = None;
-            D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut d3d11_device),
-                None,
-                None,
-            )?;
-            let d3d11_device = d3d11_device.ok_or("D3D11 returned no device")?;
-            let dxgi_device: IDXGIDevice = d3d11_device.cast()?;
-            let device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
-            let target = device.CreateTargetForHwnd(host.0, true)?;
-            let root = device.CreateVisual()?;
-            let egui_overlay = device.CreateVisual()?;
-            root.AddVisual(&egui_overlay, true, None::<&IDCompositionVisual>)?;
-            target.SetRoot(&root)?;
-            device.Commit()?;
+        let controller = CompositorController::new()?;
+        let compositor = controller.Compositor()?;
+        let desktop: ICompositorDesktopInterop = compositor.cast()?;
+        // SAFETY: the desktop target retains the live HWND for the lifetime of
+        // this tree, and WindowTarget cannot outlive its winit Window.
+        let target = unsafe { desktop.CreateDesktopWindowTarget(host.0, true)? };
+        let root = compositor.CreateContainerVisual()?;
+        root.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
+        target.SetRoot(&root)?;
 
-            Ok(Self {
-                host,
-                device,
-                _target: target,
-                root,
-                overlay: egui_overlay,
-                game: None,
-            })
-        }
+        let overlay = compositor.CreateSpriteVisual()?;
+        overlay.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
+        root.Children()?.InsertAtTop(&overlay)?;
+        controller.Commit()?;
+
+        Ok(Self {
+            host,
+            controller,
+            compositor,
+            _target: target,
+            root,
+            overlay,
+            layers: HashMap::new(),
+            layer_order: Vec::new(),
+        })
     }
 
     pub fn focus_host(&self) {
@@ -885,32 +940,99 @@ impl CompositionTree {
     }
 
     pub fn set_egui_overlay_content(&self, content: &IUnknown) -> Result<(), windows::core::Error> {
-        // SAFETY: the content is a composition swapchain retained by the
-        // shell's overlay compositor.
-        unsafe { self.overlay.SetContent(content) }
+        let brush = self.surface_brush(content)?;
+        self.overlay.SetBrush(&brush)
     }
 
-    /// Attaches the one window-spanning shell/game swapchain below diagnostics.
-    pub fn set_merged_content(&mut self, content: &IUnknown) -> Result<(), windows::core::Error> {
-        // SAFETY: the content is a composition swapchain, and the visual and
-        // content remain retained by the tree and merged compositor.
-        unsafe {
-            let visual = self.device.CreateVisual()?;
-            visual.SetContent(content)?;
-            // With no reference visual, `insert_above = true` inserts at the
-            // bottom of the child list, beneath the egui overlay.
-            self.root
-                .AddVisual(&visual, true, None::<&IDCompositionVisual>)?;
-            if let Some(previous) = self.game.replace(visual) {
-                self.root.RemoveVisual(&previous)?;
+    /// Reconciles the exact Blitz paint sequence into retained WUC visuals.
+    /// Layer inputs arrive back-to-front: band, tracked surface, next band.
+    /// Moving or resizing a tracked surface changes only visual properties.
+    pub fn set_shell_layers(
+        &mut self,
+        layers: &[CompositionLayer],
+    ) -> Result<(), windows::core::Error> {
+        let children = self.root.Children()?;
+        let next_order = layers.iter().map(|layer| layer.id).collect::<Vec<_>>();
+        let order_changed = self.layer_order != next_order;
+        if order_changed {
+            for id in &self.layer_order {
+                if let Some(visual) = self.layers.get(id) {
+                    children.Remove(&visual.visual)?;
+                }
             }
+        }
+        let live = next_order
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        self.layers.retain(|id, _| live.contains(id));
+
+        for layer in layers {
+            let retained = if let Some(visual) = self.layers.get(&layer.id) {
+                CompositionVisual {
+                    visual: visual.visual.clone(),
+                    brush: visual.brush.clone(),
+                }
+            } else {
+                let visual = self.compositor.CreateSpriteVisual()?;
+                let brush = self.surface_brush(&layer.content)?;
+                visual.SetBrush(&brush)?;
+                let retained = CompositionVisual { visual, brush };
+                self.layers.insert(
+                    layer.id,
+                    CompositionVisual {
+                        visual: retained.visual.clone(),
+                        brush: retained.brush.clone(),
+                    },
+                );
+                retained
+            };
+            retained.brush.SetStretch(match layer.stretch {
+                CompositionLayerStretch::Fill => CompositionStretch::Fill,
+                CompositionLayerStretch::UniformToFill => CompositionStretch::UniformToFill,
+            })?;
+            retained
+                .brush
+                .SetHorizontalAlignmentRatio(layer.horizontal_alignment)?;
+            retained
+                .brush
+                .SetVerticalAlignmentRatio(layer.vertical_alignment)?;
+            retained.visual.SetOffset(Vector3 {
+                X: layer.x,
+                Y: layer.y,
+                Z: 0.0,
+            })?;
+            retained.visual.SetSize(Vector2 {
+                X: layer.width.max(0.0),
+                Y: layer.height.max(0.0),
+            })?;
+            retained.visual.SetOpacity(layer.opacity.clamp(0.0, 1.0))?;
+        }
+        if order_changed {
+            for id in &next_order {
+                children.InsertBelow(&self.layers[id].visual, &self.overlay)?;
+            }
+            self.layer_order = next_order;
         }
         Ok(())
     }
 
+    fn surface_brush(
+        &self,
+        swapchain: &IUnknown,
+    ) -> windows::core::Result<windows::UI::Composition::CompositionSurfaceBrush> {
+        let interop: ICompositorInterop = self.compositor.cast()?;
+        // SAFETY: the supplied object is an IDXGISwapChain created for
+        // composition and retained by its renderer for at least as long as the
+        // resulting surface brush remains installed.
+        let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swapchain)? };
+        let brush = self.compositor.CreateSurfaceBrushWithSurface(&surface)?;
+        brush.SetStretch(CompositionStretch::Fill)?;
+        Ok(brush)
+    }
+
     pub fn commit(&self) -> windows::core::Result<()> {
-        // SAFETY: commits the retained tree without borrowing external data.
-        unsafe { self.device.Commit() }
+        self.controller.Commit()
     }
 }
 
