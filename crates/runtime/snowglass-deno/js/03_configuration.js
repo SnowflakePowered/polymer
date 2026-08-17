@@ -1,12 +1,7 @@
 import {
   op_configuration_describe,
   op_configuration_prepare,
-  op_prepared_filesystem_release,
 } from "ext:core/ops";
-
-const preparedFilesystemFinalizer = new FinalizationRegistry((token) => {
-  op_prepared_filesystem_release(token);
-});
 
 export function createConfiguration(scraping, pluginApi) {
   const Configuration = Object.freeze({
@@ -43,9 +38,6 @@ export function createConfiguration(scraping, pluginApi) {
         },
         preparedFilesystem: plugin.preparedFilesystem,
       });
-      if (plugin.preparedFilesystem !== undefined) {
-        preparedFilesystemFinalizer.register(launch, plugin.preparedFilesystem);
-      }
       return launch;
     },
   });

@@ -9652,6 +9652,8 @@ dependencies = [
  "snowglass-renderer",
  "snowglass-runtime",
  "snowglass-statistics",
+ "snowglass-vfs",
+ "snowglass-vfs-winfsp",
  "stylo",
  "tempfile",
  "tokio",
@@ -9695,6 +9697,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "widestring",
+ "windows 0.61.3",
+]
+
+[[package]]
+name = "snowglass-vfs-winfsp"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "snowglass-vfs",
+ "windows 0.61.3",
+ "winfsp",
 ]
 
 [[package]]
@@ -12857,6 +12870,32 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
+
+[[package]]
+name = "winfsp"
+version = "0.13.0+winfsp-2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86829821fff6ed3bc1ace8a0c9a67a5a63a121a9f0a025929ffd5428bad1fa62"
+dependencies = [
+ "bytemuck",
+ "parking_lot",
+ "paste",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "widestring",
+ "windows 0.61.3",
+ "winfsp-sys",
+]
+
+[[package]]
+name = "winfsp-sys"
+version = "0.12.1+winfsp-2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d42acc30c105f8d33507f556398237c738b681271c775a3b94eefd29d2b8c77e"
+dependencies = [
+ "bindgen",
+ "windows-registry",
+]
 
 [[package]]
 name = "winit"

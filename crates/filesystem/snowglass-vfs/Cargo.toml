@@ -17,6 +17,15 @@ tempfile.workspace = true
 thiserror.workspace = true
 widestring = "1"
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
 [dev-dependencies]
 asar = "0.3.0"
 

@@ -1,7 +1,7 @@
 use crate::{
-    CompiledFilesystem, CreateOptions, DirectoryEntry, DirectoryNode, FileNode, Metadata, Node,
-    OpenFile, OpenOptions, Permissions, RemoveKind, VfsComponent, VfsError, VfsPath, VfsPathBuf,
-    VfsPathUnit, VfsResult, Volume,
+    CompiledFilesystem, CreateOptions, DirectoryEntry, DirectoryNode, FileNode, Metadata,
+    MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind, VfsComponent, VfsError,
+    VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
 use parking_lot::Mutex;
 use std::{collections::HashMap, fmt, sync::Arc};
@@ -149,6 +149,18 @@ impl PreparedFilesystem {
         self.resolve_node(path)?.node.metadata()
     }
 
+    pub fn set_metadata(&self, path: &VfsPathBuf, changes: MetadataChanges) -> VfsResult<()> {
+        let resolved = self.resolve_node(path)?;
+        if !resolved.permissions.can_write() {
+            return Err(VfsError::PermissionDenied(path.clone()));
+        }
+        match resolved.node {
+            Node::File(file) => file.set_metadata(changes),
+            Node::Directory(directory) => directory.set_metadata(changes),
+            Node::SyntheticDirectory => Err(VfsError::PermissionDenied(path.clone())),
+        }
+    }
+
     pub fn open(&self, path: &VfsPathBuf, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
         let resolved = self.resolve_node(path)?;
         if (options.read && !resolved.permissions.can_read())
@@ -207,13 +219,41 @@ impl PreparedFilesystem {
     }
 
     pub fn remove(&self, path: &VfsPathBuf, kind: RemoveKind) -> VfsResult<()> {
+        self.validate_remove(path, kind)?;
+        let parent = self.writable_parent(path)?;
+        parent.directory.remove(&parent.name, kind)
+    }
+
+    pub fn validate_remove(&self, path: &VfsPathBuf, kind: RemoveKind) -> VfsResult<()> {
         if self.compiled.is_mount_point(path)? || self.compiled.has_descendant(path)? {
             return Err(VfsError::Unsupported(
                 "mounted nodes cannot be removed".into(),
             ));
         }
         let parent = self.writable_parent(path)?;
-        parent.directory.remove(&parent.name, kind)
+        let node = parent
+            .directory
+            .lookup(&parent.name)?
+            .ok_or_else(|| VfsError::NotFound(path.clone()))?;
+        match (node, kind) {
+            (Node::File(_), RemoveKind::File) => Ok(()),
+            (Node::File(_), RemoveKind::Directory) => Err(VfsError::NotDirectory(path.clone())),
+            (Node::Directory(_), RemoveKind::File)
+            | (Node::SyntheticDirectory, RemoveKind::File) => {
+                Err(VfsError::IsDirectory(path.clone()))
+            }
+            (Node::Directory(directory), RemoveKind::Directory) => {
+                if let Some(entry) = directory.read_dir()?.next() {
+                    entry?;
+                    Err(VfsError::DirectoryNotEmpty(path.clone()))
+                } else {
+                    Ok(())
+                }
+            }
+            (Node::SyntheticDirectory, RemoveKind::Directory) => {
+                Err(VfsError::PermissionDenied(path.clone()))
+            }
+        }
     }
 
     pub fn rename(&self, source: &VfsPathBuf, target: &VfsPathBuf) -> VfsResult<()> {

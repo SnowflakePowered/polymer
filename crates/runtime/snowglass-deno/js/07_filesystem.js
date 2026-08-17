@@ -1,5 +1,6 @@
 import {
-  op_vfs_game,
+  op_vfs_mount_host_file,
+  op_vfs_mount_host_tree,
   op_vfs_mount_file_bytes,
   op_vfs_mount_file_pkg,
   op_vfs_mount_file_resource,
@@ -17,7 +18,7 @@ const handles = new WeakMap();
 
 function resource(description) {
   if (description == null) return undefined;
-  const value = Object.freeze({ kind: description.kind });
+  const value = Object.freeze({ kind: description.kind, path: description.path });
   handles.set(value, description);
   return value;
 }
@@ -43,6 +44,14 @@ function pkgSource(value) {
 }
 
 const filesystem = Object.freeze({
+  mountHostTree(target, source, options) {
+    op_vfs_mount_host_tree(String(target), String(source), mode(options));
+  },
+
+  mountHostFile(target, source, options) {
+    op_vfs_mount_host_file(String(target), String(source), mode(options));
+  },
+
   mountTree(target, source, options) {
     target = String(target);
     const permissions = mode(options);
@@ -91,7 +100,7 @@ const filesystem = Object.freeze({
 });
 
 Object.defineProperty(globalThis, "__snowglassFilesystem", {
-  value: Object.freeze({ filesystem, resources: namedResources, game: resource(op_vfs_game()) }),
+  value: Object.freeze({ filesystem, resources: namedResources }),
   configurable: false,
   enumerable: false,
   writable: false,

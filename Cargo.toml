@@ -107,6 +107,7 @@ phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
 snowglass-vfs = { path = "crates/filesystem/snowglass-vfs" }
+snowglass-vfs-winfsp = { path = "crates/filesystem/snowglass-vfs-winfsp" }
 
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 

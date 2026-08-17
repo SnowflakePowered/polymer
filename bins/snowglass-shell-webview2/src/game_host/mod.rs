@@ -550,6 +550,7 @@ struct ActiveEmulator {
     options: AttachedLaunchPlan,
     webrtc: Option<snowglass_renderer::webrtc::Publication>,
     audio: snowglass_runtime::AudioState,
+    filesystem: Option<snowglass_vfs::MountedFilesystem>,
 }
 
 pub(crate) struct ConnectedSurface {
@@ -781,6 +782,7 @@ impl GameHost {
         &mut self,
         token: crate::shell_runtime::InstanceToken,
         options: AttachedLaunchPlan,
+        mut filesystem: Option<snowglass_vfs::MountedFilesystem>,
         session: String,
         wake_window: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Result<(), String> {
@@ -827,8 +829,16 @@ impl GameHost {
             if !wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) && !wake_window() {
                 wake_pending.store(false, std::sync::atomic::Ordering::Release);
             }
-        })
-        .map_err(|error| error.to_string())?;
+        });
+        let runtime = match runtime {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Some(filesystem) = filesystem.take() {
+                    filesystem.finish(snowglass_vfs::FinalizationReason::LaunchFailed);
+                }
+                return Err(error.to_string());
+            }
+        };
         self.capture.attach(&runtime);
         let audio = runtime.audio_state();
         self.active = Some(ActiveEmulator {
@@ -837,6 +847,7 @@ impl GameHost {
             options,
             webrtc: None,
             audio,
+            filesystem,
         });
         Ok(())
     }
@@ -1180,10 +1191,13 @@ impl GameHost {
         self.capture.detach();
         self.surfaces.clear();
         self.compositor_dirty = true;
-        Some(FinishedGame {
-            token: active.token,
-            connections,
-        })
+        let token = active.token;
+        let filesystem = active.filesystem.take();
+        drop(active.runtime);
+        if let Some(filesystem) = filesystem {
+            filesystem.finish(snowglass_vfs::FinalizationReason::ProcessExited);
+        }
+        Some(FinishedGame { token, connections })
     }
 
     fn next_target_configuration(&self) -> Option<(u32, u8)> {

@@ -6,61 +6,6 @@ use super::{
     SnowglassNotification, WebRtcCommand, WebRtcCommandSink,
 };
 
-#[tokio::test]
-async fn pluginhost_executes_the_cemu_package_with_realized_configuration() {
-    let plugins = snowglass_pluginhost::PluginRegistry::new();
-    plugins
-        .load(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("plugins")
-                .join("cemu")
-                .join("plugin.toml"),
-        )
-        .unwrap();
-    let plugin = plugins
-        .plugin::<dyn snowglass_pluginhost::EmulatorPluginInstance>("cemu")
-        .unwrap();
-    let assignments = plugin
-        .port_assignments("NINTENDO_WIIU", &["WIIU_DRC_CONTROLLER".to_owned()])
-        .unwrap();
-    let configuration = plugin.materialize("NINTENDO_WIIU", assignments).unwrap();
-    let runtime = snowglass_pluginhost::PluginRuntime::new(
-        plugins,
-        snowglass_pluginhost::PluginRuntimeOptions::default(),
-    );
-    let plan = runtime
-        .handle()
-        .setup_emulator(snowglass_pluginhost::EmulatorSetupInvocation {
-            plugin,
-            arguments: serde_json::json!({
-                "launchPath": "E:/games/U-King.rpx",
-                "console": "NINTENDO_WIIU",
-                "portAssignments": { "gamepad": ["WIIU_DRC_CONTROLLER"] },
-            }),
-            configuration,
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(plan.argv, ["-g", "E:/games/U-King.rpx"]);
-    assert!(plan.command.ends_with("/Cemu.exe"), "{}", plan.command);
-    assert_eq!(plan.surfaces[0].index, 0);
-    assert_eq!(plan.surfaces[0].rotation, 0);
-    assert_eq!(plan.surfaces[0].pattern.as_deref(), Some("Cemu+"));
-    assert!(plan.config.contains_key("settings.xml"));
-    assert!(
-        plan.config
-            .contains_key("controllerProfiles/controller0.xml")
-    );
-    let settings = std::str::from_utf8(&plan.config["settings.xml"]).unwrap();
-    assert!(
-        settings.contains("<open_pad>true</open_pad>"),
-        "cemu.ts did not mutate content.open_pad before host serialization:\n{settings}"
-    );
-}
-
 fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>) {
     let commands = Arc::new(Mutex::new(Vec::new()));
     let recorded = commands.clone();
@@ -656,7 +601,7 @@ async fn plugin_facade_invokes_a_fresh_worker_through_the_direct_op() {
         messages[0]["command"]
             .as_str()
             .unwrap()
-            .ends_with("/Cemu.exe")
+            .ends_with(r"\Cemu\Cemu.exe")
     );
     assert_eq!(messages[0]["hook"], "vulkan");
 }

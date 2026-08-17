@@ -152,6 +152,11 @@ impl TargetProcess {
             let _ = child.wait();
             return Err(error);
         }
+        if let Err(error) = force_high_qos(child.raw_handle()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let architecture = match process_architecture(child.raw_handle()) {
             Ok(architecture) => architecture,
             Err(error) => {
@@ -237,6 +242,37 @@ impl TargetProcess {
             result
         }
     }
+}
+
+/// Explicitly opts a process out of EcoQoS and timer-resolution throttling.
+///
+/// This runs while the root process is suspended, before injection and before
+/// any emulator code can create worker threads or child processes.
+fn force_high_qos(process: isize) -> std::io::Result<()> {
+    use windows::Win32::{
+        Foundation::HANDLE,
+        System::Threading::{
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
+            ProcessPowerThrottling, SetProcessInformation,
+        },
+    };
+
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    unsafe {
+        SetProcessInformation(
+            HANDLE(process as *mut _),
+            ProcessPowerThrottling,
+            (&raw const state).cast(),
+            std::mem::size_of_val(&state) as u32,
+        )
+    }
+    .map_err(|_| std::io::Error::last_os_error())
 }
 
 pub fn architecture_artifact_dir(

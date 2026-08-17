@@ -184,7 +184,6 @@ impl<'runtime> EmulatorWorker<'runtime> {
                     args.configuration = configuration;
                     args.filesystem = __snowglassFilesystem.filesystem;
                     args.resources = __snowglassFilesystem.resources;
-                    if (__snowglassFilesystem.game !== undefined) args.game = __snowglassFilesystem.game;
                     return {{
                       result: await Reflect.apply(setupLaunch, receiver, [args]),
                       configuration,

@@ -19,6 +19,8 @@ pub enum VfsError {
     NotDirectory(VfsPathBuf),
     #[error("expected a file at '{0}'")]
     IsDirectory(VfsPathBuf),
+    #[error("directory is not empty: '{0}'")]
+    DirectoryNotEmpty(VfsPathBuf),
     #[error("cannot place a binding below file binding '{0}'")]
     BindingBelowFile(VfsPathBuf),
     #[error("duplicate filesystem binding at '{0}'")]
