@@ -68,7 +68,29 @@ button:disabled {
 tracked-surface {
   display: block;
   overflow: hidden;
-  background: #000000;
+  background: transparent;
+  object-fit: contain;
+  object-position: center;
+}
+
+.classic-surface-backdrop {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #292929 0%, #050505 18%, #050505 82%, #292929 100%);
+  pointer-events: none;
+}
+
+.classic-surface-backdrop svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.game-surface {
+  z-index: 1;
 }
 
 /* The configuration screen deliberately uses conservative flex layout.  The

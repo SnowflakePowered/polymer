@@ -1852,7 +1852,7 @@ emit = { key = "ShowActiveTitle", bool_style = "upper" }
 key = "skip_n_kit_warning"
 title = "Skip N Kit Warning"
 type = "bool"
-default = false
+default = true
 emit = { key = "SkipNKitWarning", bool_style = "upper" }
 
 [[sections.main.interface.options]]

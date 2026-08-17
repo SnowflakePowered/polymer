@@ -4,6 +4,7 @@
 //! worker isolate for each native invocation.
 
 pub(crate) mod deno;
+mod events;
 
 use blitz_dom::BaseDocument;
 use deno::EventResult;
@@ -16,7 +17,18 @@ pub(crate) use deno::{
 pub(crate) use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
 
 pub(crate) struct ShellRuntime {
-    runtime: Option<deno::Runtime>,
+    runtime: deno::Runtime,
+}
+
+pub(crate) struct ShellRuntimeOptions {
+    pub html: String,
+    pub source_name: String,
+    pub emulator_commands: EmulatorCommandSink,
+    pub input_commands: InputCommandSink,
+    pub webrtc_commands: WebRtcCommandSink,
+    pub startup_request: Option<Value>,
+    pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    pub viewer: Option<snowglass_renderer::cli::ViewerOptions>,
 }
 
 impl ShellRuntime {
@@ -24,15 +36,18 @@ impl ShellRuntime {
         document: &BaseDocument,
         width: u32,
         height: u32,
-        html: String,
-        source_name: String,
-        emulator_commands: EmulatorCommandSink,
-        input_commands: deno::InputCommandSink,
-        webrtc_commands: WebRtcCommandSink,
-        startup_request: Option<Value>,
-        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
-        viewer: Option<snowglass_renderer::cli::ViewerOptions>,
+        options: ShellRuntimeOptions,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn Error>> {
+        let ShellRuntimeOptions {
+            html,
+            source_name,
+            emulator_commands,
+            input_commands,
+            webrtc_commands,
+            startup_request,
+            plugin_runtime,
+            viewer,
+        } = options;
         let result = match deno::Runtime::serialized_snapshot(document, width, height) {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
                 initial_snapshot,
@@ -49,25 +64,16 @@ impl ShellRuntime {
             .unwrap_or_else(|error| Err(Box::new(error))),
             Err(error) => Err(Box::new(error) as Box<dyn Error>),
         };
-        result.map(|(runtime, notifications)| {
-            (
-                Self {
-                    runtime: Some(runtime),
-                },
-                notifications,
-            )
-        })
+        result.map(|(runtime, notifications)| (Self { runtime }, notifications))
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.resize(width, height)
-        {
+        if let Err(error) = self.runtime.resize(width, height) {
             tracing::error!("snowglass: resizing the shell window failed: {error}");
         }
     }
 
-    pub fn dispatch_dom(
+    fn dispatch_dom(
         &mut self,
         kind: &str,
         target: usize,
@@ -76,10 +82,7 @@ impl ShellRuntime {
         bubbles: bool,
         cancelable: bool,
     ) -> EventResult {
-        let Some(runtime) = self.runtime.as_mut() else {
-            return EventResult::default();
-        };
-        runtime
+        self.runtime
             .dispatch_dom(kind, target, event_class, init, bubbles, cancelable)
             .unwrap_or_else(|error| {
                 tracing::error!("snowglass: dispatching shell {kind} failed: {error}");
@@ -87,14 +90,22 @@ impl ShellRuntime {
             })
     }
 
-    pub async fn poll_event_loop(&mut self) -> bool {
-        let Some(runtime) = self.runtime.as_mut() else {
-            return false;
-        };
-        if let Err(error) = runtime.poll_event_loop().await {
+    pub fn dispatch_event(
+        &mut self,
+        kind: &str,
+        target: usize,
+        event: &blitz_traits::events::DomEventData,
+        bubbles: bool,
+        cancelable: bool,
+    ) -> EventResult {
+        let (event_class, init) = events::event_init(event);
+        self.dispatch_dom(kind, target, event_class, &init, bubbles, cancelable)
+    }
+
+    pub async fn poll_event_loop(&mut self) {
+        if let Err(error) = self.runtime.poll_event_loop().await {
             tracing::error!("snowglass: polling shell JavaScript failed: {error}");
         }
-        true
     }
 
     pub fn sync(
@@ -105,18 +116,13 @@ impl ShellRuntime {
         node_ids: &HashMap<usize, usize>,
         roots: Option<&[usize]>,
     ) {
-        if let Some(runtime) = self.runtime.as_mut()
-            && let Err(error) = runtime.sync(document, width, height, node_ids, roots)
-        {
+        if let Err(error) = self.runtime.sync(document, width, height, node_ids, roots) {
             tracing::error!("snowglass: synchronizing the shell DOM failed: {error}");
         }
     }
 
     pub fn take_mutations(&mut self) -> Vec<Mutation> {
-        self.runtime
-            .as_mut()
-            .map(deno::Runtime::take_mutations)
-            .unwrap_or_default()
+        self.runtime.take_mutations()
     }
 }
 

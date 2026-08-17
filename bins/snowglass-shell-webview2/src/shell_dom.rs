@@ -8,7 +8,7 @@ use crate::shell_document::{
     DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle, ShellDocument,
     ShellDocumentFactory,
 };
-use crate::shell_runtime::ShellRuntime;
+use crate::shell_runtime::{ShellRuntime, ShellRuntimeOptions};
 use kurbo::Rect;
 use std::future::Future;
 
@@ -18,14 +18,10 @@ pub(crate) struct ShellFrame {
     pub chrome_bands: Vec<vello::Scene>,
     pub width: u32,
     pub height: u32,
-    pub dirty: bool,
     /// A mutation inside a CSS paint/layout containment boundary can redraw
     /// only that boundary's old and new paint bounds. `None` means the whole
     /// frame changed.
     pub damage: Option<kurbo::Rect>,
-    /// Optional renderer-level band restriction. Contained DOM damage is sent
-    /// to every band because visual overflow can cross tracked-surface splits.
-    pub dirty_bands: Option<Vec<usize>>,
 }
 
 /// Immutable compositor-facing layout published by the shell DOM.
@@ -48,13 +44,13 @@ pub(crate) struct ShellHitSnapshot {
     pub over_tracked_surface: bool,
 }
 
-pub(crate) struct ShellDomCoordinator {
+pub(crate) struct ShellSession {
     slot: ShellDocumentSlot,
 }
 
 enum ShellDocumentSlot {
-    Awaiting(ShellDocumentFactory),
-    Active(ActiveShellDocument),
+    Awaiting(ShellSessionFactory),
+    Active(Box<ActiveShellDocument>),
     Disabled,
 }
 
@@ -63,8 +59,8 @@ struct ActiveShellDocument {
     runtime: ShellRuntime,
 }
 
-impl ShellDomCoordinator {
-    pub fn new(factory: ShellDocumentFactory) -> Self {
+impl ShellSession {
+    pub fn new(factory: ShellSessionFactory) -> Self {
         Self {
             slot: ShellDocumentSlot::Awaiting(factory),
         }
@@ -119,7 +115,7 @@ impl ShellDomCoordinator {
         create: F,
     ) -> Result<Option<crate::shell_runtime::SnowglassNotificationSender>, Box<dyn std::error::Error>>
     where
-        F: FnOnce(ShellDocumentFactory) -> Fut,
+        F: FnOnce(ShellSessionFactory) -> Fut,
         Fut: Future<
             Output = Result<
                 (
@@ -135,7 +131,8 @@ impl ShellDomCoordinator {
         match slot {
             ShellDocumentSlot::Awaiting(factory) => {
                 let (document, runtime, notifications) = create(factory).await?;
-                self.slot = ShellDocumentSlot::Active(ActiveShellDocument { document, runtime });
+                self.slot =
+                    ShellDocumentSlot::Active(Box::new(ActiveShellDocument { document, runtime }));
                 Ok(Some(notifications))
             }
             slot => {
@@ -181,16 +178,16 @@ impl ShellDomCoordinator {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return None;
         };
-        Some(active.document.produce_frame(&mut active.runtime))
+        active.document.produce_frame(&mut active.runtime)
     }
 
     pub async fn poll_runtime(&mut self) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        let polled = active.runtime.poll_event_loop().await;
+        active.runtime.poll_event_loop().await;
         active.document.apply_script_mutations(&mut active.runtime);
-        polled
+        true
     }
 
     pub fn resize(&mut self, width: u32, height: u32) -> bool {
@@ -236,5 +233,74 @@ impl ShellDomCoordinator {
         if let ShellDocumentSlot::Active(active) = &mut self.slot {
             active.document.ime_event(&mut active.runtime, event);
         }
+    }
+}
+
+pub(crate) struct ShellSessionFactory {
+    document: ShellDocumentFactory,
+    plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+}
+
+impl ShellSessionFactory {
+    pub(crate) fn new(
+        plugin_registry: snowglass_pluginhost::PluginRegistry,
+        event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
+    ) -> Self {
+        Self {
+            document: ShellDocumentFactory::new(event_proxy),
+            plugin_runtime: std::sync::Arc::new(snowglass_pluginhost::PluginRuntime::new(
+                plugin_registry,
+                snowglass_pluginhost::PluginRuntimeOptions::default(),
+            )),
+        }
+    }
+
+    pub(crate) fn plugin_runtime_handle(&self) -> snowglass_pluginhost::PluginRuntimeHandle {
+        self.plugin_runtime.handle()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create(
+        self,
+        html: &str,
+        base_url: String,
+        views: usize,
+        width: u32,
+        height: u32,
+        emulator_commands: crate::shell_runtime::EmulatorCommandSink,
+        input_commands: crate::shell_runtime::InputCommandSink,
+        webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
+        startup_request: Option<serde_json::Value>,
+        viewer: snowglass_renderer::cli::ViewerOptions,
+    ) -> Result<
+        (
+            ShellDocument,
+            ShellRuntime,
+            crate::shell_runtime::SnowglassNotificationSender,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let mut document = self
+            .document
+            .create(html, base_url.clone(), views, width, height);
+        let (base_document, width, height) = document.runtime_context();
+        let (mut runtime, notifications) = ShellRuntime::start(
+            base_document,
+            width,
+            height,
+            ShellRuntimeOptions {
+                html: html.to_owned(),
+                source_name: base_url,
+                emulator_commands,
+                input_commands,
+                webrtc_commands,
+                startup_request,
+                plugin_runtime: self.plugin_runtime,
+                viewer: Some(viewer),
+            },
+        )
+        .await?;
+        document.apply_script_mutations(&mut runtime);
+        Ok((document, runtime, notifications))
     }
 }

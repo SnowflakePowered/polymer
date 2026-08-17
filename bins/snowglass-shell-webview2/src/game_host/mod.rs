@@ -270,9 +270,6 @@ impl ShellRasterizer {
     }
 
     fn rasterize_frame(&mut self, frame: &ShellFrame, mut band: impl FnMut(usize, &ChromeTexture)) {
-        if !frame.dirty {
-            return;
-        }
         let rasterized = std::time::Instant::now();
         let parameters = RenderParams {
             base_color: vello::peniko::Color::TRANSPARENT,
@@ -284,13 +281,6 @@ impl ShellRasterizer {
         let mut reused = Vec::with_capacity(frame.chrome_bands.len());
         let mut band_timings = Vec::with_capacity(frame.chrome_bands.len());
         for (index, scene) in frame.chrome_bands.iter().enumerate() {
-            if frame
-                .dirty_bands
-                .as_ref()
-                .is_some_and(|bands| !bands.contains(&index))
-            {
-                continue;
-            }
             let target_is_current_size = self.targets.get(index).is_some_and(|target| {
                 target.as_ref().is_some_and(|target| {
                     (target.width, target.height) == (frame.width, frame.height)
@@ -1290,9 +1280,6 @@ impl GameHost {
     }
 
     pub fn rasterize_shell(&mut self, frame: &ShellFrame) -> Result<bool, String> {
-        if !frame.dirty {
-            return Ok(false);
-        }
         let device = &mut self.render_device;
         let bands = device.render_shell(frame)?;
         let previous_bands = self.chrome_bands.len();

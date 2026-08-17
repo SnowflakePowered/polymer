@@ -12,6 +12,9 @@ type Configuration = {
             input: {
                 background_input: boolean,
             },
+            interface: {
+                skip_n_kit_warning: boolean,
+            },
         },
     },
 }
@@ -31,6 +34,9 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     // isolated capture surface. Dolphin must continue polling the injected
     // virtual controller while its own hidden window is not foreground.
     args.configuration.options().main.input.background_input = true;
+    // NKit images trigger a modal warning before emulation starts. Snowglass
+    // launches Dolphin unattended, so the warning must never block startup.
+    args.configuration.options().main.interface.skip_n_kit_warning = true;
 
     return {
         command: executable.href,
