@@ -1,5 +1,6 @@
 use crate::{
-    EmulatorPlugin, EmulatorPluginInstance, PackageError, PluginModuleLoader, PluginResource,
+    EmulatorPlugin, EmulatorPluginInstance, PackageError, PluginCache, PluginModuleLoader,
+    PluginResource, descriptor::PluginDescriptor,
 };
 use serde::Deserialize;
 use std::{
@@ -19,6 +20,9 @@ pub trait PluginInstance: Send + Sync + 'static {
     fn module_loader(&self) -> &PluginModuleLoader;
     fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
         Ok(Vec::new())
+    }
+    fn caches(&self) -> &[PluginCache] {
+        &[]
     }
 }
 
@@ -120,6 +124,14 @@ impl PluginRegistry {
         ids.sort();
         ids.into_iter()
             .filter_map(|id| plugins[id].get::<I>())
+            .collect()
+    }
+
+    /// Returns a stable frontend-safe snapshot ordered by plugin ID.
+    pub fn descriptors(&self) -> Vec<PluginDescriptor> {
+        self.plugins::<dyn PluginInstance>()
+            .iter()
+            .map(|plugin| PluginDescriptor::from_instance(plugin.as_ref()))
             .collect()
     }
 

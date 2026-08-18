@@ -588,7 +588,38 @@ fn filesystem_options(
             permissions: resource.permissions,
         })
         .collect();
+    if !plugin.caches().is_empty() {
+        let plugin_cache_root = local_cache_root()?.join(".snowglass").join(plugin.id());
+        options.caches = plugin
+            .caches()
+            .iter()
+            .map(|cache| snowglass_deno::filesystem::NamedCache {
+                key: cache.key.clone(),
+                path: plugin_cache_root.join(&cache.key),
+            })
+            .collect();
+    }
     Ok(options)
+}
+
+fn local_cache_root() -> Result<std::path::PathBuf, crate::PackageError> {
+    #[cfg(windows)]
+    let root = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+
+    #[cfg(target_os = "linux")]
+    let root = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .map(|home| home.join(".cache"))
+        });
+
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let root = None;
+
+    root.filter(|path| path.is_absolute())
+        .ok_or(crate::PackageError::CacheStorageUnavailable)
 }
 
 use std::future::Future;
