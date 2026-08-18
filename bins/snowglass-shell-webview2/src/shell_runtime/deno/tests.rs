@@ -547,6 +547,8 @@ async fn plugin_facade_rejects_non_json_arguments_before_invocation() {
 
 #[tokio::test]
 async fn plugin_facade_invokes_a_fresh_worker_through_the_direct_op() {
+    let game = tempfile::tempdir().unwrap();
+    let launch_path = serde_json::to_string(game.path().to_str().unwrap()).unwrap();
     let plugins = snowglass_pluginhost::PluginRegistry::new();
     plugins
         .load(
@@ -562,19 +564,21 @@ async fn plugin_facade_invokes_a_fresh_worker_through_the_direct_op() {
         plugins,
         snowglass_pluginhost::PluginRuntimeOptions::default(),
     ));
-    let html = r#"
+    let html = format!(
+        r#"
         <html><body><script>
-          Snowglass.plugin.open("cemu").setupLaunch({
-            launchPath: "E:/games/U-King.rpx",
+          Snowglass.plugin.open("cemu").setupLaunch({{
+            launchPath: {launch_path},
             console: "NINTENDO_WIIU",
-            portAssignments: { gamepad: ["WIIU_DRC_CONTROLLER"] },
-          }).then(plan => postMessage({ command: plan.command, hook: plan.hooks[0] }));
+            portAssignments: {{ gamepad: ["WIIU_DRC_CONTROLLER"] }},
+          }}).then(plan => postMessage({{ command: plan.command, hook: plan.hooks[0] }}));
         </script></body></html>
-    "#;
-    let document = document(html);
+    "#
+    );
+    let document = document(&html);
     let mut runtime = Runtime::new_with_plugin_runtime(
         document.as_ref(),
-        html,
+        &html,
         "snowglass:///plugin-test.html",
         800,
         600,

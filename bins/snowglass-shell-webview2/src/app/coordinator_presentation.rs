@@ -35,28 +35,15 @@ impl ShellCoordinator {
                 break;
             };
             processed += 1;
-            let size = self.window.size();
-            match self
-                .game_host
-                .take_composition_content_update(size.width, size.height)
-            {
-                Ok(Some(content)) => {
-                    if let Err(error) = self.window.set_shell_layers(&content.layers) {
-                        tracing::error!(
-                            "snowglass: attaching replacement game compositor failed: {error}"
-                        );
-                    } else if let Err(error) = self.window.commit() {
-                        tracing::error!(
-                            "snowglass: committing replacement game compositor failed: {error}"
-                        );
-                    }
-                    self.shell_dom.invalidate();
+            if let Some(rasterizer) = self.game_host.take_shell_rasterizer_replacement() {
+                match self.shell_compositor.replace_rasterizer(rasterizer) {
+                    Ok(()) => self.shell_dom.invalidate(),
+                    Err(error) => tracing::error!(
+                        "snowglass: replacing the shell compositor device failed: {error}"
+                    ),
                 }
-                Ok(None) => {}
-                Err(error) => tracing::error!(
-                    "snowglass: obtaining replacement game compositor content failed: {error}"
-                ),
             }
+            self.sync_shell_visuals();
             match event {
                 GameHostCaptureEvent::Connected(accepted) => {
                     let Some(surface) = accepted.surface else {
@@ -173,32 +160,27 @@ impl ShellCoordinator {
     }
 
     pub(super) fn draw_pending_chrome(&mut self) {
-        let size = self.window.size();
-        let result = {
-            let render_window = self.window.surface(size.width.max(1), size.height.max(1));
-            self.game_host.draw_chrome(&render_window)
-        };
-        match result {
-            Ok(true) => {}
-            Ok(false) => self.window.request_redraw(),
+        match self.shell_compositor.draw() {
+            Ok(Some(placements)) => {
+                self.game_host.apply_tracked_layout(&placements);
+            }
+            Ok(None) => {}
             Err(error) => tracing::error!("snowglass: presenting shell chrome failed: {error}"),
         }
-        self.sync_shell_visuals(size.width, size.height);
+        self.sync_shell_visuals();
+        if self.shell_compositor.is_pending() {
+            self.window.request_redraw();
+        }
     }
 
-    fn sync_shell_visuals(&mut self, width: u32, height: u32) {
-        match self
-            .game_host
-            .take_composition_content_update(width, height)
-        {
-            Ok(Some(content)) => {
-                if let Err(error) = self.window.set_shell_layers(&content.layers) {
-                    tracing::error!("snowglass: reconciling shell visuals failed: {error}");
-                } else if let Err(error) = self.window.commit() {
+    fn sync_shell_visuals(&mut self) {
+        match self.shell_compositor.reconcile(&mut self.game_host) {
+            Ok(true) => {
+                if let Err(error) = self.window.commit() {
                     tracing::error!("snowglass: committing shell visuals failed: {error}");
                 }
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(error) => tracing::error!("snowglass: obtaining shell visuals failed: {error}"),
         }
     }
@@ -223,12 +205,7 @@ impl ShellCoordinator {
         let Some(frame) = self.shell_dom.produce_frame() else {
             return;
         };
-        let size = self.window.size();
-        if let Err(error) = self.game_host.rasterize_shell(frame) {
-            tracing::error!("snowglass: rasterizing shell chrome failed: {error}");
-            return;
-        }
-        self.sync_shell_visuals(size.width, size.height);
+        self.shell_compositor.submit(frame);
         self.draw_pending_chrome();
     }
 }

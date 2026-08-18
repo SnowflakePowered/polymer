@@ -3,6 +3,7 @@
 
 use crate::{CompositingPlan, D3d12Compositor, WebRtcCompositor};
 use parking_lot::Mutex;
+use snowglass_protocol::AdapterLuid;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -283,6 +284,28 @@ impl Publication {
         })
     }
 
+    pub fn start_d3d12_device(
+        bind: SocketAddr,
+        targets: &[u32],
+        adapter: AdapterLuid,
+        device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    ) -> Result<Self, Box<dyn Error>> {
+        if targets.is_empty() {
+            return Err("WebRTC publication requires at least one render target".into());
+        }
+        let requested = targets.to_vec();
+        let targets = requested.iter().copied().collect::<HashSet<_>>();
+        if requested.len() != targets.len() {
+            return Err("WebRTC render-target indices must be unique".into());
+        }
+        Ok(Self {
+            publisher: Publisher::start(bind, &requested)?,
+            compositor: WebRtcCompositor::new_d3d12_device(adapter, device)?,
+            targets,
+            connections: HashMap::new(),
+        })
+    }
+
     pub fn targets(&self) -> &HashSet<u32> {
         &self.targets
     }
@@ -311,6 +334,19 @@ impl Publication {
     /// signaling server, peer sessions, and negotiated tracks remain alive.
     pub fn reattach_d3d12(&mut self, compositor: &D3d12Compositor) -> Result<(), Box<dyn Error>> {
         let mut replacement = WebRtcCompositor::new_d3d12(compositor)?;
+        for &connection in self.connections.keys() {
+            replacement.import_d3d12_stream(connection)?;
+        }
+        self.compositor = replacement;
+        Ok(())
+    }
+
+    pub fn reattach_d3d12_device(
+        &mut self,
+        adapter: AdapterLuid,
+        device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut replacement = WebRtcCompositor::new_d3d12_device(adapter, device)?;
         for &connection in self.connections.keys() {
             replacement.import_d3d12_stream(connection)?;
         }

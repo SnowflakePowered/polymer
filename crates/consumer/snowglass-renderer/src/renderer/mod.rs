@@ -9,7 +9,7 @@ pub mod d3d12;
 pub mod vulkan;
 pub mod webrtc;
 
-pub use d3d12::{D3d12Compositor, D3d12RenderPass};
+pub use d3d12::{D3d12Compositor, D3d12RenderPass, RasterSurface};
 pub use vulkan::{VulkanCompositor, VulkanRenderPass};
 pub use webrtc::{VideoSwapchain, WebRtcCompositor};
 
@@ -64,21 +64,6 @@ impl SurfacePlacement {
     }
 }
 
-/// One thing a composition pass draws, in back-to-front order.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PlanLayer {
-    /// A received stream, drawn from the texture it was imported into.
-    Surface(SurfacePlacement),
-    /// Pixels the shell rasterised and handed to the compositor to hold, such
-    /// as the chrome painted around the game views.
-    ///
-    /// Chrome exists as a layer rather than as something drawn underneath
-    /// everything because a stream can have chrome both below and above it: a
-    /// handheld bezel sits over a fullscreen view while the backdrop sits under
-    /// it. Interleaving is the only way to say that.
-    Chrome { id: u64, rectangle: Rect },
-}
-
 /// Immutable instructions for one swapchain composition pass.
 ///
 /// Receivers describe available surfaces through [`Presentation`]. The shell
@@ -87,23 +72,15 @@ pub enum PlanLayer {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompositingPlan {
     clear_color: [f32; 4],
-    layers: Vec<PlanLayer>,
+    placements: Vec<SurfacePlacement>,
 }
 
 impl CompositingPlan {
     /// A plan of nothing but received streams.
     pub fn new(clear_color: [f32; 4], placements: Vec<SurfacePlacement>) -> Self {
-        Self::layered(
-            clear_color,
-            placements.into_iter().map(PlanLayer::Surface).collect(),
-        )
-    }
-
-    /// A plan whose streams and shell-drawn chrome interleave.
-    pub fn layered(clear_color: [f32; 4], layers: Vec<PlanLayer>) -> Self {
         Self {
             clear_color,
-            layers,
+            placements,
         }
     }
 
@@ -111,17 +88,8 @@ impl CompositingPlan {
         self.clear_color
     }
 
-    pub fn layers(&self) -> &[PlanLayer] {
-        &self.layers
-    }
-
-    /// The received streams alone, in the order they are drawn. Input mapping
-    /// and guest-window resizing care about streams and not about chrome.
     pub fn placements(&self) -> impl Iterator<Item = &SurfacePlacement> {
-        self.layers.iter().filter_map(|layer| match layer {
-            PlanLayer::Surface(placement) => Some(placement),
-            PlanLayer::Chrome { .. } => None,
-        })
+        self.placements.iter()
     }
 
     pub fn rectangle(&self, connection: u64, surface_id: u64) -> Option<Rect> {
@@ -439,51 +407,10 @@ mod tests {
         assert_eq!(plan.clear_color(), [0.25, 0.5, 0.75, 1.0]);
     }
 
-    /// Chrome sits between the streams in draw order, but the callers that map
-    /// pointers and resize guest windows only know about streams. Both views of
-    /// the same plan have to stay consistent.
     #[test]
-    fn chrome_layers_draw_between_streams_without_appearing_as_surfaces() {
-        let below = SurfacePlacement::new(1, 1, Rect::new(0, 0, 800, 600), 0.0);
-        let above = SurfacePlacement::new(2, 1, Rect::new(600, 400, 200, 150), 0.0);
-        let plan = CompositingPlan::layered(
-            [0.0; 4],
-            vec![
-                PlanLayer::Chrome {
-                    id: 0,
-                    rectangle: Rect::new(0, 0, 800, 600),
-                },
-                PlanLayer::Surface(below),
-                // The bezel, painted over the fullscreen view and under the
-                // handheld screen seated inside it.
-                PlanLayer::Chrome {
-                    id: 1,
-                    rectangle: Rect::new(0, 0, 800, 600),
-                },
-                PlanLayer::Surface(above),
-            ],
-        );
-
-        assert_eq!(plan.layers().len(), 4);
-        assert_eq!(
-            plan.placements().copied().collect::<Vec<_>>(),
-            vec![below, above],
-            "chrome must not be mistaken for a stream"
-        );
-        assert_eq!(plan.rectangle(2, 1), Some(above.rectangle));
-        assert_eq!(
-            plan.rectangle(0, 1),
-            None,
-            "a chrome id is not a connection"
-        );
-    }
-
-    /// A plan built from placements alone is every bit a layered plan, so the
-    /// compositor only has one path to walk.
-    #[test]
-    fn a_plan_without_chrome_is_all_surface_layers() {
+    fn a_plan_retains_surface_order() {
         let placement = SurfacePlacement::new(7, 9, Rect::new(10, 20, 30, 40), 0.0);
         let plan = CompositingPlan::new([0.0; 4], vec![placement]);
-        assert_eq!(plan.layers(), [PlanLayer::Surface(placement)]);
+        assert_eq!(plan.placements().copied().collect::<Vec<_>>(), [placement]);
     }
 }

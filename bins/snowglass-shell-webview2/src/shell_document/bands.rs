@@ -26,10 +26,7 @@ use anyrender::{
 };
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke, Vec2};
 use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use style::{
     properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
     values::computed::position::Position,
@@ -92,8 +89,21 @@ pub struct BandFragment {
     /// Tight viewport-space bounds of a promoted paint group. Root chrome has
     /// no finite owner and remains a full-viewport fragment.
     pub bounds: Option<Rect>,
-    pub shadow: Option<CompositionShadowStyle>,
     pub scene: anyrender::Scene,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositingGroup {
+    pub id: u64,
+    pub parent: Option<u64>,
+    pub bounds: Rect,
+    pub opacity: f32,
+    pub shadow: Option<CompositionShadowStyle>,
+}
+
+pub struct CompositingOutput {
+    pub fragments: Vec<BandFragment>,
+    pub groups: Vec<CompositingGroup>,
 }
 
 #[derive(Clone, Copy)]
@@ -117,42 +127,38 @@ struct OpenLayer {
 /// Routes a document's paint into a series of chrome bands, diverting
 /// game-view fills into [`GamePlacement`]s.
 pub struct BandedScene<'a, S> {
-    bands: &'a mut [S],
+    bands: &'a mut Vec<S>,
     placements: &'a mut Vec<GamePlacement>,
     current: usize,
     stack: Vec<OpenLayer>,
-    overflowed: bool,
     next_layer_id: u64,
     command_meta: Vec<Vec<CommandMeta>>,
-    promoted_layers: HashSet<u64>,
+    /// Paint-layer id to stable retained-compositor id. Embedded surface ids
+    /// are stable for the lifetime of an emulator layout even when unrelated
+    /// paint commands are inserted earlier in the document.
+    promoted_layers: HashMap<u64, u64>,
 }
 
-impl<'a, S: PaintScene> BandedScene<'a, S> {
-    /// `bands` must hold one more scene than the document has game views.
-    pub fn new(bands: &'a mut [S], placements: &'a mut Vec<GamePlacement>) -> Self {
+impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
+    pub fn new(bands: &'a mut Vec<S>, placements: &'a mut Vec<GamePlacement>) -> Self {
+        if bands.is_empty() {
+            bands.push(S::default());
+        }
         let band_count = bands.len();
         Self {
             bands,
             placements,
             current: 0,
             stack: Vec::new(),
-            overflowed: false,
             next_layer_id: 1,
             command_meta: (0..band_count).map(|_| Vec::new()).collect(),
-            promoted_layers: HashSet::new(),
+            promoted_layers: HashMap::new(),
         }
     }
 
     /// How many bands actually received content.
     pub fn bands_used(&self) -> usize {
         self.current + 1
-    }
-
-    /// Whether the document held more game views than there were bands for, in
-    /// which case the views past the last band share one and cannot be stacked
-    /// against the chrome between them.
-    pub fn overflowed(&self) -> bool {
-        self.overflowed
     }
 
     fn band(&mut self) -> &mut S {
@@ -167,8 +173,8 @@ impl<'a, S: PaintScene> BandedScene<'a, S> {
     /// next one, so clipping carries across the seam.
     fn advance_band(&mut self) {
         if self.current + 1 >= self.bands.len() {
-            self.overflowed = true;
-            return;
+            self.bands.push(S::default());
+            self.command_meta.push(Vec::new());
         }
         for _ in 0..self.stack.len() {
             self.bands[self.current].pop_layer();
@@ -198,29 +204,20 @@ impl BandedScene<'_, anyrender::Scene> {
     /// Splits each paint band into contiguous retained fragments. The deepest
     /// paint layer enclosing a tracked surface becomes an independent owner;
     /// unrelated chrome in the same z band remains in separate WUC visuals.
-    pub fn take_fragments(&mut self) -> Vec<BandFragment> {
+    pub fn take_compositing_output(&mut self) -> CompositingOutput {
         struct Builder {
             group: Option<u64>,
             bounds: Option<Rect>,
-            shadow: Option<CompositionShadowStyle>,
             scene: anyrender::Scene,
             stack: Vec<(u64, RenderCommand)>,
         }
 
         impl Builder {
-            fn close(
-                mut self,
-                output: &mut Vec<(
-                    Option<u64>,
-                    Option<Rect>,
-                    Option<CompositionShadowStyle>,
-                    anyrender::Scene,
-                )>,
-            ) {
+            fn close(mut self, output: &mut Vec<(Option<u64>, Option<Rect>, anyrender::Scene)>) {
                 for _ in 0..self.stack.len() {
                     self.scene.commands.push(RenderCommand::PopLayer);
                 }
-                output.push((self.group, self.bounds, self.shadow, self.scene));
+                output.push((self.group, self.bounds, self.scene));
             }
 
             fn reconcile(&mut self, desired: &[(u64, RenderCommand)]) {
@@ -242,6 +239,7 @@ impl BandedScene<'_, anyrender::Scene> {
         }
 
         let mut fragments = Vec::new();
+        let mut groups = HashMap::<u64, CompositingGroup>::new();
         for band in 0..self.bands_used() {
             let scene = &mut self.bands[band];
             let commands = std::mem::take(&mut scene.commands);
@@ -253,47 +251,70 @@ impl BandedScene<'_, anyrender::Scene> {
             let mut prelude_owner = HashMap::new();
             let mut native_shadows = HashMap::new();
             let mut group_bounds = HashMap::new();
+            let mut source_groups = Vec::<Option<u64>>::new();
             for (index, meta) in metadata.iter().enumerate() {
-                let CommandMeta::Push(id) = meta else {
-                    continue;
-                };
-                if self.promoted_layers.contains(id) {
-                    let (transform, clip) = match &commands[index] {
-                        RenderCommand::PushLayer(layer) => (layer.transform, &layer.clip),
-                        RenderCommand::PushClipLayer(layer) => (layer.transform, &layer.clip),
-                        _ => unreachable!("push metadata must describe a push command"),
-                    };
-                    group_bounds.insert(*id, transform.transform_rect_bbox(clip.bounding_box()));
-                }
-                if self.promoted_layers.contains(id)
-                    && let Some(shadow) = (0..index)
-                        .rev()
-                        .find(|candidate| matches!(metadata[*candidate], CommandMeta::Draw))
-                    && matches!(commands[shadow], RenderCommand::BoxShadow(_))
-                {
-                    prelude_owner.insert(shadow, *id);
-                    let RenderCommand::BoxShadow(shadow_command) = &commands[shadow] else {
-                        unreachable!("the shadow command was checked above")
-                    };
-                    let layer_transform = match &commands[index] {
-                        RenderCommand::PushLayer(layer) => layer.transform,
-                        RenderCommand::PushClipLayer(layer) => layer.transform,
-                        _ => unreachable!("push metadata must describe a push command"),
-                    };
-                    let shadow_transform = shadow_command.transform.as_coeffs();
-                    let layer_transform = layer_transform.as_coeffs();
-                    let color = shadow_command.brush.to_rgba8().to_u8_array();
-                    native_shadows.insert(
-                        *id,
-                        CompositionShadowStyle {
-                            offset: [
-                                (shadow_transform[4] - layer_transform[4]) as f32,
-                                (shadow_transform[5] - layer_transform[5]) as f32,
-                            ],
-                            blur_radius: shadow_command.std_dev.max(0.0) as f32,
-                            color,
-                        },
-                    );
+                match meta {
+                    CommandMeta::Push(id) => {
+                        if let Some(&group_id) = self.promoted_layers.get(id) {
+                            let (transform, clip) = match &commands[index] {
+                                RenderCommand::PushLayer(layer) => (layer.transform, &layer.clip),
+                                RenderCommand::PushClipLayer(layer) => {
+                                    (layer.transform, &layer.clip)
+                                }
+                                _ => unreachable!("push metadata must describe a push command"),
+                            };
+                            let bounds = transform.transform_rect_bbox(clip.bounding_box());
+                            group_bounds.insert(group_id, bounds);
+                            groups.entry(group_id).or_insert_with(|| CompositingGroup {
+                                id: group_id,
+                                parent: source_groups.iter().rev().find_map(|group| *group),
+                                bounds,
+                                // The layer command remains in the Vello chunk for now, so
+                                // group opacity stays neutral until effect layers are emitted
+                                // separately from raster content.
+                                opacity: 1.0,
+                                shadow: None,
+                            });
+                            source_groups.push(Some(group_id));
+                        } else {
+                            source_groups.push(None);
+                        }
+                        if let Some(&group_id) = self.promoted_layers.get(id)
+                            && let Some(shadow) = (0..index)
+                                .rev()
+                                .find(|candidate| matches!(metadata[*candidate], CommandMeta::Draw))
+                            && matches!(commands[shadow], RenderCommand::BoxShadow(_))
+                        {
+                            prelude_owner.insert(shadow, group_id);
+                            let RenderCommand::BoxShadow(shadow_command) = &commands[shadow] else {
+                                unreachable!("the shadow command was checked above")
+                            };
+                            let layer_transform = match &commands[index] {
+                                RenderCommand::PushLayer(layer) => layer.transform,
+                                RenderCommand::PushClipLayer(layer) => layer.transform,
+                                _ => unreachable!("push metadata must describe a push command"),
+                            };
+                            let shadow_transform = shadow_command.transform.as_coeffs();
+                            let layer_transform = layer_transform.as_coeffs();
+                            let color = shadow_command.brush.to_rgba8().to_u8_array();
+                            let style = CompositionShadowStyle {
+                                offset: [
+                                    (shadow_transform[4] - layer_transform[4]) as f32,
+                                    (shadow_transform[5] - layer_transform[5]) as f32,
+                                ],
+                                blur_radius: shadow_command.std_dev.max(0.0) as f32,
+                                color,
+                            };
+                            native_shadows.insert(group_id, style);
+                            if let Some(group) = groups.get_mut(&group_id) {
+                                group.shadow = Some(style);
+                            }
+                        }
+                    }
+                    CommandMeta::Pop => {
+                        source_groups.pop();
+                    }
+                    CommandMeta::Draw => {}
                 }
             }
             let mut source_stack = Vec::<(u64, RenderCommand)>::new();
@@ -307,9 +328,10 @@ impl BandedScene<'_, anyrender::Scene> {
                     }
                     CommandMeta::Draw => {
                         let group = prelude_owner.get(&index).copied().or_else(|| {
-                            source_stack.iter().rev().find_map(|(id, _)| {
-                                self.promoted_layers.contains(id).then_some(*id)
-                            })
+                            source_stack
+                                .iter()
+                                .rev()
+                                .find_map(|(id, _)| self.promoted_layers.get(id).copied())
                         });
                         if builder
                             .as_ref()
@@ -321,7 +343,6 @@ impl BandedScene<'_, anyrender::Scene> {
                         let builder = builder.get_or_insert_with(|| Builder {
                             group,
                             bounds: group.and_then(|group| group_bounds.get(&group).copied()),
-                            shadow: group.and_then(|group| native_shadows.get(&group).copied()),
                             scene: anyrender::Scene::with_tolerance(scene.tolerance),
                             stack: Vec::new(),
                         });
@@ -341,29 +362,26 @@ impl BandedScene<'_, anyrender::Scene> {
             if let Some(builder) = builder {
                 builder.close(&mut runs);
             }
-            fragments.extend(
-                runs.into_iter()
-                    .map(|(group, bounds, shadow, scene)| BandFragment {
-                        band,
-                        group,
-                        bounds,
-                        shadow,
-                        scene,
-                    }),
-            );
+            fragments.extend(runs.into_iter().map(|(group, bounds, scene)| BandFragment {
+                band,
+                group,
+                bounds,
+                scene,
+            }));
         }
-        fragments
+        let mut groups = groups.into_values().collect::<Vec<_>>();
+        groups.sort_by_key(|group| group.id);
+        CompositingOutput { fragments, groups }
     }
 }
 
 impl<S> RenderContext for BandedScene<'_, S> {}
 
-impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
+impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
     fn reset(&mut self) {
         self.placements.clear();
         self.stack.clear();
         self.current = 0;
-        self.overflowed = false;
         self.next_layer_id = 1;
         self.promoted_layers.clear();
         for metadata in &mut self.command_meta {
@@ -465,19 +483,21 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
                         .transform_rect_bbox(layer.clip.bounding_box())
                 })
                 .reduce(|current, next| current.intersect(next));
+            let source_id = resource.image.into_ffi();
+            let group = self.stack.last().map(|_| source_id);
             self.placements.push(GamePlacement {
                 node_id: None,
-                source_id: resource.image.into_ffi(),
+                source_id,
                 rect: transform.transform_rect_bbox(shape.bounding_box()),
                 clipping,
                 corner_radius: 0.0,
                 style: None,
                 opacity: self.stack.iter().map(|layer| layer.alpha).product(),
                 band: self.current,
-                group: self.stack.last().map(|layer| layer.id),
+                group,
             });
             if let Some(layer) = self.stack.last() {
-                self.promoted_layers.insert(layer.id);
+                self.promoted_layers.insert(layer.id, source_id);
             }
             self.advance_band();
             return;

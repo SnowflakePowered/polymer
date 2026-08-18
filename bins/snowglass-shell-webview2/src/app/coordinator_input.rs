@@ -180,10 +180,6 @@ impl ShellCoordinator {
         if self.shell_dom.resize(width, height) {
             self.refresh_shell();
         }
-        let render_window = self.window.surface(width, height);
-        if let Err(error) = self.game_host.resize_compositor(&render_window) {
-            tracing::error!("snowglass: resizing the shared swapchain failed: {error}");
-        }
         self.window.request_redraw();
     }
 
@@ -305,7 +301,7 @@ impl ShellCoordinator {
 
     pub(super) fn draw_overlay(&mut self) {
         let entered = self.profile.enter();
-        if self.game_host.has_pending_chrome() {
+        if self.shell_compositor.is_pending() {
             self.draw_pending_chrome();
         }
         if let Err(error) = self.window.draw_overlay() {

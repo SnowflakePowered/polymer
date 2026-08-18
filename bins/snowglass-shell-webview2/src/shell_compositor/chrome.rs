@@ -22,7 +22,7 @@ pub struct ChromeTexture {
     resource: ID3D12Resource,
     pub width: u32,
     pub height: u32,
-    pub texture: wgpu::Texture,
+    _texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 }
 
@@ -118,7 +118,7 @@ impl ChromeTexture {
             resource,
             width,
             height,
-            texture,
+            _texture: texture,
             view,
         })
     }
