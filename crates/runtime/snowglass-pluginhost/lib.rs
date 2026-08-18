@@ -8,6 +8,7 @@
 
 mod configuration;
 mod deno;
+pub mod descriptor;
 mod emulator;
 mod module_loader;
 mod plugin_runtime;
@@ -25,7 +26,9 @@ pub use plugin_runtime::{
     PluginRuntimeOptions,
 };
 pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError};
-pub use toml::{EmulatorPlugin, PackageError, PluginPackage, PluginResource, PluginResourceFormat};
+pub use toml::{
+    EmulatorPlugin, PackageError, PluginCache, PluginPackage, PluginResource, PluginResourceFormat,
+};
 
 #[cfg(test)]
 mod tests {
@@ -149,6 +152,25 @@ mod tests {
             .unwrap();
         assert_eq!(base.id(), "cemu");
         assert_eq!(emulator.id(), "cemu");
+        assert_eq!(
+            base.caches(),
+            &[PluginCache {
+                key: "shaderCache".to_owned(),
+                label: "Shader Cache".to_owned(),
+            }]
+        );
+        assert_eq!(
+            serde_json::to_value(plugins.descriptors()).unwrap(),
+            serde_json::json!([{
+                "id": "cemu",
+                "version": "0.0.1",
+                "class": "emulator",
+                "caches": [{
+                    "key": "shaderCache",
+                    "label": "Shader Cache",
+                }],
+            }])
+        );
         assert!(plugins.plugin::<TestPlugin>("cemu").is_none());
         assert_eq!(
             plugins

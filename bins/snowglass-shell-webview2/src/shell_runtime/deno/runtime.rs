@@ -233,6 +233,7 @@ impl Runtime {
             .map(std::path::PathBuf::from)
             .map(|path| path.join("Snowglass").join("webstorage"));
         let plugin_handle = plugin_runtime.handle();
+        let descriptor_registry = plugin_handle.registry().clone();
         let invoke_handle = plugin_handle.clone();
         let release_handle = plugin_handle.clone();
         let configuration_context = viewer.map(|viewer| (plugin_handle.registry().clone(), viewer));
@@ -267,6 +268,10 @@ impl Runtime {
                         .ok_or_else(|| "configuration service is unavailable".to_owned())?;
                     crate::configuration::prepare_api(plugins, viewer, package, request)
                 }
+            }),
+            list_plugins: Arc::new(move || {
+                serde_json::to_value(descriptor_registry.descriptors())
+                    .expect("plugin descriptors are JSON-compatible")
             }),
             invoke_plugin: Arc::new(move |plugin, path, arguments| {
                 let handle = invoke_handle.clone();

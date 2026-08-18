@@ -1,8 +1,27 @@
-import { op_plugin_invoke } from "ext:core/ops";
+import { op_plugin_invoke, op_plugin_list } from "ext:core/ops";
 
 // Same-realm plugin facade. Calls cross only the Deno op boundary; pluginhost
 // keeps each package invocation in its own fresh worker isolate.
 export function createPlugin() {
+  const pluginId = (id) => {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) {
+      throw new TypeError("plugin ID must contain only letters, digits, '-' or '_'");
+    }
+    return id;
+  };
+
+  const descriptor = (value) => Object.freeze({
+    id: String(value.id),
+    version: String(value.version),
+    class: String(value.class),
+    caches: Object.freeze((value.caches ?? []).map((cache) => Object.freeze({
+      key: String(cache.key),
+      label: String(cache.label),
+    }))),
+  });
+
+  const list = () => Object.freeze(op_plugin_list().map(descriptor));
+
   const errorFrom = (wire) => {
     const error = new Error(String(wire?.message ?? "plugin invocation failed"));
     error.name = String(wire?.name ?? "Error");
@@ -60,11 +79,13 @@ export function createPlugin() {
   });
 
   return Object.freeze({
+    list,
+    get(id) {
+      id = pluginId(id);
+      return list().find((plugin) => plugin.id === id);
+    },
     open(id) {
-      if (typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id)) {
-        throw new TypeError("plugin ID must contain only letters, digits, '-' or '_'");
-      }
-      return callable(id);
+      return callable(pluginId(id));
     },
   });
 }

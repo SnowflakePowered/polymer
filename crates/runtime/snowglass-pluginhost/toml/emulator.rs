@@ -236,6 +236,10 @@ impl PluginInstance for EmulatorPlugin {
     fn resources(&self) -> Result<Vec<crate::PluginResource>, PackageError> {
         self.package.resources()
     }
+
+    fn caches(&self) -> &[crate::PluginCache] {
+        self.package.caches()
+    }
 }
 
 impl EmulatorPluginInstance for EmulatorPlugin {

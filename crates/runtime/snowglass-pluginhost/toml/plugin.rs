@@ -17,6 +17,8 @@ struct PluginBlock {
     config: toml::Table,
     #[serde(default)]
     resources: Vec<ResourceBlock>,
+    #[serde(default)]
+    caches: Vec<PluginCache>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -45,6 +47,15 @@ pub struct PluginResource {
     pub permissions: Permissions,
 }
 
+/// Persistent, plugin-local cache storage declared by a package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct PluginCache {
+    /// Stable key used by the plugin when requesting the cache resource.
+    pub key: String,
+    /// Human-readable name suitable for cache-management UI.
+    pub label: String,
+}
+
 /// Generic data shared by every loaded plugin package. `B` is the root block
 /// belonging to the plugin class, such as `[emulator]`.
 pub struct PluginPackage<B> {
@@ -71,6 +82,7 @@ impl<B: DeserializeOwned> PluginPackage<B> {
             return Err(PackageError::InvalidPluginId(plugin.id));
         }
         validate_resources(&root, &plugin.resources)?;
+        validate_caches(&plugin.caches)?;
         let class = plugin.class.clone();
         let block: B = manifest
             .remove(&class)
@@ -133,9 +145,34 @@ impl<B> PluginPackage<B> {
         Ok(selected)
     }
 
+    pub fn caches(&self) -> &[PluginCache] {
+        &self.plugin.caches
+    }
+
     pub fn module_loader(&self) -> crate::PluginModuleLoader {
         crate::PluginModuleLoader::new(self.id(), self.root.clone())
     }
+}
+
+fn validate_caches(caches: &[PluginCache]) -> Result<(), PackageError> {
+    let mut keys = BTreeSet::new();
+    for cache in caches {
+        if cache.key.is_empty()
+            || !cache
+                .key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(PackageError::InvalidCacheKey(cache.key.clone()));
+        }
+        if cache.label.trim().is_empty() {
+            return Err(PackageError::InvalidCacheLabel(cache.key.clone()));
+        }
+        if !keys.insert(cache.key.clone()) {
+            return Err(PackageError::DuplicateCache(cache.key.clone()));
+        }
+    }
+    Ok(())
 }
 
 fn validate_resources(root: &Path, resources: &[ResourceBlock]) -> Result<(), PackageError> {
@@ -279,6 +316,14 @@ pub enum PackageError {
     InvalidResourceSource(String),
     #[error("plugin resource '{0}' does not match its declared format")]
     InvalidResourceType(String),
+    #[error("invalid plugin cache key '{0}'")]
+    InvalidCacheKey(String),
+    #[error("plugin cache '{0}' must have a non-empty label")]
+    InvalidCacheLabel(String),
+    #[error("duplicate plugin cache '{0}'")]
+    DuplicateCache(String),
+    #[error("the user-local cache directory is unavailable")]
+    CacheStorageUnavailable,
     #[error(
         "layout '{layout}' does not identify one next port on '{console}' (candidates: {candidates:?})"
     )]
