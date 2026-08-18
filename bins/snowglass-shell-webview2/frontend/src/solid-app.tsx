@@ -455,7 +455,14 @@ function GameLayout(props: ParentProps) {
               <ClassicSurfaceBackdrop />
               <tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="game-surface absolute inset-0 h-full w-full" />
             </FloatingPanel.Body>
-            <FloatingPanel.ResizeTrigger axis="se" class="absolute bottom-0 right-0 h-5 w-5 cursor-se-resize border-b-2 border-r-2 border-ice-500" />
+            <FloatingPanel.ResizeTrigger
+              axis="se"
+              class="gamepad-panel-resize"
+              data-no-drag
+              aria-label="Resize gamepad display"
+            >
+              <span class="gamepad-panel-resize-grip" aria-hidden="true" />
+            </FloatingPanel.ResizeTrigger>
           </FloatingPanel.Content>
         </FloatingPanel.Positioner>
       </FloatingPanel.Root>

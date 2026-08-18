@@ -44,6 +44,22 @@ use tracked_surface::{
 /// reachable through an asset it just loaded.
 const ASSET_ROUNDS: usize = 4;
 
+fn chrome_fragment_bounds(bounds: Option<kurbo::Rect>, viewport: kurbo::Rect) -> kurbo::Rect {
+    // The desktop visual tree clips at the window. Keeping a promoted group's
+    // full viewport-space bounds here is essential: clamping its origin at an
+    // edge would move the chrome into a different coordinate space from an
+    // enclosed tracked surface.
+    let bounds = bounds
+        .map(|bounds| bounds.inflate(1.0, 1.0))
+        .unwrap_or(viewport);
+    kurbo::Rect::new(
+        bounds.x0.floor(),
+        bounds.y0.floor(),
+        bounds.x1.ceil(),
+        bounds.y1.ceil(),
+    )
+}
+
 /// Set to report what each repaint of this layer costs.
 const PAINT_TIMING: &str = "SNOWGLASS_GAME_LAYER_TIMING";
 
@@ -394,8 +410,12 @@ impl ShellDocument {
                 .is_some_and(|fragment| fragment.band == band)
             {
                 let fragment = fragments.next().expect("peeked fragment exists");
+                let viewport =
+                    kurbo::Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
+                let bounds = chrome_fragment_bounds(fragment.bounds, viewport);
                 chrome_bands.push(ShellChromeLayer {
                     scene: fragment.scene,
+                    bounds,
                     z_order,
                     group: fragment.group,
                     shadow: fragment.shadow,
@@ -414,9 +434,7 @@ impl ShellDocument {
                     node_id,
                     source_id: placement.source_id,
                     bounds: placement.rect,
-                    clipping: placement.clipping,
                     z_order,
-                    group: placement.group,
                     corner_radius: placement.corner_radius,
                     style: placement.style.clone(),
                     opacity: placement.opacity,

@@ -4,6 +4,17 @@ use anyrender::Scene;
 use blitz_dom::LocalName;
 
 #[test]
+fn promoted_chrome_keeps_its_origin_outside_the_viewport() {
+    let viewport = kurbo::Rect::new(0.0, 0.0, 800.0, 600.0);
+    let bounds = chrome_fragment_bounds(
+        Some(kurbo::Rect::new(-120.25, -40.5, 399.75, 299.5)),
+        viewport,
+    );
+    assert_eq!(bounds, kurbo::Rect::new(-122.0, -42.0, 401.0, 301.0));
+    assert_eq!(chrome_fragment_bounds(None, viewport), viewport);
+}
+
+#[test]
 fn tracked_surface_becomes_a_custom_paint_placeholder() {
     let mut document = blitz_html::HtmlDocument::from_html(
         r#"<style>.panel {
@@ -69,6 +80,11 @@ fn tracked_surface_becomes_a_custom_paint_placeholder() {
         .iter()
         .find(|fragment| fragment.group == placements[0].group)
         .expect("the promoted panel has an independent chrome fragment");
+    let panel_bounds = panel_fragment
+        .bounds
+        .expect("a promoted panel publishes tight compositor bounds");
+    assert!(panel_bounds.width() < 800.0);
+    assert!(panel_bounds.height() < 600.0);
     let shadow = panel_fragment
         .shadow
         .expect("the outset shadow is owned by the native panel visual");
@@ -101,6 +117,57 @@ fn tracked_surface_becomes_a_custom_paint_placeholder() {
             .px(),
         75.0
     );
+}
+
+#[test]
+fn tracked_surface_group_owns_explicit_clip_path_chrome() {
+    let mut document = blitz_html::HtmlDocument::from_html(
+        r#"<style>
+            html, body { width: 100%; height: 100%; margin: 0; }
+            .positioner {
+                position: fixed; top: 0; left: 0; width: 520px; height: 340px;
+                transform: translate(300px, 100px); contain: layout paint;
+            }
+            .content {
+                position: relative; width: 100%; height: 100%; overflow: hidden;
+                clip-path: inset(0 round 12px); background: red;
+            }
+            .header { height: 32px; background: blue; }
+            .body { position: relative; height: calc(100% - 32px); }
+            tracked-surface { position: absolute; inset: 0; width: 100%; height: 100%; }
+        </style>
+        <div class="positioner"><div class="content">
+            <div class="header">Gamepad display</div>
+            <div class="body"><tracked-surface src="1"></tracked-surface></div>
+        </div></div>"#,
+        blitz_dom::DocumentConfig::default(),
+    );
+    initialise_tracked_surfaces(&mut document);
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            1280,
+            720,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(1.0);
+
+    let mut scenes = (0..3).map(|_| Scene::new()).collect::<Vec<_>>();
+    let mut placements = Vec::new();
+    let mut scene = BandedScene::new(&mut scenes, &mut placements);
+    blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 1280, 720, 0, 0);
+    let fragments = scene.take_fragments();
+
+    let placement = placements.first().expect("tracked surface placement");
+    let group = placement.group.expect("enclosing compositor group");
+    let chrome = fragments
+        .iter()
+        .find(|fragment| fragment.group == Some(group))
+        .expect("the surface group also owns panel chrome");
+    let bounds = chrome.bounds.expect("promoted panel has finite bounds");
+    assert!(bounds.y0 < placement.rect.y0);
+    assert!(bounds.height() > placement.rect.height());
 }
 
 #[test]
