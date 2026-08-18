@@ -16,12 +16,11 @@ mod mutations;
 mod providers;
 mod tracked_surface;
 
-use crate::shell_dom::{ShellFrame, ShellHitSnapshot};
+use crate::shell_dom::{ShellChromeLayer, ShellFrame, ShellHitSnapshot, TrackedSurfaceLayout};
 use crate::shell_runtime::ShellRuntime;
 use anyrender::PaintScene as _;
-use anyrender_vello::VelloScenePainter;
 use bands::BandedScene;
-pub use bands::{GamePlacement, GameViewStyle};
+pub use bands::{CompositionShadowStyle, GamePlacement, GameViewStyle};
 use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
@@ -40,7 +39,6 @@ use std::{
 use tracked_surface::{
     apply_tracked_surface_styles, initialise_tracked_surfaces, is_tracked_surface_element,
 };
-use vello::Scene;
 
 /// How many times a paint will re-resolve to pick up assets that only became
 /// reachable through an asset it just loaded.
@@ -54,9 +52,10 @@ pub struct ShellDocument {
     /// Assets arrive here because a fetch is issued while the document is
     /// mid-resolve and cannot take them straight away.
     arrivals: Receiver<()>,
-    /// One encoded scene per band. Encoding is cheap and happens on the CPU;
-    /// only rasterising is worth a GPU.
-    bands: Vec<Scene>,
+    /// Backend-neutral paint commands per band. Vello path and glyph encoding
+    /// happens on the latest-only raster worker so DOM input and captured
+    /// surface presentation never wait for framebuffer-sized scene encoding.
+    bands: Vec<anyrender::Scene>,
     placements: Vec<GamePlacement>,
     width: u32,
     height: u32,
@@ -141,7 +140,7 @@ impl ShellDocumentFactory {
         let mut document = ShellDocument {
             document,
             arrivals,
-            bands: (0..=views).map(|_| Scene::new()).collect(),
+            bands: (0..=views).map(|_| anyrender::Scene::new()).collect(),
             placements: Vec::new(),
             width: 0,
             height: 0,
@@ -193,10 +192,6 @@ impl ShellDocument {
         self.contained_damage.clear();
         self.needs_resolve = true;
         self.needs_geometry_sync = true;
-    }
-
-    pub fn placements(&self) -> &[GamePlacement] {
-        &self.placements
     }
 
     /// Forces the next paint even when the document itself did not change.
@@ -344,15 +339,8 @@ impl ShellDocument {
         // invalidate the shell when its chrome actually changes.
 
         let started = std::time::Instant::now();
-        let (used, overflowed) = {
-            // The painters are a view onto the scenes, so they are built for
-            // this pass and dropped before the scenes are rasterised.
-            let mut painters = self
-                .bands
-                .iter_mut()
-                .map(VelloScenePainter::new)
-                .collect::<Vec<_>>();
-            let mut scene = BandedScene::new(&mut painters, &mut self.placements);
+        let (used, overflowed, fragments) = {
+            let mut scene = BandedScene::new(&mut self.bands, &mut self.placements);
             // blitz-paint 0.3 deliberately leaves scene lifetime to its
             // caller. Reusing our retained Vello scenes without resetting
             // them accumulates every prior drawer position, border and shadow
@@ -367,7 +355,10 @@ impl ShellDocument {
                 0,
                 0,
             );
-            (scene.bands_used(), scene.overflowed())
+            let used = scene.bands_used();
+            let overflowed = scene.overflowed();
+            let fragments = scene.take_fragments();
+            (used, overflowed, fragments)
         };
         apply_tracked_surface_styles(self.document.as_ref(), &mut self.placements);
         if overflowed {
@@ -389,10 +380,55 @@ impl ShellDocument {
         let damage = (!self.full_repaint)
             .then_some(self.partial_damage)
             .flatten();
+        // Flatten the exact paint sequence into independent chrome visuals and
+        // tracked surfaces. Fragments from the same original band no longer
+        // share a full-window texture merely because no guest surface happened
+        // to separate them.
+        let mut chrome_bands = Vec::new();
+        let mut surface_layout = Vec::new();
+        let mut z_order = 0i32;
+        let mut fragments = fragments.into_iter().peekable();
+        for band in 0..used {
+            while fragments
+                .peek()
+                .is_some_and(|fragment| fragment.band == band)
+            {
+                let fragment = fragments.next().expect("peeked fragment exists");
+                chrome_bands.push(ShellChromeLayer {
+                    scene: fragment.scene,
+                    z_order,
+                    group: fragment.group,
+                    shadow: fragment.shadow,
+                });
+                z_order += 1;
+            }
+            for placement in self
+                .placements
+                .iter()
+                .filter(|placement| placement.band == band)
+            {
+                let Some(node_id) = placement.node_id else {
+                    continue;
+                };
+                surface_layout.push(TrackedSurfaceLayout {
+                    node_id,
+                    source_id: placement.source_id,
+                    bounds: placement.rect,
+                    clipping: placement.clipping,
+                    z_order,
+                    group: placement.group,
+                    corner_radius: placement.corner_radius,
+                    style: placement.style.clone(),
+                    opacity: placement.opacity,
+                });
+                z_order += 1;
+            }
+        }
         self.full_repaint = false;
         self.partial_damage = None;
         Some(ShellFrame {
-            chrome_bands: self.bands[..used].to_vec(),
+            chrome_bands,
+            surface_layout,
             width: self.width,
             height: self.height,
             damage,

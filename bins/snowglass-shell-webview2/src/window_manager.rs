@@ -22,8 +22,9 @@ use std::{
 use windows::{
     System::DispatcherQueueController,
     UI::Composition::{
-        CompositionStretch, CompositionSurfaceBrush, Compositor, ContainerVisual,
-        Core::CompositorController, Desktop::DesktopWindowTarget, SpriteVisual,
+        CompositionShadow, CompositionStretch, CompositionSurfaceBrush, Compositor,
+        ContainerVisual, Core::CompositorController, Desktop::DesktopWindowTarget, DropShadow,
+        SpriteVisual,
     },
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, WAIT_FAILED, WAIT_OBJECT_0},
@@ -883,6 +884,7 @@ struct CompositionTree {
 struct CompositionVisual {
     visual: SpriteVisual,
     brush: CompositionSurfaceBrush,
+    shadow: Option<DropShadow>,
 }
 
 /// Opaque native host-window target. Native handle extraction and operations
@@ -972,17 +974,23 @@ impl CompositionTree {
                 CompositionVisual {
                     visual: visual.visual.clone(),
                     brush: visual.brush.clone(),
+                    shadow: visual.shadow.clone(),
                 }
             } else {
                 let visual = self.compositor.CreateSpriteVisual()?;
                 let brush = self.surface_brush(&layer.content)?;
                 visual.SetBrush(&brush)?;
-                let retained = CompositionVisual { visual, brush };
+                let retained = CompositionVisual {
+                    visual,
+                    brush,
+                    shadow: None,
+                };
                 self.layers.insert(
                     layer.id,
                     CompositionVisual {
                         visual: retained.visual.clone(),
                         brush: retained.brush.clone(),
+                        shadow: None,
                     },
                 );
                 retained
@@ -1007,6 +1015,35 @@ impl CompositionTree {
                 Y: layer.height.max(0.0),
             })?;
             retained.visual.SetOpacity(layer.opacity.clamp(0.0, 1.0))?;
+
+            let shadow = if let Some(style) = layer.shadow {
+                let shadow = match retained.shadow {
+                    Some(shadow) => shadow,
+                    None => self.compositor.CreateDropShadow()?,
+                };
+                shadow.SetBlurRadius(style.blur_radius.max(0.0))?;
+                shadow.SetColor(windows::UI::Color {
+                    A: style.color[3],
+                    R: style.color[0],
+                    G: style.color[1],
+                    B: style.color[2],
+                })?;
+                shadow.SetOffset(Vector3 {
+                    X: style.offset[0],
+                    Y: style.offset[1],
+                    Z: 0.0,
+                })?;
+                retained.visual.SetShadow(&shadow)?;
+                Some(shadow)
+            } else {
+                if retained.shadow.is_some() {
+                    retained.visual.SetShadow(None::<&CompositionShadow>)?;
+                }
+                None
+            };
+            if let Some(stored) = self.layers.get_mut(&layer.id) {
+                stored.shadow = shadow;
+            }
         }
         if order_changed {
             for id in &next_order {

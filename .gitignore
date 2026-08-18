@@ -9,3 +9,5 @@
 
 *.pyc
 .smoke-artifacts/
+s*.log
+smoke-*.png

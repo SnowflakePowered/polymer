@@ -228,8 +228,6 @@ impl ShellCoordinator {
             tracing::error!("snowglass: rasterizing shell chrome failed: {error}");
             return;
         }
-        let placements = self.shell_dom.tracked_surface_layout();
-        self.game_host.apply_tracked_layout(&placements);
         self.sync_shell_visuals(size.width, size.height);
         self.draw_pending_chrome();
     }

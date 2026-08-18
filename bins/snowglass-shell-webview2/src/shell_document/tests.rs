@@ -1,18 +1,23 @@
 use super::*;
 use crate::shell_runtime::deno;
+use anyrender::Scene;
 use blitz_dom::LocalName;
 
 #[test]
 fn tracked_surface_becomes_a_custom_paint_placeholder() {
     let mut document = blitz_html::HtmlDocument::from_html(
-        r#"<style>.surface {
+        r#"<style>.panel {
+                opacity: 0.4;
+                background: red;
+                box-shadow: 0 16px 40px black;
+            }
+            .surface {
                 display: block;
                 width: 320px;
                 height: 180px;
                 object-fit: cover;
                 object-position: 25% 75%;
-                opacity: 0.4;
-            }</style><tracked-surface class="surface" src="7" data-corner-radius="12"></tracked-surface>"#,
+            }</style><div class="panel"><tracked-surface class="surface" src="7" data-corner-radius="12"></tracked-surface></div>"#,
         blitz_dom::DocumentConfig::default(),
     );
     initialise_tracked_surfaces(&mut document);
@@ -37,13 +42,11 @@ fn tracked_surface_becomes_a_custom_paint_placeholder() {
         .unwrap();
     assert!(surface.custom_widget_data().is_some());
     let mut scenes = (0..2).map(|_| Scene::new()).collect::<Vec<_>>();
-    let mut painters = scenes
-        .iter_mut()
-        .map(VelloScenePainter::new)
-        .collect::<Vec<_>>();
     let mut placements = Vec::new();
-    let mut scene = BandedScene::new(&mut painters, &mut placements);
+    let mut scene = BandedScene::new(&mut scenes, &mut placements);
     blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 800, 600, 0, 0);
+    let fragments = scene.take_fragments();
+    drop(scene);
     apply_tracked_surface_styles(document.as_ref(), &mut placements);
     assert_eq!(placements.len(), 1);
     assert_eq!(placements[0].node_id, Some(surface_id));
@@ -56,6 +59,27 @@ fn tracked_surface_becomes_a_custom_paint_placeholder() {
     assert!(clipping.contains(placements[0].rect.origin()));
     assert_eq!(placements[0].corner_radius, 12.0);
     assert!((placements[0].opacity - 0.4).abs() < f32::EPSILON);
+    assert!(placements[0].group.is_some());
+    assert!(
+        fragments
+            .iter()
+            .any(|fragment| fragment.group == placements[0].group)
+    );
+    let panel_fragment = fragments
+        .iter()
+        .find(|fragment| fragment.group == placements[0].group)
+        .expect("the promoted panel has an independent chrome fragment");
+    let shadow = panel_fragment
+        .shadow
+        .expect("the outset shadow is owned by the native panel visual");
+    assert_eq!(shadow.offset, [0.0, 16.0]);
+    assert_eq!(shadow.blur_radius, 40.0);
+    assert_eq!(shadow.color, [0, 0, 0, 255]);
+    assert!(
+        !panel_fragment.scene.commands.iter().any(|command| {
+            matches!(command, anyrender::recording::RenderCommand::BoxShadow(_))
+        })
+    );
     let style = placements[0].style.as_ref().unwrap();
     assert_eq!(
         style.object_fit,
@@ -658,12 +682,8 @@ async fn dynamically_inserted_tracked_surfaces_are_placed() {
     document.as_mut().resolve(1.0);
 
     let mut scenes = (0..3).map(|_| Scene::new()).collect::<Vec<_>>();
-    let mut painters = scenes
-        .iter_mut()
-        .map(VelloScenePainter::new)
-        .collect::<Vec<_>>();
     let mut placements = Vec::new();
-    let mut scene = BandedScene::new(&mut painters, &mut placements);
+    let mut scene = BandedScene::new(&mut scenes, &mut placements);
     blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 800, 600, 0, 0);
     assert_eq!(
         placements
