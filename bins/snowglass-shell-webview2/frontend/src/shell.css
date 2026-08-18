@@ -312,6 +312,10 @@ tracked-surface {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  /* Blitz exposes clip-path as an isolated paint layer. Keep the complete
+     floating surface and its chrome in one compositor group without relying
+     on an opacity/filter workaround. */
+  clip-path: inset(0 round 0.75rem);
   border: 1px solid #9fb3cb;
   border-radius: 0.75rem;
   background: #101827;
@@ -344,6 +348,39 @@ tracked-surface {
 .gamepad-panel-close:hover,
 .gamepad-panel-close:focus { background: rgb(255 255 255 / 12%); }
 .gamepad-panel-body { position: relative; height: calc(100% - 2rem); }
+
+.gamepad-panel-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0.4rem;
+  border: 0;
+  background: transparent;
+  cursor: se-resize;
+  touch-action: none;
+}
+
+.gamepad-panel-resize-grip {
+  width: 1rem;
+  height: 1rem;
+  border-right: 3px solid #57b8ff;
+  border-bottom: 3px solid #57b8ff;
+  border-bottom-right-radius: 0.3rem;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.gamepad-panel-resize:hover .gamepad-panel-resize-grip,
+.gamepad-panel-resize:focus .gamepad-panel-resize-grip {
+  border-color: #99d5ff;
+  opacity: 1;
+}
 
 .remap-positioner {
   z-index: 30;

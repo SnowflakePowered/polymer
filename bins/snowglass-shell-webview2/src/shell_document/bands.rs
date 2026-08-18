@@ -89,6 +89,9 @@ pub struct GamePlacement {
 pub struct BandFragment {
     pub band: usize,
     pub group: Option<u64>,
+    /// Tight viewport-space bounds of a promoted paint group. Root chrome has
+    /// no finite owner and remains a full-viewport fragment.
+    pub bounds: Option<Rect>,
     pub shadow: Option<CompositionShadowStyle>,
     pub scene: anyrender::Scene,
 }
@@ -198,6 +201,7 @@ impl BandedScene<'_, anyrender::Scene> {
     pub fn take_fragments(&mut self) -> Vec<BandFragment> {
         struct Builder {
             group: Option<u64>,
+            bounds: Option<Rect>,
             shadow: Option<CompositionShadowStyle>,
             scene: anyrender::Scene,
             stack: Vec<(u64, RenderCommand)>,
@@ -208,6 +212,7 @@ impl BandedScene<'_, anyrender::Scene> {
                 mut self,
                 output: &mut Vec<(
                     Option<u64>,
+                    Option<Rect>,
                     Option<CompositionShadowStyle>,
                     anyrender::Scene,
                 )>,
@@ -215,7 +220,7 @@ impl BandedScene<'_, anyrender::Scene> {
                 for _ in 0..self.stack.len() {
                     self.scene.commands.push(RenderCommand::PopLayer);
                 }
-                output.push((self.group, self.shadow, self.scene));
+                output.push((self.group, self.bounds, self.shadow, self.scene));
             }
 
             fn reconcile(&mut self, desired: &[(u64, RenderCommand)]) {
@@ -247,10 +252,19 @@ impl BandedScene<'_, anyrender::Scene> {
             // shadow with a promoted layer so WUC moves both together.
             let mut prelude_owner = HashMap::new();
             let mut native_shadows = HashMap::new();
+            let mut group_bounds = HashMap::new();
             for (index, meta) in metadata.iter().enumerate() {
                 let CommandMeta::Push(id) = meta else {
                     continue;
                 };
+                if self.promoted_layers.contains(id) {
+                    let (transform, clip) = match &commands[index] {
+                        RenderCommand::PushLayer(layer) => (layer.transform, &layer.clip),
+                        RenderCommand::PushClipLayer(layer) => (layer.transform, &layer.clip),
+                        _ => unreachable!("push metadata must describe a push command"),
+                    };
+                    group_bounds.insert(*id, transform.transform_rect_bbox(clip.bounding_box()));
+                }
                 if self.promoted_layers.contains(id)
                     && let Some(shadow) = (0..index)
                         .rev()
@@ -306,6 +320,7 @@ impl BandedScene<'_, anyrender::Scene> {
                         }
                         let builder = builder.get_or_insert_with(|| Builder {
                             group,
+                            bounds: group.and_then(|group| group_bounds.get(&group).copied()),
                             shadow: group.and_then(|group| native_shadows.get(&group).copied()),
                             scene: anyrender::Scene::with_tolerance(scene.tolerance),
                             stack: Vec::new(),
@@ -326,12 +341,16 @@ impl BandedScene<'_, anyrender::Scene> {
             if let Some(builder) = builder {
                 builder.close(&mut runs);
             }
-            fragments.extend(runs.into_iter().map(|(group, shadow, scene)| BandFragment {
-                band,
-                group,
-                shadow,
-                scene,
-            }));
+            fragments.extend(
+                runs.into_iter()
+                    .map(|(group, bounds, shadow, scene)| BandFragment {
+                        band,
+                        group,
+                        bounds,
+                        shadow,
+                        scene,
+                    }),
+            );
         }
         fragments
     }

@@ -996,6 +996,7 @@ impl CompositionTree {
                 retained
             };
             retained.brush.SetStretch(match layer.stretch {
+                CompositionLayerStretch::None => CompositionStretch::None,
                 CompositionLayerStretch::Fill => CompositionStretch::Fill,
                 CompositionLayerStretch::UniformToFill => CompositionStretch::UniformToFill,
             })?;

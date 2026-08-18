@@ -28,6 +28,7 @@ pub(crate) struct ShellFrame {
 #[derive(Clone)]
 pub(crate) struct ShellChromeLayer {
     pub scene: anyrender::Scene,
+    pub bounds: Rect,
     pub z_order: i32,
     pub group: Option<u64>,
     pub shadow: Option<CompositionShadowStyle>,
@@ -39,9 +40,7 @@ pub(crate) struct TrackedSurfaceLayout {
     pub node_id: usize,
     pub source_id: u64,
     pub bounds: Rect,
-    pub clipping: Option<Rect>,
     pub z_order: i32,
-    pub group: Option<u64>,
     pub corner_radius: f32,
     pub style: Option<GameViewStyle>,
     pub opacity: f32,
