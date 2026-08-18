@@ -5,8 +5,8 @@
 //! emulator commands enter the shell through the event loop.
 
 use crate::shell_document::{
-    DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle, ShellDocument,
-    ShellDocumentFactory,
+    CompositionShadowStyle, DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle,
+    ShellDocument, ShellDocumentFactory,
 };
 use crate::shell_runtime::{ShellRuntime, ShellRuntimeOptions};
 use kurbo::Rect;
@@ -15,13 +15,22 @@ use std::future::Future;
 /// Paint output published by Blitz without exposing its document or renderer.
 #[derive(Clone)]
 pub(crate) struct ShellFrame {
-    pub chrome_bands: Vec<vello::Scene>,
+    pub chrome_bands: Vec<ShellChromeLayer>,
+    pub surface_layout: Vec<TrackedSurfaceLayout>,
     pub width: u32,
     pub height: u32,
     /// A mutation inside a CSS paint/layout containment boundary can redraw
     /// only that boundary's old and new paint bounds. `None` means the whole
     /// frame changed.
     pub damage: Option<kurbo::Rect>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ShellChromeLayer {
+    pub scene: anyrender::Scene,
+    pub z_order: i32,
+    pub group: Option<u64>,
+    pub shadow: Option<CompositionShadowStyle>,
 }
 
 /// Immutable compositor-facing layout published by the shell DOM.
@@ -31,7 +40,8 @@ pub(crate) struct TrackedSurfaceLayout {
     pub source_id: u64,
     pub bounds: Rect,
     pub clipping: Option<Rect>,
-    pub z_order: usize,
+    pub z_order: i32,
+    pub group: Option<u64>,
     pub corner_radius: f32,
     pub style: Option<GameViewStyle>,
     pub opacity: f32,
@@ -146,28 +156,6 @@ impl ShellSession {
         if matches!(self.slot, ShellDocumentSlot::Awaiting(_)) {
             self.slot = ShellDocumentSlot::Disabled;
         }
-    }
-
-    pub fn tracked_surface_layout(&self) -> Vec<TrackedSurfaceLayout> {
-        let Some(layer) = self.active() else {
-            return Vec::new();
-        };
-        layer
-            .placements()
-            .iter()
-            .filter_map(|placement| {
-                Some(TrackedSurfaceLayout {
-                    node_id: placement.node_id?,
-                    source_id: placement.source_id,
-                    bounds: placement.rect,
-                    clipping: placement.clipping,
-                    z_order: placement.band,
-                    corner_radius: placement.corner_radius,
-                    style: placement.style.clone(),
-                    opacity: placement.opacity,
-                })
-            })
-            .collect()
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<ShellHitSnapshot> {

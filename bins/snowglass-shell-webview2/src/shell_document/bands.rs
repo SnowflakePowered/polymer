@@ -20,10 +20,16 @@
 //! being left and reopened on the band being entered — otherwise a clip
 //! established before a game view would stop applying after it.
 
-use anyrender::{Filter, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext};
+use anyrender::{
+    Filter, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext,
+    recording::RenderCommand,
+};
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke, Vec2};
 use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use style::{
     properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
     values::computed::position::Position,
@@ -38,6 +44,15 @@ const CLIP_TOLERANCE: f64 = 0.05;
 pub struct GameViewStyle {
     pub object_fit: ObjectFit,
     pub object_position: Position,
+}
+
+/// An outset box shadow that can be applied by the retained native
+/// compositor instead of being baked into a full-window chrome texture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompositionShadowStyle {
+    pub offset: [f32; 2],
+    pub blur_radius: f32,
+    pub color: [u8; 4],
 }
 
 /// Where one game view landed, and which chrome band it is drawn over.
@@ -66,10 +81,28 @@ pub struct GamePlacement {
     /// Index of the band painted immediately below this view. The view is
     /// composited above that band and below the next one.
     pub band: usize,
+    /// Nearest retained paint layer shared with this view. Chrome fragments
+    /// carrying the same id can move independently from unrelated content.
+    pub group: Option<u64>,
+}
+
+pub struct BandFragment {
+    pub band: usize,
+    pub group: Option<u64>,
+    pub shadow: Option<CompositionShadowStyle>,
+    pub scene: anyrender::Scene,
+}
+
+#[derive(Clone, Copy)]
+enum CommandMeta {
+    Push(u64),
+    Pop,
+    Draw,
 }
 
 /// A clip layer left open across a band switch.
 struct OpenLayer {
+    id: u64,
     blend: Option<BlendMode>,
     alpha: f32,
     transform: Affine,
@@ -86,17 +119,24 @@ pub struct BandedScene<'a, S> {
     current: usize,
     stack: Vec<OpenLayer>,
     overflowed: bool,
+    next_layer_id: u64,
+    command_meta: Vec<Vec<CommandMeta>>,
+    promoted_layers: HashSet<u64>,
 }
 
 impl<'a, S: PaintScene> BandedScene<'a, S> {
     /// `bands` must hold one more scene than the document has game views.
     pub fn new(bands: &'a mut [S], placements: &'a mut Vec<GamePlacement>) -> Self {
+        let band_count = bands.len();
         Self {
             bands,
             placements,
             current: 0,
             stack: Vec::new(),
             overflowed: false,
+            next_layer_id: 1,
+            command_meta: (0..band_count).map(|_| Vec::new()).collect(),
+            promoted_layers: HashSet::new(),
         }
     }
 
@@ -116,6 +156,10 @@ impl<'a, S: PaintScene> BandedScene<'a, S> {
         &mut self.bands[self.current]
     }
 
+    fn record(&mut self, meta: CommandMeta) {
+        self.command_meta[self.current].push(meta);
+    }
+
     /// Closes the open layer stack on the band being left and reopens it on the
     /// next one, so clipping carries across the seam.
     fn advance_band(&mut self) {
@@ -125,6 +169,7 @@ impl<'a, S: PaintScene> BandedScene<'a, S> {
         }
         for _ in 0..self.stack.len() {
             self.bands[self.current].pop_layer();
+            self.command_meta[self.current].push(CommandMeta::Pop);
         }
         self.current += 1;
         let (bands, stack) = (&mut *self.bands, &self.stack);
@@ -141,7 +186,154 @@ impl<'a, S: PaintScene> BandedScene<'a, S> {
             } else {
                 bands[self.current].push_clip_layer(layer.transform, &layer.clip);
             }
+            self.command_meta[self.current].push(CommandMeta::Push(layer.id));
         }
+    }
+}
+
+impl BandedScene<'_, anyrender::Scene> {
+    /// Splits each paint band into contiguous retained fragments. The deepest
+    /// paint layer enclosing a tracked surface becomes an independent owner;
+    /// unrelated chrome in the same z band remains in separate WUC visuals.
+    pub fn take_fragments(&mut self) -> Vec<BandFragment> {
+        struct Builder {
+            group: Option<u64>,
+            shadow: Option<CompositionShadowStyle>,
+            scene: anyrender::Scene,
+            stack: Vec<(u64, RenderCommand)>,
+        }
+
+        impl Builder {
+            fn close(
+                mut self,
+                output: &mut Vec<(
+                    Option<u64>,
+                    Option<CompositionShadowStyle>,
+                    anyrender::Scene,
+                )>,
+            ) {
+                for _ in 0..self.stack.len() {
+                    self.scene.commands.push(RenderCommand::PopLayer);
+                }
+                output.push((self.group, self.shadow, self.scene));
+            }
+
+            fn reconcile(&mut self, desired: &[(u64, RenderCommand)]) {
+                let common = self
+                    .stack
+                    .iter()
+                    .zip(desired)
+                    .take_while(|((left, _), (right, _))| left == right)
+                    .count();
+                for _ in common..self.stack.len() {
+                    self.scene.commands.push(RenderCommand::PopLayer);
+                }
+                self.stack.truncate(common);
+                for entry in &desired[common..] {
+                    self.scene.commands.push(entry.1.clone());
+                    self.stack.push(entry.clone());
+                }
+            }
+        }
+
+        let mut fragments = Vec::new();
+        for band in 0..self.bands_used() {
+            let scene = &mut self.bands[band];
+            let commands = std::mem::take(&mut scene.commands);
+            let metadata = std::mem::take(&mut self.command_meta[band]);
+            debug_assert_eq!(commands.len(), metadata.len());
+            // Blitz paints an element's outset shadow immediately before the
+            // clip layer that owns its background and descendants. Carry that
+            // shadow with a promoted layer so WUC moves both together.
+            let mut prelude_owner = HashMap::new();
+            let mut native_shadows = HashMap::new();
+            for (index, meta) in metadata.iter().enumerate() {
+                let CommandMeta::Push(id) = meta else {
+                    continue;
+                };
+                if self.promoted_layers.contains(id)
+                    && let Some(shadow) = (0..index)
+                        .rev()
+                        .find(|candidate| matches!(metadata[*candidate], CommandMeta::Draw))
+                    && matches!(commands[shadow], RenderCommand::BoxShadow(_))
+                {
+                    prelude_owner.insert(shadow, *id);
+                    let RenderCommand::BoxShadow(shadow_command) = &commands[shadow] else {
+                        unreachable!("the shadow command was checked above")
+                    };
+                    let layer_transform = match &commands[index] {
+                        RenderCommand::PushLayer(layer) => layer.transform,
+                        RenderCommand::PushClipLayer(layer) => layer.transform,
+                        _ => unreachable!("push metadata must describe a push command"),
+                    };
+                    let shadow_transform = shadow_command.transform.as_coeffs();
+                    let layer_transform = layer_transform.as_coeffs();
+                    let color = shadow_command.brush.to_rgba8().to_u8_array();
+                    native_shadows.insert(
+                        *id,
+                        CompositionShadowStyle {
+                            offset: [
+                                (shadow_transform[4] - layer_transform[4]) as f32,
+                                (shadow_transform[5] - layer_transform[5]) as f32,
+                            ],
+                            blur_radius: shadow_command.std_dev.max(0.0) as f32,
+                            color,
+                        },
+                    );
+                }
+            }
+            let mut source_stack = Vec::<(u64, RenderCommand)>::new();
+            let mut runs = Vec::new();
+            let mut builder = None::<Builder>;
+            for (index, (command, meta)) in commands.into_iter().zip(metadata).enumerate() {
+                match meta {
+                    CommandMeta::Push(id) => source_stack.push((id, command)),
+                    CommandMeta::Pop => {
+                        source_stack.pop();
+                    }
+                    CommandMeta::Draw => {
+                        let group = prelude_owner.get(&index).copied().or_else(|| {
+                            source_stack.iter().rev().find_map(|(id, _)| {
+                                self.promoted_layers.contains(id).then_some(*id)
+                            })
+                        });
+                        if builder
+                            .as_ref()
+                            .is_some_and(|builder| builder.group != group)
+                            && let Some(builder) = builder.take()
+                        {
+                            builder.close(&mut runs);
+                        }
+                        let builder = builder.get_or_insert_with(|| Builder {
+                            group,
+                            shadow: group.and_then(|group| native_shadows.get(&group).copied()),
+                            scene: anyrender::Scene::with_tolerance(scene.tolerance),
+                            stack: Vec::new(),
+                        });
+                        builder.reconcile(&source_stack);
+                        // A compositor-owned shadow follows the retained visual
+                        // through translation without repainting or leaving old
+                        // blurred pixels in the swapchain.
+                        if !native_shadows
+                            .get(&group.unwrap_or_default())
+                            .is_some_and(|_| prelude_owner.contains_key(&index))
+                        {
+                            builder.scene.commands.push(command);
+                        }
+                    }
+                }
+            }
+            if let Some(builder) = builder {
+                builder.close(&mut runs);
+            }
+            fragments.extend(runs.into_iter().map(|(group, shadow, scene)| BandFragment {
+                band,
+                group,
+                shadow,
+                scene,
+            }));
+        }
+        fragments
     }
 }
 
@@ -153,6 +345,11 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
         self.stack.clear();
         self.current = 0;
         self.overflowed = false;
+        self.next_layer_id = 1;
+        self.promoted_layers.clear();
+        for metadata in &mut self.command_meta {
+            metadata.clear();
+        }
         for band in self.bands.iter_mut() {
             band.reset();
         }
@@ -169,6 +366,8 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
     ) {
         let blend = blend.into();
         let clip = clip.into_path(CLIP_TOLERANCE);
+        let id = self.next_layer_id;
+        self.next_layer_id += 1;
         self.band().push_layer(
             blend,
             alpha,
@@ -178,6 +377,7 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
             backdrop_filter.clone(),
         );
         self.stack.push(OpenLayer {
+            id,
             blend: Some(blend),
             alpha,
             transform,
@@ -185,12 +385,16 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
             filter,
             backdrop_filter,
         });
+        self.record(CommandMeta::Push(id));
     }
 
     fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
         let clip = clip.into_path(CLIP_TOLERANCE);
+        let id = self.next_layer_id;
+        self.next_layer_id += 1;
         self.band().push_clip_layer(transform, &clip);
         self.stack.push(OpenLayer {
+            id,
             blend: None,
             alpha: 1.0,
             transform,
@@ -198,11 +402,13 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
             filter: None,
             backdrop_filter: None,
         });
+        self.record(CommandMeta::Push(id));
     }
 
     fn pop_layer(&mut self) {
         self.stack.pop();
         self.band().pop_layer();
+        self.record(CommandMeta::Pop);
     }
 
     fn stroke<'a>(
@@ -215,6 +421,7 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
     ) {
         self.band()
             .stroke(style, transform, brush, brush_transform, shape);
+        self.record(CommandMeta::Draw);
     }
 
     fn fill<'a>(
@@ -248,12 +455,17 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
                 style: None,
                 opacity: self.stack.iter().map(|layer| layer.alpha).product(),
                 band: self.current,
+                group: self.stack.last().map(|layer| layer.id),
             });
+            if let Some(layer) = self.stack.last() {
+                self.promoted_layers.insert(layer.id);
+            }
             self.advance_band();
             return;
         }
         self.band()
             .fill(style, transform, brush, brush_transform, shape);
+        self.record(CommandMeta::Draw);
     }
 
     fn draw_glyphs<'a, 'b: 'a>(
@@ -270,6 +482,7 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
         glyph_transform: Option<Affine>,
         glyphs: impl Iterator<Item = Glyph> + Clone,
     ) {
+        self.record(CommandMeta::Draw);
         self.bands[self.current].draw_glyphs(
             font,
             font_size,
@@ -295,5 +508,6 @@ impl<S: PaintScene> PaintScene for BandedScene<'_, S> {
     ) {
         self.band()
             .draw_box_shadow(transform, rect, brush, radius, std_dev);
+        self.record(CommandMeta::Draw);
     }
 }
