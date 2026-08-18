@@ -9,6 +9,7 @@ mod input;
 mod instance_events;
 mod launch;
 mod metrics;
+mod shell_compositor;
 mod shell_document;
 mod shell_dom;
 mod shell_runtime;
@@ -39,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let statistics_recorder = snowglass_statistics::install()?;
     let options = cli::parse()?;
     // Prepare native renderers before the shell document starts.
-    let shell_rasterizer = game_host::ShellRasterizer::new().await?;
+    let shell_rasterizer = shell_compositor::ShellRasterizer::new().await?;
     let _timer_resolution = TimerResolution::raise();
     let mut event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();

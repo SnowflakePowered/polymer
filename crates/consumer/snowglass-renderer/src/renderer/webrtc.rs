@@ -127,8 +127,15 @@ impl Drop for VulkanWebRtcState {
 
 impl WebRtcCompositor {
     pub fn new_d3d12(compositor: &D3d12Compositor) -> windows::core::Result<Self> {
+        Self::new_d3d12_device(compositor.adapter_luid(), compositor.d3d12_device())
+    }
+
+    pub fn new_d3d12_device(
+        adapter: AdapterLuid,
+        device: &ID3D12Device,
+    ) -> windows::core::Result<Self> {
         let completion_fence = unsafe {
-            compositor.d3d12_device().CreateFence(
+            device.CreateFence(
                 0,
                 windows::Win32::Graphics::Direct3D12::D3D12_FENCE_FLAG_NONE,
             )?
@@ -136,7 +143,7 @@ impl WebRtcCompositor {
         Ok(Self {
             swapchain: VideoSwapchain::new(FRAME_CHANNEL_CAPACITY),
             d3d12: Some(D3d12WebRtcState {
-                adapter: compositor.adapter_luid(),
+                adapter,
                 completion_fence,
                 completion_value: 0,
                 stream_completion: HashMap::new(),

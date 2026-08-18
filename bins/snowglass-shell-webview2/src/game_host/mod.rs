@@ -3,17 +3,15 @@
 //! Validated launch-plan adaptation, process lifecycle, and captured-surface
 //! models are contained here; the shell coordinator only forwards commands.
 
-mod chrome;
-
 use crate::{
     launch::AttachedLaunchPlan,
-    shell_document::{CompositionShadowStyle, GameViewStyle},
-    shell_dom::{ShellFrame, TrackedSurfaceLayout},
+    shell_compositor::{
+        CompositionLayer, CompositionLayerContent, CompositionLayerId, CompositionLayerStretch,
+        ShellDeviceContext, ShellRasterizer,
+    },
+    shell_document::GameViewStyle,
+    shell_dom::TrackedSurfaceLayout,
 };
-use anyrender::PaintScene as _;
-use anyrender_vello::VelloScenePainter;
-use chrome::{ChromeResource, ChromeTexture};
-use parking_lot::Mutex;
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
@@ -21,8 +19,8 @@ use snowglass_input::mouse::layout::Rect;
 use snowglass_platform_windows::performance_counter;
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use snowglass_renderer::{
-    CompositingPlan, D3d12Compositor, Extent, PlanLayer, Renderer, SurfaceCapture,
-    SurfaceCaptureEvent, SurfaceContent, SurfacePlacement, SurfacePointerSender,
+    CompositingPlan, D3d12Compositor, Extent, Renderer, SurfaceCapture, SurfaceCaptureEvent,
+    SurfaceContent, SurfacePlacement, SurfacePointerSender,
 };
 use snowglass_runtime::{SurfaceFrameReceiver, SurfaceFrameUpdate};
 use std::error::Error;
@@ -36,677 +34,16 @@ use std::{
     },
     thread,
 };
-use vello::wgpu;
-use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions};
-use windows::core::{IUnknown, Interface};
+use windows::{
+    Win32::Graphics::Direct3D12::ID3D12Device,
+    core::{IUnknown, Interface},
+};
 
-/// Vello GPU state owned by the native game host.
-pub(crate) struct ShellRasterizer {
-    renderer: VelloRenderer,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    adapter_luid: AdapterLuid,
-    targets: Vec<Option<ChromeTexture>>,
-    /// The complete scene currently represented by each retained band texture.
-    /// Comparing encodings is cheap relative to another Vello dispatch and
-    /// avoids unsafe partial updates across alpha and effect boundaries.
-    rendered_scenes: Vec<Option<vello::Scene>>,
-    /// Backend-neutral scene represented by each retained band texture. A
-    /// later scene that differs only by one uniform translation can keep these
-    /// pixels and move the WUC visual instead of waking Vello.
-    recorded_scenes: Vec<Option<anyrender::Scene>>,
-    band_offsets: Vec<[f32; 2]>,
-}
-
-/// Returns the viewport translation that turns `retained` into `next` when
-/// every paint command is otherwise identical. This is deliberately generic:
-/// it recognizes any translated Blitz paint band, independent of the DOM
-/// component or CSS class that produced it.
-fn translated_scene_offset(
-    retained: &anyrender::Scene,
-    next: &anyrender::Scene,
-) -> Option<[f32; 2]> {
-    use anyrender::recording::RenderCommand;
-
-    if retained.tolerance != next.tolerance || retained.commands.len() != next.commands.len() {
-        return None;
-    }
-    let mut normalized = next.clone();
-    let mut offset = None::<[f64; 2]>;
-    for (retained, next) in retained.commands.iter().zip(&mut normalized.commands) {
-        let transforms = match (retained, next) {
-            (RenderCommand::PushLayer(left), RenderCommand::PushLayer(right)) => {
-                Some((&left.transform, &mut right.transform))
-            }
-            (RenderCommand::PushClipLayer(left), RenderCommand::PushClipLayer(right)) => {
-                Some((&left.transform, &mut right.transform))
-            }
-            (RenderCommand::Stroke(left), RenderCommand::Stroke(right)) => {
-                Some((&left.transform, &mut right.transform))
-            }
-            (RenderCommand::Fill(left), RenderCommand::Fill(right)) => {
-                Some((&left.transform, &mut right.transform))
-            }
-            (RenderCommand::GlyphRun(left), RenderCommand::GlyphRun(right)) => {
-                Some((&left.transform, &mut right.transform))
-            }
-            (RenderCommand::BoxShadow(left), RenderCommand::BoxShadow(right)) => {
-                Some((&left.transform, &mut right.transform))
-            }
-            (RenderCommand::PopLayer, RenderCommand::PopLayer) => None,
-            _ => return None,
-        };
-        let Some((retained_transform, next_transform)) = transforms else {
-            continue;
-        };
-        let retained_coefficients = retained_transform.as_coeffs();
-        let next_coefficients = next_transform.as_coeffs();
-        if retained_coefficients[..4] != next_coefficients[..4] {
-            return None;
-        }
-        let command_offset = [
-            next_coefficients[4] - retained_coefficients[4],
-            next_coefficients[5] - retained_coefficients[5],
-        ];
-        if let Some(offset) = offset {
-            const TRANSLATION_EPSILON: f64 = 1.0 / 256.0;
-            if (offset[0] - command_offset[0]).abs() > TRANSLATION_EPSILON
-                || (offset[1] - command_offset[1]).abs() > TRANSLATION_EPSILON
-            {
-                return None;
-            }
-        } else {
-            offset = Some(command_offset);
-        }
-        // Make the clone byte-for-byte comparable after proving that this
-        // command carries the same linear transform and common translation.
-        *next_transform = *retained_transform;
-    }
-    (normalized == *retained).then(|| {
-        let offset = offset.unwrap_or([0.0; 2]);
-        [offset[0] as f32, offset[1] as f32]
-    })
-}
-
-fn same_scene(left: &vello::Scene, right: &vello::Scene) -> bool {
-    let left = left.encoding();
-    let right = right.encoding();
-    left.path_tags == right.path_tags
-        && left.path_data == right.path_data
-        && left.draw_tags == right.draw_tags
-        && left.draw_data == right.draw_data
-        && left.transforms == right.transforms
-        && left.styles == right.styles
-        && left.n_paths == right.n_paths
-        && left.n_path_segments == right.n_path_segments
-        && left.n_clips == right.n_clips
-        && left.n_open_clips == right.n_open_clips
-        && left.flags == right.flags
-        && same_resources(&left.resources, &right.resources)
-}
-
-fn same_resources(left: &vello_encoding::Resources, right: &vello_encoding::Resources) -> bool {
-    left.color_stops == right.color_stops
-        && left.normalized_coords == right.normalized_coords
-        && left.glyphs.len() == right.glyphs.len()
-        && left.glyphs.iter().zip(&right.glyphs).all(|(left, right)| {
-            left.id == right.id
-                && left.x.to_bits() == right.x.to_bits()
-                && left.y.to_bits() == right.y.to_bits()
-        })
-        && left.glyph_runs.len() == right.glyph_runs.len()
-        && left
-            .glyph_runs
-            .iter()
-            .zip(&right.glyph_runs)
-            .all(|(left, right)| {
-                let left_offsets = left.stream_offsets;
-                let right_offsets = right.stream_offsets;
-                left.font == right.font
-                    && left.transform == right.transform
-                    && left.glyph_transform == right.glyph_transform
-                    && left.brush_transform == right.brush_transform
-                    && left.font_size.to_bits() == right.font_size.to_bits()
-                    && left.font_embolden.amount.xx.to_bits()
-                        == right.font_embolden.amount.xx.to_bits()
-                    && left.font_embolden.amount.yy.to_bits()
-                        == right.font_embolden.amount.yy.to_bits()
-                    && left.font_embolden.join == right.font_embolden.join
-                    && left.font_embolden.miter_limit.to_bits()
-                        == right.font_embolden.miter_limit.to_bits()
-                    && left.font_embolden.tolerance.to_bits()
-                        == right.font_embolden.tolerance.to_bits()
-                    && left.hint == right.hint
-                    && left.normalized_coords == right.normalized_coords
-                    && left.style == right.style
-                    && left.glyphs == right.glyphs
-                    && left_offsets.path_tags == right_offsets.path_tags
-                    && left_offsets.path_data == right_offsets.path_data
-                    && left_offsets.draw_tags == right_offsets.draw_tags
-                    && left_offsets.draw_data == right_offsets.draw_data
-                    && left_offsets.transforms == right_offsets.transforms
-                    && left_offsets.styles == right_offsets.styles
-            })
-        && left.patches.len() == right.patches.len()
-        && left
-            .patches
-            .iter()
-            .zip(&right.patches)
-            .all(|(left, right)| match (left, right) {
-                (
-                    vello_encoding::Patch::Ramp {
-                        draw_data_offset: left_offset,
-                        stops: left_stops,
-                        extend: left_extend,
-                    },
-                    vello_encoding::Patch::Ramp {
-                        draw_data_offset: right_offset,
-                        stops: right_stops,
-                        extend: right_extend,
-                    },
-                ) => {
-                    left_offset == right_offset
-                        && left_stops == right_stops
-                        && left_extend == right_extend
-                }
-                (
-                    vello_encoding::Patch::GlyphRun { index: left },
-                    vello_encoding::Patch::GlyphRun { index: right },
-                ) => left == right,
-                (
-                    vello_encoding::Patch::Image {
-                        image: left_image,
-                        draw_data_offset: left_offset,
-                    },
-                    vello_encoding::Patch::Image {
-                        image: right_image,
-                        draw_data_offset: right_offset,
-                    },
-                ) => left_offset == right_offset && left_image == right_image,
-                _ => false,
-            })
-}
-
-fn shell_instance_options() -> wgpu::InstanceDescriptor {
-    let mut options = wgpu::InstanceDescriptor::new_without_display_handle();
-    options.backends = wgpu::Backends::DX12;
-    // `Auto` may select a dxcompiler.dll without its matching DXIL.dll. The
-    // Shell chrome does not need Shader Model 6, so use the in-box FXC.
-    options.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
-    options
-}
-
-fn adapter_luid(adapter: &wgpu::Adapter) -> Option<AdapterLuid> {
-    // SAFETY: the HAL adapter is borrowed only to read its immutable DXGI
-    // description.
-    let adapter = unsafe { adapter.as_hal::<wgpu_hal::api::Dx12>()? };
-    let description = unsafe { adapter.raw_adapter().GetDesc2().ok()? };
-    Some(AdapterLuid {
-        low_part: description.AdapterLuid.LowPart,
-        high_part: description.AdapterLuid.HighPart,
-    })
-}
-
-impl ShellRasterizer {
-    async fn from_adapter(adapter: &wgpu::Adapter) -> Result<Self, Box<dyn Error>> {
-        let adapter_info = adapter.get_info();
-        let use_cpu_stages = matches!(
-            adapter_info.device_type,
-            wgpu::DeviceType::VirtualGpu | wgpu::DeviceType::Cpu
-        );
-        if use_cpu_stages {
-            tracing::info!(
-                adapter = %adapter_info.name,
-                "snowglass: using Vello CPU geometry stages on a virtual/software D3D12 adapter"
-            );
-        }
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("snowglass shell chrome"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::default(),
-            })
-            .await
-            .map_err(|error| format!("shell chrome could not open a D3D12 device: {error}"))?;
-        let renderer = VelloRenderer::new(
-            &device,
-            RendererOptions {
-                // The final fine raster still writes the compositor-owned GPU
-                // texture. Only Vello's compute-heavy geometry stages move to
-                // the CPU on virtual adapters whose WARP path cannot run them.
-                use_cpu: use_cpu_stages,
-                num_init_threads: None,
-                antialiasing_support: AaSupport::area_only(),
-                pipeline_cache: None,
-            },
-        )
-        .map_err(|error| format!("shell chrome could not start Vello: {error}"))?;
-        let adapter_luid = adapter_luid(adapter)
-            .ok_or("the selected D3D12 adapter did not expose an adapter LUID")?;
-        Ok(Self {
-            renderer,
-            device,
-            queue,
-            adapter_luid,
-            targets: Vec::new(),
-            rendered_scenes: Vec::new(),
-            recorded_scenes: Vec::new(),
-            band_offsets: Vec::new(),
-        })
-    }
-    /// Prepares the initial adapter before the shell document starts. A later foreign
-    /// adapter causes the complete RenderDevice to be recreated on demand.
-    pub async fn new() -> Result<Self, Box<dyn Error>> {
-        Self::new_for_adapter(None).await
-    }
-
-    async fn new_for_adapter(desired: Option<AdapterLuid>) -> Result<Self, Box<dyn Error>> {
-        let instance = wgpu::Instance::new(shell_instance_options());
-        let adapter = if let Some(desired) = desired {
-            let mut selected = None;
-            let mut available = Vec::new();
-            for adapter in instance.enumerate_adapters(wgpu::Backends::DX12).await {
-                let luid = adapter_luid(&adapter);
-                available.push(format!("{} ({luid:?})", adapter.get_info().name));
-                if luid == Some(desired) {
-                    selected = Some(adapter);
-                    break;
-                }
-            }
-            selected.ok_or_else(|| {
-                format!(
-                    "shell chrome could not find requested D3D12 adapter {desired:?}; available: {}",
-                    available.join(", ")
-                )
-            })?
-        } else {
-            instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: None,
-                    force_fallback_adapter: false,
-                })
-                .await
-                .map_err(|error| format!("shell chrome found no D3D12 adapter: {error}"))?
-        };
-        Self::from_adapter(&adapter).await
-    }
-
-    pub const fn adapter_luid(&self) -> AdapterLuid {
-        self.adapter_luid
-    }
-
-    fn retained_device_context(
-        &self,
-    ) -> Result<(*mut std::ffi::c_void, *mut std::ffi::c_void), Box<dyn Error>> {
-        use windows_wgpu::core::Interface as _;
-        // SAFETY: the returned COM clones each transfer one owned reference to
-        // the compositor constructor.
-        unsafe {
-            let hal = self
-                .device
-                .as_hal::<wgpu_hal::api::Dx12>()
-                .ok_or("the shell renderer is not using D3D12")?;
-            Ok((
-                hal.raw_device().clone().into_raw(),
-                hal.raw_queue().clone().into_raw(),
-            ))
-        }
-    }
-
-    fn rasterize_frame(
-        &mut self,
-        mut frame: ShellFrame,
-        mut band: impl FnMut(usize, &ChromeTexture),
-    ) -> Vec<[f32; 2]> {
-        let rasterized = std::time::Instant::now();
-        let band_count = frame.chrome_bands.len();
-        let mut drawn = Vec::with_capacity(band_count);
-        let mut reused = Vec::with_capacity(band_count);
-        let mut band_timings = Vec::with_capacity(band_count);
-        for (index, layer) in frame.chrome_bands.drain(..).enumerate() {
-            let bounds = layer.bounds;
-            let origin = [bounds.x0 as f32, bounds.y0 as f32];
-            let target_width = bounds.width().ceil().max(1.0) as u32;
-            let target_height = bounds.height().ceil().max(1.0) as u32;
-            let parameters = RenderParams {
-                base_color: vello::peniko::Color::TRANSPARENT,
-                width: target_width,
-                height: target_height,
-                antialiasing_method: AaConfig::Area,
-            };
-            let recorded_scene = layer.scene;
-            let target_is_current_size = self.targets.get(index).is_some_and(|target| {
-                target.as_ref().is_some_and(|target| {
-                    (target.width, target.height) == (target_width, target_height)
-                })
-            });
-            if self.band_offsets.len() <= index {
-                self.band_offsets.resize(index + 1, [0.0; 2]);
-            }
-            self.band_offsets[index] = origin;
-            if layer.group.is_some()
-                && target_is_current_size
-                && let Some(retained) = self.recorded_scenes.get(index).and_then(Option::as_ref)
-                && translated_scene_offset(retained, &recorded_scene).is_some()
-            {
-                reused.push(index);
-                continue;
-            }
-            // Blitz records backend-neutral commands on the UI thread. The
-            // expensive Vello path/glyph encoding belongs here on the
-            // latest-only worker alongside rasterization.
-            let mut scene = vello::Scene::new();
-            VelloScenePainter::new(&mut scene).append_scene(
-                recorded_scene.clone(),
-                kurbo::Affine::translate((-bounds.x0, -bounds.y0)),
-            );
-            if target_is_current_size
-                && self
-                    .rendered_scenes
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|rendered| same_scene(rendered, &scene))
-            {
-                if self.recorded_scenes.len() <= index {
-                    self.recorded_scenes.resize_with(index + 1, || None);
-                }
-                self.recorded_scenes[index] = Some(recorded_scene);
-                reused.push(index);
-                continue;
-            }
-            let band_started = std::time::Instant::now();
-            if self.targets.len() <= index {
-                self.targets.resize_with(index + 1, || None);
-            }
-            let target = match &mut self.targets[index] {
-                Some(target) if (target.width, target.height) == (target_width, target_height) => {
-                    target
-                }
-                slot => match ChromeTexture::new(&self.device, target_width, target_height) {
-                    Ok(target) => slot.insert(target),
-                    Err(error) => {
-                        tracing::error!(
-                            "snowglass: shell chrome could not make band {index}: {error}"
-                        );
-                        continue;
-                    }
-                },
-            };
-            // Retained WUC visuals make translated and unchanged scenes free
-            // above. When pixels truly change, redraw the complete local
-            // fragment into a transparently cleared target. Partial copies
-            // cannot safely account for alpha masks, antialiasing, filters, or
-            // native shadows and were the source of accumulated trails.
-            if let Err(error) = self.renderer.render_to_texture(
-                &self.device,
-                &self.queue,
-                &scene,
-                &target.view,
-                &parameters,
-            ) {
-                tracing::error!("snowglass: rasterizing shell band {index} failed: {error}");
-                continue;
-            }
-            if self.rendered_scenes.len() <= index {
-                self.rendered_scenes.resize_with(index + 1, || None);
-            }
-            self.rendered_scenes[index] = Some(scene);
-            if self.recorded_scenes.len() <= index {
-                self.recorded_scenes.resize_with(index + 1, || None);
-            }
-            self.recorded_scenes[index] = Some(recorded_scene);
-            band_timings.push((index, band_started.elapsed()));
-            drawn.push(index);
-        }
-        // Vello and the compositor intentionally share this exact D3D12
-        // command queue. The compositor's sampling submission is therefore
-        // ordered after these raster submissions without a CPU wait. Blocking
-        // here serialized every DOM transform update with the GPU and
-        // starved both input delivery and guest presentation while dragging.
-        self.device.poll(wgpu::PollType::Poll).ok();
-        let drawn_count = drawn.len();
-        for index in drawn {
-            if let Some(Some(target)) = self.targets.get(index) {
-                band(index, target);
-            }
-        }
-        if std::env::var_os("SNOWGLASS_GAME_LAYER_TIMING").is_some() {
-            tracing::error!(
-                "snowglass: shell chrome rasterized {}x{} in {:.2}ms over {}/{} band(s){}",
-                frame.width,
-                frame.height,
-                rasterized.elapsed().as_secs_f64() * 1000.0,
-                drawn_count,
-                band_count,
-                frame.damage.map_or(String::new(), |damage| format!(
-                    " damage {:.0}x{:.0}",
-                    damage.width(),
-                    damage.height()
-                )),
-            );
-            tracing::error!(
-                "snowglass: shell band raster timings {}",
-                band_timings
-                    .iter()
-                    .map(|(band, elapsed)| format!(
-                        "{band}:{:.2}ms",
-                        elapsed.as_secs_f64() * 1000.0
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            );
-            if !reused.is_empty() {
-                tracing::error!(
-                    "snowglass: shell reused unchanged band(s) {}",
-                    reused
-                        .iter()
-                        .map(usize::to_string)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-            }
-        }
-        self.band_offsets.truncate(band_count);
-        self.band_offsets.clone()
-    }
-}
-
-struct ShellRasterResult {
-    band_count: usize,
-    updates: Vec<(usize, ChromeResource)>,
-    band_offsets: Vec<[f32; 2]>,
-    band_layout: Vec<(i32, Option<u64>, Option<CompositionShadowStyle>, [u32; 2])>,
-    surface_layout: Vec<TrackedSurfaceLayout>,
-}
-
-/// A complete visual-tree revision waiting for all changed chrome swapchains
-/// to accept their frame. The currently published chrome transforms must not
-/// be changed before the matching tracked-surface geometry is ready: doing so
-/// lets a panel move while its embedded surface remains at the prior position.
-struct PendingShellPublication {
-    band_count: usize,
-    band_offsets: Vec<[f32; 2]>,
-    band_layout: Vec<(i32, Option<u64>, Option<CompositionShadowStyle>, [u32; 2])>,
-    surface_layout: Vec<TrackedSurfaceLayout>,
-}
-
-#[derive(Default)]
-struct ShellRasterWorkerState {
-    pending: Option<ShellFrame>,
-    busy: bool,
-    /// One raster result is waiting for the presentation thread to submit all
-    /// of its chrome bands and matching tracked-surface layout. The rasterizer
-    /// retains and updates its band textures, so it must not begin the next
-    /// generation until that submission has sampled the current one.
-    awaiting_publication: bool,
-    ready: usize,
-    stopping: bool,
-}
-
-/// Latest-only Vello worker. DOM/layout stays on the UI thread, but shader
-/// dispatch, command encoding, and full-frame band raster no longer delay
-/// capture draining or a guest Present.
-struct ShellRasterWorker {
-    state: Arc<Mutex<ShellRasterWorkerState>>,
-    results: mpsc::Receiver<ShellRasterResult>,
-    worker: Option<thread::JoinHandle<()>>,
-}
-
-impl ShellRasterWorker {
-    fn spawn(mut rasterizer: ShellRasterizer) -> Self {
-        let state = Arc::new(Mutex::new(ShellRasterWorkerState::default()));
-        let worker_state = Arc::clone(&state);
-        let (sender, results) = mpsc::channel();
-        let worker = thread::Builder::new()
-            .name("snowglass-blitz-raster".to_owned())
-            .spawn(move || {
-                loop {
-                    let frame = {
-                        let mut state = worker_state.lock();
-                        if state.stopping {
-                            break;
-                        }
-                        if state.awaiting_publication {
-                            None
-                        } else {
-                            state.pending.take()
-                        }
-                    };
-                    let Some(mut frame) = frame else {
-                        thread::park();
-                        continue;
-                    };
-                    let band_count = frame.chrome_bands.len();
-                    let band_layout = frame
-                        .chrome_bands
-                        .iter()
-                        .map(|layer| {
-                            (
-                                layer.z_order,
-                                layer.group,
-                                layer.shadow,
-                                [
-                                    layer.bounds.width().ceil().max(1.0) as u32,
-                                    layer.bounds.height().ceil().max(1.0) as u32,
-                                ],
-                            )
-                        })
-                        .collect();
-                    let surface_layout = std::mem::take(&mut frame.surface_layout);
-                    let mut updates = Vec::new();
-                    let band_offsets = rasterizer.rasterize_frame(frame, |band, texture| {
-                        updates.push((band, texture.retained_resource()));
-                    });
-                    {
-                        let mut state = worker_state.lock();
-                        state.ready += 1;
-                        state.awaiting_publication = true;
-                    }
-                    if sender
-                        .send(ShellRasterResult {
-                            band_count,
-                            updates,
-                            band_offsets,
-                            band_layout,
-                            surface_layout,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .expect("failed to create the Blitz raster worker");
-        Self {
-            state,
-            results,
-            worker: Some(worker),
-        }
-    }
-
-    fn submit(&self, mut frame: ShellFrame) {
-        let mut state = self.state.lock();
-        if let Some(skipped) = state.pending.take() {
-            frame.damage = if (skipped.width, skipped.height) != (frame.width, frame.height) {
-                None
-            } else {
-                merge_shell_damage(skipped.damage, frame.damage)
-            };
-        }
-        state.pending = Some(frame);
-        state.busy = true;
-        if let Some(worker) = &self.worker {
-            worker.thread().unpark();
-        }
-    }
-
-    fn try_result(&self) -> Option<ShellRasterResult> {
-        self.results.try_recv().ok()
-    }
-
-    /// Releases the raster worker only after the compositor has submitted the
-    /// result it produced. This keeps the retained texture immutable between
-    /// handoff and sampling while still coalescing any newer DOM frames.
-    fn acknowledge_publication(&self) {
-        let mut state = self.state.lock();
-        if !state.awaiting_publication {
-            return;
-        }
-        state.awaiting_publication = false;
-        state.ready = state.ready.saturating_sub(1);
-        state.busy = state.pending.is_some();
-        drop(state);
-        if let Some(worker) = &self.worker {
-            worker.thread().unpark();
-        }
-    }
-
-    fn is_pending(&self) -> bool {
-        let state = self.state.lock();
-        state.busy || state.pending.is_some() || state.ready != 0
-    }
-}
-
-/// Damage is measured relative to the previously submitted DOM frame. When a
-/// latest-only worker replaces an intermediate frame, retain both transitions
-/// so the texture currently held by WUC is fully transformed into the newest
-/// frame. `None` means a full repaint and therefore dominates the union.
-fn merge_shell_damage(
-    previous: Option<kurbo::Rect>,
-    next: Option<kurbo::Rect>,
-) -> Option<kurbo::Rect> {
-    previous
-        .zip(next)
-        .map(|(previous, next)| previous.union(next))
-}
-
-impl Drop for ShellRasterWorker {
-    fn drop(&mut self) {
-        {
-            let mut state = self.state.lock();
-            state.stopping = true;
-            state.pending = None;
-        }
-        if let Some(worker) = self.worker.take() {
-            worker.thread().unpark();
-            let _ = worker.join();
-        }
-    }
-}
-
-/// All renderer state local to one D3D12 adapter. Replacing this value moves
-/// composition, Vello, chrome, and foreign imports as one device domain.
+/// Capture renderer state local to one D3D12 adapter. Shell rasterization and
+/// WUC composition are owned independently by `ShellCompositor`.
 struct RenderDevice {
     adapter: AdapterLuid,
-    chrome_device: IUnknown,
-    chrome_queue: IUnknown,
-    shell_worker: ShellRasterWorker,
-    chrome_compositors: Vec<D3d12Compositor>,
-    chrome_capacities: Vec<Extent>,
+    device: IUnknown,
     surface_compositors: HashMap<u64, SurfaceCompositor>,
 }
 
@@ -839,171 +176,27 @@ impl<W: snowglass_renderer::RenderWindow> snowglass_renderer::RenderWindow
     }
 }
 
-fn chrome_capacity([width, height]: [u32; 2]) -> Extent {
-    fn bucket(value: u32) -> u32 {
-        value
-            .max(64)
-            .checked_next_power_of_two()
-            .unwrap_or(value.max(64))
-    }
-    Extent::new(bucket(width), bucket(height))
-}
-
 impl RenderDevice {
-    fn new(
-        window: &impl snowglass_renderer::RenderWindow,
-        shell: ShellRasterizer,
-    ) -> Result<Self, Box<dyn Error>> {
-        let adapter = shell.adapter_luid();
-        let (device, queue) = shell.retained_device_context()?;
-        // SAFETY: retained_device_context transfers one owned reference for
-        // each pointer. These anchors mint a fresh retained pair whenever a
-        // new band compositor is required.
-        let chrome_device = unsafe { IUnknown::from_raw(device) };
-        let chrome_queue = unsafe { IUnknown::from_raw(queue) };
-        // SAFETY: the shell context supplied retained references to its exact
-        // D3D12 device and queue. Band zero is always present, even for an
-        // empty document, and is the stable adapter anchor for WebRTC.
-        let chrome = unsafe {
-            D3d12Compositor::new_for_transparent_composition_from_external(
-                window,
-                adapter,
-                chrome_device.clone().into_raw(),
-                chrome_queue.clone().into_raw(),
-            )?
-        };
-        let initial_capacity = window.render_extent();
-        Ok(Self {
-            adapter,
-            chrome_device,
-            chrome_queue,
-            shell_worker: ShellRasterWorker::spawn(shell),
-            chrome_compositors: vec![chrome],
-            chrome_capacities: vec![initial_capacity],
+    fn new(context: ShellDeviceContext) -> Self {
+        Self {
+            adapter: context.adapter,
+            device: context.device,
             surface_compositors: HashMap::new(),
-        })
+        }
     }
 
-    fn recreate(
-        window: &impl snowglass_renderer::RenderWindow,
-        adapter: AdapterLuid,
-    ) -> Result<Self, Box<dyn Error>> {
+    fn recreate(adapter: AdapterLuid) -> Result<(Self, ShellRasterizer), Box<dyn Error>> {
         let shell = pollster::block_on(ShellRasterizer::new_for_adapter(Some(adapter)))?;
-        Self::new(window, shell)
+        let context = shell.device_context()?;
+        Ok((Self::new(context), shell))
     }
 
     fn adapter_luid(&self) -> AdapterLuid {
         self.adapter
     }
 
-    fn ensure_chrome_bands(
-        &mut self,
-        window: &impl snowglass_renderer::RenderWindow,
-        sizes: &[[u32; 2]],
-    ) -> Result<bool, String> {
-        let mut changed = false;
-        while self.chrome_compositors.len() < sizes.len().max(1) {
-            let desired = sizes
-                .get(self.chrome_compositors.len())
-                .copied()
-                .unwrap_or([1, 1]);
-            let capacity = chrome_capacity(desired);
-            let local = LocalRenderWindow {
-                window,
-                extent: capacity,
-            };
-            // SAFETY: each call transfers its own retained references into a
-            // new transparent composition swapchain on the shell device.
-            let compositor = unsafe {
-                D3d12Compositor::new_for_transparent_composition_from_external(
-                    &local,
-                    self.adapter,
-                    self.chrome_device.clone().into_raw(),
-                    self.chrome_queue.clone().into_raw(),
-                )
-            }
-            .map_err(|error| error.to_string())?;
-            self.chrome_compositors.push(compositor);
-            self.chrome_capacities.push(capacity);
-            changed = true;
-        }
-        for (index, desired) in sizes.iter().copied().enumerate() {
-            let desired = Extent::new(desired[0].max(1), desired[1].max(1));
-            let current = self.chrome_capacities[index];
-            let too_small = desired.width > current.width || desired.height > current.height;
-            let far_too_large = u64::from(current.width) * u64::from(current.height)
-                > 4 * u64::from(desired.width) * u64::from(desired.height);
-            if too_small || far_too_large {
-                let capacity = chrome_capacity([desired.width, desired.height]);
-                let local = LocalRenderWindow {
-                    window,
-                    extent: capacity,
-                };
-                Renderer::recreate_swapchain(&mut self.chrome_compositors[index], &local)
-                    .map_err(|error| error.to_string())?;
-                self.chrome_capacities[index] = capacity;
-                changed = true;
-            }
-        }
-        Ok(changed)
-    }
-
-    fn submit_shell(&self, frame: ShellFrame) {
-        self.shell_worker.submit(frame);
-    }
-
-    fn apply_shell_result(
-        &mut self,
-        window: &impl snowglass_renderer::RenderWindow,
-        result: ShellRasterResult,
-    ) -> Result<
-        (
-            usize,
-            Vec<usize>,
-            Vec<[f32; 2]>,
-            Vec<(i32, Option<u64>, Option<CompositionShadowStyle>, [u32; 2])>,
-            Vec<TrackedSurfaceLayout>,
-        ),
-        String,
-    > {
-        let ShellRasterResult {
-            band_count,
-            updates,
-            band_offsets,
-            band_layout,
-            surface_layout,
-        } = result;
-        let band_sizes = band_layout
-            .iter()
-            .map(|layout| layout.3)
-            .collect::<Vec<_>>();
-        self.ensure_chrome_bands(window, &band_sizes)?;
-        let mut updated = Vec::with_capacity(updates.len());
-        for (band, resource) in updates {
-            let Some(compositor) = self.chrome_compositors.get_mut(band) else {
-                continue;
-            };
-            // SAFETY: the worker retained this exact device-local resource;
-            // queue submission order on the shared chrome queue makes the
-            // completed Vello write visible before this compositor samples it.
-            let (width, height) = (resource.width, resource.height);
-            unsafe {
-                compositor.set_chrome_layer_resource(
-                    band as u64,
-                    resource.into_abi_reference(),
-                    width,
-                    height,
-                );
-            }
-            updated.push(band);
-        }
-        Ok((
-            band_count,
-            updated,
-            band_offsets,
-            band_layout,
-            surface_layout,
-        ))
+    fn d3d12_device(&self) -> Result<ID3D12Device, windows::core::Error> {
+        self.device.cast()
     }
 
     fn create_surface(
@@ -1057,6 +250,7 @@ struct CapturedSurface {
     quarter_turns: u8,
     pointer_events: bool,
     z_index: i32,
+    group: Option<u64>,
     corner_radius: f32,
     game_view_style: Option<GameViewStyle>,
     opacity: f32,
@@ -1123,59 +317,18 @@ pub(crate) struct GameHost {
     surface_worker_events: mpsc::Receiver<SurfaceWorkerFrame>,
     surface_worker_sender: mpsc::Sender<SurfaceWorkerFrame>,
     surfaces: HashMap<u64, CapturedSurface>,
-    /// One adapter-local device domain shared by native chrome, composition,
-    /// and every imported captured stream.
+    /// Adapter-local capture device and imported captured streams.
     render_device: RenderDevice,
+    replacement_shell_rasterizer: Option<ShellRasterizer>,
     composition_content_dirty: bool,
-    chrome_bands: Vec<usize>,
-    chrome_layout: Vec<(i32, Option<u64>, Option<CompositionShadowStyle>, [u32; 2])>,
-    /// WUC translation of each retained full-window band. Translation-only
-    /// DOM updates move these visuals without rerasterizing their pixels.
-    chrome_offsets: Vec<[f32; 2]>,
-    chrome_dirty: HashSet<usize>,
     shell_refresh_pending: bool,
-    pending_shell_publication: Option<PendingShellPublication>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum CompositionLayerId {
-    Band(usize),
-    Surface(u64),
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum CompositionLayerStretch {
-    None,
-    Fill,
-    UniformToFill,
-}
-
-pub(crate) struct CompositionLayer {
-    pub id: CompositionLayerId,
-    pub content: IUnknown,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub opacity: f32,
-    pub shadow: Option<CompositionShadowStyle>,
-    pub stretch: CompositionLayerStretch,
-    pub horizontal_alignment: f32,
-    pub vertical_alignment: f32,
-}
-
-pub(crate) struct CompositionContents {
-    pub layers: Vec<CompositionLayer>,
 }
 
 impl GameHost {
-    pub fn new(
-        window: &impl snowglass_renderer::RenderWindow,
-        rasterizer: ShellRasterizer,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub fn new(context: ShellDeviceContext) -> Result<Self, Box<dyn Error>> {
         let capture = SurfaceCapture::default();
         let pointer = capture.pointer_sender();
-        let render_device = RenderDevice::new(window, rasterizer)?;
+        let render_device = RenderDevice::new(context);
         let (surface_worker_sender, surface_worker_events) = mpsc::channel();
         Ok(Self {
             active: None,
@@ -1188,57 +341,17 @@ impl GameHost {
             surface_worker_sender,
             surfaces: HashMap::new(),
             render_device,
+            replacement_shell_rasterizer: None,
             composition_content_dirty: false,
-            chrome_bands: Vec::new(),
-            chrome_layout: Vec::new(),
-            chrome_offsets: Vec::new(),
-            chrome_dirty: HashSet::new(),
             shell_refresh_pending: false,
-            pending_shell_publication: None,
         })
     }
 
-    pub fn composition_content(
+    pub(crate) fn composition_layers(
         &self,
-        width: u32,
-        height: u32,
-    ) -> Result<CompositionContents, Box<dyn Error>> {
+        group_bounds: &HashMap<u64, kurbo::Rect>,
+    ) -> Result<Vec<CompositionLayer>, Box<dyn Error>> {
         let mut ordered = Vec::new();
-        for &band in &self.chrome_bands {
-            let Some(compositor) = self.render_device.chrome_compositors.get(band) else {
-                continue;
-            };
-            ordered.push((
-                self.chrome_layout
-                    .get(band)
-                    .map_or(band as i32, |layout| layout.0),
-                CompositionLayer {
-                    id: CompositionLayerId::Band(band),
-                    content: compositor.composition_content()?,
-                    x: self
-                        .chrome_offsets
-                        .get(band)
-                        .map_or(0.0, |offset| offset[0]),
-                    y: self
-                        .chrome_offsets
-                        .get(band)
-                        .map_or(0.0, |offset| offset[1]),
-                    width: self
-                        .chrome_layout
-                        .get(band)
-                        .map_or(width, |layout| layout.3[0]) as f32,
-                    height: self
-                        .chrome_layout
-                        .get(band)
-                        .map_or(height, |layout| layout.3[1]) as f32,
-                    opacity: 1.0,
-                    shadow: self.chrome_layout.get(band).and_then(|layout| layout.2),
-                    stretch: CompositionLayerStretch::None,
-                    horizontal_alignment: 0.0,
-                    vertical_alignment: 0.0,
-                },
-            ));
-        }
         for (&connection, surface) in &self.surfaces {
             let Some(output) = self.render_device.surface_compositors.get(&connection) else {
                 continue;
@@ -1275,21 +388,32 @@ impl GameHost {
                 surface.z_index,
                 CompositionLayer {
                     id: CompositionLayerId::Surface(connection),
-                    content: if let Some(content) = &output.content {
-                        content.clone()
-                    } else {
-                        output
-                            .compositor
-                            .as_ref()
-                            .ok_or("surface compositor has neither content nor an owner")?
-                            .composition_content()?
-                    },
-                    x: fitted.destination[0],
-                    y: fitted.destination[1],
+                    parent: surface.group,
+                    z_order: surface.z_index,
+                    content: CompositionLayerContent::Swapchain(
+                        if let Some(content) = &output.content {
+                            content.clone()
+                        } else {
+                            output
+                                .compositor
+                                .as_ref()
+                                .ok_or("surface compositor has neither content nor an owner")?
+                                .composition_content()?
+                        },
+                    ),
+                    x: fitted.destination[0]
+                        - surface
+                            .group
+                            .and_then(|group| group_bounds.get(&group))
+                            .map_or(0.0, |bounds| bounds.x0 as f32),
+                    y: fitted.destination[1]
+                        - surface
+                            .group
+                            .and_then(|group| group_bounds.get(&group))
+                            .map_or(0.0, |bounds| bounds.y0 as f32),
                     width: (fitted.destination[2] - fitted.destination[0]).max(0.0),
                     height: (fitted.destination[3] - fitted.destination[1]).max(0.0),
                     opacity: fitted.opacity,
-                    shadow: None,
                     stretch: if fitted.source == [0.0, 0.0, 1.0, 1.0] {
                         CompositionLayerStretch::Fill
                     } else {
@@ -1301,25 +425,15 @@ impl GameHost {
             ));
         }
         ordered.sort_by_key(|(z, _)| *z);
-        Ok(CompositionContents {
-            layers: ordered.into_iter().map(|(_, layer)| layer).collect(),
-        })
+        Ok(ordered.into_iter().map(|(_, layer)| layer).collect())
     }
 
-    /// Publishes a replacement swapchain to the window visual slot exactly
-    /// once, including when the capture offer that prompted the adapter switch
-    /// is subsequently rejected.
-    pub fn take_composition_content_update(
-        &mut self,
-        width: u32,
-        height: u32,
-    ) -> Result<Option<CompositionContents>, Box<dyn Error>> {
-        if !self.composition_content_dirty {
-            return Ok(None);
-        }
-        let content = self.composition_content(width, height)?;
-        self.composition_content_dirty = false;
-        Ok(Some(content))
+    pub(crate) fn take_composition_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.composition_content_dirty)
+    }
+
+    pub(crate) fn take_shell_rasterizer_replacement(&mut self) -> Option<ShellRasterizer> {
+        self.replacement_shell_rasterizer.take()
     }
 
     pub fn is_active(&self, token: crate::shell_runtime::InstanceToken) -> bool {
@@ -1452,23 +566,6 @@ impl GameHost {
         self.shell_refresh_pending = false;
     }
 
-    pub fn resize_compositor(
-        &mut self,
-        window: &impl snowglass_renderer::RenderWindow,
-    ) -> Result<bool, String> {
-        let mut changed = false;
-        for (band, compositor) in self.render_device.chrome_compositors.iter_mut().enumerate() {
-            if Renderer::recreate_swapchain(compositor, window)
-                .map_err(|error| error.to_string())?
-            {
-                self.chrome_dirty.insert(band);
-                changed = true;
-            }
-        }
-        self.composition_content_dirty |= changed;
-        Ok(changed)
-    }
-
     pub fn launch(
         &mut self,
         token: crate::shell_runtime::InstanceToken,
@@ -1566,10 +663,15 @@ impl GameHost {
                 "WebRTC render target {target} is not part of the emulator launch"
             ));
         }
-        let mut publication = snowglass_renderer::webrtc::Publication::start_d3d12(
+        let device = self
+            .render_device
+            .d3d12_device()
+            .map_err(|error| error.to_string())?;
+        let mut publication = snowglass_renderer::webrtc::Publication::start_d3d12_device(
             bind,
             targets,
-            &self.render_device.chrome_compositors[0],
+            self.render_device.adapter_luid(),
+            &device,
         )
         .map_err(|error| error.to_string())?;
         for (&connection, surface) in &self.surfaces {
@@ -1713,7 +815,7 @@ impl GameHost {
             return Ok(AcceptedSurface { surface: None });
         };
         let desired_adapter = offer.stream().adapter_luid;
-        let recreated = self.ensure_render_device(window, desired_adapter)?;
+        let recreated = self.ensure_render_device(desired_adapter)?;
         let connection = offer.connection_id();
         let surface_id = offer.stream().surface_id.0;
         let replaced_connection = (!recreated)
@@ -1751,6 +853,7 @@ impl GameHost {
                     quarter_turns,
                     pointer_events: true,
                     z_index: target_index as i32,
+                    group: None,
                     corner_radius: 0.0,
                     game_view_style: None,
                     opacity: 1.0,
@@ -1859,26 +962,24 @@ impl GameHost {
         })
     }
 
-    fn ensure_render_device(
-        &mut self,
-        window: &impl snowglass_renderer::RenderWindow,
-        desired: AdapterLuid,
-    ) -> Result<bool, Box<dyn Error>> {
+    fn ensure_render_device(&mut self, desired: AdapterLuid) -> Result<bool, Box<dyn Error>> {
         if self.render_device.adapter_luid() == desired {
             return Ok(false);
         }
 
         // Construct the complete replacement before disturbing the active
         // device domain. A failure leaves the old compositor usable.
-        let replacement = RenderDevice::recreate(window, desired)?;
+        let (replacement, shell_rasterizer) = RenderDevice::recreate(desired)?;
         if let Some(publication) = self
             .active
             .as_mut()
             .and_then(|active| active.webrtc.as_mut())
         {
-            publication.reattach_d3d12(&replacement.chrome_compositors[0])?;
+            let device = replacement.d3d12_device()?;
+            publication.reattach_d3d12_device(replacement.adapter_luid(), &device)?;
         }
         self.render_device = replacement;
+        self.replacement_shell_rasterizer = Some(shell_rasterizer);
         let stale_connections = self.surfaces.keys().copied().collect::<Vec<_>>();
         for connection in stale_connections {
             self.capture.revoke(connection);
@@ -1892,11 +993,6 @@ impl GameHost {
         }
         self.surfaces.clear();
         self.composition_content_dirty = true;
-        self.chrome_bands.clear();
-        self.chrome_layout.clear();
-        self.chrome_offsets.clear();
-        self.chrome_dirty.clear();
-        self.pending_shell_publication = None;
         self.shell_refresh_pending = true;
         Ok(true)
     }
@@ -1990,10 +1086,6 @@ impl GameHost {
             .any(Renderer::has_pending_frame)
     }
 
-    pub fn has_pending_chrome(&self) -> bool {
-        !self.chrome_dirty.is_empty() || self.render_device.shell_worker.is_pending()
-    }
-
     pub fn draw(
         &mut self,
         _width: u32,
@@ -2054,82 +1146,6 @@ impl GameHost {
         }
     }
 
-    /// Presents shell pixels into their independent transparent swapchain.
-    /// WUC retains the last chrome buffer, so this runs only after Blitz
-    /// changed a band and cannot consume the guest swapchain's latency permit.
-    pub fn draw_chrome(
-        &mut self,
-        window: &impl snowglass_renderer::RenderWindow,
-    ) -> Result<bool, String> {
-        while let Some(result) = self.render_device.shell_worker.try_result() {
-            let (bands, updated, band_offsets, band_layout, surface_layout) =
-                self.render_device.apply_shell_result(window, result)?;
-            debug_assert!(self.pending_shell_publication.is_none());
-            self.pending_shell_publication = Some(PendingShellPublication {
-                band_count: bands,
-                band_offsets,
-                band_layout,
-                surface_layout,
-            });
-            self.chrome_dirty.extend(updated);
-        }
-        let dirty = self.chrome_dirty.iter().copied().collect::<Vec<_>>();
-        for band in dirty {
-            let Some(compositor) = self.render_device.chrome_compositors.get_mut(band) else {
-                self.chrome_dirty.remove(&band);
-                continue;
-            };
-            if !compositor.try_begin_frame() {
-                continue;
-            }
-            let size = self
-                .pending_shell_publication
-                .as_ref()
-                .and_then(|publication| publication.band_layout.get(band))
-                .or_else(|| self.chrome_layout.get(band))
-                .map_or([1, 1], |layout| layout.3);
-            let plan = CompositingPlan::layered(
-                [0.0, 0.0, 0.0, 0.0],
-                vec![PlanLayer::Chrome {
-                    id: band as u64,
-                    rectangle: Rect::new(0, 0, size[0].max(1), size[1].max(1)),
-                }],
-            );
-            compositor
-                .present_with_webrtc(&plan, None)
-                .map_err(|error| error.to_string())?;
-            self.chrome_dirty.remove(&band);
-        }
-        if self.chrome_dirty.is_empty()
-            && let Some(publication) = self.pending_shell_publication.take()
-        {
-            let previous_bands = self.chrome_bands.len();
-            let bands_changed = previous_bands != publication.band_count;
-            let offsets_changed = self.chrome_offsets != publication.band_offsets;
-            let layout_changed = self.chrome_layout != publication.band_layout;
-
-            self.chrome_bands = (0..publication.band_count).collect();
-            self.chrome_offsets = publication.band_offsets;
-            self.chrome_layout = publication.band_layout;
-            self.composition_content_dirty |= bands_changed || offsets_changed || layout_changed;
-            self.composition_content_dirty |=
-                self.apply_tracked_layout(&publication.surface_layout);
-
-            for band in publication.band_count..previous_bands {
-                if let Some(compositor) = self.render_device.chrome_compositors.get_mut(band) {
-                    compositor.drop_chrome_layer(band as u64);
-                }
-            }
-            self.render_device.shell_worker.acknowledge_publication();
-        }
-        Ok(self.chrome_dirty.is_empty() && !self.render_device.shell_worker.is_pending())
-    }
-
-    pub fn rasterize_shell(&mut self, frame: ShellFrame) -> Result<bool, String> {
-        self.render_device.submit_shell(frame);
-        Ok(true)
-    }
-
     pub fn apply_tracked_layout(&mut self, placements: &[TrackedSurfaceLayout]) -> bool {
         let mut placed = HashSet::new();
         let mut changed = false;
@@ -2156,6 +1172,7 @@ impl GameHost {
                 height: rect.height().round().max(0.0) as u32,
                 pointer_events: true,
                 z_index: placement.z_order,
+                group: placement.group,
                 corner_radius: placement.corner_radius,
                 style: placement.style.clone(),
                 opacity: placement.opacity,
@@ -2189,6 +1206,7 @@ impl GameHost {
                     height: 0,
                     pointer_events: false,
                     z_index: 1,
+                    group: None,
                     corner_radius: 0.0,
                     style: None,
                     opacity: 1.0,
@@ -2216,6 +1234,7 @@ struct SurfaceGeometry {
     height: u32,
     pointer_events: bool,
     z_index: i32,
+    group: Option<u64>,
     corner_radius: f32,
     style: Option<GameViewStyle>,
     opacity: f32,
@@ -2228,6 +1247,7 @@ fn apply_geometry(surface: &mut CapturedSurface, next: SurfaceGeometry) -> bool 
         || surface.viewport_height != next.height
         || surface.pointer_events != next.pointer_events
         || surface.z_index != next.z_index
+        || surface.group != next.group
         || surface.corner_radius != next.corner_radius
         || surface.game_view_style != next.style
         || surface.opacity != next.opacity;
@@ -2238,6 +1258,7 @@ fn apply_geometry(surface: &mut CapturedSurface, next: SurfaceGeometry) -> bool 
         surface.viewport_height = next.height;
         surface.pointer_events = next.pointer_events;
         surface.z_index = next.z_index;
+        surface.group = next.group;
         surface.corner_radius = next.corner_radius;
         surface.game_view_style = next.style;
         surface.opacity = next.opacity;
@@ -2424,116 +1445,6 @@ mod tests {
 
         assert_eq!(content.destination, [0.0, 0.0, 200.0, 100.0]);
         assert_eq!(content.source, [0.5, 0.5, 1.0, 1.0]);
-    }
-
-    #[test]
-    fn shell_renderer_uses_the_self_contained_d3d12_shader_compiler() {
-        let options = shell_instance_options();
-        assert_eq!(options.backends, wgpu::Backends::DX12);
-        assert!(matches!(
-            options.backend_options.dx12.shader_compiler,
-            wgpu::Dx12Compiler::Fxc
-        ));
-    }
-
-    #[test]
-    fn scene_reuse_requires_identical_vello_commands() {
-        let mut scene = vello::Scene::new();
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            vello::peniko::Color::WHITE,
-            None,
-            &kurbo::Rect::new(1.0, 2.0, 30.0, 40.0),
-        );
-        let identical = scene.clone();
-        assert!(same_scene(&scene, &identical));
-
-        let mut changed = identical;
-        changed.encoding_mut().draw_data[0] ^= 1;
-        assert!(!same_scene(&scene, &changed));
-    }
-
-    #[test]
-    fn translated_recorded_scene_can_move_as_one_wuc_visual() {
-        let mut retained = anyrender::Scene::new();
-        retained.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::translate((10.0, 20.0)),
-            peniko::Color::WHITE,
-            None,
-            &kurbo::Rect::new(0.0, 0.0, 100.0, 80.0),
-        );
-        retained.draw_box_shadow(
-            kurbo::Affine::translate((10.0, 20.0)),
-            kurbo::Rect::new(0.0, 0.0, 100.0, 80.0),
-            peniko::Color::BLACK,
-            8.0,
-            12.0,
-        );
-        let mut moved = anyrender::Scene::new();
-        moved.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::translate((25.0, 13.0)),
-            peniko::Color::WHITE,
-            None,
-            &kurbo::Rect::new(0.0, 0.0, 100.0, 80.0),
-        );
-        moved.draw_box_shadow(
-            kurbo::Affine::translate((25.0, 13.0)),
-            kurbo::Rect::new(0.0, 0.0, 100.0, 80.0),
-            peniko::Color::BLACK,
-            8.0,
-            12.0,
-        );
-
-        assert_eq!(
-            translated_scene_offset(&retained, &moved),
-            Some([15.0, -7.0])
-        );
-    }
-
-    #[test]
-    fn independently_moving_commands_do_not_promote_a_whole_band() {
-        let mut retained = anyrender::Scene::new();
-        let mut moved = anyrender::Scene::new();
-        for scene in [&mut retained, &mut moved] {
-            scene.fill(
-                peniko::Fill::NonZero,
-                kurbo::Affine::IDENTITY,
-                peniko::Color::WHITE,
-                None,
-                &kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
-            );
-        }
-        retained.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::translate((20.0, 20.0)),
-            peniko::Color::WHITE,
-            None,
-            &kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
-        );
-        moved.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::translate((40.0, 20.0)),
-            peniko::Color::WHITE,
-            None,
-            &kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
-        );
-
-        assert_eq!(translated_scene_offset(&retained, &moved), None);
-    }
-
-    #[test]
-    fn skipped_shell_frames_preserve_every_damage_transition() {
-        let first = kurbo::Rect::new(10.0, 20.0, 110.0, 120.0);
-        let second = kurbo::Rect::new(300.0, 200.0, 450.0, 350.0);
-        assert_eq!(
-            merge_shell_damage(Some(first), Some(second)),
-            Some(first.union(second))
-        );
-        assert_eq!(merge_shell_damage(None, Some(second)), None);
-        assert_eq!(merge_shell_damage(Some(first), None), None);
     }
 
     #[test]

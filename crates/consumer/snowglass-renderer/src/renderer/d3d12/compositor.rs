@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     error::Error,
     ffi::c_void,
     mem::{ManuallyDrop, size_of},
@@ -11,8 +11,7 @@ use std::{
 };
 
 use crate::renderer::{
-    CompositingPlan, PlanLayer, ReceivedSurface, RenderWindow, SwapchainMode,
-    webrtc::WebRtcCompositor,
+    CompositingPlan, ReceivedSurface, RenderWindow, SwapchainMode, webrtc::WebRtcCompositor,
 };
 use raw_window_handle::RawWindowHandle;
 use snowglass_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
@@ -42,7 +41,6 @@ const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
 /// a swapchain which stops signalling cannot stall an event loop.
 const FRAME_PERMIT_TIMEOUT_MS: u32 = 250;
 const FIRST_CONTENT_DESCRIPTOR: u32 = 0;
-const FIRST_DYNAMIC_DESCRIPTOR: u32 = 64;
 const SWAPCHAIN_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 #[repr(C)]
@@ -274,63 +272,6 @@ impl DisplayLatency {
     }
 }
 
-/// Shell-rasterised pixels the compositor holds so a plan can draw them
-/// between the streams.
-struct ChromeLayer {
-    resource: ID3D12Resource,
-    descriptor: u32,
-    identity: usize,
-}
-
-struct ChromeSource {
-    resource: ID3D12Resource,
-    identity: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChromeOpenAction {
-    KeepPending,
-    CancelPending,
-    ReplacePending,
-}
-
-impl ChromeOpenAction {
-    fn for_identities(identity: usize, held: Option<usize>, pending: Option<usize>) -> Self {
-        if pending == Some(identity) {
-            Self::KeepPending
-        } else if held == Some(identity) {
-            Self::CancelPending
-        } else {
-            Self::ReplacePending
-        }
-    }
-}
-
-impl ChromeSource {
-    fn queue_open(
-        self,
-        id: u64,
-        held: Option<usize>,
-        opens: &mut Vec<(u64, Self)>,
-        removals: &mut Vec<u64>,
-    ) {
-        let pending = opens
-            .iter()
-            .find_map(|(pending_id, source)| (*pending_id == id).then_some(source.identity));
-        match ChromeOpenAction::for_identities(self.identity, held, pending) {
-            ChromeOpenAction::KeepPending => return,
-            ChromeOpenAction::CancelPending => {
-                opens.retain(|(pending_id, _)| *pending_id != id);
-            }
-            ChromeOpenAction::ReplacePending => {
-                opens.retain(|(pending_id, _)| *pending_id != id);
-                opens.push((id, self));
-            }
-        }
-        removals.retain(|pending_id| *pending_id != id);
-    }
-}
-
 pub struct D3d12Compositor {
     receiver: D3d12Receiver,
     mode: SwapchainMode,
@@ -355,19 +296,11 @@ pub struct D3d12Compositor {
     fence_value: u64,
     frame_values: [u64; FRAME_COUNT],
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
-    frame_descriptors: [Vec<u32>; FRAME_COUNT],
     frame_uploads: [UploadArena; FRAME_COUNT],
     surfaces: Vec<ImportedSurface>,
     // Standalone copy submission used to bound keyed-mutex holds; the main
     // command list executes too late to release the mutex promptly.
     mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
-    chrome: HashMap<u64, ChromeLayer>,
-    /// Chrome handed over since the last frame. Creating its descriptor waits
-    /// for the start of a frame because a slot cannot be reused while an
-    /// in-flight frame still refers to it.
-    chrome_opens: Vec<(u64, ChromeSource)>,
-    chrome_removals: Vec<u64>,
-    free_descriptors: Vec<u32>,
     display_latency: DisplayLatency,
     /// QPC ticks per second, for turning vblank stamps into milliseconds.
     counter_frequency: f64,
@@ -602,32 +535,6 @@ impl D3d12Compositor {
         )
     }
 
-    /// Creates a transparent composition swapchain on a retained device and
-    /// queue. This is intended for independently presented UI/chrome visuals:
-    /// transparent pixels expose lower Windows.UI.Composition visuals without
-    /// requiring the guest image to be copied into the UI swapchain.
-    ///
-    /// # Safety
-    ///
-    /// See [`D3d12ConsumerDevice::from_external`].
-    pub unsafe fn new_for_transparent_composition_from_external(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-        device: *mut c_void,
-        queue: *mut c_void,
-    ) -> Result<Self, Box<dyn Error>> {
-        let consumer = unsafe { D3d12ConsumerDevice::from_external(adapter, device, queue)? };
-        Self::with_consumer(
-            window,
-            consumer,
-            SwapchainTarget::Composition {
-                transparent: true,
-                sync_interval: 0,
-            },
-            SwapchainMode::Shared,
-        )
-    }
-
     /// Creates an opaque composition swapchain dedicated to one captured
     /// connection on a caller-owned D3D12 device and queue. The swapchain can
     /// be attached directly to a Windows.UI.Composition visual.
@@ -792,14 +699,9 @@ impl D3d12Compositor {
                 fence_value: 0,
                 frame_values: [0; FRAME_COUNT],
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
-                frame_descriptors: std::array::from_fn(|_| Vec::new()),
                 frame_uploads: std::array::from_fn(|_| UploadArena::new()),
                 surfaces: Vec::new(),
                 mutex_copy: None,
-                chrome: HashMap::new(),
-                chrome_opens: Vec::new(),
-                chrome_removals: Vec::new(),
-                free_descriptors: (FIRST_DYNAMIC_DESCRIPTOR..DESCRIPTOR_COUNT).rev().collect(),
                 display_latency: DisplayLatency::default(),
                 counter_frequency: counter_frequency(),
             })
@@ -1117,25 +1019,11 @@ impl D3d12Compositor {
         // The fence above is what makes reusing these bytes safe: the GPU has
         // finished every draw that read from this frame's arena.
         self.frame_uploads[frame_index].reset();
-        self.free_descriptors
-            .append(&mut self.frame_descriptors[frame_index]);
         let allocator = &self.allocators[frame_index];
         unsafe {
             allocator.Reset()?;
             self.command_list
                 .Reset(allocator, Some(&self.content_pipeline))?;
-        }
-
-        self.upload_chrome(frame_index)?;
-        unsafe {
-            for layer in self.chrome.values() {
-                transition(
-                    &self.command_list,
-                    &layer.resource,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                );
-            }
         }
 
         let mut release_values = Vec::new();
@@ -1253,14 +1141,6 @@ impl D3d12Compositor {
         let backbuffer = self.backbuffers[frame_index].clone();
         let clear_color = plan.clear_color();
         unsafe {
-            for layer in self.chrome.values() {
-                transition(
-                    &self.command_list,
-                    &layer.resource,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                );
-            }
             transition(
                 &self.command_list,
                 &backbuffer,
@@ -1280,7 +1160,7 @@ impl D3d12Compositor {
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
 
-        if !plan.layers().is_empty() {
+        if plan.placements().next().is_some() {
             self.draw_content(frame_index, plan)?;
         }
         record(&mut D3d12RenderPass {
@@ -1365,8 +1245,7 @@ impl D3d12Compositor {
     ) -> Result<(), Box<dyn Error>> {
         // Painter order follows the plan, not the order streams happened to be
         // imported in, so a shell that stacks surfaces gets the z-order it
-        // asked for. Chrome is interleaved rather than drawn first, because a
-        // stream can have chrome both below and above it.
+        // asked for.
         let corners = |rect: [f32; 4]| {
             (
                 rect[0] / self.extent.0 as f32 * 2.0 - 1.0,
@@ -1376,81 +1255,48 @@ impl D3d12Compositor {
             )
         };
         let draws = plan
-            .layers()
-            .iter()
-            .filter_map(|layer| match layer {
-                PlanLayer::Surface(placement) => {
-                    if placement.content.opacity <= 0.0
-                        || placement.content.destination[2] <= placement.content.destination[0]
-                        || placement.content.destination[3] <= placement.content.destination[1]
-                    {
-                        return None;
-                    }
-                    let surface = self.surfaces.iter().find(|surface| {
-                        surface.connection == placement.connection
-                            && surface.surface_id == placement.surface_id
-                    })?;
-                    let frame = surface.display_frame?;
-                    let (crop_w, crop_h) = crate::fit_inside(
-                        frame.render_width.max(1),
-                        frame.render_height.max(1),
-                        surface.imported.width,
-                        surface.imported.height,
-                    );
-                    let (l, t, r, b) = corners(placement.content.destination);
-                    let u = crop_w as f32 / surface.imported.width as f32;
-                    let v = crop_h as f32 / surface.imported.height as f32;
-                    let width = placement.content.destination[2] - placement.content.destination[0];
-                    let height =
-                        placement.content.destination[3] - placement.content.destination[1];
-                    let opacity = (placement.content.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    Some((
-                        placement.corner_radius > 0.0 || opacity < 255,
-                        surface.descriptor,
-                        quad(
-                            l,
-                            t,
-                            r,
-                            b,
-                            u,
-                            v,
-                            placement.content.source,
-                            surface.flip_y,
-                            surface.quarter_turns,
-                            [255, 255, 255, opacity],
-                            [width, height, placement.corner_radius, 0.0],
-                        ),
-                    ))
+            .placements()
+            .filter_map(|placement| {
+                if placement.content.opacity <= 0.0
+                    || placement.content.destination[2] <= placement.content.destination[0]
+                    || placement.content.destination[3] <= placement.content.destination[1]
+                {
+                    return None;
                 }
-                PlanLayer::Chrome { id, rectangle } => {
-                    let layer = self.chrome.get(id)?;
-                    let (l, t, r, b) = corners([
-                        rectangle.x as f32,
-                        rectangle.y as f32,
-                        rectangle.x as f32 + rectangle.width as f32,
-                        rectangle.y as f32 + rectangle.height as f32,
-                    ]);
-                    // Chrome is mostly transparent by design — a band covering
-                    // only a bezel is empty everywhere else — so it composites
-                    // rather than overwriting what is already there.
-                    Some((
-                        true,
-                        layer.descriptor,
-                        quad(
-                            l,
-                            t,
-                            r,
-                            b,
-                            1.0,
-                            1.0,
-                            [0.0, 0.0, 1.0, 1.0],
-                            false,
-                            0,
-                            [255; 4],
-                            [rectangle.width as f32, rectangle.height as f32, 0.0, 1.0],
-                        ),
-                    ))
-                }
+                let surface = self.surfaces.iter().find(|surface| {
+                    surface.connection == placement.connection
+                        && surface.surface_id == placement.surface_id
+                })?;
+                let frame = surface.display_frame?;
+                let (crop_w, crop_h) = crate::fit_inside(
+                    frame.render_width.max(1),
+                    frame.render_height.max(1),
+                    surface.imported.width,
+                    surface.imported.height,
+                );
+                let (l, t, r, b) = corners(placement.content.destination);
+                let u = crop_w as f32 / surface.imported.width as f32;
+                let v = crop_h as f32 / surface.imported.height as f32;
+                let width = placement.content.destination[2] - placement.content.destination[0];
+                let height = placement.content.destination[3] - placement.content.destination[1];
+                let opacity = (placement.content.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                Some((
+                    placement.corner_radius > 0.0 || opacity < 255,
+                    surface.descriptor,
+                    quad(
+                        l,
+                        t,
+                        r,
+                        b,
+                        u,
+                        v,
+                        placement.content.source,
+                        surface.flip_y,
+                        surface.quarter_turns,
+                        [255, 255, 255, opacity],
+                        [width, height, placement.corner_radius, 0.0],
+                    ),
+                ))
             })
             .collect::<Vec<_>>();
         let mut blending = None;
@@ -1530,90 +1376,6 @@ impl D3d12Compositor {
             self.command_list.IASetIndexBuffer(Some(&ibv));
             self.command_list
                 .DrawIndexedInstanced(indices.len() as u32, 1, 0, 0, 0);
-        }
-        Ok(())
-    }
-
-    /// Hands the compositor an owned reference to a device-local texture drawn
-    /// wherever a plan places [`PlanLayer::Chrome`] with this `id`.
-    ///
-    /// # Safety
-    ///
-    /// `resource` must carry one owned, ABI-compatible `ID3D12Resource` COM
-    /// reference created on this compositor's device. Ownership transfers to
-    /// the compositor.
-    pub unsafe fn set_chrome_layer_resource(
-        &mut self,
-        id: u64,
-        resource: *mut c_void,
-        width: u32,
-        height: u32,
-    ) {
-        if width == 0 || height == 0 || resource.is_null() {
-            return;
-        }
-        let source = ChromeSource {
-            resource: unsafe { ID3D12Resource::from_raw(resource) },
-            identity: resource as usize,
-        };
-        source.queue_open(
-            id,
-            self.chrome.get(&id).map(|held| held.identity),
-            &mut self.chrome_opens,
-            &mut self.chrome_removals,
-        );
-    }
-
-    /// Releases a chrome layer the shell has stopped drawing.
-    pub fn drop_chrome_layer(&mut self, id: u64) {
-        self.chrome_opens.retain(|(existing, _)| *existing != id);
-        if self.chrome.contains_key(&id) && !self.chrome_removals.contains(&id) {
-            self.chrome_removals.push(id);
-        }
-    }
-
-    /// Whether anything is holding chrome, so a shell can tell an empty layer
-    /// from one it has not supplied yet.
-    pub fn has_chrome(&self) -> bool {
-        !self.chrome.is_empty() || !self.chrome_opens.is_empty()
-    }
-
-    fn upload_chrome(&mut self, frame_index: usize) -> Result<(), Box<dyn Error>> {
-        for id in std::mem::take(&mut self.chrome_removals) {
-            if let Some(layer) = self.chrome.remove(&id) {
-                self.frame_descriptors[frame_index].push(layer.descriptor);
-                self.frame_garbage[frame_index].push(layer.resource);
-            }
-        }
-        for (id, source) in std::mem::take(&mut self.chrome_opens) {
-            // Never overwrite a shader-visible descriptor still referenced by
-            // another in-flight frame. Its old slot is recycled with that frame.
-            let descriptor = self
-                .free_descriptors
-                .pop()
-                .ok_or("descriptor heap exhausted opening chrome")?;
-            let resource = source.resource;
-            // SAFETY: the descriptor slot is free and the resource outlives it.
-            unsafe {
-                create_srv(
-                    self.receiver.device(),
-                    &self.srv_heap,
-                    self.srv_stride,
-                    descriptor,
-                    &resource,
-                )
-            };
-            if let Some(old) = self.chrome.insert(
-                id,
-                ChromeLayer {
-                    resource,
-                    descriptor,
-                    identity: source.identity,
-                },
-            ) {
-                self.frame_descriptors[frame_index].push(old.descriptor);
-                self.frame_garbage[frame_index].push(old.resource);
-            }
         }
         Ok(())
     }
@@ -2154,26 +1916,10 @@ fn as_bytes<T>(items: &[T]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChromeOpenAction, DisplayLatency, UploadArena, compile, compositor_shader, quad};
+    use super::{DisplayLatency, UploadArena, compile, compositor_shader, quad};
 
     /// One tick of the QPC clock per millisecond, so latencies read directly.
     const TEST_FREQUENCY: f64 = 1000.0;
-
-    #[test]
-    fn chrome_open_action_coalesces_by_resource_identity() {
-        assert_eq!(
-            ChromeOpenAction::for_identities(2, Some(1), Some(2)),
-            ChromeOpenAction::KeepPending
-        );
-        assert_eq!(
-            ChromeOpenAction::for_identities(1, Some(1), Some(2)),
-            ChromeOpenAction::CancelPending
-        );
-        assert_eq!(
-            ChromeOpenAction::for_identities(3, Some(1), Some(2)),
-            ChromeOpenAction::ReplacePending
-        );
-    }
 
     #[test]
     fn a_vblank_dates_only_the_present_it_named() {

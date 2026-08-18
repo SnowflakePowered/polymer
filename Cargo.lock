@@ -2110,15 +2110,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cssparser-color"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbaa233e1dcd9c13a5d3e3a8a2c0f5a727bac380398345dbcb31db4597edc86b"
-dependencies = [
- "cssparser 0.37.0",
-]
-
-[[package]]
 name = "cssparser-macros"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9713,39 +9704,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snowglass-viewer"
-version = "0.1.0"
-dependencies = [
- "ash",
- "consolespec",
- "cssparser 0.37.0",
- "cssparser-color",
- "egui",
- "egui-winit",
- "parking_lot",
- "raw-window-handle",
- "regex",
- "serde_json",
- "snowglass-egui",
- "snowglass-input",
- "snowglass-input-dinput",
- "snowglass-ipc",
- "snowglass-platform-windows",
- "snowglass-protocol",
- "snowglass-renderer",
- "snowglass-runtime",
- "snowglass-statistics",
- "snowglass-ui",
- "taffy",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "webrtc",
- "windows 0.61.3",
- "winit",
-]
-
-[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10706,7 +10664,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "340a09581f29809fc0df82a3955501dc7f2a21f887e5d1c13dbe288fe1c0bef4"
 dependencies = [
  "arrayvec",
- "cssparser 0.37.0",
  "grid",
  "serde",
  "slotmap",

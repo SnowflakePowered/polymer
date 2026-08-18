@@ -16,7 +16,10 @@ mod mutations;
 mod providers;
 mod tracked_surface;
 
-use crate::shell_dom::{ShellChromeLayer, ShellFrame, ShellHitSnapshot, TrackedSurfaceLayout};
+use crate::shell_dom::{
+    RasterChunkId, ShellCompositionGroup, ShellFrame, ShellHitSnapshot, ShellRasterChunk,
+    TrackedSurfaceLayout,
+};
 use crate::shell_runtime::ShellRuntime;
 use anyrender::PaintScene as _;
 use bands::BandedScene;
@@ -25,9 +28,9 @@ use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
+use mutations::apply_dom_mutations;
 #[cfg(test)]
 use mutations::style_change_requires_geometry;
-use mutations::{ContainedDamage, apply_dom_mutations, visual_damage_rect};
 use providers::NativeShellProvider;
 use std::{
     collections::HashMap,
@@ -78,13 +81,6 @@ pub struct ShellDocument {
     /// Set whenever layout or content changed, so a paint is only spent when
     /// something can differ. Guest frames arriving do not dirty this layer.
     dirty: bool,
-    /// Damage accumulated for mutations below a CSS layout/paint containment
-    /// boundary. Any uncontained change sets `full_repaint` and discards it.
-    partial_damage: Option<kurbo::Rect>,
-    /// Containment boundaries whose old bounds were captured before a pending
-    /// style resolve. Their new bounds complete the damage union afterwards.
-    contained_damage: Vec<ContainedDamage>,
-    full_repaint: bool,
     /// Style/tree mutations need Stylo and Taffy.
     needs_resolve: bool,
     /// Geometry snapshots are only needed when layout may have changed.
@@ -113,18 +109,7 @@ impl ShellDocumentFactory {
         Self { event_proxy }
     }
 
-    /// `views` is how many game views the document can show; it fixes the
-    /// number of chrome bands, which is one more than that. The document names
-    /// each one by its `<tracked-surface src>`, so this is a capacity, not a
-    /// mapping.
-    pub fn create(
-        &self,
-        html: &str,
-        base_url: String,
-        views: usize,
-        width: u32,
-        height: u32,
-    ) -> ShellDocument {
+    pub fn create(&self, html: &str, base_url: String, width: u32, height: u32) -> ShellDocument {
         let (sender, arrivals) = channel();
         let proxy = self.event_proxy.clone();
         let waker: Arc<dyn NetWaker> = Arc::new(move |_| {
@@ -156,14 +141,11 @@ impl ShellDocumentFactory {
         let mut document = ShellDocument {
             document,
             arrivals,
-            bands: (0..=views).map(|_| anyrender::Scene::new()).collect(),
+            bands: vec![anyrender::Scene::new()],
             placements: Vec::new(),
             width: 0,
             height: 0,
             dirty: true,
-            partial_damage: None,
-            contained_damage: Vec::new(),
-            full_repaint: true,
             needs_resolve: true,
             needs_geometry_sync: true,
             animation_epoch: std::time::Instant::now(),
@@ -203,9 +185,6 @@ impl ShellDocument {
                 blitz_traits::shell::ColorScheme::Dark,
             ));
         self.dirty = true;
-        self.full_repaint = true;
-        self.partial_damage = None;
-        self.contained_damage.clear();
         self.needs_resolve = true;
         self.needs_geometry_sync = true;
     }
@@ -216,9 +195,6 @@ impl ShellDocument {
     /// because the replacement device must create fresh local chrome textures.
     pub fn invalidate(&mut self) {
         self.dirty = true;
-        self.full_repaint = true;
-        self.partial_damage = None;
-        self.contained_damage.clear();
     }
 
     pub fn needs_paint(&self) -> bool {
@@ -293,9 +269,7 @@ impl ShellDocument {
         // next. The bound is there because a document that somehow kept asking
         // for more must not spin the shell.
         if assets_arrived {
-            self.full_repaint = true;
-            self.partial_damage = None;
-            self.contained_damage.clear();
+            self.needs_geometry_sync = true;
         }
         if assets_arrived || self.needs_resolve {
             self.needs_resolve = false;
@@ -312,20 +286,12 @@ impl ShellDocument {
             let resolved = resolve_started.elapsed();
             let sync_started = std::time::Instant::now();
             if std::mem::take(&mut self.needs_geometry_sync) {
-                let geometry_roots = (!self.full_repaint)
-                    .then(|| {
-                        self.contained_damage
-                            .iter()
-                            .map(|damage| damage.node)
-                            .collect::<Vec<_>>()
-                    })
-                    .filter(|roots| !roots.is_empty());
                 runtime.sync(
                     self.document.as_ref(),
                     self.width,
                     self.height,
                     &self.dom_to_script,
-                    geometry_roots.as_deref(),
+                    None,
                 );
             }
             if std::env::var_os(PAINT_TIMING).is_some() {
@@ -335,18 +301,6 @@ impl ShellDocument {
                     sync_started.elapsed().as_secs_f64() * 1000.0,
                 );
             }
-            if !self.full_repaint {
-                for contained in self.contained_damage.drain(..) {
-                    let after = visual_damage_rect(self.document.as_ref(), contained.node);
-                    let damage = contained.before.union(after);
-                    self.partial_damage = Some(
-                        self.partial_damage
-                            .map_or(damage, |current| current.union(damage)),
-                    );
-                }
-            } else {
-                self.contained_damage.clear();
-            }
         }
         // Blitz counts every custom widget as permanently animating. A tracked
         // surface is a retained compositor placeholder, not animated shell
@@ -355,7 +309,7 @@ impl ShellDocument {
         // invalidate the shell when its chrome actually changes.
 
         let started = std::time::Instant::now();
-        let (used, overflowed, fragments) = {
+        let (used, output) = {
             let mut scene = BandedScene::new(&mut self.bands, &mut self.placements);
             // blitz-paint 0.3 deliberately leaves scene lifetime to its
             // caller. Reusing our retained Vello scenes without resetting
@@ -372,18 +326,10 @@ impl ShellDocument {
                 0,
             );
             let used = scene.bands_used();
-            let overflowed = scene.overflowed();
-            let fragments = scene.take_fragments();
-            (used, overflowed, fragments)
+            let output = scene.take_compositing_output();
+            (used, output)
         };
         apply_tracked_surface_styles(self.document.as_ref(), &mut self.placements);
-        if overflowed {
-            tracing::error!(
-                "snowglass: the game layer shows more than {} views, so the ones past that \
-                 cannot be stacked against the chrome between them",
-                self.bands.len() - 1
-            );
-        }
         let encoded = started.elapsed();
         if std::env::var_os(PAINT_TIMING).is_some() {
             tracing::error!(
@@ -393,17 +339,16 @@ impl ShellDocument {
                 encoded.as_secs_f64() * 1000.0,
             );
         }
-        let damage = (!self.full_repaint)
-            .then_some(self.partial_damage)
-            .flatten();
         // Flatten the exact paint sequence into independent chrome visuals and
         // tracked surfaces. Fragments from the same original band no longer
         // share a full-window texture merely because no guest surface happened
         // to separate them.
-        let mut chrome_bands = Vec::new();
+        let mut raster_chunks = Vec::new();
         let mut surface_layout = Vec::new();
         let mut z_order = 0i32;
-        let mut fragments = fragments.into_iter().peekable();
+        let mut group_first_z = HashMap::<u64, i32>::new();
+        let mut chunk_ordinals = HashMap::<Option<u64>, u32>::new();
+        let mut fragments = output.fragments.into_iter().peekable();
         for band in 0..used {
             while fragments
                 .peek()
@@ -413,12 +358,26 @@ impl ShellDocument {
                 let viewport =
                     kurbo::Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
                 let bounds = chrome_fragment_bounds(fragment.bounds, viewport);
-                chrome_bands.push(ShellChromeLayer {
-                    scene: fragment.scene,
+                let mut local_scene = anyrender::Scene::with_tolerance(fragment.scene.tolerance);
+                local_scene.append_scene(
+                    fragment.scene,
+                    kurbo::Affine::translate((-bounds.x0, -bounds.y0)),
+                );
+                if let Some(group) = fragment.group {
+                    group_first_z.entry(group).or_insert(z_order);
+                }
+                let ordinal = chunk_ordinals.entry(fragment.group).or_default();
+                let id = RasterChunkId {
+                    owner: fragment.group,
+                    ordinal: *ordinal,
+                };
+                *ordinal += 1;
+                raster_chunks.push(ShellRasterChunk {
+                    id,
+                    scene: local_scene,
                     bounds,
                     z_order,
                     group: fragment.group,
-                    shadow: fragment.shadow,
                 });
                 z_order += 1;
             }
@@ -435,21 +394,35 @@ impl ShellDocument {
                     source_id: placement.source_id,
                     bounds: placement.rect,
                     z_order,
+                    group: placement.group,
                     corner_radius: placement.corner_radius,
                     style: placement.style.clone(),
                     opacity: placement.opacity,
                 });
+                if let Some(group) = placement.group {
+                    group_first_z.entry(group).or_insert(z_order);
+                }
                 z_order += 1;
             }
         }
-        self.full_repaint = false;
-        self.partial_damage = None;
+        let composition_groups = output
+            .groups
+            .into_iter()
+            .map(|group| ShellCompositionGroup {
+                id: group.id,
+                parent: group.parent,
+                bounds: group.bounds,
+                z_order: group_first_z.get(&group.id).copied().unwrap_or(i32::MAX),
+                opacity: group.opacity,
+                shadow: group.shadow,
+            })
+            .collect();
         Some(ShellFrame {
-            chrome_bands,
+            raster_chunks,
+            composition_groups,
             surface_layout,
             width: self.width,
             height: self.height,
-            damage,
         })
     }
 }
@@ -482,13 +455,6 @@ impl ShellDocument {
         self.dirty = true;
         self.needs_resolve |= effect.needs_resolve;
         self.needs_geometry_sync |= effect.needs_geometry_sync;
-        if effect.unbounded {
-            self.full_repaint = true;
-            self.partial_damage = None;
-            self.contained_damage.clear();
-        } else if !self.full_repaint {
-            self.contained_damage.extend(effect.contained);
-        }
     }
 }
 

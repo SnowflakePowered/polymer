@@ -1,11 +1,12 @@
 use crate::cli;
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
-use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand, ShellRasterizer};
+use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
 use crate::input::{InputPriority, InputRouter, InputTransport, KeyboardTarget};
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
+use crate::shell_compositor::{ShellCompositor, ShellRasterizer};
 use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use crate::shell_dom::{ShellSession, ShellSessionFactory};
 use crate::shell_runtime::{
@@ -41,13 +42,6 @@ pub(crate) use crate::commands::UserEvent;
 const MAX_CAPTURE_EVENTS_PER_TURN: usize = 32;
 /// Composition-tree key for the single visual every stream shares when the
 /// shell composites them together. Not a real connection.
-/// How many game views the layer document may show at once.
-///
-/// This fixes how many chrome bands are kept, which is one more than the view
-/// count. Overshooting costs a command buffer each and nothing per frame, so it
-/// is set well above what a console layout needs rather than derived from the
-/// document, which can change under us.
-const SHELL_SURFACE_CAPACITY: usize = 8;
 const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 
 /// How long a compositor-clock tick waits for DXGI to return a present slot.
@@ -71,6 +65,7 @@ struct ShellCoordinator {
     session: String,
     proxy: EventLoopProxy<UserEvent>,
     game_host: GameHost,
+    shell_compositor: ShellCompositor,
     input: InputRouter,
     notifications: Option<SnowglassNotificationSender>,
     startup_request: Option<serde_json::Value>,
@@ -109,16 +104,16 @@ impl ShellCoordinator {
                 .map(|options| serde_json::json!({ "kind": "launch", "options": options })),
         };
 
-        let mut window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
-        let size = window.size();
-        let (game_host, composition_content) = {
-            let render_window = window.surface(size.width.max(1), size.height.max(1));
+        let window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
+        let compositor = window.compositor();
+        let (game_host, shell_compositor) = {
             // Prepare the retained Vello renderer before the first shell frame.
-            let game_host = GameHost::new(&render_window, shell_rasterizer)?;
-            let composition_content = game_host.composition_content(size.width, size.height)?;
-            (game_host, composition_content)
+            let mut shell_compositor = ShellCompositor::new(&compositor, shell_rasterizer)?;
+            let mut game_host = GameHost::new(shell_compositor.device_context())?;
+            shell_compositor.reconcile(&mut game_host)?;
+            (game_host, shell_compositor)
         };
-        window.set_shell_layers(&composition_content.layers)?;
+        window.set_shell_root(shell_compositor.root_visual())?;
         window.commit()?;
         let session = unique_session();
         let plugin_runtime = shell_factory.plugin_runtime_handle();
@@ -134,6 +129,7 @@ impl ShellCoordinator {
             session,
             proxy,
             game_host,
+            shell_compositor,
             input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
             notifications: None,
             startup_request,
@@ -199,7 +195,6 @@ impl ShellCoordinator {
                         .create(
                             &html,
                             base_url,
-                            SHELL_SURFACE_CAPACITY,
                             size.width,
                             size.height,
                             emulator_commands,

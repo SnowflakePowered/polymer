@@ -15,22 +15,46 @@ use std::future::Future;
 /// Paint output published by Blitz without exposing its document or renderer.
 #[derive(Clone)]
 pub(crate) struct ShellFrame {
-    pub chrome_bands: Vec<ShellChromeLayer>,
+    pub raster_chunks: Vec<ShellRasterChunk>,
+    pub composition_groups: Vec<ShellCompositionGroup>,
     pub surface_layout: Vec<TrackedSurfaceLayout>,
     pub width: u32,
     pub height: u32,
-    /// A mutation inside a CSS paint/layout containment boundary can redraw
-    /// only that boundary's old and new paint bounds. `None` means the whole
-    /// frame changed.
-    pub damage: Option<kurbo::Rect>,
 }
 
 #[derive(Clone)]
-pub(crate) struct ShellChromeLayer {
+pub(crate) struct ShellRasterChunk {
+    pub id: RasterChunkId,
     pub scene: anyrender::Scene,
     pub bounds: Rect,
     pub z_order: i32,
     pub group: Option<u64>,
+}
+
+/// Stable identity for one raster leaf within a retained compositor owner.
+/// Root chrome and each promoted stacking context have independent ordinal
+/// spaces, so unrelated group insertion does not churn existing WUC visuals.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct RasterChunkId {
+    pub owner: Option<u64>,
+    pub ordinal: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RasterChunkLayout {
+    pub id: RasterChunkId,
+    pub bounds: Rect,
+    pub z_order: i32,
+    pub group: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ShellCompositionGroup {
+    pub id: u64,
+    pub parent: Option<u64>,
+    pub bounds: Rect,
+    pub z_order: i32,
+    pub opacity: f32,
     pub shadow: Option<CompositionShadowStyle>,
 }
 
@@ -41,6 +65,7 @@ pub(crate) struct TrackedSurfaceLayout {
     pub source_id: u64,
     pub bounds: Rect,
     pub z_order: i32,
+    pub group: Option<u64>,
     pub corner_radius: f32,
     pub style: Option<GameViewStyle>,
     pub opacity: f32,
@@ -251,7 +276,6 @@ impl ShellSessionFactory {
         self,
         html: &str,
         base_url: String,
-        views: usize,
         width: u32,
         height: u32,
         emulator_commands: crate::shell_runtime::EmulatorCommandSink,
@@ -267,9 +291,7 @@ impl ShellSessionFactory {
         ),
         Box<dyn std::error::Error>,
     > {
-        let mut document = self
-            .document
-            .create(html, base_url.clone(), views, width, height);
+        let mut document = self.document.create(html, base_url.clone(), width, height);
         let (base_document, width, height) = document.runtime_context();
         let (mut runtime, notifications) = ShellRuntime::start(
             base_document,

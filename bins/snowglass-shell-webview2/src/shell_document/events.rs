@@ -120,9 +120,6 @@ impl ShellDocument {
         }
         self.pointer_hover_path = next_path;
         self.dirty = true;
-        self.full_repaint = true;
-        self.partial_damage = None;
-        self.contained_damage.clear();
         self.needs_resolve = true;
         // Hover selectors may legally change layout, so keep this conservative.
         self.needs_geometry_sync = true;

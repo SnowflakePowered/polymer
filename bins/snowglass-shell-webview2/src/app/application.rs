@@ -294,7 +294,7 @@ impl ShellApplication {
                 state.draw_pending_surfaces();
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }
-            if state.game_host.has_pending_chrome() {
+            if state.shell_compositor.is_pending() {
                 state.draw_pending_chrome();
                 deadline = deadline.min(now + PENDING_SURFACE_RETRY);
             }

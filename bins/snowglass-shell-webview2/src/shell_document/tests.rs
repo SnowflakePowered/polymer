@@ -52,12 +52,16 @@ fn tracked_surface_becomes_a_custom_paint_placeholder() {
         })
         .unwrap();
     assert!(surface.custom_widget_data().is_some());
-    let mut scenes = (0..2).map(|_| Scene::new()).collect::<Vec<_>>();
+    let mut scenes = vec![Scene::new()];
     let mut placements = Vec::new();
     let mut scene = BandedScene::new(&mut scenes, &mut placements);
     blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 800, 600, 0, 0);
-    let fragments = scene.take_fragments();
+    let output = scene.take_compositing_output();
+    assert_eq!(scene.bands_used(), 2);
+    let fragments = output.fragments;
+    let groups = output.groups;
     drop(scene);
+    assert_eq!(scenes.len(), 2);
     apply_tracked_surface_styles(document.as_ref(), &mut placements);
     assert_eq!(placements.len(), 1);
     assert_eq!(placements[0].node_id, Some(surface_id));
@@ -85,8 +89,10 @@ fn tracked_surface_becomes_a_custom_paint_placeholder() {
         .expect("a promoted panel publishes tight compositor bounds");
     assert!(panel_bounds.width() < 800.0);
     assert!(panel_bounds.height() < 600.0);
-    let shadow = panel_fragment
-        .shadow
+    let shadow = groups
+        .iter()
+        .find(|group| Some(group.id) == placements[0].group)
+        .and_then(|group| group.shadow)
         .expect("the outset shadow is owned by the native panel visual");
     assert_eq!(shadow.offset, [0.0, 16.0]);
     assert_eq!(shadow.blur_radius, 40.0);
@@ -157,7 +163,8 @@ fn tracked_surface_group_owns_explicit_clip_path_chrome() {
     let mut placements = Vec::new();
     let mut scene = BandedScene::new(&mut scenes, &mut placements);
     blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 1280, 720, 0, 0);
-    let fragments = scene.take_fragments();
+    let output = scene.take_compositing_output();
+    let fragments = output.fragments;
 
     let placement = placements.first().expect("tracked surface placement");
     let group = placement.group.expect("enclosing compositor group");
@@ -337,98 +344,6 @@ fn pointer_hit_does_not_let_scroll_overflow_steal_a_header_button() {
 }
 
 #[test]
-fn contained_style_change_uses_the_nearest_css_paint_boundary() {
-    let html = r#"
-            <style>
-              #island { position: fixed; left: 100px; top: 80px; width: 520px;
-                        height: 340px; contain: layout paint; }
-            </style>
-            <div id="island"><div id="child"></div></div>
-        "#;
-    let mut document =
-        blitz_html::HtmlDocument::from_html(html, blitz_dom::DocumentConfig::default());
-    document
-        .as_mut()
-        .set_viewport(blitz_traits::shell::Viewport::new(
-            800,
-            600,
-            1.0,
-            blitz_traits::shell::ColorScheme::Dark,
-        ));
-    document.as_mut().resolve(1.0);
-    let find = |id| {
-        document
-            .as_ref()
-            .tree()
-            .iter()
-            .find_map(|(node, current)| {
-                (current.attr(local_name!("id")) == Some(id)).then_some(node)
-            })
-            .unwrap()
-    };
-    let island = find("island");
-    let child = find("child");
-    let mut script_to_dom = document
-        .as_ref()
-        .tree()
-        .iter()
-        .map(|(id, _)| (id, id))
-        .collect::<HashMap<_, _>>();
-    let mut dom_to_script = script_to_dom.clone();
-
-    let effect = apply_dom_mutations(
-        &mut document,
-        &mut script_to_dom,
-        &mut dom_to_script,
-        vec![deno::Mutation::SetAttribute {
-            node: child,
-            name: "style".to_owned(),
-            value: "color: white".to_owned(),
-        }],
-    );
-    assert!(effect.needs_resolve);
-    assert!(!effect.unbounded);
-    assert_eq!(effect.contained.len(), 1);
-    assert_eq!(effect.contained[0].node, island);
-    assert!(effect.contained[0].before.width() > 520.0);
-}
-
-#[test]
-fn uncontained_style_change_requires_a_full_repaint() {
-    let mut document = blitz_html::HtmlDocument::from_html(
-        r#"<div id="ordinary"></div>"#,
-        blitz_dom::DocumentConfig::default(),
-    );
-    document.as_mut().resolve(1.0);
-    let node = document
-        .as_ref()
-        .tree()
-        .iter()
-        .find_map(|(id, node)| (node.attr(local_name!("id")) == Some("ordinary")).then_some(id))
-        .unwrap();
-    let mut script_to_dom = document
-        .as_ref()
-        .tree()
-        .iter()
-        .map(|(id, _)| (id, id))
-        .collect::<HashMap<_, _>>();
-    let mut dom_to_script = script_to_dom.clone();
-    let effect = apply_dom_mutations(
-        &mut document,
-        &mut script_to_dom,
-        &mut dom_to_script,
-        vec![deno::Mutation::SetAttribute {
-            node,
-            name: "class".to_owned(),
-            value: "changed".to_owned(),
-        }],
-    );
-    assert!(effect.needs_resolve);
-    assert!(effect.unbounded);
-    assert!(effect.contained.is_empty());
-}
-
-#[test]
 fn paint_only_inline_styles_do_not_require_geometry_sync() {
     assert!(!style_change_requires_geometry(
         Some("transform: translate(10px, 20px); opacity: 0.5"),
@@ -540,9 +455,6 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                     width: 800,
                     height: 600,
                     dirty: true,
-                    partial_damage: None,
-                    contained_damage: Vec::new(),
-                    full_repaint: true,
                     needs_resolve: true,
                     needs_geometry_sync: true,
                     animation_epoch: std::time::Instant::now(),

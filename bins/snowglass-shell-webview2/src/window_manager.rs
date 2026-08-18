@@ -2,7 +2,6 @@
 
 #![allow(unsafe_code)]
 
-use crate::game_host::{CompositionLayer, CompositionLayerId, CompositionLayerStretch};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use snowglass_egui::{D3d12EguiPainter, DebugOverlayModel, InputDiagnostics, draw_debug_overlay};
 use snowglass_platform_windows::{performance_counter, performance_frequency};
@@ -22,9 +21,8 @@ use std::{
 use windows::{
     System::DispatcherQueueController,
     UI::Composition::{
-        CompositionShadow, CompositionStretch, CompositionSurfaceBrush, Compositor,
-        ContainerVisual, Core::CompositorController, Desktop::DesktopWindowTarget, DropShadow,
-        SpriteVisual,
+        CompositionStretch, Compositor, ContainerVisual, Core::CompositorController,
+        Desktop::DesktopWindowTarget, SpriteVisual,
     },
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, WAIT_FAILED, WAIT_OBJECT_0},
@@ -41,7 +39,7 @@ use windows::{
     },
     core::{IUnknown, Interface},
 };
-use windows_numerics::{Vector2, Vector3};
+use windows_numerics::Vector2;
 
 /// Initialises the Windows Runtime apartment used by the desktop visual layer.
 /// The shell owns one current-thread apartment for its entire event loop.
@@ -749,6 +747,10 @@ impl WindowManager {
         SurfaceWindow::new(&self.window, width, height)
     }
 
+    pub fn compositor(&self) -> Compositor {
+        self.composition.compositor.clone()
+    }
+
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }
@@ -773,8 +775,8 @@ impl WindowManager {
         );
     }
 
-    pub fn set_shell_layers(&mut self, layers: &[CompositionLayer]) -> windows::core::Result<()> {
-        self.composition.set_shell_layers(layers)
+    pub fn set_shell_root(&self, root: &ContainerVisual) -> windows::core::Result<()> {
+        self.composition.set_shell_root(root)
     }
 
     pub fn commit(&self) -> windows::core::Result<()> {
@@ -877,14 +879,6 @@ struct CompositionTree {
     _target: DesktopWindowTarget,
     root: ContainerVisual,
     overlay: SpriteVisual,
-    layers: HashMap<CompositionLayerId, CompositionVisual>,
-    layer_order: Vec<CompositionLayerId>,
-}
-
-struct CompositionVisual {
-    visual: SpriteVisual,
-    brush: CompositionSurfaceBrush,
-    shadow: Option<DropShadow>,
 }
 
 /// Opaque native host-window target. Native handle extraction and operations
@@ -932,8 +926,6 @@ impl CompositionTree {
             _target: target,
             root,
             overlay,
-            layers: HashMap::new(),
-            layer_order: Vec::new(),
         })
     }
 
@@ -946,113 +938,11 @@ impl CompositionTree {
         self.overlay.SetBrush(&brush)
     }
 
-    /// Reconciles the exact Blitz paint sequence into retained WUC visuals.
-    /// Layer inputs arrive back-to-front: band, tracked surface, next band.
-    /// Moving or resizing a tracked surface changes only visual properties.
-    pub fn set_shell_layers(
-        &mut self,
-        layers: &[CompositionLayer],
-    ) -> Result<(), windows::core::Error> {
+    pub fn set_shell_root(&self, shell: &ContainerVisual) -> windows::core::Result<()> {
         let children = self.root.Children()?;
-        let next_order = layers.iter().map(|layer| layer.id).collect::<Vec<_>>();
-        let order_changed = self.layer_order != next_order;
-        if order_changed {
-            for id in &self.layer_order {
-                if let Some(visual) = self.layers.get(id) {
-                    children.Remove(&visual.visual)?;
-                }
-            }
-        }
-        let live = next_order
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        self.layers.retain(|id, _| live.contains(id));
-
-        for layer in layers {
-            let retained = if let Some(visual) = self.layers.get(&layer.id) {
-                CompositionVisual {
-                    visual: visual.visual.clone(),
-                    brush: visual.brush.clone(),
-                    shadow: visual.shadow.clone(),
-                }
-            } else {
-                let visual = self.compositor.CreateSpriteVisual()?;
-                let brush = self.surface_brush(&layer.content)?;
-                visual.SetBrush(&brush)?;
-                let retained = CompositionVisual {
-                    visual,
-                    brush,
-                    shadow: None,
-                };
-                self.layers.insert(
-                    layer.id,
-                    CompositionVisual {
-                        visual: retained.visual.clone(),
-                        brush: retained.brush.clone(),
-                        shadow: None,
-                    },
-                );
-                retained
-            };
-            retained.brush.SetStretch(match layer.stretch {
-                CompositionLayerStretch::None => CompositionStretch::None,
-                CompositionLayerStretch::Fill => CompositionStretch::Fill,
-                CompositionLayerStretch::UniformToFill => CompositionStretch::UniformToFill,
-            })?;
-            retained
-                .brush
-                .SetHorizontalAlignmentRatio(layer.horizontal_alignment)?;
-            retained
-                .brush
-                .SetVerticalAlignmentRatio(layer.vertical_alignment)?;
-            retained.visual.SetOffset(Vector3 {
-                X: layer.x,
-                Y: layer.y,
-                Z: 0.0,
-            })?;
-            retained.visual.SetSize(Vector2 {
-                X: layer.width.max(0.0),
-                Y: layer.height.max(0.0),
-            })?;
-            retained.visual.SetOpacity(layer.opacity.clamp(0.0, 1.0))?;
-
-            let shadow = if let Some(style) = layer.shadow {
-                let shadow = match retained.shadow {
-                    Some(shadow) => shadow,
-                    None => self.compositor.CreateDropShadow()?,
-                };
-                shadow.SetBlurRadius(style.blur_radius.max(0.0))?;
-                shadow.SetColor(windows::UI::Color {
-                    A: style.color[3],
-                    R: style.color[0],
-                    G: style.color[1],
-                    B: style.color[2],
-                })?;
-                shadow.SetOffset(Vector3 {
-                    X: style.offset[0],
-                    Y: style.offset[1],
-                    Z: 0.0,
-                })?;
-                retained.visual.SetShadow(&shadow)?;
-                Some(shadow)
-            } else {
-                if retained.shadow.is_some() {
-                    retained.visual.SetShadow(None::<&CompositionShadow>)?;
-                }
-                None
-            };
-            if let Some(stored) = self.layers.get_mut(&layer.id) {
-                stored.shadow = shadow;
-            }
-        }
-        if order_changed {
-            for id in &next_order {
-                children.InsertBelow(&self.layers[id].visual, &self.overlay)?;
-            }
-            self.layer_order = next_order;
-        }
-        Ok(())
+        children.RemoveAll()?;
+        children.InsertAtTop(shell)?;
+        children.InsertAtTop(&self.overlay)
     }
 
     fn surface_brush(

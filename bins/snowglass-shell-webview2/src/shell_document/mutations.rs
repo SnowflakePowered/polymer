@@ -2,20 +2,11 @@ use super::tracked_surface::TrackedSurfaceWidget;
 use crate::shell_runtime::Mutation;
 use blitz_dom::{LocalName, QualName, ns};
 use std::collections::HashMap;
-use style::values::specified::box_::Contain;
 
 #[derive(Default)]
 pub(super) struct MutationEffect {
     pub(super) needs_resolve: bool,
     pub(super) needs_geometry_sync: bool,
-    pub(super) unbounded: bool,
-    pub(super) contained: Vec<ContainedDamage>,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ContainedDamage {
-    pub(super) node: usize,
-    pub(super) before: kurbo::Rect,
 }
 
 pub(super) fn apply_dom_mutations(
@@ -58,8 +49,6 @@ pub(super) fn apply_dom_mutations(
             apply_dom_mutation_batch(document, script_to_dom, dom_to_script, attributes);
         effect.needs_resolve = true;
         effect.needs_geometry_sync = true;
-        effect.unbounded = true;
-        effect.contained.clear();
         effect
     } else {
         apply_dom_mutation_batch(document, script_to_dom, dom_to_script, mutations)
@@ -67,8 +56,6 @@ pub(super) fn apply_dom_mutations(
     if !focus.is_empty() {
         effect.needs_resolve = true;
         effect.needs_geometry_sync = true;
-        effect.unbounded = true;
-        effect.contained.clear();
     }
     for mutation in focus {
         if let Mutation::Focus { node } = mutation
@@ -88,8 +75,6 @@ fn apply_dom_mutation_batch(
 ) -> MutationEffect {
     let mut needs_resolve = false;
     let mut needs_geometry_sync = false;
-    let mut unbounded_damage = false;
-    let mut contained_damage = HashMap::<usize, kurbo::Rect>::new();
     let mut mutator = document.as_mut().mutate();
     for mutation in mutations {
         match mutation {
@@ -100,7 +85,6 @@ fn apply_dom_mutation_batch(
             } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 let is_tracked_surface = tag == "tracked-surface";
                 let namespace = match namespace.as_deref() {
                     Some("http://www.w3.org/2000/svg") => ns!(svg),
@@ -121,7 +105,6 @@ fn apply_dom_mutation_batch(
             Mutation::CreateText { node, text } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 let actual = mutator.create_text_node(&text);
                 script_to_dom.insert(node, actual);
                 dom_to_script.insert(actual, node);
@@ -129,7 +112,6 @@ fn apply_dom_mutation_batch(
             Mutation::CreateComment { node } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 let actual = mutator.create_comment_node();
                 script_to_dom.insert(node, actual);
                 dom_to_script.insert(actual, node);
@@ -137,7 +119,6 @@ fn apply_dom_mutation_batch(
             Mutation::AppendChild { parent, child } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 let Some((parent, child)) = script_to_dom
                     .get(&parent)
                     .copied()
@@ -154,7 +135,6 @@ fn apply_dom_mutation_batch(
             } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 let Some((parent, child, before)) = script_to_dom
                     .get(&parent)
                     .copied()
@@ -171,7 +151,6 @@ fn apply_dom_mutation_batch(
             Mutation::RemoveChild { parent, child } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 let Some((parent, child)) = script_to_dom
                     .get(&parent)
                     .copied()
@@ -186,7 +165,6 @@ fn apply_dom_mutation_batch(
             Mutation::SetText { node, text } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                unbounded_damage = true;
                 if let Some(node) = script_to_dom.get(&node).copied() {
                     mutator.set_node_text(node, &text);
                 }
@@ -208,13 +186,6 @@ fn apply_dom_mutation_batch(
                 needs_resolve = true;
                 needs_geometry_sync |= attribute_name.as_ref() != "style"
                     || style_change_requires_geometry(previous.as_deref(), Some(&value));
-                if let Some(contained) = containment_damage(mutator.doc, node) {
-                    contained_damage
-                        .entry(contained.node)
-                        .or_insert(contained.before);
-                } else {
-                    unbounded_damage = true;
-                }
                 // HTML attributes are in the null namespace. Using the HTML
                 // element namespace here creates a second attribute instead
                 // of replacing one parsed from markup, leaving Stylo and hit
@@ -247,13 +218,6 @@ fn apply_dom_mutation_batch(
                             .and_then(|element| element.attr(attribute_name.clone())),
                         None,
                     );
-                if let Some(contained) = containment_damage(mutator.doc, node) {
-                    contained_damage
-                        .entry(contained.node)
-                        .or_insert(contained.before);
-                } else {
-                    unbounded_damage = true;
-                }
                 mutator.clear_attribute(node, qualified_name);
             }
             Mutation::Focus { .. } => unreachable!("focus mutations are applied after DOM edits"),
@@ -262,11 +226,6 @@ fn apply_dom_mutation_batch(
     MutationEffect {
         needs_resolve,
         needs_geometry_sync,
-        unbounded: unbounded_damage,
-        contained: contained_damage
-            .into_iter()
-            .map(|(node, before)| ContainedDamage { node, before })
-            .collect(),
     }
 }
 
@@ -294,56 +253,4 @@ pub(super) fn style_change_requires_geometry(
         .chain(current.keys())
         .filter(|name| !matches!(name.as_str(), "transform" | "transform-origin" | "opacity"))
         .any(|name| previous.get(name) != current.get(name))
-}
-
-/// Finds the nearest standards-defined paint boundary for a mutation. Layout
-/// and paint containment together guarantee that descendant layout and paint
-/// cannot escape this box, so the compositor may preserve pixels outside it.
-fn containment_damage(
-    document: &blitz_dom::BaseDocument,
-    node_id: usize,
-) -> Option<ContainedDamage> {
-    std::iter::successors(Some(node_id), |node| {
-        document.get_node(*node).and_then(|node| node.parent)
-    })
-    .find_map(|node| {
-        let contain = document
-            .get_node(node)?
-            .primary_styles()?
-            .get_box()
-            .clone_contain();
-        (contain.contains(Contain::LAYOUT | Contain::PAINT)).then(|| ContainedDamage {
-            node,
-            before: visual_damage_rect(document, node),
-        })
-    })
-}
-
-/// Returns conservative viewport-space paint bounds. Blitz exposes layout
-/// bounds separately from transforms and does not yet publish visual-overflow
-/// rectangles, so include translations explicitly and reserve enough fringe
-/// for ordinary shadows and antialiasing.
-pub(super) fn visual_damage_rect(
-    document: &blitz_dom::BaseDocument,
-    node_id: usize,
-) -> kurbo::Rect {
-    const VISUAL_OVERFLOW_MARGIN: f64 = 64.0;
-    let Some(rect) = document.get_client_bounding_rect(node_id) else {
-        return kurbo::Rect::ZERO;
-    };
-    let mut translation = kurbo::Vec2::ZERO;
-    for node in std::iter::successors(Some(node_id), |node| {
-        document.get_node(*node).and_then(|node| node.parent)
-    }) {
-        if let Some(transform) = document.get_node(node).and_then(|node| node.transform) {
-            let coefficients = transform.as_coeffs();
-            translation += kurbo::Vec2::new(coefficients[4], coefficients[5]);
-        }
-    }
-    kurbo::Rect::new(
-        rect.x + translation.x - VISUAL_OVERFLOW_MARGIN,
-        rect.y + translation.y - VISUAL_OVERFLOW_MARGIN,
-        rect.x + translation.x + rect.width + VISUAL_OVERFLOW_MARGIN,
-        rect.y + translation.y + rect.height + VISUAL_OVERFLOW_MARGIN,
-    )
 }

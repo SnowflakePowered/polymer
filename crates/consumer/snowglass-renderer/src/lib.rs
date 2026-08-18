@@ -8,7 +8,7 @@ pub mod webrtc;
 
 pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfacePointerSender};
 pub use renderer::{
-    CompositingPlan, D3d12Compositor, D3d12RenderPass, MappedPointer, PlanLayer, Presentation,
+    CompositingPlan, D3d12Compositor, D3d12RenderPass, MappedPointer, Presentation, RasterSurface,
     ReceivedSurface, RenderWindow, Renderer, SurfaceContent, SurfacePlacement, SwapchainMode,
     VideoSwapchain, VulkanCompositor, VulkanRenderPass, WebRtcCompositor,
 };
