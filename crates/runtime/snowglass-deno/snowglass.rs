@@ -25,6 +25,7 @@ pub type ConfigurationPrepareCallback =
     Arc<dyn Fn(Value, Value) -> Result<Value, String> + Send + Sync>;
 pub type PluginInvokeCallback =
     Arc<dyn Fn(String, Vec<String>, Vec<Value>) -> ApiFuture<Value> + Send + Sync>;
+pub type PluginListCallback = Arc<dyn Fn() -> Value + Send + Sync>;
 pub type PreparedFilesystemReleaseCallback = Arc<dyn Fn(String) -> bool + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -110,6 +111,7 @@ pub struct SnowglassOptions {
     pub scrape: ScrapeCallback,
     pub describe_configuration: ConfigurationDescribeCallback,
     pub prepare_configuration: ConfigurationPrepareCallback,
+    pub list_plugins: PluginListCallback,
     pub invoke_plugin: PluginInvokeCallback,
     pub release_prepared_filesystem: PreparedFilesystemReleaseCallback,
     pub emulator_commands: EmulatorCommandSink,
@@ -127,6 +129,7 @@ impl Default for SnowglassOptions {
             prepare_configuration: Arc::new(|_, _| {
                 Err("configuration service is unavailable".into())
             }),
+            list_plugins: Arc::new(|| serde_json::json!([])),
             invoke_plugin: Arc::new(|_, _, _| {
                 Box::pin(async {
                     serde_json::json!({
@@ -235,6 +238,12 @@ fn op_configuration_prepare(
 ) -> Result<serde_json::Value, JsErrorBox> {
     (state.borrow::<SnowglassOptions>().prepare_configuration)(package, request)
         .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+fn op_plugin_list(state: &mut OpState) -> Result<serde_json::Value, JsErrorBox> {
+    Ok((state.borrow::<SnowglassOptions>().list_plugins)())
 }
 
 #[op2]
@@ -418,6 +427,7 @@ deno_core::extension!(
         op_scraping_package_from_path,
         op_configuration_describe,
         op_configuration_prepare,
+        op_plugin_list,
         op_plugin_invoke,
         op_prepared_filesystem_release,
         op_emulator_launch,

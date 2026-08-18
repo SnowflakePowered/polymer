@@ -10,6 +10,10 @@ source = "pkg:bin/win-x64"
 format = "directory"
 mode = "rx"
 
+[[plugin.caches]]
+key = "shaderCache"
+label = "Shader Cache"
+
 [emulator]
 platforms = ["NINTENDO_WIIU"]
 main = "cemu.ts"

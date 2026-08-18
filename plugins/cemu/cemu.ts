@@ -13,6 +13,7 @@ type Configuration = {
 type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
 type Filesystem = {
+    mountCache(cacheKey: string): Resource,
     mountHostTree(target: string, source: string, options: { mode: string }): void,
     mountHostFile(target: string, source: string, options: { mode: string }): void,
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
@@ -48,6 +49,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     args.filesystem.mountFile("/Cemu/Cemu.exe", new URL("pkg:bin/win-x64/Cemu.exe"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/resources", new URL("pkg:bin/win-x64/resources"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/gameProfiles", new URL("pkg:bin/win-x64/gameProfiles"), { mode: "rx" });
+    args.filesystem.mountTree("/Cemu/shaderCache", args.filesystem.mountCache("shaderCache"), { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
     }

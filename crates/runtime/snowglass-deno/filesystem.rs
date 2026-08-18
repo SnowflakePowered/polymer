@@ -5,9 +5,10 @@ use deno_error::JsErrorBox;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
 use snowglass_vfs::{
-    AsarVolumeFactory, FilesystemEndpoint, FilesystemPlan, HostFileFactory, MemoryFileFactory,
-    PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, ProfileLayout, Resource,
-    ResourceOrigin, ScratchBacking, ScratchVolumeFactory, VfsError, VfsPathBuf,
+    AsarVolumeFactory, FilesystemEndpoint, FilesystemPlan, HostDirectoryFactory, HostFileFactory,
+    MemoryFileFactory, PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch,
+    ProfileLayout, Resource, ResourceOrigin, ScratchBacking, ScratchVolumeFactory, VfsError,
+    VfsPathBuf,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -34,9 +35,16 @@ pub struct NamedResource {
 }
 
 #[derive(Clone, Debug)]
+pub struct NamedCache {
+    pub key: String,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
 pub struct FilesystemOptions {
     pub package_root: PathBuf,
     pub resources: Vec<NamedResource>,
+    pub caches: Vec<NamedCache>,
 }
 
 impl FilesystemOptions {
@@ -44,6 +52,7 @@ impl FilesystemOptions {
         Self {
             package_root,
             resources: Vec::new(),
+            caches: Vec::new(),
         }
     }
 }
@@ -52,6 +61,11 @@ impl FilesystemOptions {
 enum ResourceHandle {
     Tree(Handle<Resource<dyn snowglass_vfs::Volume>>),
     File(Handle<Resource<dyn snowglass_vfs::FileNode>>),
+}
+
+struct CacheResource {
+    path: PathBuf,
+    handle: Option<Handle<Resource<dyn snowglass_vfs::Volume>>>,
 }
 
 struct FilesystemState {
@@ -67,6 +81,7 @@ struct FilesystemState {
         Arc<Resource<dyn snowglass_vfs::FileNode>>,
     >,
     named: BTreeMap<String, ResourceHandle>,
+    caches: BTreeMap<String, CacheResource>,
     used: bool,
     working_directory_set: bool,
     profile_set: bool,
@@ -83,6 +98,7 @@ impl FilesystemState {
             volumes: HashMap::new(),
             files: HashMap::new(),
             named: BTreeMap::new(),
+            caches: BTreeMap::new(),
             used: false,
             working_directory_set: false,
             profile_set: false,
@@ -98,7 +114,53 @@ impl FilesystemState {
                 state.insert_path_resource(resource.path, resource.kind, resource.permissions)?;
             state.named.insert(resource.name, handle);
         }
+        for cache in options.caches {
+            if !cache.path.is_absolute() {
+                return Err(VfsError::Unsupported(format!(
+                    "cache '{}' must have an absolute host path",
+                    cache.key
+                )));
+            }
+            if state
+                .caches
+                .insert(
+                    cache.key.clone(),
+                    CacheResource {
+                        path: cache.path,
+                        handle: None,
+                    },
+                )
+                .is_some()
+            {
+                return Err(VfsError::Unsupported(format!(
+                    "duplicate declared cache '{}'",
+                    cache.key
+                )));
+            }
+        }
         Ok(state)
+    }
+
+    fn cache(&mut self, key: &str) -> Result<ResourceHandle, VfsError> {
+        let cache = self.caches.get(key).ok_or_else(|| {
+            VfsError::Unsupported(format!("cache '{key}' is not declared by this plugin"))
+        })?;
+        if let Some(handle) = cache.handle {
+            return Ok(ResourceHandle::Tree(handle));
+        }
+
+        let path = cache.path.clone();
+        std::fs::create_dir_all(&path)?;
+        let handle = self.insert_volume(Resource::new(
+            Arc::new(HostDirectoryFactory::new(path, true)),
+            Permissions::ALL,
+            ResourceOrigin::Cache(key.to_owned()),
+        ));
+        self.caches
+            .get_mut(key)
+            .expect("cache was validated above")
+            .handle = Some(handle);
+        Ok(ResourceHandle::Tree(handle))
     }
 
     fn insert_path_resource(
@@ -275,6 +337,19 @@ fn op_vfs_resources(state: &mut OpState) -> Vec<JsResource> {
         .iter()
         .map(|(name, handle)| JsResource::new(Some(name.clone()), *handle))
         .collect()
+}
+
+#[op2]
+#[serde]
+fn op_vfs_mount_cache(
+    state: &mut OpState,
+    #[string] key: String,
+) -> Result<JsResource, JsErrorBox> {
+    let handle = state
+        .borrow_mut::<FilesystemState>()
+        .cache(&key)
+        .map_err(js_error)?;
+    Ok(JsResource::new(None, handle))
 }
 
 #[op2(fast)]
@@ -619,7 +694,7 @@ fn op_vfs_set_profile(state: &mut OpState, #[serde] profile: JsProfile) -> Resul
 
 deno_core::extension!(snowglass_filesystem,
     ops = [
-        op_vfs_resources, op_vfs_mount_host_tree, op_vfs_mount_host_file,
+        op_vfs_resources, op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
         op_vfs_mount_scratch, op_vfs_path, op_vfs_set_working_directory,
@@ -659,4 +734,81 @@ fn reject_links(root: &Path, relative: &Path) -> Result<(), VfsError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_cache_is_lazy_persistent_and_reused() {
+        let package = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let cache_path = storage.path().join("plugin-cache");
+        let mut options = FilesystemOptions::new(package.path().to_owned());
+        options.caches.push(NamedCache {
+            key: "shaders".to_owned(),
+            path: cache_path.clone(),
+        });
+        let mut state = FilesystemState::new(options).unwrap();
+
+        assert!(!cache_path.exists());
+        let ResourceHandle::Tree(first) = state.cache("shaders").unwrap() else {
+            unreachable!()
+        };
+        let ResourceHandle::Tree(second) = state.cache("shaders").unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(first, second);
+        assert!(cache_path.is_dir());
+
+        let resource = state.volume(first).unwrap();
+        assert_eq!(resource.authority(), Permissions::ALL);
+        assert_eq!(
+            resource.origin(),
+            &ResourceOrigin::Cache("shaders".to_owned())
+        );
+        let materialized = resource.materialize().unwrap();
+        assert!(
+            !materialized
+                .backend
+                .root()
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .readonly
+        );
+        assert!(state.cache("undeclared").is_err());
+    }
+
+    #[test]
+    fn javascript_mount_cache_returns_a_mountable_tree_capability() {
+        let package = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let cache_path = storage.path().join("plugin-cache");
+        let mut options = FilesystemOptions::new(package.path().to_owned());
+        options.caches.push(NamedCache {
+            key: "shaders".to_owned(),
+            path: cache_path.clone(),
+        });
+        let mut runtime = JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![extension(options)],
+            ..Default::default()
+        });
+
+        runtime
+            .execute_script(
+                "snowglass:test/cache.js",
+                r#"
+                    const cache = __snowglassFilesystem.filesystem.mountCache("shaders");
+                    __snowglassFilesystem.filesystem.mountTree(
+                      "/Cache", cache, { mode: "rwx" });
+                "#,
+            )
+            .unwrap();
+
+        let prepared = take_prepared(&mut runtime).unwrap().unwrap();
+        assert_eq!(prepared.filesystem().compiled().bindings().len(), 1);
+        assert!(cache_path.is_dir());
+    }
 }

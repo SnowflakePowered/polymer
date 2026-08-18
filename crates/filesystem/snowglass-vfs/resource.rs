@@ -10,6 +10,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 pub enum ResourceOrigin {
     Memory,
     Scratch,
+    Cache(String),
     Package(String),
     Asar(String),
     HostFile,
