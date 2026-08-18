@@ -14,8 +14,8 @@ mod resource;
 mod traits;
 
 pub use backends::{
-    AsarVolumeFactory, HostFileFactory, MemoryFileFactory, PackageDirectoryFactory, ScratchBacking,
-    ScratchVolumeFactory,
+    AsarVolumeFactory, HostDirectoryFactory, HostFileFactory, MemoryFileFactory,
+    PackageDirectoryFactory, ScratchBacking, ScratchVolumeFactory,
 };
 pub use error::{VfsError, VfsResult};
 pub use host::{

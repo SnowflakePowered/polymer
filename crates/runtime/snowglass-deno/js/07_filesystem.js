@@ -1,4 +1,5 @@
 import {
+  op_vfs_mount_cache,
   op_vfs_mount_host_file,
   op_vfs_mount_host_tree,
   op_vfs_mount_file_bytes,
@@ -44,6 +45,10 @@ function pkgSource(value) {
 }
 
 const filesystem = Object.freeze({
+  mountCache(cacheKey) {
+    return resource(op_vfs_mount_cache(String(cacheKey)));
+  },
+
   mountHostTree(target, source, options) {
     op_vfs_mount_host_tree(String(target), String(source), mode(options));
   },

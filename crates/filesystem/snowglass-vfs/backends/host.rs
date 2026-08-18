@@ -52,6 +52,31 @@ impl ResourceFactory<dyn Volume> for PackageDirectoryFactory {
     }
 }
 
+/// A directory on the host filesystem exposed with explicit write authority.
+///
+/// Package directories use [`PackageDirectoryFactory`] and are always
+/// read-only. This factory is for trusted host-owned storage such as persistent
+/// plugin caches and temporary materialized data.
+pub struct HostDirectoryFactory {
+    root: PathBuf,
+    writable: bool,
+}
+
+impl HostDirectoryFactory {
+    pub fn new(root: PathBuf, writable: bool) -> Self {
+        Self { root, writable }
+    }
+}
+
+impl ResourceFactory<dyn Volume> for HostDirectoryFactory {
+    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        Ok(Materialized {
+            backend: Arc::new(HostVolume::new(&self.root, self.writable)?),
+            lease: Arc::new(crate::NoopResourceLease),
+        })
+    }
+}
+
 pub(super) fn temporary_volume() -> VfsResult<Materialized<dyn Volume>> {
     let directory = tempfile::tempdir()?;
     let backend = Arc::new(HostVolume::new(directory.path(), true)?);
