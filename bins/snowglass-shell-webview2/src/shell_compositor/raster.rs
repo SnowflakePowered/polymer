@@ -7,7 +7,7 @@ use crate::shell_dom::{
 };
 use anyrender::PaintScene as _;
 use anyrender_vello::VelloScenePainter;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use snowglass_protocol::AdapterLuid;
 use std::{
     collections::{HashMap, HashSet},
@@ -261,7 +261,7 @@ impl ShellRasterizer {
         }
     }
 
-    pub(crate) fn device_context(&self) -> Result<ShellDeviceContext, Box<dyn Error>> {
+    pub(super) fn device_context(&self) -> Result<ShellDeviceContext, Box<dyn Error>> {
         let (device, queue) = self.retained_device_context()?;
         Ok(ShellDeviceContext {
             adapter: self.adapter_luid,
@@ -410,13 +410,11 @@ pub(crate) struct ShellRasterResult {
 #[derive(Default)]
 struct ShellRasterWorkerState {
     pending: Option<ShellFrame>,
-    busy: bool,
     /// One raster result is waiting for the presentation thread to submit all
     /// of its raster chunks and matching tracked-surface layout. The rasterizer
     /// retains and updates its chunk textures, so it must not begin the next
     /// generation until that submission has sampled the current one.
     awaiting_publication: bool,
-    ready: usize,
     stopping: bool,
 }
 
@@ -425,6 +423,7 @@ struct ShellRasterWorkerState {
 /// capture draining or a guest Present.
 pub(crate) struct ShellRasterWorker {
     state: Arc<Mutex<ShellRasterWorkerState>>,
+    wake: Arc<Condvar>,
     results: mpsc::Receiver<ShellRasterResult>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -433,6 +432,8 @@ impl ShellRasterWorker {
     pub(crate) fn spawn(mut rasterizer: ShellRasterizer) -> Self {
         let state = Arc::new(Mutex::new(ShellRasterWorkerState::default()));
         let worker_state = Arc::clone(&state);
+        let wake = Arc::new(Condvar::new());
+        let worker_wake = Arc::clone(&wake);
         let (sender, results) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("snowglass-blitz-raster".to_owned())
@@ -440,19 +441,16 @@ impl ShellRasterWorker {
                 loop {
                     let frame = {
                         let mut state = worker_state.lock();
+                        worker_wake.wait_while(&mut state, |state| {
+                            !state.stopping
+                                && (state.awaiting_publication || state.pending.is_none())
+                        });
                         if state.stopping {
                             break;
                         }
-                        if state.awaiting_publication {
-                            None
-                        } else {
-                            state.pending.take()
-                        }
+                        state.pending.take()
                     };
-                    let Some(mut frame) = frame else {
-                        thread::park();
-                        continue;
-                    };
+                    let Some(mut frame) = frame else { continue };
                     let raster_chunks = frame
                         .raster_chunks
                         .iter()
@@ -468,7 +466,6 @@ impl ShellRasterWorker {
                     let updates = rasterizer.rasterize_frame(frame);
                     {
                         let mut state = worker_state.lock();
-                        state.ready += 1;
                         state.awaiting_publication = true;
                     }
                     if sender
@@ -487,6 +484,7 @@ impl ShellRasterWorker {
             .expect("failed to create the Blitz raster worker");
         Self {
             state,
+            wake,
             results,
             worker: Some(worker),
         }
@@ -495,10 +493,8 @@ impl ShellRasterWorker {
     pub(crate) fn submit(&self, frame: ShellFrame) {
         let mut state = self.state.lock();
         state.pending = Some(frame);
-        state.busy = true;
-        if let Some(worker) = &self.worker {
-            worker.thread().unpark();
-        }
+        drop(state);
+        self.wake.notify_one();
     }
 
     pub(crate) fn try_result(&self) -> Option<ShellRasterResult> {
@@ -514,17 +510,13 @@ impl ShellRasterWorker {
             return;
         }
         state.awaiting_publication = false;
-        state.ready = state.ready.saturating_sub(1);
-        state.busy = state.pending.is_some();
         drop(state);
-        if let Some(worker) = &self.worker {
-            worker.thread().unpark();
-        }
+        self.wake.notify_one();
     }
 
     pub(crate) fn is_pending(&self) -> bool {
         let state = self.state.lock();
-        state.busy || state.pending.is_some() || state.ready != 0
+        state.pending.is_some() || state.awaiting_publication
     }
 }
 
@@ -535,8 +527,8 @@ impl Drop for ShellRasterWorker {
             state.stopping = true;
             state.pending = None;
         }
+        self.wake.notify_one();
         if let Some(worker) = self.worker.take() {
-            worker.thread().unpark();
             let _ = worker.join();
         }
     }

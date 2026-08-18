@@ -30,19 +30,19 @@ use windows::{
 use windows_numerics::{Vector2, Vector3};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum CompositionLayerId {
+enum CompositionLayerId {
     Raster(RasterChunkId),
     Surface(u64),
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum CompositionLayerStretch {
+enum CompositionLayerStretch {
     None,
     Fill,
     UniformToFill,
 }
 
-pub(crate) enum CompositionLayerContent {
+enum CompositionLayerContent {
     Swapchain(IUnknown),
     Surface(windows::UI::Composition::ICompositionSurface),
 }
@@ -56,19 +56,19 @@ impl CompositionLayerContent {
     }
 }
 
-pub(crate) struct CompositionLayer {
-    pub id: CompositionLayerId,
-    pub parent: Option<u64>,
-    pub z_order: i32,
-    pub content: CompositionLayerContent,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub opacity: f32,
-    pub stretch: CompositionLayerStretch,
-    pub horizontal_alignment: f32,
-    pub vertical_alignment: f32,
+struct CompositionLayer {
+    id: CompositionLayerId,
+    parent: Option<u64>,
+    z_order: i32,
+    content: CompositionLayerContent,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    opacity: f32,
+    stretch: CompositionLayerStretch,
+    horizontal_alignment: f32,
+    vertical_alignment: f32,
 }
 
 struct CompositionGroup {
@@ -106,17 +106,43 @@ struct CompositionGroupVisual {
     shadow: Option<DropShadow>,
 }
 
-#[derive(Clone)]
-pub(crate) struct ShellDeviceContext {
-    pub adapter: AdapterLuid,
-    pub device: IUnknown,
-    pub queue: IUnknown,
+struct ShellDeviceContext {
+    adapter: AdapterLuid,
+    device: IUnknown,
+    queue: IUnknown,
 }
 
 struct PendingPublication {
     chunks: Vec<RasterChunkLayout>,
     groups: Vec<ShellCompositionGroup>,
     tracked: Vec<TrackedSurfaceLayout>,
+}
+
+struct RasterDomain {
+    context: ShellDeviceContext,
+    worker: ShellRasterWorker,
+    surfaces: Vec<RasterSurface>,
+    slots: HashMap<RasterChunkId, usize>,
+    chunks: Vec<RasterChunkLayout>,
+    groups: Vec<ShellCompositionGroup>,
+    dirty: HashSet<RasterChunkId>,
+    pending: Option<PendingPublication>,
+}
+
+impl RasterDomain {
+    fn new(rasterizer: ShellRasterizer) -> Result<Self, Box<dyn Error>> {
+        let context = rasterizer.device_context()?;
+        Ok(Self {
+            context,
+            worker: ShellRasterWorker::spawn(rasterizer),
+            surfaces: Vec::new(),
+            slots: HashMap::new(),
+            chunks: Vec::new(),
+            groups: Vec::new(),
+            dirty: HashSet::new(),
+            pending: None,
+        })
+    }
 }
 
 /// Owns every shell-specific GPU and retained-composition resource. GameHost
@@ -127,15 +153,9 @@ pub(crate) struct ShellCompositor {
     visuals: HashMap<CompositionLayerId, CompositionVisual>,
     group_visuals: HashMap<u64, CompositionGroupVisual>,
     child_orders: HashMap<Option<u64>, Vec<CompositionNodeId>>,
-    context: ShellDeviceContext,
-    worker: ShellRasterWorker,
-    surfaces: Vec<RasterSurface>,
-    slots: HashMap<RasterChunkId, usize>,
-    chunks: Vec<RasterChunkLayout>,
-    groups: Vec<ShellCompositionGroup>,
-    dirty: HashSet<RasterChunkId>,
-    pending: Option<PendingPublication>,
+    raster: RasterDomain,
     content_dirty: bool,
+    game_revision: u64,
 }
 
 impl ShellCompositor {
@@ -143,17 +163,7 @@ impl ShellCompositor {
         compositor: &Compositor,
         rasterizer: ShellRasterizer,
     ) -> Result<Self, Box<dyn Error>> {
-        let context = rasterizer.device_context()?;
-        let adapter = context.adapter;
-        let anchor = unsafe {
-            RasterSurface::from_external(
-                compositor,
-                adapter,
-                context.device.clone().into_raw(),
-                context.queue.clone().into_raw(),
-                Extent::new(64, 64),
-            )?
-        };
+        let raster = RasterDomain::new(rasterizer)?;
         let root = compositor.CreateContainerVisual()?;
         root.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
         Ok(Self {
@@ -162,37 +172,35 @@ impl ShellCompositor {
             visuals: HashMap::new(),
             group_visuals: HashMap::new(),
             child_orders: HashMap::new(),
-            context,
-            worker: ShellRasterWorker::spawn(rasterizer),
-            surfaces: vec![anchor],
-            slots: HashMap::new(),
-            chunks: Vec::new(),
-            groups: Vec::new(),
-            dirty: HashSet::new(),
-            pending: None,
+            raster,
             content_dirty: true,
+            game_revision: 0,
         })
     }
 
-    pub(crate) fn replace_rasterizer(
-        &mut self,
-        rasterizer: ShellRasterizer,
-    ) -> Result<(), Box<dyn Error>> {
-        let replacement = Self::new(&self.compositor, rasterizer)?;
-        self.context = replacement.context;
-        self.worker = replacement.worker;
-        self.surfaces = replacement.surfaces;
-        self.slots.clear();
-        self.chunks.clear();
-        self.groups.clear();
-        self.dirty.clear();
-        self.pending = None;
+    fn replace_rasterizer(&mut self, rasterizer: ShellRasterizer) -> Result<(), Box<dyn Error>> {
+        self.raster = RasterDomain::new(rasterizer)?;
         self.content_dirty = true;
         Ok(())
     }
 
-    pub(crate) fn device_context(&self) -> ShellDeviceContext {
-        self.context.clone()
+    pub(crate) fn replace_adapter(
+        &mut self,
+        adapter: AdapterLuid,
+    ) -> Result<(AdapterLuid, IUnknown), Box<dyn Error>> {
+        if self.raster.context.adapter == adapter {
+            return Ok(self.device_context());
+        }
+        let rasterizer = pollster::block_on(ShellRasterizer::new_for_adapter(Some(adapter)))?;
+        self.replace_rasterizer(rasterizer)?;
+        Ok(self.device_context())
+    }
+
+    pub(crate) fn device_context(&self) -> (AdapterLuid, IUnknown) {
+        (
+            self.raster.context.adapter,
+            self.raster.context.device.clone(),
+        )
     }
 
     pub(crate) fn root_visual(&self) -> &ContainerVisual {
@@ -200,102 +208,103 @@ impl ShellCompositor {
     }
 
     pub(crate) fn submit(&self, frame: ShellFrame) {
-        self.worker.submit(frame);
+        self.raster.worker.submit(frame);
     }
 
     pub(crate) fn is_pending(&self) -> bool {
-        !self.dirty.is_empty() || self.worker.is_pending()
+        !self.raster.dirty.is_empty() || self.raster.worker.is_pending()
     }
 
     pub(crate) fn draw(&mut self) -> Result<Option<Vec<TrackedSurfaceLayout>>, String> {
-        while let Some(result) = self.worker.try_result() {
+        while let Some(result) = self.raster.worker.try_result() {
             self.apply_result(result)?;
         }
-        for id in self.dirty.iter().copied().collect::<Vec<_>>() {
-            let Some(slot) = self.slots.get(&id).copied() else {
-                self.dirty.remove(&id);
+        for id in self.raster.dirty.iter().copied().collect::<Vec<_>>() {
+            let Some(slot) = self.raster.slots.get(&id).copied() else {
+                self.raster.dirty.remove(&id);
                 continue;
             };
-            if !self.surfaces[slot]
+            if !self.raster.surfaces[slot]
                 .try_present()
                 .map_err(|error| error.to_string())?
             {
                 continue;
             }
-            self.dirty.remove(&id);
+            self.raster.dirty.remove(&id);
         }
-        if !self.dirty.is_empty() {
+        if !self.raster.dirty.is_empty() {
             return Ok(None);
         }
-        let Some(pending) = self.pending.take() else {
+        let Some(pending) = self.raster.pending.take() else {
             return Ok(None);
         };
-        self.content_dirty |= self.chunks != pending.chunks || self.groups != pending.groups;
-        self.chunks = pending.chunks;
-        self.groups = pending.groups;
-        self.worker.acknowledge_publication();
+        self.content_dirty |=
+            self.raster.chunks != pending.chunks || self.raster.groups != pending.groups;
+        self.raster.chunks = pending.chunks;
+        self.raster.groups = pending.groups;
+        self.raster.worker.acknowledge_publication();
         Ok(Some(pending.tracked))
     }
 
     fn apply_result(&mut self, result: ShellRasterResult) -> Result<(), String> {
-        debug_assert!(self.pending.is_none());
+        debug_assert!(self.raster.pending.is_none());
         let live = result
             .raster_chunks
             .iter()
             .map(|chunk| chunk.id)
             .collect::<HashSet<_>>();
-        self.slots.retain(|id, _| live.contains(id));
-        let mut used = self.slots.values().copied().collect::<HashSet<_>>();
+        self.raster.slots.retain(|id, _| live.contains(id));
+        let mut used = self.raster.slots.values().copied().collect::<HashSet<_>>();
         for chunk in &result.raster_chunks {
-            if self.slots.contains_key(&chunk.id) {
+            if self.raster.slots.contains_key(&chunk.id) {
                 continue;
             }
-            let slot = (0..self.surfaces.len())
+            let slot = (0..self.raster.surfaces.len())
                 .find(|slot| !used.contains(slot))
-                .unwrap_or(self.surfaces.len());
-            if slot == self.surfaces.len() {
+                .unwrap_or(self.raster.surfaces.len());
+            if slot == self.raster.surfaces.len() {
                 let surface = unsafe {
                     RasterSurface::from_external(
                         &self.compositor,
-                        self.context.adapter,
-                        self.context.device.clone().into_raw(),
-                        self.context.queue.clone().into_raw(),
+                        self.raster.context.adapter,
+                        self.raster.context.device.clone().into_raw(),
+                        self.raster.context.queue.clone().into_raw(),
                         chunk_capacity(chunk),
                     )
                 }
                 .map_err(|error| error.to_string())?;
-                self.surfaces.push(surface);
+                self.raster.surfaces.push(surface);
             }
-            self.slots.insert(chunk.id, slot);
+            self.raster.slots.insert(chunk.id, slot);
             used.insert(slot);
             self.content_dirty = true;
         }
         for chunk in &result.raster_chunks {
-            let slot = self.slots[&chunk.id];
+            let slot = self.raster.slots[&chunk.id];
             let desired = chunk_capacity(chunk);
-            let current = self.surfaces[slot].capacity();
+            let current = self.raster.surfaces[slot].capacity();
             if desired.width > current.width
                 || desired.height > current.height
                 || u64::from(current.width) * u64::from(current.height)
                     > 4 * u64::from(desired.width) * u64::from(desired.height)
             {
-                self.surfaces[slot]
+                self.raster.surfaces[slot]
                     .resize(desired)
                     .map_err(|error| error.to_string())?;
-                self.dirty.insert(chunk.id);
+                self.raster.dirty.insert(chunk.id);
             }
         }
         for (id, resource) in result.updates {
-            let Some(slot) = self.slots.get(&id).copied() else {
+            let Some(slot) = self.raster.slots.get(&id).copied() else {
                 continue;
             };
             let (width, height) = (resource.width, resource.height);
             unsafe {
-                self.surfaces[slot].set_source(resource.into_abi_reference(), width, height);
+                self.raster.surfaces[slot].set_source(resource.into_abi_reference(), width, height);
             }
-            self.dirty.insert(id);
+            self.raster.dirty.insert(id);
         }
-        self.pending = Some(PendingPublication {
+        self.raster.pending = Some(PendingPublication {
             chunks: result.raster_chunks,
             groups: result.composition_groups,
             tracked: result.surface_layout,
@@ -303,21 +312,19 @@ impl ShellCompositor {
         Ok(())
     }
 
-    fn content_update(
-        &mut self,
-        game: &mut GameHost,
-    ) -> Result<Option<CompositionContents>, Box<dyn Error>> {
-        let game_dirty = game.take_composition_dirty();
-        if !self.content_dirty && !game_dirty {
-            return Ok(None);
+    fn content_update(&self, game: &GameHost) -> Option<CompositionContents> {
+        let game_revision = game.composition_revision();
+        if !self.content_dirty && self.game_revision == game_revision {
+            return None;
         }
-        self.content_dirty = false;
         let group_bounds = self
+            .raster
             .groups
             .iter()
             .map(|group| (group.id, group.bounds))
             .collect::<HashMap<_, _>>();
         let groups = self
+            .raster
             .groups
             .iter()
             .map(|group| {
@@ -339,8 +346,8 @@ impl ShellCompositor {
             })
             .collect();
         let mut layers = Vec::new();
-        for chunk in &self.chunks {
-            let Some(slot) = self.slots.get(&chunk.id).copied() else {
+        for chunk in &self.raster.chunks {
+            let Some(slot) = self.raster.slots.get(&chunk.id).copied() else {
                 continue;
             };
             let origin = chunk
@@ -352,7 +359,7 @@ impl ShellCompositor {
                 parent: chunk.group,
                 z_order: chunk.z_order,
                 content: CompositionLayerContent::Surface(
-                    self.surfaces[slot].composition_surface(),
+                    self.raster.surfaces[slot].composition_surface(),
                 ),
                 x: chunk.bounds.x0 as f32 - origin.0 as f32,
                 y: chunk.bounds.y0 as f32 - origin.1 as f32,
@@ -364,16 +371,54 @@ impl ShellCompositor {
                 vertical_alignment: 0.0,
             });
         }
-        layers.extend(game.composition_layers(&group_bounds)?);
+        for surface in game.captured_surface_snapshots() {
+            let fitted = surface.placement;
+            let cropped_width = 1.0 - (fitted.source[0] + (1.0 - fitted.source[2]));
+            let cropped_height = 1.0 - (fitted.source[1] + (1.0 - fitted.source[3]));
+            let horizontal_alignment = if cropped_width < 1.0 {
+                (fitted.source[0] / (1.0 - cropped_width)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let vertical_alignment = if cropped_height < 1.0 {
+                (fitted.source[1] / (1.0 - cropped_height)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let origin = surface
+                .parent
+                .and_then(|group| group_bounds.get(&group))
+                .map_or((0.0, 0.0), |bounds| (bounds.x0, bounds.y0));
+            layers.push(CompositionLayer {
+                id: CompositionLayerId::Surface(surface.connection),
+                parent: surface.parent,
+                z_order: surface.z_order,
+                content: CompositionLayerContent::Swapchain(surface.content),
+                x: fitted.destination[0] - origin.0 as f32,
+                y: fitted.destination[1] - origin.1 as f32,
+                width: (fitted.destination[2] - fitted.destination[0]).max(0.0),
+                height: (fitted.destination[3] - fitted.destination[1]).max(0.0),
+                opacity: fitted.opacity,
+                stretch: if fitted.source == [0.0, 0.0, 1.0, 1.0] {
+                    CompositionLayerStretch::Fill
+                } else {
+                    CompositionLayerStretch::UniformToFill
+                },
+                horizontal_alignment,
+                vertical_alignment,
+            });
+        }
         layers.sort_by_key(|layer| layer.z_order);
-        Ok(Some(CompositionContents { groups, layers }))
+        Some(CompositionContents { groups, layers })
     }
 
-    pub(crate) fn reconcile(&mut self, game: &mut GameHost) -> Result<bool, Box<dyn Error>> {
-        let Some(content) = self.content_update(game)? else {
+    pub(crate) fn reconcile(&mut self, game: &GameHost) -> Result<bool, Box<dyn Error>> {
+        let Some(content) = self.content_update(game) else {
             return Ok(false);
         };
         self.reconcile_content(&content)?;
+        self.content_dirty = false;
+        self.game_revision = game.composition_revision();
         Ok(true)
     }
 

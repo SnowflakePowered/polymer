@@ -24,6 +24,7 @@ impl ShellCoordinator {
         // per captured frame.
         self.game_host.begin_capture_drain();
         let mut changed = false;
+        let mut shell_refresh_required = false;
         let mut processed = 0;
         while processed < MAX_CAPTURE_EVENTS_PER_TURN {
             let event = {
@@ -35,16 +36,30 @@ impl ShellCoordinator {
                 break;
             };
             processed += 1;
-            if let Some(rasterizer) = self.game_host.take_shell_rasterizer_replacement() {
-                match self.shell_compositor.replace_rasterizer(rasterizer) {
-                    Ok(()) => self.shell_dom.invalidate(),
-                    Err(error) => tracing::error!(
-                        "snowglass: replacing the shell compositor device failed: {error}"
-                    ),
-                }
-            }
-            self.sync_shell_visuals();
             match event {
+                GameHostCaptureEvent::AdapterRequired(adapter) => {
+                    let replacement = self
+                        .shell_compositor
+                        .replace_adapter(adapter)
+                        .and_then(|context| self.game_host.replace_render_device(context));
+                    match replacement {
+                        Ok(stale_connections) => {
+                            for connection in stale_connections {
+                                self.window.remove_target(connection);
+                                self.cancel_pointer_connection(connection);
+                            }
+                            self.shell_dom.invalidate();
+                            shell_refresh_required = true;
+                            changed = true;
+                        }
+                        Err(error) => {
+                            let connection = self.game_host.reject_pending_offer();
+                            tracing::error!(
+                                "snowglass: replacing the shell compositor device for capture {connection:?} failed: {error}"
+                            );
+                        }
+                    }
+                }
                 GameHostCaptureEvent::Connected(accepted) => {
                     let Some(surface) = accepted.surface else {
                         continue;
@@ -59,7 +74,7 @@ impl ShellCoordinator {
                         surface.surface_id,
                         surface.target_index,
                     );
-                    self.refresh_shell();
+                    shell_refresh_required = true;
                     changed = true;
                 }
                 GameHostCaptureEvent::Rejected { connection, error } => {
@@ -88,6 +103,11 @@ impl ShellCoordinator {
                     }
                 }
             }
+        }
+        if shell_refresh_required {
+            self.refresh_shell();
+        } else {
+            self.sync_shell_visuals();
         }
         if changed && let Some(token) = self.game_host.active_token() {
             self.publish_targets_for(token);
@@ -174,7 +194,7 @@ impl ShellCoordinator {
     }
 
     fn sync_shell_visuals(&mut self) {
-        match self.shell_compositor.reconcile(&mut self.game_host) {
+        match self.shell_compositor.reconcile(&self.game_host) {
             Ok(true) => {
                 if let Err(error) = self.window.commit() {
                     tracing::error!("snowglass: committing shell visuals failed: {error}");

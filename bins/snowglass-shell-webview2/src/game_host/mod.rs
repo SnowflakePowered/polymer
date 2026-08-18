@@ -4,13 +4,7 @@
 //! models are contained here; the shell coordinator only forwards commands.
 
 use crate::{
-    launch::AttachedLaunchPlan,
-    shell_compositor::{
-        CompositionLayer, CompositionLayerContent, CompositionLayerId, CompositionLayerStretch,
-        ShellDeviceContext, ShellRasterizer,
-    },
-    shell_document::GameViewStyle,
-    shell_dom::TrackedSurfaceLayout,
+    launch::AttachedLaunchPlan, shell_document::GameViewStyle, shell_dom::TrackedSurfaceLayout,
 };
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
@@ -49,7 +43,11 @@ struct RenderDevice {
 
 struct SurfaceCompositor {
     compositor: Option<D3d12Compositor>,
-    content: Option<IUnknown>,
+    content: IUnknown,
+    #[expect(
+        dead_code,
+        reason = "retains and joins the surface presentation thread"
+    )]
     worker: Option<SurfacePresentationWorker>,
     latest_frame: Option<snowglass_protocol::FrameReady>,
     surface_id: u64,
@@ -177,18 +175,12 @@ impl<W: snowglass_renderer::RenderWindow> snowglass_renderer::RenderWindow
 }
 
 impl RenderDevice {
-    fn new(context: ShellDeviceContext) -> Self {
+    fn new((adapter, device): (AdapterLuid, IUnknown)) -> Self {
         Self {
-            adapter: context.adapter,
-            device: context.device,
+            adapter,
+            device,
             surface_compositors: HashMap::new(),
         }
-    }
-
-    fn recreate(adapter: AdapterLuid) -> Result<(Self, ShellRasterizer), Box<dyn Error>> {
-        let shell = pollster::block_on(ShellRasterizer::new_for_adapter(Some(adapter)))?;
-        let context = shell.device_context()?;
-        Ok((Self::new(context), shell))
     }
 
     fn adapter_luid(&self) -> AdapterLuid {
@@ -199,35 +191,18 @@ impl RenderDevice {
         self.device.cast()
     }
 
-    fn create_surface(
-        &mut self,
+    fn create_surface_compositor(
+        &self,
         window: &impl snowglass_renderer::RenderWindow,
         connection: u64,
         width: u32,
         height: u32,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<D3d12Compositor, Box<dyn Error>> {
         let local = LocalRenderWindow {
             window,
             extent: Extent::new(width.max(1), height.max(1)),
         };
-        let compositor =
-            D3d12Compositor::new_for_stream_composition(&local, self.adapter, connection)?;
-        self.surface_compositors.insert(
-            connection,
-            SurfaceCompositor {
-                compositor: Some(compositor),
-                content: None,
-                worker: None,
-                latest_frame: None,
-                surface_id: 0,
-                target_window: 0,
-                quarter_turns: 0,
-                flip_y: false,
-                width: width.max(1),
-                height: height.max(1),
-            },
-        );
-        Ok(())
+        D3d12Compositor::new_for_stream_composition(&local, self.adapter, connection)
     }
 }
 
@@ -278,6 +253,7 @@ pub(crate) struct AcceptedSurface {
 }
 
 pub(crate) enum GameHostCaptureEvent {
+    AdapterRequired(AdapterLuid),
     Connected(AcceptedSurface),
     Frame {
         connection: u64,
@@ -307,6 +283,14 @@ pub(crate) struct GameSurfaceTarget {
     pub height: u32,
 }
 
+pub(crate) struct CapturedSurfaceSnapshot {
+    pub connection: u64,
+    pub parent: Option<u64>,
+    pub z_order: i32,
+    pub content: IUnknown,
+    pub placement: SurfaceContent,
+}
+
 pub(crate) struct GameHost {
     active: Option<ActiveEmulator>,
     capture: SurfaceCapture,
@@ -317,15 +301,15 @@ pub(crate) struct GameHost {
     surface_worker_events: mpsc::Receiver<SurfaceWorkerFrame>,
     surface_worker_sender: mpsc::Sender<SurfaceWorkerFrame>,
     surfaces: HashMap<u64, CapturedSurface>,
+    pending_offer: Option<snowglass_runtime::SurfaceOffer>,
     /// Adapter-local capture device and imported captured streams.
     render_device: RenderDevice,
-    replacement_shell_rasterizer: Option<ShellRasterizer>,
-    composition_content_dirty: bool,
+    composition_revision: u64,
     shell_refresh_pending: bool,
 }
 
 impl GameHost {
-    pub fn new(context: ShellDeviceContext) -> Result<Self, Box<dyn Error>> {
+    pub fn new(context: (AdapterLuid, IUnknown)) -> Result<Self, Box<dyn Error>> {
         let capture = SurfaceCapture::default();
         let pointer = capture.pointer_sender();
         let render_device = RenderDevice::new(context);
@@ -340,18 +324,15 @@ impl GameHost {
             surface_worker_events,
             surface_worker_sender,
             surfaces: HashMap::new(),
+            pending_offer: None,
             render_device,
-            replacement_shell_rasterizer: None,
-            composition_content_dirty: false,
+            composition_revision: 0,
             shell_refresh_pending: false,
         })
     }
 
-    pub(crate) fn composition_layers(
-        &self,
-        group_bounds: &HashMap<u64, kurbo::Rect>,
-    ) -> Result<Vec<CompositionLayer>, Box<dyn Error>> {
-        let mut ordered = Vec::new();
+    pub(crate) fn captured_surface_snapshots(&self) -> Vec<CapturedSurfaceSnapshot> {
+        let mut snapshots = Vec::new();
         for (&connection, surface) in &self.surfaces {
             let Some(output) = self.render_device.surface_compositors.get(&connection) else {
                 continue;
@@ -372,68 +353,24 @@ impl GameHost {
                 surface.game_view_style.as_ref(),
                 surface.opacity,
             );
-            let cropped_width = 1.0 - (fitted.source[0] + (1.0 - fitted.source[2]));
-            let cropped_height = 1.0 - (fitted.source[1] + (1.0 - fitted.source[3]));
-            let horizontal_alignment = if cropped_width < 1.0 {
-                (fitted.source[0] / (1.0 - cropped_width)).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            let vertical_alignment = if cropped_height < 1.0 {
-                (fitted.source[1] / (1.0 - cropped_height)).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            ordered.push((
-                surface.z_index,
-                CompositionLayer {
-                    id: CompositionLayerId::Surface(connection),
-                    parent: surface.group,
-                    z_order: surface.z_index,
-                    content: CompositionLayerContent::Swapchain(
-                        if let Some(content) = &output.content {
-                            content.clone()
-                        } else {
-                            output
-                                .compositor
-                                .as_ref()
-                                .ok_or("surface compositor has neither content nor an owner")?
-                                .composition_content()?
-                        },
-                    ),
-                    x: fitted.destination[0]
-                        - surface
-                            .group
-                            .and_then(|group| group_bounds.get(&group))
-                            .map_or(0.0, |bounds| bounds.x0 as f32),
-                    y: fitted.destination[1]
-                        - surface
-                            .group
-                            .and_then(|group| group_bounds.get(&group))
-                            .map_or(0.0, |bounds| bounds.y0 as f32),
-                    width: (fitted.destination[2] - fitted.destination[0]).max(0.0),
-                    height: (fitted.destination[3] - fitted.destination[1]).max(0.0),
-                    opacity: fitted.opacity,
-                    stretch: if fitted.source == [0.0, 0.0, 1.0, 1.0] {
-                        CompositionLayerStretch::Fill
-                    } else {
-                        CompositionLayerStretch::UniformToFill
-                    },
-                    horizontal_alignment,
-                    vertical_alignment,
-                },
-            ));
+            snapshots.push(CapturedSurfaceSnapshot {
+                connection,
+                parent: surface.group,
+                z_order: surface.z_index,
+                content: output.content.clone(),
+                placement: fitted,
+            });
         }
-        ordered.sort_by_key(|(z, _)| *z);
-        Ok(ordered.into_iter().map(|(_, layer)| layer).collect())
+        snapshots.sort_by_key(|surface| surface.z_order);
+        snapshots
     }
 
-    pub(crate) fn take_composition_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.composition_content_dirty)
+    pub(crate) const fn composition_revision(&self) -> u64 {
+        self.composition_revision
     }
 
-    pub(crate) fn take_shell_rasterizer_replacement(&mut self) -> Option<ShellRasterizer> {
-        self.replacement_shell_rasterizer.take()
+    fn mark_composition_dirty(&mut self) {
+        self.composition_revision = self.composition_revision.wrapping_add(1);
     }
 
     pub fn is_active(&self, token: crate::shell_runtime::InstanceToken) -> bool {
@@ -762,41 +699,63 @@ impl GameHost {
         &mut self,
         window: &impl snowglass_renderer::RenderWindow,
     ) -> Option<GameHostCaptureEvent> {
-        if let Ok(worker) = self.surface_worker_events.try_recv() {
-            let (frame, dimensions_changed) =
-                self.update_surface_frame(worker.connection, worker.update)?;
-            return Some(GameHostCaptureEvent::Frame {
-                connection: worker.connection,
-                frame,
-                observed_qpc: Some(worker.observed_qpc),
-                dimensions_changed,
+        if let Some(offer) = self.pending_offer.take() {
+            return Some(self.handle_surface_offer(window, offer));
+        }
+        while let Ok(worker) = self.surface_worker_events.try_recv() {
+            if let Some((frame, dimensions_changed)) =
+                self.update_surface_frame(worker.connection, worker.update)
+            {
+                return Some(GameHostCaptureEvent::Frame {
+                    connection: worker.connection,
+                    frame,
+                    observed_qpc: Some(worker.observed_qpc),
+                    dimensions_changed,
+                });
+            }
+        }
+        loop {
+            return Some(match self.capture.try_recv().ok()? {
+                SurfaceCaptureEvent::Offered(offer) => self.handle_surface_offer(window, offer),
+                SurfaceCaptureEvent::Frame { connection, update } => {
+                    let Some((frame, dimensions_changed)) =
+                        self.update_surface_frame(connection, update)
+                    else {
+                        continue;
+                    };
+                    GameHostCaptureEvent::Frame {
+                        connection,
+                        frame,
+                        observed_qpc: None,
+                        dimensions_changed,
+                    }
+                }
+                SurfaceCaptureEvent::Removed { connection, .. } => GameHostCaptureEvent::Removed {
+                    connection,
+                    layout_changed: self.remove_surface(connection),
+                },
             });
         }
-        Some(match self.capture.try_recv().ok()? {
-            SurfaceCaptureEvent::Offered(offer) => {
-                let connection = offer.connection_id();
-                match self.accept_surface_offer(window, offer) {
-                    Ok(accepted) => GameHostCaptureEvent::Connected(accepted),
-                    Err(error) => GameHostCaptureEvent::Rejected {
-                        connection,
-                        error: error.to_string(),
-                    },
-                }
-            }
-            SurfaceCaptureEvent::Frame { connection, update } => {
-                let (frame, dimensions_changed) = self.update_surface_frame(connection, update)?;
-                GameHostCaptureEvent::Frame {
-                    connection,
-                    frame,
-                    observed_qpc: None,
-                    dimensions_changed,
-                }
-            }
-            SurfaceCaptureEvent::Removed { connection, .. } => GameHostCaptureEvent::Removed {
+    }
+
+    fn handle_surface_offer(
+        &mut self,
+        window: &impl snowglass_renderer::RenderWindow,
+        offer: snowglass_runtime::SurfaceOffer,
+    ) -> GameHostCaptureEvent {
+        let desired_adapter = offer.stream().adapter_luid;
+        if self.render_device.adapter_luid() != desired_adapter {
+            self.pending_offer = Some(offer);
+            return GameHostCaptureEvent::AdapterRequired(desired_adapter);
+        }
+        let connection = offer.connection_id();
+        match self.accept_surface_offer(window, offer) {
+            Ok(accepted) => GameHostCaptureEvent::Connected(accepted),
+            Err(error) => GameHostCaptureEvent::Rejected {
                 connection,
-                layout_changed: self.remove_surface(connection),
+                error: error.to_string(),
             },
-        })
+        }
     }
 
     /// Selects the offer's adapter, imports it into the window-spanning
@@ -814,13 +773,11 @@ impl GameHost {
             self.capture.reject(offer);
             return Ok(AcceptedSurface { surface: None });
         };
-        let desired_adapter = offer.stream().adapter_luid;
-        let recreated = self.ensure_render_device(desired_adapter)?;
         let connection = offer.connection_id();
         let surface_id = offer.stream().surface_id.0;
-        let replaced_connection = (!recreated)
-            .then(|| offer.replaced_connection_id())
-            .flatten();
+        let replaced_connection = offer
+            .replaced_connection_id()
+            .filter(|connection| self.surfaces.contains_key(connection));
         if replaced_connection.is_none() && self.surfaces.len() >= surface_capacity {
             self.capture.reject(offer);
             return Ok(AcceptedSurface { surface: None });
@@ -867,27 +824,14 @@ impl GameHost {
         let flip_y = offer.stream().bottom_up;
         let (output_width, output_height) =
             rotated_extent(offer.stream().width, offer.stream().height, quarter_turns);
-        self.render_device
-            .create_surface(window, connection, output_width, output_height)?;
-        {
-            let output = self
-                .render_device
-                .surface_compositors
-                .get_mut(&connection)
-                .ok_or("the dedicated surface compositor was not retained")?;
-            output.surface_id = surface_id;
-            output.target_window = target_window;
-            output.quarter_turns = quarter_turns;
-            output.flip_y = flip_y;
-            let compositor = output
-                .compositor
-                .as_mut()
-                .ok_or("the surface compositor was already transferred")?;
-            if let Err(error) = Renderer::import_surface_offer(compositor, &offer, quarter_turns) {
-                self.render_device.surface_compositors.remove(&connection);
-                return Err(error);
-            }
-        }
+        let mut compositor = self.render_device.create_surface_compositor(
+            window,
+            connection,
+            output_width,
+            output_height,
+        )?;
+        Renderer::import_surface_offer(&mut compositor, &offer, quarter_turns)?;
+        let content = compositor.composition_content()?;
 
         let use_worker = self
             .active
@@ -901,42 +845,60 @@ impl GameHost {
                     return Err(error.into());
                 }
             };
-            let output = self
-                .render_device
-                .surface_compositors
-                .get_mut(&connection)
-                .ok_or("the dedicated surface compositor was not retained")?;
-            let compositor = output
-                .compositor
-                .take()
-                .ok_or("the surface compositor was already transferred")?;
-            let content = compositor.composition_content()?;
-            output.content = Some(content);
-            output.worker = Some(SurfacePresentationWorker::spawn(
+            let worker = SurfacePresentationWorker::spawn(
                 compositor,
                 frames,
                 self.pointer.clone(),
                 self.surface_worker_sender.clone(),
                 connection,
                 surface_id,
-                output.width,
-                output.height,
-            ));
+                output_width.max(1),
+                output_height.max(1),
+            );
+            self.render_device.surface_compositors.insert(
+                connection,
+                SurfaceCompositor {
+                    compositor: None,
+                    content,
+                    worker: Some(worker),
+                    latest_frame: None,
+                    surface_id,
+                    target_window,
+                    quarter_turns,
+                    flip_y,
+                    width: output_width.max(1),
+                    height: output_height.max(1),
+                },
+            );
         } else if let Err(error) = self.capture.accept(offer) {
-            self.render_device.surface_compositors.remove(&connection);
             return Err(error.into());
+        } else {
+            self.render_device.surface_compositors.insert(
+                connection,
+                SurfaceCompositor {
+                    compositor: Some(compositor),
+                    content,
+                    worker: None,
+                    latest_frame: None,
+                    surface_id,
+                    target_window,
+                    quarter_turns,
+                    flip_y,
+                    width: output_width.max(1),
+                    height: output_height.max(1),
+                },
+            );
         }
 
         if let Some(publication) = self
             .active
             .as_mut()
             .and_then(|active| active.webrtc.as_mut())
+            && let Err(error) = publication.add_stream(connection, target_index)
         {
-            if let Err(error) = publication.add_stream(connection, target_index) {
-                self.capture.revoke(connection);
-                self.render_device.surface_compositors.remove(&connection);
-                return Err(error);
-            }
+            self.capture.revoke(connection);
+            self.render_device.surface_compositors.remove(&connection);
+            return Err(error);
         }
         self.surfaces.insert(connection, surface);
         if let Some(previous) = replaced_connection {
@@ -950,7 +912,7 @@ impl GameHost {
                 publication.remove_stream(previous);
             }
         }
-        self.composition_content_dirty = true;
+        self.mark_composition_dirty();
         Ok(AcceptedSurface {
             surface: Some(ConnectedSurface {
                 connection,
@@ -962,14 +924,11 @@ impl GameHost {
         })
     }
 
-    fn ensure_render_device(&mut self, desired: AdapterLuid) -> Result<bool, Box<dyn Error>> {
-        if self.render_device.adapter_luid() == desired {
-            return Ok(false);
-        }
-
-        // Construct the complete replacement before disturbing the active
-        // device domain. A failure leaves the old compositor usable.
-        let (replacement, shell_rasterizer) = RenderDevice::recreate(desired)?;
+    pub(crate) fn replace_render_device(
+        &mut self,
+        context: (AdapterLuid, IUnknown),
+    ) -> Result<Vec<u64>, Box<dyn Error>> {
+        let replacement = RenderDevice::new(context);
         if let Some(publication) = self
             .active
             .as_mut()
@@ -979,9 +938,8 @@ impl GameHost {
             publication.reattach_d3d12_device(replacement.adapter_luid(), &device)?;
         }
         self.render_device = replacement;
-        self.replacement_shell_rasterizer = Some(shell_rasterizer);
         let stale_connections = self.surfaces.keys().copied().collect::<Vec<_>>();
-        for connection in stale_connections {
+        for &connection in &stale_connections {
             self.capture.revoke(connection);
             if let Some(publication) = self
                 .active
@@ -992,9 +950,16 @@ impl GameHost {
             }
         }
         self.surfaces.clear();
-        self.composition_content_dirty = true;
+        self.mark_composition_dirty();
         self.shell_refresh_pending = true;
-        Ok(true)
+        Ok(stale_connections)
+    }
+
+    pub(crate) fn reject_pending_offer(&mut self) -> Option<u64> {
+        let offer = self.pending_offer.take()?;
+        let connection = offer.connection_id();
+        self.capture.reject(offer);
+        Some(connection)
     }
 
     fn update_surface_frame(
@@ -1021,7 +986,9 @@ impl GameHost {
                 Renderer::set_latest(compositor, connection, frame);
             }
         }
-        self.composition_content_dirty |= dimensions_changed;
+        if dimensions_changed {
+            self.mark_composition_dirty();
+        }
         Some((frame, dimensions_changed))
     }
 
@@ -1036,7 +1003,7 @@ impl GameHost {
         let removed = self.surfaces.remove(&connection).is_some();
         if removed {
             self.render_device.surface_compositors.remove(&connection);
-            self.composition_content_dirty = true;
+            self.mark_composition_dirty();
         }
         removed
     }
@@ -1053,7 +1020,8 @@ impl GameHost {
         }
         self.capture.detach();
         self.surfaces.clear();
-        self.composition_content_dirty = true;
+        self.pending_offer = None;
+        self.mark_composition_dirty();
         let token = active.token;
         let filesystem = active.filesystem.take();
         drop(active.runtime);
@@ -1213,7 +1181,9 @@ impl GameHost {
                 },
             );
         }
-        self.composition_content_dirty |= changed;
+        if changed {
+            self.mark_composition_dirty();
+        }
         changed
     }
 }
