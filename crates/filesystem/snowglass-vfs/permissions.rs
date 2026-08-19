@@ -1,19 +1,18 @@
 use crate::{VfsError, VfsResult};
 use std::{fmt, str::FromStr};
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct Permissions(u8);
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+    pub struct Permissions: u8 {
+        const READ = 1;
+        const WRITE = 2;
+        const EXECUTE = 4;
+    }
+}
 
 impl Permissions {
-    pub const NONE: Self = Self(0);
-    pub const READ: Self = Self(1);
-    pub const WRITE: Self = Self(2);
-    pub const EXECUTE: Self = Self(4);
-    pub const ALL: Self = Self(7);
-
-    pub const fn contains(self, requested: Self) -> bool {
-        self.0 & requested.0 == requested.0
-    }
+    pub const NONE: Self = Self::empty();
+    pub const ALL: Self = Self::all();
 
     pub const fn can_read(self) -> bool {
         self.contains(Self::READ)
@@ -36,15 +35,15 @@ impl FromStr for Permissions {
             .bytes()
             .try_fold((0_u8, 0_u8), |(bits, previous), byte| {
                 let (order, bit) = match byte {
-                    b'r' => (1, Self::READ.0),
-                    b'w' => (2, Self::WRITE.0),
-                    b'x' => (3, Self::EXECUTE.0),
+                    b'r' => (1, Self::READ.bits()),
+                    b'w' => (2, Self::WRITE.bits()),
+                    b'x' => (3, Self::EXECUTE.bits()),
                     _ => return None,
                 };
                 (order > previous && bits & bit == 0).then_some((bits | bit, order))
             });
         expected
-            .map(|(bits, _)| Self(bits))
+            .map(|(bits, _)| Self::from_bits_truncate(bits))
             .ok_or_else(|| VfsError::InvalidPermissions(value.to_owned()))
     }
 }

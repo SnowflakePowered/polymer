@@ -1,4 +1,3 @@
-use crate::Storage;
 use crate::error::Error;
 use image::RgbaImage;
 

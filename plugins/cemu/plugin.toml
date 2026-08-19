@@ -10,6 +10,12 @@ source = "pkg:bin/win-x64"
 format = "directory"
 mode = "rx"
 
+[[plugin.resources]]
+name = "graphicsPacks"
+source = "pkg:bin/graphicsPacks"
+format = "directory"
+mode = "r"
+
 [[plugin.caches]]
 key = "shaderCache"
 label = "Shader Cache"
