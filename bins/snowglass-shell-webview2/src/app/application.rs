@@ -222,6 +222,12 @@ impl ShellApplication {
             ShellWindowEvent::Resized { width, height } if width != 0 && height != 0 => {
                 state.resize(width, height);
             }
+            ShellWindowEvent::ScaleFactorChanged => {
+                let size = state.window.size();
+                if size.width != 0 && size.height != 0 {
+                    state.resize(size.width, size.height);
+                }
+            }
             ShellWindowEvent::FocusLost => state.handle_focus_lost(),
             ShellWindowEvent::Keyboard {
                 physical_key,

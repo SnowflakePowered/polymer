@@ -155,6 +155,7 @@ impl ShellCoordinator {
         }
         if let Some(shell_source) = source {
             let size = self.window.size();
+            let scale_factor = self.window.scale_factor();
             let command_proxy = self.proxy.clone();
             let input_proxy = self.proxy.clone();
             let webrtc_proxy = self.proxy.clone();
@@ -197,6 +198,7 @@ impl ShellCoordinator {
                             base_url,
                             size.width,
                             size.height,
+                            scale_factor,
                             emulator_commands,
                             input_commands,
                             webrtc_commands,

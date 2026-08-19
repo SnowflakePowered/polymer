@@ -259,6 +259,7 @@ pub(super) struct DomSnapshot {
     active_element: Option<usize>,
     width: u32,
     height: u32,
+    device_pixel_ratio: f32,
     nodes: Vec<NodeSnapshot>,
 }
 
@@ -292,6 +293,7 @@ pub(super) struct LayoutSnapshot {
     active_element: Option<usize>,
     width: u32,
     height: u32,
+    device_pixel_ratio: f32,
     nodes: Vec<LayoutNodeSnapshot>,
 }
 
@@ -300,8 +302,13 @@ impl LayoutSnapshot {
         !self.nodes.is_empty()
     }
 
-    pub(super) fn view_state(&self) -> (Option<usize>, u32, u32) {
-        (self.active_element, self.width, self.height)
+    pub(super) fn view_state(&self) -> (Option<usize>, u32, u32, u32) {
+        (
+            self.active_element,
+            self.width,
+            self.height,
+            self.device_pixel_ratio.to_bits(),
+        )
     }
 }
 
@@ -315,6 +322,7 @@ pub(super) fn layout_snapshot(
     document: &BaseDocument,
     width: u32,
     height: u32,
+    device_pixel_ratio: f32,
     node_ids: &HashMap<usize, usize>,
     previous: &mut HashMap<usize, [f32; 4]>,
     roots: Option<&[usize]>,
@@ -386,6 +394,7 @@ pub(super) fn layout_snapshot(
             .and_then(|id| node_ids.get(&id).copied()),
         width,
         height,
+        device_pixel_ratio,
         nodes,
     }
 }
@@ -404,6 +413,7 @@ pub(super) fn snapshot(
     document: &BaseDocument,
     width: u32,
     height: u32,
+    device_pixel_ratio: f32,
     node_ids: Option<&HashMap<usize, usize>>,
 ) -> DomSnapshot {
     let map_id = |id: usize| {
@@ -461,6 +471,7 @@ pub(super) fn snapshot(
         active_element: document.get_focussed_node_id().map(map_id),
         width,
         height,
+        device_pixel_ratio,
         nodes,
     }
 }

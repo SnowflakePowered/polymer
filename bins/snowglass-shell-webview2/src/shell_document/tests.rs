@@ -2,6 +2,87 @@ use super::*;
 use crate::shell_runtime::deno;
 use anyrender::Scene;
 use blitz_dom::LocalName;
+use std::sync::Arc;
+
+fn image_fill_count(scene: &anyrender::Scene) -> usize {
+    scene
+        .commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                anyrender::recording::RenderCommand::Fill(fill)
+                    if matches!(fill.brush, anyrender::Paint::Image(_))
+            )
+        })
+        .count()
+}
+
+#[test]
+fn repeated_raster_background_survives_viewport_resize() {
+    let mut document = blitz_html::HtmlDocument::from_html(
+        r#"<style>
+            html, body { width: 100%; height: 100%; margin: 0; }
+            .backdrop {
+                position: absolute;
+                inset: 0;
+                background-color: #050505;
+                background-image: url("snowglass:///dots.png"), linear-gradient(90deg, #292929, #050505);
+                background-repeat: repeat, no-repeat;
+                background-size: 24px 24px, 100% 100%;
+            }
+        </style><div class="backdrop"></div>"#,
+        blitz_dom::DocumentConfig::default(),
+    );
+    let viewport = |width, height| {
+        blitz_traits::shell::Viewport::new(
+            width,
+            height,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        )
+    };
+    document.as_mut().set_viewport(viewport(800, 600));
+    document.as_mut().resolve(0.0);
+    document
+        .as_mut()
+        .load_resource(blitz_dom::net::ResourceLoadResponse {
+            request_id: 0,
+            node_id: None,
+            resolved_url: Some("snowglass:///dots.png".to_owned()),
+            result: Ok(blitz_dom::net::Resource::Image(
+                blitz_dom::util::ImageType::Background(0),
+                2,
+                2,
+                Arc::new(vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]),
+            )),
+        });
+    document.as_mut().resolve(0.0);
+
+    let paint = |document: &mut blitz_html::HtmlDocument, width, height| {
+        let mut scene = anyrender::Scene::new();
+        blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, width, height, 0, 0);
+        scene
+    };
+    let initial = paint(&mut document, 800, 600);
+    assert!(image_fill_count(&initial) > 0);
+
+    document.as_mut().set_viewport(viewport(1280, 720));
+    document.as_mut().resolve(1.0);
+    let resized = paint(&mut document, 1280, 720);
+    assert!(image_fill_count(&resized) > 0);
+}
+
+#[test]
+fn dpi_helpers_keep_css_and_compositor_coordinates_distinct() {
+    assert_eq!(normalized_scale_factor(f32::NAN), 1.0);
+    assert_eq!(normalized_scale_factor(0.0), 1.0);
+    assert_eq!(normalized_scale_factor(1.5), 1.5);
+    assert_eq!(
+        scaled_rect(kurbo::Rect::new(10.0, 20.0, 110.0, 70.0), 1.5),
+        kurbo::Rect::new(15.0, 30.0, 165.0, 105.0),
+    );
+}
 
 #[test]
 fn promoted_chrome_keeps_its_origin_outside_the_viewport() {
@@ -454,6 +535,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                     placements: Vec::new(),
                     width: 800,
                     height: 600,
+                    scale_factor: 1.0,
                     dirty: true,
                     needs_resolve: true,
                     needs_geometry_sync: true,
@@ -466,6 +548,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                     layer.document.as_ref(),
                     800,
                     600,
+                    1.0,
                     crate::shell_runtime::ShellRuntimeOptions {
                         html: html.to_owned(),
                         source_name: "snowglass:///native-click-test.html".to_owned(),

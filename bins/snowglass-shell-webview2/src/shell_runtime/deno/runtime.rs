@@ -97,7 +97,7 @@ pub struct Runtime {
     // callback captured by the Snowglass extension.
     _plugin_runtime: Arc<snowglass_pluginhost::PluginRuntime>,
     layout_cache: HashMap<usize, [f32; 4]>,
-    layout_view_state: Option<(Option<usize>, u32, u32)>,
+    layout_view_state: Option<(Option<usize>, u32, u32, u32)>,
 }
 
 impl Runtime {
@@ -190,7 +190,7 @@ impl Runtime {
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
         Self::from_snapshot(
-            Self::serialized_snapshot(document, width, height)?,
+            Self::serialized_snapshot(document, width, height, 1.0)?,
             html.to_owned(),
             source_name.to_owned(),
             emulator_commands,
@@ -207,8 +207,9 @@ impl Runtime {
         document: &BaseDocument,
         width: u32,
         height: u32,
+        device_pixel_ratio: f32,
     ) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&snapshot(document, width, height, None))
+        serde_json::to_string(&snapshot(document, width, height, device_pixel_ratio, None))
     }
 
     pub(in crate::shell_runtime) async fn from_snapshot(
@@ -344,6 +345,7 @@ impl Runtime {
         document: &BaseDocument,
         width: u32,
         height: u32,
+        device_pixel_ratio: f32,
         node_ids: &HashMap<usize, usize>,
         roots: Option<&[usize]>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -351,6 +353,7 @@ impl Runtime {
             document,
             width,
             height,
+            device_pixel_ratio,
             node_ids,
             &mut self.layout_cache,
             roots,
@@ -372,10 +375,15 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn resize(
+        &mut self,
+        width: u32,
+        height: u32,
+        device_pixel_ratio: f32,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.worker.js_runtime_mut().execute_script(
             "snowglass:shell/resize.js",
-            format!("__snowglassDom.resize({width}, {height});"),
+            format!("__snowglassDom.resize({width}, {height}, {device_pixel_ratio});"),
         )?;
         Ok(())
     }

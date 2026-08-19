@@ -238,6 +238,7 @@ pub(crate) enum ShellWindowEvent {
         width: u32,
         height: u32,
     },
+    ScaleFactorChanged,
     FocusLost,
     Keyboard {
         physical_key: Option<String>,
@@ -303,6 +304,7 @@ pub(crate) fn translate_window_event(event: WindowEvent) -> ShellWindowEvent {
             width: size.width,
             height: size.height,
         },
+        WindowEvent::ScaleFactorChanged { .. } => ShellWindowEvent::ScaleFactorChanged,
         WindowEvent::Focused(false) => ShellWindowEvent::FocusLost,
         WindowEvent::Focused(true) => ShellWindowEvent::Other,
         WindowEvent::KeyboardInput { event, .. } => {
@@ -741,6 +743,10 @@ impl WindowManager {
             width: size.width,
             height: size.height,
         }
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor() as f32
     }
 
     pub fn surface(&self, width: u32, height: u32) -> SurfaceWindow<'_> {

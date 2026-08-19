@@ -982,8 +982,13 @@
   defineEventHandler(globalThis, "message");
 
   let dimensions = { width: 0, height: 0 };
+  let deviceScaleFactor = 1;
   let activeElement = null;
   const windowObject = globalThis;
+
+  function setDeviceScaleFactor(value) {
+    deviceScaleFactor = Number.isFinite(value) && value > 0 ? value : 1;
+  }
 
   function makeNode(snapshot) {
     if (snapshot.kind === "document") return new Document(snapshot);
@@ -999,6 +1004,7 @@
 
   function sync(snapshot) {
     dimensions = { width: snapshot.width, height: snapshot.height };
+    setDeviceScaleFactor(snapshot.devicePixelRatio);
     const resized = [];
     for (const item of snapshot.nodes) {
       nextNodeId = Math.max(nextNodeId, item.id + 1);
@@ -1030,6 +1036,7 @@
 
   function syncLayout(snapshot) {
     dimensions = { width: snapshot.width, height: snapshot.height };
+    setDeviceScaleFactor(snapshot.devicePixelRatio);
     const resized = [];
     for (const item of snapshot.nodes) {
       const current = nodes.get(item.id);
@@ -1110,6 +1117,7 @@
   Object.defineProperties(globalThis, {
     innerWidth: { get: () => dimensions.width },
     innerHeight: { get: () => dimensions.height },
+    devicePixelRatio: { get: () => deviceScaleFactor },
     scrollX: { get: () => 0 },
     scrollY: { get: () => 0 },
     pageXOffset: { get: () => 0 },
@@ -1144,8 +1152,9 @@
     syncLayout() {
       syncLayout(ops.op_dom_take_layout());
     },
-    resize(width, height) {
+    resize(width, height, scaleFactor) {
       dimensions = { width, height };
+      setDeviceScaleFactor(scaleFactor);
       dispatch(windowObject, new Event("resize"));
     },
     dispatchDom(type, targetId, eventClass, init, bubbles, cancelable) {
