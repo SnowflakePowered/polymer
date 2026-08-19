@@ -11,3 +11,17 @@ path = "lib.rs"
 thiserror.workspace = true
 image = { version = "0.25", default-features = false }
 jiff = "0.2.35"
+walkdir = "2.5.0"
+tokio = { version = "1.53.0", features = ["fs", "io-util", "rt"] }
+vfs = "0.13.0"
+quick-xml = { version = "0.39.4", features = ["serialize"] }
+serde.workspace = true
+futures = { version = "0.3", features = []}
+blake3 = { version = "1", features = ["mmap", "rayon"] }
+turso = "0.7.2"
+bitflags = "2.13.1"
+uuid = { version = "1.24.1", features = ["v7"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1.53.0", features = ["fs", "io-util", "macros", "rt"] }

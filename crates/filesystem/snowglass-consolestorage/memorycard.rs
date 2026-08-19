@@ -1,6 +1,6 @@
-use crate::Storage;
 use crate::error::Error;
 use crate::savegame::{RawSaveGame, SaveGameLineage};
+
 
 pub trait RawMemoryCard<R: RawSaveGame> {
     const BYTES_PER_BLOCK: u32;
@@ -11,7 +11,7 @@ pub trait RawMemoryCard<R: RawSaveGame> {
 }
 
 pub trait MemoryCard<R: RawSaveGame, S: SaveGameLineage<R>> {
-    fn import_from_bytes<St: Storage>(storage: St, bytes: &[u8]) -> Result<Self, Error>
+    fn import_from_bytes(bytes: &[u8]) -> Result<Self, Error>
     where
         Self: Sized;
 

@@ -41,6 +41,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/snowglass-config/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/snowglass-config/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-library/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/filesystem/snowglass-consolestorage/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-d3d11/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-d3d12/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

@@ -9,6 +9,7 @@ path = "lib.rs"
 
 [dependencies]
 asar.workspace = true
+bitflags = "2.13.1"
 bstr = "1"
 memmap2.workspace = true
 parking_lot.workspace = true
