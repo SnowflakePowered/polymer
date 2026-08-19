@@ -177,7 +177,10 @@ impl ShellCoordinator {
         if let Err(error) = self.window.resize_overlay() {
             tracing::error!("snowglass: resizing egui composition overlay failed: {error}");
         }
-        if self.shell_dom.resize(width, height) {
+        if self
+            .shell_dom
+            .resize(width, height, self.window.scale_factor())
+        {
             self.refresh_shell();
         }
         self.window.request_redraw();
@@ -188,14 +191,11 @@ impl ShellCoordinator {
             self.cancel_pointer_connection(connection);
         }
         let cursor = self.input.cursor();
+        let (css_x, css_y) = self
+            .shell_dom
+            .physical_to_css(cursor.x as f32, cursor.y as f32);
         for (button, _) in self.input.focus_lost_buttons() {
-            self.shell_mouse(
-                "mouseup",
-                cursor.x as f32,
-                cursor.y as f32,
-                button,
-                Some(false),
-            );
+            self.shell_mouse("mouseup", css_x, css_y, button, Some(false));
         }
         self.input.finish_focus_lost();
     }
@@ -210,10 +210,11 @@ impl ShellCoordinator {
         if consumed {
             return;
         }
-        let Some(hit) = self.shell_dom.hit_test(x as f32, y as f32) else {
+        let (css_x, css_y) = self.shell_dom.physical_to_css(x as f32, y as f32);
+        let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
             return;
         };
-        let prevented = self.shell_mouse("mousemove", x as f32, y as f32, 0, None);
+        let prevented = self.shell_mouse("mousemove", css_x, css_y, 0, None);
         if prevented || !hit.over_tracked_surface {
             return;
         }
@@ -237,17 +238,14 @@ impl ShellCoordinator {
         if consumed {
             return;
         }
-        let Some(hit) = self.shell_dom.hit_test(cursor.x as f32, cursor.y as f32) else {
+        let (css_x, css_y) = self
+            .shell_dom
+            .physical_to_css(cursor.x as f32, cursor.y as f32);
+        let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
             return;
         };
         let kind = if pressed { "mousedown" } else { "mouseup" };
-        let prevented = self.shell_mouse(
-            kind,
-            cursor.x as f32,
-            cursor.y as f32,
-            dom_button,
-            Some(pressed),
-        );
+        let prevented = self.shell_mouse(kind, css_x, css_y, dom_button, Some(pressed));
         if prevented || !hit.over_tracked_surface {
             return;
         }
@@ -265,16 +263,20 @@ impl ShellCoordinator {
 
     pub(super) fn handle_mouse_wheel(&mut self, horizontal: i32, vertical: i32) {
         let cursor = self.input.cursor();
-        let Some(hit) = self.shell_dom.hit_test(cursor.x as f32, cursor.y as f32) else {
+        let (css_x, css_y) = self
+            .shell_dom
+            .physical_to_css(cursor.x as f32, cursor.y as f32);
+        let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
             return;
         };
+        let scale_factor = f64::from(self.window.scale_factor());
         let claimed = self.shell_dom.wheel_event(
             hit,
             DomWheelEvent {
-                x: cursor.x as f32,
-                y: cursor.y as f32,
-                horizontal: f64::from(horizontal),
-                vertical: f64::from(vertical),
+                x: css_x,
+                y: css_y,
+                horizontal: f64::from(horizontal) / scale_factor,
+                vertical: f64::from(vertical) / scale_factor,
                 ctrl_key: self.input.dom_control_key(),
                 shift_key: self.input.dom_shift_key(),
                 alt_key: self.input.dom_alt_key(),

@@ -18,6 +18,7 @@ import type {
   ConfigurationOption,
   ConfigurationSelection,
   EmulatorConfiguration,
+  HTMLTrackedSurfaceElement,
   LaunchInstance,
   LaunchOptions,
   LaunchRequest,
@@ -293,49 +294,53 @@ function ConfigurePage() {
   </main>}</Show>;
 }
 
-const CLASSIC_DOT_RADIUS = 2.4;
-const CLASSIC_DOT_PITCH = 12;
-
-function createClassicDotPath(width: number, height: number) {
-  const commands: string[] = [];
-  const diameter = CLASSIC_DOT_RADIUS * 2;
-  for (let row = 0, y = CLASSIC_DOT_RADIUS; y < height + CLASSIC_DOT_RADIUS; row++, y += CLASSIC_DOT_PITCH / 2) {
-    const offset = row % 2 ? CLASSIC_DOT_PITCH / 2 : 0;
-    for (let x = CLASSIC_DOT_RADIUS + offset; x < width + CLASSIC_DOT_RADIUS; x += CLASSIC_DOT_PITCH) {
-      commands.push(`M ${x - CLASSIC_DOT_RADIUS} ${y} a ${CLASSIC_DOT_RADIUS} ${CLASSIC_DOT_RADIUS} 0 1 0 ${diameter} 0 a ${CLASSIC_DOT_RADIUS} ${CLASSIC_DOT_RADIUS} 0 1 0 -${diameter} 0`);
-    }
-  }
-  return commands.join(" ");
-}
-
-function ClassicSurfaceBackdrop() {
+function ClassicSurfaceBackdrop(props: { surface?: () => HTMLElement | undefined; revision?: number }) {
   let backdrop!: HTMLDivElement;
-  const [dimensions, setDimensions] = createSignal({ width: 0, height: 0 });
-  const dotPath = createMemo(() => createClassicDotPath(dimensions().width, dimensions().height));
+  let pendingFrame = 0;
 
+  const updateSurfaceInset = () => {
+    const surface = props.surface?.() as HTMLTrackedSurfaceElement | undefined;
+    const preferred = surface?.preferredSize;
+    const bounds = backdrop.getBoundingClientRect();
+    if (!preferred?.width || !preferred.height || !bounds.width || !bounds.height) {
+      backdrop.style.removeProperty("--surface-side-inset");
+      return;
+    }
+    const fittedWidth = Math.min(bounds.width, bounds.height * preferred.width / preferred.height);
+    const sideInset = Math.max(0, (bounds.width - fittedWidth) / 2);
+    backdrop.style.setProperty("--surface-side-inset", `${sideInset}px`);
+  };
+  const scheduleUpdate = () => {
+    if (pendingFrame) cancelAnimationFrame(pendingFrame);
+    pendingFrame = requestAnimationFrame(() => {
+      pendingFrame = 0;
+      updateSurfaceInset();
+    });
+  };
+
+  createEffect(() => {
+    props.revision;
+    props.surface?.();
+    scheduleUpdate();
+  });
   onMount(() => {
-    const updateDimensions = () => {
-      const bounds = backdrop.getBoundingClientRect();
-      const next = { width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) };
-      setDimensions((current) => current.width === next.width && current.height === next.height ? current : next);
-    };
-    const observer = new ResizeObserver(updateDimensions);
+    const observer = new ResizeObserver(scheduleUpdate);
     observer.observe(backdrop);
-    updateDimensions();
-    onCleanup(() => observer.disconnect());
+    scheduleUpdate();
+    onCleanup(() => {
+      observer.disconnect();
+      if (pendingFrame) cancelAnimationFrame(pendingFrame);
+    });
   });
 
-  return <div ref={backdrop} class="classic-surface-backdrop" aria-hidden="true">
-    <svg>
-      <path d={dotPath()} fill="#000000" fill-opacity="0.92" />
-    </svg>
-  </div>;
+  return <div ref={backdrop} class="classic-surface-backdrop" aria-hidden="true" />;
 }
 
 function GameLayout(props: ParentProps) {
   const shell = useShell();
   const [gamepadPosition, setGamepadPosition] = createSignal({ x: 300, y: 100 });
   const [gamepadSize, setGamepadSize] = createSignal({ width: 520, height: 340 });
+  const [surfaceRevision, setSurfaceRevision] = createSignal(0);
   let stage!: HTMLElement;
   const surfaceElements = new Map<number, HTMLElement>();
   const displayedSurfaces = createMemo(() => {
@@ -388,10 +393,11 @@ function GameLayout(props: ParentProps) {
       shell.navigate("/game/play");
     };
     const audio = (event: Event) => shell.setModel("audio", (event as CustomEvent<AudioState>).detail);
+    const surfacesChanged = () => setSurfaceRevision((revision) => revision + 1);
     const failed = (event: Event) => { const error = (event as CustomEvent<Error>).detail; shell.setModel("error", error?.message || "Game launch failed"); shell.setModel("surfaces", []); shell.navigate("/"); };
     const closed = () => { shell.setModel("launch", null); shell.setModel("request", null); shell.setModel("audio", { ...DEFAULT_AUDIO }); shell.setModel("surfaces", []); shell.setModel("launcher", { kind: "idle" }); shell.navigate("/"); };
-    instance.addEventListener("ready", ready); instance.addEventListener("audioChanged", audio); instance.addEventListener("error", failed); instance.addEventListener("closed", closed);
-    unbindInstance = () => { instance.removeEventListener("ready", ready); instance.removeEventListener("audioChanged", audio); instance.removeEventListener("error", failed); instance.removeEventListener("closed", closed); };
+    instance.addEventListener("ready", ready); instance.addEventListener("audioChanged", audio); instance.addEventListener("surfacesChanged", surfacesChanged); instance.addEventListener("error", failed); instance.addEventListener("closed", closed);
+    unbindInstance = () => { instance.removeEventListener("ready", ready); instance.removeEventListener("audioChanged", audio); instance.removeEventListener("surfacesChanged", surfacesChanged); instance.removeEventListener("error", failed); instance.removeEventListener("closed", closed); };
     if (instance.state === "ready") ready();
     else if (instance.state === "error") failed(new CustomEvent("error", { detail: instance.error }));
     else if (instance.state === "closed") closed();
@@ -439,7 +445,7 @@ function GameLayout(props: ParentProps) {
   });
   return <main ref={stage} class="relative h-screen w-screen overflow-hidden bg-black text-snow-100">
     <For each={displayedSurfaces()}>{(surface, index) => <Show when={index() > 0} fallback={
-      <><ClassicSurfaceBackdrop /><tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="game-surface absolute inset-0 h-full w-full" /></>
+      <><ClassicSurfaceBackdrop surface={() => surfaceElements.get(surface.index)} revision={surfaceRevision()} /><tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="game-surface absolute inset-0 h-full w-full" /></>
     }>
       <FloatingPanel.Root open={shell.model.gamepadOpen} onOpenChange={(details: any) => shell.setModel("gamepadOpen", details.open)} position={gamepadPosition()} onPositionChange={(details: any) => setGamepadPosition(details.position)} size={gamepadSize()} onSizeChange={(details: any) => setGamepadSize(details.size)} minSize={{ width: 240, height: 180 }} lockAspectRatio persistRect closeOnEscape={false}>
         <FloatingPanel.Positioner class="gamepad-panel-positioner" data-open={shell.model.gamepadOpen} style={`position: fixed; top: 0px; left: 0px; width: ${gamepadSize().width}px; height: ${gamepadSize().height}px; transform: translate(${gamepadPosition().x}px, ${gamepadPosition().y}px);`}>
@@ -452,7 +458,7 @@ function GameLayout(props: ParentProps) {
               <FloatingPanel.CloseTrigger class="gamepad-panel-close symbol-glyph" data-no-drag aria-label="Hide gamepad">×</FloatingPanel.CloseTrigger>
             </FloatingPanel.Header>
             <FloatingPanel.Body class="gamepad-panel-body">
-              <ClassicSurfaceBackdrop />
+              <ClassicSurfaceBackdrop surface={() => surfaceElements.get(surface.index)} revision={surfaceRevision()} />
               <tracked-surface ref={(element) => registerSurface(surface.index, element)} src={String(surface.index)} data-index={String(surface.index)} class="game-surface absolute inset-0 h-full w-full" />
             </FloatingPanel.Body>
             <FloatingPanel.ResizeTrigger

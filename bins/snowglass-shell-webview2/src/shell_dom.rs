@@ -202,14 +202,24 @@ impl ShellSession {
         true
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) -> bool {
+    pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active.document.resize(width, height);
-        active.runtime.resize(width, height);
+        active.document.resize(width, height, scale_factor);
+        let (logical_width, logical_height) = active.document.logical_size();
+        active.runtime.resize(
+            logical_width,
+            logical_height,
+            active.document.scale_factor(),
+        );
         active.document.apply_script_mutations(&mut active.runtime);
         true
+    }
+
+    pub fn physical_to_css(&self, x: f32, y: f32) -> (f32, f32) {
+        self.active()
+            .map_or((x, y), |document| document.physical_to_css(x, y))
     }
 
     pub fn mouse_event(&mut self, hit: ShellHitSnapshot, event: DomMouseEvent<'_>) -> bool {
@@ -278,6 +288,7 @@ impl ShellSessionFactory {
         base_url: String,
         width: u32,
         height: u32,
+        scale_factor: f32,
         emulator_commands: crate::shell_runtime::EmulatorCommandSink,
         input_commands: crate::shell_runtime::InputCommandSink,
         webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
@@ -291,12 +302,15 @@ impl ShellSessionFactory {
         ),
         Box<dyn std::error::Error>,
     > {
-        let mut document = self.document.create(html, base_url.clone(), width, height);
-        let (base_document, width, height) = document.runtime_context();
+        let mut document =
+            self.document
+                .create(html, base_url.clone(), width, height, scale_factor);
+        let (base_document, width, height, scale_factor) = document.runtime_context();
         let (mut runtime, notifications) = ShellRuntime::start(
             base_document,
             width,
             height,
+            scale_factor,
             ShellRuntimeOptions {
                 html: html.to_owned(),
                 source_name: base_url,

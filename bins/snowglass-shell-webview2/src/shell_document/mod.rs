@@ -63,6 +63,23 @@ fn chrome_fragment_bounds(bounds: Option<kurbo::Rect>, viewport: kurbo::Rect) ->
     )
 }
 
+fn normalized_scale_factor(scale_factor: f32) -> f32 {
+    if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    }
+}
+
+fn scaled_rect(rect: kurbo::Rect, scale_factor: f64) -> kurbo::Rect {
+    kurbo::Rect::new(
+        rect.x0 * scale_factor,
+        rect.y0 * scale_factor,
+        rect.x1 * scale_factor,
+        rect.y1 * scale_factor,
+    )
+}
+
 /// Set to report what each repaint of this layer costs.
 const PAINT_TIMING: &str = "SNOWGLASS_GAME_LAYER_TIMING";
 
@@ -78,6 +95,7 @@ pub struct ShellDocument {
     placements: Vec<GamePlacement>,
     width: u32,
     height: u32,
+    scale_factor: f32,
     /// Set whenever layout or content changed, so a paint is only spent when
     /// something can differ. Guest frames arriving do not dirty this layer.
     dirty: bool,
@@ -109,7 +127,14 @@ impl ShellDocumentFactory {
         Self { event_proxy }
     }
 
-    pub fn create(&self, html: &str, base_url: String, width: u32, height: u32) -> ShellDocument {
+    pub fn create(
+        &self,
+        html: &str,
+        base_url: String,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+    ) -> ShellDocument {
         let (sender, arrivals) = channel();
         let proxy = self.event_proxy.clone();
         let waker: Arc<dyn NetWaker> = Arc::new(move |_| {
@@ -145,6 +170,7 @@ impl ShellDocumentFactory {
             placements: Vec::new(),
             width: 0,
             height: 0,
+            scale_factor: 1.0,
             dirty: true,
             needs_resolve: true,
             needs_geometry_sync: true,
@@ -153,7 +179,7 @@ impl ShellDocumentFactory {
             dom_to_script,
             pointer_hover_path: Vec::new(),
         };
-        document.resize(width, height);
+        document.resize(width, height, scale_factor);
         // Scripts run after parsing, with a complete DOM just like deferred
         // document scripts. Resolve once first so geometry APIs have useful
         // values during initialisation.
@@ -163,24 +189,48 @@ impl ShellDocumentFactory {
 }
 
 impl ShellDocument {
-    pub(crate) fn runtime_context(&self) -> (&blitz_dom::BaseDocument, u32, u32) {
-        (self.document.as_ref(), self.width, self.height)
+    pub(crate) fn runtime_context(&self) -> (&blitz_dom::BaseDocument, u32, u32, f32) {
+        let (width, height) = self.logical_size();
+        (self.document.as_ref(), width, height, self.scale_factor)
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub(crate) fn logical_size(&self) -> (u32, u32) {
+        let scale = f64::from(self.scale_factor);
+        (
+            (f64::from(self.width) / scale).round().max(1.0) as u32,
+            (f64::from(self.height) / scale).round().max(1.0) as u32,
+        )
+    }
+
+    pub(crate) fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    pub(crate) fn physical_to_css(&self, x: f32, y: f32) -> (f32, f32) {
+        (x / self.scale_factor, y / self.scale_factor)
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) {
         let (width, height) = (width.max(1), height.max(1));
-        if (self.width, self.height) == (width, height) {
+        let scale_factor = normalized_scale_factor(scale_factor);
+        if (self.width, self.height, self.scale_factor) == (width, height, scale_factor) {
             return;
         }
         self.width = width;
         self.height = height;
+        self.scale_factor = scale_factor;
+        let (logical_width, logical_height) = self.logical_size();
         // Absolutely positioned boxes resolve against the viewport, so without
-        // one every box in this layer lays out at zero size.
+        // one every box in this layer lays out at zero size. Keep Blitz in CSS
+        // pixels and scale its completed display list once below. Blitz 0.3's
+        // internal HiDPI transform path scales layout translations but not
+        // absolute lengths inside CSS transforms, which otherwise separates
+        // transformed chrome from its tracked surface.
         self.document
             .as_mut()
             .set_viewport(blitz_traits::shell::Viewport::new(
-                width,
-                height,
+                logical_width,
+                logical_height,
                 1.0,
                 blitz_traits::shell::ColorScheme::Dark,
             ));
@@ -286,10 +336,12 @@ impl ShellDocument {
             let resolved = resolve_started.elapsed();
             let sync_started = std::time::Instant::now();
             if std::mem::take(&mut self.needs_geometry_sync) {
+                let (logical_width, logical_height) = self.logical_size();
                 runtime.sync(
                     self.document.as_ref(),
-                    self.width,
-                    self.height,
+                    logical_width,
+                    logical_height,
+                    self.scale_factor,
                     &self.dom_to_script,
                     None,
                 );
@@ -309,6 +361,7 @@ impl ShellDocument {
         // invalidate the shell when its chrome actually changes.
 
         let started = std::time::Instant::now();
+        let (logical_width, logical_height) = self.logical_size();
         let (used, output) = {
             let mut scene = BandedScene::new(&mut self.bands, &mut self.placements);
             // blitz-paint 0.3 deliberately leaves scene lifetime to its
@@ -320,8 +373,8 @@ impl ShellDocument {
                 &mut scene,
                 self.document.as_mut(),
                 1.0,
-                self.width,
-                self.height,
+                logical_width,
+                logical_height,
                 0,
                 0,
             );
@@ -355,13 +408,17 @@ impl ShellDocument {
                 .is_some_and(|fragment| fragment.band == band)
             {
                 let fragment = fragments.next().expect("peeked fragment exists");
+                let scale = f64::from(self.scale_factor);
                 let viewport =
                     kurbo::Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
-                let bounds = chrome_fragment_bounds(fragment.bounds, viewport);
+                let bounds = chrome_fragment_bounds(
+                    fragment.bounds.map(|bounds| scaled_rect(bounds, scale)),
+                    viewport,
+                );
                 let mut local_scene = anyrender::Scene::with_tolerance(fragment.scene.tolerance);
                 local_scene.append_scene(
                     fragment.scene,
-                    kurbo::Affine::translate((-bounds.x0, -bounds.y0)),
+                    kurbo::Affine::new([scale, 0.0, 0.0, scale, -bounds.x0, -bounds.y0]),
                 );
                 if let Some(group) = fragment.group {
                     group_first_z.entry(group).or_insert(z_order);
@@ -392,10 +449,10 @@ impl ShellDocument {
                 surface_layout.push(TrackedSurfaceLayout {
                     node_id,
                     source_id: placement.source_id,
-                    bounds: placement.rect,
+                    bounds: scaled_rect(placement.rect, f64::from(self.scale_factor)),
                     z_order,
                     group: placement.group,
-                    corner_radius: placement.corner_radius,
+                    corner_radius: placement.corner_radius * self.scale_factor,
                     style: placement.style.clone(),
                     opacity: placement.opacity,
                 });
@@ -411,10 +468,15 @@ impl ShellDocument {
             .map(|group| ShellCompositionGroup {
                 id: group.id,
                 parent: group.parent,
-                bounds: group.bounds,
+                bounds: scaled_rect(group.bounds, f64::from(self.scale_factor)),
                 z_order: group_first_z.get(&group.id).copied().unwrap_or(i32::MAX),
                 opacity: group.opacity,
-                shadow: group.shadow,
+                shadow: group.shadow.map(|mut shadow| {
+                    shadow.offset[0] *= self.scale_factor;
+                    shadow.offset[1] *= self.scale_factor;
+                    shadow.blur_radius *= self.scale_factor;
+                    shadow
+                }),
             })
             .collect();
         Some(ShellFrame {

@@ -36,6 +36,7 @@ impl ShellRuntime {
         document: &BaseDocument,
         width: u32,
         height: u32,
+        scale_factor: f32,
         options: ShellRuntimeOptions,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn Error>> {
         let ShellRuntimeOptions {
@@ -48,7 +49,8 @@ impl ShellRuntime {
             plugin_runtime,
             viewer,
         } = options;
-        let result = match deno::Runtime::serialized_snapshot(document, width, height) {
+        let result = match deno::Runtime::serialized_snapshot(document, width, height, scale_factor)
+        {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
                 initial_snapshot,
                 html,
@@ -67,8 +69,8 @@ impl ShellRuntime {
         result.map(|(runtime, notifications)| (Self { runtime }, notifications))
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if let Err(error) = self.runtime.resize(width, height) {
+    pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) {
+        if let Err(error) = self.runtime.resize(width, height, scale_factor) {
             tracing::error!("snowglass: resizing the shell window failed: {error}");
         }
     }
@@ -113,10 +115,14 @@ impl ShellRuntime {
         document: &BaseDocument,
         width: u32,
         height: u32,
+        scale_factor: f32,
         node_ids: &HashMap<usize, usize>,
         roots: Option<&[usize]>,
     ) {
-        if let Err(error) = self.runtime.sync(document, width, height, node_ids, roots) {
+        if let Err(error) =
+            self.runtime
+                .sync(document, width, height, scale_factor, node_ids, roots)
+        {
             tracing::error!("snowglass: synchronizing the shell DOM failed: {error}");
         }
     }

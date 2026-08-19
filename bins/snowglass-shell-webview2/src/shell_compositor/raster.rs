@@ -134,6 +134,18 @@ fn same_resources(left: &vello_encoding::Resources, right: &vello_encoding::Reso
             })
 }
 
+fn scene_images(scene: &vello::Scene) -> impl Iterator<Item = &vello::peniko::ImageData> {
+    scene
+        .encoding()
+        .resources
+        .patches
+        .iter()
+        .filter_map(|patch| match patch {
+            vello_encoding::Patch::Image { image, .. } => Some(image),
+            _ => None,
+        })
+}
+
 fn shell_instance_options() -> wgpu::InstanceDescriptor {
     let mut options = wgpu::InstanceDescriptor::new_without_display_handle();
     options.backends = wgpu::Backends::DX12;
@@ -339,6 +351,16 @@ impl ShellRasterizer {
                 .targets
                 .get_mut(&id)
                 .expect("chunk target was inserted");
+            // One Vello renderer rasterizes several independent retained
+            // chunks. Its resolver keys image-atlas residency by blob identity,
+            // so intervening chunk renders can replace atlas storage while a
+            // later scene still appears to reference an already-resident PNG.
+            // Reassert only the images in a chunk that is actually being
+            // rasterized. This is independent of guest presentation and keeps
+            // retained/reused chrome frames free.
+            for image in scene_images(&scene) {
+                self.renderer.mark_override_image_dirty(image);
+            }
             // Retained WUC visuals make translated and unchanged scenes free
             // above. When pixels truly change, redraw the complete local
             // fragment into a transparently cleared target. Partial copies
@@ -564,5 +586,28 @@ mod tests {
         let mut changed = identical;
         changed.encoding_mut().draw_data[0] ^= 1;
         assert!(!same_scene(&scene, &changed));
+    }
+
+    #[test]
+    fn discovers_images_that_need_reupload_after_target_replacement() {
+        let image = vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![
+                0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255,
+            ])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            width: 2,
+            height: 2,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+        };
+        let mut scene = vello::Scene::new();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            kurbo::Affine::IDENTITY,
+            &vello::peniko::ImageBrush::new(image),
+            None,
+            &kurbo::Rect::new(0.0, 0.0, 20.0, 20.0),
+        );
+
+        assert_eq!(scene_images(&scene).count(), 1);
     }
 }

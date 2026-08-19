@@ -43,6 +43,42 @@ fn document(html: &str) -> blitz_html::HtmlDocument {
 }
 
 #[tokio::test]
+async fn resize_reports_logical_viewport_and_native_device_pixel_ratio() {
+    let html = r#"
+        <html><body><script>
+          window.addEventListener("resize", () => postMessage({
+            width: innerWidth,
+            height: innerHeight,
+            devicePixelRatio,
+          }));
+        </script></body></html>
+    "#;
+    let document = document(html);
+    let mut runtime = Runtime::new(
+        document.as_ref(),
+        html,
+        "snowglass:///dpi-test.html",
+        800,
+        600,
+        EmulatorCommandSink::default(),
+    )
+    .await
+    .unwrap();
+
+    runtime.resize(640, 360, 2.0).unwrap();
+    runtime.poll_event_loop().await.unwrap();
+
+    assert_eq!(
+        runtime.take_messages(),
+        [serde_json::json!({
+            "width": 640,
+            "height": 360,
+            "devicePixelRatio": 2,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn node_dispatch_event_reaches_delegated_ancestors() {
     let html = r##"
         <html><body>
