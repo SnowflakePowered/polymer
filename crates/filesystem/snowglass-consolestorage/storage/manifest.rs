@@ -218,6 +218,7 @@ impl ArtifactDb {
     /// already-branded manifest keeps its id, platform, and label.
     async fn claim_identity(
         &self,
+        id: Uuid,
         platform: &str,
         label: Option<&str>,
     ) -> Result<NandMetadata, Error> {
@@ -225,9 +226,8 @@ impl ArtifactDb {
             return Ok(identity);
         }
 
-        // v7 so a listing sorts by creation without a second index.
         let identity = NandMetadata {
-            id: Uuid::now_v7(),
+            id,
             platform: platform.to_string(),
             label: label.map(str::to_string),
             created: Timestamp::now(),
@@ -310,10 +310,11 @@ impl ArtifactDb {
 
     pub(super) fn brand<'a>(
         &'a self,
+        id: Uuid,
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
-        Box::pin(self.claim_identity(platform, label))
+        Box::pin(self.claim_identity(id, platform, label))
     }
 
     pub(super) fn identity(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {

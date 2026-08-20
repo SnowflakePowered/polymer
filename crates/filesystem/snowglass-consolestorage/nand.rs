@@ -20,8 +20,13 @@ pub trait VirtualNand {
     /// set later with [`Self::set_label`].
     async fn new_empty<St: Storage + 'static>(
         storage: St,
+        id: Uuid,
         label: Option<String>,
     ) -> Result<Self, Error>
+    where
+        Self: Sized;
+
+    async fn open<St: Storage + 'static>(storage: St) -> Result<Self, Error>
     where
         Self: Sized;
 
