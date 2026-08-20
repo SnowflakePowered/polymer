@@ -12,6 +12,8 @@ use std::sync::Arc;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::Notify;
 
+use uuid::Uuid;
+
 use crate::error::Error;
 
 pub mod manifest;
@@ -189,6 +191,7 @@ pub trait Storage: Send + Sync {
     /// Establish an identity if there is none, returning it either way.
     fn brand<'a>(
         &'a self,
+        id: Uuid,
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
@@ -373,10 +376,11 @@ impl Storage for DirectoryStorage {
 
     fn brand<'a>(
         &'a self,
+        id: Uuid,
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
-        self.artifacts.brand(platform, label)
+        self.artifacts.brand(id, platform, label)
     }
 
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {

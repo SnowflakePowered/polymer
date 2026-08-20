@@ -102,7 +102,7 @@ snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
 snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
 snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }
 consolespec = { version = "0.0.1" }
-gumshoe = { git = "https://github.com/SnowflakePowered/gumshoe", rev = "ba12927450f56fa10ddb12f206f9b8eed985bcb9" }
+gumshoe = { version = "0.0.4-beta" }
 phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }

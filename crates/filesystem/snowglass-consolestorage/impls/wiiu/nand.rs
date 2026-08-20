@@ -13,6 +13,7 @@ use jiff::Timestamp;
 use std::io::{BufReader, Read};
 use std::time::Duration;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 const COUNTRY_FILE: &str = include_str!("./static/country.txt");
 const LANGUAGE_FILE: &str = include_str!("./static/language.txt");
@@ -37,11 +38,27 @@ impl VirtualNand for WiiUNand {
   }
 
   fn platform(&self) -> &str {
-    "NINTENDO_WIIU"
+    Self::PLATFORM
+  }
+
+  async fn open<St: Storage + 'static>(storage: St) -> Result<Self, Error> {
+    let storage: Box<dyn Storage> = Box::new(storage);
+    let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
+
+    if metadata.platform != Self::PLATFORM {
+      return Err(Error::Unsupported(format!(
+        "`{}` is a {} volume",
+        storage.describe(),
+        metadata.platform
+      )));
+    }
+
+    Ok(Self { storage })
   }
 
   async fn new_empty<St: Storage + 'static>(
     storage: St,
+    id: Uuid,
     label: Option<String>,
   ) -> Result<Self, Error> {
     let storage: Box<dyn Storage> = Box::new(storage);
@@ -60,7 +77,7 @@ impl VirtualNand for WiiUNand {
         "usr/save/00050010/1004a200/user/common/db/",
     )?;
 
-    storage.brand("NINTENDO_WIIU", label.as_deref()).await?;
+    storage.brand(id, Self::PLATFORM, label.as_deref()).await?;
 
     Ok(Self { storage })
   }
@@ -133,6 +150,7 @@ impl WiiUSaveLayout for SaveDepotId {
 
 impl WiiUNand {
   const SAVE_ROOT: &str = "usr/save";
+  const PLATFORM: &str = "NINTENDO_WIIU";
 
 
   fn describe_save(&self, id: SaveDepotId) -> Result<SaveDescriptor, Error> {

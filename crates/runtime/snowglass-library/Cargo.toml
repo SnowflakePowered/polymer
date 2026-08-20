@@ -7,6 +7,14 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+directories = "6.0.0"
+snowglass-consolestorage = { version = "0.1.0", path = "../../filesystem/snowglass-consolestorage" }
+tokio = { version = "1.53.1", features = ["fs", "rt"] }
+uuid = "1.24.1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1.53.1", features = ["macros"] }
