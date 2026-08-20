@@ -30,6 +30,8 @@ pub enum Error {
   },
   #[error("nand has no identity")]
   UnclaimedNand,
+  #[error("unsupported: {0}")]
+  Unsupported(String),
   #[error("installation did not run to completion")]
   InstallIncomplete,
   /// The file in the depot is corrupt.
@@ -61,6 +63,7 @@ impl Clone for Error {
         reason: reason.clone(),
       },
       Error::UnclaimedNand => Error::UnclaimedNand,
+      Error::Unsupported(what) => Error::Unsupported(what.clone()),
       Error::InstallIncomplete => Error::InstallIncomplete,
       Error::IntegrityMatchFailed { failed } => Error::IntegrityMatchFailed {
         failed: failed.clone(),

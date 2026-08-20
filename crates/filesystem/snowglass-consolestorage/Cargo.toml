@@ -12,7 +12,7 @@ thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["tga"] }
 jiff = "0.2.35"
 walkdir = "2.5.0"
-tokio = { version = "1.53.0", features = ["fs", "io-util", "rt"] }
+tokio = { version = "1.53.0", features = ["fs", "io-util", "rt", "sync", "time"] }
 vfs = "0.13.0"
 quick-xml = { version = "0.39.4", features = ["serialize"] }
 serde.workspace = true
@@ -21,6 +21,7 @@ blake3 = { version = "1", features = ["mmap", "rayon"] }
 turso = "0.7.2"
 bitflags = "2.13.1"
 uuid = { version = "1.24.1", features = ["v7"] }
+notify = "8.2.0"
 
 [dev-dependencies]
 tempfile.workspace = true
