@@ -62,7 +62,7 @@ pub trait VirtualNand {
         Ok(self.metadata().await?.label)
     }
 
-    async fn set_label(&self, label: &str) -> Result<(), Error> {
+    async fn set_label(&self, label: Option<&str>) -> Result<(), Error> {
         self.root().set_label(label).await
     }
 

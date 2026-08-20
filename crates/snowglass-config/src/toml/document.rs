@@ -392,6 +392,9 @@ mod packages {
         #[toml(default)]
         #[expect(dead_code)]
         resources: Vec<ManifestResource<'de>>,
+        #[toml(default)]
+        #[expect(dead_code)]
+        caches: Vec<ManifestCache<'de>>,
     }
 
     #[derive(Toml)]
@@ -407,6 +410,15 @@ mod packages {
         format: &'de str,
         #[expect(dead_code)]
         mode: &'de str,
+    }
+
+    #[derive(Toml)]
+    #[toml(FromToml)]
+    struct ManifestCache<'de> {
+        #[expect(dead_code)]
+        key: &'de str,
+        #[expect(dead_code)]
+        label: &'de str,
     }
 
     #[derive(Toml)]

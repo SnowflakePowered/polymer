@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod commands;
+mod consolestorage;
 mod configuration;
 mod game_host;
 mod input;
