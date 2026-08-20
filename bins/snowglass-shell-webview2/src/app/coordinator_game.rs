@@ -1,32 +1,22 @@
 use super::*;
-use snowglass_vfs::FilesystemHost;
 
 impl ShellCoordinator {
     pub(super) fn launch_game(
         &mut self,
         token: InstanceToken,
         options: AttachedLaunchPlan,
+        prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
     ) -> Result<(), String> {
-        let mounted_filesystem = if let Some(handle) = options.prepared_filesystem.as_deref() {
-            let prepared = self
-                .plugin_runtime
-                .take_prepared_filesystem(handle)
-                .map_err(|error| error.to_string())?;
-            prepared
-                .validate_command(&options.command)
-                .map_err(|error| error.to_string())?;
+        let mounted_filesystem = if let Some(prepared) = prepared_filesystem {
             let host = snowglass_vfs_winfsp::WinFspFilesystemHost::default();
-            if !host.supported() {
-                let error = "the plugin prepared a virtual filesystem, but WinFSP is unavailable"
-                    .to_owned();
-                self.emit_instance_event(token, "error", &instance_events::error(&error));
-                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-                return Err(error);
+            match snowglass_runtime::mount_prepared_filesystem(&host, prepared, &options.command) {
+                Ok(filesystem) => Some(filesystem),
+                Err(error) => {
+                    self.emit_instance_event(token, "error", &instance_events::error(&error));
+                    self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                    return Err(error);
+                }
             }
-            Some(
-                host.mount(prepared.endpoint().clone(), prepared.filesystem().clone())
-                    .map_err(|error| error.to_string())?,
-            )
         } else {
             None
         };

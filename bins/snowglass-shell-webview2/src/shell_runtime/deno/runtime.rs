@@ -16,13 +16,12 @@ use super::dom::{
 use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::state::{BridgeState, op_post_message};
-use snowglass_deno::snowglass::{
-    EmulatorCommandSink, InputCommandSink, SnowglassNotification, SnowglassNotificationSender,
-    SnowglassOptions, WebRtcCommandSink,
-};
+use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
+use snowglass_runtime::{EmulatorCommandSink, InputCommandSink, WebRtcCommandSink};
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
 const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
+
 deno_core::extension!(
     snowglass_shell_runtime,
     ops = [
@@ -93,9 +92,6 @@ deno_core::extension!(
 
 pub struct Runtime {
     worker: snowglass_deno::Runtime,
-    // PluginRuntime's Drop initiates shutdown; keep its owner alive for every
-    // callback captured by the Snowglass extension.
-    _plugin_runtime: Arc<snowglass_pluginhost::PluginRuntime>,
     layout_cache: HashMap<usize, [f32; 4]>,
     layout_view_state: Option<(Option<usize>, u32, u32, u32)>,
 }
@@ -233,84 +229,17 @@ impl Runtime {
         let storage_dir = std::env::var_os("LOCALAPPDATA")
             .map(std::path::PathBuf::from)
             .map(|path| path.join("Snowglass").join("webstorage"));
-        let plugin_handle = plugin_runtime.handle();
-        let descriptor_registry = plugin_handle.registry().clone();
-        let invoke_handle = plugin_handle.clone();
-        let release_handle = plugin_handle.clone();
-        let configuration_context = viewer.map(|viewer| (plugin_handle.registry().clone(), viewer));
-        let storage = crate::consolestorage::manager();
-        let launch_storage = storage.clone();
-        let snowglass_options = SnowglassOptions {
-            scrape: Arc::new(|path| {
-                Box::pin(async move {
-                    tokio::task::spawn_blocking(move || {
-                        snowglass_runtime::ScrapedPackage::from_path(path)
-                    })
-                    .await
-                    .map_err(|error| format!("package detection task failed: {error}"))?
-                    .map_err(|error| error.to_string())
-                    .and_then(|package| {
-                        serde_json::to_value(package).map_err(|error| error.to_string())
-                    })
-                })
-            }),
-            describe_configuration: Arc::new({
-                let context = configuration_context.clone();
-                move |package, preferred| {
-                    let (plugins, viewer) = context
-                        .clone()
-                        .ok_or_else(|| "configuration service is unavailable".to_owned())?;
-                    crate::configuration::describe_api(plugins, viewer, package, preferred)
-                }
-            }),
-            prepare_configuration: Arc::new({
-                let context = configuration_context;
-                move |package, request| {
-                    let (plugins, viewer) = context
-                        .clone()
-                        .ok_or_else(|| "configuration service is unavailable".to_owned())?;
-                    crate::configuration::prepare_api(plugins, viewer, package, request)
-                }
-            }),
-            list_plugins: Arc::new(move || {
-                serde_json::to_value(descriptor_registry.descriptors())
-                    .expect("plugin descriptors are JSON-compatible")
-            }),
-            invoke_plugin: Arc::new(move |plugin, path, arguments| {
-                let handle = invoke_handle.clone();
-                let storage = launch_storage.clone();
-                Box::pin(async move {
-                    let nand =
-                        match snowglass_runtime::launch_nand(storage, &path, &arguments).await {
-                            Ok(nand) => nand,
-                            Err(error) => {
-                                let error = snowglass_pluginhost::PluginInvocationError::new(
-                                    "Error",
-                                    "NAND_UNAVAILABLE",
-                                    error,
-                                );
-                                return serde_json::json!({ "ok": false, "error": error });
-                            }
-                        };
-                    match handle.invoke_with_nand(&plugin, &path, arguments, nand).await {
-                        Ok(value) => serde_json::json!({ "ok": true, "value": value }),
-                        Err(error) => serde_json::json!({ "ok": false, "error": error }),
-                    }
-                })
-            }),
-            release_prepared_filesystem: Arc::new(move |token| {
-                release_handle.release_prepared_filesystem(&token)
-            }),
-            consolestorage: Arc::new(move |request| {
-                let storage = storage.clone();
-                Box::pin(async move { crate::consolestorage::serve(storage, request).await })
-            }),
+        let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
             emulator_commands,
             input_commands,
             webrtc_commands,
-        };
-        let (snowglass_extension, notifications) =
-            snowglass_deno::snowglass::init(snowglass_options);
+        ));
+        let services = snowglass_runtime::FrontendServices::new(
+            plugin_runtime.clone(),
+            viewer.as_ref().map(configuration_defaults),
+            platform,
+        );
+        let (snowglass_extension, notifications) = snowglass_deno::snowglass::init(services);
         let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
             main_module: document_url.clone(),
             module_loader: browser_loader.clone(),
@@ -351,7 +280,6 @@ impl Runtime {
         Ok((
             Self {
                 worker,
-                _plugin_runtime: plugin_runtime,
                 layout_cache: HashMap::new(),
                 layout_view_state: None,
             },
@@ -475,6 +403,26 @@ impl Runtime {
                 .borrow_mut::<BridgeState>()
                 .messages,
         )
+    }
+}
+
+fn configuration_defaults(
+    viewer: &snowglass_renderer::cli::ViewerOptions,
+) -> snowglass_runtime::ConfigurationDefaults {
+    snowglass_runtime::ConfigurationDefaults {
+        gamepads: viewer
+            .gamepads
+            .iter()
+            .map(|gamepad| snowglass_runtime::DefaultGamepad {
+                selector: gamepad.selector.clone(),
+                slot: gamepad.slot,
+                layout: gamepad.layout.clone(),
+                force_mouse: gamepad.force_mouse,
+            })
+            .collect(),
+        machine: viewer.machine.clone(),
+        webrtc_targets: viewer.webrtc.clone(),
+        webrtc_bind: viewer.bind_webrtc,
     }
 }
 

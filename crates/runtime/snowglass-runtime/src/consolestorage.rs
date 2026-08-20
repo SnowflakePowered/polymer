@@ -5,13 +5,13 @@ use snowglass_deno::snowglass::ConsoleStorageRequest;
 use snowglass_library::{Directories, NandMetadata, StorageManager, VirtualNand};
 use uuid::Uuid;
 
-pub(crate) fn manager() -> Option<Arc<StorageManager>> {
+pub fn manager() -> Option<Arc<StorageManager>> {
     Directories::discover()
         .ok()
         .map(|directories| Arc::new(StorageManager::new(directories.consolestorage())))
 }
 
-pub(crate) async fn serve(
+pub async fn serve(
     manager: Option<Arc<StorageManager>>,
     request: ConsoleStorageRequest,
 ) -> Result<Value, String> {

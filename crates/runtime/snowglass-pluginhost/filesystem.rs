@@ -1,4 +1,4 @@
-//! Filesystem composition capabilities for plugin-worker isolates.
+//! Filesystem composition capabilities owned by plugin-worker isolates.
 
 use deno_core::{JsRuntime, OpState, op2};
 use deno_error::JsErrorBox;
@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::Handle;
+use crate::handle::Handle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NamedResourceKind {
@@ -743,8 +743,8 @@ deno_core::extension!(snowglass_filesystem,
         op_vfs_mount_scratch, op_vfs_mount_nand, op_vfs_path, op_vfs_set_working_directory,
         op_vfs_set_profile,
     ],
-    esm_entry_point = "ext:snowglass_filesystem/07_filesystem.js",
-    esm = [dir "js", "07_filesystem.js"],
+    esm_entry_point = "ext:snowglass_filesystem/filesystem.js",
+    esm = [dir "js", "filesystem.js"],
     options = { options: FilesystemOptions },
     state = |state, options| { state.put(FilesystemState::new(options.options).expect("validated filesystem options")); },
 );

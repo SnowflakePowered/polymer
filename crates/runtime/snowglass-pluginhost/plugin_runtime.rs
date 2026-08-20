@@ -1,9 +1,9 @@
+use crate::filesystem::NandFactory;
 use crate::{
     EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorSetupInvocation, PluginRegistry,
 };
 use deno_core::{serde_v8, v8};
 use serde::{Deserialize, Serialize};
-use snowglass_deno::filesystem::NandFactory;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -43,6 +43,13 @@ pub struct PluginInvocationError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stack: Option<String>,
+}
+
+/// Result of a plugin call before application-owned resources are converted
+/// into frontend-visible opaque handles.
+pub struct PluginInvocationResult {
+    pub value: Value,
+    pub prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
 }
 
 impl PluginInvocationError {
@@ -127,7 +134,6 @@ struct RuntimeState {
     permits: Arc<Semaphore>,
     next_call: AtomicU64,
     active: Mutex<HashMap<u64, Arc<InvocationControl>>>,
-    prepared_filesystems: Mutex<HashMap<u64, snowglass_vfs::PreparedFilesystemLaunch>>,
     shutdown: AtomicBool,
 }
 
@@ -149,7 +155,6 @@ impl PluginRuntime {
                     permits: Arc::new(Semaphore::new(options.max_concurrent_calls)),
                     next_call: AtomicU64::new(1),
                     active: Mutex::new(HashMap::new()),
-                    prepared_filesystems: Mutex::new(HashMap::new()),
                     shutdown: AtomicBool::new(false),
                 }),
             },
@@ -165,12 +170,6 @@ impl Drop for PluginRuntime {
     fn drop(&mut self) {
         self.handle.state.shutdown.store(true, Ordering::Release);
         self.handle.cancel_all();
-        self.handle
-            .state
-            .prepared_filesystems
-            .lock()
-            .unwrap()
-            .clear();
         self.handle.state.permits.close();
     }
 }
@@ -213,6 +212,20 @@ impl PluginRuntimeHandle {
         nand: Option<NandFactory>,
     ) -> Result<Value, PluginInvocationError> {
         let cancellation = self.cancellation_token();
+        let result = self
+            .invoke_inner(plugin_id, export_path, arguments, nand, cancellation)
+            .await?;
+        Ok(result.value)
+    }
+
+    pub async fn invoke_with_nand_owned(
+        &self,
+        plugin_id: &str,
+        export_path: &[String],
+        arguments: Vec<Value>,
+        nand: Option<NandFactory>,
+    ) -> Result<PluginInvocationResult, PluginInvocationError> {
+        let cancellation = self.cancellation_token();
         self.invoke_inner(plugin_id, export_path, arguments, nand, cancellation)
             .await
     }
@@ -224,8 +237,10 @@ impl PluginRuntimeHandle {
         arguments: Vec<Value>,
         cancellation: PluginCancellationToken,
     ) -> Result<Value, PluginInvocationError> {
-        self.invoke_inner(plugin_id, export_path, arguments, None, cancellation)
-            .await
+        let result = self
+            .invoke_inner(plugin_id, export_path, arguments, None, cancellation)
+            .await?;
+        Ok(result.value)
     }
 
     async fn invoke_inner(
@@ -235,7 +250,7 @@ impl PluginRuntimeHandle {
         arguments: Vec<Value>,
         nand: Option<NandFactory>,
         cancellation: PluginCancellationToken,
-    ) -> Result<Value, PluginInvocationError> {
+    ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let plugin = self
             .state
             .registry
@@ -327,11 +342,13 @@ impl PluginRuntimeHandle {
                     matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
                 )
                 .await?;
-            if let Some(filesystem) = result.filesystem.take() {
-                let handle = self.store_prepared_filesystem(filesystem);
-                result.prepared_filesystem = Some(handle.to_string());
-            }
-            return serde_json::to_value(result).map_err(PluginInvocationError::worker);
+            let filesystem = result.filesystem.take();
+            result.prepared_filesystem = None;
+            let value = serde_json::to_value(result).map_err(PluginInvocationError::worker)?;
+            return Ok(PluginInvocationResult {
+                value,
+                prepared_filesystem: filesystem,
+            });
         }
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
@@ -339,25 +356,30 @@ impl PluginRuntimeHandle {
         let filesystem =
             filesystem_options(plugin.as_ref(), None).map_err(PluginInvocationError::worker)?;
         let path = export_path.to_vec();
-        self.run_with_control(cancellation.control, move |control| {
-            run_worker(
-                entrypoint,
-                loader,
-                filesystem,
-                control,
-                move |runtime| async move {
-                    let mut runtime = runtime;
-                    invoke_export(
-                        runtime.js_runtime_mut(),
-                        &invocation_entrypoint,
-                        &path,
-                        arguments,
-                    )
-                    .await
-                },
-            )
+        let value = self
+            .run_with_control(cancellation.control, move |control| {
+                run_worker(
+                    entrypoint,
+                    loader,
+                    filesystem,
+                    control,
+                    move |runtime| async move {
+                        let mut runtime = runtime;
+                        invoke_export(
+                            runtime.js_runtime_mut(),
+                            &invocation_entrypoint,
+                            &path,
+                            arguments,
+                        )
+                        .await
+                    },
+                )
+            })
+            .await?;
+        Ok(PluginInvocationResult {
+            value,
+            prepared_filesystem: None,
         })
-        .await
     }
 
     /// Executes the emulator launch capability while keeping its mutable
@@ -416,54 +438,6 @@ impl PluginRuntimeHandle {
         for control in self.state.active.lock().unwrap().values() {
             control.cancel();
         }
-    }
-
-    pub fn take_prepared_filesystem(
-        &self,
-        token: &str,
-    ) -> Result<snowglass_vfs::PreparedFilesystemLaunch, PluginInvocationError> {
-        let token = u64::from_str_radix(token, 16).map_err(|_| {
-            PluginInvocationError::new(
-                "TypeError",
-                "INVALID_FILESYSTEM_HANDLE",
-                "invalid prepared filesystem handle",
-            )
-        })?;
-        self.state
-            .prepared_filesystems
-            .lock()
-            .unwrap()
-            .remove(&token)
-            .ok_or_else(|| {
-                PluginInvocationError::new(
-                    "NotFoundError",
-                    "UNKNOWN_FILESYSTEM_HANDLE",
-                    "prepared filesystem handle is unknown or was already consumed",
-                )
-            })
-    }
-
-    pub fn release_prepared_filesystem(&self, token: &str) -> bool {
-        u64::from_str_radix(token, 16)
-            .ok()
-            .and_then(|token| {
-                self.state
-                    .prepared_filesystems
-                    .lock()
-                    .unwrap()
-                    .remove(&token)
-            })
-            .is_some()
-    }
-
-    fn store_prepared_filesystem(
-        &self,
-        filesystem: snowglass_vfs::PreparedFilesystemLaunch,
-    ) -> snowglass_deno::Handle<snowglass_vfs::PreparedFilesystemLaunch> {
-        let mut prepared = self.state.prepared_filesystems.lock().unwrap();
-        let handle = snowglass_deno::Handle::new();
-        prepared.insert(handle.as_raw(), filesystem);
-        handle
     }
 
     #[cfg(test)]
@@ -554,7 +528,7 @@ impl Drop for ActiveCallGuard {
 fn run_worker<T, F, Fut>(
     entrypoint: String,
     loader: crate::PluginModuleLoader,
-    filesystem: snowglass_deno::filesystem::FilesystemOptions,
+    filesystem: crate::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
     operation: F,
 ) -> Result<T, PluginInvocationError>
@@ -574,7 +548,7 @@ where
             module_loader: Rc::new(loader),
             extensions: vec![
                 crate::deno::extension(),
-                snowglass_deno::filesystem::extension(filesystem),
+                crate::filesystem::extension(filesystem),
             ],
             user_agent: format!("SnowglassPluginHost/{}", env!("CARGO_PKG_VERSION")),
             storage_dir: None,
@@ -591,27 +565,22 @@ where
 fn filesystem_options(
     plugin: &dyn EmulatorPluginInstance,
     nand: Option<NandFactory>,
-) -> Result<snowglass_deno::filesystem::FilesystemOptions, crate::PackageError> {
-    let mut options = snowglass_deno::filesystem::FilesystemOptions::new(
-        plugin.module_loader().root().to_owned(),
-    );
+) -> Result<crate::filesystem::FilesystemOptions, crate::PackageError> {
+    let mut options =
+        crate::filesystem::FilesystemOptions::new(plugin.module_loader().root().to_owned());
     options.nand = nand;
     options.resources = plugin
         .resources()?
         .into_iter()
-        .map(|resource| snowglass_deno::filesystem::NamedResource {
+        .map(|resource| crate::filesystem::NamedResource {
             name: resource.name,
             path: resource.path,
             kind: match resource.format {
                 crate::PluginResourceFormat::Directory => {
-                    snowglass_deno::filesystem::NamedResourceKind::Directory
+                    crate::filesystem::NamedResourceKind::Directory
                 }
-                crate::PluginResourceFormat::Asar => {
-                    snowglass_deno::filesystem::NamedResourceKind::Asar
-                }
-                crate::PluginResourceFormat::File => {
-                    snowglass_deno::filesystem::NamedResourceKind::File
-                }
+                crate::PluginResourceFormat::Asar => crate::filesystem::NamedResourceKind::Asar,
+                crate::PluginResourceFormat::File => crate::filesystem::NamedResourceKind::File,
             },
             permissions: resource.permissions,
         })
@@ -621,7 +590,7 @@ fn filesystem_options(
         options.caches = plugin
             .caches()
             .iter()
-            .map(|cache| snowglass_deno::filesystem::NamedCache {
+            .map(|cache| crate::filesystem::NamedCache {
                 key: cache.key.clone(),
                 path: plugin_cache_root.join(&cache.key),
             })
@@ -1083,12 +1052,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn prepared_filesystem_handles_are_typed_single_use_capabilities() {
+    async fn prepared_filesystems_are_returned_to_the_application_owner() {
         let (root, registry) = package();
         let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
         let handle = runtime.handle();
         let result = handle
-            .invoke(
+            .invoke_with_nand_owned(
                 "worker-test",
                 &["setupLaunch".to_owned()],
                 vec![serde_json::json!({
@@ -1097,13 +1066,13 @@ mod tests {
                     "portAssignments": {},
                     "virtualize": true,
                 })],
+                None,
             )
             .await
             .unwrap();
-        let token = result["preparedFilesystem"].as_str().unwrap();
-        let filesystem = handle.take_prepared_filesystem(token).unwrap();
+        assert!(result.value["preparedFilesystem"].is_null());
+        let filesystem = result.prepared_filesystem.unwrap();
         assert_eq!(filesystem.filesystem().compiled().bindings().len(), 5);
-        assert!(handle.take_prepared_filesystem(token).is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

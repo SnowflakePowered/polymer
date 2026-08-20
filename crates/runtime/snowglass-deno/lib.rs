@@ -17,12 +17,9 @@ use std::{
     time::Duration,
 };
 
-pub mod filesystem;
-pub mod handle;
 pub mod snowglass;
 
 pub use deno_inspector_server::{InspectPublishUid, InspectorServerError, create_inspector_server};
-pub use handle::Handle;
 
 struct UserAgent(String);
 

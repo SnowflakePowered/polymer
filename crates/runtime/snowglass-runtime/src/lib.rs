@@ -3,14 +3,29 @@
 #![forbid(unsafe_code)]
 
 mod capture;
+mod configuration;
+mod consolestorage;
+mod frontend;
 mod input;
 mod instance;
 mod launch;
 mod nand;
 mod scraping;
+mod session;
 mod ui;
 
 pub use capture::ConsumerPreference;
+pub use configuration::{
+    ChoiceDescriptor, ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame,
+    EmulatorDescriptor, GameDescriptor, GamepadId, GamepadMapping, LaunchGroupRequest,
+    LaunchPortRequest, OptionDescriptor, PortDescriptor, PortGroupDescriptor, PreparedGame,
+    describe_api as describe_configuration, prepare_api as prepare_configuration,
+};
+pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
+pub use frontend::{
+    CommandRuntimePlatform, CommandSink, EmulatorCommand, EmulatorCommandSink, FrontendServices,
+    InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand, WebRtcCommandSink,
+};
 #[doc(hidden)]
 pub use input::ProtocolInputSender;
 pub use instance::{
@@ -22,6 +37,7 @@ pub use instance::{
 };
 pub use nand::{NandFactory, launch_nand};
 pub use scraping::{ScrapedPackage, ScrapingError};
+pub use session::{SessionController, mount_prepared_filesystem};
 pub use ui::{UiRequest, UiRequestReceiver};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

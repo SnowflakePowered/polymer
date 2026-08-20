@@ -1,3 +1,4 @@
+// Plugin-worker filesystem API. This is intentionally separate from Snowglass.*.
 import {
   op_vfs_mount_cache,
   op_vfs_mount_host_file,

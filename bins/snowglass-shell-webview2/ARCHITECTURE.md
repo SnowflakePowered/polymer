@@ -29,6 +29,30 @@ and fonts. Its waker posts a shell redraw event when a resource arrives.
 - `WindowManager` owns the Winit window, merged shell/game DirectComposition
   visual, and the egui diagnostics overlay.
 
+## Runtime crate boundaries
+
+- `snowglass-shell-webview2` constructs the application Deno isolate and owns
+  DOM adaptation, window input, capture composition, and other native
+  presentation resources. It does not implement `Snowglass.*` services.
+- `snowglass-deno` defines the curated web runtime, the frontend-only
+  `Snowglass.*` JavaScript extension, its ops, notifications, and the typed
+  `SnowglassHost` capability boundary. Its ops contain input conversion and
+  delegation only.
+- `snowglass-runtime` implements `SnowglassHost`. It owns configuration and
+  console-storage services, package scraping, plugin dispatch, prepared VFS
+  lifetime, filesystem mounting, and emulator process/audio/session lifecycle.
+  `RuntimePlatform` is the narrow port for operations that must return to the
+  shell's native event thread.
+- `snowglass-pluginhost` owns plugin discovery and invocation, plugin Deno
+  isolates, and plugin-only JavaScript APIs such as filesystem preparation.
+  A prepared filesystem is returned as an owned Rust value to
+  `snowglass-runtime`; plugin isolates never receive frontend `Snowglass.*`
+  APIs and do not retain application session handles.
+
+The dependency direction is shell -> runtime -> pluginhost and deno, with the
+shell also depending on deno to instantiate its UI isolate. Neither deno nor
+pluginhost depends on shell types.
+
 There is no foreground proxy, linked document, shared UI bus, or structured
 remote-value codec. `Snowglass.input`, `Snowglass.plugin`, `Snowglass.scraping`,
 `Snowglass.configuration`, `Snowglass.emulator`, and `Snowglass.webrtc` are

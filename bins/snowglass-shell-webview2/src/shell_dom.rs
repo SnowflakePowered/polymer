@@ -277,10 +277,6 @@ impl ShellSessionFactory {
         }
     }
 
-    pub(crate) fn plugin_runtime_handle(&self) -> snowglass_pluginhost::PluginRuntimeHandle {
-        self.plugin_runtime.handle()
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create(
         self,

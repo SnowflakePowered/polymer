@@ -242,7 +242,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             let value = property(scope, wrapper, "result")?;
             serde_v8::from_v8(scope, value)?
         };
-        let filesystem = snowglass_deno::filesystem::take_prepared(self.runtime)
+        let filesystem = crate::filesystem::take_prepared(self.runtime)
             .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
         if let Some(filesystem) = &filesystem {
             filesystem

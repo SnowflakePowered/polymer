@@ -14,11 +14,12 @@ mod state;
 pub use dom::Mutation;
 pub use input::EventResult;
 pub use runtime::Runtime;
+pub use snowglass_deno::snowglass::InstanceToken;
 #[cfg(test)]
 pub use snowglass_deno::snowglass::SnowglassNotification;
-pub use snowglass_deno::snowglass::{
-    EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, InstanceToken,
-    WebRtcCommand, WebRtcCommandSink,
+pub use snowglass_runtime::{
+    EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, WebRtcCommand,
+    WebRtcCommandSink,
 };
 
 #[cfg(test)]

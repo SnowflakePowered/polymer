@@ -15,6 +15,7 @@ impl ShellCoordinator {
             EmulatorCommand::Launch {
                 token,
                 options,
+                prepared_filesystem,
                 result,
             } => {
                 let options = serde_json::from_value::<AttachedLaunchPlan>(options)
@@ -23,7 +24,8 @@ impl ShellCoordinator {
                         options.validate()?;
                         Ok(options)
                     });
-                let launched = options.and_then(|options| self.launch_game(token, options));
+                let launched = options
+                    .and_then(|options| self.launch_game(token, options, prepared_filesystem));
                 let _ = result.send(launched);
             }
             EmulatorCommand::Close(token) => self.close_game(token),

@@ -22,11 +22,8 @@ deno_web = "0.287.0"
 deno_webidl = "0.256.0"
 deno_websocket = "0.261.0"
 deno_webstorage = "0.251.0"
-percent-encoding = "2"
 serde.workspace = true
-serde_bytes = "0.11"
 serde_json.workspace = true
-snowglass-vfs.workspace = true
 sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
 tokio = { version = "1.53.0", features = ["sync", "time"] }
 

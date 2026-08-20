@@ -10,6 +10,8 @@ mod configuration;
 mod deno;
 pub mod descriptor;
 mod emulator;
+mod filesystem;
+mod handle;
 mod module_loader;
 mod plugin_runtime;
 mod runtime;
@@ -22,8 +24,8 @@ pub use emulator::{
 };
 pub use module_loader::PluginModuleLoader;
 pub use plugin_runtime::{
-    PluginCancellationToken, PluginInvocationError, PluginRuntime, PluginRuntimeHandle,
-    PluginRuntimeOptions,
+    PluginCancellationToken, PluginInvocationError, PluginInvocationResult, PluginRuntime,
+    PluginRuntimeHandle, PluginRuntimeOptions,
 };
 pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError};
 pub use toml::{
