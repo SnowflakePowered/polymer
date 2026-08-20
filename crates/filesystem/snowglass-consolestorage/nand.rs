@@ -1,67 +1,10 @@
-use crate::Error;
+use crate::{Error, Permissions};
 use crate::installable::artifacts::Artifact;
 use crate::storage::Storage;
-use crate::storage::manifest::{ArtifactSummary, NandIdentity};
+use crate::storage::manifest::{ArtifactSummary, NandMetadata};
 use uuid::Uuid;
 
-bitflags::bitflags! {
-    /// Access a NAND grants for a path, in the same bit layout as
-    /// `snowglass_vfs::Permissions` so a mount can pass it straight through.
-    #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-    pub struct Permissions: u8 {
-        const READ = 1;
-        const WRITE = 2;
-        const EXECUTE = 4;
 
-        const READ_EXECUTE = Self::READ.bits() | Self::EXECUTE.bits();
-    }
-}
-
-impl Permissions {
-    pub const fn can_read(self) -> bool {
-        self.contains(Self::READ)
-    }
-
-    pub const fn can_write(self) -> bool {
-        self.contains(Self::WRITE)
-    }
-
-    pub const fn can_execute(self) -> bool {
-        self.contains(Self::EXECUTE)
-    }
-}
-
-impl std::fmt::Display for Permissions {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (allowed, letter) in [
-            (self.can_read(), "r"),
-            (self.can_write(), "w"),
-            (self.can_execute(), "x"),
-        ] {
-            if allowed {
-                formatter.write_str(letter)?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-/// Resolve `path` against a longest-prefix table of granted permissions.
-/// Prefixes match on component boundaries, and `""` is the root.
-pub fn permissions_for(path: &str, layout: &[(&str, Permissions)]) -> Permissions {
-    layout
-        .iter()
-        .filter(|(prefix, _)| {
-            prefix.is_empty()
-                || path == *prefix
-                || path
-                    .strip_prefix(prefix)
-                    .is_some_and(|rest| rest.starts_with('/'))
-        })
-        .max_by_key(|(prefix, _)| prefix.len())
-        .map_or(Permissions::empty(), |(_, permissions)| *permissions)
-}
 
 pub enum NandCompletion {
     /// The NAND is complete as far as minimally required to run a game.
@@ -71,9 +14,6 @@ pub enum NandCompletion {
     /// The NAND is verified against an mtree
     Verified,
 }
-
-// TODO: lets not deal with savegames yet; they need to be mounted.
-// NANDs here are just for game, os, updates etc.
 
 pub trait VirtualNand {
     /// Lay out an empty NAND on `storage`. The label is optional and can be
@@ -101,27 +41,24 @@ pub trait VirtualNand {
     where
         Self: Sized;
 
-    /// Who this NAND is. Fails if nothing has claimed the manifest, which
-    /// `new_empty` does.
-    async fn identity(&self) -> Result<NandIdentity, Error> {
+    async fn metadata(&self) -> Result<NandMetadata, Error> {
         self.root()
-            .artifacts()
-            .identity()
+            .volumeinfo()
             .await?
             .ok_or(Error::UnclaimedNand)
     }
 
     /// Distinguishes this NAND from the user's others, e.g. for scoping saves.
     async fn id(&self) -> Result<Uuid, Error> {
-        Ok(self.identity().await?.id)
+        Ok(self.metadata().await?.id)
     }
 
     async fn label(&self) -> Result<Option<String>, Error> {
-        Ok(self.identity().await?.label)
+        Ok(self.metadata().await?.label)
     }
 
     async fn set_label(&self, label: &str) -> Result<(), Error> {
-        self.root().artifacts().set_label(label).await
+        self.root().set_label(label).await
     }
 
     /// Everything installed, without reading any manifest.
@@ -129,7 +66,7 @@ pub trait VirtualNand {
         self.root().artifacts().summaries().await
     }
 
-    /// Note that `artifact` is installed here.
+    /// Add the artifact to the nand manifest.
     async fn record(&self, artifact: &Artifact) -> Result<(), Error> {
         self.root().artifacts().record(artifact).await
     }

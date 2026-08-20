@@ -5,9 +5,12 @@ pub mod structure;
 
 mod memorycard;
 pub mod nand;
-mod savegame;
+pub mod savegame;
 mod storage;
 
 pub use error::Error;
-pub use nand::Permissions;
-pub use storage::{BoxFuture, InstallResult, DirEntry, DirectoryStorage, Metadata, Storage, StorageFile};
+pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, NandMetadata};
+pub use storage::{
+    BoxFuture, DirEntry, EntryKind, ReadDir, DirectoryStorage, InstallResult, Metadata, Storage, StorageFile, StorageRead,
+    permissions::*,
+};

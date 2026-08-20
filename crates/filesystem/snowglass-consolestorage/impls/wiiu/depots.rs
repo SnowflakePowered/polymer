@@ -56,7 +56,7 @@ impl WiiUMetaXmlDepot {
     let app: xml::AppXml = xml::read(&path.join("code/app.xml"))?;
     let meta: xml::MetaXml = xml::read(&path.join("meta/meta.xml"))?;
 
-    let label = meta.longname_en.text.replace('\n', " ").trim().to_string();
+    let label = meta.longname_en.0.clone();
     let version = Some(meta.title_version.text.trim().to_string()).filter(|v| !v.is_empty());
 
     Ok(Self {

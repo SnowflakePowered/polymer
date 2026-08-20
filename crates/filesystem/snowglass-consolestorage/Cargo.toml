@@ -9,7 +9,7 @@ path = "lib.rs"
 
 [dependencies]
 thiserror.workspace = true
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["tga"] }
 jiff = "0.2.35"
 walkdir = "2.5.0"
 tokio = { version = "1.53.0", features = ["fs", "io-util", "rt"] }
