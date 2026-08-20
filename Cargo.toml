@@ -106,12 +106,14 @@ gumshoe = { version = "0.0.4-beta" }
 phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
+snowglass-library = { path = "crates/runtime/snowglass-library" }
 snowglass-vfs = { path = "crates/filesystem/snowglass-vfs" }
 snowglass-vfs-winfsp = { path = "crates/filesystem/snowglass-vfs-winfsp" }
 
 snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
 thiserror = "2"
+arrayref = "=0.3.4"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

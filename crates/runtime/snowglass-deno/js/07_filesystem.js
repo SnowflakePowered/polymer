@@ -6,6 +6,7 @@ import {
   op_vfs_mount_file_pkg,
   op_vfs_mount_file_resource,
   op_vfs_mount_file_text,
+  op_vfs_mount_nand,
   op_vfs_mount_scratch,
   op_vfs_mount_tree_pkg,
   op_vfs_mount_tree_resource,
@@ -90,6 +91,10 @@ const filesystem = Object.freeze({
     } else {
       throw new TypeError("mountFile source must be text, Uint8Array, file resource, or pkg: string/URL");
     }
+  },
+
+  mountNand(target) {
+    op_vfs_mount_nand(String(target));
   },
 
   mountScratch(target, options) {

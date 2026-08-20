@@ -19,6 +19,7 @@ type Filesystem = {
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
+    mountNand(target: string): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
     setProfile(profile: {
@@ -29,7 +30,8 @@ type Filesystem = {
     }): void,
 };
 
-// We'll need to determine the shape of the NAND API later as well.
+// The host resolves and opens the NAND before launch; the plugin only sees a
+// descriptor and decides where it belongs in the guest layout.
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
@@ -37,6 +39,7 @@ type SetupLaunchArgs = {
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
+    nand?: { platform: string, id: string },
 }
 
 export const setupLaunch = (args: SetupLaunchArgs) => {
@@ -52,6 +55,9 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     args.filesystem.mountTree("/Cemu/shaderCache", args.filesystem.mountCache("shaderCache"), { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
+    }
+    if (args.nand) {
+        args.filesystem.mountNand("/Cemu/mlc01");
     }
     args.filesystem.mountHostTree("/Game", args.launchPath, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });

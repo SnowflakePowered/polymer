@@ -239,6 +239,7 @@ impl Runtime {
         let release_handle = plugin_handle.clone();
         let configuration_context = viewer.map(|viewer| (plugin_handle.registry().clone(), viewer));
         let storage = crate::consolestorage::manager();
+        let launch_storage = storage.clone();
         let snowglass_options = SnowglassOptions {
             scrape: Arc::new(|path| {
                 Box::pin(async move {
@@ -277,8 +278,21 @@ impl Runtime {
             }),
             invoke_plugin: Arc::new(move |plugin, path, arguments| {
                 let handle = invoke_handle.clone();
+                let storage = launch_storage.clone();
                 Box::pin(async move {
-                    match handle.invoke(&plugin, &path, arguments).await {
+                    let nand =
+                        match snowglass_runtime::launch_nand(storage, &path, &arguments).await {
+                            Ok(nand) => nand,
+                            Err(error) => {
+                                let error = snowglass_pluginhost::PluginInvocationError::new(
+                                    "Error",
+                                    "NAND_UNAVAILABLE",
+                                    error,
+                                );
+                                return serde_json::json!({ "ok": false, "error": error });
+                            }
+                        };
+                    match handle.invoke_with_nand(&plugin, &path, arguments, nand).await {
                         Ok(value) => serde_json::json!({ "ok": true, "value": value }),
                         Err(error) => serde_json::json!({ "ok": false, "error": error }),
                     }

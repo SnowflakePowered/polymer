@@ -15,14 +15,17 @@ serde.workspace = true
 serde_json.workspace = true
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
+snowglass-library.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
 snowglass-statistics.workspace = true
+snowglass-vfs.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 url = "2"
+uuid = "1.24.1"
 watchable.workspace = true
 
 [lints]

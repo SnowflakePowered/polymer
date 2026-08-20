@@ -50,6 +50,7 @@ pub struct EmulatorSetupInvocation {
     pub plugin: Arc<dyn EmulatorPluginInstance>,
     pub arguments: Value,
     pub configuration: ConfigurationInstance,
+    pub nand: Option<snowglass_deno::filesystem::NandFactory>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

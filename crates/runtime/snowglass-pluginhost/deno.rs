@@ -159,6 +159,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             plugin,
             arguments,
             configuration,
+            nand: _,
         } = invocation;
         if !arguments.is_object() {
             return Err(DenoPluginError::Adapter(
