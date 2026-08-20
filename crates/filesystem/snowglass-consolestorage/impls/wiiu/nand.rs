@@ -1,15 +1,17 @@
 use futures::Stream;
 use crate::nand::{NandCompletion, VirtualNand};
+use crate::storage::ChangeSignal;
 use crate::{BoxFuture, EntryKind, Error, Permissions, PermissionsTable, Storage, ensure_structure, requires_structure};
 use crate::savegame::{
-  SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink,
+  SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
 use crate::impls::wiiu::xml;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use image::DynamicImage;
 use image::codecs::tga::TgaDecoder;
 use jiff::Timestamp;
 use std::io::{BufReader, Read};
+use std::time::Duration;
 use std::path::PathBuf;
 
 const COUNTRY_FILE: &str = include_str!("./static/country.txt");
@@ -262,6 +264,33 @@ impl SaveGameSink for WiiUNand {
     Ok(SaveDepot { save_descriptor, blobs })
   }
 
+  fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher<'_>, Error> {
+    let mut roots = Vec::with_capacity(saves.len());
+    for id in saves {
+      let root = id.save_root();
+
+      self.root().create_dir_all(&root)?;
+      roots.push(root);
+    }
+
+    let borrowed: Vec<&str> = roots.iter().map(String::as_str).collect();
+    let activity = self
+      .root()
+      .watch(&borrowed)?
+      .ok_or_else(|| Error::Unsupported(format!("{} cannot watch saves", self.platform())))?;
+
+    let signal = FlushSignal {
+      storage: self.root(),
+      activity,
+      markers: roots
+        .iter()
+        .map(|root| format!("{root}/meta/saveinfo.xml"))
+        .collect(),
+    };
+
+    Ok(SaveWatcher::new(saves.to_vec(), Box::new(signal)))
+  }
+
   fn install_save<'a>(
     &'a self,
     blobs: impl Stream<Item = SaveBlob> + Send + 'a,
@@ -288,6 +317,41 @@ impl SaveGameSink for WiiUNand {
 
       let id = id.ok_or(Error::UnclaimedNand)?;
       self.describe_save(id)
+    })
+  }
+}
+
+struct FlushSignal<'a> {
+  storage: &'a dyn Storage,
+  activity: Box<dyn ChangeSignal>,
+  markers: Vec<String>,
+}
+
+impl FlushSignal<'_> {
+  const SAVE_SETTLE: Duration = Duration::from_secs(2);
+  fn markers(&self) -> Vec<Option<Timestamp>> {
+    self
+      .markers
+      .iter()
+      .map(|path| self.storage.metadata(path).ok().map(|meta| meta.mtime))
+      .collect()
+  }
+}
+
+impl ChangeSignal for FlushSignal<'_> {
+  fn changed(&self) -> BoxFuture<'_, ()> {
+    Box::pin(async move {
+      self.activity.changed().await;
+      let before = self.markers();
+
+      loop {
+        tokio::time::sleep(Self::SAVE_SETTLE).await;
+        let writing = self.activity.changed().now_or_never().is_some();
+
+        if self.markers() != before || !writing {
+          return;
+        }
+      }
     })
   }
 }

@@ -7,6 +7,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+use std::sync::Arc;
+
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::Notify;
+
 use crate::error::Error;
 
 pub mod manifest;
@@ -122,6 +127,11 @@ impl Iterator for ReadDir<'_> {
     }
 }
 
+/// A hint that something under a watched path may have changed.
+pub trait ChangeSignal: Send + Sync {
+    fn changed(&self) -> BoxFuture<'_, ()>;
+}
+
 pub trait StorageFile: Read + Write + Seek + Send {}
 
 impl<T: Read + Write + Seek + Send> StorageFile for T {}
@@ -163,6 +173,12 @@ pub trait Storage: Send + Sync {
     /// Remove a file, or an empty directory. A path that is already gone is not
     /// an error, so uninstalling twice is safe.
     fn remove(&self, path: &str) -> Result<(), Error>;
+
+    /// Returns a recursive change watcher for the requested paths.
+    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
+        let _ = paths;
+        Ok(None)
+    }
 
     /// The record of what is installed here. Save-only volumes have none.
     fn artifacts(&self) -> &dyn ArtifactRegistry;
@@ -377,6 +393,33 @@ impl Storage for DirectoryStorage {
         self.artifacts.set_label(label)
     }
 
+    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
+        let signal = Arc::new(Notify::new());
+        let notifier = Arc::clone(&signal);
+
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+            // Ignore aaccess events
+            if event.is_ok_and(|event| event.kind.is_access()) {
+                return;
+            }
+
+            notifier.notify_one();
+        })
+        .map_err(|e|  Error::io(&self.root, std::io::Error::other(e)))?;
+
+        for path in paths {
+            let resolved = self.resolve(path)?;
+            watcher
+                .watch(&resolved, RecursiveMode::Recursive)
+                .map_err(|e| Error::io(&self.root, std::io::Error::other(e)))?;
+        }
+
+        Ok(Some(Box::new(DirectoryWatch {
+            _watcher: watcher,
+            signal,
+        })))
+    }
+
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -484,5 +527,17 @@ mod tests {
                 "`{path}` was not rejected"
             );
         }
+    }
+}
+
+/// Keeps the OS watch alive; dropping it stops the watch.
+struct DirectoryWatch {
+    _watcher: RecommendedWatcher,
+    signal: Arc<Notify>,
+}
+
+impl ChangeSignal for DirectoryWatch {
+    fn changed(&self) -> BoxFuture<'_, ()> {
+        Box::pin(self.signal.notified())
     }
 }

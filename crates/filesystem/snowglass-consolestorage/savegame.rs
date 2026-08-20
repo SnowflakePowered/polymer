@@ -1,10 +1,11 @@
-use std::borrow::Cow;
 use std::path::PathBuf;
-use std::process::Output;
+
 use futures::Stream;
-use crate::error::Error;
 use image::RgbaImage;
+
 use crate::BoxFuture;
+use crate::error::Error;
+use crate::storage::ChangeSignal;
 
 pub struct SaveDescriptor {
     pub id: SaveDepotId,
@@ -15,7 +16,8 @@ pub struct SaveDescriptor {
     pub root_path: String,
 }
 
-/// Identifies a save within its volume. Wii U uses the title id it belongs to.
+/// A unique ID for the save. This ID only has meaning
+/// relative to the NAND it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SaveDepotId(pub u64);
 
@@ -31,6 +33,25 @@ pub struct SaveBlob {
     pub bytes: Vec<u8>,
 }
 
+pub struct SaveWatcher<'a> {
+    saves: Vec<SaveDepotId>,
+    signal: Box<dyn ChangeSignal + 'a>,
+}
+
+impl<'a> SaveWatcher<'a> {
+    pub fn new(saves: Vec<SaveDepotId>, signal: Box<dyn ChangeSignal + 'a>) -> Self {
+        Self { saves, signal }
+    }
+
+    pub fn saves(&self) -> &[SaveDepotId] {
+        &self.saves
+    }
+
+    pub fn changed(&self) -> BoxFuture<'_, ()> {
+        self.signal.changed()
+    }
+}
+
 pub trait SaveGameSink {
     fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_;
 
@@ -40,4 +61,6 @@ pub trait SaveGameSink {
         &'a self,
         blobs: impl Stream<Item = SaveBlob> + Send + 'a,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>>;
+    
+    fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher<'_>, Error>;
 }
