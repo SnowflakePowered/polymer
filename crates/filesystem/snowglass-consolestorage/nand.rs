@@ -1,6 +1,8 @@
 use crate::{Error, Permissions};
 use crate::installable::artifacts::Artifact;
-use crate::storage::Storage;
+use std::sync::Arc;
+
+use crate::storage::MountableStorage;
 use crate::storage::manifest::{ArtifactSummary, NandMetadata};
 use uuid::Uuid;
 
@@ -18,7 +20,7 @@ pub enum NandCompletion {
 pub trait VirtualNand {
     /// Lay out an empty NAND on `storage`. The label is optional and can be
     /// set later with [`Self::set_label`].
-    async fn new_empty<St: Storage + 'static>(
+    async fn new_empty<St: MountableStorage + 'static>(
         storage: St,
         id: Uuid,
         label: Option<String>,
@@ -26,11 +28,11 @@ pub trait VirtualNand {
     where
         Self: Sized;
 
-    async fn open<St: Storage + 'static>(storage: St) -> Result<Self, Error>
+    async fn open<St: MountableStorage + 'static>(storage: St) -> Result<Self, Error>
     where
         Self: Sized;
 
-    fn root(&self) -> &dyn Storage;
+    fn root(&self) -> Arc<dyn MountableStorage>;
 
     /// The consolespec platform ID this NAND was created for.
     fn platform(&self) -> &str;
@@ -42,7 +44,7 @@ pub trait VirtualNand {
     fn permissions(&self, path: &str) -> Permissions;
 
     /// Clone the base, ignoring save games.
-    async fn clone<St: Storage + 'static>(&self, storage: St) -> Result<Self, Error>
+    async fn clone<St: MountableStorage + 'static>(&self, storage: St) -> Result<Self, Error>
     where
         Self: Sized;
 

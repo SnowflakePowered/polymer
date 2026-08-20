@@ -56,7 +56,7 @@ impl StorageManager {
         let storage = DirectoryStorage::new(&path).await?;
 
         let metadata = match platform {
-            "NINTENDO_WIIU" => WiiUNand::open(storage).await?.metadata().await?,
+            WiiUNand::PLATFORM => WiiUNand::open(storage).await?.metadata().await?,
             other => return Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
         };
 

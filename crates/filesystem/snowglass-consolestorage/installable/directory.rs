@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures::Stream;
 use futures::channel::oneshot;
@@ -16,7 +17,7 @@ pub struct DirectoryInstall<'a> {
     pub root: PathBuf,
     /// Where the depot lands in `storage`.
     pub base: String,
-    pub storage: &'a dyn Storage,
+    pub storage: Arc<dyn Storage>,
     pub artifact: &'a dyn DescribeArtifact,
 }
 
@@ -83,7 +84,7 @@ impl<'a> DirectoryInstall<'a> {
                     Err(error) => return Some(state.fail(Error::io(entry.path(), error))),
                 };
 
-                let storage = state.install.storage;
+                let storage = state.install.storage.clone();
                 return match storage.install_file(source, &destination).await {
                     Ok(copied) => {
                         state.manifest.push(DepotFile::new(

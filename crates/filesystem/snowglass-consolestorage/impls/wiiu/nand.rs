@@ -1,7 +1,7 @@
 use futures::Stream;
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::storage::ChangeSignal;
-use crate::{BoxFuture, EntryKind, Error, Permissions, PermissionsTable, Storage, ensure_structure, requires_structure};
+use crate::{BoxFuture, EntryKind, Error, MountableStorage, Permissions, PermissionsTable, Storage, ensure_structure, requires_structure};
 use crate::savegame::{
   SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -13,6 +13,7 @@ use jiff::Timestamp;
 use std::io::{BufReader, Read};
 use std::time::Duration;
 use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
 
 const COUNTRY_FILE: &str = include_str!("./static/country.txt");
@@ -29,20 +30,20 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
 ]);
 
 pub struct WiiUNand {
-  storage: Box<dyn Storage>,
+  storage: Arc<dyn MountableStorage>,
 }
 
 impl VirtualNand for WiiUNand {
-  fn root(&self) -> &dyn Storage {
-    &*self.storage
+  fn root(&self) -> Arc<dyn MountableStorage> {
+    self.storage.clone()
   }
 
   fn platform(&self) -> &str {
     Self::PLATFORM
   }
 
-  async fn open<St: Storage + 'static>(storage: St) -> Result<Self, Error> {
-    let storage: Box<dyn Storage> = Box::new(storage);
+  async fn open<St: MountableStorage + 'static>(storage: St) -> Result<Self, Error> {
+    let storage: Arc<dyn MountableStorage> = Arc::new(storage);
     let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
 
     if metadata.platform != Self::PLATFORM {
@@ -56,14 +57,14 @@ impl VirtualNand for WiiUNand {
     Ok(Self { storage })
   }
 
-  async fn new_empty<St: Storage + 'static>(
+  async fn new_empty<St: MountableStorage + 'static>(
     storage: St,
     id: Uuid,
     label: Option<String>,
   ) -> Result<Self, Error> {
-    let storage: Box<dyn Storage> = Box::new(storage);
+    let storage: Arc<dyn MountableStorage> = Arc::new(storage);
 
-    ensure_structure!(&*storage,
+    ensure_structure!(&*storage as &dyn Storage,
       "sys/",
         "sys/title/0005001b/1005c000/content/country.txt": COUNTRY_FILE,
         "sys/title/0005001b/1005c000/content/language.txt": LANGUAGE_FILE,
@@ -89,7 +90,7 @@ impl VirtualNand for WiiUNand {
   fn is_complete(&self, completion_criteria: NandCompletion) -> bool {
     // TODO: verify against mtrees.
     match completion_criteria {
-      NandCompletion::Minimal => requires_structure!(&*self.storage,
+      NandCompletion::Minimal => requires_structure!(&*self.storage as &dyn Storage,
         "sys/",
           "sys/title/0005001b/1005c000/content/country.txt",
           "sys/title/0005001b/1005c000/content/language.txt",
@@ -106,7 +107,7 @@ impl VirtualNand for WiiUNand {
     }
   }
 
-  async fn clone<St: Storage + 'static>(&self, storage: St) -> Result<Self, Error> {
+  async fn clone<St: MountableStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
     todo!()
   }
 }
@@ -205,7 +206,8 @@ impl WiiUNand {
   }
   
   fn save_ids(&self) -> Vec<SaveDepotId> {
-    let Ok(highs) = self.root().read_dir(Self::SAVE_ROOT, false) else {
+    let storage = self.root();
+    let Ok(highs) = storage.read_dir(Self::SAVE_ROOT, false) else {
       return Vec::new();
     };
 
@@ -220,7 +222,7 @@ impl WiiUNand {
       }
 
       let path = format!("{}/{}", Self::SAVE_ROOT, high.name);
-      let Ok(lows) = self.root().read_dir(&path, false) else {
+      let Ok(lows) = storage.read_dir(&path, false) else {
         continue;
       };
 
@@ -282,7 +284,7 @@ impl SaveGameSink for WiiUNand {
     Ok(SaveDepot { save_descriptor, blobs })
   }
 
-  fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher<'_>, Error> {
+  fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error> {
     let mut roots = Vec::with_capacity(saves.len());
     for id in saves {
       let root = id.save_root();
@@ -339,13 +341,13 @@ impl SaveGameSink for WiiUNand {
   }
 }
 
-struct FlushSignal<'a> {
-  storage: &'a dyn Storage,
+struct FlushSignal {
+  storage: Arc<dyn MountableStorage>,
   activity: Box<dyn ChangeSignal>,
   markers: Vec<String>,
 }
 
-impl FlushSignal<'_> {
+impl FlushSignal {
   const SAVE_SETTLE: Duration = Duration::from_secs(2);
   fn markers(&self) -> Vec<Option<Timestamp>> {
     self
@@ -356,7 +358,7 @@ impl FlushSignal<'_> {
   }
 }
 
-impl ChangeSignal for FlushSignal<'_> {
+impl ChangeSignal for FlushSignal {
   fn changed(&self) -> BoxFuture<'_, ()> {
     Box::pin(async move {
       self.activity.changed().await;

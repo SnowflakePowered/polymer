@@ -48,8 +48,6 @@ pub struct TrackedSurface {
 
 pub struct EmulatorSetupInvocation {
     pub plugin: Arc<dyn EmulatorPluginInstance>,
-    /// JSON-compatible arguments passed to the plugin's `setupLaunch` method.
-    /// The runtime adapter adds the invocation-scoped `configuration` proxy.
     pub arguments: Value,
     pub configuration: ConfigurationInstance,
 }
