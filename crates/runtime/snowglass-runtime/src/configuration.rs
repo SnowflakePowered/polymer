@@ -1,19 +1,92 @@
-//! Native backing for `Snowglass.configuration`.
+//! Native configuration and launch-selection services.
 
 use serde::{Deserialize, Serialize};
 use snowglass_config::ast::{
     ConfigurationInstance, OptionRange, PortAssignments, Value, ValueKind,
 };
-use snowglass_input::provider::sdl3::DeviceSelector;
+use snowglass_input::{hub::VirtualPort, provider::sdl3::DeviceSelector};
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
-use snowglass_renderer::cli::{GamepadArgument, ViewerOptions};
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::Arc,
 };
 
-use crate::input::GamepadMapping;
+#[derive(Clone, Debug)]
+pub struct ConfigurationDefaults {
+    pub gamepads: Vec<DefaultGamepad>,
+    pub machine: String,
+    pub webrtc_targets: Option<Vec<u32>>,
+    pub webrtc_bind: std::net::SocketAddr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DefaultGamepad {
+    pub selector: DeviceSelector,
+    pub slot: usize,
+    pub layout: String,
+    pub force_mouse: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GamepadMapping {
+    pub gamepad_id: GamepadId,
+    #[serde(default)]
+    pub mouse: bool,
+    pub slot: usize,
+    #[serde(default)]
+    pub port: Option<VirtualPort>,
+    pub layout: String,
+    #[serde(default)]
+    pub mapping: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum GamepadId {
+    Index(usize),
+    Name(String),
+}
+
+impl GamepadMapping {
+    pub fn selector(&self) -> DeviceSelector {
+        match &self.gamepad_id {
+            GamepadId::Index(index) => DeviceSelector::Index(*index),
+            GamepadId::Name(value) if value == "K" => DeviceSelector::Keyboard,
+            GamepadId::Name(value) => {
+                let compact = value.replace('-', "");
+                if compact.len() == 32 && compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    DeviceSelector::Guid(compact.to_ascii_lowercase())
+                } else {
+                    DeviceSelector::Name(value.clone())
+                }
+            }
+        }
+    }
+}
+
+impl From<&DefaultGamepad> for GamepadMapping {
+    fn from(value: &DefaultGamepad) -> Self {
+        let gamepad_id = match &value.selector {
+            DeviceSelector::Keyboard => GamepadId::Name("K".to_owned()),
+            DeviceSelector::Index(index) => GamepadId::Index(*index),
+            DeviceSelector::Name(name) | DeviceSelector::Guid(name) => {
+                GamepadId::Name(name.clone())
+            }
+            DeviceSelector::GuidOrdinal { guid, .. } => GamepadId::Name(guid.clone()),
+            DeviceSelector::DeviceId(device_id) => GamepadId::Name(device_id.clone()),
+        };
+        Self {
+            gamepad_id,
+            mouse: value.force_mouse,
+            slot: value.slot,
+            port: None,
+            layout: value.layout.clone(),
+            mapping: HashMap::new(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,7 +154,7 @@ pub struct ChoiceDescriptor {
 
 pub struct PreparedGame {
     descriptor: GameDescriptor,
-    viewer: ViewerOptions,
+    viewer: ConfigurationDefaults,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,7 +182,7 @@ pub struct LaunchPortRequest {
 }
 
 pub struct ConfiguredSelection {
-    pub viewer: ViewerOptions,
+    pub viewer: ConfigurationDefaults,
     pub port_assignments: PortAssignments,
 }
 
@@ -126,11 +199,11 @@ struct PreparedConfiguration {
 
 pub fn describe_api(
     plugins: snowglass_pluginhost::PluginRegistry,
-    viewer: ViewerOptions,
+    viewer: ConfigurationDefaults,
     package: serde_json::Value,
     preferred_emulator: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let package: snowglass_runtime::ScrapedPackage =
+    let package: crate::ScrapedPackage =
         serde_json::from_value(package).map_err(|error| error.to_string())?;
     let descriptor = PreparedGame::new(
         DetectedGame {
@@ -148,11 +221,11 @@ pub fn describe_api(
 
 pub fn prepare_api(
     plugins: snowglass_pluginhost::PluginRegistry,
-    viewer: ViewerOptions,
+    viewer: ConfigurationDefaults,
     package: serde_json::Value,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let package: snowglass_runtime::ScrapedPackage =
+    let package: crate::ScrapedPackage =
         serde_json::from_value(package).map_err(|error| error.to_string())?;
     let request: ConfigurationRequest =
         serde_json::from_value(request).map_err(|error| error.to_string())?;
@@ -179,7 +252,7 @@ pub fn prepare_api(
             )
         })
         .collect::<HashMap<_, _>>();
-    let webrtc_targets = prepared.viewer.webrtc.clone().unwrap_or_default();
+    let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
     let mut arguments = serde_json::json!({
         "launchPath": package.path.to_string_lossy(),
         "package": package,
@@ -205,9 +278,9 @@ pub fn prepare_api(
         machine: prepared.viewer.machine,
         webrtc_bind: prepared
             .viewer
-            .webrtc
+            .webrtc_targets
             .as_ref()
-            .map(|_| prepared.viewer.bind_webrtc.to_string()),
+            .map(|_| prepared.viewer.webrtc_bind.to_string()),
         webrtc_targets,
     })
     .map_err(|error| error.to_string())
@@ -217,7 +290,7 @@ impl PreparedGame {
     pub fn new(
         detected: DetectedGame,
         plugins: impl IntoIterator<Item = Arc<dyn EmulatorPluginInstance>>,
-        viewer: ViewerOptions,
+        viewer: ConfigurationDefaults,
     ) -> Result<Self, String> {
         let mut plugins = plugins
             .into_iter()
@@ -302,7 +375,7 @@ impl PreparedGame {
 fn describe_emulator(
     plugin: &dyn EmulatorPluginInstance,
     platform: &str,
-    viewer: &ViewerOptions,
+    viewer: &ConfigurationDefaults,
 ) -> Result<EmulatorDescriptor, String> {
     let ports = match plugin.ports(platform) {
         Ok(ports) => ports,
@@ -323,7 +396,7 @@ fn describe_emulator(
 
 fn default_groups(
     ports: Vec<EmulatorPort>,
-    viewer: &ViewerOptions,
+    viewer: &ConfigurationDefaults,
     plugin: &dyn EmulatorPluginInstance,
     platform: &str,
 ) -> Vec<PortGroupDescriptor> {
@@ -388,7 +461,7 @@ fn default_groups(
 }
 
 fn default_device_for_port(
-    gamepads: &[GamepadArgument],
+    gamepads: &[DefaultGamepad],
     connected: bool,
     port_index: usize,
     source_slot: &mut usize,
@@ -494,7 +567,7 @@ fn describe_options(configuration: &ConfigurationInstance) -> Vec<OptionDescript
 fn validate_assignments(
     descriptor: &EmulatorDescriptor,
     groups: Vec<LaunchGroupRequest>,
-) -> Result<(PortAssignments, Vec<GamepadArgument>), String> {
+) -> Result<(PortAssignments, Vec<DefaultGamepad>), String> {
     let mut by_name = groups
         .into_iter()
         .map(|group| (group.name.clone(), group))
@@ -531,7 +604,7 @@ fn validate_assignments(
             }
             let selector = parse_device(&port.device)?;
             layouts.push(port.layout.clone().into_boxed_str());
-            gamepads.push(GamepadArgument {
+            gamepads.push(DefaultGamepad {
                 force_mouse: matches!(selector, DeviceSelector::Keyboard),
                 selector,
                 slot: gamepads.len(),
@@ -548,7 +621,7 @@ fn validate_assignments(
     Ok((assignments, gamepads))
 }
 
-fn selector_text(gamepad: &GamepadArgument) -> String {
+fn selector_text(gamepad: &DefaultGamepad) -> String {
     match &gamepad.selector {
         DeviceSelector::Keyboard => "K".to_owned(),
         DeviceSelector::Index(index) => index.to_string(),
@@ -598,7 +671,7 @@ mod tests {
 
     #[test]
     fn disconnected_ports_do_not_consume_requested_input_sources() {
-        let gamepads = [GamepadArgument {
+        let gamepads = [DefaultGamepad {
             selector: DeviceSelector::Keyboard,
             slot: 0,
             layout: "WIIU_DRC_CONTROLLER".to_owned(),

@@ -1,3 +1,5 @@
+//! Opaque handles for resources owned by a plugin worker.
+
 use std::{
     fmt,
     hash::{Hash, Hasher},
@@ -25,9 +27,6 @@ impl<T: ?Sized> Handle<T> {
         }
     }
 
-    pub const fn as_raw(self) -> u64 {
-        self.raw
-    }
 }
 
 impl<T: ?Sized> Clone for Handle<T> {

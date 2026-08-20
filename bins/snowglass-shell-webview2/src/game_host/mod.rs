@@ -231,13 +231,10 @@ struct CapturedSurface {
     opacity: f32,
 }
 
-struct ActiveEmulator {
+struct ActivePresentation {
     token: crate::shell_runtime::InstanceToken,
-    runtime: snowglass_runtime::EmulatorInstance,
     options: AttachedLaunchPlan,
     webrtc: Option<snowglass_renderer::webrtc::Publication>,
-    audio: snowglass_runtime::AudioState,
-    filesystem: Option<snowglass_vfs::MountedFilesystem>,
 }
 
 pub(crate) struct ConnectedSurface {
@@ -292,7 +289,8 @@ pub(crate) struct CapturedSurfaceSnapshot {
 }
 
 pub(crate) struct GameHost {
-    active: Option<ActiveEmulator>,
+    active: Option<ActivePresentation>,
+    session: snowglass_runtime::SessionController,
     capture: SurfaceCapture,
     pointer: SurfacePointerSender,
     wake_pending: Arc<AtomicBool>,
@@ -316,6 +314,7 @@ impl GameHost {
         let (surface_worker_sender, surface_worker_events) = mpsc::channel();
         Ok(Self {
             active: None,
+            session: snowglass_runtime::SessionController::default(),
             capture,
             pointer,
             wake_pending: Arc::new(AtomicBool::new(false)),
@@ -374,17 +373,17 @@ impl GameHost {
     }
 
     pub fn is_active(&self, token: crate::shell_runtime::InstanceToken) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|active| active.token == token)
+        self.session.is_active(token.0)
     }
 
     pub fn active_token(&self) -> Option<crate::shell_runtime::InstanceToken> {
-        self.active.as_ref().map(|active| active.token)
+        self.session
+            .active_token()
+            .map(crate::shell_runtime::InstanceToken)
     }
 
     pub fn has_active_game(&self) -> bool {
-        self.active.is_some()
+        self.session.has_active_session()
     }
 
     pub fn gamepad_mapping(&self) -> &[crate::input::GamepadMapping] {
@@ -511,7 +510,7 @@ impl GameHost {
         session: String,
         wake_window: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Result<(), String> {
-        if self.active.is_some() {
+        if self.session.has_active_session() {
             return Err("another emulator instance is active".to_owned());
         }
         let artifact_root = std::env::current_exe()
@@ -549,30 +548,22 @@ impl GameHost {
         };
         let dirty = self.dirty.clone();
         let wake_pending = self.wake_pending.clone();
-        let runtime = snowglass_runtime::EmulatorInstance::launch_with_waker(config, move || {
-            dirty.store(true, std::sync::atomic::Ordering::Release);
-            if !wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) && !wake_window() {
-                wake_pending.store(false, std::sync::atomic::Ordering::Release);
-            }
-        });
-        let runtime = match runtime {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                if let Some(filesystem) = filesystem.take() {
-                    filesystem.finish(snowglass_vfs::FinalizationReason::LaunchFailed);
+        self.session
+            .launch(token.0, config, filesystem.take(), move || {
+                dirty.store(true, std::sync::atomic::Ordering::Release);
+                if !wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) && !wake_window() {
+                    wake_pending.store(false, std::sync::atomic::Ordering::Release);
                 }
-                return Err(error.to_string());
-            }
-        };
-        self.capture.attach(&runtime);
-        let audio = runtime.audio_state();
-        self.active = Some(ActiveEmulator {
+            })?;
+        self.capture.attach(
+            self.session
+                .instance()
+                .expect("a successful session launch owns an emulator instance"),
+        );
+        self.active = Some(ActivePresentation {
             token,
-            runtime,
             options,
             webrtc: None,
-            audio,
-            filesystem,
         });
         Ok(())
     }
@@ -628,40 +619,28 @@ impl GameHost {
     }
 
     pub fn input_endpoint(&self) -> Option<crate::input::GameInputEndpoint> {
-        self.active.as_ref().map(|active| {
+        self.session.instance().map(|instance| {
             crate::input::GameInputEndpoint::new(
-                active.runtime.protocol_input_sender(),
-                active.runtime.gamepad_input(),
+                instance.protocol_input_sender(),
+                instance.gamepad_input(),
             )
         })
     }
 
     pub fn request_close(&mut self, token: crate::shell_runtime::InstanceToken) -> bool {
-        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
+        if !self.session.close(token.0) {
             return false;
-        };
-        active.runtime.close();
+        }
         self.capture.detach();
         true
     }
 
     pub fn set_volume(&self, token: crate::shell_runtime::InstanceToken, volume: f64) -> bool {
-        let Some(volume) = snowglass_runtime::NormalizedVolume::new(volume as f32) else {
-            return false;
-        };
-        let Some(active) = self.active.as_ref().filter(|active| active.token == token) else {
-            return false;
-        };
-        active.runtime.set_volume(volume);
-        true
+        self.session.set_volume(token.0, volume)
     }
 
     pub fn set_muted(&self, token: crate::shell_runtime::InstanceToken, muted: bool) -> bool {
-        let Some(active) = self.active.as_ref().filter(|active| active.token == token) else {
-            return false;
-        };
-        active.runtime.set_muted(muted);
-        true
+        self.session.set_muted(token.0, muted)
     }
 
     pub fn audio_change(
@@ -671,22 +650,13 @@ impl GameHost {
         crate::shell_runtime::InstanceToken,
         snowglass_runtime::AudioState,
     )> {
-        let active = self.active.as_mut()?;
-        let audio = active.runtime.audio_state();
-        if !force && active.audio == audio {
-            return None;
-        }
-        active.audio = audio;
-        Some((active.token, audio))
+        self.session
+            .audio_change(force)
+            .map(|(token, audio)| (crate::shell_runtime::InstanceToken(token), audio))
     }
 
     pub fn has_exited(&self) -> bool {
-        self.active.as_ref().is_some_and(|active| {
-            matches!(
-                active.runtime.state(),
-                snowglass_runtime::InstanceState::Exited(_)
-            )
-        })
+        self.session.has_exited()
     }
 
     pub fn detach_capture(&mut self) {
@@ -1022,12 +992,11 @@ impl GameHost {
         self.surfaces.clear();
         self.pending_offer = None;
         self.mark_composition_dirty();
-        let token = active.token;
-        let filesystem = active.filesystem.take();
-        drop(active.runtime);
-        if let Some(filesystem) = filesystem {
-            filesystem.finish(snowglass_vfs::FinalizationReason::ProcessExited);
-        }
+        let token = crate::shell_runtime::InstanceToken(
+            self.session
+                .finish(snowglass_vfs::FinalizationReason::ProcessExited)
+                .expect("presentation and runtime sessions finish together"),
+        );
         Some(FinishedGame { token, connections })
     }
 
@@ -1188,15 +1157,6 @@ impl GameHost {
     }
 }
 
-fn hook_backend(hook: snowglass_pluginhost::GraphicsHook) -> snowglass_runtime::HookBackend {
-    match hook {
-        snowglass_pluginhost::GraphicsHook::Opengl => snowglass_runtime::HookBackend::OpenGl,
-        snowglass_pluginhost::GraphicsHook::Vulkan => snowglass_runtime::HookBackend::Vulkan,
-        snowglass_pluginhost::GraphicsHook::D3d11 => snowglass_runtime::HookBackend::D3d11,
-        snowglass_pluginhost::GraphicsHook::D3d12 => snowglass_runtime::HookBackend::D3d12,
-    }
-}
-
 struct SurfaceGeometry {
     x: i32,
     y: i32,
@@ -1241,8 +1201,8 @@ impl Drop for GameHost {
         for &connection in self.surfaces.keys() {
             self.capture.revoke(connection);
         }
-        if let Some(active) = self.active.as_mut() {
-            active.runtime.close();
+        if let Some(token) = self.session.active_token() {
+            self.session.close(token);
         }
     }
 }

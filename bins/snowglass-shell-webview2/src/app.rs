@@ -70,7 +70,6 @@ struct ShellCoordinator {
     notifications: Option<SnowglassNotificationSender>,
     startup_request: Option<serde_json::Value>,
     viewer: snowglass_renderer::cli::ViewerOptions,
-    plugin_runtime: snowglass_pluginhost::PluginRuntimeHandle,
 }
 
 impl ShellCoordinator {
@@ -116,7 +115,6 @@ impl ShellCoordinator {
         window.set_shell_root(shell_compositor.root_visual())?;
         window.commit()?;
         let session = unique_session();
-        let plugin_runtime = shell_factory.plugin_runtime_handle();
         let shell_dom = ShellSession::new(shell_factory);
 
         let input = InputTransport::runtime().map_err(std::io::Error::other)?;
@@ -134,7 +132,6 @@ impl ShellCoordinator {
             notifications: None,
             startup_request,
             viewer: options,
-            plugin_runtime,
         };
         Ok(state)
     }

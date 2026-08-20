@@ -214,7 +214,7 @@ async fn snowglass_is_the_only_public_native_namespace() {
     assert_eq!(
         runtime.take_messages(),
         [serde_json::json!({
-            "keys": ["configuration", "emulator", "input", "plugin", "scraping", "webrtc"],
+            "keys": ["configuration", "consolestorage", "emulator", "input", "plugin", "scraping", "webrtc"],
             "frozen": true,
             "readonly": true,
             "legacy": ["undefined", "undefined", "undefined", "undefined"],
