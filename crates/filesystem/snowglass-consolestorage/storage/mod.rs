@@ -198,7 +198,7 @@ pub trait Storage: Send + Sync {
 
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
 
-    fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>>;
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
 
     /// Copy `source` to `dest`, returning the blake3 digest and length of what
     /// was written. The file is only visible at `dest` once fully written.
@@ -393,7 +393,7 @@ impl Storage for DirectoryStorage {
         })
     }
 
-    fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
         self.artifacts.set_label(label)
     }
 

@@ -249,7 +249,7 @@ impl ArtifactDb {
         Ok(identity)
     }
 
-    async fn write_label(&self, label: &str) -> Result<(), Error> {
+    async fn write_label(&self, label: Option<&str>) -> Result<(), Error> {
         let changed = self
             .connection
             .execute("UPDATE nand SET label = ?1", params![label])
@@ -321,7 +321,10 @@ impl ArtifactDb {
         Box::pin(self.read_identity())
     }
 
-    pub(super) fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+    pub(super) fn set_label<'a>(
+        &'a self,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(self.write_label(label))
     }
 }

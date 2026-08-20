@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use snowglass_consolestorage::impls::wiiu::nand::{self as wiiu, WiiUNand};
+use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
 use snowglass_consolestorage::nand::VirtualNand;
 use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata};
 use uuid::Uuid;
@@ -61,6 +61,28 @@ impl StorageManager {
         };
 
         Ok(Nand { metadata, path })
+    }
+
+    pub async fn set_label(
+        &self,
+        platform: &str,
+        id: Uuid,
+        label: Option<String>,
+    ) -> Result<Nand, Error> {
+        let path = self.path(platform, id);
+        let storage = DirectoryStorage::new(&path).await?;
+
+        match platform {
+            WiiUNand::PLATFORM => {
+                WiiUNand::open(storage)
+                    .await?
+                    .set_label(label.as_deref())
+                    .await?
+            }
+            other => return Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
+        }
+
+        self.open(platform, id).await
     }
 
     pub async fn list(&self) -> Result<Vec<Nand>, Error> {

@@ -27,6 +27,26 @@ pub type PluginInvokeCallback =
     Arc<dyn Fn(String, Vec<String>, Vec<Value>) -> ApiFuture<Value> + Send + Sync>;
 pub type PluginListCallback = Arc<dyn Fn() -> Value + Send + Sync>;
 pub type PreparedFilesystemReleaseCallback = Arc<dyn Fn(String) -> bool + Send + Sync>;
+pub type ConsoleStorageCallback =
+    Arc<dyn Fn(ConsoleStorageRequest) -> ApiFuture<Result<Value, String>> + Send + Sync>;
+
+#[derive(Debug)]
+pub enum ConsoleStorageRequest {
+    List,
+    Create {
+        platform: String,
+        label: Option<String>,
+    },
+    Delete {
+        platform: String,
+        id: String,
+    },
+    SetLabel {
+        platform: String,
+        id: String,
+        label: Option<String>,
+    },
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
@@ -114,6 +134,7 @@ pub struct SnowglassOptions {
     pub list_plugins: PluginListCallback,
     pub invoke_plugin: PluginInvokeCallback,
     pub release_prepared_filesystem: PreparedFilesystemReleaseCallback,
+    pub consolestorage: ConsoleStorageCallback,
     pub emulator_commands: EmulatorCommandSink,
     pub input_commands: InputCommandSink,
     pub webrtc_commands: WebRtcCommandSink,
@@ -128,6 +149,9 @@ impl Default for SnowglassOptions {
             }),
             prepare_configuration: Arc::new(|_, _| {
                 Err("configuration service is unavailable".into())
+            }),
+            consolestorage: Arc::new(|_| {
+                Box::pin(async { Err("console storage is unavailable".into()) })
             }),
             list_plugins: Arc::new(|| serde_json::json!([])),
             invoke_plugin: Arc::new(|_, _, _| {
@@ -216,6 +240,64 @@ async fn op_scraping_package_from_path(
 ) -> Result<serde_json::Value, JsErrorBox> {
     let callback = state.borrow().borrow::<SnowglassOptions>().scrape.clone();
     callback(path).await.map_err(JsErrorBox::generic)
+}
+
+async fn consolestorage(
+    state: &Rc<RefCell<OpState>>,
+    request: ConsoleStorageRequest,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let callback = state
+        .borrow()
+        .borrow::<SnowglassOptions>()
+        .consolestorage
+        .clone();
+
+    callback(request).await.map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+async fn op_consolestorage_list(state: Rc<RefCell<OpState>>) -> Result<serde_json::Value, JsErrorBox> {
+    consolestorage(&state, ConsoleStorageRequest::List).await
+}
+
+#[op2]
+#[serde]
+async fn op_consolestorage_create(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] label: Option<String>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    consolestorage(&state, ConsoleStorageRequest::Create { platform, label }).await
+}
+
+#[op2]
+#[serde]
+async fn op_consolestorage_delete(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] id: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    consolestorage(&state, ConsoleStorageRequest::Delete { platform, id }).await
+}
+
+#[op2]
+#[serde]
+async fn op_consolestorage_set_label(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] id: String,
+    #[string] label: Option<String>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    consolestorage(
+        &state,
+        ConsoleStorageRequest::SetLabel {
+            platform,
+            id,
+            label,
+        },
+    )
+    .await
 }
 
 #[op2]
@@ -430,6 +512,10 @@ deno_core::extension!(
         op_plugin_list,
         op_plugin_invoke,
         op_prepared_filesystem_release,
+        op_consolestorage_list,
+        op_consolestorage_create,
+        op_consolestorage_delete,
+        op_consolestorage_set_label,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,
@@ -450,6 +536,7 @@ deno_core::extension!(
         "04_input.js",
         "05_webrtc.js",
         "06_emulator.js",
+        "08_consolestorage.js",
         "99_main.js",
     ],
     options = {

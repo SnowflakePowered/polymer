@@ -238,6 +238,7 @@ impl Runtime {
         let invoke_handle = plugin_handle.clone();
         let release_handle = plugin_handle.clone();
         let configuration_context = viewer.map(|viewer| (plugin_handle.registry().clone(), viewer));
+        let storage = crate::consolestorage::manager();
         let snowglass_options = SnowglassOptions {
             scrape: Arc::new(|path| {
                 Box::pin(async move {
@@ -285,6 +286,10 @@ impl Runtime {
             }),
             release_prepared_filesystem: Arc::new(move |token| {
                 release_handle.release_prepared_filesystem(&token)
+            }),
+            consolestorage: Arc::new(move |request| {
+                let storage = storage.clone();
+                Box::pin(async move { crate::consolestorage::serve(storage, request).await })
             }),
             emulator_commands,
             input_commands,

@@ -150,7 +150,7 @@ impl WiiUSaveLayout for SaveDepotId {
 
 impl WiiUNand {
   const SAVE_ROOT: &str = "usr/save";
-  const PLATFORM: &str = "NINTENDO_WIIU";
+  pub const PLATFORM: &str = "NINTENDO_WIIU";
 
 
   fn describe_save(&self, id: SaveDepotId) -> Result<SaveDescriptor, Error> {
