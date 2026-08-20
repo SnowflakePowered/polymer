@@ -285,13 +285,18 @@ impl SaveGameSink for WiiUNand {
   }
 
   fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error> {
-    let mut roots = Vec::with_capacity(saves.len());
-    for id in saves {
-      let root = id.save_root();
-
-      self.root().create_dir_all(&root)?;
-      roots.push(root);
-    }
+    let roots = if saves.is_empty() {
+      // An empty filter watches every save
+      vec![Self::SAVE_ROOT.to_owned()]
+    } else {
+      let mut roots = Vec::with_capacity(saves.len());
+      for id in saves {
+        let root = id.save_root();
+        self.root().create_dir_all(&root)?;
+        roots.push(root);
+      }
+      roots
+    };
 
     let borrowed: Vec<&str> = roots.iter().map(String::as_str).collect();
     let activity = self
@@ -302,9 +307,9 @@ impl SaveGameSink for WiiUNand {
     let signal = FlushSignal {
       storage: self.root(),
       activity,
-      markers: roots
+      markers: saves
         .iter()
-        .map(|root| format!("{root}/meta/saveinfo.xml"))
+        .map(|id| format!("{}/meta/saveinfo.xml", id.save_root()))
         .collect(),
     };
 

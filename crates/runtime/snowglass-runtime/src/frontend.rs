@@ -378,6 +378,24 @@ impl SnowglassHost for FrontendServices {
         Box::pin(async move { crate::serve_console_storage(storage, request).await })
     }
 
+    fn consolestorage_game_saved(
+        &self,
+        platform: String,
+        id: String,
+    ) -> ApiFuture<Result<(), String>> {
+        let storage = self.storage.clone();
+        Box::pin(async move {
+            let storage = storage.ok_or_else(|| "console storage is unavailable".to_owned())?;
+            let id = uuid::Uuid::parse_str(&id)
+                .map_err(|_| format!("`{id}` is not a nand id"))?;
+            let nand = storage
+                .open(&platform, id)
+                .await
+                .map_err(|error| error.to_string())?;
+            nand.game_saved().await.map_err(|error| error.to_string())
+        })
+    }
+
     fn emulator_launch(
         &self,
         token: InstanceToken,

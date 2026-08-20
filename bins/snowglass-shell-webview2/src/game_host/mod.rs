@@ -33,6 +33,15 @@ use windows::{
     core::{IUnknown, Interface},
 };
 
+fn hook_backend(hook: snowglass_pluginhost::GraphicsHook) -> snowglass_runtime::HookBackend {
+    match hook {
+        snowglass_pluginhost::GraphicsHook::Opengl => snowglass_runtime::HookBackend::OpenGl,
+        snowglass_pluginhost::GraphicsHook::Vulkan => snowglass_runtime::HookBackend::Vulkan,
+        snowglass_pluginhost::GraphicsHook::D3d11 => snowglass_runtime::HookBackend::D3d11,
+        snowglass_pluginhost::GraphicsHook::D3d12 => snowglass_runtime::HookBackend::D3d12,
+    }
+}
+
 /// Capture renderer state local to one D3D12 adapter. Shell rasterization and
 /// WUC composition are owned independently by `ShellCompositor`.
 struct RenderDevice {

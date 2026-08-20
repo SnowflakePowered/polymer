@@ -143,6 +143,24 @@ export interface ConfigurationApi {
   setupLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
+export interface ConsoleStorageNand extends EventTarget {
+  readonly id: string;
+  readonly platform: string;
+  readonly label: string | null;
+  readonly created: Date;
+  readonly path: string;
+  setLabel(label: string | null): Promise<ConsoleStorageNand>;
+  delete(): Promise<void>;
+}
+
+export interface ConsoleStorageApi {
+  readonly Nand: {
+    readonly prototype: ConsoleStorageNand;
+    create(platform: string, options?: { label?: string }): Promise<ConsoleStorageNand>;
+    list(): Promise<ConsoleStorageNand[]>;
+  };
+}
+
 export type WebRtcPublicationState = "starting" | "active" | "closing" | "closed" | "error";
 
 export interface WebRtcPublication extends EventTarget {
@@ -168,6 +186,7 @@ declare global {
     readonly Snowglass: Readonly<{
       readonly scraping: ScrapingApi;
       readonly configuration: ConfigurationApi;
+      readonly consolestorage: ConsoleStorageApi;
       readonly emulator: EmulatorApi;
       readonly plugin: PluginApi;
       readonly webrtc: WebRtcApi;

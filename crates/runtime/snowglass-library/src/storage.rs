@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
 use snowglass_consolestorage::nand::{NandCompletion, VirtualNand};
+use snowglass_consolestorage::savegame::SaveGameSink;
 use snowglass_consolestorage::{
     DirectoryStorage, Error, MountableStorage, NandMetadata, Permissions,
 };
@@ -13,6 +14,17 @@ enum OpenNand {
 }
 
 pub struct Nand(OpenNand);
+
+impl Nand {
+    /// Wait until a game saves to the nand.
+    /// TODO: this should be scoped to a game
+    pub async fn game_saved(&self) -> Result<(), Error> {
+        match &self.0 {
+            OpenNand::WiiU(nand) => nand.watch_saves(&[])?.changed().await,
+        }
+        Ok(())
+    }
+}
 
 impl VirtualNand for Nand {
     async fn new_empty<St: MountableStorage + 'static>(

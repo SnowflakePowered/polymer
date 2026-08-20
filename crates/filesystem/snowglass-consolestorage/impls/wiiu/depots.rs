@@ -104,14 +104,17 @@ impl Depot for WiiUMetaXmlDepot {
     if nand.platform() != "NINTENDO_WIIU" {
       return false;
     }
-    requires_structure!(&self.root,
+
+    let storage = nand.root();
+    requires_structure!(&*storage as &dyn Storage,
       "sys/",
       "usr/",
         "usr/title/",
-          "usr/title/0005000e", // game updates
-          "usr/title/00050000", // games
-          "usr/title/0005000c" // DLC
-    ).is_ok()
+          "usr/title/0005000e/", // game updates
+          "usr/title/00050000/", // games
+          "usr/title/0005000c/", // DLC
+    )
+    .is_ok()
   }
 
   fn validate_contents(&self) -> Vec<String> {

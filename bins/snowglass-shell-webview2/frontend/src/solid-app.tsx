@@ -17,6 +17,7 @@ import { createStore, unwrap } from "solid-js/store";
 import type {
   ConfigurationOption,
   ConfigurationSelection,
+  ConsoleStorageNand,
   EmulatorConfiguration,
   HTMLTrackedSurfaceElement,
   LaunchInstance,
@@ -31,7 +32,9 @@ type RecentGame = { path: string; name: string; platform: string; emulator: stri
 type AudioState = { available: boolean; volume: number; muted: boolean };
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
+const WIIU_PLATFORM = "NINTENDO_WIIU";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
+let defaultWiiUNand: Promise<ConsoleStorageNand> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
 type StartupRequest =
   | { kind: "package"; path: string; emulator?: string }
@@ -61,6 +64,20 @@ function friendly(value: string) {
 }
 
 function cloneGame(game: PackageConfiguration) { return structuredClone(unwrap(game)); }
+
+function ensureDefaultWiiUNand() {
+  if (!defaultWiiUNand) {
+    const pending = window.Snowglass.consolestorage.Nand.list().then((nands) =>
+      nands.find((nand) => nand.platform === WIIU_PLATFORM)
+        ?? window.Snowglass.consolestorage.Nand.create(WIIU_PLATFORM, { label: "Default" })
+    );
+    defaultWiiUNand = pending.catch((error) => {
+      defaultWiiUNand = null;
+      throw error;
+    });
+  }
+  return defaultWiiUNand;
+}
 
 type LauncherUiState =
   | { kind: "idle" }
@@ -115,6 +132,7 @@ function ShellProvider(props: ParentProps) {
     gamepadOpen: false,
   });
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
+  void ensureDefaultWiiUNand().catch(() => {});
 
   let detection: AbortController | null = null;
 
@@ -184,11 +202,17 @@ function ShellProvider(props: ParentProps) {
       settings: Object.fromEntries(emulator.options.filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
     setModel("launcher", { kind: "launching", name: game.name });
-    void window.Snowglass.configuration.setupLaunch(packageValue, selection).then((request) => {
-      setModel("request", request);
-      setModel("surfaces", structuredClone(request.surfaces));
-      navigateMemory("/game/launching", true);
-    }, fail);
+    void (async () => {
+      try {
+        if (game.platform === WIIU_PLATFORM) selection.nand = (await ensureDefaultWiiUNand()).id;
+        const request = await window.Snowglass.configuration.setupLaunch(packageValue, selection);
+        setModel("request", request);
+        setModel("surfaces", structuredClone(request.surfaces));
+        navigateMemory("/game/launching", true);
+      } catch (error) {
+        fail(error);
+      }
+    })();
   };
   const cancel = () => {
     detection?.abort();

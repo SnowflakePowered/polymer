@@ -41,6 +41,11 @@ pub trait SnowglassHost: Send + Sync {
     ) -> ApiFuture<Value>;
     fn release_prepared_filesystem(&self, token: String) -> bool;
     fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>>;
+    fn consolestorage_game_saved(
+        &self,
+        platform: String,
+        id: String,
+    ) -> ApiFuture<Result<(), String>>;
     fn emulator_launch(
         &self,
         token: InstanceToken,
@@ -209,6 +214,18 @@ async fn op_consolestorage_set_label(
 }
 
 #[op2]
+async fn op_consolestorage_game_saved(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] id: String,
+) -> Result<(), JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.consolestorage_game_saved(platform, id)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
 #[serde]
 fn op_configuration_describe(
     state: &mut OpState,
@@ -369,6 +386,7 @@ deno_core::extension!(
         op_consolestorage_create,
         op_consolestorage_delete,
         op_consolestorage_set_label,
+        op_consolestorage_game_saved,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,
