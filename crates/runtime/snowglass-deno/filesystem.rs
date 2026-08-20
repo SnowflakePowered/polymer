@@ -7,8 +7,8 @@ use serde_bytes::ByteBuf;
 use snowglass_vfs::{
     AsarVolumeFactory, FilesystemEndpoint, FilesystemPlan, HostDirectoryFactory, HostFileFactory,
     MemoryFileFactory, PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch,
-    ProfileLayout, Resource, ResourceOrigin, ScratchBacking, ScratchVolumeFactory, VfsError,
-    VfsPathBuf,
+    ProfileLayout, Resource, ResourceFactory, ResourceOrigin, ScratchBacking, ScratchVolumeFactory,
+    VfsError, VfsPathBuf, Volume,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -40,11 +40,26 @@ pub struct NamedCache {
     pub path: PathBuf,
 }
 
-#[derive(Clone, Debug)]
+pub type NandFactory = Arc<dyn ResourceFactory<dyn Volume>>;
+
+#[derive(Clone)]
 pub struct FilesystemOptions {
     pub package_root: PathBuf,
     pub resources: Vec<NamedResource>,
     pub caches: Vec<NamedCache>,
+    pub nand: Option<NandFactory>,
+}
+
+impl std::fmt::Debug for FilesystemOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FilesystemOptions")
+            .field("package_root", &self.package_root)
+            .field("resources", &self.resources)
+            .field("caches", &self.caches)
+            .field("nand", &self.nand.is_some())
+            .finish()
+    }
 }
 
 impl FilesystemOptions {
@@ -53,6 +68,7 @@ impl FilesystemOptions {
             package_root,
             resources: Vec::new(),
             caches: Vec::new(),
+            nand: None,
         }
     }
 }
@@ -82,6 +98,7 @@ struct FilesystemState {
     >,
     named: BTreeMap<String, ResourceHandle>,
     caches: BTreeMap<String, CacheResource>,
+    nand: Option<NandFactory>,
     used: bool,
     working_directory_set: bool,
     profile_set: bool,
@@ -99,6 +116,7 @@ impl FilesystemState {
             files: HashMap::new(),
             named: BTreeMap::new(),
             caches: BTreeMap::new(),
+            nand: options.nand.clone(),
             used: false,
             working_directory_set: false,
             profile_set: false,
@@ -611,6 +629,31 @@ fn op_vfs_mount_file_resource(
 }
 
 #[op2(fast)]
+fn op_vfs_mount_nand(state: &mut OpState, #[string] target: String) -> Result<(), JsErrorBox> {
+    let vfs = state.borrow_mut::<FilesystemState>();
+    let factory = vfs
+        .nand
+        .clone()
+        .ok_or_else(|| js_error("no nand was provided for this launch"))?;
+
+    let resource = Resource::new(
+        factory,
+        Permissions::ALL,
+        ResourceOrigin::Other("nand".to_owned()),
+    );
+    let handle = vfs.insert_volume(resource);
+    let resource = vfs.volume(handle).map_err(js_error)?;
+    vfs.plan.mount_tree(
+        VfsPathBuf::new(target).map_err(js_error)?,
+        resource,
+        Permissions::ALL,
+    );
+    vfs.used = true;
+
+    Ok(())
+}
+
+#[op2(fast)]
 fn op_vfs_mount_scratch(
     state: &mut OpState,
     #[string] target: String,
@@ -697,7 +740,7 @@ deno_core::extension!(snowglass_filesystem,
         op_vfs_resources, op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
-        op_vfs_mount_scratch, op_vfs_path, op_vfs_set_working_directory,
+        op_vfs_mount_scratch, op_vfs_mount_nand, op_vfs_path, op_vfs_set_working_directory,
         op_vfs_set_profile,
     ],
     esm_entry_point = "ext:snowglass_filesystem/07_filesystem.js",

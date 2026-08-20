@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use snowglass_deno::snowglass::ConsoleStorageRequest;
-use snowglass_library::{Directories, Nand, StorageManager};
+use snowglass_library::{Directories, NandMetadata, StorageManager, VirtualNand};
 use uuid::Uuid;
 
 pub(crate) fn manager() -> Option<Arc<StorageManager>> {
@@ -20,13 +20,21 @@ pub(crate) async fn serve(
     match request {
         ConsoleStorageRequest::List => {
             let nands = manager.list().await.map_err(|error| error.to_string())?;
-            Ok(Value::Array(nands.iter().map(describe).collect()))
+            Ok(Value::Array(
+                nands
+                    .iter()
+                    .map(|metadata| describe(&manager, metadata))
+                    .collect(),
+            ))
         }
-        ConsoleStorageRequest::Create { platform, label } => manager
-            .create(&platform, label)
-            .await
-            .map(|nand| describe(&nand))
-            .map_err(|error| error.to_string()),
+        ConsoleStorageRequest::Create { platform, label } => {
+            let nand = manager
+                .create(&platform, label)
+                .await
+                .map_err(|error| error.to_string())?;
+            let metadata = nand.metadata().await.map_err(|error| error.to_string())?;
+            Ok(describe(&manager, &metadata))
+        }
         ConsoleStorageRequest::Delete { platform, id } => manager
             .delete(&platform, parse(&id)?)
             .await
@@ -36,11 +44,14 @@ pub(crate) async fn serve(
             platform,
             id,
             label,
-        } => manager
-            .set_label(&platform, parse(&id)?, label)
-            .await
-            .map(|nand| describe(&nand))
-            .map_err(|error| error.to_string()),
+        } => {
+            let nand = manager
+                .set_label(&platform, parse(&id)?, label)
+                .await
+                .map_err(|error| error.to_string())?;
+            let metadata = nand.metadata().await.map_err(|error| error.to_string())?;
+            Ok(describe(&manager, &metadata))
+        }
     }
 }
 
@@ -48,12 +59,14 @@ fn parse(id: &str) -> Result<Uuid, String> {
     Uuid::parse_str(id).map_err(|_| format!("`{id}` is not a nand id"))
 }
 
-fn describe(nand: &Nand) -> Value {
+fn describe(manager: &StorageManager, metadata: &NandMetadata) -> Value {
     json!({
-        "id": nand.metadata.id.simple().to_string(),
-        "platform": nand.metadata.platform,
-        "label": nand.metadata.label,
-        "created": nand.metadata.created.to_string(),
-        "path": nand.path.to_string_lossy(),
+        "id": metadata.id.simple().to_string(),
+        "platform": metadata.platform,
+        "label": metadata.label,
+        "created": metadata.created.to_string(),
+        "path": manager
+            .path(&metadata.platform, metadata.id)
+            .to_string_lossy(),
     })
 }

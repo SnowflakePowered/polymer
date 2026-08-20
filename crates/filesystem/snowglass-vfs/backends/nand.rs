@@ -3,8 +3,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use snowglass_consolestorage::nand::VirtualNand;
 use snowglass_consolestorage::{
-    EntryKind, Error as NandError, MountableStorage, Permissions as NandPermissions, StorageFile,
-    StorageRead,
+    EntryKind, Error as NandError, Permissions as NandPermissions, StorageFile, StorageRead,
 };
 
 use crate::{

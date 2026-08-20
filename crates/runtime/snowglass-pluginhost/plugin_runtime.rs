@@ -3,6 +3,7 @@ use crate::{
 };
 use deno_core::{serde_v8, v8};
 use serde::{Deserialize, Serialize};
+use snowglass_deno::filesystem::NandFactory;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -45,7 +46,7 @@ pub struct PluginInvocationError {
 }
 
 impl PluginInvocationError {
-    fn new(name: &str, code: &str, message: impl Into<String>) -> Self {
+    pub fn new(name: &str, code: &str, message: impl Into<String>) -> Self {
         Self {
             name: name.to_owned(),
             code: code.to_owned(),
@@ -204,11 +205,35 @@ impl PluginRuntimeHandle {
             .await
     }
 
+    pub async fn invoke_with_nand(
+        &self,
+        plugin_id: &str,
+        export_path: &[String],
+        arguments: Vec<Value>,
+        nand: Option<NandFactory>,
+    ) -> Result<Value, PluginInvocationError> {
+        let cancellation = self.cancellation_token();
+        self.invoke_inner(plugin_id, export_path, arguments, nand, cancellation)
+            .await
+    }
+
     pub async fn invoke_with_cancellation(
         &self,
         plugin_id: &str,
         export_path: &[String],
         arguments: Vec<Value>,
+        cancellation: PluginCancellationToken,
+    ) -> Result<Value, PluginInvocationError> {
+        self.invoke_inner(plugin_id, export_path, arguments, None, cancellation)
+            .await
+    }
+
+    async fn invoke_inner(
+        &self,
+        plugin_id: &str,
+        export_path: &[String],
+        arguments: Vec<Value>,
+        nand: Option<NandFactory>,
         cancellation: PluginCancellationToken,
     ) -> Result<Value, PluginInvocationError> {
         let plugin = self
@@ -296,6 +321,7 @@ impl PluginRuntimeHandle {
                         plugin,
                         arguments: plugin_arguments,
                         configuration,
+                        nand,
                     },
                     cancellation,
                     matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
@@ -311,7 +337,7 @@ impl PluginRuntimeHandle {
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
         let filesystem =
-            filesystem_options(plugin.as_ref()).map_err(PluginInvocationError::worker)?;
+            filesystem_options(plugin.as_ref(), None).map_err(PluginInvocationError::worker)?;
         let path = export_path.to_vec();
         self.run_with_control(cancellation.control, move |control| {
             run_worker(
@@ -362,7 +388,7 @@ impl PluginRuntimeHandle {
     ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
         let entrypoint = invocation.plugin.entrypoint().to_string();
         let loader = invocation.plugin.module_loader().clone();
-        let filesystem = filesystem_options(invocation.plugin.as_ref())
+        let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.nand.clone())
             .map_err(PluginInvocationError::worker)?;
         self.run_with_control(cancellation.control, move |control| {
             run_worker(
@@ -564,10 +590,12 @@ where
 
 fn filesystem_options(
     plugin: &dyn EmulatorPluginInstance,
+    nand: Option<NandFactory>,
 ) -> Result<snowglass_deno::filesystem::FilesystemOptions, crate::PackageError> {
     let mut options = snowglass_deno::filesystem::FilesystemOptions::new(
         plugin.module_loader().root().to_owned(),
     );
+    options.nand = nand;
     options.resources = plugin
         .resources()?
         .into_iter()
@@ -1000,6 +1028,7 @@ mod tests {
                     "virtualize": true
                 }),
                 configuration: configuration(),
+                nand: None,
             })
             .await
             .unwrap();

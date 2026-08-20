@@ -6,6 +6,7 @@ mod capture;
 mod input;
 mod instance;
 mod launch;
+mod nand;
 mod scraping;
 mod ui;
 
@@ -19,6 +20,7 @@ pub use instance::{
     SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
     TrackedSurfaceHandle, TrackedSurfaceId,
 };
+pub use nand::{NandFactory, launch_nand};
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use ui::{UiRequest, UiRequestReceiver};
 

@@ -1,14 +1,70 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
-use snowglass_consolestorage::nand::VirtualNand;
-use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata};
+use snowglass_consolestorage::nand::{NandCompletion, VirtualNand};
+use snowglass_consolestorage::{
+    DirectoryStorage, Error, MountableStorage, NandMetadata, Permissions,
+};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Nand {
-    pub metadata: NandMetadata,
-    pub path: PathBuf,
+enum OpenNand {
+    WiiU(WiiUNand),
+}
+
+pub struct Nand(OpenNand);
+
+impl VirtualNand for Nand {
+    async fn new_empty<St: MountableStorage + 'static>(
+        _storage: St,
+        _id: Uuid,
+        _label: Option<String>,
+    ) -> Result<Self, Error> {
+        Err(Error::Unsupported(
+            "an empty nand must be laid out by a platform-specific layout".to_owned(),
+        ))
+    }
+
+    async fn open<St: MountableStorage + 'static>(storage: St) -> Result<Self, Error> {
+        let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
+
+        match metadata.platform.as_str() {
+            WiiUNand::PLATFORM => Ok(Self(OpenNand::WiiU(WiiUNand::open(storage).await?))),
+            other => Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
+        }
+    }
+
+    fn root(&self) -> Arc<dyn MountableStorage> {
+        match &self.0 {
+            OpenNand::WiiU(nand) => nand.root(),
+        }
+    }
+
+    fn platform(&self) -> &str {
+        match &self.0 {
+            OpenNand::WiiU(nand) => nand.platform(),
+        }
+    }
+
+    fn is_complete(&self, completion_criteria: NandCompletion) -> bool {
+        match &self.0 {
+            OpenNand::WiiU(nand) => nand.is_complete(completion_criteria),
+        }
+    }
+
+    fn permissions(&self, path: &str) -> Permissions {
+        match &self.0 {
+            OpenNand::WiiU(nand) => nand.permissions(path),
+        }
+    }
+
+    async fn clone<St: MountableStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
+        match &self.0 {
+            OpenNand::WiiU(nand) => Ok(Self(OpenNand::WiiU(
+                VirtualNand::clone(nand, storage).await?,
+            ))),
+        }
+    }
 }
 
 pub struct StorageManager {
@@ -44,7 +100,7 @@ impl StorageManager {
         let storage = DirectoryStorage::new(self.path(platform, id)).await?;
 
         match platform {
-            "NINTENDO_WIIU" => WiiUNand::new_empty(storage, id, label).await?,
+            WiiUNand::PLATFORM => WiiUNand::new_empty(storage, id, label).await?,
             _ => unreachable!("platform support was checked"),
         };
 
@@ -52,15 +108,7 @@ impl StorageManager {
     }
 
     pub async fn open(&self, platform: &str, id: Uuid) -> Result<Nand, Error> {
-        let path = self.path(platform, id);
-        let storage = DirectoryStorage::new(&path).await?;
-
-        let metadata = match platform {
-            WiiUNand::PLATFORM => WiiUNand::open(storage).await?.metadata().await?,
-            other => return Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
-        };
-
-        Ok(Nand { metadata, path })
+        Nand::open(DirectoryStorage::new(self.path(platform, id)).await?).await
     }
 
     pub async fn set_label(
@@ -69,34 +117,26 @@ impl StorageManager {
         id: Uuid,
         label: Option<String>,
     ) -> Result<Nand, Error> {
-        let path = self.path(platform, id);
-        let storage = DirectoryStorage::new(&path).await?;
+        let nand = self.open(platform, id).await?;
+        nand.set_label(label.as_deref()).await?;
 
-        match platform {
-            WiiUNand::PLATFORM => {
-                WiiUNand::open(storage)
-                    .await?
-                    .set_label(label.as_deref())
-                    .await?
-            }
-            other => return Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
-        }
-
-        self.open(platform, id).await
+        Ok(nand)
     }
 
-    pub async fn list(&self) -> Result<Vec<Nand>, Error> {
+    pub async fn list(&self) -> Result<Vec<NandMetadata>, Error> {
         let mut nands = Vec::new();
 
         for platform in self.platforms().await {
             for id in self.ids(&platform).await {
-                if let Ok(nand) = self.open(&platform, id).await {
-                    nands.push(nand);
+                if let Ok(nand) = self.open(&platform, id).await
+                    && let Ok(metadata) = nand.metadata().await
+                {
+                    nands.push(metadata);
                 }
             }
         }
 
-        nands.sort_by_key(|nand| nand.metadata.id);
+        nands.sort_by_key(|metadata| metadata.id);
         Ok(nands)
     }
 
