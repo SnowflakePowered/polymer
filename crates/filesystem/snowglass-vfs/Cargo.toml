@@ -14,6 +14,7 @@ bstr = "1"
 memmap2.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
+snowglass-consolestorage = { version = "0.1.0", path = "../snowglass-consolestorage" }
 tempfile.workspace = true
 thiserror.workspace = true
 widestring = "1"
@@ -29,6 +30,8 @@ windows = { workspace = true, features = [
 
 [dev-dependencies]
 asar = "0.3.0"
+tokio = { version = "1.53.1", features = ["rt", "macros"] }
+uuid = "1.24.1"
 
 [lints]
 workspace = true

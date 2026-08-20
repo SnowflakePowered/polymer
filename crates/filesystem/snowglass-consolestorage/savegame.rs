@@ -33,13 +33,13 @@ pub struct SaveBlob {
     pub bytes: Vec<u8>,
 }
 
-pub struct SaveWatcher<'a> {
+pub struct SaveWatcher {
     saves: Vec<SaveDepotId>,
-    signal: Box<dyn ChangeSignal + 'a>,
+    signal: Box<dyn ChangeSignal>,
 }
 
-impl<'a> SaveWatcher<'a> {
-    pub fn new(saves: Vec<SaveDepotId>, signal: Box<dyn ChangeSignal + 'a>) -> Self {
+impl SaveWatcher {
+    pub fn new(saves: Vec<SaveDepotId>, signal: Box<dyn ChangeSignal>) -> Self {
         Self { saves, signal }
     }
 
@@ -62,5 +62,5 @@ pub trait SaveGameSink {
         blobs: impl Stream<Item = SaveBlob> + Send + 'a,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>>;
     
-    fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher<'_>, Error>;
+    fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error>;
 }

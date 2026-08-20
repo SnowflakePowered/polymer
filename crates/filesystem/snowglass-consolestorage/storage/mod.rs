@@ -209,6 +209,16 @@ pub trait Storage: Send + Sync {
     ) -> BoxFuture<'a, Result<InstallResult, Error>>;
 }
 
+/// The operations a guest filesystem needs that plain enumeration does not.
+/// A volume only has to satisfy these to be mounted.
+pub trait MountableStorage: Storage {
+    fn rename(&self, from: &str, to: &str) -> Result<(), Error>;
+
+    fn set_len(&self, path: &str, len: u64) -> Result<(), Error>;
+
+    fn sync(&self, path: &str) -> Result<(), Error>;
+}
+
 pub struct DirectoryStorage {
     root: PathBuf,
     artifacts: ArtifactDb,
@@ -312,7 +322,13 @@ impl Storage for DirectoryStorage {
     fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
         let resolved = self.resolve(path)?;
         Self::ensure_directory(&resolved)?;
-        let file = File::create(&resolved).map_err(|e| Error::io(&resolved, e))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&resolved)
+            .map_err(|e| Error::io(&resolved, e))?;
         Ok(Box::new(file))
     }
 
@@ -339,6 +355,7 @@ impl Storage for DirectoryStorage {
         let resolved = self.resolve(path)?;
         Self::ensure_directory(&resolved)?;
         let file = OpenOptions::new()
+            .read(true)
             .append(true)
             .create(true)
             .open(&resolved)
@@ -543,5 +560,32 @@ struct DirectoryWatch {
 impl ChangeSignal for DirectoryWatch {
     fn changed(&self) -> BoxFuture<'_, ()> {
         Box::pin(self.signal.notified())
+    }
+}
+
+impl MountableStorage for DirectoryStorage {
+    fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        let from = self.resolve(from)?;
+        let to = self.resolve(to)?;
+        Self::ensure_directory(&to)?;
+        fs::rename(&from, &to).map_err(|e| Error::io(&from, e))
+    }
+
+    fn set_len(&self, path: &str, len: u64) -> Result<(), Error> {
+        let resolved = self.resolve(path)?;
+        OpenOptions::new()
+            .write(true)
+            .open(&resolved)
+            .and_then(|file| file.set_len(len))
+            .map_err(|e| Error::io(&resolved, e))
+    }
+
+    fn sync(&self, path: &str) -> Result<(), Error> {
+        let resolved = self.resolve(path)?;
+        OpenOptions::new()
+            .write(true)
+            .open(&resolved)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| Error::io(&resolved, e))
     }
 }

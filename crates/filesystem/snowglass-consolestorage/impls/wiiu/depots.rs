@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::Stream;
 use futures::channel::oneshot;
 use futures::future::TryFutureExt;
 
+use crate::Storage;
 use crate::error::Error;
 use crate::installable::{Depot, DepotType, DirectoryInstall, IconHint};
 use crate::impls::wiiu::xml;
@@ -134,10 +136,11 @@ impl Depot for WiiUMetaXmlDepot {
   ) {
     let (sender, receiver) = oneshot::channel();
 
+    let storage: Arc<dyn Storage> = nand.root();
     let install = DirectoryInstall {
       root: self.root.clone(),
       base: self.install_path(),
-      storage: nand.root(),
+      storage,
       artifact: self,
     };
 

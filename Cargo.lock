@@ -10431,8 +10431,11 @@ dependencies = [
  "memmap2",
  "parking_lot",
  "rand 0.10.2",
+ "snowglass-consolestorage",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "uuid",
  "widestring",
  "windows 0.61.3",
 ]
