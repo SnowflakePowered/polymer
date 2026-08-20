@@ -10,8 +10,10 @@ use std::pin::Pin;
 use crate::error::Error;
 
 pub mod manifest;
+pub(crate) mod permissions;
 
 use manifest::{ArtifactDb, ArtifactRegistry};
+use crate::storage::manifest::NandMetadata;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -34,6 +36,7 @@ impl EntryKind {
 pub struct Metadata {
     pub kind: EntryKind,
     pub len: u64,
+    pub mtime: jiff::Timestamp,
 }
 
 /// What [`Storage::install_file`] wrote.
@@ -45,13 +48,87 @@ pub struct InstallResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
+    /// The leaf name.
     pub name: String,
+    /// Where the entry lives, relative to the storage root.
+    pub path: String,
     pub kind: EntryKind,
+}
+
+/// A directory listing. Backends produce [`ReadDir::Surface`] for one level;
+/// [`ReadDir::Recursive`] walks those listings depth first, so recursion is
+/// shared rather than reimplemented per backend.
+pub enum ReadDir<'a> {
+    Surface {
+        entries: Box<dyn Iterator<Item = DirEntry> + Send + 'a>,
+    },
+    Recursive {
+        storage: &'a dyn Storage,
+        current: Box<dyn Iterator<Item = DirEntry> + Send + 'a>,
+        pending: Vec<String>,
+    },
+}
+
+impl<'a> ReadDir<'a> {
+    pub fn surface(entries: impl Iterator<Item = DirEntry> + Send + 'a) -> Self {
+        Self::Surface {
+            entries: Box::new(entries),
+        }
+    }
+
+    /// Walk everything under `root`, driving the backend one level at a time.
+    pub fn recursive(storage: &'a dyn Storage, root: &str) -> Result<Self, Error> {
+        Ok(Self::Recursive {
+            storage,
+            current: storage.read_dir(root, false)?.entries(),
+            pending: Vec::new(),
+        })
+    }
+
+    fn entries(self) -> Box<dyn Iterator<Item = DirEntry> + Send + 'a> {
+        match self {
+            Self::Surface { entries } => entries,
+            recursive => Box::new(recursive),
+        }
+    }
+}
+
+impl Iterator for ReadDir<'_> {
+    type Item = DirEntry;
+
+    fn next(&mut self) -> Option<DirEntry> {
+        match self {
+            Self::Surface { entries } => entries.next(),
+            Self::Recursive {
+                storage,
+                current,
+                pending,
+            } => loop {
+                if let Some(entry) = current.next() {
+                    if entry.kind == EntryKind::Directory {
+                        pending.push(entry.path.clone());
+                    }
+
+                    return Some(entry);
+                }
+
+                // An unreadable subdirectory is skipped rather than ending the walk.
+                match storage.read_dir(&pending.pop()?, false) {
+                    Ok(listing) => *current = listing.entries(),
+                    Err(_) => continue,
+                }
+            },
+        }
+    }
 }
 
 pub trait StorageFile: Read + Write + Seek + Send {}
 
 impl<T: Read + Write + Seek + Send> StorageFile for T {}
+
+pub trait StorageRead: Read + Seek + Send {}
+
+impl<T: Read + Seek + Send> StorageRead for T {}
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -66,14 +143,19 @@ pub trait Storage: Send + Sync {
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error>;
 
-    fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, Error>;
+    /// List `path`, optionally walking everything beneath it.
+    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error>;
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error>;
 
     /// Create or truncate a file, creating parent directories.
     fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error>;
 
+    /// Open for reading and writing.
     fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error>;
+
+    /// Open for reading only, which succeeds on entries [`Self::open`] rejects.
+    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error>;
 
     /// Open for appending, creating the file and its parents if absent.
     fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error>;
@@ -82,8 +164,22 @@ pub trait Storage: Send + Sync {
     /// an error, so uninstalling twice is safe.
     fn remove(&self, path: &str) -> Result<(), Error>;
 
-    /// The record of what is installed here.
+    /// The record of what is installed here. Save-only volumes have none.
     fn artifacts(&self) -> &dyn ArtifactRegistry;
+
+    /// Who this volume is, or `None` if nothing has branded it yet.
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>>;
+
+    /// Establish an identity if there is none, returning it either way.
+    fn brand<'a>(
+        &'a self,
+        platform: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
+
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
+
+    fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>>;
 
     /// Copy `source` to `dest`, returning the blake3 digest and length of what
     /// was written. The file is only visible at `dest` once fully written.
@@ -149,6 +245,7 @@ impl Storage for DirectoryStorage {
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
         let resolved = self.resolve(path)?;
         let meta = fs::metadata(&resolved).map_err(|e| Error::io(&resolved, e))?;
+        let mtime = meta.modified().map_err(|e| Error::io(&resolved, e))?;
         Ok(Metadata {
             kind: if meta.is_dir() {
                 EntryKind::Directory
@@ -156,25 +253,36 @@ impl Storage for DirectoryStorage {
                 EntryKind::File
             },
             len: meta.len(),
+            mtime: jiff::Timestamp::try_from(mtime)?
         })
     }
 
-    fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, Error> {
-        let resolved = self.resolve(path)?;
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&resolved).map_err(|e| Error::io(&resolved, e))? {
-            let entry = entry.map_err(|e| Error::io(&resolved, e))?;
-            let kind = entry.file_type().map_err(|e| Error::io(&resolved, e))?;
-            entries.push(DirEntry {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                kind: if kind.is_dir() {
-                    EntryKind::Directory
-                } else {
-                    EntryKind::File
-                },
-            });
+    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
+        if recursive {
+            return ReadDir::recursive(self, path);
         }
-        Ok(entries)
+
+        let resolved = self.resolve(path)?;
+        let listing = fs::read_dir(&resolved).map_err(|e| Error::io(&resolved, e))?;
+        let parent = path.to_string();
+
+        Ok(ReadDir::surface(listing.filter_map(move |entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = match parent.is_empty() {
+                true => name.clone(),
+                false => format!("{parent}/{name}"),
+            };
+
+            Some(DirEntry {
+                name,
+                path,
+                kind: match entry.file_type().ok()?.is_dir() {
+                    true => EntryKind::Directory,
+                    false => EntryKind::File,
+                },
+            })
+        })))
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
@@ -194,6 +302,15 @@ impl Storage for DirectoryStorage {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
+            .open(&resolved)
+            .map_err(|e| Error::io(&resolved, e))?;
+        Ok(Box::new(file))
+    }
+
+    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
+        let resolved = self.resolve(path)?;
+        let file = OpenOptions::new()
+            .read(true)
             .open(&resolved)
             .map_err(|e| Error::io(&resolved, e))?;
         Ok(Box::new(file))
@@ -234,6 +351,32 @@ impl Storage for DirectoryStorage {
         &self.artifacts
     }
 
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
+        self.artifacts.identity()
+    }
+
+    fn brand<'a>(
+        &'a self,
+        platform: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
+        self.artifacts.brand(platform, label)
+    }
+
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
+        Box::pin(async move {
+            Ok(self
+                .artifacts
+                .identity()
+                .await?
+                .and_then(|metadata| metadata.label))
+        })
+    }
+
+    fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+        self.artifacts.set_label(label)
+    }
+
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -248,74 +391,77 @@ impl Storage for DirectoryStorage {
         let dest = dest.to_string();
         Box::pin(async move {
             let resolved = resolved?;
-            copy_hashed(source, &resolved, &dest).await
+            DirectoryStorage::copy_hashed(source, &resolved, &dest).await
         })
     }
 }
 
-/// Copy `source` onto `resolved` through a staging file, hashing in the same pass.
-async fn copy_hashed(
-    mut source: Box<dyn AsyncRead + Send + Unpin>,
-    resolved: &Path,
-    dest: &str,
-) -> Result<InstallResult, Error> {
-    // for atomic copying
-    fn staging_path(resolved: &Path) -> PathBuf {
-        let mut name = resolved.file_name().unwrap_or_default().to_os_string();
-        name.push(".sgpart");
-        resolved.with_file_name(name)
-    }
-
-    let parent = resolved
-        .parent()
-        .ok_or_else(|| Error::InvalidPath(dest.to_string()))?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(|e| Error::io(parent, e))?;
-
-    let staged = staging_path(resolved);
-    let mut writer = tokio::fs::File::create(&staged)
-        .await
-        .map_err(|e| Error::io(&staged, e))?;
-
-    let mut hasher = blake3::Hasher::new();
-    let mut buffer = vec![0u8; 1 << 20];
-    let mut byte_length = 0u64;
-
-    let copied = async {
-        loop {
-            let read = match source.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(read) => read,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            };
-
-            hasher.update(&buffer[..read]);
-            writer.write_all(&buffer[..read]).await?;
-            byte_length += read as u64;
+impl DirectoryStorage {
+    /// Copy `source` onto `resolved` through a staging file, hashing in the same pass.
+    async fn copy_hashed(
+        mut source: Box<dyn AsyncRead + Send + Unpin>,
+        resolved: &Path,
+        dest: &str,
+    ) -> Result<InstallResult, Error> {
+        // for atomic copying
+        fn staging_path(resolved: &Path) -> PathBuf {
+            let mut name = resolved.file_name().unwrap_or_default().to_os_string();
+            name.push(".sgpart");
+            resolved.with_file_name(name)
         }
 
-        writer.flush().await
-    }
-    .await;
-    drop(writer);
+        let parent = resolved
+            .parent()
+            .ok_or_else(|| Error::InvalidPath(dest.to_string()))?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| Error::io(parent, e))?;
 
-    if let Err(error) = copied {
-        let _ = tokio::fs::remove_file(&staged).await;
-        return Err(Error::io(&staged, error));
-    }
+        let staged = staging_path(resolved);
+        let mut writer = tokio::fs::File::create(&staged)
+            .await
+            .map_err(|e| Error::io(&staged, e))?;
 
-    if let Err(error) = tokio::fs::rename(&staged, resolved).await {
-        let _ = tokio::fs::remove_file(&staged).await;
-        return Err(Error::io(resolved, error));
-    }
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0u8; 1 << 20];
+        let mut byte_length = 0u64;
 
-    Ok(InstallResult {
-        blake3: *hasher.finalize().as_bytes(),
-        byte_length,
-    })
+        let copied = async {
+            loop {
+                let read = match source.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                };
+
+                hasher.update(&buffer[..read]);
+                writer.write_all(&buffer[..read]).await?;
+                byte_length += read as u64;
+            }
+
+            writer.flush().await
+        }
+            .await;
+        drop(writer);
+
+        if let Err(error) = copied {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(Error::io(&staged, error));
+        }
+
+        if let Err(error) = tokio::fs::rename(&staged, resolved).await {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(Error::io(resolved, error));
+        }
+
+        Ok(InstallResult {
+            blake3: *hasher.finalize().as_bytes(),
+            byte_length,
+        })
+    }
 }
+
 
 #[cfg(test)]
 mod tests {

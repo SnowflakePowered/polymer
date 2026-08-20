@@ -47,7 +47,7 @@ pub struct ArtifactSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NandIdentity {
+pub struct NandMetadata {
     pub id: Uuid,
     pub platform: String,
     pub label: Option<String>,
@@ -55,15 +55,6 @@ pub struct NandIdentity {
 }
 
 pub trait ArtifactRegistry: Send + Sync {
-
-    fn brand<'a>(
-        &'a self,
-        platform: &'a str,
-        label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandIdentity, Error>>;
-
-    fn identity(&self) -> BoxFuture<'_, Result<Option<NandIdentity>, Error>>;
-    fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>>;
     fn record<'a>(&'a self, artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>>;
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>>;
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>>;
@@ -195,7 +186,7 @@ impl ArtifactDb {
         Ok(files)
     }
 
-    async fn read_identity(&self) -> Result<Option<NandIdentity>, Error> {
+    async fn read_identity(&self) -> Result<Option<NandMetadata>, Error> {
         let mut rows = self
             .connection
             .query("SELECT id, platform, label, created FROM nand LIMIT 1", ())
@@ -215,7 +206,7 @@ impl ArtifactDb {
             reason: format!("`{created}` is not a timestamp"),
         })?;
 
-        Ok(Some(NandIdentity {
+        Ok(Some(NandMetadata {
             id,
             platform: text(&row, 1)?,
             label: optional_text(&row, 2)?,
@@ -223,17 +214,19 @@ impl ArtifactDb {
         }))
     }
 
+    /// Establish an identity if there is none, returning it either way. An
+    /// already-branded manifest keeps its id, platform, and label.
     async fn claim_identity(
         &self,
         platform: &str,
         label: Option<&str>,
-    ) -> Result<NandIdentity, Error> {
+    ) -> Result<NandMetadata, Error> {
         if let Some(identity) = self.read_identity().await? {
             return Ok(identity);
         }
 
         // v7 so a listing sorts by creation without a second index.
-        let identity = NandIdentity {
+        let identity = NandMetadata {
             id: Uuid::now_v7(),
             platform: platform.to_string(),
             label: label.map(str::to_string),
@@ -314,24 +307,25 @@ impl ArtifactDb {
 
         Ok(())
     }
-}
 
-impl ArtifactRegistry for ArtifactDb {
-    fn brand<'a>(
+    pub(super) fn brand<'a>(
         &'a self,
         platform: &'a str,
         label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandIdentity, Error>> {
+    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
         Box::pin(self.claim_identity(platform, label))
     }
 
-    fn identity(&self) -> BoxFuture<'_, Result<Option<NandIdentity>, Error>> {
+    pub(super) fn identity(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
         Box::pin(self.read_identity())
     }
 
-    fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+    pub(super) fn set_label<'a>(&'a self, label: &'a str) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(self.write_label(label))
     }
+}
+
+impl ArtifactRegistry for ArtifactDb {
 
     fn record<'a>(&'a self, artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(self.insert(artifact))

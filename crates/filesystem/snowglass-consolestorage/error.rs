@@ -36,7 +36,9 @@ pub enum Error {
   #[error("corrupt depot")]
   IntegrityMatchFailed {
     failed: String,
-  }
+  },
+  #[error("time error")]
+  TimeError(#[from] jiff::Error)
 }
 
 impl Clone for Error {
@@ -63,6 +65,7 @@ impl Clone for Error {
       Error::IntegrityMatchFailed { failed } => Error::IntegrityMatchFailed {
         failed: failed.clone(),
       },
+      Error::TimeError(failure) => Error::TimeError(failure.clone())
     }
   }
 }
