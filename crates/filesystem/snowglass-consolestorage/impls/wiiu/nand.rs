@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::storage::ChangeSignal;
-use crate::{BoxFuture, EntryKind, Error, MountableStorage, Permissions, PermissionsTable, Storage, ensure_structure, requires_structure};
+use crate::{BoxFuture, EntryKind, Error, MountableStorage, Permissions, PermissionsTable, Storage, VolumeStorage, ensure_structure, requires_structure};
 use crate::savegame::{
   SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -31,12 +31,12 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
 ]);
 
 pub struct WiiUNand {
-  storage: Arc<dyn MountableStorage>,
+  storage: Arc<dyn VolumeStorage>,
 }
 
 #[async_trait]
 impl VirtualNand for WiiUNand {
-  fn root(&self) -> Arc<dyn MountableStorage> {
+  fn root(&self) -> Arc<dyn VolumeStorage> {
     self.storage.clone()
   }
 
@@ -49,8 +49,8 @@ impl VirtualNand for WiiUNand {
     Ok(())
   }
 
-  async fn open<St: MountableStorage + 'static>(storage: St) -> Result<Self, Error> {
-    let storage: Arc<dyn MountableStorage> = Arc::new(storage);
+  async fn open<St: VolumeStorage + 'static>(storage: St) -> Result<Self, Error> {
+    let storage: Arc<dyn VolumeStorage> = Arc::new(storage);
     let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
 
     if metadata.platform != Self::PLATFORM {
@@ -64,12 +64,12 @@ impl VirtualNand for WiiUNand {
     Ok(Self { storage })
   }
 
-  async fn new_empty<St: MountableStorage + 'static>(
+  async fn new_empty<St: VolumeStorage + 'static>(
     storage: St,
     id: Uuid,
     label: Option<String>,
   ) -> Result<Self, Error> {
-    let storage: Arc<dyn MountableStorage> = Arc::new(storage);
+    let storage: Arc<dyn VolumeStorage> = Arc::new(storage);
 
     ensure_structure!(&*storage as &dyn Storage,
       "sys/",
@@ -114,7 +114,7 @@ impl VirtualNand for WiiUNand {
     }
   }
 
-  async fn clone<St: MountableStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
+  async fn clone<St: VolumeStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
     todo!()
   }
 }
