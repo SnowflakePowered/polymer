@@ -476,12 +476,12 @@ impl FileSystemContext for SnowglassFileSystem {
         context: &Self::FileContext,
         file_name: &U16CStr,
         new_file_name: &U16CStr,
-        _replace_if_exists: bool,
+        replace_if_exists: bool,
     ) -> winfsp::Result<()> {
         let source = vfs_path(file_name)?;
         let target = vfs_path(new_file_name)?;
         self.filesystem
-            .rename(&source, &target)
+            .rename_with_options(&source, &target, replace_if_exists)
             .map_err(map_vfs_error)?;
         *context.path.write() = target;
         Ok(())

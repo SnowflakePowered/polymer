@@ -266,6 +266,21 @@ impl Volume for MemoryVolume {
     }
 
     fn rename(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        self.rename_inner(source, target, false)
+    }
+
+    fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        self.rename_inner(source, target, true)
+    }
+}
+
+impl MemoryVolume {
+    fn rename_inner(
+        &self,
+        source: &VfsPath,
+        target: &VfsPath,
+        replace_if_exists: bool,
+    ) -> VfsResult<()> {
         let source_parent_path = source
             .parent()
             .ok_or_else(|| VfsError::Unsupported("the volume root cannot be renamed".into()))?;
@@ -292,7 +307,7 @@ impl Volume for MemoryVolume {
                 .map(|(_, child)| *child)
                 .ok_or_else(|| VfsError::NotFound(source.to_owned()))?
         };
-        {
+        let replaced = {
             let parent = state
                 .nodes
                 .get(&target_parent)
@@ -300,8 +315,42 @@ impl Volume for MemoryVolume {
             let MemoryKind::Directory(children) = &parent.kind else {
                 return Err(VfsError::NotDirectory(target_parent_path));
             };
-            if children.contains_key(&target_key) {
+            children.get(&target_key).map(|(_, child)| *child)
+        };
+        if replaced == Some(child) {
+            let MemoryKind::Directory(children) = &mut state
+                .nodes
+                .get_mut(&source_parent)
+                .expect("source parent exists")
+                .kind
+            else {
+                unreachable!()
+            };
+            children.insert(target_key, (target_name, child));
+            return Ok(());
+        }
+        if let Some(replaced) = replaced {
+            if !replace_if_exists {
                 return Err(VfsError::AlreadyExists(target.to_owned()));
+            }
+            match (
+                &state.nodes.get(&child).expect("source child exists").kind,
+                &state
+                    .nodes
+                    .get(&replaced)
+                    .expect("target child exists")
+                    .kind,
+            ) {
+                (MemoryKind::File(_), MemoryKind::Directory(_)) => {
+                    return Err(VfsError::IsDirectory(target.to_owned()));
+                }
+                (MemoryKind::Directory(_), MemoryKind::File(_)) => {
+                    return Err(VfsError::NotDirectory(target.to_owned()));
+                }
+                (_, MemoryKind::Directory(children)) if !children.is_empty() => {
+                    return Err(VfsError::DirectoryNotEmpty(target.to_owned()));
+                }
+                _ => {}
             }
         }
         let MemoryKind::Directory(children) = &mut state
@@ -313,6 +362,18 @@ impl Volume for MemoryVolume {
             unreachable!()
         };
         children.remove(&source_key);
+        if let Some(replaced) = replaced {
+            let MemoryKind::Directory(children) = &mut state
+                .nodes
+                .get_mut(&target_parent)
+                .expect("target parent exists")
+                .kind
+            else {
+                unreachable!()
+            };
+            children.remove(&target_key);
+            state.nodes.remove(&replaced);
+        }
         let MemoryKind::Directory(children) = &mut state
             .nodes
             .get_mut(&target_parent)

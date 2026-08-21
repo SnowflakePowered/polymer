@@ -120,4 +120,12 @@ pub trait Volume<S: PathSemantics = NativePathSemantics>: Send + Sync {
 
     /// Atomically renames two mount-relative paths within this volume.
     fn rename(&self, source: &VfsPath<S>, target: &VfsPath<S>) -> VfsResult<()>;
+
+    /// Atomically renames `source` over `target` within this volume.
+    ///
+    /// Backends which cannot replace an existing target retain their normal
+    /// rename behavior and should return `AlreadyExists`.
+    fn replace(&self, source: &VfsPath<S>, target: &VfsPath<S>) -> VfsResult<()> {
+        self.rename(source, target)
+    }
 }

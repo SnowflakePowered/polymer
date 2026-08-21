@@ -258,6 +258,15 @@ impl PreparedFilesystem {
     }
 
     pub fn rename(&self, source: &VfsPathBuf, target: &VfsPathBuf) -> VfsResult<()> {
+        self.rename_with_options(source, target, false)
+    }
+
+    pub fn rename_with_options(
+        &self,
+        source: &VfsPathBuf,
+        target: &VfsPathBuf,
+        replace_if_exists: bool,
+    ) -> VfsResult<()> {
         if self.compiled.is_mount_point(source)?
             || self.compiled.has_descendant(source)?
             || self.compiled.is_mount_point(target)?
@@ -272,10 +281,17 @@ impl PreparedFilesystem {
         if !Arc::ptr_eq(&source.volume, &target.volume) {
             return Err(VfsError::CrossDevice);
         }
-        source.volume.rename(
-            source.child_relative.as_path(),
-            target.child_relative.as_path(),
-        )
+        if replace_if_exists {
+            source.volume.replace(
+                source.child_relative.as_path(),
+                target.child_relative.as_path(),
+            )
+        } else {
+            source.volume.rename(
+                source.child_relative.as_path(),
+                target.child_relative.as_path(),
+            )
+        }
     }
 
     fn writable_parent(&self, path: &VfsPathBuf) -> VfsResult<WritableParent> {
@@ -546,6 +562,76 @@ mod tests {
                 .remove(&"/A/mounted".parse().unwrap(), RemoveKind::File)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn scratch_files_can_be_atomically_replaced() {
+        let mut plan = FilesystemPlan::default();
+        plan.mount_tree("/Scratch".parse().unwrap(), scratch(), Permissions::ALL);
+        let prepared = Arc::new(plan.seal().unwrap());
+        let host = MockFilesystemHost;
+        let mounted = host.mount(host.allocate_endpoint(), prepared).unwrap();
+        let filesystem = mounted.filesystem();
+        let source = "/Scratch/settings.ini.new".parse().unwrap();
+        let target = "/Scratch/settings.ini".parse().unwrap();
+
+        filesystem
+            .create_file(&source, CreateOptions { exclusive: true })
+            .unwrap();
+        filesystem
+            .open(
+                &source,
+                OpenOptions {
+                    read: false,
+                    write: true,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .write_at(0, b"new")
+            .unwrap();
+        filesystem
+            .create_file(&target, CreateOptions { exclusive: true })
+            .unwrap();
+        filesystem
+            .open(
+                &target,
+                OpenOptions {
+                    read: false,
+                    write: true,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .write_at(0, b"old")
+            .unwrap();
+
+        assert!(matches!(
+            filesystem.rename(&source, &target),
+            Err(VfsError::AlreadyExists(_))
+        ));
+        filesystem
+            .rename_with_options(&source, &target, true)
+            .unwrap();
+
+        let mut contents = [0; 3];
+        filesystem
+            .open(
+                &target,
+                OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .read_at(0, &mut contents)
+            .unwrap();
+        assert_eq!(&contents, b"new");
+        assert!(matches!(
+            filesystem.metadata(&source),
+            Err(VfsError::NotFound(_))
+        ));
     }
 
     #[test]

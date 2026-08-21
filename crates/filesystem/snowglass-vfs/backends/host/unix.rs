@@ -174,6 +174,21 @@ impl Volume for HostVolume {
     }
 
     fn rename(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        self.rename_inner(source, target, false)
+    }
+
+    fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        self.rename_inner(source, target, true)
+    }
+}
+
+impl HostVolume {
+    fn rename_inner(
+        &self,
+        source: &VfsPath,
+        target: &VfsPath,
+        replace_if_exists: bool,
+    ) -> VfsResult<()> {
         VfsError::require_writable(self.inner.writable)?;
         let source = self
             .inner
@@ -187,7 +202,7 @@ impl Volume for HostVolume {
         let target = self
             .inner
             .child(&target_parent, &Self::component(target)?)?;
-        if target.exists() {
+        if !replace_if_exists && target.exists() {
             return Err(VfsError::AlreadyExists(VfsPathBuf::root()));
         }
         fs::rename(source, target)?;
