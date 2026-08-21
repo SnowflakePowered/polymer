@@ -118,15 +118,18 @@ finalization validates both checksums and the active directory/BAT pair. Active 
 are selected using the GameCube signed update-counter rules. Only a coherent logical snapshot is
 atomically reconciled into depots and manifest metadata.
 
-## Shared `MemoryCardView`
+## Shared storage view
 
-`MemoryCardView` should remain console-neutral. It owns the snapshot generation, exclusive writer
-lease, dirty state, reconciliation boundary, and either a projected file or projected tree. The
-GameCube provider owns GCI headers, card geometry, redundant metadata selection, checksums, BAT
-chains, filename escaping, and serial-protected-save handling.
+The public view contains an `Arc<dyn MountableStorage>` namespace and the relative entry to mount.
+For `gci`, that entry is the directory root; for `raw`, it is the card file inside a namespace that
+can also hold atomic-replacement siblings. There is no separate `MemoryCardProjection` or
+`ProjectedTree` abstraction. The storage owns the snapshot generation, exclusive writer lease,
+dirty state, and reconciliation boundary. The GameCube provider owns GCI headers, card geometry,
+redundant metadata selection, checksums, BAT chains, filename escaping, and serial-protected-save
+handling.
 
-An mmap is useful for the raw image but is not part of the contract. The GCI projection is naturally
-implemented as synthetic files backed by depot payloads and manifest records.
+An mmap is useful for the raw file but is not part of the contract. The GCI storage exposes
+synthetic `StorageFile` handles backed by depot payloads and manifest records.
 
 Directory-to-raw and raw-to-directory transparency is guaranteed across validated flushes and
 subsequent launches. Two simultaneous emulator writers still require a single-writer lease.
@@ -135,7 +138,7 @@ subsequent launches. Two simultaneous emulator writers still require a single-wr
 
 1. Add the GameCube card and save metadata records to the manifest database, including a stable
    card header and generation.
-2. Implement GCI parsing/building and the `gci` projected-tree provider.
+2. Implement GCI parsing/building and the `gci` `MountableStorage` provider.
 3. Implement raw header, directory, BAT, checksum, and allocation codecs with fixtures for every
    supported capacity and redundant-copy recovery.
 4. Add GameCube format resolution to `mountMemoryCard(path, { format })` and update Dolphin to mount
