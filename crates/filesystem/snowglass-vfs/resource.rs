@@ -144,7 +144,7 @@ impl PreparedFilesystem {
             let mounted = volume.mount(format.as_deref())?;
             storage_mounts.insert(
                 binding.at().normalized_components()?,
-                MaterializedStorageMount::new(mounted, volume),
+                MaterializedStorageMount::new(mounted, volume, format.as_deref())?,
             );
         }
         *state = Some(MaterializedResources {
@@ -526,7 +526,7 @@ impl PreparedFilesystem {
                 let mounted = self.materialized_storage_mount(binding.at())?;
                 let mut node = mounted.node.clone();
                 let mut namespace_file = mounted.namespace_file.clone();
-                let mut relative = VfsPathBuf::root();
+                let mut relative = mounted.relative.clone();
                 for component in relative_components {
                     relative = relative.as_path().join(&component);
                     let Node::Directory(directory) = node else {
@@ -761,30 +761,38 @@ struct MaterializedStorageMount {
     node: Node,
     namespace_file: Option<Arc<NamespaceFile>>,
     volume: Option<Arc<dyn Volume>>,
+    relative: VfsPathBuf,
 }
 
 impl MaterializedStorageMount {
-    fn new(mounted: crate::VolumeMount, source: Arc<dyn Volume>) -> Self {
-        match mounted.node {
+    fn new(mounted: Node, source: Arc<dyn Volume>, format: Option<&str>) -> VfsResult<Self> {
+        let relative = match format {
+            Some(format) => VfsPathBuf::new(format!("/{format}"))?,
+            None => VfsPathBuf::root(),
+        };
+        Ok(match mounted {
             Node::File(file) => {
                 let file = Arc::new(NamespaceFile::new(file));
                 Self {
                     node: Node::File(file.clone()),
                     namespace_file: Some(file),
                     volume: None,
+                    relative,
                 }
             }
             node @ Node::Directory(_) => Self {
                 node,
                 namespace_file: None,
-                volume: Some(mounted.volume.unwrap_or(source)),
+                volume: Some(source),
+                relative,
             },
             Node::SyntheticDirectory => Self {
                 node: Node::SyntheticDirectory,
                 namespace_file: None,
                 volume: None,
+                relative,
             },
-        }
+        })
     }
 }
 

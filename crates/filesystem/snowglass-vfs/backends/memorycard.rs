@@ -1,12 +1,12 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::Mutex;
 use snowglass_consolestorage::savegame::SaveDepotId;
 use snowglass_consolestorage::{EntryKind, MemoryCard, MemoryCardView};
 
 use crate::{
-    FileNode, FinalizationReason, Materialized, Node, NoopResourceLease, ResourceFactory,
-    ResourceLease, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume, VolumeMount,
+    FileNode, FinalizationReason, Materialized, Node, NoopResourceLease, PathStr, ResourceFactory,
+    ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume,
 };
 
 use super::storage::{materialize_file, materialize_volume, unrestricted};
@@ -108,7 +108,7 @@ where
             card: self.card.clone(),
             primary: self.primary.clone(),
             capacity_blocks: self.capacity_blocks,
-            views: Mutex::new(Vec::new()),
+            views: Mutex::new(HashMap::new()),
         });
         Ok(Materialized {
             backend: volume.clone(),
@@ -121,7 +121,13 @@ struct MemoryCardStorageVolume<M: ?Sized> {
     card: Arc<M>,
     primary: Vec<SaveDepotId>,
     capacity_blocks: u32,
-    views: Mutex<Vec<MemoryCardView>>,
+    views: Mutex<HashMap<String, MountedMemoryCardView>>,
+}
+
+struct MountedMemoryCardView {
+    view: MemoryCardView,
+    node: Node,
+    volume: Option<Arc<dyn Volume>>,
 }
 
 impl<M> Volume for MemoryCardStorageVolume<M>
@@ -134,23 +140,30 @@ where
         ))
     }
 
-    fn mount(&self, format: Option<&str>) -> VfsResult<VolumeMount> {
+    fn mount(&self, format: Option<&str>) -> VfsResult<Node> {
         let format = format
             .ok_or_else(|| VfsError::Unsupported("memory-card storage requires a format".into()))?;
+        let mut views = self.views.lock();
+        if let Some(mounted) = views.get(format) {
+            return Ok(mounted.node.clone());
+        }
         let view = self
             .card
             .view(&self.primary, self.capacity_blocks, format)
             .map_err(|error| VfsError::Unsupported(error.to_string()))?;
-        let mounted = match view.kind() {
-            EntryKind::File => VolumeMount::node(Node::File(
-                materialize_file(
-                    view.storage().clone(),
-                    view.entry().to_owned(),
-                    unrestricted(),
-                    Arc::new(NoopResourceLease),
-                )
-                .backend,
-            )),
+        let (node, volume) = match view.kind() {
+            EntryKind::File => (
+                Node::File(
+                    materialize_file(
+                        view.storage().clone(),
+                        view.entry().to_owned(),
+                        unrestricted(),
+                        Arc::new(NoopResourceLease),
+                    )
+                    .backend,
+                ),
+                None,
+            ),
             EntryKind::Directory => {
                 let volume = materialize_volume(
                     view.storage().clone(),
@@ -159,17 +172,63 @@ where
                     Arc::new(NoopResourceLease),
                 )
                 .backend;
-                VolumeMount::volume(volume)?
+                (Node::Directory(volume.root()?), Some(volume))
             }
         };
-        self.views.lock().push(view);
-        Ok(mounted)
+        views.insert(
+            format.to_owned(),
+            MountedMemoryCardView {
+                view,
+                node: node.clone(),
+                volume,
+            },
+        );
+        Ok(node)
     }
 
-    fn rename(&self, _source: &VfsPath, _target: &VfsPath) -> VfsResult<()> {
-        Err(VfsError::Unsupported(
-            "a memory-card storage root cannot be mutated".into(),
-        ))
+    fn rename(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        let (source_volume, source) = self.route(source)?;
+        let (target_volume, target) = self.route(target)?;
+        if !Arc::ptr_eq(&source_volume, &target_volume) {
+            return Err(VfsError::CrossDevice);
+        }
+        source_volume.rename(source.as_path(), target.as_path())
+    }
+
+    fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        let (source_volume, source) = self.route(source)?;
+        let (target_volume, target) = self.route(target)?;
+        if !Arc::ptr_eq(&source_volume, &target_volume) {
+            return Err(VfsError::CrossDevice);
+        }
+        source_volume.replace(source.as_path(), target.as_path())
+    }
+
+    fn detach(&self, source: &VfsPath) -> VfsResult<()> {
+        let (volume, source) = self.route(source)?;
+        volume.detach(source.as_path())
+    }
+}
+
+impl<M: ?Sized> MemoryCardStorageVolume<M> {
+    fn route(&self, path: &VfsPath) -> VfsResult<(Arc<dyn Volume>, VfsPathBuf)> {
+        let mut components = path.components();
+        let format = components.next().ok_or_else(|| {
+            VfsError::Unsupported("a memory-card storage root cannot be mutated".into())
+        })?;
+        let format = format.to_string_lossy();
+        let volume = self
+            .views
+            .lock()
+            .get(format.as_ref() as &str)
+            .and_then(|mounted| mounted.volume.clone())
+            .ok_or_else(|| VfsError::NotDirectory(path.to_owned()))?;
+        let mut relative = VfsPathBuf::root();
+        for component in components {
+            let component = VfsComponent::from_units(PathStr::as_slice(component).to_vec())?;
+            relative = relative.as_path().join(&component);
+        }
+        Ok((volume, relative))
     }
 }
 
@@ -181,7 +240,13 @@ where
         if reason == FinalizationReason::LaunchFailed {
             return;
         }
-        for view in self.views.lock().iter() {
+        let views = self
+            .views
+            .lock()
+            .values()
+            .map(|mounted| mounted.view.clone())
+            .collect::<Vec<_>>();
+        for view in views {
             if view.kind() == EntryKind::File {
                 let _ = view.storage().sync(view.entry());
             }
