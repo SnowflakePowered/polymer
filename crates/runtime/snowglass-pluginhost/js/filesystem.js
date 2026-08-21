@@ -8,6 +8,7 @@ import {
   op_vfs_mount_file_resource,
   op_vfs_mount_file_text,
   op_vfs_mount_scratch,
+  op_vfs_mount_storage,
   op_vfs_mount_tree_pkg,
   op_vfs_mount_tree_resource,
   op_vfs_path,
@@ -112,7 +113,14 @@ const filesystem = Object.freeze({
       throw new TypeError("mountStorage source must be a storage resource");
     }
     const handle = handles.get(source);
-    op_vfs_mount_tree_resource(target, handle.kind, handle.handle, permissions);
+    const format = options.format;
+    if (format !== undefined && typeof format !== "string") {
+      throw new TypeError("mountStorage format must be a string");
+    }
+    op_vfs_mount_storage(target, handle.kind, handle.handle, {
+      mode: permissions,
+      ...(format === undefined ? {} : { format }),
+    });
   },
 
   mountScratch(target, options) {

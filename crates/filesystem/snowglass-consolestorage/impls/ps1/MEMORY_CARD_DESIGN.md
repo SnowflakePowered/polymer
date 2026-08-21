@@ -98,7 +98,10 @@ card through WinFSP. It temporarily mounts the supplied NAND at `/User/memcards`
 capability exists, it should request the raw projection explicitly:
 
 ```ts
-args.filesystem.mountMemoryCard("/User/memcards/snowglass.mcd", { format: "raw" });
+args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1, {
+  mode: "rw",
+  format: "raw",
+});
 ```
 
 DuckStation continues to see the same path; only the plugin capability changes.

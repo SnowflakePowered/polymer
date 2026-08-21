@@ -110,10 +110,12 @@ impl PreparedFilesystem {
         }
         let mut volumes = HashMap::new();
         let mut files = HashMap::new();
+        let mut storage_mounts = HashMap::new();
         let mut leases = Vec::new();
         for binding in self.compiled.bindings() {
             match binding.kind() {
-                crate::BindingKind::Tree(resource) => {
+                crate::BindingKind::Tree(resource)
+                | crate::BindingKind::Storage { resource, .. } => {
                     let key = resource_key(resource);
                     if let std::collections::hash_map::Entry::Vacant(entry) = volumes.entry(key) {
                         let value = resource.materialize()?;
@@ -131,9 +133,24 @@ impl PreparedFilesystem {
                 }
             }
         }
+        for binding in self.compiled.bindings() {
+            let crate::BindingKind::Storage { resource, format } = binding.kind() else {
+                continue;
+            };
+            let volume = volumes
+                .get(&resource_key(resource))
+                .cloned()
+                .ok_or(VfsError::StaleNode)?;
+            let mounted = volume.mount(format.as_deref())?;
+            storage_mounts.insert(
+                binding.at().normalized_components()?,
+                MaterializedStorageMount::new(mounted, volume),
+            );
+        }
         *state = Some(MaterializedResources {
             volumes,
             files,
+            storage_mounts,
             tree_files: HashMap::new(),
             leases,
             finalized: false,
@@ -328,10 +345,11 @@ impl PreparedFilesystem {
         if !target_binding.permissions().can_write() {
             return Err(VfsError::PermissionDenied(target.clone()));
         }
-        let crate::BindingKind::File(resource) = target_binding.kind() else {
+        let target_node = self.resolve_node(target)?;
+        if !matches!(target_node.node, Node::File(_)) {
             return Err(VfsError::IsDirectory(target.clone()));
-        };
-        let target_file = self.materialized_file(resource)?;
+        }
+        let target_file = target_node.namespace_file.ok_or(VfsError::StaleNode)?;
         let adoption = source_file.prepare_adoption(&target_file)?;
 
         source_parent
@@ -344,7 +362,23 @@ impl PreparedFilesystem {
         resources
             .tree_files
             .remove(&source.normalized_components()?);
-        resources.files.insert(resource_key(resource), source_file);
+        match target_binding.kind() {
+            crate::BindingKind::File(resource) => {
+                resources.files.insert(resource_key(resource), source_file);
+            }
+            crate::BindingKind::Storage { .. } => {
+                let mounted = resources
+                    .storage_mounts
+                    .get_mut(&target.normalized_components()?)
+                    .ok_or(VfsError::StaleNode)?;
+                mounted.node = Node::File(source_file.clone());
+                mounted.namespace_file = Some(source_file);
+                mounted.volume = None;
+            }
+            crate::BindingKind::Tree(_) => {
+                return Err(VfsError::IsDirectory(target.clone()));
+            }
+        }
         Ok(())
     }
 
@@ -488,6 +522,38 @@ impl PreparedFilesystem {
                     permissions,
                 })
             }
+            crate::BindingKind::Storage { .. } => {
+                let mounted = self.materialized_storage_mount(binding.at())?;
+                let mut node = mounted.node.clone();
+                let mut namespace_file = mounted.namespace_file.clone();
+                let mut relative = VfsPathBuf::root();
+                for component in relative_components {
+                    relative = relative.as_path().join(&component);
+                    let Node::Directory(directory) = node else {
+                        return Err(VfsError::NotDirectory(path.clone()));
+                    };
+                    match directory.lookup(&component)? {
+                        Some(found) => node = found,
+                        None if self.compiled.has_descendant(path)? => {
+                            return Ok(ResolvedNode::synthetic());
+                        }
+                        None => return Err(VfsError::NotFound(path.clone())),
+                    }
+                    namespace_file = None;
+                }
+                if let Node::File(file) = node {
+                    let file = namespace_file.unwrap_or(self.remember_tree_file(path, file)?);
+                    node = Node::File(file.clone());
+                    namespace_file = Some(file);
+                }
+                Ok(ResolvedNode {
+                    node,
+                    namespace_file,
+                    volume: mounted.volume.clone(),
+                    relative: mounted.volume.as_ref().map(|_| relative),
+                    permissions,
+                })
+            }
         }
     }
 
@@ -515,6 +581,17 @@ impl PreparedFilesystem {
             .ok_or_else(not_materialized)?
             .files
             .get(&resource_key(resource))
+            .cloned()
+            .ok_or(VfsError::StaleNode)
+    }
+
+    fn materialized_storage_mount(&self, at: &VfsPathBuf) -> VfsResult<MaterializedStorageMount> {
+        self.materialized
+            .lock()
+            .as_ref()
+            .ok_or_else(not_materialized)?
+            .storage_mounts
+            .get(&at.normalized_components()?)
             .cloned()
             .ok_or(VfsError::StaleNode)
     }
@@ -673,9 +750,42 @@ impl Drop for PreparedFilesystem {
 struct MaterializedResources {
     volumes: HashMap<usize, Arc<dyn Volume>>,
     files: HashMap<usize, Arc<NamespaceFile>>,
+    storage_mounts: HashMap<Vec<Vec<VfsPathUnit>>, MaterializedStorageMount>,
     tree_files: HashMap<Vec<Vec<VfsPathUnit>>, Arc<NamespaceFile>>,
     leases: Vec<Arc<dyn ResourceLease>>,
     finalized: bool,
+}
+
+#[derive(Clone)]
+struct MaterializedStorageMount {
+    node: Node,
+    namespace_file: Option<Arc<NamespaceFile>>,
+    volume: Option<Arc<dyn Volume>>,
+}
+
+impl MaterializedStorageMount {
+    fn new(mounted: crate::VolumeMount, source: Arc<dyn Volume>) -> Self {
+        match mounted.node {
+            Node::File(file) => {
+                let file = Arc::new(NamespaceFile::new(file));
+                Self {
+                    node: Node::File(file.clone()),
+                    namespace_file: Some(file),
+                    volume: None,
+                }
+            }
+            node @ Node::Directory(_) => Self {
+                node,
+                namespace_file: None,
+                volume: Some(mounted.volume.unwrap_or(source)),
+            },
+            Node::SyntheticDirectory => Self {
+                node: Node::SyntheticDirectory,
+                namespace_file: None,
+                volume: None,
+            },
+        }
+    }
 }
 
 impl MaterializedResources {

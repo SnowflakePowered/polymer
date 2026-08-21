@@ -159,9 +159,11 @@ impl FilesystemState {
         }
         for (name, factory) in options.storage {
             let origin = ResourceOrigin::Other(format!("storage:{name}"));
-            let handle = ResourceHandle::Tree(
-                state.insert_volume(Resource::new(factory, Permissions::ALL, origin)),
-            );
+            let handle = ResourceHandle::Tree(state.insert_volume(Resource::new(
+                factory,
+                Permissions::ALL,
+                origin,
+            )));
             state.storage.insert(name, handle);
         }
         Ok(state)
@@ -309,6 +311,28 @@ impl FilesystemState {
         }
     }
 
+    fn storage_handle(
+        &self,
+        kind: &str,
+        token: &str,
+    ) -> Result<Handle<Resource<dyn snowglass_vfs::Volume>>, VfsError> {
+        if kind != "storage" {
+            return Err(invalid_handle());
+        }
+        let token = u64::from_str_radix(token, 16).map_err(|_| invalid_handle())?;
+        let handle = Handle::from_raw(token);
+        self.volume(handle)?;
+        if self
+            .storage
+            .values()
+            .any(|candidate| matches!(candidate, ResourceHandle::Tree(candidate) if *candidate == handle))
+        {
+            Ok(handle)
+        } else {
+            Err(invalid_handle())
+        }
+    }
+
     fn seal(self) -> Result<Option<PreparedFilesystemLaunch>, VfsError> {
         if !self.used {
             return Ok(None);
@@ -344,6 +368,17 @@ impl JsResource {
             },
         }
     }
+
+    fn storage(name: String, handle: ResourceHandle) -> Self {
+        let ResourceHandle::Tree(handle) = handle else {
+            unreachable!("storage resources are volume factories")
+        };
+        Self {
+            name: Some(name),
+            kind: "storage",
+            handle: handle.to_string(),
+        }
+    }
 }
 
 fn js_error(error: impl std::fmt::Display) -> JsErrorBox {
@@ -372,7 +407,7 @@ fn op_vfs_storage(state: &mut OpState) -> Vec<JsResource> {
         .borrow::<FilesystemState>()
         .storage
         .iter()
-        .map(|(name, handle)| JsResource::new(Some(name.clone()), *handle))
+        .map(|(name, handle)| JsResource::storage(name.clone(), *handle))
         .collect()
 }
 
@@ -532,6 +567,35 @@ fn op_vfs_mount_tree_resource(
         VfsPathBuf::new(target).map_err(js_error)?,
         resource,
         permissions,
+    );
+    vfs.used = true;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsStorageMount {
+    mode: String,
+    format: Option<String>,
+}
+
+#[op2]
+fn op_vfs_mount_storage(
+    state: &mut OpState,
+    #[string] target: String,
+    #[string] kind: String,
+    #[string] token: String,
+    #[serde] options: JsStorageMount,
+) -> Result<(), JsErrorBox> {
+    let permissions = Permissions::from_str(&options.mode).map_err(js_error)?;
+    let vfs = state.borrow_mut::<FilesystemState>();
+    let handle = vfs.storage_handle(&kind, &token).map_err(js_error)?;
+    let resource = vfs.volume(handle).map_err(js_error)?;
+    vfs.plan.mount_storage(
+        VfsPathBuf::new(target).map_err(js_error)?,
+        resource,
+        permissions,
+        options.format,
     );
     vfs.used = true;
     Ok(())
@@ -734,8 +798,8 @@ deno_core::extension!(snowglass_filesystem,
         op_vfs_resources, op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
-        op_vfs_mount_scratch, op_vfs_storage, op_vfs_path, op_vfs_set_working_directory,
-        op_vfs_set_profile,
+        op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_storage, op_vfs_path,
+        op_vfs_set_working_directory, op_vfs_set_profile,
     ],
     esm_entry_point = "ext:snowglass_filesystem/filesystem.js",
     esm = [dir "js", "filesystem.js"],
@@ -847,5 +911,59 @@ mod tests {
         let prepared = take_prepared(&mut runtime).unwrap().unwrap();
         assert_eq!(prepared.filesystem().compiled().bindings().len(), 1);
         assert!(cache_path.is_dir());
+    }
+
+    #[test]
+    fn javascript_mount_storage_preserves_root_and_format_requests() {
+        fn runtime_with_storage(package: &Path) -> JsRuntime {
+            let mut options = FilesystemOptions::new(package.to_owned());
+            options.storage.insert(
+                "card1".into(),
+                Arc::new(ScratchVolumeFactory::new(ScratchBacking::Memory)),
+            );
+            JsRuntime::new(deno_core::RuntimeOptions {
+                extensions: vec![extension(options)],
+                ..Default::default()
+            })
+        }
+
+        let package = tempfile::tempdir().unwrap();
+        let mut root = runtime_with_storage(package.path());
+        root.execute_script(
+            "snowglass:test/storage-root.js",
+            r#"
+                const card = __snowglassFilesystem.storage.card1;
+                __snowglassFilesystem.filesystem.mountStorage(
+                  "/Storage", card, { mode: "rwx" });
+            "#,
+        )
+        .unwrap();
+        let prepared = take_prepared(&mut root).unwrap().unwrap();
+        assert!(matches!(
+            prepared.filesystem().compiled().bindings()[0].kind(),
+            snowglass_vfs::BindingKind::Storage { format: None, .. }
+        ));
+        prepared.filesystem().materialize().unwrap();
+
+        let mut formatted = runtime_with_storage(package.path());
+        formatted
+            .execute_script(
+                "snowglass:test/storage-format.js",
+                r#"
+                    const card = __snowglassFilesystem.storage.card1;
+                    __snowglassFilesystem.filesystem.mountStorage(
+                      "/Storage/card.mcd", card, { mode: "rw", format: "raw" });
+                "#,
+            )
+            .unwrap();
+        let prepared = take_prepared(&mut formatted).unwrap().unwrap();
+        assert!(matches!(
+            prepared.filesystem().compiled().bindings()[0].kind(),
+            snowglass_vfs::BindingKind::Storage { format: Some(format), .. } if format == "raw"
+        ));
+        assert!(matches!(
+            prepared.filesystem().materialize(),
+            Err(VfsError::Unsupported(reason)) if reason.contains("does not support")
+        ));
     }
 }
