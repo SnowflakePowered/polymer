@@ -8,8 +8,14 @@ database. The same state can be projected either as Dolphin's GCI folder or as a
 memory-card image:
 
 ```ts
-args.filesystem.mountMemoryCard("/MemoryCard/USA", { format: "gci" });
-args.filesystem.mountMemoryCard("/MemoryCard/MemoryCardA.USA.raw", { format: "raw" });
+args.filesystem.mountStorage("/MemoryCard/USA", args.storage.card1, {
+  mode: "rwx",
+  format: "gci",
+});
+args.filesystem.mountStorage("/MemoryCard/MemoryCardA.USA.raw", args.storage.card1, {
+  mode: "rw",
+  format: "raw",
+});
 ```
 
 `gci` is a directory projection and `raw` is a file projection. Both can be served through the
@@ -142,7 +148,7 @@ subsequent launches. Two simultaneous emulator writers still require a single-wr
 2. Implement GCI parsing/building and the `gci` `MountableStorage` provider.
 3. Implement raw header, directory, BAT, checksum, and allocation codecs with fixtures for every
    supported capacity and redundant-copy recovery.
-4. Add GameCube format resolution to `mountMemoryCard(path, { format })` and update Dolphin to mount
+4. Add GameCube format resolution to `mountStorage(path, card, { format })` and update Dolphin to mount
    `gci` instead of the temporary scratch tree. Format selection belongs to the emulator plugin;
    it is not inferred from the path or canonical depot.
 5. Reconcile GCI files independently and raw images transactionally, publishing save changes only

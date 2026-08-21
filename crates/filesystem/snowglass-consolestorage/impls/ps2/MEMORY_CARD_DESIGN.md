@@ -11,8 +11,15 @@ Projection metadata belongs in the manifest database. A plugin asks for the repr
 emulator consumes; the memory-card capability owns translation and metadata:
 
 ```ts
-args.filesystem.mountMemoryCard("/User/memcards/Mcd001.ps2", { format: "pcsx2" });
-args.filesystem.mountMemoryCard("/User/system/pcsx2/memcards/Mcd001.ps2", { format: "raw" });
+args.filesystem.mountStorage("/User/memcards/Mcd001.ps2", args.storage.card1, {
+  mode: "rwx",
+  format: "pcsx2",
+});
+args.filesystem.mountStorage(
+  "/User/system/pcsx2/memcards/Mcd001.ps2",
+  args.storage.card1,
+  { mode: "rw", format: "raw" },
+);
 ```
 
 Both projections can be served through Snowglass's WinFSP namespace and operate on the same
@@ -149,11 +156,15 @@ Artifact-registry, volume identity, and branding operations live on the
 `Storage`, so canonical memory cards can be named without pretending to be managed volumes.
 Memory-card views implement only `MountableStorage` and forward the card label where appropriate.
 
-At the plugin boundary, the launch supplies exactly one authorized memory-card capability.
-`mountMemoryCard` accepts only a target path and projection format:
+At the plugin boundary, the launch supplies authorized memory cards as ordinary storage
+capabilities. `mountStorage` requires a projection format for a memory-card source:
 
 ```ts
-mountMemoryCard(target: string, options: { format: "raw" | "pcsx2" }): void;
+mountStorage(
+  target: string,
+  source: Storage,
+  options: { mode: string, format: "raw" | "pcsx2" },
+): void;
 ```
 
 The operation asks the assigned card to resolve the format, looks up the view's `entry`, and mounts
@@ -199,8 +210,7 @@ flush/close and subsequent launches, not between two concurrent emulator process
    open-handle observer transfer, and finalize-on-lease behavior.
 2. Implement the PS2 parser/builder in Snowglass, using the debug crate only as a test oracle.
 3. Add manifest tables and transactions for console metadata and format-specific projection state.
-4. Add the pluginhost `mountMemoryCard(path, { format })` capability and resolve the requested
-   format against the invocation-assigned card.
+4. Resolve the format supplied to pluginhost `mountStorage` against the invocation-assigned card.
 5. Implement the PCSX2 directory projection without writing reserved `_pcsx2_*` files into save
    depots, with fixtures for ordering, timestamps, nonstandard modes, empty files, deletion, and
    full-card behavior.

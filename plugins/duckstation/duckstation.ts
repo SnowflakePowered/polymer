@@ -7,7 +7,7 @@ type Filesystem = {
     mountHostTree(target: string, source: string, options: { mode: string }): void,
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
-    mountStorage(target: string, source: Resource, options: { mode: string }): void,
+    mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
@@ -47,7 +47,10 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User/generated", { mode: "rwx", backing: "temporary" });
     if (args.storage.card1) {
-        args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1, { mode: "rw" });
+        args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1, {
+            mode: "rw",
+            format: "raw",
+        });
     } else {
         args.filesystem.mountScratch("/User/memcards", { mode: "rwx", backing: "temporary" });
     }

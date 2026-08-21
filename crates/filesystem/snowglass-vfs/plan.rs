@@ -16,6 +16,10 @@ pub struct ProfileLayout {
 pub enum BindingKind {
     Tree(Arc<Resource<dyn Volume>>),
     File(Arc<Resource<dyn FileNode>>),
+    Storage {
+        resource: Arc<Resource<dyn Volume>>,
+        format: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -30,18 +34,26 @@ pub enum BindingSpec {
         resource: Arc<Resource<dyn FileNode>>,
         permissions: Permissions,
     },
+    Storage {
+        at: VfsPathBuf,
+        resource: Arc<Resource<dyn Volume>>,
+        permissions: Permissions,
+        format: Option<String>,
+    },
 }
 
 impl BindingSpec {
     pub fn at(&self) -> &VfsPathBuf {
         match self {
-            Self::Tree { at, .. } | Self::File { at, .. } => at,
+            Self::Tree { at, .. } | Self::File { at, .. } | Self::Storage { at, .. } => at,
         }
     }
 
     pub const fn permissions(&self) -> Permissions {
         match self {
-            Self::Tree { permissions, .. } | Self::File { permissions, .. } => *permissions,
+            Self::Tree { permissions, .. }
+            | Self::File { permissions, .. }
+            | Self::Storage { permissions, .. } => *permissions,
         }
     }
 
@@ -49,6 +61,12 @@ impl BindingSpec {
         match self {
             Self::Tree { resource, .. } => BindingKind::Tree(resource.clone()),
             Self::File { resource, .. } => BindingKind::File(resource.clone()),
+            Self::Storage {
+                resource, format, ..
+            } => BindingKind::Storage {
+                resource: resource.clone(),
+                format: format.clone(),
+            },
         }
     }
 }
@@ -94,6 +112,21 @@ impl FilesystemPlan {
             at,
             resource,
             permissions,
+        });
+    }
+
+    pub fn mount_storage(
+        &mut self,
+        at: VfsPathBuf,
+        resource: Arc<Resource<dyn Volume>>,
+        permissions: Permissions,
+        format: Option<String>,
+    ) {
+        self.bindings.push(BindingSpec::Storage {
+            at,
+            resource,
+            permissions,
+            format,
         });
     }
 
@@ -156,6 +189,7 @@ impl CompiledFilesystem {
             let authority = match spec.kind() {
                 BindingKind::Tree(resource) => resource.authority(),
                 BindingKind::File(resource) => resource.authority(),
+                BindingKind::Storage { resource, .. } => resource.authority(),
             };
             if !authority.contains(spec.permissions()) {
                 return Err(VfsError::AuthorityExceeded {
@@ -243,8 +277,10 @@ impl CompiledFilesystem {
         let normalized = path.normalized_components()?;
         Ok(self.bindings.iter().rev().find(|binding| {
             normalized.starts_with(&binding.normalized)
-                && (matches!(binding.kind, BindingKind::Tree(_))
-                    || normalized.len() == binding.normalized.len())
+                && (matches!(
+                    binding.kind,
+                    BindingKind::Tree(_) | BindingKind::Storage { .. }
+                ) || normalized.len() == binding.normalized.len())
         }))
     }
 
@@ -287,6 +323,8 @@ impl CompiledFilesystem {
                 match binding.kind {
                     BindingKind::Tree(_) => FileKind::Directory,
                     BindingKind::File(_) => FileKind::File,
+                    // Storage roots are resolved after their volume is materialized.
+                    BindingKind::Storage { .. } => FileKind::Directory,
                 }
             } else {
                 FileKind::Directory
@@ -305,7 +343,10 @@ fn resolve_binding<'a>(
         .rev()
         .find_map(|depth| indexed.get(&path[..depth]))
         .filter(|binding| {
-            matches!(binding.kind, BindingKind::Tree(_)) || binding.normalized.len() == path.len()
+            matches!(
+                binding.kind,
+                BindingKind::Tree(_) | BindingKind::Storage { .. }
+            ) || binding.normalized.len() == path.len()
         })
 }
 
@@ -318,7 +359,14 @@ fn ensure_projected_directory(
         return Ok(());
     }
     match resolve_binding(path, indexed) {
-        Some(binding) if matches!(binding.kind, BindingKind::Tree(_)) => Ok(()),
+        Some(binding)
+            if matches!(
+                binding.kind,
+                BindingKind::Tree(_) | BindingKind::Storage { .. }
+            ) =>
+        {
+            Ok(())
+        }
         Some(_) => Err(VfsError::NotDirectory(original.clone())),
         None if indexed
             .keys()

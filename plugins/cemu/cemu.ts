@@ -19,7 +19,7 @@ type Filesystem = {
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
-    mountStorage(target: string, source: Resource, options: { mode: string }): void,
+    mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
     setProfile(profile: {
