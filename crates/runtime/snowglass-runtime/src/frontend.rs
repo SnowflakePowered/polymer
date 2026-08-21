@@ -4,6 +4,7 @@
 //! mechanics such as presentation, input routing, and window attachment.
 
 use crate::ConfigurationDefaults;
+use parking_lot::Mutex;
 use serde_json::Value;
 use snowglass_deno::snowglass::{ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost};
 use snowglass_library::StorageManager;
@@ -11,7 +12,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -237,13 +238,13 @@ struct PreparedFilesystemStoreInner {
 impl PreparedFilesystemStore {
     fn insert(&self, filesystem: snowglass_vfs::PreparedFilesystemLaunch) -> String {
         let token = self.0.next.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        self.0.filesystems.lock().unwrap().insert(token, filesystem);
+        self.0.filesystems.lock().insert(token, filesystem);
         format!("{token:016x}")
     }
 
     fn take(&self, token: &str) -> Option<snowglass_vfs::PreparedFilesystemLaunch> {
         let token = u64::from_str_radix(token, 16).ok()?;
-        self.0.filesystems.lock().unwrap().remove(&token)
+        self.0.filesystems.lock().remove(&token)
     }
 
     fn release(&self, token: &str) -> bool {
