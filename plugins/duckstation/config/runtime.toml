@@ -1,0 +1,71 @@
+[targets.settings.Folders]
+[targets.settings.InputSources]
+
+[sections.folders]
+title = "Folders"
+target = "settings.Folders"
+
+[[sections.folders.options]]
+key = "cache"
+title = "Cache"
+type = "path"
+emit = { key = "Cache" }
+
+[[sections.folders.options]]
+key = "cheats"
+title = "Cheats"
+type = "path"
+emit = { key = "Cheats" }
+
+[[sections.folders.options]]
+key = "game_settings"
+title = "Game Settings"
+type = "path"
+emit = { key = "GameSettings" }
+
+[[sections.folders.options]]
+key = "input_profiles"
+title = "Input Profiles"
+type = "path"
+emit = { key = "InputProfiles" }
+
+[[sections.folders.options]]
+key = "patches"
+title = "Patches"
+type = "path"
+emit = { key = "Patches" }
+
+[[sections.folders.options]]
+key = "save_states"
+title = "Save States"
+type = "path"
+emit = { key = "SaveStates" }
+
+[[sections.folders.options]]
+key = "screenshots"
+title = "Screenshots"
+type = "path"
+emit = { key = "Screenshots" }
+
+[[sections.folders.options]]
+key = "textures"
+title = "Textures"
+type = "path"
+emit = { key = "Textures" }
+
+[[sections.folders.options]]
+key = "user_resources"
+title = "User Resources"
+type = "path"
+emit = { key = "UserResources" }
+
+[sections.input_sources]
+title = "Input Sources"
+target = "settings.InputSources"
+
+[[sections.input_sources.options]]
+key = "sdl"
+title = "SDL"
+type = "bool"
+default = true
+emit = { key = "SDL", bool_style = "lower" }

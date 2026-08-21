@@ -6,6 +6,30 @@ title = "MemoryCards"
 target = "settings.MemoryCards"
 
 [[sections.memorycards.options]]
+key = "card1_type"
+title = "Card 1 Type"
+type = "string"
+emit = { key = "Card1Type" }
+
+[[sections.memorycards.options]]
+key = "card1_path"
+title = "Card 1 Path"
+type = "string"
+emit = { key = "Card1Path" }
+
+[[sections.memorycards.options]]
+key = "card2_type"
+title = "Card 2 Type"
+type = "string"
+emit = { key = "Card2Type" }
+
+[[sections.memorycards.options]]
+key = "directory"
+title = "Directory"
+type = "path"
+emit = { key = "Directory" }
+
+[[sections.memorycards.options]]
 key = "fast_forward_access"
 title = "Fast Forward Access"
 type = "bool"

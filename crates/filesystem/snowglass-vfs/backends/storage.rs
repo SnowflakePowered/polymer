@@ -289,12 +289,14 @@ impl FileNode for StorageFileNode {
                 "the storage file does not accept source-node adoption".into(),
             ));
         }
-        Ok(Arc::new(StorageFileAdoption {
+        let adoption = Arc::new(StorageFileAdoption {
             storage: self.storage.clone(),
             path: self.path.clone(),
             source,
             finalizing: Mutex::new(()),
-        }))
+        });
+        adoption.finalize()?;
+        Ok(adoption)
     }
 }
 

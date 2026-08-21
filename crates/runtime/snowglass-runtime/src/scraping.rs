@@ -9,6 +9,8 @@ pub struct ScrapedPackage {
     pub path: PathBuf,
     pub name: String,
     pub platform: String,
+    pub serial: Option<String>,
+    pub title_id: Option<String>,
 }
 
 impl ScrapedPackage {
@@ -33,6 +35,8 @@ impl ScrapedPackage {
                 platform: format!("{:?}", package.platform()),
             }
         })?;
+        let serial = package.serial().map(str::to_owned);
+        let title_id = package.titleid();
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -42,6 +46,8 @@ impl ScrapedPackage {
             path,
             name,
             platform: platform.to_owned(),
+            serial,
+            title_id,
         })
     }
 }

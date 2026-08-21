@@ -6,6 +6,18 @@ title = "BIOS"
 target = "settings.BIOS"
 
 [[sections.bios.options]]
+key = "search_directory"
+title = "Search Directory"
+type = "path"
+emit = { key = "SearchDirectory" }
+
+[[sections.bios.options]]
+key = "path_ntscu"
+title = "NTSC-U BIOS"
+type = "string"
+emit = { key = "PathNTSCU" }
+
+[[sections.bios.options]]
 key = "fast_forward_boot"
 title = "Fast Forward Boot"
 type = "bool"

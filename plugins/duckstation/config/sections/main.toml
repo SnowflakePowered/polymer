@@ -6,6 +6,20 @@ title = "Main"
 target = "settings.Main"
 
 [[sections.main.options]]
+key = "settings_version"
+title = "Settings Version"
+type = "int"
+default = 3
+emit = { key = "SettingsVersion" }
+
+[[sections.main.options]]
+key = "setup_wizard_incomplete"
+title = "Setup Wizard Incomplete"
+type = "bool"
+default = false
+emit = { key = "SetupWizardIncomplete", bool_style = "lower" }
+
+[[sections.main.options]]
 key = "apply_compatibility_settings"
 title = "Apply Compatibility Settings"
 type = "bool"

@@ -20,6 +20,7 @@ main = "duckstation.ts"
 [emulator.configuration]
 definitions = [
     "config/duckstation.toml",
+    "config/runtime.toml",
     "config/input.toml",
     "config/sections/*.toml",
 ]

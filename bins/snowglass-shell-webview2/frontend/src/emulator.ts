@@ -80,7 +80,15 @@ export interface ScrapedPackage {
   readonly path: string;
   readonly name: string;
   readonly platform: string;
-  toJSON(): Readonly<{ path: string; name: string; platform: string }>;
+  readonly serial: string | null;
+  readonly titleId: string | null;
+  toJSON(): Readonly<{
+    path: string;
+    name: string;
+    platform: string;
+    serial: string | null;
+    titleId: string | null;
+  }>;
 }
 
 export interface ScrapingApi extends EventTarget {
