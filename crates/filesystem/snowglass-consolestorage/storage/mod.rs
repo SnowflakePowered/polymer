@@ -46,7 +46,6 @@ pub struct Metadata {
     pub mtime: jiff::Timestamp,
 }
 
-/// What [`Storage::install_file`] wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstallResult {
     pub blake3: [u8; 32],
@@ -55,16 +54,12 @@ pub struct InstallResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
-    /// The leaf name.
     pub name: String,
-    /// Where the entry lives, relative to the storage root.
     pub path: String,
     pub kind: EntryKind,
 }
 
-/// A directory listing. Backends produce [`ReadDir::Surface`] for one level;
-/// [`ReadDir::Recursive`] walks those listings depth first, so recursion is
-/// shared rather than reimplemented per backend.
+/// A directory listing.
 pub enum ReadDir<'a> {
     Surface {
         entries: Box<dyn Iterator<Item = DirEntry> + Send + 'a>,
@@ -83,7 +78,6 @@ impl<'a> ReadDir<'a> {
         }
     }
 
-    /// Walk everything under `root`, driving the backend one level at a time.
     pub fn recursive(storage: &'a dyn Storage, root: &str) -> Result<Self, Error> {
         Ok(Self::Recursive {
             storage,
@@ -129,7 +123,6 @@ impl Iterator for ReadDir<'_> {
     }
 }
 
-/// A hint that something under a watched path may have changed.
 pub trait ChangeSignal: Send + Sync {
     fn changed(&self) -> BoxFuture<'_, ()>;
 }
@@ -383,6 +376,33 @@ impl Storage for DirectoryStorage {
         }
     }
 
+    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
+        let signal = Arc::new(Notify::new());
+        let notifier = Arc::clone(&signal);
+
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+            // Ignore aaccess events
+            if event.is_ok_and(|event| event.kind.is_access()) {
+                return;
+            }
+
+            notifier.notify_one();
+        })
+        .map_err(|e|  Error::io(&self.root, std::io::Error::other(e)))?;
+
+        for path in paths {
+            let resolved = self.resolve(path)?;
+            watcher
+                .watch(&resolved, RecursiveMode::Recursive)
+                .map_err(|e| Error::io(&self.root, std::io::Error::other(e)))?;
+        }
+
+        Ok(Some(Box::new(DirectoryWatch {
+            _watcher: watcher,
+            signal,
+        })))
+    }
+
     fn artifacts(&self) -> &dyn ArtifactRegistry {
         &self.artifacts
     }
@@ -412,33 +432,6 @@ impl Storage for DirectoryStorage {
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
         self.artifacts.set_label(label)
-    }
-
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        let signal = Arc::new(Notify::new());
-        let notifier = Arc::clone(&signal);
-
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
-            // Ignore aaccess events
-            if event.is_ok_and(|event| event.kind.is_access()) {
-                return;
-            }
-
-            notifier.notify_one();
-        })
-        .map_err(|e|  Error::io(&self.root, std::io::Error::other(e)))?;
-
-        for path in paths {
-            let resolved = self.resolve(path)?;
-            watcher
-                .watch(&resolved, RecursiveMode::Recursive)
-                .map_err(|e| Error::io(&self.root, std::io::Error::other(e)))?;
-        }
-
-        Ok(Some(Box::new(DirectoryWatch {
-            _watcher: watcher,
-            signal,
-        })))
     }
 
     fn install_file<'a>(
