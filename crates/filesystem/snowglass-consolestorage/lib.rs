@@ -3,7 +3,6 @@ pub mod impls;
 pub mod installable;
 pub mod structure;
 
-mod memorycard;
 pub mod nand;
 pub mod savegame;
 mod storage;
