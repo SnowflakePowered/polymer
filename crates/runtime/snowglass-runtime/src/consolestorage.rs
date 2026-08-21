@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use snowglass_deno::snowglass::ConsoleStorageRequest;
-use snowglass_library::{Directories, NandMetadata, StorageManager, VirtualNand};
+use snowglass_library::{Directories, NandMetadata, StorageManager};
 use uuid::Uuid;
 
 pub fn manager() -> Option<Arc<StorageManager>> {

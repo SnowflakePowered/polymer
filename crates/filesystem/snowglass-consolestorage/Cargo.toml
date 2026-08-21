@@ -8,6 +8,7 @@ license.workspace = true
 path = "lib.rs"
 
 [dependencies]
+async-trait.workspace = true
 thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["tga"] }
 jiff = "0.2.35"

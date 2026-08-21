@@ -2,82 +2,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
-use snowglass_consolestorage::nand::{NandCompletion, VirtualNand};
-use snowglass_consolestorage::savegame::SaveGameSink;
-use snowglass_consolestorage::{
-    DirectoryStorage, Error, MountableStorage, NandMetadata, Permissions,
-};
+use snowglass_consolestorage::nand::VirtualNand;
+use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, Storage};
 use uuid::Uuid;
 
-enum OpenNand {
-    WiiU(WiiUNand),
-}
-
-pub struct Nand(OpenNand);
-
-impl Nand {
-    /// Wait until a game saves to the nand.
-    /// TODO: this should be scoped to a game
-    pub async fn game_saved(&self) -> Result<(), Error> {
-        match &self.0 {
-            OpenNand::WiiU(nand) => nand.watch_saves(&[])?.changed().await,
-        }
-        Ok(())
-    }
-}
-
-impl VirtualNand for Nand {
-    async fn new_empty<St: MountableStorage + 'static>(
-        _storage: St,
-        _id: Uuid,
-        _label: Option<String>,
-    ) -> Result<Self, Error> {
-        Err(Error::Unsupported(
-            "an empty nand must be laid out by a platform-specific layout".to_owned(),
-        ))
-    }
-
-    async fn open<St: MountableStorage + 'static>(storage: St) -> Result<Self, Error> {
-        let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
-
-        match metadata.platform.as_str() {
-            WiiUNand::PLATFORM => Ok(Self(OpenNand::WiiU(WiiUNand::open(storage).await?))),
-            other => Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
-        }
-    }
-
-    fn root(&self) -> Arc<dyn MountableStorage> {
-        match &self.0 {
-            OpenNand::WiiU(nand) => nand.root(),
-        }
-    }
-
-    fn platform(&self) -> &str {
-        match &self.0 {
-            OpenNand::WiiU(nand) => nand.platform(),
-        }
-    }
-
-    fn is_complete(&self, completion_criteria: NandCompletion) -> bool {
-        match &self.0 {
-            OpenNand::WiiU(nand) => nand.is_complete(completion_criteria),
-        }
-    }
-
-    fn permissions(&self, path: &str) -> Permissions {
-        match &self.0 {
-            OpenNand::WiiU(nand) => nand.permissions(path),
-        }
-    }
-
-    async fn clone<St: MountableStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
-        match &self.0 {
-            OpenNand::WiiU(nand) => Ok(Self(OpenNand::WiiU(
-                VirtualNand::clone(nand, storage).await?,
-            ))),
-        }
-    }
-}
+pub type Nand = Arc<dyn VirtualNand>;
 
 pub struct StorageManager {
     root: PathBuf,
@@ -111,16 +40,21 @@ impl StorageManager {
         let id = Uuid::now_v7();
         let storage = DirectoryStorage::new(self.path(platform, id)).await?;
 
-        match platform {
-            WiiUNand::PLATFORM => WiiUNand::new_empty(storage, id, label).await?,
+        let nand: Nand = match platform {
+            WiiUNand::PLATFORM => Arc::new(WiiUNand::new_empty(storage, id, label).await?),
             _ => unreachable!("platform support was checked"),
         };
-
-        self.open(platform, id).await
+        Ok(nand)
     }
 
     pub async fn open(&self, platform: &str, id: Uuid) -> Result<Nand, Error> {
-        Nand::open(DirectoryStorage::new(self.path(platform, id)).await?).await
+        let storage = DirectoryStorage::new(self.path(platform, id)).await?;
+        let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
+
+        match metadata.platform.as_str() {
+            WiiUNand::PLATFORM => Ok(Arc::new(WiiUNand::open(storage).await?)),
+            other => Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
+        }
     }
 
     pub async fn set_label(

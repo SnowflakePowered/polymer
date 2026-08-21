@@ -19,6 +19,7 @@ repository = "https://github.com/snowglass/snowglass"
 rust-version = "1.94"
 
 [workspace.dependencies]
+async-trait = "0.1.89"
 asar = { version = "0.3.0", default-features = false }
 ash = { version = "0.38.0", default-features = false, features = ["loaded", "std"] }
 ash-window = "0.13.0"

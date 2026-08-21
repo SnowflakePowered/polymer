@@ -3,6 +3,8 @@ id = "pcsx2"
 version = "0.0.1"
 class = "emulator"
 
+[plugin.config]
+bios = "D:\\bios\\ps2\\scph-39001.BIN"
 [emulator]
 platforms = ["SONY_PS2"]
 

@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use futures::Stream;
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::storage::ChangeSignal;
@@ -33,6 +34,7 @@ pub struct WiiUNand {
   storage: Arc<dyn MountableStorage>,
 }
 
+#[async_trait]
 impl VirtualNand for WiiUNand {
   fn root(&self) -> Arc<dyn MountableStorage> {
     self.storage.clone()
@@ -40,6 +42,11 @@ impl VirtualNand for WiiUNand {
 
   fn platform(&self) -> &str {
     Self::PLATFORM
+  }
+
+  async fn game_saved(&self) -> Result<(), Error> {
+    self.watch_saves(&[])?.changed().await;
+    Ok(())
   }
 
   async fn open<St: MountableStorage + 'static>(storage: St) -> Result<Self, Error> {
