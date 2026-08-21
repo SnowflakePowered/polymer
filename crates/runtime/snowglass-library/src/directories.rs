@@ -14,7 +14,7 @@ impl Directories {
         let base = BaseDirs::new()
             .ok_or_else(|| Error::Unsupported("no home directory for this user".to_string()))?;
 
-        Ok(Self::rooted(base.cache_dir(), base.data_local_dir()))
+        Ok(Self::rooted(base.cache_dir(), base.data_dir()))
     }
 
     pub fn rooted(cache: impl AsRef<Path>, storage: impl AsRef<Path>) -> Self {
@@ -37,6 +37,6 @@ impl Directories {
     }
 
     pub fn consolestorage(&self) -> PathBuf {
-        self.storage.join("consolestorage")
+        self.storage.clone()
     }
 }

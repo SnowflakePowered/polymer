@@ -157,10 +157,10 @@ impl StorageManager {
 
     async fn ids(&self, platform: &str) -> Vec<Uuid> {
         let collection = match platform {
-            PlaystationMemoryCard::PLATFORM => "memorycards",
-            _ => "nands",
+            PlaystationMemoryCard::PLATFORM => self.root.join("memorycards"),
+            _ => self.root.join("nands"),
         };
-        Self::names(&self.root.join(collection).join(platform))
+        Self::names(&collection.join(platform))
             .await
             .iter()
             .filter_map(|name| Uuid::parse_str(name).ok())
