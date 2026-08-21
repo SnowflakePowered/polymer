@@ -33,8 +33,10 @@ type AudioState = { available: boolean; volume: number; muted: boolean };
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
 const WIIU_PLATFORM = "NINTENDO_WIIU";
+const PSX_PLATFORM = "SONY_PSX";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
 let defaultWiiUNand: Promise<ConsoleStorageNand> | null = null;
+let defaultPs1Card: Promise<ConsoleStorageNand> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
 type StartupRequest =
   | { kind: "package"; path: string; emulator?: string }
@@ -77,6 +79,22 @@ function ensureDefaultWiiUNand() {
     });
   }
   return defaultWiiUNand;
+}
+
+function ensureDefaultPs1Card() {
+  if (!defaultPs1Card) {
+    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+      volumes
+        .filter((volume) => volume.platform === PSX_PLATFORM && volume.label === "Default")
+        .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
+        ?? window.Snowglass.consolestorage.Nand.create(PSX_PLATFORM, { label: "Default" })
+    );
+    defaultPs1Card = pending.catch((error) => {
+      defaultPs1Card = null;
+      throw error;
+    });
+  }
+  return defaultPs1Card;
 }
 
 type LauncherUiState =
@@ -206,6 +224,8 @@ function ShellProvider(props: ParentProps) {
       try {
         if (game.platform === WIIU_PLATFORM) {
           selection.storage = { mlc: (await ensureDefaultWiiUNand()).id };
+        } else if (game.platform === PSX_PLATFORM) {
+          selection.storage = { card1: (await ensureDefaultPs1Card()).id };
         }
         const request = await window.Snowglass.configuration.setupLaunch(packageValue, selection);
         setModel("request", request);

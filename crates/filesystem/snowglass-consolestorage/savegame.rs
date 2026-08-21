@@ -38,6 +38,26 @@ pub struct SaveWatcher {
     signal: Box<dyn ChangeSignal>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Package {
+    serial: Option<String>,
+    title_id: Option<String>,
+}
+
+impl Package {
+    pub fn new(serial: Option<String>, title_id: Option<String>) -> Self {
+        Self { serial, title_id }
+    }
+
+    pub fn serial(&self) -> Option<&str> {
+        self.serial.as_deref()
+    }
+
+    pub fn title_id(&self) -> Option<&str> {
+        self.title_id.as_deref()
+    }
+}
+
 impl SaveWatcher {
     pub fn new(saves: Vec<SaveDepotId>, signal: Box<dyn ChangeSignal>) -> Self {
         Self { saves, signal }
@@ -53,6 +73,8 @@ impl SaveWatcher {
 }
 
 pub trait SaveGameSink {
+    fn infer_save_depot(&self, package: &Package) -> SaveDepotId;
+
     fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_;
 
     fn export_save<'a>(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error>;
@@ -61,6 +83,6 @@ pub trait SaveGameSink {
         &'a self,
         blobs: impl Stream<Item = SaveBlob> + Send + 'a,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>>;
-    
+
     fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error>;
 }

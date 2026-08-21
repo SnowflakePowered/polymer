@@ -45,3 +45,17 @@ title = "Log To File"
 type = "bool"
 default = false
 emit = { key = "LogToFile", bool_style = "lower" }
+
+[[sections.logging.options]]
+key = "memory_card"
+title = "Memory Card"
+type = "bool"
+default = false
+emit = { key = "MemoryCard", bool_style = "lower" }
+
+[[sections.logging.options]]
+key = "system"
+title = "System"
+type = "bool"
+default = false
+emit = { key = "System", bool_style = "lower" }
