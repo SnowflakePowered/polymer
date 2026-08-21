@@ -18,11 +18,11 @@ impl From<NandPermissions> for Permissions {
     }
 }
 
-pub struct NandVolumeFactory<N> {
+pub struct NandVolumeFactory<N: ?Sized> {
     nand: Arc<N>,
 }
 
-impl<N> NandVolumeFactory<N> {
+impl<N: ?Sized> NandVolumeFactory<N> {
     pub fn new(nand: Arc<N>) -> Self {
         Self { nand }
     }
@@ -30,7 +30,7 @@ impl<N> NandVolumeFactory<N> {
 
 impl<N> ResourceFactory<dyn Volume> for NandVolumeFactory<N>
 where
-    N: VirtualNand + Send + Sync + 'static,
+    N: VirtualNand + ?Sized + 'static,
 {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
         Ok(Materialized {
@@ -42,13 +42,13 @@ where
     }
 }
 
-struct NandVolume<N> {
+struct NandVolume<N: ?Sized> {
     nand: Arc<N>,
 }
 
 impl<N> Volume for NandVolume<N>
 where
-    N: VirtualNand + Send + Sync + 'static,
+    N: VirtualNand + ?Sized + 'static,
 {
     fn root(&self) -> VfsResult<Arc<dyn DirectoryNode>> {
         Ok(Arc::new(NandDirectory {
@@ -70,27 +70,27 @@ where
     }
 }
 
-fn readable(nand: &impl VirtualNand, path: &str) -> bool {
+fn readable(nand: &(impl VirtualNand + ?Sized), path: &str) -> bool {
     nand.permissions(path).can_read()
 }
 
-fn require_read(nand: &impl VirtualNand, path: &str) -> VfsResult<()> {
+fn require_read(nand: &(impl VirtualNand + ?Sized), path: &str) -> VfsResult<()> {
     match readable(nand, path) {
         true => Ok(()),
         false => Err(VfsError::PermissionDenied(vfs_path(path))),
     }
 }
 
-fn require_write(nand: &impl VirtualNand, path: &str) -> VfsResult<()> {
+fn require_write(nand: &(impl VirtualNand + ?Sized), path: &str) -> VfsResult<()> {
     match nand.permissions(path).can_write() {
         true => Ok(()),
         false => Err(VfsError::PermissionDenied(vfs_path(path))),
     }
 }
 
-fn node<N>(nand: &Arc<N>, path: String, kind: EntryKind) -> Node
+fn node<N: ?Sized>(nand: &Arc<N>, path: String, kind: EntryKind) -> Node
 where
-    N: VirtualNand + Send + Sync + 'static,
+    N: VirtualNand + 'static,
 {
     match kind {
         EntryKind::Directory => Node::Directory(Arc::new(NandDirectory {
@@ -104,14 +104,14 @@ where
     }
 }
 
-struct NandDirectory<N> {
+struct NandDirectory<N: ?Sized> {
     nand: Arc<N>,
     path: String,
 }
 
 impl<N> DirectoryNode for NandDirectory<N>
 where
-    N: VirtualNand + Send + Sync + 'static,
+    N: VirtualNand + ?Sized + 'static,
 {
     fn metadata(&self) -> VfsResult<Metadata> {
         Ok(Metadata {
@@ -224,14 +224,14 @@ where
     }
 }
 
-struct NandFile<N> {
+struct NandFile<N: ?Sized> {
     nand: Arc<N>,
     path: String,
 }
 
 impl<N> FileNode for NandFile<N>
 where
-    N: VirtualNand + Send + Sync + 'static,
+    N: VirtualNand + ?Sized + 'static,
 {
     fn metadata(&self) -> VfsResult<Metadata> {
         let metadata = self
@@ -300,7 +300,7 @@ enum Handle {
     Writable(Mutex<Box<dyn StorageFile>>),
 }
 
-struct NandOpen<N> {
+struct NandOpen<N: ?Sized> {
     nand: Arc<N>,
     path: String,
     handle: Handle,
@@ -308,7 +308,7 @@ struct NandOpen<N> {
 
 impl<N> OpenFile for NandOpen<N>
 where
-    N: VirtualNand + Send + Sync + 'static,
+    N: VirtualNand + ?Sized + 'static,
 {
     fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         use std::io::{Read, Seek, SeekFrom};

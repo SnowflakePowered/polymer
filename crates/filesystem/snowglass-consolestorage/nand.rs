@@ -1,12 +1,12 @@
-use crate::{Error, Permissions};
-use crate::installable::artifacts::Artifact;
 use std::sync::Arc;
 
-use crate::storage::MountableStorage;
-use crate::storage::manifest::{ArtifactSummary, NandMetadata};
+use async_trait::async_trait;
 use uuid::Uuid;
 
-
+use crate::installable::artifacts::Artifact;
+use crate::storage::MountableStorage;
+use crate::storage::manifest::{ArtifactSummary, NandMetadata};
+use crate::{Error, Permissions};
 
 pub enum NandCompletion {
     /// The NAND is complete as far as minimally required to run a game.
@@ -17,7 +17,8 @@ pub enum NandCompletion {
     Verified,
 }
 
-pub trait VirtualNand {
+#[async_trait]
+pub trait VirtualNand: Send + Sync {
     /// Lay out an empty NAND on `storage`. The label is optional and can be
     /// set later with [`Self::set_label`].
     async fn new_empty<St: MountableStorage + 'static>(
@@ -36,6 +37,9 @@ pub trait VirtualNand {
 
     /// The consolespec platform ID this NAND was created for.
     fn platform(&self) -> &str;
+
+    /// Wait until a game save anywhere on this NAND has settled on disk.
+    async fn game_saved(&self) -> Result<(), Error>;
 
     fn is_complete(&self, completion_criteria: NandCompletion) -> bool;
 

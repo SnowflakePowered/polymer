@@ -41,5 +41,5 @@ pub async fn launch_nand(
         .await
         .map_err(|error| error.to_string())?;
 
-    Ok(Some(Arc::new(NandVolumeFactory::new(Arc::new(nand)))))
+    Ok(Some(Arc::new(NandVolumeFactory::new(nand))))
 }
