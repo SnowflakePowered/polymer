@@ -140,11 +140,10 @@ the storage operations and console codec which use that session. PS1, PS2, Dream
 GameCube cards therefore share session and commit machinery without forcing file and directory
 formats through different public interfaces.
 
-The current `Storage` trait also contains artifact-registry, branding, and volume-label operations.
-Those are managed-volume concerns rather than filesystem operations. They should move to a
-`ManagedStorage: MountableStorage` extension before projections are implemented. `DirectoryStorage`
-implements both; memory-card views implement only `MountableStorage` and never need dummy manifest
-or branding behavior.
+Artifact-registry, branding, and volume-label operations are volume concerns rather than
+filesystem operations. They live on the `VolumeStorage: MountableStorage` extension.
+`DirectoryStorage` implements both; memory-card views implement only `MountableStorage` and never
+need dummy manifest or branding behavior.
 
 At the plugin boundary, the launch supplies exactly one authorized memory-card capability.
 `mountMemoryCard` accepts only a target path and projection format:

@@ -176,24 +176,6 @@ pub trait Storage: Send + Sync {
         Ok(None)
     }
 
-    /// The record of what is installed here. Save-only volumes have none.
-    fn artifacts(&self) -> &dyn ArtifactRegistry;
-
-    /// Who this volume is, or `None` if nothing has branded it yet.
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>>;
-
-    /// Establish an identity if there is none, returning it either way.
-    fn brand<'a>(
-        &'a self,
-        id: Uuid,
-        platform: &'a str,
-        label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
-
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
-
     /// Copy `source` to `dest`, returning the blake3 digest and length of what
     /// was written. The file is only visible at `dest` once fully written.
     fn install_file<'a>(
@@ -211,6 +193,27 @@ pub trait MountableStorage: Storage {
     fn set_len(&self, path: &str, len: u64) -> Result<(), Error>;
 
     fn sync(&self, path: &str) -> Result<(), Error>;
+}
+
+/// A mountable filesystem with persistent volume identity and artifact metadata.
+pub trait VolumeStorage: MountableStorage {
+    /// The record of what is installed here. Save-only volumes have none.
+    fn artifacts(&self) -> &dyn ArtifactRegistry;
+
+    /// Who this volume is, or `None` if nothing has branded it yet.
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>>;
+
+    /// Establish an identity if there is none, returning it either way.
+    fn brand<'a>(
+        &'a self,
+        id: Uuid,
+        platform: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
+
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
 }
 
 pub struct DirectoryStorage {
@@ -404,37 +407,6 @@ impl Storage for DirectoryStorage {
         })))
     }
 
-    fn artifacts(&self) -> &dyn ArtifactRegistry {
-        &self.artifacts
-    }
-
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
-        self.artifacts.identity()
-    }
-
-    fn brand<'a>(
-        &'a self,
-        id: Uuid,
-        platform: &'a str,
-        label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
-        self.artifacts.brand(id, platform, label)
-    }
-
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        Box::pin(async move {
-            Ok(self
-                .artifacts
-                .identity()
-                .await?
-                .and_then(|metadata| metadata.label))
-        })
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.artifacts.set_label(label)
-    }
-
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -581,5 +553,38 @@ impl MountableStorage for DirectoryStorage {
             .open(&resolved)
             .and_then(|file| file.sync_all())
             .map_err(|e| Error::io(&resolved, e))
+    }
+}
+
+impl VolumeStorage for DirectoryStorage {
+    fn artifacts(&self) -> &dyn ArtifactRegistry {
+        &self.artifacts
+    }
+
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
+        self.artifacts.identity()
+    }
+
+    fn brand<'a>(
+        &'a self,
+        id: Uuid,
+        platform: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
+        self.artifacts.brand(id, platform, label)
+    }
+
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
+        Box::pin(async move {
+            Ok(self
+                .artifacts
+                .identity()
+                .await?
+                .and_then(|metadata| metadata.label))
+        })
+    }
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
+        self.artifacts.set_label(label)
     }
 }

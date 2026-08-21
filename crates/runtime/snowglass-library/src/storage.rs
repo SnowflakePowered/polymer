@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
 use snowglass_consolestorage::nand::VirtualNand;
-use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, Storage};
+use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, VolumeStorage};
 use uuid::Uuid;
 
 pub type Nand = Arc<dyn VirtualNand>;
