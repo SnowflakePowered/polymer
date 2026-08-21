@@ -5,14 +5,23 @@ class = "emulator"
 
 [plugin.config]
 bios = "D:\\bios\\ps2\\scph-39001.BIN"
+
+[[plugin.resources]]
+name = "runtime"
+target = "x86_64-pc-windows-msvc"
+source = "pkg:bin/win-x64"
+format = "directory"
+mode = "rx"
+
 [emulator]
 platforms = ["SONY_PS2"]
+main = "pcsx2.ts"
 
 
 [emulator.configuration]
 definitions = [
     "config/pcsx2.toml",
     "config/input.toml",
+    "config/runtime.toml",
     "config/sections/*.toml",
 ]
-resolver = "config/resolvers.ts"
