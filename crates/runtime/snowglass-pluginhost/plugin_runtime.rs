@@ -3,13 +3,14 @@ use crate::{
     EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorSetupInvocation, PluginRegistry,
 };
 use deno_core::{serde_v8, v8};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -118,13 +119,13 @@ impl InvocationControl {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
         self.cancelled_signal.notify_one();
-        if let Some(isolate) = self.isolate.lock().unwrap().as_ref() {
+        if let Some(isolate) = self.isolate.lock().as_ref() {
             isolate.terminate_execution();
         }
     }
 
     fn install_isolate(&self, isolate: v8::IsolateHandle) -> bool {
-        *self.isolate.lock().unwrap() = Some(isolate);
+        *self.isolate.lock() = Some(isolate);
         self.cancelled.load(Ordering::Acquire)
     }
 }
@@ -444,14 +445,14 @@ impl PluginRuntimeHandle {
     /// Cancels queued and executing calls. Executing V8 isolates receive a
     /// thread-safe termination request.
     pub fn cancel_all(&self) {
-        for control in self.state.active.lock().unwrap().values() {
+        for control in self.state.active.lock().values() {
             control.cancel();
         }
     }
 
     #[cfg(test)]
     fn active_call_count(&self) -> usize {
-        self.state.active.lock().unwrap().len()
+        self.state.active.lock().len()
     }
 
     #[cfg(test)]
@@ -477,11 +478,7 @@ impl PluginRuntimeHandle {
             return Err(PluginInvocationError::cancelled());
         }
         let call_id = self.state.next_call.fetch_add(1, Ordering::Relaxed);
-        self.state
-            .active
-            .lock()
-            .unwrap()
-            .insert(call_id, control.clone());
+        self.state.active.lock().insert(call_id, control.clone());
         let mut guard = ActiveCallGuard {
             state: self.state.clone(),
             call_id,
@@ -526,7 +523,7 @@ struct ActiveCallGuard {
 
 impl Drop for ActiveCallGuard {
     fn drop(&mut self) {
-        if let Some(control) = self.state.active.lock().unwrap().remove(&self.call_id)
+        if let Some(control) = self.state.active.lock().remove(&self.call_id)
             && !self.complete
         {
             control.cancel();

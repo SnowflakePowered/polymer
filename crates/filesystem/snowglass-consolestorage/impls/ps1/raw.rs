@@ -1,8 +1,9 @@
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use jiff::Timestamp;
+use parking_lot::Mutex;
 
 use crate::{
     BoxFuture, DirEntry, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
@@ -63,7 +64,7 @@ impl Storage for RawMemoryStorage {
             }),
             ENTRY => Ok(Metadata {
                 kind: EntryKind::File,
-                len: self.bytes.lock().expect("raw card mutex poisoned").len() as u64,
+                len: self.bytes.lock().len() as u64,
                 mtime: Timestamp::now(),
             }),
             _ => Err(not_found(path)),
@@ -109,7 +110,7 @@ impl Storage for RawMemoryStorage {
 
     fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
         let mut handle = self.handle(path)?;
-        handle.position = self.bytes.lock().expect("raw card mutex poisoned").len() as u64;
+        handle.position = self.bytes.lock().len() as u64;
         Ok(Box::new(handle))
     }
 
@@ -117,7 +118,7 @@ impl Storage for RawMemoryStorage {
         if path != ENTRY {
             return Err(not_found(path));
         }
-        self.bytes.lock().expect("raw card mutex poisoned").clear();
+        self.bytes.lock().clear();
         Ok(())
     }
 
@@ -155,10 +156,7 @@ impl MountableStorage for RawMemoryStorage {
         }
         let len = usize::try_from(len)
             .map_err(|_| Error::Unsupported("raw memory-card image is too large".to_owned()))?;
-        self.bytes
-            .lock()
-            .expect("raw card mutex poisoned")
-            .resize(len, 0);
+        self.bytes.lock().resize(len, 0);
         Ok(())
     }
 
@@ -166,7 +164,7 @@ impl MountableStorage for RawMemoryStorage {
         if path != ENTRY {
             return Err(not_found(path));
         }
-        let image = self.bytes.lock().expect("raw card mutex poisoned").clone();
+        let image = self.bytes.lock().clone();
         (self.reconcile)(&image)
     }
 }
@@ -178,7 +176,7 @@ struct MemoryHandle {
 
 impl Read for MemoryHandle {
     fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        let bytes = self.bytes.lock().expect("raw card mutex poisoned");
+        let bytes = self.bytes.lock();
         let start = usize::try_from(self.position)
             .unwrap_or(usize::MAX)
             .min(bytes.len());
@@ -191,7 +189,7 @@ impl Read for MemoryHandle {
 
 impl Write for MemoryHandle {
     fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
-        let mut bytes = self.bytes.lock().expect("raw card mutex poisoned");
+        let mut bytes = self.bytes.lock();
         let start = usize::try_from(self.position)
             .map_err(|_| std::io::Error::other("memory-card offset is too large"))?;
         let end = start
@@ -212,7 +210,7 @@ impl Write for MemoryHandle {
 
 impl Seek for MemoryHandle {
     fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
-        let len = self.bytes.lock().expect("raw card mutex poisoned").len() as i128;
+        let len = self.bytes.lock().len() as i128;
         let position = match position {
             SeekFrom::Start(offset) => i128::from(offset),
             SeekFrom::End(offset) => len + i128::from(offset),

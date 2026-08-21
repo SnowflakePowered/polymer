@@ -1,5 +1,5 @@
 use blitz_traits::shell::{ClipboardError, ShellProvider};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 pub(super) struct NativeShellProvider {
     proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
@@ -52,7 +52,6 @@ impl ShellProvider for NativeShellProvider {
     fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
         self.clipboard
             .lock()
-            .map_err(|_| ClipboardError)?
             .as_mut()
             .ok_or(ClipboardError)?
             .get_text()
@@ -62,7 +61,6 @@ impl ShellProvider for NativeShellProvider {
     fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
         self.clipboard
             .lock()
-            .map_err(|_| ClipboardError)?
             .as_mut()
             .ok_or(ClipboardError)?
             .set_text(text)

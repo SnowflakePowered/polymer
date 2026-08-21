@@ -4,12 +4,13 @@ use std::collections::HashSet;
 use std::fmt;
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use image::RgbaImage;
 use jiff::Timestamp;
+use parking_lot::Mutex;
 use psxmem::{BAState, Block, DataBlock, MemCard};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
@@ -450,7 +451,7 @@ impl ChangeSignal for SaveSignal {
                 self.activity.changed().await;
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let current = self.card.snapshot(&self.saves);
-                let mut last = self.last.lock().expect("save watcher mutex poisoned");
+                let mut last = self.last.lock();
                 if *last != current {
                     *last = current;
                     return;

@@ -1,5 +1,6 @@
 use blitz_dom::DocumentConfig;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use super::{
     EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, Mutation, Runtime,
@@ -10,7 +11,7 @@ fn command_recorder() -> (EmulatorCommandSink, Arc<Mutex<Vec<EmulatorCommand>>>)
     let commands = Arc::new(Mutex::new(Vec::new()));
     let recorded = commands.clone();
     (
-        EmulatorCommandSink::new(move |command| recorded.lock().unwrap().push(command)),
+        EmulatorCommandSink::new(move |command| recorded.lock().push(command)),
         commands,
     )
 }
@@ -19,13 +20,13 @@ fn input_command_recorder() -> (InputCommandSink, Arc<Mutex<Vec<InputCommand>>>)
     let commands = Arc::new(Mutex::new(Vec::new()));
     let recorded = commands.clone();
     (
-        InputCommandSink::new(move |command| recorded.lock().unwrap().push(command)),
+        InputCommandSink::new(move |command| recorded.lock().push(command)),
         commands,
     )
 }
 
 fn drain_input_commands(commands: &Mutex<Vec<InputCommand>>) -> Vec<InputCommand> {
-    std::mem::take(&mut *commands.lock().unwrap())
+    std::mem::take(&mut *commands.lock())
 }
 
 fn document(html: &str) -> blitz_html::HtmlDocument {
@@ -417,7 +418,7 @@ async fn webrtc_facade_owns_publication_lifecycle_through_async_ops() {
             targets,
             result,
         } => {
-            recorded.lock().unwrap().push(serde_json::json!({
+            recorded.lock().push(serde_json::json!({
                 "type": "start",
                 "token": token.0,
                 "bind": bind.to_string(),
@@ -426,7 +427,7 @@ async fn webrtc_facade_owns_publication_lifecycle_through_async_ops() {
             result.send(Ok(())).unwrap();
         }
         WebRtcCommand::Stop { token, result } => {
-            recorded.lock().unwrap().push(serde_json::json!({
+            recorded.lock().push(serde_json::json!({
                 "type": "stop",
                 "token": token.0,
             }));
@@ -459,7 +460,7 @@ async fn webrtc_facade_owns_publication_lifecycle_through_async_ops() {
         ]
     );
     assert_eq!(
-        *commands.lock().unwrap(),
+        *commands.lock(),
         [
             serde_json::json!({
                 "type": "start",
