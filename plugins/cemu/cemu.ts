@@ -19,7 +19,7 @@ type Filesystem = {
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
-    mountNand(target: string): void,
+    mountStorage(target: string, source: Resource, options: { mode: string }): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
     setProfile(profile: {
@@ -30,8 +30,6 @@ type Filesystem = {
     }): void,
 };
 
-// The host resolves and opens the NAND before launch; the plugin only sees a
-// descriptor and decides where it belongs in the guest layout.
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
@@ -39,7 +37,12 @@ type SetupLaunchArgs = {
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
-    nand?: { platform: string, id: string },
+    storage: Readonly<{
+        slc?: Resource,
+        slccmpt?: Resource,
+        mlc?: Resource,
+        sd?: Resource,
+    }>,
 }
 
 export const setupLaunch = (args: SetupLaunchArgs) => {
@@ -56,8 +59,8 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
     }
-    if (args.nand) {
-        args.filesystem.mountNand("/Cemu/mlc01");
+    if (args.storage.mlc) {
+        args.filesystem.mountStorage("/Cemu/mlc01", args.storage.mlc, { mode: "rwx" });
     }
     args.filesystem.mountHostTree("/Game", args.launchPath, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });

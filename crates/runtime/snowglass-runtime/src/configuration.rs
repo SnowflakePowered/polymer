@@ -165,7 +165,7 @@ pub struct ConfigurationRequest {
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
-    pub nand: Option<String>,
+    pub storage: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,7 +231,7 @@ pub fn prepare_api(
         serde_json::from_value(request).map_err(|error| error.to_string())?;
     let settings = request.settings.clone();
     let emulator = request.emulator.clone();
-    let nand = request.nand.clone();
+    let storage = request.storage.clone();
     let prepared = PreparedGame::new(
         DetectedGame {
             path: package.path.clone(),
@@ -260,11 +260,9 @@ pub fn prepare_api(
         "portAssignments": port_assignments,
         "settings": settings,
     });
-    if let Some(id) = nand {
-        arguments["nand"] = serde_json::json!({
-            "platform": prepared.viewer.machine,
-            "id": id,
-        });
+    if !storage.is_empty() {
+        arguments["storage"] =
+            serde_json::to_value(storage).expect("string storage selections are JSON-compatible");
     }
     serde_json::to_value(PreparedConfiguration {
         plugin: emulator,

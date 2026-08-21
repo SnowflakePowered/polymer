@@ -204,7 +204,9 @@ function ShellProvider(props: ParentProps) {
     setModel("launcher", { kind: "launching", name: game.name });
     void (async () => {
       try {
-        if (game.platform === WIIU_PLATFORM) selection.nand = (await ensureDefaultWiiUNand()).id;
+        if (game.platform === WIIU_PLATFORM) {
+          selection.storage = { mlc: (await ensureDefaultWiiUNand()).id };
+        }
         const request = await window.Snowglass.configuration.setupLaunch(packageValue, selection);
         setModel("request", request);
         setModel("surfaces", structuredClone(request.surfaces));

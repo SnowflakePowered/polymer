@@ -54,7 +54,7 @@ pub struct EmulatorSetupInvocation {
     pub plugin: Arc<dyn EmulatorPluginInstance>,
     pub arguments: Value,
     pub configuration: ConfigurationInstance,
-    pub nand: Option<crate::filesystem::NandFactory>,
+    pub storage: crate::filesystem::StorageFactories,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

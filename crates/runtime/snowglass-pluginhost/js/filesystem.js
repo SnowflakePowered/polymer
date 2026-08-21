@@ -7,17 +7,18 @@ import {
   op_vfs_mount_file_pkg,
   op_vfs_mount_file_resource,
   op_vfs_mount_file_text,
-  op_vfs_mount_nand,
   op_vfs_mount_scratch,
   op_vfs_mount_tree_pkg,
   op_vfs_mount_tree_resource,
   op_vfs_path,
   op_vfs_resources,
+  op_vfs_storage,
   op_vfs_set_profile,
   op_vfs_set_working_directory,
 } from "ext:core/ops";
 
 const handles = new WeakMap();
+const storageHandles = new WeakSet();
 
 function resource(description) {
   if (description == null) return undefined;
@@ -33,6 +34,16 @@ for (const description of op_vfs_resources()) {
   });
 }
 Object.freeze(namedResources);
+
+const storageResources = Object.create(null);
+for (const description of op_vfs_storage()) {
+  const value = resource(description);
+  storageHandles.add(value);
+  Object.defineProperty(storageResources, description.name, {
+    value, enumerable: true, writable: false,
+  });
+}
+Object.freeze(storageResources);
 
 function mode(options) {
   if (options == null || typeof options.mode !== "string") {
@@ -94,8 +105,14 @@ const filesystem = Object.freeze({
     }
   },
 
-  mountNand(target) {
-    op_vfs_mount_nand(String(target));
+  mountStorage(target, source, options) {
+    target = String(target);
+    const permissions = mode(options);
+    if (!storageHandles.has(source)) {
+      throw new TypeError("mountStorage source must be a storage resource");
+    }
+    const handle = handles.get(source);
+    op_vfs_mount_tree_resource(target, handle.kind, handle.handle, permissions);
   },
 
   mountScratch(target, options) {
@@ -111,7 +128,7 @@ const filesystem = Object.freeze({
 });
 
 Object.defineProperty(globalThis, "__snowglassFilesystem", {
-  value: Object.freeze({ filesystem, resources: namedResources }),
+  value: Object.freeze({ filesystem, resources: namedResources, storage: storageResources }),
   configurable: false,
   enumerable: false,
   writable: false,
