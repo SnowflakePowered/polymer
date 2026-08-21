@@ -22,6 +22,7 @@ pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort,
     EmulatorSetupInvocation, GraphicsHook, TrackedSurface,
 };
+pub use filesystem::{StorageFactories, StorageFactory};
 pub use module_loader::PluginModuleLoader;
 pub use plugin_runtime::{
     PluginCancellationToken, PluginInvocationError, PluginInvocationResult, PluginRuntime,

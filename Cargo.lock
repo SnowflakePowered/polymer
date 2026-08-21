@@ -10315,6 +10315,7 @@ name = "snowglass-runtime"
 version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
+ "consolespec",
  "crossfire",
  "dashmap",
  "gumshoe",

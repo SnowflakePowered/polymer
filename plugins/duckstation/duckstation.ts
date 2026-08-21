@@ -7,7 +7,7 @@ type Filesystem = {
     mountHostTree(target: string, source: string, options: { mode: string }): void,
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
-    mountNand(target: string): void,
+    mountStorage(target: string, source: Resource, options: { mode: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
@@ -20,6 +20,7 @@ type SetupLaunchArgs = {
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
+    storage: Readonly<{ card1?: Resource, card2?: Resource }>,
 };
 
 function basename(path: string): string {
@@ -45,7 +46,11 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     args.filesystem.mountFile("/DuckStation/duckstation.log", new Uint8Array(), { mode: "rw" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User/generated", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountNand("/User/memcards");
+    if (args.storage.card1) {
+        args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1, { mode: "rw" });
+    } else {
+        args.filesystem.mountScratch("/User/memcards", { mode: "rwx", backing: "temporary" });
+    }
     args.filesystem.mountHostFile(`/User/bios/${biosName}`, config.plugin.config.bios, { mode: "r" });
     args.filesystem.mountHostTree("/Game", dirname(args.launchPath), { mode: "rx" });
     args.filesystem.setWorkingDirectory("/DuckStation");
@@ -81,7 +86,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
         `UserResources = ${path("/DuckStation/resources")}`,
         "",
         "[MemoryCards]",
-        "Card1Type = Shared",
+        `Card1Type = ${args.storage.card1 ? "Shared" : "None"}`,
         "Card1Path = snowglass.mcd",
         "Card2Type = None",
         `Directory = ${path("/User/memcards")}`,

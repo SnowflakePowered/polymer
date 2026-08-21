@@ -340,19 +340,19 @@ impl SnowglassHost for FrontendServices {
         let storage = self.storage.clone();
         let prepared_filesystems = self.prepared_filesystems.clone();
         Box::pin(async move {
-            let nand = match crate::launch_nand(storage, &path, &arguments).await {
-                Ok(nand) => nand,
+            let storage = match crate::launch_storage(storage, &path, &arguments).await {
+                Ok(storage) => storage,
                 Err(error) => {
                     let error = snowglass_pluginhost::PluginInvocationError::new(
                         "Error",
-                        "NAND_UNAVAILABLE",
+                        "STORAGE_UNAVAILABLE",
                         error,
                     );
                     return serde_json::json!({ "ok": false, "error": error });
                 }
             };
             match handle
-                .invoke_with_nand_owned(&plugin, &path, arguments, nand)
+                .invoke_with_storage_owned(&plugin, &path, arguments, storage)
                 .await
             {
                 Ok(mut result) => {
@@ -386,8 +386,7 @@ impl SnowglassHost for FrontendServices {
         let storage = self.storage.clone();
         Box::pin(async move {
             let storage = storage.ok_or_else(|| "console storage is unavailable".to_owned())?;
-            let id = uuid::Uuid::parse_str(&id)
-                .map_err(|_| format!("`{id}` is not a nand id"))?;
+            let id = uuid::Uuid::parse_str(&id).map_err(|_| format!("`{id}` is not a nand id"))?;
             let nand = storage
                 .open(&platform, id)
                 .await

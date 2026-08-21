@@ -1,4 +1,4 @@
-use crate::filesystem::NandFactory;
+use crate::filesystem::StorageFactories;
 use crate::{
     EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorSetupInvocation, PluginRegistry,
 };
@@ -6,7 +6,7 @@ use deno_core::{serde_v8, v8};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     rc::Rc,
     sync::{
         Arc, Mutex,
@@ -204,29 +204,29 @@ impl PluginRuntimeHandle {
             .await
     }
 
-    pub async fn invoke_with_nand(
+    pub async fn invoke_with_storage(
         &self,
         plugin_id: &str,
         export_path: &[String],
         arguments: Vec<Value>,
-        nand: Option<NandFactory>,
+        storage: StorageFactories,
     ) -> Result<Value, PluginInvocationError> {
         let cancellation = self.cancellation_token();
         let result = self
-            .invoke_inner(plugin_id, export_path, arguments, nand, cancellation)
+            .invoke_inner(plugin_id, export_path, arguments, storage, cancellation)
             .await?;
         Ok(result.value)
     }
 
-    pub async fn invoke_with_nand_owned(
+    pub async fn invoke_with_storage_owned(
         &self,
         plugin_id: &str,
         export_path: &[String],
         arguments: Vec<Value>,
-        nand: Option<NandFactory>,
+        storage: StorageFactories,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let cancellation = self.cancellation_token();
-        self.invoke_inner(plugin_id, export_path, arguments, nand, cancellation)
+        self.invoke_inner(plugin_id, export_path, arguments, storage, cancellation)
             .await
     }
 
@@ -238,7 +238,13 @@ impl PluginRuntimeHandle {
         cancellation: PluginCancellationToken,
     ) -> Result<Value, PluginInvocationError> {
         let result = self
-            .invoke_inner(plugin_id, export_path, arguments, None, cancellation)
+            .invoke_inner(
+                plugin_id,
+                export_path,
+                arguments,
+                BTreeMap::new(),
+                cancellation,
+            )
             .await?;
         Ok(result.value)
     }
@@ -248,7 +254,7 @@ impl PluginRuntimeHandle {
         plugin_id: &str,
         export_path: &[String],
         arguments: Vec<Value>,
-        nand: Option<NandFactory>,
+        storage: StorageFactories,
         cancellation: PluginCancellationToken,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let plugin = self
@@ -326,17 +332,20 @@ impl PluginRuntimeHandle {
                     .map_err(PluginInvocationError::worker)?;
             }
             let mut plugin_arguments = arguments.clone();
-            plugin_arguments
-                .as_object_mut()
-                .expect("validated setupLaunch arguments remain an object")
-                .remove("settings");
+            {
+                let object = plugin_arguments
+                    .as_object_mut()
+                    .expect("validated setupLaunch arguments remain an object");
+                object.remove("settings");
+                object.remove("storage");
+            }
             let mut result = self
                 .setup_emulator_export_with_cancellation(
                     EmulatorSetupInvocation {
                         plugin,
                         arguments: plugin_arguments,
                         configuration,
-                        nand,
+                        storage,
                     },
                     cancellation,
                     matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
@@ -353,8 +362,8 @@ impl PluginRuntimeHandle {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
-        let filesystem =
-            filesystem_options(plugin.as_ref(), None).map_err(PluginInvocationError::worker)?;
+        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
+            .map_err(PluginInvocationError::worker)?;
         let path = export_path.to_vec();
         let value = self
             .run_with_control(cancellation.control, move |control| {
@@ -410,7 +419,7 @@ impl PluginRuntimeHandle {
     ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
         let entrypoint = invocation.plugin.entrypoint().to_string();
         let loader = invocation.plugin.module_loader().clone();
-        let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.nand.clone())
+        let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
             .map_err(PluginInvocationError::worker)?;
         self.run_with_control(cancellation.control, move |control| {
             run_worker(
@@ -564,11 +573,11 @@ where
 
 fn filesystem_options(
     plugin: &dyn EmulatorPluginInstance,
-    nand: Option<NandFactory>,
+    storage: StorageFactories,
 ) -> Result<crate::filesystem::FilesystemOptions, crate::PackageError> {
     let mut options =
         crate::filesystem::FilesystemOptions::new(plugin.module_loader().root().to_owned());
-    options.nand = nand;
+    options.storage = storage;
     options.resources = plugin
         .resources()?
         .into_iter()
@@ -998,7 +1007,7 @@ mod tests {
                     "virtualize": true
                 }),
                 configuration: configuration(),
-                nand: None,
+                storage: BTreeMap::new(),
             })
             .await
             .unwrap();
@@ -1059,7 +1068,7 @@ mod tests {
         let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
         let handle = runtime.handle();
         let result = handle
-            .invoke_with_nand_owned(
+            .invoke_with_storage_owned(
                 "worker-test",
                 &["setupLaunch".to_owned()],
                 vec![serde_json::json!({
@@ -1068,7 +1077,7 @@ mod tests {
                     "portAssignments": {},
                     "virtualize": true,
                 })],
-                None,
+                BTreeMap::new(),
             )
             .await
             .unwrap();

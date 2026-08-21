@@ -135,7 +135,7 @@ export type ConfigurationSelection = {
     ports: Array<{ index: number; layout: string; device: string }>;
   }>;
   settings: Record<string, unknown>;
-  nand?: string;
+  storage?: Record<string, string>;
 };
 
 export interface ConfigurationApi {

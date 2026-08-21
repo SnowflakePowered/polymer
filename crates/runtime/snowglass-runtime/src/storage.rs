@@ -1,0 +1,68 @@
+use std::{collections::BTreeMap, sync::Arc};
+
+use consolespec::MachineSpec;
+use serde_json::Value;
+use snowglass_library::StorageManager;
+use snowglass_pluginhost::StorageFactories;
+use snowglass_vfs::NandVolumeFactory;
+use uuid::Uuid;
+
+fn is_setup_launch(export_path: &[String]) -> bool {
+    matches!(export_path, [name] if name == "setupLaunch")
+        || matches!(export_path, [default, name] if default == "default" && name == "setupLaunch")
+}
+
+pub async fn launch_storage(
+    manager: Option<Arc<StorageManager>>,
+    export_path: &[String],
+    arguments: &[Value],
+) -> Result<StorageFactories, String> {
+    if !is_setup_launch(export_path) {
+        return Ok(BTreeMap::new());
+    }
+
+    let Some(arguments) = arguments.first() else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(requested) = arguments.get("storage") else {
+        return Ok(BTreeMap::new());
+    };
+    let requested = requested
+        .as_object()
+        .ok_or_else(|| "launch storage must be an object".to_owned())?;
+    if requested.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let console = arguments
+        .get("console")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "launch storage requires a string console".to_owned())?;
+    let machine = MachineSpec::try_from(console).map_err(|error| error.to_string())?;
+    let declared = machine
+        .storage_devices()
+        .map(|device| device.id())
+        .collect::<std::collections::BTreeSet<_>>();
+    let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
+
+    let mut storage = StorageFactories::new();
+    for (name, id) in requested {
+        if !declared.contains(name.as_str()) {
+            return Err(format!(
+                "storage device '{name}' is not declared by console '{console}'"
+            ));
+        }
+        let id = id
+            .as_str()
+            .ok_or_else(|| format!("storage device '{name}' requires a string id"))?;
+        let id = Uuid::parse_str(id)
+            .map_err(|_| format!("`{id}` is not a console storage id for '{name}'"))?;
+        let volume = manager
+            .open(console, id)
+            .await
+            .map_err(|error| error.to_string())?;
+        storage.insert(name.clone(), Arc::new(NandVolumeFactory::new(volume)));
+    }
+
+    Ok(storage)
+}

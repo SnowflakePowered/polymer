@@ -159,7 +159,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             plugin,
             arguments,
             configuration,
-            nand: _,
+            storage: _,
         } = invocation;
         if !arguments.is_object() {
             return Err(DenoPluginError::Adapter(
@@ -185,6 +185,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                     args.configuration = configuration;
                     args.filesystem = __snowglassFilesystem.filesystem;
                     args.resources = __snowglassFilesystem.resources;
+                    args.storage = __snowglassFilesystem.storage;
                     return {{
                       result: await Reflect.apply(setupLaunch, receiver, [args]),
                       configuration,
