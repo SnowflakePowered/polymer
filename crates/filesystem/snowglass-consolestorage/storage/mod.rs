@@ -190,7 +190,7 @@ pub trait Storage: fmt::Debug + Send + Sync {
 pub trait MountableStorage: Storage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error>;
 
-    fn set_len(&self, path: &str, len: u64) -> Result<(), Error>;
+    fn truncate(&self, path: &str, len: u64) -> Result<(), Error>;
 
     fn sync(&self, path: &str) -> Result<(), Error>;
 }
@@ -569,7 +569,7 @@ impl MountableStorage for DirectoryStorage {
         fs::rename(&from, &to).map_err(|e| Error::io(&from, e))
     }
 
-    fn set_len(&self, path: &str, len: u64) -> Result<(), Error> {
+    fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
         let resolved = self.resolve(path)?;
         OpenOptions::new()
             .write(true)

@@ -1,9 +1,9 @@
 use crate::{
-    CompiledFilesystem, CreateOptions, DirectoryEntry, DirectoryNode, FileNode, Metadata,
-    MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind, VfsComponent, VfsError,
-    VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
+    AdoptHandle, CompiledFilesystem, CreateOptions, DirectoryEntry, DirectoryNode, FileNode,
+    Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind, VfsComponent,
+    VfsError, VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::{collections::HashMap, fmt, sync::Arc};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,7 +126,7 @@ impl PreparedFilesystem {
                     if let std::collections::hash_map::Entry::Vacant(entry) = files.entry(key) {
                         let value = resource.materialize()?;
                         leases.push(value.lease.clone());
-                        entry.insert(value.backend);
+                        entry.insert(Arc::new(NamespaceFile::new(value.backend)));
                     }
                 }
             }
@@ -134,6 +134,7 @@ impl PreparedFilesystem {
         *state = Some(MaterializedResources {
             volumes,
             files,
+            tree_files: HashMap::new(),
             leases,
             finalized: false,
         });
@@ -206,7 +207,8 @@ impl PreparedFilesystem {
             return Err(VfsError::AlreadyExists(path.clone()));
         }
         let parent = self.writable_parent(path)?;
-        parent.directory.create_file(&parent.name, options)?;
+        let file = parent.directory.create_file(&parent.name, options)?;
+        self.remember_tree_file(path, file)?;
         Ok(())
     }
 
@@ -222,7 +224,9 @@ impl PreparedFilesystem {
     pub fn remove(&self, path: &VfsPathBuf, kind: RemoveKind) -> VfsResult<()> {
         self.validate_remove(path, kind)?;
         let parent = self.writable_parent(path)?;
-        parent.directory.remove(&parent.name, kind)
+        parent.directory.remove(&parent.name, kind)?;
+        self.forget_tree_files(path)?;
+        Ok(())
     }
 
     pub fn validate_remove(&self, path: &VfsPathBuf, kind: RemoveKind) -> VfsResult<()> {
@@ -267,15 +271,22 @@ impl PreparedFilesystem {
         target: &VfsPathBuf,
         replace_if_exists: bool,
     ) -> VfsResult<()> {
-        if self.compiled.is_mount_point(source)?
+        let source_is_mount = self.compiled.is_mount_point(source)?;
+        let target_is_mount = self.compiled.is_mount_point(target)?;
+        if replace_if_exists && !source_is_mount && target_is_mount {
+            return self.adopt_source_node(source, target);
+        }
+        if source_is_mount
             || self.compiled.has_descendant(source)?
-            || self.compiled.is_mount_point(target)?
+            || target_is_mount
             || self.compiled.has_descendant(target)?
         {
             return Err(VfsError::Unsupported(
                 "mounted nodes cannot be renamed or replaced".into(),
             ));
         }
+        let source_path = source.clone();
+        let target_path = target.clone();
         let source = self.writable_parent(source)?;
         let target = self.writable_parent(target)?;
         if !Arc::ptr_eq(&source.volume, &target.volume) {
@@ -285,13 +296,106 @@ impl PreparedFilesystem {
             source.volume.replace(
                 source.child_relative.as_path(),
                 target.child_relative.as_path(),
-            )
+            )?;
         } else {
             source.volume.rename(
                 source.child_relative.as_path(),
                 target.child_relative.as_path(),
-            )
+            )?;
         }
+        self.move_tree_files(source_path, target_path)?;
+        Ok(())
+    }
+
+    fn adopt_source_node(&self, source: &VfsPathBuf, target: &VfsPathBuf) -> VfsResult<()> {
+        if self.compiled.has_descendant(source)? || self.compiled.has_descendant(target)? {
+            return Err(VfsError::Unsupported(
+                "nodes containing mounts cannot be adopted".into(),
+            ));
+        }
+        let source_node = self.resolve_node(source)?;
+        if !matches!(&source_node.node, Node::File(_)) {
+            return Err(VfsError::IsDirectory(source.clone()));
+        }
+        let source_file = source_node.namespace_file.ok_or(VfsError::StaleNode)?;
+        let source_parent = self.writable_parent(source)?;
+
+        let target_binding = self
+            .compiled
+            .resolve(target)?
+            .filter(|binding| binding.at() == target)
+            .ok_or_else(|| VfsError::NotFound(target.clone()))?;
+        if !target_binding.permissions().can_replace() {
+            return Err(VfsError::PermissionDenied(target.clone()));
+        }
+        let crate::BindingKind::File(resource) = target_binding.kind() else {
+            return Err(VfsError::IsDirectory(target.clone()));
+        };
+        let target_file = self.materialized_file(resource)?;
+        let adoption = source_file.prepare_adoption(&target_file)?;
+
+        source_parent
+            .volume
+            .detach(source_parent.child_relative.as_path())?;
+        source_file.install_adoption(adoption, &target_file);
+
+        let mut state = self.materialized.lock();
+        let resources = state.as_mut().ok_or_else(not_materialized)?;
+        resources
+            .tree_files
+            .remove(&source.normalized_components()?);
+        resources.files.insert(resource_key(resource), source_file);
+        Ok(())
+    }
+
+    fn remember_tree_file(
+        &self,
+        path: &VfsPathBuf,
+        backend: Arc<dyn FileNode>,
+    ) -> VfsResult<Arc<NamespaceFile>> {
+        let key = path.normalized_components()?;
+        let mut state = self.materialized.lock();
+        let resources = state.as_mut().ok_or_else(not_materialized)?;
+        Ok(resources
+            .tree_files
+            .entry(key)
+            .or_insert_with(|| Arc::new(NamespaceFile::new(backend)))
+            .clone())
+    }
+
+    fn forget_tree_files(&self, path: &VfsPathBuf) -> VfsResult<()> {
+        let prefix = path.normalized_components()?;
+        let mut state = self.materialized.lock();
+        let resources = state.as_mut().ok_or_else(not_materialized)?;
+        resources
+            .tree_files
+            .retain(|path, _| !path.starts_with(&prefix));
+        Ok(())
+    }
+
+    fn move_tree_files(&self, source: VfsPathBuf, target: VfsPathBuf) -> VfsResult<()> {
+        let source = source.normalized_components()?;
+        let target = target.normalized_components()?;
+        let mut state = self.materialized.lock();
+        let resources = state.as_mut().ok_or_else(not_materialized)?;
+        resources
+            .tree_files
+            .retain(|path, _| !path.starts_with(&target));
+        let moved = resources
+            .tree_files
+            .iter()
+            .filter(|(path, _)| path.starts_with(&source))
+            .map(|(path, file)| {
+                let mut rebased = target.clone();
+                rebased.extend_from_slice(&path[source.len()..]);
+                (path.clone(), rebased, file.clone())
+            })
+            .collect::<Vec<_>>();
+        for (old, new, file) in moved {
+            resources.tree_files.remove(&old);
+            resources.tree_files.insert(new, file);
+        }
+        Ok(())
     }
 
     fn writable_parent(&self, path: &VfsPathBuf) -> VfsResult<WritableParent> {
@@ -345,7 +449,8 @@ impl PreparedFilesystem {
                 }
                 let file = self.materialized_file(resource)?;
                 Ok(ResolvedNode {
-                    node: Node::File(file),
+                    node: Node::File(file.clone()),
+                    namespace_file: Some(file),
                     volume: None,
                     relative: None,
                     permissions,
@@ -368,8 +473,16 @@ impl PreparedFilesystem {
                         None => return Err(VfsError::NotFound(path.clone())),
                     }
                 }
+                let (node, namespace_file) = match node {
+                    Node::File(file) => {
+                        let file = self.remember_tree_file(path, file)?;
+                        (Node::File(file.clone()), Some(file))
+                    }
+                    node => (node, None),
+                };
                 Ok(ResolvedNode {
                     node,
+                    namespace_file,
                     volume: Some(volume),
                     relative: Some(relative),
                     permissions,
@@ -395,7 +508,7 @@ impl PreparedFilesystem {
     fn materialized_file(
         &self,
         resource: &Arc<Resource<dyn FileNode>>,
-    ) -> VfsResult<Arc<dyn FileNode>> {
+    ) -> VfsResult<Arc<NamespaceFile>> {
         self.materialized
             .lock()
             .as_ref()
@@ -423,6 +536,105 @@ fn path_component(path: &VfsPath) -> VfsResult<VfsComponent> {
         .ok_or_else(|| VfsError::Unsupported("the namespace root has no name".into()))
 }
 
+struct NamespaceFile {
+    backend: Arc<dyn FileNode>,
+    adoption: Arc<RwLock<Option<Adoption>>>,
+}
+
+#[derive(Clone)]
+struct Adoption {
+    target: Arc<dyn FileNode>,
+    handle: Arc<dyn AdoptHandle>,
+}
+
+impl NamespaceFile {
+    fn new(backend: Arc<dyn FileNode>) -> Self {
+        Self {
+            backend,
+            adoption: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    fn prepare_adoption(&self, displaced: &NamespaceFile) -> VfsResult<Adoption> {
+        let target = displaced
+            .adoption
+            .read()
+            .as_ref()
+            .map(|adoption| adoption.target.clone())
+            .unwrap_or_else(|| displaced.backend.clone());
+        let handle = target.adopt(self.backend.clone())?;
+        Ok(Adoption { target, handle })
+    }
+
+    fn install_adoption(&self, adoption: Adoption, displaced: &NamespaceFile) {
+        *self.adoption.write() = Some(adoption);
+        displaced.adoption.write().take();
+    }
+
+    fn finalize_adoption(&self) -> VfsResult<()> {
+        match self.adoption.read().clone() {
+            Some(adoption) => adoption.handle.finalize(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl FileNode for NamespaceFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        self.backend.metadata()
+    }
+
+    fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
+        self.backend.set_metadata(changes)?;
+        self.finalize_adoption()
+    }
+
+    fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
+        Ok(Box::new(NamespaceOpenFile {
+            inner: self.backend.open(options)?,
+            adoption: self.adoption.clone(),
+        }))
+    }
+}
+
+struct NamespaceOpenFile {
+    inner: Box<dyn OpenFile>,
+    adoption: Arc<RwLock<Option<Adoption>>>,
+}
+
+impl NamespaceOpenFile {
+    fn finalize_adoption(&self) -> VfsResult<()> {
+        match self.adoption.read().clone() {
+            Some(adoption) => adoption.handle.finalize(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl OpenFile for NamespaceOpenFile {
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+        self.inner.read(offset, buffer)
+    }
+
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+        self.inner.write(offset, buffer)
+    }
+
+    fn truncate(&self, len: u64) -> VfsResult<()> {
+        self.inner.truncate(len)
+    }
+
+    fn flush(&self) -> VfsResult<()> {
+        self.inner.flush()?;
+        self.finalize_adoption()
+    }
+
+    fn sync(&self) -> VfsResult<()> {
+        self.inner.sync()?;
+        self.finalize_adoption()
+    }
+}
+
 struct WritableParent {
     volume: Arc<dyn Volume>,
     directory: Arc<dyn DirectoryNode>,
@@ -432,6 +644,7 @@ struct WritableParent {
 
 struct ResolvedNode {
     node: Node,
+    namespace_file: Option<Arc<NamespaceFile>>,
     volume: Option<Arc<dyn Volume>>,
     relative: Option<VfsPathBuf>,
     permissions: Permissions,
@@ -441,6 +654,7 @@ impl ResolvedNode {
     fn synthetic() -> Self {
         Self {
             node: Node::SyntheticDirectory,
+            namespace_file: None,
             volume: None,
             relative: None,
             permissions: Permissions::ALL,
@@ -458,7 +672,8 @@ impl Drop for PreparedFilesystem {
 
 struct MaterializedResources {
     volumes: HashMap<usize, Arc<dyn Volume>>,
-    files: HashMap<usize, Arc<dyn FileNode>>,
+    files: HashMap<usize, Arc<NamespaceFile>>,
+    tree_files: HashMap<Vec<Vec<VfsPathUnit>>, Arc<NamespaceFile>>,
     leases: Vec<Arc<dyn ResourceLease>>,
     finalized: bool,
 }
@@ -467,6 +682,11 @@ impl MaterializedResources {
     fn finalize(&mut self, reason: FinalizationReason) {
         if self.finalized {
             return;
+        }
+        if reason != FinalizationReason::LaunchFailed {
+            for file in self.files.values().chain(self.tree_files.values()) {
+                let _ = file.finalize_adoption();
+            }
         }
         for lease in self.leases.iter().rev() {
             lease.finalize(reason);
@@ -588,7 +808,7 @@ mod tests {
                 },
             )
             .unwrap()
-            .write_at(0, b"new")
+            .write(0, b"new")
             .unwrap();
         filesystem
             .create_file(&target, CreateOptions { exclusive: true })
@@ -603,7 +823,7 @@ mod tests {
                 },
             )
             .unwrap()
-            .write_at(0, b"old")
+            .write(0, b"old")
             .unwrap();
 
         assert!(matches!(
@@ -625,7 +845,7 @@ mod tests {
                 },
             )
             .unwrap()
-            .read_at(0, &mut contents)
+            .read(0, &mut contents)
             .unwrap();
         assert_eq!(&contents, b"new");
         assert!(matches!(
@@ -671,7 +891,7 @@ mod tests {
             )
             .unwrap();
         let mut bytes = [0; 6];
-        file.read_at(0, &mut bytes).unwrap();
+        file.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes, b"memory");
     }
 }

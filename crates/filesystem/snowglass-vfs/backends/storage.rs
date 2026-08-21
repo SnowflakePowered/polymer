@@ -6,9 +6,9 @@ use snowglass_consolestorage::{
 };
 
 use crate::{
-    CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode,
-    Materialized, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind,
-    ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume,
+    AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,
+    FileNode, Materialized, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions,
+    RemoveKind, ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume,
 };
 
 pub(crate) type StoragePermissions = Arc<dyn Fn(&str) -> Permissions + Send + Sync>;
@@ -17,7 +17,7 @@ pub(crate) fn unrestricted() -> StoragePermissions {
     Arc::new(|_| Permissions::ALL)
 }
 
-pub(crate) fn materialize_file(
+pub(crate) fn materialize_adoptable_file(
     storage: Arc<dyn MountableStorage>,
     path: String,
     permissions: StoragePermissions,
@@ -28,6 +28,7 @@ pub(crate) fn materialize_file(
             storage,
             path,
             permissions,
+            adoptable: true,
         }),
         lease,
     }
@@ -164,6 +165,7 @@ impl DirectoryNode for StorageDirectoryNode {
             storage: self.storage.clone(),
             path,
             permissions: self.permissions.clone(),
+            adoptable: false,
         }))
     }
 
@@ -219,6 +221,7 @@ fn node(
             storage: storage.clone(),
             path,
             permissions: permissions.clone(),
+            adoptable: false,
         })),
     }
 }
@@ -227,6 +230,7 @@ struct StorageFileNode {
     storage: Arc<dyn MountableStorage>,
     path: String,
     permissions: StoragePermissions,
+    adoptable: bool,
 }
 
 impl FileNode for StorageFileNode {
@@ -246,7 +250,7 @@ impl FileNode for StorageFileNode {
         require_write(&self.permissions, &self.path)?;
         if let Some(len) = changes.len {
             self.storage
-                .set_len(&self.path, len)
+                .truncate(&self.path, len)
                 .map_err(|error| storage_error(error, &self.path))?;
         }
         Ok(())
@@ -271,7 +275,7 @@ impl FileNode for StorageFileNode {
         if options.truncate {
             require_write(&self.permissions, &self.path)?;
             self.storage
-                .set_len(&self.path, 0)
+                .truncate(&self.path, 0)
                 .map_err(|error| storage_error(error, &self.path))?;
         }
         Ok(Box::new(StorageOpenFile {
@@ -280,6 +284,68 @@ impl FileNode for StorageFileNode {
             permissions: self.permissions.clone(),
             handle,
         }))
+    }
+
+    fn adopt(&self, source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
+        if !self.adoptable {
+            return Err(VfsError::Unsupported(
+                "the storage file does not accept source-node adoption".into(),
+            ));
+        }
+        Ok(Arc::new(StorageFileAdoption {
+            storage: self.storage.clone(),
+            path: self.path.clone(),
+            source,
+            finalizing: Mutex::new(()),
+        }))
+    }
+}
+
+struct StorageFileAdoption {
+    storage: Arc<dyn MountableStorage>,
+    path: String,
+    source: Arc<dyn FileNode>,
+    finalizing: Mutex<()>,
+}
+
+impl AdoptHandle for StorageFileAdoption {
+    fn finalize(&self) -> VfsResult<()> {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let _finalizing = self.finalizing.lock();
+        let len = self.source.metadata()?.len;
+        let reader = self.source.open(OpenOptions {
+            read: true,
+            write: false,
+            truncate: false,
+        })?;
+        self.storage
+            .truncate(&self.path, len)
+            .map_err(|error| storage_error(error, &self.path))?;
+        let mut writer = self
+            .storage
+            .open(&self.path)
+            .map_err(|error| storage_error(error, &self.path))?;
+        writer.seek(SeekFrom::Start(0))?;
+        let mut offset = 0_u64;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while offset < len {
+            let remaining = usize::try_from((len - offset).min(buffer.len() as u64))
+                .expect("bounded by the transfer buffer");
+            let read = reader.read(offset, &mut buffer[..remaining])?;
+            if read == 0 {
+                return Err(VfsError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "adopted source became shorter while reconciling",
+                )));
+            }
+            writer.write_all(&buffer[..read])?;
+            offset += read as u64;
+        }
+        writer.flush()?;
+        self.storage
+            .sync(&self.path)
+            .map_err(|error| storage_error(error, &self.path))
     }
 }
 
@@ -296,7 +362,7 @@ struct StorageOpenFile {
 }
 
 impl OpenFile for StorageOpenFile {
-    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         use std::io::{Read, Seek, SeekFrom};
         match &self.handle {
             StorageHandle::ReadOnly(file) => {
@@ -312,7 +378,7 @@ impl OpenFile for StorageOpenFile {
         }
     }
 
-    fn write_at(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
         use std::io::{Seek, SeekFrom, Write};
         let StorageHandle::Writable(file) = &self.handle else {
             return Err(VfsError::PermissionDenied(vfs_path(&self.path)));
@@ -322,10 +388,10 @@ impl OpenFile for StorageOpenFile {
         Ok(file.write(buffer)?)
     }
 
-    fn set_len(&self, len: u64) -> VfsResult<()> {
+    fn truncate(&self, len: u64) -> VfsResult<()> {
         require_write(&self.permissions, &self.path)?;
         self.storage
-            .set_len(&self.path, len)
+            .truncate(&self.path, len)
             .map_err(|error| storage_error(error, &self.path))
     }
 

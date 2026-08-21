@@ -430,7 +430,7 @@ impl FileSystemContext for SnowglassFileSystem {
             .file
             .as_ref()
             .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-            .set_len(0)
+            .truncate(0)
             .map_err(map_vfs_error)?;
         self.filesystem
             .set_metadata(
@@ -551,7 +551,7 @@ impl FileSystemContext for SnowglassFileSystem {
                 .file
                 .as_ref()
                 .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-                .set_len(new_size)
+                .truncate(new_size)
                 .map_err(map_vfs_error)?;
         }
         *file_info = self.file_info(&path)?;
@@ -576,7 +576,7 @@ impl FileSystemContext for SnowglassFileSystem {
             .file
             .as_ref()
             .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-            .read_at(offset, buffer)
+            .read(offset, buffer)
             .map_err(map_vfs_error)?;
         if read == 0 && !buffer.is_empty() {
             return Err(STATUS_END_OF_FILE.into());
@@ -612,7 +612,7 @@ impl FileSystemContext for SnowglassFileSystem {
             .file
             .as_ref()
             .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-            .write_at(offset, buffer)
+            .write(offset, buffer)
             .map_err(map_vfs_error)?;
         *file_info = self.file_info(&path)?;
         u32::try_from(written).map_err(|_| STATUS_INVALID_DEVICE_REQUEST.into())
@@ -799,9 +799,9 @@ mod tests {
             )
             .unwrap();
         let file = handle.file.as_ref().unwrap();
-        file.write_at(0, b"snowglass").unwrap();
+        file.write(0, b"snowglass").unwrap();
         let mut bytes = [0; 9];
-        file.read_at(0, &mut bytes).unwrap();
+        file.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes, b"snowglass");
 
         let entries = context

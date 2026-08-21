@@ -38,6 +38,6 @@ pub use resource::{
     ResourceOrigin,
 };
 pub use traits::{
-    CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode, Metadata,
-    MetadataChanges, Node, OpenFile, OpenOptions, RemoveKind, Volume,
+    AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,
+    FileNode, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, RemoveKind, Volume,
 };

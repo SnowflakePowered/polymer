@@ -48,17 +48,17 @@ struct HostOpen {
 }
 
 impl OpenFile for HostOpen {
-    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         use std::os::unix::fs::FileExt;
         Ok(self.file.read_at(buffer, offset)?)
     }
 
-    fn write_at(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
         use std::os::unix::fs::FileExt;
         Ok(self.file.write_at(buffer, offset)?)
     }
 
-    fn set_len(&self, len: u64) -> VfsResult<()> {
+    fn truncate(&self, len: u64) -> VfsResult<()> {
         self.file.set_len(len)?;
         Ok(())
     }
@@ -88,8 +88,8 @@ struct HostDirectory {
 }
 
 struct HostTreeFile {
-    volume: Arc<HostVolumeInner>,
-    path: PathBuf,
+    handle: Arc<File>,
+    writable: bool,
 }
 
 impl HostVolume {
@@ -157,9 +157,13 @@ impl HostVolumeInner {
                 path,
             })))
         } else {
+            let handle = fs::OpenOptions::new()
+                .read(true)
+                .write(self.writable)
+                .open(path)?;
             Ok(Node::File(Arc::new(HostTreeFile {
-                volume: self.clone(),
-                path,
+                handle: Arc::new(handle),
+                writable: self.writable,
             })))
         }
     }
@@ -179,6 +183,18 @@ impl Volume for HostVolume {
 
     fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
         self.rename_inner(source, target, true)
+    }
+
+    fn detach(&self, source: &VfsPath) -> VfsResult<()> {
+        VfsError::require_writable(self.inner.writable)?;
+        let source = self
+            .inner
+            .confined_existing(Self::host_path(&self.inner, source)?)?;
+        if !source.is_file() {
+            return Err(VfsError::IsDirectory(VfsPathBuf::root()));
+        }
+        fs::remove_file(source)?;
+        Ok(())
     }
 }
 
@@ -257,17 +273,17 @@ impl DirectoryNode for HostDirectory {
     ) -> VfsResult<Arc<dyn FileNode>> {
         VfsError::require_writable(self.volume.writable)?;
         let path = self.volume.child(&self.path, name)?;
-        fs::OpenOptions::new()
+        let handle = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .create_new(options.exclusive)
             .truncate(false)
             .open(&path)?;
-        let path = self.volume.confined_existing(path)?;
+        self.volume.confined_existing(path)?;
         Ok(Arc::new(HostTreeFile {
-            volume: self.volume.clone(),
-            path,
+            handle: Arc::new(handle),
+            writable: self.volume.writable,
         }))
     }
 
@@ -297,15 +313,31 @@ impl DirectoryNode for HostDirectory {
 
 impl FileNode for HostTreeFile {
     fn metadata(&self) -> VfsResult<Metadata> {
-        file_metadata(&fs::metadata(&self.path)?, self.volume.writable)
+        file_metadata(&self.handle.metadata()?, self.writable)
     }
 
     fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
-        set_host_metadata(&self.path, self.volume.writable, changes, false)
+        VfsError::require_writable(self.writable)?;
+        if let Some(len) = changes.len {
+            self.handle.set_len(len)?;
+        }
+        if let Some(readonly) = changes.readonly {
+            let mut permissions = self.handle.metadata()?.permissions();
+            permissions.set_readonly(readonly);
+            self.handle.set_permissions(permissions)?;
+        }
+        Ok(())
     }
 
     fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
-        open_path(&self.path, self.volume.writable, options)
+        if options.write || options.truncate {
+            VfsError::require_writable(self.writable)?;
+        }
+        let file = self.handle.try_clone()?;
+        if options.truncate {
+            file.set_len(0)?;
+        }
+        Ok(Box::new(HostOpen { file }))
     }
 }
 

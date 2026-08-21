@@ -327,7 +327,7 @@ struct AsarOpen {
 }
 
 impl OpenFile for AsarOpen {
-    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         let offset = usize::try_from(offset)
             .map_err(|_| VfsError::Unsupported("file offset exceeds host address space".into()))?;
         if offset >= self.range.len() {
@@ -339,11 +339,11 @@ impl OpenFile for AsarOpen {
         Ok(count)
     }
 
-    fn write_at(&self, _offset: u64, _buffer: &[u8]) -> VfsResult<usize> {
+    fn write(&self, _offset: u64, _buffer: &[u8]) -> VfsResult<usize> {
         readonly()
     }
 
-    fn set_len(&self, _len: u64) -> VfsResult<()> {
+    fn truncate(&self, _len: u64) -> VfsResult<()> {
         readonly()
     }
 
@@ -441,7 +441,7 @@ mod tests {
             })
             .unwrap();
         let mut bytes = [0; 6];
-        assert_eq!(file.read_at(0, &mut bytes).unwrap(), 6);
+        assert_eq!(file.read(0, &mut bytes).unwrap(), 6);
         assert_eq!(&bytes, b"binary");
     }
 }
