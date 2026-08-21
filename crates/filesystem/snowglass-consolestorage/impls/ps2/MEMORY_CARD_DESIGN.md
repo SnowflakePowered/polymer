@@ -93,8 +93,8 @@ pub trait MemoryCard: Storage {
     fn view(
         &self,
         primary: &[SaveDepotId],
-        capacity: MemoryCardCapacity,
-        format: &MemoryCardFormatId,
+        capacity_blocks: u32,
+        format: &str,
     ) -> Result<MemoryCardView, Error>;
 }
 ```
@@ -117,18 +117,22 @@ There is no `MemoryCardProjection`, `ProjectedTree`, or `RandomAccessImage` publ
 `StorageFile` already supplies read, write, and seek; `MountableStorage` adds rename, truncate, and
 sync. An mmap or owned page cache remains an implementation detail of the raw storage.
 
-The namespace is significant even for a raw file: emulators may write a temporary sibling and
-atomically rename it over the card. The VFS adapter retains the namespace while mounting `entry`,
-so that replacement transaction stays owned by the same view. The final namespace `Arc` is also
-the view lease. Its implementation owns the opening snapshot, dirty state, and reconciliation
-boundary. Dropping its final reference performs the last best-effort reconciliation; explicit
-`sync` remains the observable commit boundary.
+An emulator may write a temporary sibling in another mounted storage and atomically rename it over
+the raw card. The composed VFS must adopt that source file object into the mounted card instead of
+copying its bytes. The mounted path, already-open source handles, and subsequent target opens then
+refer to the same object. The card's dirty/sync observer is transferred to the adopted object so
+post-rename writes and flushes still reach reconciliation. The displaced raw projection remains
+alive only for handles which were already open to it, matching normal replacement semantics.
+
+The final view `Arc` is the card lease. Its implementation owns the opening snapshot, dirty state,
+and reconciliation boundary. Dropping its final reference performs the last best-effort
+reconciliation; explicit `sync` remains the observable commit boundary.
 
 Format providers are console-specific and operate on logical snapshots plus manifest metadata:
 
 ```rust
 pub trait MemoryCardFormat: Send + Sync {
-    fn id(&self) -> &MemoryCardFormatId;
+    fn id(&self) -> &str;
     fn open(&self, session: MemoryCardSession)
         -> Result<MemoryCardView, Error>;
 }
@@ -140,10 +144,10 @@ the storage operations and console codec which use that session. PS1, PS2, Dream
 GameCube cards therefore share session and commit machinery without forcing file and directory
 formats through different public interfaces.
 
-Artifact-registry, branding, and volume-label operations are volume concerns rather than
-filesystem operations. They live on the `VolumeStorage: MountableStorage` extension.
-`DirectoryStorage` implements both; memory-card views implement only `MountableStorage` and never
-need dummy manifest or branding behavior.
+Artifact-registry, volume identity, and branding operations live on the
+`VolumeStorage: MountableStorage` extension. User-facing `label` and `set_label` remain on
+`Storage`, so canonical memory cards can be named without pretending to be managed volumes.
+Memory-card views implement only `MountableStorage` and forward the card label where appropriate.
 
 At the plugin boundary, the launch supplies exactly one authorized memory-card capability.
 `mountMemoryCard` accepts only a target path and projection format:
@@ -153,10 +157,12 @@ mountMemoryCard(target: string, options: { format: "raw" | "pcsx2" }): void;
 ```
 
 The operation asks the assigned card to resolve the format, looks up the view's `entry`, and mounts
-it as either a VFS file or tree. A file adapter keeps the containing storage namespace so sibling
-replacement remains a single-storage rename. A plugin cannot name a card, depot, or host path, and
-requesting an unsupported format fails during launch setup. `raw` is a common format identifier
-whose codec is selected by the card's platform; `pcsx2` is available only from the PS2 provider.
+it as either a VFS file or tree. Replacement of a mounted raw file is a specific composed-VFS
+operation: detach the source file object from its parent volume, adopt it as the mounted file's
+backing object, and attach the memory-card observer to its existing and future handles. It is not a
+general cross-volume rename. A plugin cannot name a card, depot, or host path, and requesting an
+unsupported format fails during launch setup. `raw` is a common format identifier whose codec is
+selected by the card's platform; `pcsx2` is available only from the PS2 provider.
 
 ## Write synchronization
 
@@ -189,8 +195,8 @@ flush/close and subsequent launches, not between two concurrent emulator process
 
 ## Implementation order
 
-1. Add the VFS adapter for a `MemoryCardView` storage entry, including namespace-preserving atomic
-   replacement and finalize-on-lease behavior.
+1. Add the VFS adapter for a `MemoryCardView` storage entry, including source-node adoption,
+   open-handle observer transfer, and finalize-on-lease behavior.
 2. Implement the PS2 parser/builder in Snowglass, using the debug crate only as a test oracle.
 3. Add manifest tables and transactions for console metadata and format-specific projection state.
 4. Add the pluginhost `mountMemoryCard(path, { format })` capability and resolve the requested
