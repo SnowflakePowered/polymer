@@ -1,0 +1,18 @@
+[meta]
+emulator = "retroarch-lrps2"
+
+[targets.generated]
+output = { format = "ini", path = "generated.ini" }
+
+[targets.generated.Core]
+
+[sections.core]
+title = "LRPS2"
+target = "generated.Core"
+
+[[sections.core.options]]
+key = "placeholder"
+title = "Placeholder"
+type = "bool"
+default = false
+emit = { key = "Placeholder" }

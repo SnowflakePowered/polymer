@@ -1,0 +1,75 @@
+[targets.generated]
+output = { format = "ini", path = "generated.ini" }
+
+[targets.generated.Pad1]
+[targets.generated.Pad2]
+
+[input]
+driver = "sdl3"
+device = "SDL-{index}"
+
+[input.mapping]
+"button.a"              = "{device}/FaceSouth"
+"button.b"              = "{device}/FaceEast"
+"button.x"              = "{device}/FaceWest"
+"button.y"              = "{device}/FaceNorth"
+"button.select"         = "{device}/Back"
+"button.guide"          = "{device}/Guide"
+"button.start"          = "{device}/Start"
+"button.clickl"         = "{device}/LeftStick"
+"button.clickr"         = "{device}/RightStick"
+"button.l"              = "{device}/LeftShoulder"
+"button.r"              = "{device}/RightShoulder"
+"directional.n"         = "{device}/DPadUp"
+"directional.s"         = "{device}/DPadDown"
+"directional.w"         = "{device}/DPadLeft"
+"directional.e"         = "{device}/DPadRight"
+"analog.stick.left.x+"  = "{device}/+LeftX"
+"analog.stick.left.x-"  = "{device}/-LeftX"
+"analog.stick.left.y+"  = "{device}/-LeftY"
+"analog.stick.left.y-"  = "{device}/+LeftY"
+"analog.stick.right.x+" = "{device}/+RightX"
+"analog.stick.right.x-" = "{device}/-RightX"
+"analog.stick.right.y+" = "{device}/-RightY"
+"analog.stick.right.y-" = "{device}/+RightY"
+"trigger.left"          = "{device}/+LeftTrigger"
+"trigger.right"         = "{device}/+RightTrigger"
+
+[input.layouts.DUALSHOCK_2_CONTROLLER]
+"analog.stick.left.x-" = "Left Analog Left"
+"analog.stick.left.y-" = "Left Analog Down"
+"analog.stick.left.x+" = "Left Analog Right"
+"analog.stick.left.y+" = "Left Analog Up"
+"analog.stick.right.x-" = "Right Analog Left"
+"analog.stick.right.y-" = "Right Analog Down"
+"analog.stick.right.x+" = "Right Analog Right"
+"analog.stick.right.y+" = "Right Analog Up"
+"button.a" = "Cross"
+"button.b" = "Circle"
+"button.clickl" = "L3"
+"button.clickr" = "R3"
+"button.guide" = "Analog"
+"button.l" = "L1"
+"button.r" = "R1"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.x" = "Square"
+"button.y" = "Triangle"
+"directional.e" = "Right"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"trigger.left" = "L2"
+"trigger.right" = "R2"
+
+[platforms.SONY_PS2.ports.controller.0]
+target = "generated.Pad1"
+layouts = ["DUALSHOCK_2_CONTROLLER"]
+emit.unplugged = [{ key = "Type", value = "None" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
+
+[platforms.SONY_PS2.ports.controller.1]
+target = "generated.Pad2"
+layouts = ["DUALSHOCK_2_CONTROLLER"]
+emit.unplugged = [{ key = "Type", value = "None" }]
+emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
