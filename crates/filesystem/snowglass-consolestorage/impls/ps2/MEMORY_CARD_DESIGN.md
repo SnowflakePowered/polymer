@@ -85,60 +85,66 @@ Projection files are disposable views and can always be regenerated from those t
 
 ## Proposed interfaces
 
-`MemoryCard` owns the canonical save-depot storage and manifest records. It grants an exclusive
-view lease in a requested projection format:
+`MemoryCard` owns the canonical save-depot storage and manifest records. It grants an exclusive,
+rooted storage view in a requested format:
 
 ```rust
 pub trait MemoryCard: Storage {
-    fn project(
+    fn view(
         &self,
         primary: &[SaveDepotId],
         capacity: MemoryCardCapacity,
-        format: &ProjectionFormatId,
-    ) -> Result<MemoryCardProjection, Error>;
+        format: &MemoryCardFormatId,
+    ) -> Result<MemoryCardView, Error>;
 }
 ```
 
-The lease and reconciliation machinery is common, but a projection may be a file or a directory:
+Every view is a storage namespace plus the entry within it that the emulator mounts:
 
 ```rust
-pub enum MemoryCardProjection {
-    Image(MemoryCardView<dyn RandomAccessImage>),
-    Directory(MemoryCardView<dyn ProjectedTree>),
+pub struct MemoryCardView {
+    storage: Arc<dyn MountableStorage>,
+    entry: String,
 }
 ```
 
-`raw` produces `Image`; `pcsx2` produces `Directory`. Both interfaces remain independent of VFS
-and WinFSP. The VFS crate supplies `FileNode` and tree adapters around them.
+`entry` is a validated relative storage path. Its metadata identifies the mount shape:
 
-The raw image interface remains fixed-length random access:
+- `raw` names a fixed-length seekable file within the namespace.
+- `pcsx2` names the namespace root (`""`), which is a synthetic directory tree.
 
-```rust
-pub trait RandomAccessImage: Send + Sync {
-    fn len(&self) -> u64;
-    fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, Error>;
-    fn write_at(&self, offset: u64, input: &[u8]) -> Result<usize, Error>;
-    fn flush(&self) -> Result<(), Error>;
-}
-```
+There is no `MemoryCardProjection`, `ProjectedTree`, or `RandomAccessImage` public abstraction.
+`StorageFile` already supplies read, write, and seek; `MountableStorage` adds rename, truncate, and
+sync. An mmap or owned page cache remains an implementation detail of the raw storage.
 
-An mmap is an implementation choice for the image buffer, not part of the contract; an owned page
-cache is also valid.
+The namespace is significant even for a raw file: emulators may write a temporary sibling and
+atomically rename it over the card. The VFS adapter retains the namespace while mounting `entry`,
+so that replacement transaction stays owned by the same view. The final namespace `Arc` is also
+the view lease. Its implementation owns the opening snapshot, dirty state, and reconciliation
+boundary. Dropping its final reference performs the last best-effort reconciliation; explicit
+`sync` remains the observable commit boundary.
 
 Format providers are console-specific and operate on logical snapshots plus manifest metadata:
 
 ```rust
-pub trait MemoryCardProjectionFormat: Send + Sync {
-    fn id(&self) -> &ProjectionFormatId;
-    fn project(&self, saves: &SaveDepotSnapshot, metadata: &ProjectionMetadata)
-        -> Result<MemoryCardProjection, Error>;
-    fn reconcile(&self, projection: &MemoryCardProjection)
-        -> Result<(SaveDepotSnapshot, ProjectionMetadata), DecodeError>;
+pub trait MemoryCardFormat: Send + Sync {
+    fn id(&self) -> &MemoryCardFormatId;
+    fn open(&self, session: MemoryCardSession)
+        -> Result<MemoryCardView, Error>;
 }
 ```
 
-PS1, PS2, Dreamcast VMU, and GameCube cards can share the view, dirty-range tracking, leases, and
-VFS adapter while supplying different format implementations.
+`MemoryCardSession` is the common internal capability containing the exclusive writer lease,
+opening snapshot, manifest metadata, and atomic reconcile operation. A format implementation owns
+the storage operations and console codec which use that session. PS1, PS2, Dreamcast VMU, and
+GameCube cards therefore share session and commit machinery without forcing file and directory
+formats through different public interfaces.
+
+The current `Storage` trait also contains artifact-registry, branding, and volume-label operations.
+Those are managed-volume concerns rather than filesystem operations. They should move to a
+`ManagedStorage: MountableStorage` extension before projections are implemented. `DirectoryStorage`
+implements both; memory-card views implement only `MountableStorage` and never need dummy manifest
+or branding behavior.
 
 At the plugin boundary, the launch supplies exactly one authorized memory-card capability.
 `mountMemoryCard` accepts only a target path and projection format:
@@ -147,10 +153,11 @@ At the plugin boundary, the launch supplies exactly one authorized memory-card c
 mountMemoryCard(target: string, options: { format: "raw" | "pcsx2" }): void;
 ```
 
-The operation asks the assigned card to resolve the format. It mounts an image as a VFS file and a
-directory projection as a VFS tree. A plugin cannot name a card, depot, or host path, and requesting
-an unsupported format fails during launch setup. `raw` is a common format identifier whose codec is
-selected by the card's platform; `pcsx2` is available only from the PS2 provider.
+The operation asks the assigned card to resolve the format, looks up the view's `entry`, and mounts
+it as either a VFS file or tree. A file adapter keeps the containing storage namespace so sibling
+replacement remains a single-storage rename. A plugin cannot name a card, depot, or host path, and
+requesting an unsupported format fails during launch setup. `raw` is a common format identifier
+whose codec is selected by the card's platform; `pcsx2` is available only from the PS2 provider.
 
 ## Write synchronization
 
@@ -183,8 +190,8 @@ flush/close and subsequent launches, not between two concurrent emulator process
 
 ## Implementation order
 
-1. Add the VFS `FileNode` adapter for a fixed-size `RandomAccessImage`, including finalize-on-lease
-   behavior.
+1. Add the VFS adapter for a `MemoryCardView` storage entry, including namespace-preserving atomic
+   replacement and finalize-on-lease behavior.
 2. Implement the PS2 parser/builder in Snowglass, using the debug crate only as a test oracle.
 3. Add manifest tables and transactions for console metadata and format-specific projection state.
 4. Add the pluginhost `mountMemoryCard(path, { format })` capability and resolve the requested
