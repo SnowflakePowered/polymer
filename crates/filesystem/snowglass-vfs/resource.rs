@@ -325,7 +325,7 @@ impl PreparedFilesystem {
             .resolve(target)?
             .filter(|binding| binding.at() == target)
             .ok_or_else(|| VfsError::NotFound(target.clone()))?;
-        if !target_binding.permissions().can_replace() {
+        if !target_binding.permissions().can_write() {
             return Err(VfsError::PermissionDenied(target.clone()));
         }
         let crate::BindingKind::File(resource) = target_binding.kind() else {

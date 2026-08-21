@@ -17,7 +17,7 @@ pub(crate) fn unrestricted() -> StoragePermissions {
     Arc::new(|_| Permissions::ALL)
 }
 
-pub(crate) fn materialize_adoptable_file(
+pub(crate) fn materialize_file(
     storage: Arc<dyn MountableStorage>,
     path: String,
     permissions: StoragePermissions,
@@ -28,7 +28,6 @@ pub(crate) fn materialize_adoptable_file(
             storage,
             path,
             permissions,
-            adoptable: true,
         }),
         lease,
     }
@@ -165,7 +164,6 @@ impl DirectoryNode for StorageDirectoryNode {
             storage: self.storage.clone(),
             path,
             permissions: self.permissions.clone(),
-            adoptable: false,
         }))
     }
 
@@ -221,7 +219,6 @@ fn node(
             storage: storage.clone(),
             path,
             permissions: permissions.clone(),
-            adoptable: false,
         })),
     }
 }
@@ -230,7 +227,6 @@ struct StorageFileNode {
     storage: Arc<dyn MountableStorage>,
     path: String,
     permissions: StoragePermissions,
-    adoptable: bool,
 }
 
 impl FileNode for StorageFileNode {
@@ -287,7 +283,8 @@ impl FileNode for StorageFileNode {
     }
 
     fn adopt(&self, source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
-        if !self.adoptable {
+        let permissions = self.permissions.as_ref()(&self.path);
+        if !permissions.contains(Permissions::WRITE | Permissions::ADOPT) {
             return Err(VfsError::Unsupported(
                 "the storage file does not accept source-node adoption".into(),
             ));

@@ -7,8 +7,8 @@ bitflags::bitflags! {
         const READ = 1;
         const WRITE = 2;
         const EXECUTE = 4;
-        /// Allows an ordinary source node to atomically replace a mounted file.
-        const REPLACE = 8;
+        /// The backend can adopt a source node as the file at this path.
+        const ADOPT = 8;
     }
 }
 
@@ -27,10 +27,6 @@ impl Permissions {
     pub const fn can_execute(self) -> bool {
         self.contains(Self::EXECUTE)
     }
-
-    pub const fn can_replace(self) -> bool {
-        self.contains(Self::REPLACE)
-    }
 }
 
 impl FromStr for Permissions {
@@ -44,7 +40,7 @@ impl FromStr for Permissions {
                     b'r' => (1, Self::READ.bits()),
                     b'w' => (2, Self::WRITE.bits()),
                     b'x' => (3, Self::EXECUTE.bits()),
-                    b'p' => (4, Self::REPLACE.bits()),
+                    b'a' => (4, Self::ADOPT.bits()),
                     _ => return None,
                 };
                 (order > previous && bits & bit == 0).then_some((bits | bit, order))
@@ -66,8 +62,8 @@ impl fmt::Display for Permissions {
         if self.can_execute() {
             formatter.write_str("x")?;
         }
-        if self.can_replace() {
-            formatter.write_str("p")?;
+        if self.contains(Self::ADOPT) {
+            formatter.write_str("a")?;
         }
         Ok(())
     }
@@ -80,12 +76,12 @@ mod tests {
     #[test]
     fn accepts_only_canonical_subsets() {
         for mode in [
-            "", "r", "w", "x", "p", "rw", "rx", "rp", "wx", "wp", "xp", "rwx", "rwp", "rxp", "wxp",
-            "rwxp",
+            "", "r", "w", "x", "a", "rw", "rx", "ra", "wx", "wa", "xa", "rwx", "rwa", "rxa", "wxa",
+            "rwxa",
         ] {
             assert_eq!(mode.parse::<Permissions>().unwrap().to_string(), mode);
         }
-        for mode in ["wr", "rr", "rxx", "pp", "a", "rwxr", "rwxpr"] {
+        for mode in ["wr", "rr", "rxx", "aa", "p", "rwxr", "rwxar"] {
             assert!(mode.parse::<Permissions>().is_err(), "{mode}");
         }
     }
