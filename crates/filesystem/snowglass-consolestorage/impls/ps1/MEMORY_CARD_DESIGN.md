@@ -34,27 +34,23 @@ The debug converter and `ps1-memcard` dependency are not production code.
 
 ## Canonical representation
 
-Use one directory per logical save, keyed by a reversible encoding of the raw PS1 filename:
+Use one directory per logical save. Only the save payload belongs in the depot:
 
 ```text
-card/
-  _snowglass/
-    format.json            # version, geometry, allocation/order metadata
-    template.mcd           # opaque physical bytes from the last coherent image
-  <encoded-save-name>/
-    dirent.bin              # original 128-byte first directory entry
+save-depots/
+  <save-depot-id>/
     data.bin                # chained 8 KiB blocks in logical order
 ```
 
-The raw filename must not be used directly as a Windows path. Its 20-byte field can contain names
-which are invalid or ambiguous on the host filesystem. Hex or percent encoding is reversible and
-case-stable.
+The manifest database maps the depot ID to the raw 20-byte filename, original directory entry,
+allocation order, and other console metadata. The raw filename must not be used directly as a
+Windows path because it can contain names which are invalid or ambiguous on the host filesystem.
 
-`template.mcd` preserves formatted free blocks, deleted-save residue, broken-sector metadata, and
-unknown bytes. It is codec state, not the logical source of truth: projection overlays the current
-canonical saves and regenerated structural fields onto it. Reconciliation refreshes it only after
-the raw image parses as a coherent card. This gives exact no-change round trips without making a
-monolithic image the user-facing save representation.
+An opaque physical template in the manifest database preserves formatted free blocks,
+deleted-save residue, broken-sector metadata, and unknown bytes. It is codec state, not the logical
+source of truth: projection overlays the current canonical saves onto it. Reconciliation refreshes
+it only after the raw image parses as a coherent card. This gives exact no-change round trips
+without making a monolithic image the user-facing save representation.
 
 ## PS1 adapter responsibilities
 
@@ -98,8 +94,13 @@ and subsequent launches.
 
 The DuckStation plugin now boots a cue/bin game tree, BIOS, portable settings, and a shared raw
 card through WinFSP. It temporarily mounts the supplied NAND at `/User/memcards`. Once the storage
-capability exists, that mount should become a named `MemoryCardView` file mount; DuckStation
-continues to see the same `snowglass.mcd` path.
+capability exists, it should request the raw projection explicitly:
+
+```ts
+args.filesystem.mountMemoryCard("/User/memcards/snowglass.mcd", { format: "raw" });
+```
+
+DuckStation continues to see the same path; only the plugin capability changes.
 
 The same PS1 view can be passed to RetroArch cores that accept raw `.mcd`/`.srm` cards. No
 emulator-specific conversion is required after the PS1 adapter produces the view.
