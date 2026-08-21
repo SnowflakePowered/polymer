@@ -73,4 +73,11 @@ impl Error {
             source,
         }
     }
+
+    pub fn not_found(path: &str) -> Self {
+        Error::Io {
+            path: path.to_owned(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "entry not found"),
+        }
+    }
 }

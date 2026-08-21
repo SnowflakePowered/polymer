@@ -10,11 +10,9 @@ use jiff::Timestamp;
 use parking_lot::Mutex;
 
 use crate::{
-    BoxFuture, DirEntry, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile, StorageRead,
+    BoxFuture, DirectoryStorage, EntryKind, Error, InstallResult, Metadata, MountableStorage,
+    ReadDir, Storage, StorageFile, StorageRead,
 };
-
-pub(super) const ENTRY: &str = "card.mcd";
 
 pub(super) struct RawMemoryStorage {
     backing: Arc<DirectoryStorage>,
@@ -36,8 +34,8 @@ impl RawMemoryStorage {
     }
 
     fn handle(&self, path: &str) -> Result<MemoryHandle, Error> {
-        if path != ENTRY {
-            return Err(not_found(path));
+        if !path.is_empty() {
+            return Err(Error::not_found(path));
         }
         Ok(MemoryHandle {
             bytes: self.bytes.clone(),
@@ -56,47 +54,31 @@ impl fmt::Debug for RawMemoryStorage {
 
 impl Storage for RawMemoryStorage {
     fn exists(&self, path: &str) -> bool {
-        path.is_empty() || path == ENTRY
+        path.is_empty()
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        match path {
-            "" => Ok(Metadata {
-                kind: EntryKind::Directory,
-                len: 0,
-                mtime: Timestamp::now(),
-            }),
-            ENTRY => Ok(Metadata {
+        if path.is_empty() {
+            Ok(Metadata {
                 kind: EntryKind::File,
                 len: self.bytes.lock().len() as u64,
                 mtime: Timestamp::now(),
-            }),
-            _ => Err(not_found(path)),
+            })
+        } else {
+            Err(Error::not_found(path))
         }
     }
 
-    fn read_dir(&self, path: &str, _recursive: bool) -> Result<ReadDir<'_>, Error> {
-        if !path.is_empty() {
-            return Err(not_found(path));
-        }
-        Ok(ReadDir::surface(
-            vec![DirEntry {
-                name: ENTRY.to_owned(),
-                path: ENTRY.to_owned(),
-                kind: EntryKind::File,
-            }]
-            .into_iter(),
+    fn read_dir(&self, _path: &str, _recursive: bool) -> Result<ReadDir<'_>, Error> {
+        Err(Error::Unsupported(
+            "a raw memory-card view is a file".to_owned(),
         ))
     }
 
-    fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        if path.is_empty() {
-            Ok(())
-        } else {
-            Err(Error::Unsupported(
-                "a raw memory-card view has no directories".to_owned(),
-            ))
-        }
+    fn create_dir_all(&self, _path: &str) -> Result<(), Error> {
+        Err(Error::Unsupported(
+            "a raw memory-card view is a file".to_owned(),
+        ))
     }
 
     fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
@@ -119,8 +101,8 @@ impl Storage for RawMemoryStorage {
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
-        if path != ENTRY {
-            return Err(not_found(path));
+        if !path.is_empty() {
+            return Err(Error::not_found(path));
         }
         self.bytes.lock().clear();
         Ok(())
@@ -155,8 +137,8 @@ impl MountableStorage for RawMemoryStorage {
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        if path != ENTRY {
-            return Err(not_found(path));
+        if !path.is_empty() {
+            return Err(Error::not_found(path));
         }
         let len = usize::try_from(len)
             .map_err(|_| Error::Unsupported("raw memory-card image is too large".to_owned()))?;
@@ -165,8 +147,8 @@ impl MountableStorage for RawMemoryStorage {
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
-        if path != ENTRY {
-            return Err(not_found(path));
+        if !path.is_empty() {
+            return Err(Error::not_found(path));
         }
         let image = self.bytes.lock();
         (self.reconcile)(&image)
@@ -225,12 +207,5 @@ impl Seek for MemoryHandle {
         }
         self.position = position as u64;
         Ok(self.position)
-    }
-}
-
-fn not_found(path: &str) -> Error {
-    Error::Io {
-        path: path.to_owned(),
-        source: std::io::Error::new(std::io::ErrorKind::NotFound, "entry not found"),
     }
 }

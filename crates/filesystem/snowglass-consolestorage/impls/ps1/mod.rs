@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use self::raw::{BLOCK_SIZE, DATA_BLOCKS, ENTRY as RAW_ENTRY, NATIVE_ID_SIZE, RawMemoryStorage};
+use self::raw::{BLOCK_SIZE, DATA_BLOCKS, NATIVE_ID_SIZE, RawMemoryStorage};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -436,7 +436,7 @@ impl MemoryCard for PlaystationMemoryCard {
             image,
             move |bytes| card.reconcile(&projected, bytes),
         ));
-        MemoryCardView::new(storage, RAW_ENTRY)
+        MemoryCardView::new(storage, "")
     }
 }
 
