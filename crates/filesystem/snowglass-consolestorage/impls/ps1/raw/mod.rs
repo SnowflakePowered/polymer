@@ -1,3 +1,7 @@
+mod card;
+
+pub(super) use card::{BLOCK_SIZE, DATA_BLOCKS, MemoryCard, NATIVE_ID_SIZE, ParseError, Save};
+
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -164,7 +168,7 @@ impl MountableStorage for RawMemoryStorage {
         if path != ENTRY {
             return Err(not_found(path));
         }
-        let image = self.bytes.lock().clone();
+        let image = self.bytes.lock();
         (self.reconcile)(&image)
     }
 }

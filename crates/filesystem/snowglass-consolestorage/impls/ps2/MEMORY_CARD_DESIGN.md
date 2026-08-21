@@ -7,7 +7,7 @@ card. Those directories contain only console-visible save directories and files.
 bookkeeping such as `_pcsx2_superblock`, `_pcsx2_meta_directory`, `_pcsx2_index`, and
 `_pcsx2_meta` is projection metadata and must not be materialized in a save depot.
 
-Projection metadata belongs in the manifest database. A plugin asks for the representation its
+Projection metadata belongs in a per-card `rkyv` archive. A plugin asks for the representation its
 emulator consumes; the memory-card capability owns translation and metadata:
 
 ```ts
@@ -55,44 +55,62 @@ save-depots/
       <game file>
 ```
 
-The `pcsx2` projection is a directory view. It synthesizes PCSX2's reserved files from manifest
-records and maps ordinary save files to the canonical depots. Writes to reserved files update
-manifest records; writes to game files update the corresponding depot.
+The `pcsx2` projection is a directory view. It synthesizes PCSX2's reserved files from the archived
+metadata and maps ordinary save files to the canonical depots. Writes to reserved files are decoded
+into typed metadata; writes to game files update the corresponding depot.
 
 The `raw` projection is a PS2 card image with 16,384 pages of 512 data bytes plus 16 spare/ECC
 bytes per page. An 8 MiB card is therefore 8,650,752 bytes on disk. Its superblock, FAT, directory
-entries, backup blocks, and ECC are encoded from the same depot snapshot and manifest metadata.
+entries, backup blocks, and ECC are encoded from the same depot snapshot and archived metadata.
 
 The production PS2 adapter must implement the Sony superblock, indirect FAT, FAT chains,
 directory entries, backup blocks, ECC, and PCSX2 filename escaping. File order, timestamps, modes,
-and unknown entry bytes are observable and cannot be replaced with host directory iteration; they
-are persisted in the manifest database.
+attributes, and exact PS2 names are observable and cannot be replaced with host directory
+iteration; they are persisted in the metadata archive.
 
-## Manifest metadata
+## Archived metadata
 
-The existing artifact manifest tables should not be overloaded. Add memory-card tables owned by
-console storage, conceptually:
+Metadata is stored as a small, typed `rkyv` snapshot owned by the memory card. It is not stored in
+SQLite or Turso, and PCSX2's raw metadata files are not retained as untyped byte blobs. The PS2
+entry metadata is represented conceptually as:
 
-```text
-memory_cards(card_id, platform, capacity, generation)
-memory_card_saves(card_id, save_depot_id, ordinal, console_name)
-memory_card_metadata(card_id, save_depot_id?, namespace, key, value, generation)
+```rust
+#[derive(Archive, Serialize, Deserialize)]
+struct Ps2EntryMetadata {
+    order: u32,
+    mode: u32,
+    created: Ps2Timestamp,
+    modified: Ps2Timestamp,
+    attributes: u32,
+    name: [u8; 32],
+}
+
+#[derive(Archive, Serialize, Deserialize)]
+struct Ps2Timestamp {
+    second: u8,
+    minute: u8,
+    hour: u8,
+    day: u8,
+    month: u8,
+    year: u16,
+}
 ```
 
-`memory_card_saves` establishes card membership and stable ordering. `memory_card_metadata` holds
-console semantics which are not representable by host files, such as raw names, timestamps, modes,
-opaque directory-entry bytes, allocation hints, and the state surfaced by PCSX2's reserved files.
-The `namespace` identifies the codec which owns a record; it does not create a second source of
-truth for a projection. Both the `pcsx2` and `raw` codecs read and update the same PS2 metadata.
-All records are versioned with the depot snapshot so stale metadata is never applied to newer save
-data.
+`mode` remains a `u32` so every flag bit survives a round trip. `name` remains the exact fixed-width
+PS2 name. File length, directory child count, cluster allocation, and parent directory-entry indexes
+are derived when a projection is built and are not archived. The `_pcsx2_index`,
+`_pcsx2_meta_directory`, and `_pcsx2_meta/*` codecs all translate to and from this same typed PS2
+metadata.
 
-The database is authoritative for metadata, while save depots are authoritative for game payloads.
-Projection files are disposable views and can always be regenerated from those two sources.
+The archive is immutable once published. An update builds and validates a complete replacement,
+serializes it to a temporary sibling file, flushes it, and atomically replaces the previous archive;
+archived bytes are never modified in place. The archive is authoritative for metadata, while save
+depots are authoritative for game payloads. Projection files are disposable views and can always be
+regenerated from those two sources.
 
 ## Proposed interfaces
 
-`MemoryCard` owns the canonical save-depot storage and manifest records. It grants an exclusive,
+`MemoryCard` owns the canonical save-depot storage and archived metadata. It grants an exclusive,
 rooted storage view in a requested format:
 
 ```rust
@@ -135,7 +153,7 @@ The final view `Arc` is the card lease. Its implementation owns the opening snap
 and reconciliation boundary. Dropping its final reference performs the last best-effort
 reconciliation; explicit `sync` remains the observable commit boundary.
 
-Format providers are console-specific and operate on logical snapshots plus manifest metadata:
+Format providers are console-specific and operate on logical snapshots plus archived metadata:
 
 ```rust
 pub trait MemoryCardFormat: Send + Sync {
@@ -146,7 +164,7 @@ pub trait MemoryCardFormat: Send + Sync {
 ```
 
 `MemoryCardSession` is the common internal capability containing the exclusive writer lease,
-opening snapshot, manifest metadata, and atomic reconcile operation. A format implementation owns
+opening snapshot, archived metadata, and atomic reconcile operation. A format implementation owns
 the storage operations and console codec which use that session. PS1, PS2, Dreamcast VMU, and
 GameCube cards therefore share session and commit machinery without forcing file and directory
 formats through different public interfaces.
@@ -209,7 +227,7 @@ flush/close and subsequent launches, not between two concurrent emulator process
 1. Add the VFS adapter for a `MemoryCardView` storage entry, including source-node adoption,
    open-handle observer transfer, and finalize-on-lease behavior.
 2. Implement the PS2 parser/builder in Snowglass, using the debug crate only as a test oracle.
-3. Add manifest tables and transactions for console metadata and format-specific projection state.
+3. Add the typed, validated `rkyv` metadata archive and atomic whole-file replacement.
 4. Resolve the format supplied to pluginhost `mountStorage` against the invocation-assigned card.
 5. Implement the PCSX2 directory projection without writing reserved `_pcsx2_*` files into save
    depots, with fixtures for ordering, timestamps, nonstandard modes, empty files, deletion, and
