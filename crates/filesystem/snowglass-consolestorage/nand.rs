@@ -53,10 +53,7 @@ pub trait VirtualNand: Send + Sync {
         Self: Sized;
 
     async fn metadata(&self) -> Result<NandMetadata, Error> {
-        self.root()
-            .volumeinfo()
-            .await?
-            .ok_or(Error::UnclaimedNand)
+        self.root().volumeinfo().await?.ok_or(Error::UnclaimedNand)
     }
 
     /// Distinguishes this NAND from the user's others, e.g. for scoping saves.

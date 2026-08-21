@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
 use crate::Error;
 use crate::nand::VirtualNand;
-use futures::prelude::Stream;
 use artifacts::Artifact;
+use futures::prelude::Stream;
+use std::path::{Path, PathBuf};
 
-mod directory;
 pub mod artifacts;
+mod directory;
 
 pub use directory::DirectoryInstall;
 
@@ -42,12 +42,12 @@ impl TryFrom<u8> for DepotType {
 
 pub trait Depot {
     fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool;
-    
-    /// Validate the contents of the depot. 
-    /// 
+
+    /// Validate the contents of the depot.
+    ///
     /// Returns the names of the contents that don't validate.
     fn validate_contents(&self) -> Vec<String>;
-    
+
     fn depot_type(&self) -> DepotType;
 
     /// Install the depot to the nand `N`.
@@ -66,8 +66,13 @@ pub trait Depot {
     /// If the stream encounters an error, it will terminate. Only after, will the future return
     /// the same error as the last poll of the stream returned.
     #[must_use]
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> (Box<dyn Future<Output=Result<Artifact, Error>>>,
-                                                              Box<dyn Stream<Item=Result<String, Error>> + 'a>);
+    fn install<'a, N: VirtualNand>(
+        &'a self,
+        nand: &'a N,
+    ) -> (
+        Box<dyn Future<Output = Result<Artifact, Error>>>,
+        Box<dyn Stream<Item = Result<String, Error>> + 'a>,
+    );
 }
 
 pub enum IconHint {
@@ -80,12 +85,16 @@ pub enum IconHint {
 pub struct DepotFile {
     path: PathBuf,
     blake3: [u8; 32],
-    byte_length: u64
+    byte_length: u64,
 }
 
 impl DepotFile {
     pub fn new(path: PathBuf, blake3: [u8; 32], byte_length: u64) -> Self {
-        Self { path, blake3, byte_length }
+        Self {
+            path,
+            blake3,
+            byte_length,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -100,4 +109,3 @@ impl DepotFile {
         self.byte_length
     }
 }
-

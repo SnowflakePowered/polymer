@@ -56,7 +56,10 @@ impl DepotEntry {
             let b = bytes[i];
             assert!(b != b'\\', "structure entries must use `/` as a separator");
             if b == b'/' {
-                assert!(i > component_start, "structure entry has an empty component");
+                assert!(
+                    i > component_start,
+                    "structure entry has an empty component"
+                );
                 assert!(
                     !is_dots(bytes, component_start, i),
                     "structure entries may not contain `.` or `..`"
@@ -65,7 +68,10 @@ impl DepotEntry {
             }
             i += 1;
         }
-        assert!(len > component_start, "structure entry has an empty component");
+        assert!(
+            len > component_start,
+            "structure entry has an empty component"
+        );
         assert!(
             !is_dots(bytes, component_start, len),
             "structure entries may not contain `.` or `..`"

@@ -41,7 +41,11 @@ impl<'de> Deserialize<'de> for Label {
         let element = Text::deserialize(deserializer)?;
 
         Ok(Label(
-            element.text.split_whitespace().collect::<Vec<_>>().join(" "),
+            element
+                .text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
         ))
     }
 }

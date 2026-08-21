@@ -17,11 +17,12 @@ use uuid::Uuid;
 
 use self::raw::{ENTRY as RAW_ENTRY, RawMemoryStorage};
 use crate::savegame::{
-    SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
+    Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
 use crate::{
-    BoxFuture, ChangeSignal, DirectoryStorage, Error, InstallResult, MemoryCard, MemoryCardView,
-    Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead, VolumeStorage,
+    BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, MemoryCard,
+    MemoryCardView, Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead,
+    VolumeStorage,
 };
 
 const BLOCK_SIZE: usize = 8 * 1024;
@@ -29,7 +30,8 @@ const FRAME_SIZE: usize = 128;
 const DATA_BLOCKS: usize = 15;
 const RAW_SIZE: usize = BLOCK_SIZE * (DATA_BLOCKS + 1);
 const NATIVE_ID_SIZE: usize = 21;
-const SAVE_ROOT: &str = "save-depots";
+const SAVE_HEADER_SIZE: usize = 12;
+const SAVE_ROOT: &str = "card";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CanonicalSave {
@@ -39,27 +41,28 @@ struct CanonicalSave {
 
 impl CanonicalSave {
     fn from_native_id(native_id: [u8; NATIVE_ID_SIZE]) -> Self {
-        let digest = blake3::hash(&native_id);
         Self {
-            id: SaveDepotId(u64::from_le_bytes(
-                digest.as_bytes()[..8].try_into().expect("eight bytes"),
-            )),
+            id: save_depot_id(&native_id[..SAVE_HEADER_SIZE]),
             native_id,
         }
     }
 
-    fn from_directory_name(name: &str) -> Option<Self> {
-        let bytes = decode_hex(name)?;
-        let native_id = bytes.try_into().ok()?;
+    fn from_native_name(name: &str) -> Option<Self> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > NATIVE_ID_SIZE
+            || name.starts_with('.')
+            || name.contains(['/', '\\'])
+        {
+            return None;
+        }
+        let mut native_id = [0; NATIVE_ID_SIZE];
+        native_id[..bytes.len()].copy_from_slice(bytes);
         Some(Self::from_native_id(native_id))
     }
 
-    fn root(&self) -> String {
-        format!("{SAVE_ROOT}/{}", encode_hex(&self.native_id))
-    }
-
     fn data_path(&self) -> String {
-        format!("{}/data.bin", self.root())
+        format!("{SAVE_ROOT}/{}", native_name(&self.native_id))
     }
 }
 
@@ -109,15 +112,18 @@ impl PlaystationMemoryCard {
             return Vec::new();
         };
         let mut saves = entries
-            .filter_map(|entry| CanonicalSave::from_directory_name(&entry.name))
-            .filter(|save| self.storage.exists(&save.data_path()))
+            .filter(|entry| entry.kind == EntryKind::File)
+            .filter_map(|entry| CanonicalSave::from_native_name(&entry.name))
             .collect::<Vec<_>>();
         saves.sort_by(|left, right| left.native_id.cmp(&right.native_id));
         saves
     }
 
-    fn save(&self, id: SaveDepotId) -> Option<CanonicalSave> {
-        self.saves().into_iter().find(|save| save.id == id)
+    fn saves_in_depot(&self, id: SaveDepotId) -> Vec<CanonicalSave> {
+        self.saves()
+            .into_iter()
+            .filter(|save| save.id == id)
+            .collect()
     }
 
     fn read_payload(&self, save: &CanonicalSave) -> Result<Vec<u8>, Error> {
@@ -151,30 +157,24 @@ impl PlaystationMemoryCard {
             title,
             description: native_name(&save.native_id),
             timestamp,
-            root_path: save.root(),
+            root_path: save.data_path(),
         })
     }
 
-    fn projection_order(&self, primary: &[SaveDepotId]) -> Result<Vec<CanonicalSave>, Error> {
+    fn projection_order(&self, primary: &[SaveDepotId]) -> Vec<CanonicalSave> {
         let saves = self.saves();
-        let mut selected = HashSet::new();
-        let mut ordered = Vec::new();
-        for id in primary {
-            if !selected.insert(id.0) {
-                continue;
-            }
-            ordered.push(
-                saves
-                    .iter()
-                    .find(|save| save.id == *id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        Error::InvalidPath(format!("unknown primary save depot {:016x}", id.0))
-                    })?,
-            );
-        }
-        ordered.extend(saves.into_iter().filter(|save| selected.insert(save.id.0)));
-        Ok(ordered)
+        let primary = primary.iter().map(|id| id.0).collect::<HashSet<_>>();
+        let mut ordered = saves
+            .iter()
+            .filter(|save| primary.contains(&save.id.0))
+            .cloned()
+            .collect::<Vec<_>>();
+        ordered.extend(
+            saves
+                .into_iter()
+                .filter(|save| !primary.contains(&save.id.0)),
+        );
+        ordered
     }
 
     fn project(
@@ -192,7 +192,7 @@ impl PlaystationMemoryCard {
         let mut image = formatted_card();
         let mut projected = Vec::new();
         let mut next_block = 0usize;
-        for save in self.projection_order(primary)? {
+        for save in self.projection_order(primary) {
             let payload = self.read_payload(&save)?;
             let blocks = payload.len().max(1).div_ceil(BLOCK_SIZE);
             if next_block + blocks > capacity_blocks as usize {
@@ -225,7 +225,6 @@ impl PlaystationMemoryCard {
                 continue;
             }
             self.storage.remove(&save.data_path())?;
-            self.storage.remove(&save.root())?;
         }
         Ok(())
     }
@@ -237,9 +236,7 @@ impl PlaystationMemoryCard {
         {
             return Ok(());
         }
-        let root = save.root();
         let path = save.data_path();
-        self.storage.create_dir_all(&root)?;
         let mut output = self.storage.create(&path)?;
         output.write_all(payload).map_err(|source| Error::Io {
             path: path.clone(),
@@ -252,7 +249,11 @@ impl PlaystationMemoryCard {
         let selected = if saves.is_empty() {
             self.saves()
         } else {
-            saves.iter().filter_map(|id| self.save(*id)).collect()
+            let ids = saves.iter().map(|id| id.0).collect::<HashSet<_>>();
+            self.saves()
+                .into_iter()
+                .filter(|save| ids.contains(&save.id.0))
+                .collect()
         };
         selected
             .into_iter()
@@ -367,26 +368,41 @@ impl MemoryCard for PlaystationMemoryCard {
 }
 
 impl SaveGameSink for PlaystationMemoryCard {
+    fn infer_save_depot(&self, package: &Package) -> SaveDepotId {
+        let serial = package
+            .serial()
+            .expect("a PlayStation package must expose a product serial");
+        save_depot_id(&save_header_from_serial(serial))
+    }
+
     fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {
+        let mut seen = HashSet::new();
         self.saves()
             .into_iter()
+            .filter(|save| seen.insert(save.id.0))
             .filter_map(|save| self.describe_save(&save).ok())
             .collect::<Vec<_>>()
             .into_iter()
     }
 
     fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
-        let save = self
-            .save(*id)
+        let saves = self.saves_in_depot(*id);
+        let save = saves
+            .first()
             .ok_or_else(|| Error::InvalidPath(format!("unknown save depot {:016x}", id.0)))?;
-        let bytes = self.read_payload(&save)?;
-        Ok(SaveDepot {
-            save_descriptor: self.describe_save(&save)?,
-            blobs: vec![SaveBlob {
+        let save_descriptor = self.describe_save(save)?;
+        let mut blobs = Vec::with_capacity(saves.len());
+        for save in saves {
+            let bytes = self.read_payload(&save)?;
+            blobs.push(SaveBlob {
                 target_path: PathBuf::from(save.data_path()),
                 blake3: *blake3::hash(&bytes).as_bytes(),
                 bytes,
-            }],
+            });
+        }
+        Ok(SaveDepot {
+            save_descriptor,
+            blobs,
         })
     }
 
@@ -396,15 +412,13 @@ impl SaveGameSink for PlaystationMemoryCard {
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>> {
         Box::pin(async move {
             let mut blobs = std::pin::pin!(blobs);
-            let mut installed = None;
+            let mut installed = None::<SaveDepotId>;
+            let mut representative = None;
             while let Some(blob) = blobs.next().await {
                 let target = blob.target_path.to_string_lossy().replace('\\', "/");
                 let save = save_from_data_path(&target)
                     .ok_or_else(|| Error::InvalidPath(target.clone()))?;
-                if installed
-                    .as_ref()
-                    .is_some_and(|installed: &CanonicalSave| installed != &save)
-                {
+                if installed.is_some_and(|installed| installed != save.id) {
                     return Err(Error::Unsupported(
                         "a PlayStation save install may contain only one depot".to_owned(),
                     ));
@@ -416,9 +430,10 @@ impl SaveGameSink for PlaystationMemoryCard {
                 if written.blake3 != blob.blake3 {
                     return Err(Error::IntegrityMatchFailed { failed: target });
                 }
-                installed = Some(save);
+                installed = Some(save.id);
+                representative.get_or_insert(save);
             }
-            let save = installed.ok_or(Error::InstallIncomplete)?;
+            let save = representative.ok_or(Error::InstallIncomplete)?;
             self.describe_save(&save)
         })
     }
@@ -611,11 +626,19 @@ fn parse_card(image: &[u8]) -> Result<MemCard, Error> {
             "raw image does not have a PlayStation card header",
         ));
     }
+    // psxmem treats the write-test frame at the end of the filesystem block as
+    // checksummed metadata. Real cards and DuckStation do not require that
+    // frame's payload to carry a valid stored checksum. Normalize only the
+    // parser's temporary copy; the projected image remains byte-for-byte intact.
+    let mut parse_image = image.to_vec();
+    let write_test = &mut parse_image[63 * FRAME_SIZE..64 * FRAME_SIZE];
+    update_checksum(write_test);
+
     let mut file = NamedTempFile::new().map_err(|source| Error::Io {
         path: "temporary PlayStation card".to_owned(),
         source,
     })?;
-    file.write_all(image).map_err(|source| Error::Io {
+    file.write_all(&parse_image).map_err(|source| Error::Io {
         path: file.path().display().to_string(),
         source,
     })?;
@@ -660,34 +683,30 @@ fn native_name(native_id: &[u8; NATIVE_ID_SIZE]) -> String {
         .to_owned()
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    encoded
+fn save_depot_id(header: &[u8]) -> SaveDepotId {
+    let digest = blake3::hash(header);
+    SaveDepotId(u64::from_le_bytes(
+        digest.as_bytes()[..8].try_into().expect("eight bytes"),
+    ))
 }
 
-fn decode_hex(encoded: &str) -> Option<Vec<u8>> {
-    if !encoded.len().is_multiple_of(2) {
-        return None;
-    }
-    encoded
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| Some((hex_digit(pair[0])? << 4) | hex_digit(pair[1])?))
-        .collect()
-}
-
-fn hex_digit(digit: u8) -> Option<u8> {
-    match digit {
-        b'0'..=b'9' => Some(digit - b'0'),
-        b'a'..=b'f' => Some(digit - b'a' + 10),
-        b'A'..=b'F' => Some(digit - b'A' + 10),
-        _ => None,
-    }
+fn save_header_from_serial(serial: &str) -> [u8; SAVE_HEADER_SIZE] {
+    let serial = serial.trim().to_ascii_uppercase();
+    let key = match serial.get(..4) {
+        Some("SLPS" | "SCPS" | "SIPS") => b"BI",
+        Some("SLUS" | "SCUS") => b"BA",
+        Some("SLES" | "SCES") => b"BE",
+        _ => panic!("unsupported PlayStation product serial `{serial}`"),
+    };
+    assert_eq!(
+        serial.len(),
+        SAVE_HEADER_SIZE - key.len(),
+        "PlayStation product serial `{serial}` does not fit a memory-card header"
+    );
+    let mut header = [0; SAVE_HEADER_SIZE];
+    header[..key.len()].copy_from_slice(key);
+    header[key.len()..].copy_from_slice(serial.as_bytes());
+    header
 }
 
 fn save_from_data_path(path: &str) -> Option<CanonicalSave> {
@@ -695,8 +714,8 @@ fn save_from_data_path(path: &str) -> Option<CanonicalSave> {
     if components.next()? != SAVE_ROOT {
         return None;
     }
-    let save = CanonicalSave::from_directory_name(components.next()?)?;
-    (components.next()? == "data.bin" && components.next().is_none()).then_some(save)
+    let save = CanonicalSave::from_native_name(components.next()?)?;
+    components.next().is_none().then_some(save)
 }
 
 fn malformed(reason: &str) -> Error {
@@ -731,7 +750,6 @@ mod tests {
 
     fn add_save(card: &PlaystationMemoryCard, native_id: [u8; NATIVE_ID_SIZE], data: &[u8]) {
         let save = CanonicalSave::from_native_id(native_id);
-        card.storage.create_dir_all(&save.root()).unwrap();
         card.storage
             .create(&save.data_path())
             .unwrap()
@@ -752,9 +770,17 @@ mod tests {
         native_id[..12].copy_from_slice(b"BASCUS-94900");
         let save = CanonicalSave::from_native_id(native_id);
         assert_eq!(
-            CanonicalSave::from_directory_name(&encode_hex(&native_id)),
-            Some(save)
+            CanonicalSave::from_native_name("BASCUS-94900"),
+            Some(save.clone())
         );
+        assert_eq!(save.data_path(), "card/BASCUS-94900");
+    }
+
+    #[test]
+    fn package_serial_maps_to_the_native_save_header() {
+        assert_eq!(save_header_from_serial("slus-00838"), *b"BASLUS-00838");
+        assert_eq!(save_header_from_serial("SCPS-10001"), *b"BISCPS-10001");
+        assert_eq!(save_header_from_serial("SLES-01234"), *b"BESLES-01234");
     }
 
     #[tokio::test]
@@ -819,5 +845,67 @@ mod tests {
         let descriptor = card.describe_save(&primary).unwrap();
         assert_eq!(descriptor.title, "A");
         assert_eq!(descriptor.banner.unwrap().dimensions(), (16, 16));
+    }
+
+    #[tokio::test]
+    async fn package_identity_selects_every_native_file_in_its_depot() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = PlaystationMemoryCard::new_empty(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            Uuid::now_v7(),
+            None,
+        )
+        .await
+        .unwrap();
+        let first = CanonicalSave::from_native_id(native(b"BASLUS-00838 A"));
+        let second = CanonicalSave::from_native_id(native(b"BASLUS-00838 B"));
+        assert_eq!(first.id, second.id);
+        add_save(&card, first.native_id, &payload(1));
+        add_save(&card, second.native_id, &payload(2));
+
+        let package = Package::new(Some("SLUS-00838".to_owned()), None);
+        let inferred = card.infer_save_depot(&package);
+        assert_eq!(inferred, first.id);
+        assert_eq!(card.enumerate_saves().count(), 1);
+        assert_eq!(card.export_save(&inferred).unwrap().blobs.len(), 2);
+
+        let view = card.view(&[inferred], 2, "raw").unwrap();
+        let mut image = Vec::new();
+        view.storage()
+            .open_read(view.entry())
+            .unwrap()
+            .read_to_end(&mut image)
+            .unwrap();
+        let parsed = parse_card(&image).unwrap();
+        assert_eq!(parsed.info.dir_frames[0].filename, first.native_id);
+        assert_eq!(parsed.info.dir_frames[1].filename, second.native_id);
+    }
+
+    #[tokio::test]
+    async fn inferred_depot_notifies_when_its_first_native_file_is_created() {
+        let directory = tempfile::tempdir().unwrap();
+        let card = PlaystationMemoryCard::new_empty(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            Uuid::now_v7(),
+            None,
+        )
+        .await
+        .unwrap();
+        let package = Package::new(Some("SLUS-00838".to_owned()), None);
+        let inferred = card.infer_save_depot(&package);
+        let watcher = card.watch_saves(&[inferred]).unwrap();
+        let view = card.view(&[inferred], 15, "raw").unwrap();
+        let save = CanonicalSave::from_native_id(native(b"BASLUS-00838 BBLIT"));
+        let mut image = formatted_card();
+        write_save(&mut image, 0, &save.native_id, &payload(1), 1);
+
+        let mut output = view.storage().open(view.entry()).unwrap();
+        output.write_all(&image).unwrap();
+        view.storage().sync(view.entry()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), watcher.changed())
+            .await
+            .unwrap();
+
+        assert_eq!(card.enumerate_saves().next().unwrap().id, inferred);
     }
 }
