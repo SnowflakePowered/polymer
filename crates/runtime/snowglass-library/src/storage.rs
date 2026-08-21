@@ -1,12 +1,41 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
 use snowglass_consolestorage::nand::VirtualNand;
-use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, VolumeStorage};
+use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, Storage, VolumeStorage};
 use uuid::Uuid;
 
 pub type Nand = Arc<dyn VirtualNand>;
+
+pub enum ConsoleStorage {
+    Nand(Nand),
+    PlaystationMemoryCard(Arc<PlaystationMemoryCard>),
+}
+
+impl ConsoleStorage {
+    pub async fn metadata(&self) -> Result<NandMetadata, Error> {
+        match self {
+            Self::Nand(nand) => nand.metadata().await,
+            Self::PlaystationMemoryCard(card) => card.metadata().await,
+        }
+    }
+
+    pub async fn set_label(&self, label: Option<&str>) -> Result<(), Error> {
+        match self {
+            Self::Nand(nand) => nand.set_label(label).await,
+            Self::PlaystationMemoryCard(card) => card.set_label(label).await,
+        }
+    }
+
+    pub async fn game_saved(&self) -> Result<(), Error> {
+        match self {
+            Self::Nand(nand) => nand.game_saved().await,
+            Self::PlaystationMemoryCard(card) => card.game_saved().await,
+        }
+    }
+}
 
 pub struct StorageManager {
     root: PathBuf,
@@ -23,37 +52,61 @@ impl StorageManager {
 
     pub fn path(&self, platform: &str, id: Uuid) -> PathBuf {
         self.root
-            .join("nands")
+            .join(match platform {
+                PlaystationMemoryCard::PLATFORM => "memorycards",
+                _ => "nands",
+            })
             .join(platform)
             .join(id.simple().to_string())
     }
 
     pub fn supports(platform: &str) -> bool {
-        matches!(platform,  "NINTENDO_WIIU")
+        matches!(
+            platform,
+            WiiUNand::PLATFORM | PlaystationMemoryCard::PLATFORM
+        )
     }
 
-    pub async fn create(&self, platform: &str, label: Option<String>) -> Result<Nand, Error> {
+    pub async fn create(
+        &self,
+        platform: &str,
+        label: Option<String>,
+    ) -> Result<ConsoleStorage, Error> {
         if !Self::supports(platform) {
-            return Err(Error::Unsupported(format!("no nand layout for `{platform}`")));
+            return Err(Error::Unsupported(format!(
+                "no console storage layout for `{platform}`"
+            )));
         }
 
         let id = Uuid::now_v7();
         let storage = DirectoryStorage::new(self.path(platform, id)).await?;
 
-        let nand: Nand = match platform {
-            WiiUNand::PLATFORM => Arc::new(WiiUNand::new_empty(storage, id, label).await?),
+        let storage = match platform {
+            WiiUNand::PLATFORM => {
+                ConsoleStorage::Nand(Arc::new(WiiUNand::new_empty(storage, id, label).await?))
+            }
+            PlaystationMemoryCard::PLATFORM => ConsoleStorage::PlaystationMemoryCard(Arc::new(
+                PlaystationMemoryCard::new_empty(storage, id, label).await?,
+            )),
             _ => unreachable!("platform support was checked"),
         };
-        Ok(nand)
+        Ok(storage)
     }
 
-    pub async fn open(&self, platform: &str, id: Uuid) -> Result<Nand, Error> {
+    pub async fn open(&self, platform: &str, id: Uuid) -> Result<ConsoleStorage, Error> {
         let storage = DirectoryStorage::new(self.path(platform, id)).await?;
         let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
 
         match metadata.platform.as_str() {
-            WiiUNand::PLATFORM => Ok(Arc::new(WiiUNand::open(storage).await?)),
-            other => Err(Error::Unsupported(format!("no nand layout for `{other}`"))),
+            WiiUNand::PLATFORM => Ok(ConsoleStorage::Nand(Arc::new(
+                WiiUNand::open(storage).await?,
+            ))),
+            PlaystationMemoryCard::PLATFORM => Ok(ConsoleStorage::PlaystationMemoryCard(Arc::new(
+                PlaystationMemoryCard::open(storage).await?,
+            ))),
+            other => Err(Error::Unsupported(format!(
+                "no console storage layout for `{other}`"
+            ))),
         }
     }
 
@@ -62,11 +115,11 @@ impl StorageManager {
         platform: &str,
         id: Uuid,
         label: Option<String>,
-    ) -> Result<Nand, Error> {
-        let nand = self.open(platform, id).await?;
-        nand.set_label(label.as_deref()).await?;
+    ) -> Result<ConsoleStorage, Error> {
+        let storage = self.open(platform, id).await?;
+        storage.set_label(label.as_deref()).await?;
 
-        Ok(nand)
+        Ok(storage)
     }
 
     pub async fn list(&self) -> Result<Vec<NandMetadata>, Error> {
@@ -74,8 +127,8 @@ impl StorageManager {
 
         for platform in self.platforms().await {
             for id in self.ids(&platform).await {
-                if let Ok(nand) = self.open(&platform, id).await
-                    && let Ok(metadata) = nand.metadata().await
+                if let Ok(storage) = self.open(&platform, id).await
+                    && let Ok(metadata) = storage.metadata().await
                 {
                     nands.push(metadata);
                 }
@@ -96,15 +149,18 @@ impl StorageManager {
     }
 
     async fn platforms(&self) -> Vec<String> {
-        Self::names(&self.root.join("nands"))
-            .await
-            .into_iter()
-            .filter(|platform| Self::supports(platform))
-            .collect()
+        vec![
+            WiiUNand::PLATFORM.to_owned(),
+            PlaystationMemoryCard::PLATFORM.to_owned(),
+        ]
     }
 
     async fn ids(&self, platform: &str) -> Vec<Uuid> {
-        Self::names(&self.root.join("nands").join(platform))
+        let collection = match platform {
+            PlaystationMemoryCard::PLATFORM => "memorycards",
+            _ => "nands",
+        };
+        Self::names(&self.root.join(collection).join(platform))
             .await
             .iter()
             .filter_map(|name| Uuid::parse_str(name).ok())
@@ -124,5 +180,34 @@ impl StorageManager {
         }
 
         names
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn creates_and_reopens_playstation_memory_cards() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = StorageManager::new(root.path());
+        let created = manager
+            .create(PlaystationMemoryCard::PLATFORM, Some("PS1 Card".to_owned()))
+            .await
+            .unwrap();
+        let metadata = created.metadata().await.unwrap();
+        assert_eq!(metadata.platform, PlaystationMemoryCard::PLATFORM);
+        assert_eq!(metadata.label.as_deref(), Some("PS1 Card"));
+        assert!(
+            manager
+                .path(&metadata.platform, metadata.id)
+                .starts_with(root.path().join("memorycards"))
+        );
+
+        let reopened = manager
+            .open(PlaystationMemoryCard::PLATFORM, metadata.id)
+            .await
+            .unwrap();
+        assert!(matches!(reopened, ConsoleStorage::PlaystationMemoryCard(_)));
     }
 }

@@ -19,20 +19,23 @@ pub async fn serve(
 
     match request {
         ConsoleStorageRequest::List => {
-            let nands = manager.list().await.map_err(|error| error.to_string())?;
+            let storage = manager.list().await.map_err(|error| error.to_string())?;
             Ok(Value::Array(
-                nands
+                storage
                     .iter()
                     .map(|metadata| describe(&manager, metadata))
                     .collect(),
             ))
         }
         ConsoleStorageRequest::Create { platform, label } => {
-            let nand = manager
+            let storage = manager
                 .create(&platform, label)
                 .await
                 .map_err(|error| error.to_string())?;
-            let metadata = nand.metadata().await.map_err(|error| error.to_string())?;
+            let metadata = storage
+                .metadata()
+                .await
+                .map_err(|error| error.to_string())?;
             Ok(describe(&manager, &metadata))
         }
         ConsoleStorageRequest::Delete { platform, id } => manager
@@ -45,18 +48,21 @@ pub async fn serve(
             id,
             label,
         } => {
-            let nand = manager
+            let storage = manager
                 .set_label(&platform, parse(&id)?, label)
                 .await
                 .map_err(|error| error.to_string())?;
-            let metadata = nand.metadata().await.map_err(|error| error.to_string())?;
+            let metadata = storage
+                .metadata()
+                .await
+                .map_err(|error| error.to_string())?;
             Ok(describe(&manager, &metadata))
         }
     }
 }
 
 fn parse(id: &str) -> Result<Uuid, String> {
-    Uuid::parse_str(id).map_err(|_| format!("`{id}` is not a nand id"))
+    Uuid::parse_str(id).map_err(|_| format!("`{id}` is not a console storage id"))
 }
 
 fn describe(manager: &StorageManager, metadata: &NandMetadata) -> Value {

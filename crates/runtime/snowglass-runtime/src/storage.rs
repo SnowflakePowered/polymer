@@ -2,9 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use consolespec::MachineSpec;
 use serde_json::Value;
-use snowglass_library::StorageManager;
+use snowglass_consolestorage::MemoryCard;
+use snowglass_library::{ConsoleStorage, StorageManager};
 use snowglass_pluginhost::StorageFactories;
-use snowglass_vfs::NandVolumeFactory;
+use snowglass_vfs::{MemoryCardStorageFactory, NandVolumeFactory};
 use uuid::Uuid;
 
 fn is_setup_launch(export_path: &[String]) -> bool {
@@ -61,7 +62,18 @@ pub async fn launch_storage(
             .open(console, id)
             .await
             .map_err(|error| error.to_string())?;
-        storage.insert(name.clone(), Arc::new(NandVolumeFactory::new(volume)));
+        match volume {
+            ConsoleStorage::Nand(nand) => {
+                storage.insert(name.clone(), Arc::new(NandVolumeFactory::new(nand)));
+            }
+            ConsoleStorage::PlaystationMemoryCard(card) => {
+                let capacity = card.max_blocks();
+                storage.insert(
+                    name.clone(),
+                    Arc::new(MemoryCardStorageFactory::new(card, Vec::new(), capacity)),
+                );
+            }
+        }
     }
 
     Ok(storage)
