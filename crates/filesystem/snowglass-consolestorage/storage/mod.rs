@@ -18,6 +18,7 @@ use crate::error::Error;
 
 pub mod manifest;
 pub(crate) mod permissions;
+pub mod memorycard;
 
 use manifest::{ArtifactDb, ArtifactRegistry};
 use crate::storage::manifest::NandMetadata;
