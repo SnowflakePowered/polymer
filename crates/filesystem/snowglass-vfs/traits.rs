@@ -126,34 +126,16 @@ pub trait DirectoryNode<S: PathSemantics = NativePathSemantics>: Send + Sync {
     fn remove(&self, name: &VfsComponent<S>, kind: RemoveKind) -> VfsResult<()>;
 }
 
-pub struct VolumeMount<S: PathSemantics = NativePathSemantics> {
-    pub node: Node<S>,
-    pub volume: Option<Arc<dyn Volume<S>>>,
-}
-
-impl<S: PathSemantics> VolumeMount<S> {
-    pub fn node(node: Node<S>) -> Self {
-        Self { node, volume: None }
-    }
-
-    pub fn volume(volume: Arc<dyn Volume<S>>) -> VfsResult<Self> {
-        Ok(Self {
-            node: Node::Directory(volume.root()?),
-            volume: Some(volume),
-        })
-    }
-}
-
 pub trait Volume<S: PathSemantics = NativePathSemantics>: Send + Sync {
     fn root(&self) -> VfsResult<Arc<dyn DirectoryNode<S>>>;
 
-    fn mount(&self, format: Option<&str>) -> VfsResult<VolumeMount<S>> {
+    fn mount(&self, format: Option<&str>) -> VfsResult<Node<S>> {
         if let Some(format) = format {
             return Err(crate::VfsError::Unsupported(format!(
                 "this storage does not support the '{format}' format"
             )));
         }
-        Ok(VolumeMount::node(Node::Directory(self.root()?)))
+        Ok(Node::Directory(self.root()?))
     }
 
     /// Atomically renames two mount-relative paths within this volume.
