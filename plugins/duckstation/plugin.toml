@@ -3,9 +3,19 @@ id = "duckstation"
 version = "0.0.1"
 class = "emulator"
 
+[plugin.config]
+bios = "D:\\bios\\SCPH1001.BIN"
+
+[[plugin.resources]]
+name = "runtime"
+target = "x86_64-pc-windows-msvc"
+source = "pkg:bin/win-x64"
+format = "directory"
+mode = "rx"
+
 [emulator]
 platforms = ["SONY_PSX"]
-
+main = "duckstation.ts"
 
 [emulator.configuration]
 definitions = [
@@ -13,4 +23,3 @@ definitions = [
     "config/input.toml",
     "config/sections/*.toml",
 ]
-resolver = "config/resolvers.ts"
