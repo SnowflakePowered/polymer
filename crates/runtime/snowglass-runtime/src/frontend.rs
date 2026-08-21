@@ -386,12 +386,13 @@ impl SnowglassHost for FrontendServices {
         let storage = self.storage.clone();
         Box::pin(async move {
             let storage = storage.ok_or_else(|| "console storage is unavailable".to_owned())?;
-            let id = uuid::Uuid::parse_str(&id).map_err(|_| format!("`{id}` is not a nand id"))?;
-            let nand = storage
+            let id = uuid::Uuid::parse_str(&id)
+                .map_err(|_| format!("`{id}` is not a console storage id"))?;
+            let volume = storage
                 .open(&platform, id)
                 .await
                 .map_err(|error| error.to_string())?;
-            nand.game_saved().await.map_err(|error| error.to_string())
+            volume.game_saved().await.map_err(|error| error.to_string())
         })
     }
 

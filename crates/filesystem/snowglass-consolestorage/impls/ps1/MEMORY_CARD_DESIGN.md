@@ -27,30 +27,31 @@ The experiment used DuckStation 0.1-11752 and Crash Bandicoot (USA), identified 
   save directory, and projecting that directory again produced a valid zero-save card.
 - The debug builder normalized unused data blocks to zero while DuckStation formats them to
   `0xFF`, so the two valid zero-save images were not byte-identical. Production must preserve
-  opaque/free-block bytes if lossless raw round trips are required; save files alone are not a
-  complete physical-card representation.
+  opaque/free-block bytes for the lifetime of a mounted view. Lossless physical-card persistence
+  across mounts is explicitly not a requirement; save files are the canonical representation.
 
 The debug converter and `ps1-memcard` dependency are not production code.
 
 ## Canonical representation
 
-Use one directory per logical save. Only the save payload belongs in the depot:
+Use one directory per logical save. The directory name is the hexadecimal encoding of the PS1
+directory filename, including its trailing zero bytes:
 
 ```text
 save-depots/
-  <save-depot-id>/
+  <hex-encoded-native-id>/
     data.bin                # chained 8 KiB blocks in logical order
 ```
 
-The manifest database maps the depot ID to the raw 20-byte filename, original directory entry,
-allocation order, and other console metadata. The raw filename must not be used directly as a
-Windows path because it can contain names which are invalid or ambiguous on the host filesystem.
+The safe encoding is reversible, so the filesystem is the complete source of truth and no save
+registry is required. `SaveDepotId` is derived from the native identity. Title and icon are parsed
+from the first data block. The manifest database retains only the storage device's identity and
+label; it does not contain save ordering or a raw card image.
 
-An opaque physical template in the manifest database preserves formatted free blocks,
-deleted-save residue, broken-sector metadata, and unknown bytes. It is codec state, not the logical
-source of truth: projection overlays the current canonical saves onto it. Reconciliation refreshes
-it only after the raw image parses as a coherent card. This gives exact no-change round trips
-without making a monolithic image the user-facing save representation.
+Free blocks, deleted-save residue, broken-sector metadata, and other physical bytes live only in
+the mounted in-memory view. They survive arbitrary emulator writes and atomic replacement for that
+mount, but are deterministically formatted again on the next projection. They are not logical save
+data and are not persisted as a second canonical representation.
 
 ## PS1 adapter responsibilities
 
@@ -71,13 +72,14 @@ The PS1 adapter is substantially smaller than the PS2 adapter, but it is still c
 
 The raw file is the transaction surface while an emulator owns the card:
 
-1. Acquire an exclusive card lease and snapshot the selected depots.
-2. Encode them over the preserved template into a 131,072-byte random-access image.
-3. Expose that image as `snowglass.mcd` through a VFS `FileNode`.
-4. Accept arbitrary reads, writes, truncation, and atomic sibling-file replacement while tracking
+1. Enumerate depots and place requested primary saves first.
+2. Fill remaining capacity with other saves in deterministic native-ID order.
+3. Encode them into a fresh 131,072-byte in-memory random-access image.
+4. Expose that image as `snowglass.mcd` through a VFS `FileNode`.
+5. Accept arbitrary reads, writes, truncation, and atomic sibling-file replacement while tracking
    dirty generations.
-5. On flush, cleanup, replacement, or view finalization, validate and decode a coherent image.
-6. Atomically reconcile added, changed, and deleted logical save directories, then publish normal
+6. On flush, cleanup, replacement, or view finalization, validate and decode a coherent image.
+7. Reconcile added, changed, and deleted logical save directories, then publish normal
    storage change notifications.
 
 DuckStation currently saves the whole card via atomic replacement rather than in-place sector
@@ -86,16 +88,18 @@ transfer the `MemoryCardView` dirty/sync observer to its existing and future han
 at rename is insufficient because an already-open source handle may legally continue writing after
 the rename. Watching only writes to the original destination node would miss the save.
 
-Directory-side changes take the reverse path. When no raw writer owns the view, a depot change
-invalidates the encoded generation and the next open/read rebuilds it. Concurrent raw and
-directory writers are intentionally unsupported; transparency is guaranteed across flush/close
-and subsequent launches.
+Directory-side changes are picked up by the next mount. Concurrent raw and directory writers are
+intentionally unsupported; transparency is guaranteed across flush/close and subsequent launches.
+
+The first implementation uses `psxmem` to parse the complete raw image and individual first data
+blocks. Its path-based, allocating API is deliberately contained behind the PS1 codec and will be
+replaced by a zero-copy parser.
 
 ## Plugin integration
 
-The DuckStation plugin now boots a cue/bin game tree, BIOS, portable settings, and a shared raw
-card through WinFSP. It temporarily mounts the supplied NAND at `/User/memcards`. Once the storage
-capability exists, it should request the raw projection explicitly:
+The DuckStation plugin boots a cue/bin game tree, BIOS, portable settings, and a shared raw card
+through WinFSP. It mounts the supplied memory-card storage directly at the expected file and
+requests the raw projection explicitly:
 
 ```ts
 args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1, {
@@ -104,7 +108,7 @@ args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1,
 });
 ```
 
-DuckStation continues to see the same path; only the plugin capability changes.
+DuckStation sees an ordinary `.mcd` file while Snowglass owns its in-memory projection.
 
 The same PS1 view can be passed to RetroArch cores that accept raw `.mcd`/`.srm` cards. No
 emulator-specific conversion is required after the PS1 adapter produces the view.

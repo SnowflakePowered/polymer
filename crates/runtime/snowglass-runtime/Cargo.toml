@@ -15,6 +15,7 @@ parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 snowglass-config.workspace = true
+snowglass-consolestorage = { path = "../../filesystem/snowglass-consolestorage" }
 snowglass-deno = { path = "../snowglass-deno" }
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
