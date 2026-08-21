@@ -162,7 +162,7 @@ impl StructureRoot for PathBuf {
 
 impl StructureRoot for dyn Storage + '_ {
     fn label(&self) -> Cow<'_, str> {
-        self.describe()
+        Cow::Owned(format!("{self:?}"))
     }
 
     fn has(&self, entry: &DepotEntry) -> bool {

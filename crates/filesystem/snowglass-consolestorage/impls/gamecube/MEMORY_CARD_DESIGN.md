@@ -121,12 +121,13 @@ atomically reconciled into depots and manifest metadata.
 ## Shared storage view
 
 The public view contains an `Arc<dyn MountableStorage>` namespace and the relative entry to mount.
-For `gci`, that entry is the directory root; for `raw`, it is the card file inside a namespace that
-can also hold atomic-replacement siblings. There is no separate `MemoryCardProjection` or
-`ProjectedTree` abstraction. The storage owns the snapshot generation, exclusive writer lease,
-dirty state, and reconciliation boundary. The GameCube provider owns GCI headers, card geometry,
-redundant metadata selection, checksums, BAT chains, filename escaping, and serial-protected-save
-handling.
+For `gci`, that entry is the directory root; for `raw`, it is the card file. If an emulator replaces
+the mounted raw file with a sibling from another storage, the composed VFS adopts the source file
+object and transfers the view's dirty/sync observer rather than copying bytes. There is no separate
+`MemoryCardProjection` or `ProjectedTree` abstraction. The storage owns the snapshot generation,
+exclusive writer lease, dirty state, and reconciliation boundary. The GameCube provider owns GCI
+headers, card geometry, redundant metadata selection, checksums, BAT chains, filename escaping,
+and serial-protected-save handling.
 
 An mmap is useful for the raw file but is not part of the contract. The GCI storage exposes
 synthetic `StorageFile` handles backed by depot payloads and manifest records.

@@ -55,8 +55,8 @@ impl VirtualNand for WiiUNand {
 
     if metadata.platform != Self::PLATFORM {
       return Err(Error::Unsupported(format!(
-        "`{}` is a {} volume",
-        storage.describe(),
+        "`{:?}` is a {} volume",
+        storage,
         metadata.platform
       )));
     }

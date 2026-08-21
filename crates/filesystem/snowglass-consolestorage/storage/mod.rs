@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, Write};
@@ -139,12 +139,7 @@ impl<T: Read + Seek + Send> StorageRead for T {}
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 
-pub trait Storage: Send + Sync {
-    /// Human-readable name for this storage, used in diagnostics.
-    fn describe(&self) -> Cow<'_, str> {
-        Cow::Borrowed("storage")
-    }
-
+pub trait Storage: fmt::Debug + Send + Sync {
     fn exists(&self, path: &str) -> bool;
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error>;
@@ -175,6 +170,11 @@ pub trait Storage: Send + Sync {
         let _ = paths;
         Ok(None)
     }
+
+    /// User-facing name for this storage, if one has been assigned.
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
 
     /// Copy `source` to `dest`, returning the blake3 digest and length of what
     /// was written. The file is only visible at `dest` once fully written.
@@ -211,9 +211,6 @@ pub trait VolumeStorage: MountableStorage {
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
 
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
 }
 
 pub struct DirectoryStorage {
@@ -259,11 +256,16 @@ impl DirectoryStorage {
     }
 }
 
-impl Storage for DirectoryStorage {
-    fn describe(&self) -> Cow<'_, str> {
-        self.root.to_string_lossy()
+impl fmt::Debug for DirectoryStorage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DirectoryStorage")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
     }
+}
 
+impl Storage for DirectoryStorage {
     fn exists(&self, path: &str) -> bool {
         self.resolve(path).is_ok_and(|p| p.exists())
     }
@@ -407,6 +409,20 @@ impl Storage for DirectoryStorage {
         })))
     }
 
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
+        Box::pin(async move {
+            Ok(self
+                .artifacts
+                .identity()
+                .await?
+                .and_then(|metadata| metadata.label))
+        })
+    }
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
+        self.artifacts.set_label(label)
+    }
+
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -515,6 +531,22 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn labels_are_available_through_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DirectoryStorage::new(dir.path()).await.unwrap();
+        storage
+            .brand(Uuid::now_v7(), "TEST", Some("Card One"))
+            .await
+            .unwrap();
+
+        assert_eq!(Storage::label(&storage).await.unwrap().as_deref(), Some("Card One"));
+        Storage::set_label(&storage, Some("Card Two"))
+            .await
+            .unwrap();
+        assert_eq!(Storage::label(&storage).await.unwrap().as_deref(), Some("Card Two"));
+    }
 }
 
 /// Keeps the OS watch alive; dropping it stops the watch.
@@ -574,17 +606,4 @@ impl VolumeStorage for DirectoryStorage {
         self.artifacts.brand(id, platform, label)
     }
 
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        Box::pin(async move {
-            Ok(self
-                .artifacts
-                .identity()
-                .await?
-                .and_then(|metadata| metadata.label))
-        })
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.artifacts.set_label(label)
-    }
 }

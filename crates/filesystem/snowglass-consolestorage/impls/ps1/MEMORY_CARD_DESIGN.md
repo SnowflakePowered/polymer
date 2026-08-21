@@ -81,9 +81,10 @@ The raw file is the transaction surface while an emulator owns the card:
    storage change notifications.
 
 DuckStation currently saves the whole card via atomic replacement rather than in-place sector
-writes. The VFS must transfer the `MemoryCardView` lease from the destination node to the renamed
-replacement and reconcile the replacement bytes; watching only writes to the original file node
-would miss the save.
+writes. The VFS must adopt the renamed source file object as the mounted card's backing object and
+transfer the `MemoryCardView` dirty/sync observer to its existing and future handles. Copying bytes
+at rename is insufficient because an already-open source handle may legally continue writing after
+the rename. Watching only writes to the original destination node would miss the save.
 
 Directory-side changes take the reverse path. When no raw writer owns the view, a depot change
 invalidates the encoded generation and the next open/read rebuilds it. Concurrent raw and
