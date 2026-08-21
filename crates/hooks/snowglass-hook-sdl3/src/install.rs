@@ -28,21 +28,31 @@ pub(crate) struct Sdl3TableState {
 }
 
 pub(crate) struct Sdl3EntryState {
-    module: snowglass_hook::__PointerKey,
     target: api::DynapiEntryFn,
+}
+
+pub(crate) struct Sdl3ExportState {
+    table: Sdl3TableState,
+}
+
+impl Default for Sdl3ExportState {
+    fn default() -> Self {
+        let table = create_table_state().expect("the SDL3 export hook state is valid");
+        if let Ok(session) = config::session() {
+            table.runtime.start_receiver(format!("{session}-input"));
+        }
+        Self { table }
+    }
 }
 
 impl Default for Sdl3EntryState {
     fn default() -> Self {
-        let module = loaded_module(SDL3_DLL)
+        let module = dynamic_api_module()
+            .or_else(|| loaded_module(SDL3_DLL))
             .expect("SDL3 module was resolved before entry-hook installation");
         let target = unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }
             .expect("SDL3 dynamic API entry target was resolved before installation");
-        Self {
-            module: snowglass_hook::__PointerKey::new(module.cast())
-                .expect("SDL3 module was resolved as non-null"),
-            target,
-        }
+        Self { target }
     }
 }
 
@@ -77,9 +87,9 @@ fn dynapi_entry_target() -> api::DynapiEntryFn {
 }
 
 fn create_table_state() -> Result<Sdl3TableState, &'static str> {
-    let module = Sdl3EntryInstallation::with_state(|state| state.module)
-        .ok_or("SDL3 entry-hook state is not installed")?
-        .as_ptr();
+    let module = dynamic_api_module()
+        .or_else(|| loaded_module(SDL3_DLL))
+        .ok_or("SDL3 module is not loaded")?;
     let projection = Projection::embedded().map_err(|_| "the SDL projection is invalid")?;
     let layouts = config::layouts()
         .into_iter()
@@ -108,6 +118,42 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     })
 }
 
+type InitSubSystemFn = unsafe extern "C" fn(u32) -> bool;
+type GetGamepadAxisFn = unsafe extern "C" fn(*mut c_void, i32) -> i16;
+type GetGamepadButtonFn = unsafe extern "C" fn(*mut c_void, i32) -> bool;
+type GetJoystickAxisFn = unsafe extern "C" fn(*mut c_void, i32) -> i16;
+type GetJoystickButtonFn = unsafe extern "C" fn(*mut c_void, i32) -> bool;
+type PollEventFn = unsafe extern "C" fn(*mut c_void) -> bool;
+
+fn frontend_symbol<T: Copy>(name: &std::ffi::CStr) -> T {
+    let module = loaded_module(SDL3_DLL).expect("the SDL3 frontend module is loaded");
+    unsafe { api::symbol(module, name) }.expect("the SDL3 frontend export is available")
+}
+
+fn init_subsystem_target() -> InitSubSystemFn {
+    frontend_symbol(c"SDL_InitSubSystem")
+}
+
+fn get_gamepad_axis_target() -> GetGamepadAxisFn {
+    frontend_symbol(c"SDL_GetGamepadAxis")
+}
+
+fn get_gamepad_button_target() -> GetGamepadButtonFn {
+    frontend_symbol(c"SDL_GetGamepadButton")
+}
+
+fn get_joystick_axis_target() -> GetJoystickAxisFn {
+    frontend_symbol(c"SDL_GetJoystickAxis")
+}
+
+fn get_joystick_button_target() -> GetJoystickButtonFn {
+    frontend_symbol(c"SDL_GetJoystickButton")
+}
+
+fn poll_event_target() -> PollEventFn {
+    frontend_symbol(c"SDL_PollEvent")
+}
+
 snowglass_hook::chain_hooks! {
     #![order(reverse)]
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
@@ -122,6 +168,62 @@ snowglass_hook::chain_hooks! {
         table: *mut c_void,
         tablesize: u32,
     ) -> i32;
+}
+
+snowglass_hook::chain_hooks! {
+    #![order(reverse)]
+    #![detour(snowglass_platform_windows::InlineDetour<_>)]
+    #[installer(state = Sdl3ExportState)]
+    pub(crate) struct Sdl3ExportInstallation;
+
+    #[trampoline]
+    #[terminal(installed(target = init_subsystem_target()), fallback = false)]
+    #[postfix(|result, next| {
+        if result {
+            prepare_export_gamepads(next.state.as_ref());
+        }
+    })]
+    unsafe extern "C" fn init_subsystem(flags: u32) -> bool;
+
+    #[trampoline]
+    #[terminal(installed(target = get_gamepad_axis_target()), fallback = 0)]
+    #[prefix(|next| flush_gamepads(&next.state.table))]
+    unsafe extern "C" fn exported_get_gamepad_axis(
+        gamepad: *mut c_void,
+        axis: i32,
+    ) -> i16;
+
+    #[trampoline]
+    #[terminal(installed(target = get_gamepad_button_target()), fallback = false)]
+    #[prefix(|next| flush_gamepads(&next.state.table))]
+    unsafe extern "C" fn exported_get_gamepad_button(
+        gamepad: *mut c_void,
+        button: i32,
+    ) -> bool;
+
+    #[trampoline]
+    #[terminal(installed(target = get_joystick_axis_target()), fallback = 0)]
+    #[prefix(|next| flush_gamepads(&next.state.table))]
+    unsafe extern "C" fn exported_get_joystick_axis(
+        joystick: *mut c_void,
+        axis: i32,
+    ) -> i16;
+
+    #[trampoline]
+    #[terminal(installed(target = get_joystick_button_target()), fallback = false)]
+    #[prefix(|next| flush_gamepads(&next.state.table))]
+    unsafe extern "C" fn exported_get_joystick_button(
+        joystick: *mut c_void,
+        button: i32,
+    ) -> bool;
+
+    #[trampoline]
+    #[terminal(installed(target = poll_event_target()), fallback = false)]
+    #[prefix(|next| {
+        prepare_export_gamepads(next.state.as_ref());
+        flush_gamepads(&next.state.table);
+    })]
+    unsafe extern "C" fn exported_poll_event(event: *mut c_void) -> bool;
 }
 
 snowglass_hook::function_table_hook! {
@@ -213,24 +315,27 @@ snowglass_hook::function_table_hook! {
 /// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
     snowglass_hook::telemetry::init_file_tracing(config::sdl_log_file());
-    preload_dynamic_api();
     discover_loaded_module();
     0
 }
 
-fn preload_dynamic_api() {
+fn dynamic_api_module() -> Option<HMODULE> {
     let Some(path) = std::env::var_os("SDL3_DYNAMIC_API") else {
-        return;
+        return None;
     };
     let mut wide = path.encode_wide().collect::<Vec<_>>();
     wide.push(0);
-    if unsafe { LoadLibraryW(wide.as_ptr()) }.is_null() {
+    let module = unsafe { LoadLibraryW(wide.as_ptr()) };
+    if module.is_null() {
         tracing::debug!("failed to preload SDL3_DYNAMIC_API runtime");
+        None
+    } else {
+        Some(module)
     }
 }
 
 fn discover_loaded_module() {
-    if let Some(module) = loaded_module(SDL3_DLL)
+    if let Some(module) = dynamic_api_module().or_else(|| loaded_module(SDL3_DLL))
         && (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_some()
     {
         install();
@@ -243,11 +348,21 @@ fn loaded_module(name: &[u16]) -> Option<HMODULE> {
 }
 
 fn install() {
-    if Sdl3EntryInstallation::install().is_err() {
-        tracing::debug!("failed to enable SDL3 dynamic API detour");
-        return;
+    let dynamic_module = dynamic_api_module().or_else(|| loaded_module(SDL3_DLL));
+    let frontend_module = loaded_module(SDL3_DLL);
+    if dynamic_module.is_some() && frontend_module.is_some() && dynamic_module != frontend_module {
+        if Sdl3ExportInstallation::install().is_err() {
+            tracing::debug!("failed to enable SDL3 frontend export detours");
+            return;
+        }
+        tracing::debug!("installed SDL3 frontend export gamepad hooks");
+    } else {
+        if Sdl3EntryInstallation::install().is_err() {
+            tracing::debug!("failed to enable SDL3 dynamic API detour");
+            return;
+        }
+        tracing::debug!("installed SDL3 dynamic API gamepad hooks");
     }
-    tracing::debug!("installed SDL3 virtual gamepad hooks");
 }
 
 unsafe fn captured_dynapi_table(
@@ -273,10 +388,22 @@ unsafe fn captured_dynapi_table(
     tracing::debug!("patched SDL3 dynamic API gamepad entries");
 }
 
-fn prepare_enumeration(state: &Sdl3TableState) {
+fn prepare_enumeration(state: &Sdl3TableState) -> bool {
     let mut backend = state.backend.lock();
     if let Err(error) = state.runtime.prepare_enumeration(&mut *backend) {
         tracing::debug!(message = %(error.0));
+        false
+    } else {
+        true
+    }
+}
+
+fn prepare_export_gamepads(state: &Sdl3ExportState) {
+    if prepare_enumeration(&state.table)
+        && !state.table.logged_enumeration.swap(true, Ordering::AcqRel)
+    {
+        let count = config::sdl_gamepad_count();
+        tracing::debug!("enumerated {count} SDL3 gamepad(s) through frontend exports");
     }
 }
 
