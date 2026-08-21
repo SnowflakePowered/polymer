@@ -11,11 +11,9 @@ use futures::{Stream, StreamExt};
 use image::RgbaImage;
 use jiff::Timestamp;
 use parking_lot::Mutex;
-use psxmem::{BAState, Block, DataBlock, MemCard};
-use tempfile::NamedTempFile;
 use uuid::Uuid;
 
-use self::raw::{ENTRY as RAW_ENTRY, RawMemoryStorage};
+use self::raw::{BLOCK_SIZE, DATA_BLOCKS, ENTRY as RAW_ENTRY, NATIVE_ID_SIZE, RawMemoryStorage};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -25,26 +23,17 @@ use crate::{
     VolumeStorage,
 };
 
-const BLOCK_SIZE: usize = 8 * 1024;
-const FRAME_SIZE: usize = 128;
-const DATA_BLOCKS: usize = 15;
-const RAW_SIZE: usize = BLOCK_SIZE * (DATA_BLOCKS + 1);
-const NATIVE_ID_SIZE: usize = 21;
 const SAVE_HEADER_SIZE: usize = 12;
 const SAVE_ROOT: &str = "card";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CanonicalSave {
-    id: SaveDepotId,
+struct SaveDataHandle {
     native_id: [u8; NATIVE_ID_SIZE],
 }
 
-impl CanonicalSave {
+impl SaveDataHandle {
     fn from_native_id(native_id: [u8; NATIVE_ID_SIZE]) -> Self {
-        Self {
-            id: save_depot_id(&native_id[..SAVE_HEADER_SIZE]),
-            native_id,
-        }
+        Self { native_id }
     }
 
     fn from_native_name(name: &str) -> Option<Self> {
@@ -61,8 +50,62 @@ impl CanonicalSave {
         Some(Self::from_native_id(native_id))
     }
 
+    fn from_data_path(path: &str) -> Option<Self> {
+        let mut components = path.split('/');
+        if components.next()? != SAVE_ROOT {
+            return None;
+        }
+        let save = Self::from_native_name(components.next()?)?;
+        components.next().is_none().then_some(save)
+    }
+
+    fn native_name(&self) -> String {
+        String::from_utf8_lossy(&self.native_id)
+            .trim_end_matches('\0')
+            .to_owned()
+    }
+
     fn data_path(&self) -> String {
-        format!("{SAVE_ROOT}/{}", native_name(&self.native_id))
+        format!("{SAVE_ROOT}/{}", self.native_name())
+    }
+
+    fn depot_id(&self) -> SaveDepotId {
+        Self::depot_id_from_header(&self.native_id[..SAVE_HEADER_SIZE])
+    }
+
+    fn depot_id_from_serial(serial: &str) -> SaveDepotId {
+        let serial = serial.trim().to_ascii_uppercase();
+        let key = match serial.get(..4) {
+            Some("SLPS" | "SCPS" | "SIPS") => b"BI",
+            Some("SLUS" | "SCUS") => b"BA",
+            Some("SLES" | "SCES") => b"BE",
+            _ => panic!("unsupported PlayStation product serial `{serial}`"),
+        };
+        assert_eq!(
+            serial.len(),
+            SAVE_HEADER_SIZE - key.len(),
+            "PlayStation product serial `{serial}` does not fit a memory-card header"
+        );
+        let mut header = [0; SAVE_HEADER_SIZE];
+        header[..key.len()].copy_from_slice(key);
+        header[key.len()..].copy_from_slice(serial.as_bytes());
+        Self::depot_id_from_header(&header)
+    }
+
+    fn depot_id_from_header(header: &[u8]) -> SaveDepotId {
+        let digest = blake3::hash(header);
+        SaveDepotId(u64::from_le_bytes(
+            digest.as_bytes()[..8].try_into().expect("eight bytes"),
+        ))
+    }
+}
+
+impl From<raw::ParseError> for Error {
+    fn from(error: raw::ParseError) -> Self {
+        Self::MalformedMetadata {
+            file: "PlayStation memory card".to_owned(),
+            reason: error.to_string(),
+        }
     }
 }
 
@@ -107,26 +150,26 @@ impl PlaystationMemoryCard {
         Ok(())
     }
 
-    fn saves(&self) -> Vec<CanonicalSave> {
+    fn saves(&self) -> Vec<SaveDataHandle> {
         let Ok(entries) = self.storage.read_dir(SAVE_ROOT, false) else {
             return Vec::new();
         };
         let mut saves = entries
             .filter(|entry| entry.kind == EntryKind::File)
-            .filter_map(|entry| CanonicalSave::from_native_name(&entry.name))
+            .filter_map(|entry| SaveDataHandle::from_native_name(&entry.name))
             .collect::<Vec<_>>();
         saves.sort_by(|left, right| left.native_id.cmp(&right.native_id));
         saves
     }
 
-    fn saves_in_depot(&self, id: SaveDepotId) -> Vec<CanonicalSave> {
+    fn saves_in_depot(&self, id: SaveDepotId) -> Vec<SaveDataHandle> {
         self.saves()
             .into_iter()
-            .filter(|save| save.id == id)
+            .filter(|save| save.depot_id() == id)
             .collect()
     }
 
-    fn read_payload(&self, save: &CanonicalSave) -> Result<Vec<u8>, Error> {
+    fn read_payload(&self, save: &SaveDataHandle) -> Result<Vec<u8>, Error> {
         let path = save.data_path();
         let mut payload = Vec::new();
         self.storage
@@ -139,10 +182,31 @@ impl PlaystationMemoryCard {
         Ok(payload)
     }
 
-    fn describe_save(&self, save: &CanonicalSave) -> Result<SaveDescriptor, Error> {
-        let (title, banner) = describe_payload(&self.read_payload(save)?)?;
+    fn describe_save(&self, save: &SaveDataHandle) -> Result<SaveDescriptor, Error> {
+        let payload = self.read_payload(save)?;
+        let header = raw::Save::new(&save.native_id, &payload)?.describe()?;
+        let banner = header.icon.and_then(|icon| {
+            let mut pixels = Vec::with_capacity(16 * 16 * 4);
+            for &byte in icon {
+                for shift in [0, 4] {
+                    let palette_offset = ((byte >> shift) & 0x0f) as usize * 2;
+                    let color = u16::from_le_bytes([
+                        header.palette[palette_offset],
+                        header.palette[palette_offset + 1],
+                    ]);
+                    pixels.extend_from_slice(&[
+                        ((color & 0x1f) * 255 / 31) as u8,
+                        (((color >> 5) & 0x1f) * 255 / 31) as u8,
+                        (((color >> 10) & 0x1f) * 255 / 31) as u8,
+                        if color == 0 { 0 } else { 255 },
+                    ]);
+                }
+            }
+            RgbaImage::from_raw(16, 16, pixels)
+        });
+        let title = header.title.into_owned();
         let title = if title.is_empty() {
-            native_name(&save.native_id)
+            save.native_name()
         } else {
             title
         };
@@ -152,36 +216,27 @@ impl PlaystationMemoryCard {
             .map(|metadata| metadata.mtime)
             .unwrap_or_else(|_| Timestamp::now());
         Ok(SaveDescriptor {
-            id: save.id,
+            id: save.depot_id(),
             banner,
             title,
-            description: native_name(&save.native_id),
+            description: save.native_name(),
             timestamp,
             root_path: save.data_path(),
         })
     }
 
-    fn projection_order(&self, primary: &[SaveDepotId]) -> Vec<CanonicalSave> {
-        let saves = self.saves();
+    fn projection_order(&self, primary: &[SaveDepotId]) -> Vec<SaveDataHandle> {
         let primary = primary.iter().map(|id| id.0).collect::<HashSet<_>>();
-        let mut ordered = saves
-            .iter()
-            .filter(|save| primary.contains(&save.id.0))
-            .cloned()
-            .collect::<Vec<_>>();
-        ordered.extend(
-            saves
-                .into_iter()
-                .filter(|save| !primary.contains(&save.id.0)),
-        );
-        ordered
+        let mut saves = self.saves();
+        saves.sort_by_key(|save| !primary.contains(&save.depot_id().0));
+        saves
     }
 
     fn project(
         &self,
         primary: &[SaveDepotId],
         capacity_blocks: u32,
-    ) -> Result<(Vec<u8>, Vec<CanonicalSave>), Error> {
+    ) -> Result<(Vec<u8>, Vec<SaveDataHandle>), Error> {
         if capacity_blocks == 0 || capacity_blocks > DATA_BLOCKS as u32 {
             return Err(Error::Unsupported(format!(
                 "PlayStation cards support 1 through {DATA_BLOCKS} data blocks"
@@ -189,36 +244,39 @@ impl PlaystationMemoryCard {
         }
 
         let primary_ids: HashSet<u64> = primary.iter().map(|id| id.0).collect();
-        let mut image = formatted_card();
+        let mut card = raw::MemoryCard::formatted();
         let mut projected = Vec::new();
         let mut next_block = 0usize;
         for save in self.projection_order(primary) {
             let payload = self.read_payload(&save)?;
             let blocks = payload.len().max(1).div_ceil(BLOCK_SIZE);
             if next_block + blocks > capacity_blocks as usize {
-                if primary_ids.contains(&save.id.0) {
+                if primary_ids.contains(&save.depot_id().0) {
                     return Err(Error::Unsupported(format!(
                         "primary saves require more than {capacity_blocks} PlayStation blocks"
                     )));
                 }
                 continue;
             }
-            write_save(&mut image, next_block, &save.native_id, &payload, blocks);
+            let raw_save = raw::Save::new(&save.native_id, &payload)?;
+            card.write_save(next_block, raw_save);
             next_block += blocks;
             projected.push(save);
         }
-        parse_card(&image)?;
-        Ok((image, projected))
+        Ok((card.into_owned(), projected))
     }
 
-    fn reconcile(&self, projected: &[CanonicalSave], image: &[u8]) -> Result<(), Error> {
-        let parsed = parse_card(image)?;
-        let decoded = decode_saves(image, &parsed)?;
+    fn reconcile(&self, projected: &[SaveDataHandle], image: &[u8]) -> Result<(), Error> {
+        let card = raw::MemoryCard::new(image)?;
+        let saves = card.saves()?;
         let decoded_names: HashSet<[u8; NATIVE_ID_SIZE]> =
-            decoded.iter().map(|save| save.save.native_id).collect();
+            saves.iter().map(|save| *save.native_id()).collect();
 
-        for decoded in &decoded {
-            self.write_if_changed(&decoded.save, &decoded.payload)?;
+        for raw_save in &saves {
+            self.write_if_changed(
+                &SaveDataHandle::from_native_id(*raw_save.native_id()),
+                raw_save,
+            )?;
         }
         for save in projected {
             if decoded_names.contains(&save.native_id) {
@@ -229,19 +287,34 @@ impl PlaystationMemoryCard {
         Ok(())
     }
 
-    fn write_if_changed(&self, save: &CanonicalSave, payload: &[u8]) -> Result<(), Error> {
-        if self
-            .read_payload(save)
-            .is_ok_and(|existing| existing == payload)
-        {
-            return Ok(());
-        }
+    fn write_if_changed(
+        &self,
+        save: &SaveDataHandle,
+        raw_save: &raw::Save<'_>,
+    ) -> Result<(), Error> {
         let path = save.data_path();
+        if self
+            .storage
+            .metadata(&path)
+            .is_ok_and(|metadata| metadata.len == raw_save.byte_len() as u64)
+            && let Ok(mut existing) = self.storage.open_read(&path)
+        {
+            let mut block_buffer = [0; BLOCK_SIZE];
+            let unchanged = raw_save.blocks().all(|block| {
+                existing.read_exact(&mut block_buffer).is_ok() && block_buffer == block
+            });
+            if unchanged {
+                return Ok(());
+            }
+        }
+
         let mut output = self.storage.create(&path)?;
-        output.write_all(payload).map_err(|source| Error::Io {
-            path: path.clone(),
-            source,
-        })?;
+        for block in raw_save.blocks() {
+            output.write_all(block).map_err(|source| Error::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
         output.flush().map_err(|source| Error::Io { path, source })
     }
 
@@ -252,7 +325,7 @@ impl PlaystationMemoryCard {
             let ids = saves.iter().map(|id| id.0).collect::<HashSet<_>>();
             self.saves()
                 .into_iter()
-                .filter(|save| ids.contains(&save.id.0))
+                .filter(|save| ids.contains(&save.depot_id().0))
                 .collect()
         };
         selected
@@ -263,7 +336,7 @@ impl PlaystationMemoryCard {
                     .metadata(&save.data_path())
                     .ok()
                     .map(|metadata| (metadata.len, metadata.mtime));
-                (save.id.0, metadata)
+                (save.depot_id().0, metadata)
             })
             .collect()
     }
@@ -372,14 +445,14 @@ impl SaveGameSink for PlaystationMemoryCard {
         let serial = package
             .serial()
             .expect("a PlayStation package must expose a product serial");
-        save_depot_id(&save_header_from_serial(serial))
+        SaveDataHandle::depot_id_from_serial(serial)
     }
 
     fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {
         let mut seen = HashSet::new();
         self.saves()
             .into_iter()
-            .filter(|save| seen.insert(save.id.0))
+            .filter(|save| seen.insert(save.depot_id().0))
             .filter_map(|save| self.describe_save(&save).ok())
             .collect::<Vec<_>>()
             .into_iter()
@@ -416,9 +489,9 @@ impl SaveGameSink for PlaystationMemoryCard {
             let mut representative = None;
             while let Some(blob) = blobs.next().await {
                 let target = blob.target_path.to_string_lossy().replace('\\', "/");
-                let save = save_from_data_path(&target)
+                let save = SaveDataHandle::from_data_path(&target)
                     .ok_or_else(|| Error::InvalidPath(target.clone()))?;
-                if installed.is_some_and(|installed| installed != save.id) {
+                if installed.is_some_and(|installed| installed != save.depot_id()) {
                     return Err(Error::Unsupported(
                         "a PlayStation save install may contain only one depot".to_owned(),
                     ));
@@ -430,7 +503,7 @@ impl SaveGameSink for PlaystationMemoryCard {
                 if written.blake3 != blob.blake3 {
                     return Err(Error::IntegrityMatchFailed { failed: target });
                 }
-                installed = Some(save.id);
+                installed = Some(save.depot_id());
                 representative.get_or_insert(save);
             }
             let save = representative.ok_or(Error::InstallIncomplete)?;
@@ -473,439 +546,5 @@ impl ChangeSignal for SaveSignal {
                 }
             }
         })
-    }
-}
-
-struct DecodedSave {
-    save: CanonicalSave,
-    payload: Vec<u8>,
-}
-
-fn decode_saves(image: &[u8], parsed: &MemCard) -> Result<Vec<DecodedSave>, Error> {
-    let mut decoded = Vec::new();
-    let mut claimed = HashSet::new();
-    let mut names = HashSet::new();
-    for (first, directory) in parsed.info.dir_frames.iter().enumerate() {
-        if directory.state != BAState::AllocFirst as u32 {
-            continue;
-        }
-        let chain = allocation_chain(parsed, first)?;
-        if chain.iter().any(|block| !claimed.insert(*block)) {
-            return Err(malformed("save allocation chains overlap"));
-        }
-        if !names.insert(directory.filename) {
-            return Err(malformed("multiple saves have the same native identity"));
-        }
-        let mut payload = Vec::with_capacity(chain.len() * BLOCK_SIZE);
-        for block in chain {
-            let start = (block + 1) * BLOCK_SIZE;
-            payload.extend_from_slice(&image[start..start + BLOCK_SIZE]);
-        }
-        decoded.push(DecodedSave {
-            save: CanonicalSave::from_native_id(directory.filename),
-            payload,
-        });
-    }
-    for (block, directory) in parsed.info.dir_frames.iter().enumerate() {
-        if matches!(
-            directory.state,
-            state if state == BAState::AllocFirst as u32
-                || state == BAState::AllocMid as u32
-                || state == BAState::AllocLast as u32
-        ) && !claimed.contains(&block)
-        {
-            return Err(malformed("allocated block is not part of a save chain"));
-        }
-    }
-    Ok(decoded)
-}
-
-fn allocation_chain(parsed: &MemCard, first: usize) -> Result<Vec<usize>, Error> {
-    let mut chain = Vec::new();
-    let mut seen = HashSet::new();
-    let mut block = first;
-    loop {
-        if block >= DATA_BLOCKS || !seen.insert(block) {
-            return Err(malformed("save contains an invalid allocation chain"));
-        }
-        chain.push(block);
-        let entry = &parsed.info.dir_frames[block];
-        let next = entry.next_block;
-        let expected = if block == first {
-            BAState::AllocFirst as u32
-        } else if next == u16::MAX {
-            BAState::AllocLast as u32
-        } else {
-            BAState::AllocMid as u32
-        };
-        if entry.state != expected {
-            return Err(malformed("save allocation chain has incompatible states"));
-        }
-        if next == u16::MAX {
-            return Ok(chain);
-        }
-        block = usize::from(next);
-    }
-}
-
-fn describe_payload(payload: &[u8]) -> Result<(String, Option<RgbaImage>), Error> {
-    let data: [u8; BLOCK_SIZE] = payload
-        .get(..BLOCK_SIZE)
-        .ok_or_else(|| malformed("save payload is shorter than one block"))?
-        .try_into()
-        .expect("slice length checked");
-    let parsed = std::panic::catch_unwind(|| DataBlock::load_data_block(Block { data }))
-        .map_err(|_| malformed("psxmem panicked while decoding save data"))?
-        .map_err(|error| malformed(&format!("psxmem rejected save data: {error}")))?;
-    let title = parsed.title_frame.decode_title().unwrap_or_default();
-    let banner = parsed.icon_frames.first().and_then(|icon| {
-        let mut pixels = Vec::with_capacity(16 * 16 * 4);
-        for byte in icon.data {
-            for shift in [0, 4] {
-                let color = parsed.title_frame.icon_palette[((byte >> shift) & 0x0f) as usize];
-                pixels.extend_from_slice(&[
-                    ((color & 0x1f) * 255 / 31) as u8,
-                    (((color >> 5) & 0x1f) * 255 / 31) as u8,
-                    (((color >> 10) & 0x1f) * 255 / 31) as u8,
-                    if color == 0 { 0 } else { 255 },
-                ]);
-            }
-        }
-        RgbaImage::from_raw(16, 16, pixels)
-    });
-    Ok((title, banner))
-}
-
-fn write_save(
-    image: &mut [u8],
-    first_block: usize,
-    native_id: &[u8; NATIVE_ID_SIZE],
-    payload: &[u8],
-    blocks: usize,
-) {
-    for chain_index in 0..blocks {
-        let block = first_block + chain_index;
-        let data_start = (block + 1) * BLOCK_SIZE;
-        let source_start = chain_index * BLOCK_SIZE;
-        let copied = payload.len().saturating_sub(source_start).min(BLOCK_SIZE);
-        image[data_start..data_start + BLOCK_SIZE].fill(0xff);
-        image[data_start..data_start + copied]
-            .copy_from_slice(&payload[source_start..source_start + copied]);
-
-        let frame_start = (block + 1) * FRAME_SIZE;
-        let frame = &mut image[frame_start..frame_start + FRAME_SIZE];
-        frame.fill(0);
-        let state = if chain_index == 0 {
-            BAState::AllocFirst as u32
-        } else if chain_index + 1 == blocks {
-            BAState::AllocLast as u32
-        } else {
-            BAState::AllocMid as u32
-        };
-        frame[..4].copy_from_slice(&state.to_le_bytes());
-        if chain_index == 0 {
-            frame[4..8].copy_from_slice(&(payload.len() as u32).to_le_bytes());
-            frame[10..31].copy_from_slice(native_id);
-        }
-        let next = if chain_index + 1 == blocks {
-            u16::MAX
-        } else {
-            (block + 1) as u16
-        };
-        frame[8..10].copy_from_slice(&next.to_le_bytes());
-        update_checksum(frame);
-    }
-}
-
-fn parse_card(image: &[u8]) -> Result<MemCard, Error> {
-    if image.len() != RAW_SIZE {
-        return Err(malformed("raw image is not 128 KiB"));
-    }
-    if image[..2] != *b"MC" {
-        return Err(malformed(
-            "raw image does not have a PlayStation card header",
-        ));
-    }
-    // psxmem treats the write-test frame at the end of the filesystem block as
-    // checksummed metadata. Real cards and DuckStation do not require that
-    // frame's payload to carry a valid stored checksum. Normalize only the
-    // parser's temporary copy; the projected image remains byte-for-byte intact.
-    let mut parse_image = image.to_vec();
-    let write_test = &mut parse_image[63 * FRAME_SIZE..64 * FRAME_SIZE];
-    update_checksum(write_test);
-
-    let mut file = NamedTempFile::new().map_err(|source| Error::Io {
-        path: "temporary PlayStation card".to_owned(),
-        source,
-    })?;
-    file.write_all(&parse_image).map_err(|source| Error::Io {
-        path: file.path().display().to_string(),
-        source,
-    })?;
-    file.flush().map_err(|source| Error::Io {
-        path: file.path().display().to_string(),
-        source,
-    })?;
-    let path = file.path().to_string_lossy().into_owned();
-    std::panic::catch_unwind(|| MemCard::open(&path))
-        .map_err(|_| malformed("psxmem panicked while decoding the raw image"))?
-        .map_err(|error| malformed(&format!("psxmem rejected the raw image: {error}")))
-}
-
-fn formatted_card() -> Vec<u8> {
-    let mut image = vec![0xff; RAW_SIZE];
-    image[..BLOCK_SIZE].fill(0);
-    image[0] = b'M';
-    image[1] = b'C';
-    for frame in 0..64 {
-        update_checksum(&mut image[frame * FRAME_SIZE..(frame + 1) * FRAME_SIZE]);
-    }
-    for block in 0..DATA_BLOCKS {
-        let start = (block + 1) * FRAME_SIZE;
-        let frame = &mut image[start..start + FRAME_SIZE];
-        frame.fill(0);
-        frame[..4].copy_from_slice(&(BAState::Free as u32).to_le_bytes());
-        frame[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
-        update_checksum(frame);
-    }
-    image
-}
-
-fn update_checksum(frame: &mut [u8]) {
-    frame[FRAME_SIZE - 1] = frame[..FRAME_SIZE - 1]
-        .iter()
-        .fold(0, |checksum, byte| checksum ^ byte);
-}
-
-fn native_name(native_id: &[u8; NATIVE_ID_SIZE]) -> String {
-    String::from_utf8_lossy(native_id)
-        .trim_end_matches('\0')
-        .to_owned()
-}
-
-fn save_depot_id(header: &[u8]) -> SaveDepotId {
-    let digest = blake3::hash(header);
-    SaveDepotId(u64::from_le_bytes(
-        digest.as_bytes()[..8].try_into().expect("eight bytes"),
-    ))
-}
-
-fn save_header_from_serial(serial: &str) -> [u8; SAVE_HEADER_SIZE] {
-    let serial = serial.trim().to_ascii_uppercase();
-    let key = match serial.get(..4) {
-        Some("SLPS" | "SCPS" | "SIPS") => b"BI",
-        Some("SLUS" | "SCUS") => b"BA",
-        Some("SLES" | "SCES") => b"BE",
-        _ => panic!("unsupported PlayStation product serial `{serial}`"),
-    };
-    assert_eq!(
-        serial.len(),
-        SAVE_HEADER_SIZE - key.len(),
-        "PlayStation product serial `{serial}` does not fit a memory-card header"
-    );
-    let mut header = [0; SAVE_HEADER_SIZE];
-    header[..key.len()].copy_from_slice(key);
-    header[key.len()..].copy_from_slice(serial.as_bytes());
-    header
-}
-
-fn save_from_data_path(path: &str) -> Option<CanonicalSave> {
-    let mut components = path.split('/');
-    if components.next()? != SAVE_ROOT {
-        return None;
-    }
-    let save = CanonicalSave::from_native_name(components.next()?)?;
-    components.next().is_none().then_some(save)
-}
-
-fn malformed(reason: &str) -> Error {
-    Error::MalformedMetadata {
-        file: "PlayStation memory card".to_owned(),
-        reason: reason.to_owned(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn native(name: &[u8]) -> [u8; NATIVE_ID_SIZE] {
-        let mut native = [0; NATIVE_ID_SIZE];
-        native[..name.len()].copy_from_slice(name);
-        native
-    }
-
-    fn payload(marker: u8) -> Vec<u8> {
-        let mut payload = vec![marker; BLOCK_SIZE];
-        payload[..BLOCK_SIZE].fill(0);
-        payload[0..2].copy_from_slice(b"SC");
-        payload[2] = 0x11;
-        payload[3] = 1;
-        payload[4..6].copy_from_slice(&[0x82, 0x60]);
-        payload[98..100].copy_from_slice(&0x001f_u16.to_le_bytes());
-        payload[FRAME_SIZE..FRAME_SIZE * 2].fill(0x11);
-        payload[FRAME_SIZE * 2] = marker;
-        payload
-    }
-
-    fn add_save(card: &PlaystationMemoryCard, native_id: [u8; NATIVE_ID_SIZE], data: &[u8]) {
-        let save = CanonicalSave::from_native_id(native_id);
-        card.storage
-            .create(&save.data_path())
-            .unwrap()
-            .write_all(data)
-            .unwrap();
-    }
-
-    #[test]
-    fn psxmem_accepts_the_virtual_blank_card() {
-        let image = formatted_card();
-        assert_eq!(image.len(), RAW_SIZE);
-        parse_card(&image).unwrap();
-    }
-
-    #[test]
-    fn canonical_name_round_trips_native_identity() {
-        let mut native_id = [0; NATIVE_ID_SIZE];
-        native_id[..12].copy_from_slice(b"BASCUS-94900");
-        let save = CanonicalSave::from_native_id(native_id);
-        assert_eq!(
-            CanonicalSave::from_native_name("BASCUS-94900"),
-            Some(save.clone())
-        );
-        assert_eq!(save.data_path(), "card/BASCUS-94900");
-    }
-
-    #[test]
-    fn package_serial_maps_to_the_native_save_header() {
-        assert_eq!(save_header_from_serial("slus-00838"), *b"BASLUS-00838");
-        assert_eq!(save_header_from_serial("SCPS-10001"), *b"BISCPS-10001");
-        assert_eq!(save_header_from_serial("SLES-01234"), *b"BESLES-01234");
-    }
-
-    #[tokio::test]
-    async fn a_new_card_materializes_only_in_its_raw_view() {
-        let directory = tempfile::tempdir().unwrap();
-        let card = PlaystationMemoryCard::new_empty(
-            DirectoryStorage::new(directory.path()).await.unwrap(),
-            Uuid::now_v7(),
-            Some("Card One".to_owned()),
-        )
-        .await
-        .unwrap();
-        let view = card.view(&[], 15, "raw").unwrap();
-        assert_eq!(
-            view.storage().metadata(view.entry()).unwrap().len,
-            RAW_SIZE as u64
-        );
-        assert!(!card.exists(RAW_ENTRY));
-        view.storage().sync(view.entry()).unwrap();
-        assert_eq!(card.enumerate_saves().count(), 0);
-        assert_eq!(card.label().await.unwrap().as_deref(), Some("Card One"));
-    }
-
-    #[tokio::test]
-    async fn primary_save_is_first_and_raw_deletions_reconcile_to_disk() {
-        let directory = tempfile::tempdir().unwrap();
-        let card = PlaystationMemoryCard::new_empty(
-            DirectoryStorage::new(directory.path()).await.unwrap(),
-            Uuid::now_v7(),
-            None,
-        )
-        .await
-        .unwrap();
-        let first = CanonicalSave::from_native_id(native(b"BASCUS-00001"));
-        let primary = CanonicalSave::from_native_id(native(b"BASCUS-00002"));
-        add_save(&card, first.native_id, &payload(1));
-        add_save(&card, primary.native_id, &payload(2));
-
-        let view = card.view(&[primary.id], 2, "raw").unwrap();
-        let mut image = Vec::new();
-        view.storage()
-            .open_read(view.entry())
-            .unwrap()
-            .read_to_end(&mut image)
-            .unwrap();
-        let parsed = parse_card(&image).unwrap();
-        assert_eq!(parsed.info.dir_frames[0].filename, primary.native_id);
-        assert_eq!(parsed.info.dir_frames[1].filename, first.native_id);
-
-        let watcher = card.watch_saves(&[primary.id]).unwrap();
-        let mut replacement = formatted_card();
-        write_save(&mut replacement, 0, &primary.native_id, &payload(3), 1);
-        let mut output = view.storage().open(view.entry()).unwrap();
-        output.write_all(&replacement).unwrap();
-        view.storage().sync(view.entry()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), watcher.changed())
-            .await
-            .unwrap();
-
-        assert!(!card.storage.exists(&first.data_path()));
-        assert!(card.storage.exists(&primary.data_path()));
-        let descriptor = card.describe_save(&primary).unwrap();
-        assert_eq!(descriptor.title, "A");
-        assert_eq!(descriptor.banner.unwrap().dimensions(), (16, 16));
-    }
-
-    #[tokio::test]
-    async fn package_identity_selects_every_native_file_in_its_depot() {
-        let directory = tempfile::tempdir().unwrap();
-        let card = PlaystationMemoryCard::new_empty(
-            DirectoryStorage::new(directory.path()).await.unwrap(),
-            Uuid::now_v7(),
-            None,
-        )
-        .await
-        .unwrap();
-        let first = CanonicalSave::from_native_id(native(b"BASLUS-00838 A"));
-        let second = CanonicalSave::from_native_id(native(b"BASLUS-00838 B"));
-        assert_eq!(first.id, second.id);
-        add_save(&card, first.native_id, &payload(1));
-        add_save(&card, second.native_id, &payload(2));
-
-        let package = Package::new(Some("SLUS-00838".to_owned()), None);
-        let inferred = card.infer_save_depot(&package);
-        assert_eq!(inferred, first.id);
-        assert_eq!(card.enumerate_saves().count(), 1);
-        assert_eq!(card.export_save(&inferred).unwrap().blobs.len(), 2);
-
-        let view = card.view(&[inferred], 2, "raw").unwrap();
-        let mut image = Vec::new();
-        view.storage()
-            .open_read(view.entry())
-            .unwrap()
-            .read_to_end(&mut image)
-            .unwrap();
-        let parsed = parse_card(&image).unwrap();
-        assert_eq!(parsed.info.dir_frames[0].filename, first.native_id);
-        assert_eq!(parsed.info.dir_frames[1].filename, second.native_id);
-    }
-
-    #[tokio::test]
-    async fn inferred_depot_notifies_when_its_first_native_file_is_created() {
-        let directory = tempfile::tempdir().unwrap();
-        let card = PlaystationMemoryCard::new_empty(
-            DirectoryStorage::new(directory.path()).await.unwrap(),
-            Uuid::now_v7(),
-            None,
-        )
-        .await
-        .unwrap();
-        let package = Package::new(Some("SLUS-00838".to_owned()), None);
-        let inferred = card.infer_save_depot(&package);
-        let watcher = card.watch_saves(&[inferred]).unwrap();
-        let view = card.view(&[inferred], 15, "raw").unwrap();
-        let save = CanonicalSave::from_native_id(native(b"BASLUS-00838 BBLIT"));
-        let mut image = formatted_card();
-        write_save(&mut image, 0, &save.native_id, &payload(1), 1);
-
-        let mut output = view.storage().open(view.entry()).unwrap();
-        output.write_all(&image).unwrap();
-        view.storage().sync(view.entry()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), watcher.changed())
-            .await
-            .unwrap();
-
-        assert_eq!(card.enumerate_saves().next().unwrap().id, inferred);
     }
 }

@@ -34,19 +34,17 @@ The debug converter and `ps1-memcard` dependency are not production code.
 
 ## Canonical representation
 
-Use one directory per logical save. The directory name is the hexadecimal encoding of the PS1
-directory filename, including its trailing zero bytes:
+Store each native PS1 save file directly beneath the canonical card directory:
 
 ```text
-save-depots/
-  <hex-encoded-native-id>/
-    data.bin                # chained 8 KiB blocks in logical order
+card/
+  BASLUS-00838 BBLIT       # chained 8 KiB blocks in logical order
 ```
 
-The safe encoding is reversible, so the filesystem is the complete source of truth and no save
-registry is required. `SaveDepotId` is derived from the native identity. Title and icon are parsed
-from the first data block. The manifest database retains only the storage device's identity and
-label; it does not contain save ordering or a raw card image.
+The native filename is authoritative, so the filesystem is the complete source of truth and no
+save registry is required. `SaveDepotId` is derived from its standardized 12-byte key/product
+header. Title and icon are parsed from the first data block. The manifest database retains only
+the storage device's identity and label; it does not contain save ordering or a raw card image.
 
 Free blocks, deleted-save residue, broken-sector metadata, and other physical bytes live only in
 the mounted in-memory view. They survive arbitrary emulator writes and atomic replacement for that
@@ -91,9 +89,10 @@ the rename. Watching only writes to the original destination node would miss the
 Directory-side changes are picked up by the next mount. Concurrent raw and directory writers are
 intentionally unsupported; transparency is guaranteed across flush/close and subsequent launches.
 
-The first implementation uses `psxmem` to parse the complete raw image and individual first data
-blocks. Its path-based, allocating API is deliberately contained behind the PS1 codec and will be
-replaced by a zero-copy parser.
+The raw memory-card view keeps its bytes in a `Cow`, borrowing mounted images and owning newly
+formatted projections. `zerocopy` directory, block, title, palette, icon, and save views borrow
+from the card on demand, so the card stores no self-references and parsing requires no path,
+temporary file, or payload copy.
 
 ## Plugin integration
 
