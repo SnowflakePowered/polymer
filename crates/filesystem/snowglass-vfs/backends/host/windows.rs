@@ -254,6 +254,21 @@ impl Volume for HostVolume {
     }
 
     fn rename(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        self.rename_inner(source, target, false)
+    }
+
+    fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
+        self.rename_inner(source, target, true)
+    }
+}
+
+impl HostVolume {
+    fn rename_inner(
+        &self,
+        source: &VfsPath,
+        target: &VfsPath,
+        replace_if_exists: bool,
+    ) -> VfsResult<()> {
         VfsError::require_writable(self.inner.writable)?;
         let source = self.inner.resolve(source)?;
         let target_parent = target
@@ -267,6 +282,7 @@ impl Volume for HostVolume {
             &source.handle,
             &target_parent.handle,
             &Self::component(target)?,
+            replace_if_exists,
         )
     }
 }
@@ -662,14 +678,19 @@ fn directory_names(directory: &File) -> VfsResult<Vec<VfsComponent>> {
     Ok(names)
 }
 
-fn rename_handle(source: &File, target_parent: &File, name: &VfsComponent) -> VfsResult<()> {
+fn rename_handle(
+    source: &File,
+    target_parent: &File,
+    name: &VfsComponent,
+    replace_if_exists: bool,
+) -> VfsResult<()> {
     let name_bytes = size_of_val(name.as_slice());
     let total = size_of::<FILE_RENAME_INFORMATION>() + name_bytes;
     let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     let mut io_status = IO_STATUS_BLOCK::default();
     unsafe {
-        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).Anonymous.ReplaceIfExists = replace_if_exists;
         (*info).RootDirectory = raw_handle(target_parent);
         (*info).FileNameLength = name_bytes as u32;
         ptr::addr_of_mut!((*info).FileName)
