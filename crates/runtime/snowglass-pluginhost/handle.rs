@@ -26,7 +26,6 @@ impl<T: ?Sized> Handle<T> {
             marker: PhantomData,
         }
     }
-
 }
 
 impl<T: ?Sized> Clone for Handle<T> {

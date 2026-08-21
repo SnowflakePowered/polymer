@@ -441,15 +441,20 @@ impl PreparedFilesystem {
         if !resolved.permissions.can_write() || !resolved.permissions.can_execute() {
             return Err(VfsError::PermissionDenied(parent_path));
         }
-        let Node::Directory(directory) = resolved.node else {
-            return Err(VfsError::NotDirectory(parent_path));
-        };
         let Some(volume) = resolved.volume else {
-            return Err(VfsError::PermissionDenied(parent_path));
+            return Err(match resolved.node {
+                Node::SyntheticDirectory => VfsError::PermissionDenied(parent_path),
+                _ => VfsError::NotDirectory(parent_path),
+            });
         };
         let relative = resolved
             .relative
             .expect("volume nodes carry a mount-relative path");
+        let directory = match resolved.node {
+            Node::Directory(directory) => directory,
+            Node::SyntheticDirectory => materialize_directory(&volume, relative.as_path())?,
+            Node::File(_) => return Err(VfsError::NotDirectory(parent_path)),
+        };
         let child_relative = relative.as_path().join(&name);
         Ok(WritableParent {
             volume,
@@ -502,7 +507,7 @@ impl PreparedFilesystem {
                     match directory.lookup(&component)? {
                         Some(found) => node = found,
                         None if self.compiled.has_descendant(path)? => {
-                            return Ok(ResolvedNode::synthetic());
+                            return Ok(ResolvedNode::synthetic_in(volume, relative, permissions));
                         }
                         None => return Err(VfsError::NotFound(path.clone())),
                     }
@@ -737,6 +742,37 @@ impl ResolvedNode {
             permissions: Permissions::ALL,
         }
     }
+
+    fn synthetic_in(
+        volume: Arc<dyn Volume>,
+        relative: VfsPathBuf,
+        permissions: Permissions,
+    ) -> Self {
+        Self {
+            node: Node::SyntheticDirectory,
+            namespace_file: None,
+            volume: Some(volume),
+            relative: Some(relative),
+            permissions,
+        }
+    }
+}
+
+fn materialize_directory(
+    volume: &Arc<dyn Volume>,
+    relative: &VfsPath,
+) -> VfsResult<Arc<dyn DirectoryNode>> {
+    let mut directory = volume.root()?;
+    for component in relative.components() {
+        let component = VfsComponent::from_units(crate::PathStr::as_slice(component).to_vec())?;
+        directory = match directory.lookup(&component)? {
+            Some(Node::Directory(directory)) => directory,
+            Some(Node::File(_)) => return Err(VfsError::NotDirectory(relative.to_owned())),
+            Some(Node::SyntheticDirectory) => return Err(VfsError::StaleNode),
+            None => directory.create_dir(&component)?,
+        };
+    }
+    Ok(directory)
 }
 
 impl Drop for PreparedFilesystem {
