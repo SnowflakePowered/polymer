@@ -7,7 +7,7 @@ use crate::{
     VfsPathBuf, VfsResult, Volume,
 };
 
-use super::storage::{materialize_adoptable_file, materialize_volume, unrestricted};
+use super::storage::{materialize_file, materialize_volume, unrestricted};
 
 /// Adapts a file entry from a [`MemoryCardView`] into a VFS resource.
 pub struct MemoryCardFileFactory {
@@ -25,7 +25,7 @@ impl MemoryCardFileFactory {
 
 impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        Ok(materialize_adoptable_file(
+        Ok(materialize_file(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),

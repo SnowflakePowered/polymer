@@ -104,8 +104,7 @@ pub trait FileNode: Send + Sync {
     fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()>;
     fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>>;
 
-    /// Prepares the mounted file to take ownership of `source` during an
-    /// atomic replacement.
+    /// Begin an atomic adoption operation. Requires [`Permissions::ADOPT`].
     fn adopt(&self, _source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
         Err(crate::VfsError::Unsupported(
             "the target file does not accept source-node adoption".into(),
