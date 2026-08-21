@@ -297,7 +297,10 @@ impl ArtifactDb {
 
     async fn delete(&self, id: &str) -> Result<(), Error> {
         self.connection
-            .execute("DELETE FROM artifact_files WHERE artifact_id = ?1", params![id])
+            .execute(
+                "DELETE FROM artifact_files WHERE artifact_id = ?1",
+                params![id],
+            )
             .await
             .map_err(database)?;
         self.connection
@@ -330,7 +333,6 @@ impl ArtifactDb {
 }
 
 impl ArtifactRegistry for ArtifactDb {
-
     fn record<'a>(&'a self, artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(self.insert(artifact))
     }

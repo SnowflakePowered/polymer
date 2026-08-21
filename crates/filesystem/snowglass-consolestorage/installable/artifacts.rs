@@ -30,7 +30,15 @@ impl Artifact {
         icon: IconHint,
     ) -> Self {
         let byte_length = manifest.iter().map(DepotFile::byte_length).sum();
-        Self { id, depot_type, manifest, label, version, icon, byte_length }
+        Self {
+            id,
+            depot_type,
+            manifest,
+            label,
+            version,
+            icon,
+            byte_length,
+        }
     }
 
     /// Replace the manifest, recomputing the installed size.

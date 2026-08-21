@@ -3,9 +3,9 @@ use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, Write};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use std::sync::Arc;
 
@@ -17,27 +17,27 @@ use uuid::Uuid;
 use crate::error::Error;
 
 pub mod manifest;
-pub(crate) mod permissions;
 pub mod memorycard;
+pub(crate) mod permissions;
 
-use manifest::{ArtifactDb, ArtifactRegistry};
 use crate::storage::manifest::NandMetadata;
+use manifest::{ArtifactDb, ArtifactRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
-  /// Declared with a trailing `/`.
-  Directory,
-  /// Declared without a trailing `/`.
-  File,
+    /// Declared with a trailing `/`.
+    Directory,
+    /// Declared without a trailing `/`.
+    File,
 }
 
 impl EntryKind {
-  pub(crate) fn matches(self, meta: &fs::Metadata) -> bool {
-    match self {
-      EntryKind::Directory => meta.is_dir(),
-      EntryKind::File => meta.is_file(),
+    pub(crate) fn matches(self, meta: &fs::Metadata) -> bool {
+        match self {
+            EntryKind::Directory => meta.is_dir(),
+            EntryKind::File => meta.is_file(),
+        }
     }
-  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +138,6 @@ impl<T: Read + Seek + Send> StorageRead for T {}
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-
 pub trait Storage: fmt::Debug + Send + Sync {
     fn exists(&self, path: &str) -> bool;
 
@@ -210,7 +209,6 @@ pub trait VolumeStorage: MountableStorage {
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
-
 }
 
 pub struct DirectoryStorage {
@@ -281,7 +279,7 @@ impl Storage for DirectoryStorage {
                 EntryKind::File
             },
             len: meta.len(),
-            mtime: jiff::Timestamp::try_from(mtime)?
+            mtime: jiff::Timestamp::try_from(mtime)?,
         })
     }
 
@@ -394,7 +392,7 @@ impl Storage for DirectoryStorage {
 
             notifier.notify_one();
         })
-        .map_err(|e|  Error::io(&self.root, std::io::Error::other(e)))?;
+        .map_err(|e| Error::io(&self.root, std::io::Error::other(e)))?;
 
         for path in paths {
             let resolved = self.resolve(path)?;
@@ -488,7 +486,7 @@ impl DirectoryStorage {
 
             writer.flush().await
         }
-            .await;
+        .await;
         drop(writer);
 
         if let Err(error) = copied {
@@ -508,7 +506,6 @@ impl DirectoryStorage {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,11 +517,22 @@ mod tests {
 
         assert_eq!(storage.resolve("").unwrap(), dir.path());
         assert_eq!(
-            storage.resolve("usr/title/00050000101c9400/code/app.xml").unwrap(),
+            storage
+                .resolve("usr/title/00050000101c9400/code/app.xml")
+                .unwrap(),
             dir.path().join("usr/title/00050000101c9400/code/app.xml")
         );
 
-        for path in ["/abs", "..", "../escape", "a/../b", "a/./b", "a//b", "a/", r"a\b"] {
+        for path in [
+            "/abs",
+            "..",
+            "../escape",
+            "a/../b",
+            "a/./b",
+            "a//b",
+            "a/",
+            r"a\b",
+        ] {
             assert!(
                 matches!(storage.resolve(path), Err(Error::InvalidPath(_))),
                 "`{path}` was not rejected"
@@ -541,11 +549,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(Storage::label(&storage).await.unwrap().as_deref(), Some("Card One"));
+        assert_eq!(
+            Storage::label(&storage).await.unwrap().as_deref(),
+            Some("Card One")
+        );
         Storage::set_label(&storage, Some("Card Two"))
             .await
             .unwrap();
-        assert_eq!(Storage::label(&storage).await.unwrap().as_deref(), Some("Card Two"));
+        assert_eq!(
+            Storage::label(&storage).await.unwrap().as_deref(),
+            Some("Card Two")
+        );
     }
 }
 
@@ -605,5 +619,4 @@ impl VolumeStorage for DirectoryStorage {
     ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
         self.artifacts.brand(id, platform, label)
     }
-
 }
