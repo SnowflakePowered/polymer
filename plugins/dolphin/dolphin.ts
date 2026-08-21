@@ -1,5 +1,3 @@
-import config from "pkg:plugin.toml";
-
 // Host-backed view of snowglass-config's ConfigurationInstance. This object is
 // deliberately opaque: the plugin may inspect and adjust option values, but it
 // returns the same object to pluginhost, which alone drives serialization.
@@ -8,6 +6,9 @@ type Configuration = {
         main: {
             core: {
                 gfx_backend: string,
+                gci_folder_a_path: string,
+                slot_a: string,
+                slot_b: string,
             },
             input: {
                 background_input: boolean,
@@ -19,33 +20,73 @@ type Configuration = {
     },
 }
 
-// We'll need to determine the shape of the NAND API later as well.
+type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
+
+type Filesystem = {
+    mountHostFile(target: string, source: string, options: { mode: string }): void,
+    mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
+    mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
+    path(path: string): string,
+    setWorkingDirectory(path: string): void,
+    setProfile(profile: {
+        home?: string,
+        roamingAppData?: string,
+        localAppData?: string,
+        temp?: string,
+    }): void,
+};
+
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     portAssignments: { [group: string]: string[] },
-    configuration: Configuration
+    configuration: Configuration,
+    filesystem: Filesystem,
+    resources: { runtime: Resource },
+}
+
+function basename(path: string): string {
+    const name = path.replaceAll("\\", "/").split("/").at(-1);
+    if (!name) throw new TypeError(`path has no filename: ${path}`);
+    return name;
 }
 
 export const setupLaunch = (args: SetupLaunchArgs) => {
-    const executable = new URL(config.plugin.config.dolphin_path);
-    args.configuration.options().main.core.gfx_backend = "D3D";
+    const gameName = basename(args.launchPath);
+
+    args.filesystem.mountTree("/Dolphin", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
+    // This scratch tree is the future mountMemoryCard(..., { format: "gci" }) target.
+    args.filesystem.mountScratch("/MemoryCard", { mode: "rwx", backing: "temporary" });
+    args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
+    args.filesystem.setWorkingDirectory("/Dolphin");
+    args.filesystem.setProfile({
+        home: "/User",
+        roamingAppData: "/User/AppData/Roaming",
+        localAppData: "/User/AppData/Local",
+        temp: "/User/Temp",
+    });
+
+    const options = args.configuration.options().main;
+    options.core.gfx_backend = "D3D";
+    options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
+    options.core.slot_a = "MemoryCardFolder";
+    options.core.slot_b = "None";
     // Snowglass owns the focused host window while Dolphin renders through an
     // isolated capture surface. Dolphin must continue polling the injected
     // virtual controller while its own hidden window is not foreground.
-    args.configuration.options().main.input.background_input = true;
+    options.input.background_input = true;
     // NKit images trigger a modal warning before emulation starts. Snowglass
     // launches Dolphin unattended, so the warning must never block startup.
-    args.configuration.options().main.interface.skip_n_kit_warning = true;
+    options.interface.skip_n_kit_warning = true;
 
     return {
-        command: executable.href,
-        argv: ["-b", "-e", args.launchPath],
-        // Dolphin's portable distribution keeps its writable INI hierarchy in
-        // `User/`. Pointing at the executable directory writes a parallel
-        // `Config/` tree that Dolphin never reads, leaving its old direct-input
-        // mappings active instead of the Snowglass virtual controller.
-        configRoot: new URL("User/", executable).href,
+        command: args.filesystem.path("/Dolphin/Dolphin.exe"),
+        argv: [
+            "-u", args.filesystem.path("/User"),
+            "-b", "-e", args.filesystem.path(`/Game/${gameName}`),
+        ],
+        configRoot: args.filesystem.path("/User"),
         isolate: true,
         hooks: ["d3d11"],
         graphTracking: true,
