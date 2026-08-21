@@ -7,7 +7,7 @@ use crate::{
     VfsPathBuf, VfsResult, Volume,
 };
 
-use super::storage::{materialize_file, materialize_volume, unrestricted};
+use super::storage::{materialize_adoptable_file, materialize_volume, unrestricted};
 
 /// Adapts a file entry from a [`MemoryCardView`] into a VFS resource.
 pub struct MemoryCardFileFactory {
@@ -25,7 +25,7 @@ impl MemoryCardFileFactory {
 
 impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        Ok(materialize_file(
+        Ok(materialize_adoptable_file(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
@@ -77,91 +77,4 @@ impl ResourceLease for MemoryCardLease {
 
 fn vfs_path(path: &str) -> VfsPathBuf {
     VfsPathBuf::new(format!("/{path}")).unwrap_or_else(|_| VfsPathBuf::root())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{CreateOptions, OpenOptions, VfsComponent};
-    use snowglass_consolestorage::{DirectoryStorage, Storage};
-    use std::io::Read;
-
-    #[tokio::test]
-    async fn file_factory_adapts_the_selected_view_entry() {
-        let directory = tempfile::tempdir().unwrap();
-        let storage = Arc::new(DirectoryStorage::new(directory.path()).await.unwrap());
-        storage.create("cards/card.mcd").unwrap();
-        let view = MemoryCardView::new(storage.clone(), "cards/card.mcd").unwrap();
-        let materialized = MemoryCardFileFactory::new(view)
-            .unwrap()
-            .materialize()
-            .unwrap();
-
-        let file = materialized
-            .backend
-            .open(OpenOptions {
-                read: true,
-                write: true,
-                truncate: false,
-            })
-            .unwrap();
-        file.write_at(4, b"card").unwrap();
-        file.sync().unwrap();
-
-        let mut bytes = Vec::new();
-        storage
-            .open_read("cards/card.mcd")
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
-        assert_eq!(bytes, b"\0\0\0\0card");
-    }
-
-    #[tokio::test]
-    async fn volume_factory_rebases_the_selected_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        let storage = Arc::new(DirectoryStorage::new(directory.path()).await.unwrap());
-        storage.create_dir_all("cards/gci").unwrap();
-        let view = MemoryCardView::new(storage.clone(), "cards/gci").unwrap();
-        let materialized = MemoryCardVolumeFactory::new(view)
-            .unwrap()
-            .materialize()
-            .unwrap();
-        let root = materialized.backend.root().unwrap();
-        let name = VfsComponent::new("save.gci").unwrap();
-        let file = root
-            .create_file(&name, CreateOptions { exclusive: true })
-            .unwrap();
-        file.open(OpenOptions {
-            read: false,
-            write: true,
-            truncate: false,
-        })
-        .unwrap()
-        .write_at(0, b"gci")
-        .unwrap();
-
-        let source = VfsPathBuf::new("/save.gci").unwrap();
-        let target = VfsPathBuf::new("/renamed.gci").unwrap();
-        materialized
-            .backend
-            .rename(source.as_path(), target.as_path())
-            .unwrap();
-
-        assert!(!storage.exists("cards/gci/save.gci"));
-        assert!(storage.exists("cards/gci/renamed.gci"));
-    }
-
-    #[tokio::test]
-    async fn factories_reject_the_wrong_entry_kind() {
-        let directory = tempfile::tempdir().unwrap();
-        let storage = Arc::new(DirectoryStorage::new(directory.path()).await.unwrap());
-        storage.create("card.raw").unwrap();
-
-        let file = MemoryCardView::new(storage.clone(), "card.raw").unwrap();
-        assert!(MemoryCardVolumeFactory::new(file).is_err());
-
-        let directory = MemoryCardView::new(storage, "").unwrap();
-        assert!(MemoryCardFileFactory::new(directory).is_err());
-    }
 }

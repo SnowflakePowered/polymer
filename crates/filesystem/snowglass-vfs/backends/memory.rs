@@ -85,7 +85,7 @@ struct MemoryOpen {
 }
 
 impl OpenFile for MemoryOpen {
-    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         let offset = offset as usize;
         let bytes = self.bytes.read();
         if offset >= bytes.len() {
@@ -96,7 +96,7 @@ impl OpenFile for MemoryOpen {
         Ok(count)
     }
 
-    fn write_at(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
         VfsError::require_writable(self.writable)?;
         let offset = offset as usize;
         let end = offset
@@ -110,7 +110,7 @@ impl OpenFile for MemoryOpen {
         Ok(buffer.len())
     }
 
-    fn set_len(&self, len: u64) -> VfsResult<()> {
+    fn truncate(&self, len: u64) -> VfsResult<()> {
         VfsError::require_writable(self.writable)?;
         self.bytes.write().resize(len as usize, 0);
         Ok(())
@@ -271,6 +271,42 @@ impl Volume for MemoryVolume {
 
     fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
         self.rename_inner(source, target, true)
+    }
+
+    fn detach(&self, source: &VfsPath) -> VfsResult<()> {
+        let parent_path = source
+            .parent()
+            .ok_or_else(|| VfsError::Unsupported("the volume root cannot be detached".into()))?;
+        let name = Self::component(source)?;
+        let key = name.normalized()?;
+        let mut state = self.state.lock();
+        let parent = Self::resolve_locked(&state, parent_path.as_path())?;
+        let child = {
+            let parent = state.nodes.get(&parent).expect("source parent exists");
+            let MemoryKind::Directory(children) = &parent.kind else {
+                return Err(VfsError::NotDirectory(parent_path));
+            };
+            children
+                .get(&key)
+                .map(|(_, child)| *child)
+                .ok_or_else(|| VfsError::NotFound(source.to_owned()))?
+        };
+        if !matches!(
+            state.nodes.get(&child).expect("source child exists").kind,
+            MemoryKind::File(_)
+        ) {
+            return Err(VfsError::IsDirectory(source.to_owned()));
+        }
+        let MemoryKind::Directory(children) = &mut state
+            .nodes
+            .get_mut(&parent)
+            .expect("source parent exists")
+            .kind
+        else {
+            unreachable!()
+        };
+        children.remove(&key);
+        Ok(())
     }
 }
 
@@ -616,9 +652,9 @@ mod tests {
                 truncate: false,
             })
             .unwrap();
-        open.write_at(4, b"z").unwrap();
+        open.write(4, b"z").unwrap();
         let mut bytes = [0; 5];
-        open.read_at(0, &mut bytes).unwrap();
+        open.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes, b"ab\0\0z");
     }
 }

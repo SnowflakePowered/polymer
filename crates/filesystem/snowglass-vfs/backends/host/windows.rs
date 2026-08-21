@@ -32,12 +32,15 @@ use windows::{
         Storage::FileSystem::{
             CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL,
             FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
-            FILE_DISPOSITION_INFO, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+            FILE_DISPOSITION_INFO_EX_FLAGS, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
             FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO, FILE_SHARE_DELETE, FILE_SHARE_MODE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
-            FileEndOfFileInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
-            GetFileInformationByHandleEx, OPEN_EXISTING, ReOpenFile, SetFileInformationByHandle,
+            FileDispositionInfoEx, FileEndOfFileInfo, FileIdBothDirectoryInfo,
+            FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
+            ReOpenFile, SetFileInformationByHandle,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -82,17 +85,17 @@ struct HostOpen {
 }
 
 impl OpenFile for HostOpen {
-    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         use std::os::windows::fs::FileExt;
         Ok(self.file.seek_read(buffer, offset)?)
     }
 
-    fn write_at(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
         use std::os::windows::fs::FileExt;
         Ok(self.file.seek_write(buffer, offset)?)
     }
 
-    fn set_len(&self, len: u64) -> VfsResult<()> {
+    fn truncate(&self, len: u64) -> VfsResult<()> {
         self.file.set_len(len)?;
         Ok(())
     }
@@ -259,6 +262,15 @@ impl Volume for HostVolume {
 
     fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
         self.rename_inner(source, target, true)
+    }
+
+    fn detach(&self, source: &VfsPath) -> VfsResult<()> {
+        VfsError::require_writable(self.inner.writable)?;
+        let source = self.inner.resolve(source)?;
+        if source.kind != FileKind::File {
+            return Err(VfsError::IsDirectory(VfsPathBuf::root()));
+        }
+        detach_handle(&source.handle)
     }
 }
 
@@ -715,6 +727,17 @@ fn delete_handle(file: &File) -> VfsResult<()> {
     set_file_information(file, FileDispositionInfo, &info)
 }
 
+fn detach_handle(file: &File) -> VfsResult<()> {
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+            FILE_DISPOSITION_FLAG_DELETE.0
+                | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+                | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0,
+        ),
+    };
+    set_file_information(file, FileDispositionInfoEx, &info)
+}
+
 fn get_file_information<T>(
     file: &File,
     class: windows::Win32::Storage::FileSystem::FILE_INFO_BY_HANDLE_CLASS,
@@ -782,9 +805,9 @@ mod tests {
                 truncate: false,
             })
             .unwrap();
-        open.write_at(0, b"relative handle").unwrap();
+        open.write(0, b"relative handle").unwrap();
         let mut bytes = [0; 15];
-        open.read_at(0, &mut bytes).unwrap();
+        open.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes, b"relative handle");
         drop(open);
         drop(file);
@@ -843,7 +866,7 @@ mod tests {
             })
             .unwrap();
         let mut bytes = [0; 8];
-        open.read_at(0, &mut bytes).unwrap();
+        open.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes, b"captured");
     }
 

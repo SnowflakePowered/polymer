@@ -88,17 +88,29 @@ pub type DirectoryIterator<S = NativePathSemantics> =
     dyn Iterator<Item = VfsResult<DirectoryEntry<S>>> + Send;
 
 pub trait OpenFile: Send + Sync {
-    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize>;
-    fn write_at(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize>;
-    fn set_len(&self, len: u64) -> VfsResult<()>;
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize>;
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize>;
+    fn truncate(&self, len: u64) -> VfsResult<()>;
     fn flush(&self) -> VfsResult<()>;
     fn sync(&self) -> VfsResult<()>;
+}
+
+pub trait AdoptHandle: Send + Sync {
+    fn finalize(&self) -> VfsResult<()>;
 }
 
 pub trait FileNode: Send + Sync {
     fn metadata(&self) -> VfsResult<Metadata>;
     fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()>;
     fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>>;
+
+    /// Prepares the mounted file to take ownership of `source` during an
+    /// atomic replacement.
+    fn adopt(&self, _source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
+        Err(crate::VfsError::Unsupported(
+            "the target file does not accept source-node adoption".into(),
+        ))
+    }
 }
 
 pub trait DirectoryNode<S: PathSemantics = NativePathSemantics>: Send + Sync {
@@ -127,5 +139,14 @@ pub trait Volume<S: PathSemantics = NativePathSemantics>: Send + Sync {
     /// rename behavior and should return `AlreadyExists`.
     fn replace(&self, source: &VfsPath<S>, target: &VfsPath<S>) -> VfsResult<()> {
         self.rename(source, target)
+    }
+
+    /// Removes a file from this volume's namespace while preserving the file
+    /// object already returned by [`DirectoryNode::lookup`] or
+    /// [`DirectoryNode::create_file`].
+    fn detach(&self, _source: &VfsPath<S>) -> VfsResult<()> {
+        Err(crate::VfsError::Unsupported(
+            "the source volume cannot detach file nodes".into(),
+        ))
     }
 }
