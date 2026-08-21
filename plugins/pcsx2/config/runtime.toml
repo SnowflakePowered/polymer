@@ -1,0 +1,182 @@
+# Invocation-critical settings that PCSX2 does not declare through the core
+# settings macros consumed by support/parse_config.py.
+
+[targets.ini.UI]
+[targets.ini.Folders]
+[targets.ini.Filenames]
+[targets.ini.MemoryCards]
+[targets.ini.InputSources]
+
+[sections.ui]
+title = "UI"
+target = "ini.UI"
+
+[[sections.ui.options]]
+key = "settings_version"
+title = "Settings Version"
+type = "int"
+default = 1
+emit = { key = "SettingsVersion" }
+
+[[sections.ui.options]]
+key = "setup_wizard_incomplete"
+title = "Setup Wizard Incomplete"
+type = "bool"
+default = false
+emit = { key = "SetupWizardIncomplete", bool_style = "lower" }
+
+[sections.folders]
+title = "Folders"
+target = "ini.Folders"
+
+[[sections.folders.options]]
+key = "bios"
+title = "BIOS"
+type = "string"
+default = "bios"
+emit = { key = "Bios" }
+
+[[sections.folders.options]]
+key = "snapshots"
+title = "Snapshots"
+type = "string"
+default = "snaps"
+emit = { key = "Snapshots" }
+
+[[sections.folders.options]]
+key = "savestates"
+title = "Savestates"
+type = "string"
+default = "sstates"
+emit = { key = "Savestates" }
+
+[[sections.folders.options]]
+key = "memory_cards"
+title = "Memory Cards"
+type = "string"
+default = "memcards"
+emit = { key = "MemoryCards" }
+
+[[sections.folders.options]]
+key = "logs"
+title = "Logs"
+type = "string"
+default = "logs"
+emit = { key = "Logs" }
+
+[[sections.folders.options]]
+key = "cheats"
+title = "Cheats"
+type = "string"
+default = "cheats"
+emit = { key = "Cheats" }
+
+[[sections.folders.options]]
+key = "patches"
+title = "Patches"
+type = "string"
+default = "patches"
+emit = { key = "Patches" }
+
+[[sections.folders.options]]
+key = "user_resources"
+title = "User Resources"
+type = "string"
+default = "resources"
+emit = { key = "UserResources" }
+
+[[sections.folders.options]]
+key = "cache"
+title = "Cache"
+type = "string"
+default = "cache"
+emit = { key = "Cache" }
+
+[[sections.folders.options]]
+key = "textures"
+title = "Textures"
+type = "string"
+default = "textures"
+emit = { key = "Textures" }
+
+[[sections.folders.options]]
+key = "input_profiles"
+title = "Input Profiles"
+type = "string"
+default = "inputprofiles"
+emit = { key = "InputProfiles" }
+
+[[sections.folders.options]]
+key = "videos"
+title = "Videos"
+type = "string"
+default = "videos"
+emit = { key = "Videos" }
+
+[[sections.folders.options]]
+key = "debugger_layouts"
+title = "Debugger Layouts"
+type = "string"
+default = "debuggerlayouts"
+emit = { key = "DebuggerLayouts" }
+
+[[sections.folders.options]]
+key = "debugger_settings"
+title = "Debugger Settings"
+type = "string"
+default = "debuggersettings"
+emit = { key = "DebuggerSettings" }
+
+[sections.filenames]
+title = "Filenames"
+target = "ini.Filenames"
+
+[[sections.filenames.options]]
+key = "bios"
+title = "BIOS"
+type = "string"
+default = ""
+emit = { key = "BIOS" }
+
+[sections.memory_cards]
+title = "Memory Cards"
+target = "ini.MemoryCards"
+
+[[sections.memory_cards.options]]
+key = "slot1_enable"
+title = "Slot 1 Enabled"
+type = "bool"
+default = true
+emit = { key = "Slot1_Enable", bool_style = "lower" }
+
+[[sections.memory_cards.options]]
+key = "slot1_filename"
+title = "Slot 1 Filename"
+type = "string"
+default = "Mcd001.ps2"
+emit = { key = "Slot1_Filename" }
+
+[[sections.memory_cards.options]]
+key = "slot2_enable"
+title = "Slot 2 Enabled"
+type = "bool"
+default = false
+emit = { key = "Slot2_Enable", bool_style = "lower" }
+
+[[sections.memory_cards.options]]
+key = "slot2_filename"
+title = "Slot 2 Filename"
+type = "string"
+default = "Mcd002.ps2"
+emit = { key = "Slot2_Filename" }
+
+[sections.input_sources]
+title = "Input Sources"
+target = "ini.InputSources"
+
+[[sections.input_sources.options]]
+key = "sdl"
+title = "SDL"
+type = "bool"
+default = true
+emit = { key = "SDL", bool_style = "lower" }
