@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use windows::{
     Win32::Graphics::Direct3D11::{
-        D3D11_BOX, ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext1, ID3D11DeviceContext2,
+        ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext1, ID3D11DeviceContext2,
         ID3D11DeviceContext3, ID3D11DeviceContext4,
     },
     core::Interface,
@@ -44,13 +44,13 @@ snowglass_hook::impl_com_hook! {
 
         #[base = ID3D11DeviceContext::Draw]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(this, Some(vertex_count))
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32);
 
         #[base = ID3D11DeviceContext::DrawIndexed]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(this, Some(index_count))
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw_indexed(
             this: *mut c_void,
@@ -61,10 +61,7 @@ snowglass_hook::impl_com_hook! {
 
         #[base = ID3D11DeviceContext::DrawIndexedInstanced]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(
-                this,
-                (instance_count == 1).then_some(index_count_per_instance),
-            )
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw_indexed_instanced(
             this: *mut c_void,
@@ -77,10 +74,7 @@ snowglass_hook::impl_com_hook! {
 
         #[base = ID3D11DeviceContext::DrawInstanced]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(
-                this,
-                (instance_count == 1).then_some(vertex_count_per_instance),
-            )
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw_instanced(
             this: *mut c_void,
@@ -92,13 +86,13 @@ snowglass_hook::impl_com_hook! {
 
         #[base = ID3D11DeviceContext::DrawAuto]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(this, None)
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw_auto(this: *mut c_void);
 
         #[base = ID3D11DeviceContext::DrawIndexedInstancedIndirect]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(this, None)
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw_indexed_instanced_indirect(
             this: *mut c_void,
@@ -108,7 +102,7 @@ snowglass_hook::impl_com_hook! {
 
         #[base = ID3D11DeviceContext::DrawInstancedIndirect]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_context_draw(this, None)
+            context.state.tracking.record_context_draw(this)
         })]
         unsafe extern "system" fn draw_instanced_indirect(
             this: *mut c_void,
@@ -116,24 +110,6 @@ snowglass_hook::impl_com_hook! {
             argument_offset: u32,
         );
 
-        #[base = ID3D11DeviceContext::UpdateSubresource]
-        #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_update_subresource(
-                destination_resource,
-                destination_subresource,
-                destination_box,
-                source_data,
-            )
-        })]
-        unsafe extern "system" fn update_subresource(
-            this: *mut c_void,
-            destination_resource: *mut c_void,
-            destination_subresource: u32,
-            destination_box: *const D3D11_BOX,
-            source_data: *const c_void,
-            source_row_pitch: u32,
-            source_depth_pitch: u32,
-        );
     }
 }
 

@@ -7,7 +7,7 @@ use snowglass_ipc::{LocalSocket, Message, StreamReady};
 use snowglass_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use snowglass_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId, transport_unorm_dxgi_format,
 };
 use std::{ffi::c_void, sync::Arc};
 use windows::{
@@ -77,8 +77,27 @@ impl SwapchainOwner for SwapchainCapture {
     /// `swapchain` must point to the live swapchain being presented.
     unsafe fn before_present(&self, swapchain: *mut c_void) {
         let presentation = self.tracking.take_swapchain_presentation(swapchain);
-        let tracked_region = presentation.as_ref().map(|value| value.region);
+        let tracked_source = presentation
+            .as_ref()
+            .and_then(|value| value.source.as_ref());
+        let tracked_region = tracked_source
+            .is_none()
+            .then(|| presentation.as_ref().map(|value| value.region))
+            .flatten();
         let mut capture = self.capture.lock();
+        if let Some(source) = tracked_source
+            && matches!(&*capture, Capture::Active(state) if {
+                let desc = state.capture.ring().desc();
+                (desc.width, desc.height, desc.format)
+                    != (
+                        source.width,
+                        source.height,
+                        transport_unorm_dxgi_format(source.format),
+                    )
+            })
+        {
+            *capture = Capture::Idle;
+        }
         if matches!(*capture, Capture::Idle) {
             let connection = match begin_viewer_connection() {
                 Ok(connection) => Some(connection),
@@ -106,7 +125,7 @@ impl SwapchainOwner for SwapchainCapture {
             };
             let mut ring = None;
             for (index, &mode) in mode_chain.iter().enumerate() {
-                match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode) } {
+                match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode, tracked_source) } {
                     Ok(value) => {
                         ring = Some(value);
                         break;
@@ -151,7 +170,7 @@ impl SwapchainOwner for SwapchainCapture {
         let Capture::Active(state) = &mut *capture else {
             return;
         };
-        let submission = match unsafe { state.capture.copy_frame(tracked_region) } {
+        let submission = match unsafe { state.capture.copy_frame(tracked_region, tracked_source) } {
             Ok(submission) => submission,
             Err(error) => {
                 state.copy_failures += 1;

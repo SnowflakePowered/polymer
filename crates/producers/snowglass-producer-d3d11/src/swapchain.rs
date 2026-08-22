@@ -1,4 +1,4 @@
-use crate::{D3d11ImageRing, D3d11RingMode};
+use crate::{D3d11ImageRing, D3d11RingMode, TrackedResource};
 use snowglass_protocol::AdapterLuid;
 use std::ffi::c_void;
 use windows::{
@@ -49,6 +49,7 @@ impl D3d11SwapchainCapture {
         swapchain: *mut c_void,
         slots: u32,
         mode: D3d11RingMode,
+        tracked_source: Option<&TrackedResource>,
     ) -> windows::core::Result<Self> {
         if swapchain.is_null() || slots == 0 {
             return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
@@ -68,8 +69,11 @@ impl D3d11SwapchainCapture {
             Err(_) if mode == D3d11RingMode::KeyedMutexNoFence => None,
             Err(error) => return Err(contextual(error, "ID3D11DeviceContext4 query")),
         };
-        let source: ID3D11Texture2D = unsafe { swapchain.GetBuffer(0) }
-            .map_err(|error| contextual(error, "IDXGISwapChain::GetBuffer"))?;
+        let source: ID3D11Texture2D = match tracked_source {
+            Some(source) => source.texture.clone(),
+            None => unsafe { swapchain.GetBuffer(0) }
+                .map_err(|error| contextual(error, "IDXGISwapChain::GetBuffer"))?,
+        };
         let swapchain_desc = unsafe { swapchain.GetDesc() }
             .map_err(|error| contextual(error, "IDXGISwapChain::GetDesc"))?;
 
@@ -86,6 +90,12 @@ impl D3d11SwapchainCapture {
         };
         let mut source_desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { source.GetDesc(&mut source_desc) };
+        if let Some(source) = tracked_source {
+            source_desc.Width = source.width;
+            source_desc.Height = source.height;
+            source_desc.MipLevels = 1;
+            source_desc.ArraySize = 1;
+        }
         let ring = unsafe { D3d11ImageRing::new(&device, &source_desc, slots, mode) }
             .map_err(|error| contextual(error, "D3D11 image ring creation"))?;
         Ok(Self {
@@ -105,9 +115,13 @@ impl D3d11SwapchainCapture {
     pub unsafe fn copy_frame(
         &mut self,
         tracked_region: Option<D3d11CaptureRegion>,
+        tracked_source: Option<&TrackedResource>,
     ) -> windows::core::Result<D3d11CopySubmission> {
-        let source: ID3D11Texture2D = unsafe { self.swapchain.GetBuffer(0)? };
-        let region = (self.source_desc.SampleDesc.Count == 1)
+        let (source, source_subresource) = match tracked_source {
+            Some(source) => (source.texture.clone(), source.subresource),
+            None => (unsafe { self.swapchain.GetBuffer(0)? }, 0),
+        };
+        let region = (tracked_source.is_none() && self.source_desc.SampleDesc.Count == 1)
             .then_some(tracked_region)
             .flatten()
             .and_then(|region| {
@@ -175,8 +189,13 @@ impl D3d11SwapchainCapture {
         if self.source_desc.SampleDesc.Count > 1 {
             let transport_format = DXGI_FORMAT(self.ring.desc().format as i32);
             unsafe {
-                self.context
-                    .ResolveSubresource(destination, 0, &source, 0, transport_format)
+                self.context.ResolveSubresource(
+                    destination,
+                    0,
+                    &source,
+                    source_subresource,
+                    transport_format,
+                )
             };
         } else {
             let source_box = D3D11_BOX {
@@ -190,7 +209,7 @@ impl D3d11SwapchainCapture {
             unsafe {
                 self.context.CopySubresourceRegion(
                     destination,
-                    0,
+                    source_subresource,
                     0,
                     0,
                     0,

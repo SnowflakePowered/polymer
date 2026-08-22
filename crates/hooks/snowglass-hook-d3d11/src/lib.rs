@@ -24,10 +24,9 @@ mod tests {
     use windows::{
         Win32::Graphics::{
             Direct3D11::{
-                D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC,
-                D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, ID3D11Device,
-                ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView,
-                ID3D11Texture2D,
+                D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+                D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
+                ID3D11ShaderResourceView, ID3D11Texture2D,
             },
             Dxgi::{
                 CreateDXGIFactory1, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
@@ -179,6 +178,7 @@ mod tests {
                 std::ptr::null_mut(),
                 3,
                 snowglass_producer_d3d11::D3d11RingMode::KeyedMutex,
+                None,
             )
         };
         assert!(result.is_err());
@@ -314,11 +314,11 @@ mod tests {
         let context_ref = unsafe { ID3D11DeviceContext::from_raw_borrowed(&context) }
             .expect("D3D11 returned a null context");
         unsafe { context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]) };
-        let mut unrelated_source = None;
+        let mut presentation_source = None;
         unsafe {
             device.CreateTexture2D(
                 &D3D11_TEXTURE2D_DESC {
-                    Width: 64,
+                    Width: 48,
                     Height: 64,
                     MipLevels: 1,
                     ArraySize: 1,
@@ -333,56 +333,55 @@ mod tests {
                     MiscFlags: 0,
                 },
                 None,
-                Some(&mut unrelated_source),
+                Some(&mut presentation_source),
             )
         }
-        .expect("D3D11 did not create the unrelated shader resource");
-        let unrelated_source = unrelated_source.expect("D3D11 returned a null shader resource");
-        let mut unrelated_view: Option<ID3D11ShaderResourceView> = None;
-        unsafe {
-            device.CreateShaderResourceView(&unrelated_source, None, Some(&mut unrelated_view))
-        }
-        .expect("D3D11 did not create the unrelated shader resource view");
-        let unrelated_view = unrelated_view.expect("D3D11 returned a null shader resource view");
-        // Some presentation passes keep a full-backbuffer viewport and put the
-        // centered content rectangle in shader constants. Use an arbitrary
-        // buffer size, offset, stage, and slot so this exercises the generic
-        // inference rather than an application's constant-buffer layout.
-        let constant_desc = D3D11_BUFFER_DESC {
-            ByteWidth: 128,
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
-            ..Default::default()
+        .expect("D3D11 did not create the presentation source");
+        let presentation_source =
+            presentation_source.expect("D3D11 returned a null presentation source");
+        let source_box = D3D11_BOX {
+            left: 0,
+            top: 0,
+            front: 0,
+            right: 48,
+            bottom: 64,
+            back: 1,
         };
-        let mut constant_buffer = None;
-        unsafe { device.CreateBuffer(&raw const constant_desc, None, Some(&mut constant_buffer)) }
-            .expect("D3D11 did not create the presentation constant buffer");
-        let constant_buffer = constant_buffer.expect("D3D11 returned a null constant buffer");
-        let mut constants = [0.0f32; 32];
-        constants[7..11].copy_from_slice(&[8.0, 0.0, 56.0, 64.0]);
+        unsafe {
+            context_ref.CopySubresourceRegion(
+                &presentation_source,
+                0,
+                0,
+                0,
+                0,
+                &buffer,
+                0,
+                Some(&raw const source_box),
+            )
+        };
+        let mut presentation_view: Option<ID3D11ShaderResourceView> = None;
+        unsafe {
+            device.CreateShaderResourceView(
+                &presentation_source,
+                None,
+                Some(&mut presentation_view),
+            )
+        }
+        .expect("D3D11 did not create the presentation source view");
+        let presentation_view =
+            presentation_view.expect("D3D11 returned a null presentation source view");
         unsafe {
             context_ref.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
-            // Bound shader inputs are not sufficient evidence that a resource
-            // is safe to transition into the capture path at Present.
-            context_ref.PSSetShaderResources(0, Some(&[Some(unrelated_view)]));
+            context_ref.PSSetShaderResources(0, Some(&[Some(presentation_view)]));
             context_ref.RSSetViewports(Some(&[D3D11_VIEWPORT {
                 Width: 64.0,
                 Height: 64.0,
                 MaxDepth: 1.0,
                 ..Default::default()
             }]));
-            context_ref.VSSetConstantBuffers(3, Some(&[Some(constant_buffer.clone())]));
-            context_ref.UpdateSubresource(
-                &constant_buffer,
-                0,
-                None,
-                constants.as_ptr().cast(),
-                0,
-                0,
-            );
             vtable::device_tracking(device.as_raw())
                 .expect("D3D11 context was not associated with its tracker")
-                .record_context_draw(context, Some(4));
+                .record_context_draw(context);
             // The test intentionally omits shaders; restore deterministic
             // pixels after recording while retaining the tracking data.
             context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]);
@@ -404,7 +403,7 @@ mod tests {
         let Message::StreamReady(ready) = ready else {
             panic!("expected StreamReady, got {ready:?}");
         };
-        assert_eq!(ready.width, 64);
+        assert_eq!(ready.width, 48);
         assert_eq!(ready.height, 64);
         assert_eq!(ready.slot_count, 3);
         assert!(ready.image_handles[..3].iter().all(|handle| *handle != 0));
@@ -413,15 +412,15 @@ mod tests {
             panic!("expected FrameReady, got {frame:?}");
         };
         assert_eq!((frame.render_width, frame.render_height), (48, 64));
-        assert_eq!((frame.capture_x, frame.capture_y), (8, 0));
-        assert_eq!((frame.capture_width, frame.capture_height), (48, 64));
+        assert_eq!((frame.capture_x, frame.capture_y), (0, 0));
+        assert_eq!((frame.capture_width, frame.capture_height), (64, 64));
         assert_eq!(
             (frame.presentation_width, frame.presentation_height),
             (64, 64)
         );
         assert_eq!(
             frame.presentation_transform,
-            snowglass_protocol::PresentationTransform::axis_aligned(8, 0, 48, 64)
+            snowglass_protocol::PresentationTransform::axis_aligned(0, 0, 64, 64)
         );
         assert_eq!(frame.sync_value, 1);
 
@@ -467,7 +466,7 @@ mod tests {
             .expect("Vulkan D3D11 readback stalled");
         assert_eq!(
             read,
-            ("read", Some(format!("{}:[64, 127, 191, 255]", 64 * 64 * 4))),
+            ("read", Some(format!("{}:[64, 127, 191, 255]", 48 * 64 * 4))),
             "{read:?}"
         );
         import_thread.join().expect("Vulkan import thread panicked");
@@ -848,10 +847,15 @@ mod tests {
         unsafe { context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]) };
 
         let mut capture = unsafe {
-            D3d11SwapchainCapture::new(swapchain.as_raw(), 3, D3d11RingMode::KeyedMutexNoFence)
+            D3d11SwapchainCapture::new(
+                swapchain.as_raw(),
+                3,
+                D3d11RingMode::KeyedMutexNoFence,
+                None,
+            )
         }
         .expect("keyed-mutex-only capture creation failed");
-        let submission = unsafe { capture.copy_frame(None) }.expect("first copy failed");
+        let submission = unsafe { capture.copy_frame(None, None) }.expect("first copy failed");
         assert_eq!(submission.slot, 0);
 
         // Hand the ring to a D3D12 consumer the way connect_viewer would.
@@ -908,15 +912,16 @@ mod tests {
         // Slots 1 and 2 are virgin, and the consumer released slot 0 back to
         // the producer, so three more copies succeed.
         for expected_slot in [1u32, 2, 0] {
-            let submission = unsafe { capture.copy_frame(None) }.expect("copy failed");
+            let submission = unsafe { capture.copy_frame(None, None) }.expect("copy failed");
             assert_eq!(submission.slot, expected_slot);
         }
         // Slot 1 is still released to the consumer; without a consumer
         // release the producer must defer instead of overwriting it.
-        assert!(unsafe { capture.copy_frame(None) }.is_err());
+        assert!(unsafe { capture.copy_frame(None, None) }.is_err());
         // Recycling the skipped slot lets capture resume.
         imported.recycle_slot(1);
-        let submission = unsafe { capture.copy_frame(None) }.expect("copy after recycle failed");
+        let submission =
+            unsafe { capture.copy_frame(None, None) }.expect("copy after recycle failed");
         assert_eq!(submission.slot, 1);
 
         drop(imported);
