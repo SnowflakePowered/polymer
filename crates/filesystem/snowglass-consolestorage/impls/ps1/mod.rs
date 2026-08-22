@@ -14,10 +14,11 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE, RawMemoryStorage};
-use crate::impls::RawMemoryCardImage;
+use crate::impls::{RawMemoryCardImage, SonyProductCode};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
+use crate::savegroups::{PS1_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, MemoryCard,
     MemoryCardView, Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead,
@@ -71,7 +72,9 @@ impl SaveDataHandle {
     }
 
     fn depot_id(&self) -> SaveDepotId {
-        Self::depot_id_from_header(&self.native_id[..SAVE_HEADER_SIZE])
+        SonyProductCode::new(&self.native_id[..SAVE_HEADER_SIZE])
+            .expect("a PlayStation save has a product-code native ID")
+            .into()
     }
 
     fn depot_id_from_serial(serial: &str) -> SaveDepotId {
@@ -90,14 +93,9 @@ impl SaveDataHandle {
         let mut header = [0; SAVE_HEADER_SIZE];
         header[..key.len()].copy_from_slice(key);
         header[key.len()..].copy_from_slice(serial.as_bytes());
-        Self::depot_id_from_header(&header)
-    }
-
-    fn depot_id_from_header(header: &[u8]) -> SaveDepotId {
-        let digest = blake3::hash(header);
-        SaveDepotId(u64::from_le_bytes(
-            digest.as_bytes()[..8].try_into().expect("eight bytes"),
-        ))
+        SonyProductCode::new(&header)
+            .expect("a package serial forms a product code")
+            .into()
     }
 }
 
@@ -226,27 +224,46 @@ impl PlaystationMemoryCard {
         })
     }
 
-    fn projection_order(&self, primary: &[SaveDepotId]) -> Vec<SaveDataHandle> {
-        let primary = primary.iter().map(|id| id.0).collect::<HashSet<_>>();
+    fn projection_order(
+        &self,
+        primary: &HashSet<u64>,
+        grouped: &HashSet<u64>,
+    ) -> Vec<SaveDataHandle> {
         let mut saves = self.saves();
-        saves.sort_by_key(|save| !primary.contains(&save.depot_id().0));
+        saves.sort_by_key(|save| {
+            let id = save.depot_id().0;
+            if primary.contains(&id) {
+                0
+            } else if grouped.contains(&id) {
+                1
+            } else {
+                2
+            }
+        });
         saves
     }
 
     fn project(&self, primary: &[SaveDepotId]) -> Result<(Vec<u8>, Vec<SaveDataHandle>), Error> {
         let capacity_blocks = <raw::MemoryCard<'_> as RawMemoryCardImage>::MAX_BLOCKS;
+        let target_blocks = capacity_blocks * TARGET_CAPACITY_PERCENT / 100;
         let primary_ids: HashSet<u64> = primary.iter().map(|id| id.0).collect();
+        let grouped_ids = PS1_SAVE_GROUPS.members(primary);
         let mut card = raw::MemoryCard::empty(capacity_blocks)?;
         let mut projected = Vec::new();
-        for save in self.projection_order(primary) {
+        for save in self.projection_order(&primary_ids, &grouped_ids) {
             let payload = self.read_payload(&save)?;
             let blocks = payload.len().max(1).div_ceil(BLOCK_SIZE);
+            let id = save.depot_id().0;
+            let preferred = primary_ids.contains(&id) || grouped_ids.contains(&id);
             if card.next_block() + blocks > capacity_blocks as usize {
                 if primary_ids.contains(&save.depot_id().0) {
                     return Err(Error::Unsupported(format!(
                         "primary saves require more than {capacity_blocks} PlayStation blocks"
                     )));
                 }
+                continue;
+            }
+            if !preferred && card.next_block() + blocks > target_blocks as usize {
                 continue;
             }
             let raw_save = raw::Save::new(&save.native_id, &payload)?;
@@ -524,5 +541,59 @@ impl ChangeSignal for SaveSignal {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn projection_keeps_primary_group_and_twenty_percent_free() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let card = PlaystationMemoryCard::new_empty(storage, Uuid::now_v7(), None)
+            .await
+            .unwrap();
+        let primary = SaveDataHandle::from_native_name("BASLUS-01201 PRIMARY").unwrap();
+        let grouped = SaveDataHandle::from_native_name("BASLUS-01377 RELATED").unwrap();
+        for save in [&primary, &grouped] {
+            card.storage
+                .create(&save.data_path())
+                .unwrap()
+                .write_all(&vec![0; BLOCK_SIZE])
+                .unwrap();
+        }
+        for index in 0..13 {
+            let save =
+                SaveDataHandle::from_native_name(&format!("BASLUS-9{index:04} EXTRA")).unwrap();
+            card.storage
+                .create(&save.data_path())
+                .unwrap()
+                .write_all(&vec![index as u8; BLOCK_SIZE])
+                .unwrap();
+        }
+
+        let primary_id = primary.depot_id();
+        assert!(
+            PS1_SAVE_GROUPS
+                .members(&[primary_id])
+                .contains(&grouped.depot_id().0)
+        );
+        let (image, projected) = card.project(&[primary_id]).unwrap();
+        assert_eq!(projected.len(), 12);
+        assert!(projected.contains(&primary));
+        assert!(projected.contains(&grouped));
+        assert_eq!(
+            raw::MemoryCard::new(
+                &image,
+                <raw::MemoryCard<'_> as RawMemoryCardImage>::MAX_BLOCKS,
+            )
+            .unwrap()
+            .saves()
+            .unwrap()
+            .len(),
+            12
+        );
     }
 }

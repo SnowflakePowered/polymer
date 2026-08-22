@@ -2,6 +2,8 @@ pub mod ps1;
 pub mod ps2;
 pub mod wiiu;
 
+pub use crate::savegame::id::{NintendoTitleId, SonyProductCode};
+
 pub trait RawMemoryCardImage<'a>: Sized {
     type Error;
 

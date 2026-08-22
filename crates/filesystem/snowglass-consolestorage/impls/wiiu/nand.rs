@@ -1,3 +1,4 @@
+use crate::impls::NintendoTitleId;
 use crate::impls::wiiu::xml;
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::savegame::{
@@ -141,7 +142,7 @@ impl WiiUSaveLayout for SaveDepotId {
         let high = u32::from_str_radix(parts.next()?, 16).ok()?;
         let low = u32::from_str_radix(parts.next()?, 16).ok()?;
 
-        Some(SaveDepotId((u64::from(high) << 32) | u64::from(low)))
+        Some(NintendoTitleId::new_from_parts(high, low).into())
     }
 
     fn save_root(&self) -> String {
@@ -238,7 +239,9 @@ impl WiiUNand {
 
             for low in lows {
                 if let Ok(low_bits) = u32::from_str_radix(&low.name, 16) {
-                    let id = SaveDepotId((u64::from(high_bits) << 32) | u64::from(low_bits));
+                    let id: SaveDepotId =
+                        NintendoTitleId::new((u64::from(high_bits) << 32) | u64::from(low_bits))
+                            .into();
 
                     if id.is_canonical() {
                         ids.push(id);
@@ -258,7 +261,7 @@ impl SaveGameSink for WiiUNand {
             .title_id()
             .and_then(|title_id| u64::from_str_radix(title_id.trim_start_matches("0x"), 16).ok())
             .expect("a Wii U package must expose a hexadecimal title ID");
-        SaveDepotId(title_id)
+        NintendoTitleId::new(title_id).into()
     }
 
     fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {

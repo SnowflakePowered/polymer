@@ -5,6 +5,7 @@ pub mod structure;
 
 pub mod nand;
 pub mod savegame;
+mod savegroups;
 mod storage;
 
 pub use error::Error;
