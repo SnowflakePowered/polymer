@@ -308,6 +308,26 @@ struct StorageFileAdoption {
 }
 
 impl AdoptHandle for StorageFileAdoption {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<()> {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let _finalizing = self.finalizing.lock();
+        let mut writer = self
+            .storage
+            .open(&self.path)
+            .map_err(|error| storage_error(error, &self.path))?;
+        writer.seek(SeekFrom::Start(offset))?;
+        writer.write_all(buffer)?;
+        Ok(())
+    }
+
+    fn truncate(&self, len: u64) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        self.storage
+            .truncate(&self.path, len)
+            .map_err(|error| storage_error(error, &self.path))
+    }
+
     fn finalize(&self) -> VfsResult<()> {
         use std::io::{Seek, SeekFrom, Write};
 

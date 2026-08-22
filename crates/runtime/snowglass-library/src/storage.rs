@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
+use snowglass_consolestorage::impls::ps2::Playstation2MemoryCard;
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
 use snowglass_consolestorage::nand::VirtualNand;
 use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, Storage, VolumeStorage};
@@ -12,6 +13,7 @@ pub type Nand = Arc<dyn VirtualNand>;
 pub enum ConsoleStorage {
     Nand(Nand),
     PlaystationMemoryCard(Arc<PlaystationMemoryCard>),
+    Playstation2MemoryCard(Arc<Playstation2MemoryCard>),
 }
 
 impl ConsoleStorage {
@@ -19,6 +21,7 @@ impl ConsoleStorage {
         match self {
             Self::Nand(nand) => nand.metadata().await,
             Self::PlaystationMemoryCard(card) => card.metadata().await,
+            Self::Playstation2MemoryCard(card) => card.metadata().await,
         }
     }
 
@@ -26,6 +29,7 @@ impl ConsoleStorage {
         match self {
             Self::Nand(nand) => nand.set_label(label).await,
             Self::PlaystationMemoryCard(card) => card.set_label(label).await,
+            Self::Playstation2MemoryCard(card) => card.set_label(label).await,
         }
     }
 
@@ -33,6 +37,7 @@ impl ConsoleStorage {
         match self {
             Self::Nand(nand) => nand.game_saved().await,
             Self::PlaystationMemoryCard(card) => card.game_saved().await,
+            Self::Playstation2MemoryCard(card) => card.game_saved().await,
         }
     }
 }
@@ -53,7 +58,7 @@ impl StorageManager {
     pub fn path(&self, platform: &str, id: Uuid) -> PathBuf {
         self.root
             .join(match platform {
-                PlaystationMemoryCard::PLATFORM => "memorycards",
+                PlaystationMemoryCard::PLATFORM | Playstation2MemoryCard::PLATFORM => "memorycards",
                 _ => "nands",
             })
             .join(platform)
@@ -63,7 +68,7 @@ impl StorageManager {
     pub fn supports(platform: &str) -> bool {
         matches!(
             platform,
-            WiiUNand::PLATFORM | PlaystationMemoryCard::PLATFORM
+            WiiUNand::PLATFORM | PlaystationMemoryCard::PLATFORM | Playstation2MemoryCard::PLATFORM
         )
     }
 
@@ -88,6 +93,9 @@ impl StorageManager {
             PlaystationMemoryCard::PLATFORM => ConsoleStorage::PlaystationMemoryCard(Arc::new(
                 PlaystationMemoryCard::new_empty(storage, id, label).await?,
             )),
+            Playstation2MemoryCard::PLATFORM => ConsoleStorage::Playstation2MemoryCard(Arc::new(
+                Playstation2MemoryCard::new_empty(storage, id, label).await?,
+            )),
             _ => unreachable!("platform support was checked"),
         };
         Ok(storage)
@@ -104,6 +112,9 @@ impl StorageManager {
             PlaystationMemoryCard::PLATFORM => Ok(ConsoleStorage::PlaystationMemoryCard(Arc::new(
                 PlaystationMemoryCard::open(storage).await?,
             ))),
+            Playstation2MemoryCard::PLATFORM => Ok(ConsoleStorage::Playstation2MemoryCard(
+                Arc::new(Playstation2MemoryCard::open(storage).await?),
+            )),
             other => Err(Error::Unsupported(format!(
                 "no console storage layout for `{other}`"
             ))),
@@ -152,12 +163,15 @@ impl StorageManager {
         vec![
             WiiUNand::PLATFORM.to_owned(),
             PlaystationMemoryCard::PLATFORM.to_owned(),
+            Playstation2MemoryCard::PLATFORM.to_owned(),
         ]
     }
 
     async fn ids(&self, platform: &str) -> Vec<Uuid> {
         let collection = match platform {
-            PlaystationMemoryCard::PLATFORM => self.root.join("memorycards"),
+            PlaystationMemoryCard::PLATFORM | Playstation2MemoryCard::PLATFORM => {
+                self.root.join("memorycards")
+            }
             _ => self.root.join("nands"),
         };
         Self::names(&collection.join(platform))

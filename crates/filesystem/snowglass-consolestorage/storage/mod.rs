@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, Write};
 
@@ -13,6 +13,8 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::Notify;
 
 use uuid::Uuid;
+
+use atomic_write_file::AtomicWriteFile;
 
 use crate::error::Error;
 
@@ -441,19 +443,12 @@ impl Storage for DirectoryStorage {
 }
 
 impl DirectoryStorage {
-    /// Copy `source` onto `resolved` through a staging file, hashing in the same pass.
+    /// Copy `source` onto `resolved` through an atomic writer, hashing in the same pass.
     async fn copy_hashed(
         mut source: Box<dyn AsyncRead + Send + Unpin>,
         resolved: &Path,
         dest: &str,
     ) -> Result<InstallResult, Error> {
-        // for atomic copying
-        fn staging_path(resolved: &Path) -> PathBuf {
-            let mut name = resolved.file_name().unwrap_or_default().to_os_string();
-            name.push(".sgpart");
-            resolved.with_file_name(name)
-        }
-
         let parent = resolved
             .parent()
             .ok_or_else(|| Error::InvalidPath(dest.to_string()))?;
@@ -461,43 +456,35 @@ impl DirectoryStorage {
             .await
             .map_err(|e| Error::io(parent, e))?;
 
-        let staged = staging_path(resolved);
-        let mut writer = tokio::fs::File::create(&staged)
-            .await
-            .map_err(|e| Error::io(&staged, e))?;
+        let writer = AtomicWriteFile::open(resolved).map_err(|e| Error::io(resolved, e))?;
+        let file = writer
+            .as_file()
+            .try_clone()
+            .map_err(|e| Error::io(resolved, e))?;
+        let mut output = tokio::fs::File::from_std(file);
 
         let mut hasher = blake3::Hasher::new();
         let mut buffer = vec![0u8; 1 << 20];
         let mut byte_length = 0u64;
 
-        let copied = async {
-            loop {
-                let read = match source.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(read) => read,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(e),
-                };
+        loop {
+            let read = match source.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(Error::io(resolved, e)),
+            };
 
-                hasher.update(&buffer[..read]);
-                writer.write_all(&buffer[..read]).await?;
-                byte_length += read as u64;
-            }
-
-            writer.flush().await
+            hasher.update(&buffer[..read]);
+            output
+                .write_all(&buffer[..read])
+                .await
+                .map_err(|e| Error::io(resolved, e))?;
+            byte_length += read as u64;
         }
-        .await;
-        drop(writer);
-
-        if let Err(error) = copied {
-            let _ = tokio::fs::remove_file(&staged).await;
-            return Err(Error::io(&staged, error));
-        }
-
-        if let Err(error) = tokio::fs::rename(&staged, resolved).await {
-            let _ = tokio::fs::remove_file(&staged).await;
-            return Err(Error::io(resolved, error));
-        }
+        output.flush().await.map_err(|e| Error::io(resolved, e))?;
+        drop(output);
+        writer.commit().map_err(|e| Error::io(resolved, e))?;
 
         Ok(InstallResult {
             blake3: *hasher.finalize().as_bytes(),
@@ -559,6 +546,25 @@ mod tests {
         assert_eq!(
             Storage::label(&storage).await.unwrap().as_deref(),
             Some("Card Two")
+        );
+    }
+
+    #[tokio::test]
+    async fn install_file_atomically_replaces_its_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DirectoryStorage::new(dir.path()).await.unwrap();
+        storage
+            .install_file(Box::new(std::io::Cursor::new(b"old")), "save/data.bin")
+            .await
+            .unwrap();
+        storage
+            .install_file(Box::new(std::io::Cursor::new(b"new")), "save/data.bin")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.path().join("save/data.bin")).unwrap(),
+            b"new"
         );
     }
 }

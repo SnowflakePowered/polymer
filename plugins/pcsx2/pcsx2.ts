@@ -30,6 +30,7 @@ type Configuration = {
             slot2_filename: string,
         },
         input_sources: { sdl: boolean },
+        "emucore-gs": { renderer: number },
     },
 };
 
@@ -38,6 +39,7 @@ type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 type Filesystem = {
     mountHostFile(target: string, source: string, options: { mode: string }): void,
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
+    mountStorage(target: string, source: Resource, options: { mode: string, format: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
@@ -56,6 +58,7 @@ type SetupLaunchArgs = {
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
+    storage: Readonly<{ mem1?: Resource, mem2?: Resource }>,
 };
 
 function basename(path: string): string {
@@ -72,8 +75,14 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     // state. Portable mode only needs its fixed `inis/` child to be writable;
     // every configurable data directory is redirected to /User below.
     args.filesystem.mountTree("/PCSX2", args.resources.runtime, { mode: "rx" });
-    args.filesystem.mountScratch("/PCSX2/inis", { mode: "rwx", backing: "temporary" });
+    args.filesystem.mountScratch("/PCSX2/inis", { mode: "rwx", backing: "memory" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
+    if (args.storage.mem1) {
+        args.filesystem.mountStorage("/User/memcards/Mcd001.ps2", args.storage.mem1, {
+            mode: "rwx",
+            format: config.plugin.config.memory_card_format,
+        });
+    }
     args.filesystem.mountHostFile(`/User/bios/${biosName}`, config.plugin.config.bios, { mode: "r" });
     args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
     args.filesystem.setWorkingDirectory("/PCSX2");
@@ -107,16 +116,17 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     options.memory_cards.slot2_enable = false;
     options.memory_cards.slot2_filename = "Mcd002.ps2";
     options.input_sources.sdl = true;
+    options["emucore-gs"].renderer = 3;
 
     return {
         command: args.filesystem.path("/PCSX2/pcsx2-qt.exe"),
-        argv: ["-portable", "-batch", "-fullscreen", "--", args.filesystem.path(`/Game/${gameName}`)],
+        argv: ["-portable", "-batch", "--", args.filesystem.path(`/Game/${gameName}`)],
         configRoot: args.filesystem.path("/PCSX2"),
-        isolate: true,
-        hooks: ["d3d12"],
+        isolate: false,
+        hooks: ["d3d11"],
         config: args.configuration,
         surfaces: [
-            { index: 0, pattern: "PCSX2" },
+            { index: 0 },
         ],
     };
 };

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use parking_lot::Mutex;
 
+use crate::impls::RawMemoryCardImage;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, InstallResult, Metadata, MountableStorage,
     ReadDir, Storage, StorageFile, StorageRead,
@@ -39,6 +40,7 @@ impl RawMemoryStorage {
         }
         Ok(MemoryHandle {
             bytes: self.bytes.clone(),
+            reconcile: self.reconcile.clone(),
             position: 0,
         })
     }
@@ -157,6 +159,7 @@ impl MountableStorage for RawMemoryStorage {
 
 struct MemoryHandle {
     bytes: Arc<Mutex<Vec<u8>>>,
+    reconcile: Arc<dyn Fn(&[u8]) -> Result<(), Error> + Send + Sync>,
     position: u64,
 }
 
@@ -186,6 +189,13 @@ impl Write for MemoryHandle {
         }
         bytes[start..end].copy_from_slice(input);
         self.position = end as u64;
+        let complete = match MemoryCard::new(&bytes, DATA_BLOCKS as u32) {
+            Ok(card) => card.saves().is_ok(),
+            Err(_) => false,
+        };
+        if complete {
+            (self.reconcile)(&bytes).map_err(std::io::Error::other)?;
+        }
         Ok(input.len())
     }
 
