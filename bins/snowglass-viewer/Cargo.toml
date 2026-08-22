@@ -1,0 +1,34 @@
+[package]
+name = "snowglass-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ash.workspace = true
+egui = "0.29.1"
+egui-winit = "0.29.1"
+cssparser = "0.37"
+cssparser-color = "0.5"
+consolespec.workspace = true
+parking_lot.workspace = true
+raw-window-handle.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "parse"] }
+snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
+snowglass-egui.workspace = true
+snowglass-statistics.workspace = true
+snowglass-input.workspace = true
+snowglass-input-dinput.workspace = true
+snowglass-ipc.workspace = true
+snowglass-platform-windows.workspace = true
+snowglass-protocol.workspace = true
+snowglass-runtime.workspace = true
+snowglass-ui.workspace = true
+winit = "0.30.13"
+windows.workspace = true
+tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+webrtc = "0.14.0"
