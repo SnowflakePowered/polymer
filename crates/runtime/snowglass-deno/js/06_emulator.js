@@ -49,6 +49,7 @@ export function createEmulator(webrtc) {
       arguments: [...(options.arguments || [])],
       isolated: Boolean(options.isolated),
       hook: [...options.hook],
+      graphTracking: Boolean(options.graphTracking),
       surfaces: options.surfaces.map((surface) => ({
         index: surface.index,
         rotation: surface.rotation || 0,

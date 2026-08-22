@@ -23,6 +23,7 @@ export function createConfiguration(scraping, pluginApi) {
         arguments: [...(plugin.argv || [])],
         isolated: Boolean(plugin.isolate),
         hook: [...(plugin.hooks || [])],
+        graphTracking: Boolean(plugin.graphTracking),
         surfaces: (plugin.surfaces || []).map((surface) => Object.freeze({
           index: surface.index,
           rotation: surface.rotation || 0,

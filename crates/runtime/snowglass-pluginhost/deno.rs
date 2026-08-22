@@ -259,6 +259,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                 .collect(),
             isolate: plan.isolate,
             hooks: plan.hooks,
+            graph_tracking: plan.graph_tracking,
             surfaces: plan.surfaces,
             prepared_filesystem: None,
             filesystem,
@@ -286,6 +287,8 @@ struct EmulatorLaunchPlan {
     #[serde(default)]
     isolate: bool,
     hooks: Vec<GraphicsHook>,
+    #[serde(default)]
+    graph_tracking: bool,
     surfaces: Vec<TrackedSurface>,
 }
 

@@ -14,6 +14,10 @@ pub struct UnattachedLaunchPlan {
     #[serde(default)]
     pub isolated: bool,
     pub hook: Vec<GraphicsHook>,
+    /// Enables presentation dependency-graph traversal for every tracked
+    /// surface in this process. The hook exposes this as a process-wide mode.
+    #[serde(default)]
+    pub graph_tracking: bool,
     pub surfaces: Vec<UnattachedTrackedSurface>,
     #[serde(default)]
     pub gamepad_mapping: Vec<GamepadMapping>,
@@ -106,6 +110,10 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub isolated: bool,
     pub hook: Vec<GraphicsHook>,
+    /// Enables presentation dependency-graph traversal for every tracked
+    /// surface in this process. The hook exposes this as a process-wide mode.
+    #[serde(default)]
+    pub graph_tracking: bool,
     pub surfaces: Vec<AttachedTrackedSurface>,
     #[serde(default)]
     pub gamepad_mapping: Vec<GamepadMapping>,
@@ -189,6 +197,7 @@ mod tests {
                 "arguments": ["--fullscreen"],
                 "isolated": true,
                 "hook": ["d3d12"],
+                "graphTracking": true,
                 "surfaces": [{
                     "index": 0,
                     "rotation": 0,
@@ -200,6 +209,7 @@ mod tests {
             }"#,
         )
         .unwrap();
+        assert!(launch.graph_tracking);
         launch.validate().unwrap();
     }
 

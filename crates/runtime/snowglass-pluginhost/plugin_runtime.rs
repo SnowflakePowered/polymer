@@ -781,6 +781,7 @@ mod tests {
                     configRoot: ".",
                     config: args.configuration,
                     hooks: ["vulkan"],
+                    graphTracking: true,
                     surfaces: [{ index: 0 }],
                   };
                 }
@@ -1033,6 +1034,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["command"], "emulator.exe");
+        assert_eq!(result["graphTracking"], true);
         assert!(result["config"]["settings.ini"].is_array());
 
         let explicit_default = runtime

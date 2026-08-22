@@ -547,7 +547,7 @@ impl GameHost {
                 .collect(),
             tracking_enabled: !options.surfaces.is_empty(),
             skip_surfaces: 0,
-            graph_tracking: false,
+            graph_tracking: options.graph_tracking,
             force_keyed_mutex: false,
             gamepad_layouts: gamepad_layouts
                 .into_iter()

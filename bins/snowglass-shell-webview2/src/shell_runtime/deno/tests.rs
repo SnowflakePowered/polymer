@@ -483,6 +483,7 @@ async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
               arguments: [],
               isolated: false,
               hook: ["d3d12"],
+              graphTracking: true,
               surfaces: [{ index: 3, rotation: 0, attach: document.querySelector("#game"), webrtc: true }],
               gamepadMapping: [],
               machine: "TEST",
@@ -507,6 +508,7 @@ async fn emulator_launch_delegates_webrtc_options_to_the_deno_namespace() {
             panic!("unexpected emulator command")
         };
         assert_eq!(options["surfaces"][0]["index"], 3);
+        assert_eq!(options["graphTracking"], true);
         result.send(Ok(())).unwrap();
     });
     let webrtc_sink = WebRtcCommandSink::new(|command| {

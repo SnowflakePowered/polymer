@@ -48,6 +48,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
         configRoot: new URL("User/", executable).href,
         isolate: true,
         hooks: ["d3d11"],
+        graphTracking: true,
         config: args.configuration,
         surfaces: [
             { index: 0, pattern: "Dolphin" },

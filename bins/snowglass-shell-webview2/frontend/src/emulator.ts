@@ -26,6 +26,7 @@ export type LaunchOptions = {
   arguments: string[];
   isolated: boolean;
   hook: GraphicsHook[];
+  graphTracking: boolean;
   surfaces: TrackedSurface[];
   gamepadMapping: GamePadMapping[];
   machine: string;

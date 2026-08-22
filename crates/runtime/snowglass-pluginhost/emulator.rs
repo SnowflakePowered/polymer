@@ -18,6 +18,10 @@ pub struct EmulatorLaunchArguments {
     #[serde(default)]
     pub isolate: bool,
     pub hooks: Vec<GraphicsHook>,
+    /// Process-wide presentation dependency-graph traversal requested by the
+    /// emulator plugin for its tracked surfaces.
+    #[serde(default)]
+    pub graph_tracking: bool,
     pub surfaces: Vec<TrackedSurface>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_filesystem: Option<String>,

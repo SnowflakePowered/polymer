@@ -60,6 +60,7 @@ pub fn launch_from_viewer(options: &ViewerOptions) -> Result<Option<UnattachedLa
         arguments: options.target[1..].to_vec(),
         isolated: options.isolate,
         hook,
+        graph_tracking: options.graph_tracking,
         surfaces,
         gamepad_mapping: options.gamepads.iter().map(GamepadMapping::from).collect(),
         machine: options.machine.clone(),
