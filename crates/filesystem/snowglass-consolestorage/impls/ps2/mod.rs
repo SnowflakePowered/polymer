@@ -2,6 +2,7 @@ mod pcsx2;
 mod psu;
 mod raw;
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{Cursor, Read, Write};
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use atomic_write_file::AtomicWriteFile;
+use encoding_rs::SHIFT_JIS;
 use futures::{Stream, StreamExt};
 use jiff::Timestamp;
 use parking_lot::Mutex;
@@ -35,34 +37,92 @@ const PRODUCT_CODE_SIZE: usize = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SaveDataHandle {
-    name: String,
+    name: Vec<u8>,
 }
 
 impl SaveDataHandle {
-    fn from_name(name: &str) -> Option<Self> {
+    fn from_name(name: &[u8]) -> Option<Self> {
         (!name.is_empty()
-            && !name.starts_with('.')
-            && !name.starts_with("_pcsx2_")
-            && !name.contains(['/', '\\']))
+            && name.len() <= 32
+            && !name.contains(&0)
+            && !matches!(name, b"." | b".."))
         .then(|| Self {
-            name: name.to_owned(),
+            name: name.to_vec(),
         })
     }
 
+    fn display_name(&self) -> Cow<'_, str> {
+        SHIFT_JIS.decode_without_bom_handling(&self.name).0
+    }
+
+    fn file_name(&self) -> String {
+        let plain = self.name.is_ascii()
+            && !matches!(self.name.first(), Some(b'.' | b'~'))
+            && !matches!(self.name.last(), Some(b'.' | b' '))
+            && self
+                .name
+                .iter()
+                .all(|byte| *byte >= 0x20 && !b"<>:\"/\\|?*".contains(byte));
+        let reserved = if plain {
+            let uppercase = String::from_utf8_lossy(&self.name).to_ascii_uppercase();
+            matches!(uppercase.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || uppercase
+                    .strip_prefix("COM")
+                    .or_else(|| uppercase.strip_prefix("LPT"))
+                    .is_some_and(|suffix| {
+                        suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9')
+                    })
+        } else {
+            false
+        };
+        if plain && !reserved {
+            std::str::from_utf8(&self.name)
+                .expect("an ASCII name is UTF-8")
+                .to_owned()
+        } else {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut encoded = String::with_capacity(1 + self.name.len() * 2);
+            encoded.push('~');
+            for byte in &self.name {
+                encoded.push(HEX[(byte >> 4) as usize] as char);
+                encoded.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+            encoded
+        }
+    }
+
     fn path(&self) -> String {
-        format!("{SAVE_ROOT}/{}.{}", self.name, psu::EXTENSION)
+        format!("{SAVE_ROOT}/{}.{}", self.file_name(), psu::EXTENSION)
     }
 
     fn from_path(name: &str) -> Option<Self> {
-        Self::from_name(name.strip_suffix(".psu")?)
+        let stem = name.strip_suffix(".psu")?;
+        let handle = if let Some(hex) = stem.strip_prefix('~') {
+            if hex.is_empty() || hex.len() % 2 != 0 || !hex.is_ascii() {
+                return None;
+            }
+            let bytes = hex.as_bytes();
+            let mut name = Vec::with_capacity(bytes.len() / 2);
+            for pair in bytes.chunks_exact(2) {
+                let nibble = |byte| match byte {
+                    b'0'..=b'9' => Some(byte - b'0'),
+                    b'a'..=b'f' => Some(byte - b'a' + 10),
+                    _ => None,
+                };
+                name.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
+            }
+            Self::from_name(&name)?
+        } else {
+            if !stem.is_ascii() {
+                return None;
+            }
+            Self::from_name(stem.as_bytes())?
+        };
+        (handle.file_name() == stem).then_some(handle)
     }
 
     fn depot_id(&self) -> SaveDepotId {
-        let product_code = self
-            .name
-            .as_bytes()
-            .get(..PRODUCT_CODE_SIZE)
-            .unwrap_or(self.name.as_bytes());
+        let product_code = self.name.get(..PRODUCT_CODE_SIZE).unwrap_or(&self.name);
         let digest = blake3::hash(product_code);
         SaveDepotId(u64::from_le_bytes(
             digest.as_bytes()[..8].try_into().expect("eight bytes"),
@@ -177,8 +237,8 @@ impl Playstation2MemoryCard {
         Ok(SaveDescriptor {
             id: save.depot_id(),
             banner: None,
-            title: save.name.clone(),
-            description: save.name.clone(),
+            title: save.display_name().into_owned(),
+            description: save.display_name().into_owned(),
             timestamp,
             root_path: save.path(),
         })
@@ -191,13 +251,13 @@ impl Playstation2MemoryCard {
             file: path.clone(),
             reason: error.to_string(),
         })?;
-        if save.name().as_ref() != handle.name {
+        if save.name_bytes() != handle.name {
             return Err(Error::MalformedMetadata {
                 file: path,
                 reason: format!(
                     "PSU contains save `{}` instead of `{}`",
                     save.name(),
-                    handle.name
+                    handle.display_name()
                 ),
             });
         }
@@ -226,7 +286,7 @@ impl Playstation2MemoryCard {
                 if primary_ids.contains(&handle.depot_id().0) {
                     return Err(Error::Unsupported(format!(
                         "primary PlayStation 2 save `{}` does not fit the requested card capacity",
-                        handle.name
+                        handle.display_name()
                     )));
                 }
             }
@@ -234,18 +294,19 @@ impl Playstation2MemoryCard {
         Ok(projected)
     }
 
-    fn reconcile(&self, projected: &[String], saves: &[Save<'_>]) -> Result<(), Error> {
+    fn reconcile(&self, projected: &[Vec<u8>], saves: &[Save<'_>]) -> Result<(), Error> {
         let decoded = saves
             .iter()
-            .map(|save| save.name().into_owned())
+            .map(|save| save.name_bytes().to_vec())
             .collect::<HashSet<_>>();
         for save in saves {
             self.write_save(save)?;
         }
         for name in projected {
             if !decoded.contains(name) {
-                let handle = SaveDataHandle::from_name(name)
-                    .ok_or_else(|| Error::InvalidPath(name.clone()))?;
+                let handle = SaveDataHandle::from_name(name).ok_or_else(|| {
+                    Error::InvalidPath(String::from_utf8_lossy(name).into_owned())
+                })?;
                 self.storage.remove(&handle.path())?;
             }
         }
@@ -253,15 +314,8 @@ impl Playstation2MemoryCard {
     }
 
     fn write_save(&self, save: &Save<'_>) -> Result<(), Error> {
-        let name = save.name();
-        let handle = SaveDataHandle::from_name(&name)
-            .ok_or_else(|| Error::InvalidPath(name.into_owned()))?;
-        if save
-            .files()
-            .any(|file| SaveDataHandle::from_name(&file.name()).is_none())
-        {
-            return Err(Error::InvalidPath("invalid PSU file name".to_owned()));
-        }
+        let handle = SaveDataHandle::from_name(save.name_bytes())
+            .ok_or_else(|| Error::InvalidPath(save.name().into_owned()))?;
         let path = self.storage.root().join(handle.path());
         let mut output = AtomicWriteFile::open(&path).map_err(|source| Error::io(&path, source))?;
         output
@@ -376,7 +430,7 @@ impl MemoryCard for Playstation2MemoryCard {
         let saves = self.project_saves(primary, CAPACITY_BLOCKS)?;
         let projected = saves
             .iter()
-            .map(|save| save.name().into_owned())
+            .map(|save| save.name_bytes().to_vec())
             .collect::<Vec<_>>();
         let storage: Arc<dyn MountableStorage> = match format {
             "raw" => {
@@ -389,7 +443,10 @@ impl MemoryCard for Playstation2MemoryCard {
                     move |saves| {
                         let previous = owned.lock().clone();
                         card.reconcile(&previous, saves)?;
-                        *owned.lock() = saves.iter().map(|save| save.name().into_owned()).collect();
+                        *owned.lock() = saves
+                            .iter()
+                            .map(|save| save.name_bytes().to_vec())
+                            .collect();
                         Ok(())
                     },
                 )?)
@@ -404,7 +461,10 @@ impl MemoryCard for Playstation2MemoryCard {
                     move |saves| {
                         let previous = owned.lock().clone();
                         card.reconcile(&previous, saves)?;
-                        *owned.lock() = saves.iter().map(|save| save.name().into_owned()).collect();
+                        *owned.lock() = saves
+                            .iter()
+                            .map(|save| save.name_bytes().to_vec())
+                            .collect();
                         Ok(())
                     },
                 )?)
@@ -489,7 +549,7 @@ impl SaveGameSink for Playstation2MemoryCard {
                         file: target.clone(),
                         reason: error.to_string(),
                     })?;
-                if parsed.name().as_ref() != relative.name {
+                if parsed.name_bytes() != relative.name {
                     return Err(Error::MalformedMetadata {
                         file: target,
                         reason: format!("PSU contains save `{}`", parsed.name()),
@@ -552,6 +612,56 @@ impl ChangeSignal for SaveSignal {
 mod tests {
     use super::*;
 
+    #[test]
+    fn save_data_handle_round_trips_native_name_bytes() {
+        let ascii = SaveDataHandle::from_name(b"BASLUS-21782Save0").unwrap();
+        assert_eq!(ascii.path(), "card/BASLUS-21782Save0.psu");
+        assert_eq!(
+            SaveDataHandle::from_path("BASLUS-21782Save0.psu"),
+            Some(ascii)
+        );
+
+        let native = SaveDataHandle::from_name(&[0x82, 0xff, b'/', 0x5c]).unwrap();
+        assert_eq!(native.path(), "card/~82ff2f5c.psu");
+        assert_eq!(SaveDataHandle::from_path("~82ff2f5c.psu"), Some(native));
+    }
+
+    #[tokio::test]
+    async fn canonical_and_raw_views_preserve_non_utf8_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let card = Playstation2MemoryCard::new_empty(storage, Uuid::now_v7(), None)
+            .await
+            .unwrap();
+        let mut bytes = Save::from_files("placeholder", &[], [])
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        bytes[0x40..0x60].fill(0);
+        bytes[0x40..0x43].copy_from_slice(&[0x82, 0xff, b'A']);
+        let save = Save::new(bytes).unwrap();
+
+        card.write_save(&save).unwrap();
+        assert!(card.exists("card/~82ff41.psu"));
+        assert_eq!(
+            card.read_save(&SaveDataHandle::from_name(&[0x82, 0xff, b'A']).unwrap())
+                .unwrap()
+                .name_bytes(),
+            &[0x82, 0xff, b'A']
+        );
+
+        let raw = card.view(&[], "raw").unwrap();
+        let mut image = Vec::new();
+        raw.storage()
+            .open_read("")
+            .unwrap()
+            .read_to_end(&mut image)
+            .unwrap();
+        let image = raw::card::MemoryCard::new(&image, CAPACITY_BLOCKS).unwrap();
+        let saves = image.saves().unwrap();
+        assert_eq!(saves[0].name_bytes(), &[0x82, 0xff, b'A']);
+    }
+
     fn dirent(name: &str, mode: u32, attributes: u32, second: u8) -> Vec<u8> {
         let mut raw = vec![0; 512];
         raw[..4].copy_from_slice(&mode.to_le_bytes());
@@ -597,7 +707,7 @@ mod tests {
             .expect("folder write should publish a save notification")
             .unwrap();
         let written = card
-            .read_save(&SaveDataHandle::from_name("BASLUS-00002").unwrap())
+            .read_save(&SaveDataHandle::from_name(b"BASLUS-00002").unwrap())
             .unwrap();
         assert_eq!(written.files().next().unwrap().data(), b"folder write");
 
@@ -653,7 +763,7 @@ mod tests {
         raw.storage().sync("").unwrap();
 
         let written = card
-            .read_save(&SaveDataHandle::from_name("BASLUS-00001").unwrap())
+            .read_save(&SaveDataHandle::from_name(b"BASLUS-00001").unwrap())
             .unwrap();
         assert_eq!(written.files().next().unwrap().data(), b"raw write");
         assert!(!card.exists("card/BASLUS-00002.psu"));

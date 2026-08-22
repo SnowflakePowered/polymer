@@ -37,13 +37,17 @@ impl Dirent {
     }
 
     fn name(&self) -> Cow<'_, str> {
+        let (name, _) = SHIFT_JIS.decode_without_bom_handling(self.name_bytes());
+        name
+    }
+
+    fn name_bytes(&self) -> &[u8] {
         let end = self
             .name
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(self.name.len());
-        let (name, _) = SHIFT_JIS.decode_without_bom_handling(&self.name[..end]);
-        name
+        &self.name[..end]
     }
 
     fn is_directory(&self) -> bool {
@@ -202,6 +206,10 @@ impl<'a> Save<'a> {
         self.directory().name()
     }
 
+    pub(super) fn name_bytes(&self) -> &[u8] {
+        self.directory().name_bytes()
+    }
+
     pub(super) fn raw_dirent(&self) -> &[u8] {
         self.directory().as_bytes()
     }
@@ -232,10 +240,10 @@ impl<'a> Save<'a> {
         if !directory.is_directory() {
             return Err(ParseError::InvalidDirectory);
         }
-        if !dot.is_directory() || dot.name().as_ref() != "." {
+        if !dot.is_directory() || dot.name_bytes() != b"." {
             return Err(ParseError::InvalidDot);
         }
-        if !dotdot.is_directory() || dotdot.name().as_ref() != ".." {
+        if !dotdot.is_directory() || dotdot.name_bytes() != b".." {
             return Err(ParseError::InvalidDotDot);
         }
         let count =
@@ -276,6 +284,10 @@ impl<'a> Save<'a> {
 impl<'a> File<'a> {
     pub(super) fn name(&self) -> Cow<'a, str> {
         self.dirent.name()
+    }
+
+    pub(super) fn name_bytes(&self) -> &'a [u8] {
+        self.dirent.name_bytes()
     }
 
     pub(super) fn raw_dirent(&self) -> &'a [u8] {
@@ -439,5 +451,16 @@ mod tests {
         assert_eq!(files[0].data(), vec![0x5a; 1024]);
         assert_eq!(files[1].name(), "empty");
         assert!(files[1].data().is_empty());
+    }
+
+    #[test]
+    fn exposes_native_name_bytes_without_requiring_valid_shift_jis() {
+        let save = Save::from_files("BASLUS-12345", &[], []).unwrap();
+        let mut bytes = save.as_bytes().to_vec();
+        bytes[0x40..0x60].fill(0);
+        bytes[0x40..0x43].copy_from_slice(&[0x82, 0xff, b'A']);
+
+        let save = Save::new(bytes).unwrap();
+        assert_eq!(save.name_bytes(), &[0x82, 0xff, b'A']);
     }
 }
