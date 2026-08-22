@@ -747,7 +747,7 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         let entries_per_cluster = cluster_size / DIRENT_SIZE;
         let root = self.root_directory()?;
         if root.entries().any(|entry| {
-            entry.is_used() && entry.is_directory() && entry.name().as_ref() == save.name().as_ref()
+            entry.is_used() && entry.is_directory() && entry.name_bytes() == save.name_bytes()
         }) {
             return Err(ParseError::DuplicateSave(save.name().into_owned()));
         }
@@ -816,7 +816,7 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
             let first_cluster = clusters.first().copied().unwrap_or(u32::MAX as usize);
             directory.extend_from_slice(&MemoryCard::<'static>::encoded_dirent(
                 file.raw_dirent(),
-                &file.name(),
+                file.name_bytes(),
                 DEFAULT_FILE_MODE,
                 file.data().len(),
                 first_cluster,
@@ -824,7 +824,7 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         }
         let root_entry = MemoryCard::<'static>::encoded_dirent(
             save.raw_dirent(),
-            &save.name(),
+            save.name_bytes(),
             DEFAULT_DIRECTORY_MODE,
             directory_count,
             save_directory_start,
@@ -1208,7 +1208,7 @@ impl MemoryCard<'static> {
                 };
                 directory.extend_from_slice(&Self::encoded_dirent(
                     file.raw_dirent(),
-                    &file.name(),
+                    file.name_bytes(),
                     DEFAULT_FILE_MODE,
                     data.len(),
                     cluster,
@@ -1217,7 +1217,7 @@ impl MemoryCard<'static> {
             Self::write_run(&mut image, &mut fat, geometry, directory_start, &directory);
             root.extend_from_slice(&Self::encoded_dirent(
                 save.raw_dirent(),
-                &save.name(),
+                save.name_bytes(),
                 DEFAULT_DIRECTORY_MODE,
                 directory_count,
                 directory_start,
@@ -1309,7 +1309,7 @@ impl MemoryCard<'static> {
 
     fn encoded_dirent(
         raw: &[u8],
-        name: &str,
+        name: &[u8],
         default_mode: u16,
         length: usize,
         cluster: usize,
@@ -1326,14 +1326,10 @@ impl MemoryCard<'static> {
             bytes[..2].copy_from_slice(&mode.to_le_bytes());
         } else {
             bytes[..2].copy_from_slice(&default_mode.to_le_bytes());
-            let (encoded, _, had_errors) = SHIFT_JIS.encode(name);
-            if had_errors {
-                return Err(ParseError::UnencodableName);
+            if name.len() > 32 {
+                return Err(ParseError::NameTooLong(name.len()));
             }
-            if encoded.len() > 32 {
-                return Err(ParseError::NameTooLong(encoded.len()));
-            }
-            bytes[0x40..0x40 + encoded.len()].copy_from_slice(&encoded);
+            bytes[0x40..0x40 + name.len()].copy_from_slice(name);
         }
         let length = u32::try_from(length).map_err(|_| ParseError::ValueTooLarge(length))?;
         let cluster = u32::try_from(cluster).map_err(|_| ParseError::ValueTooLarge(cluster))?;
@@ -1478,7 +1474,6 @@ pub(in crate::impls::ps2) enum ParseError {
     InvalidFile(&'static str),
     FileTooLarge,
     NameTooLong(usize),
-    UnencodableName,
     ValueTooLarge(usize),
     Full {
         needed: usize,
@@ -1578,9 +1573,6 @@ impl fmt::Display for ParseError {
             Self::FileTooLarge => formatter.write_str("memory-card file is too large"),
             Self::NameTooLong(length) => {
                 write!(formatter, "memory-card name is {length} bytes")
-            }
-            Self::UnencodableName => {
-                formatter.write_str("memory-card name is not representable in Shift-JIS")
             }
             Self::ValueTooLarge(value) => {
                 write!(formatter, "memory-card value {value} is too large")

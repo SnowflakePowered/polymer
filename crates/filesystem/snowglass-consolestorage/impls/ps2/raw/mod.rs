@@ -1,6 +1,6 @@
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use jiff::Timestamp;
 use parking_lot::Mutex;
@@ -25,17 +25,20 @@ type Reconcile = dyn for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send +
 pub(super) struct RawMemoryStorage {
     backing: Arc<DirectoryStorage>,
     image: Arc<CardImage>,
+    dirty: mpsc::SyncSender<()>,
 }
 
 struct CardImage {
     bytes: Mutex<Vec<u8>>,
     blocks: u32,
     reconcile: Arc<Reconcile>,
+    reconciling: Mutex<()>,
 }
 
 impl CardImage {
     fn reconcile(&self) -> Result<(), Error> {
-        let image = self.bytes.lock();
+        let _reconciling = self.reconciling.lock();
+        let image = self.bytes.lock().clone();
         let card = match card::MemoryCard::new(&image, self.blocks) {
             Ok(card) => card,
             Err(_) => return Ok(()),
@@ -65,8 +68,26 @@ impl RawMemoryStorage {
             bytes: Mutex::new(card::MemoryCard::format(capacity_blocks, &saves, true)?),
             blocks: capacity_blocks,
             reconcile: Arc::new(reconcile),
+            reconciling: Mutex::new(()),
         });
-        Ok(Self { backing, image })
+        let (dirty, pending) = mpsc::sync_channel(1);
+        let worker = image.clone();
+        std::thread::Builder::new()
+            .name("ps2-memory-card".to_owned())
+            .spawn(move || {
+                while pending.recv().is_ok() {
+                    let _ = worker.reconcile();
+                }
+            })
+            .map_err(|source| Error::Io {
+                path: "PlayStation 2 memory card".to_owned(),
+                source,
+            })?;
+        Ok(Self {
+            backing,
+            image,
+            dirty,
+        })
     }
 
     fn handle(&self, path: &str) -> Result<MemoryHandle, Error> {
@@ -75,6 +96,7 @@ impl RawMemoryStorage {
         }
         Ok(MemoryHandle {
             image: self.image.clone(),
+            dirty: self.dirty.clone(),
             position: 0,
         })
     }
@@ -191,7 +213,14 @@ impl MountableStorage for RawMemoryStorage {
 
 struct MemoryHandle {
     image: Arc<CardImage>,
+    dirty: mpsc::SyncSender<()>,
     position: u64,
+}
+
+impl MemoryHandle {
+    fn reconcile(&self) {
+        let _ = self.dirty.try_send(());
+    }
 }
 
 impl Read for MemoryHandle {
@@ -223,12 +252,13 @@ impl Write for MemoryHandle {
             self.position = end as u64;
         }
 
-        self.image.reconcile().map_err(std::io::Error::other)?;
+        self.reconcile();
         Ok(input.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.image.reconcile().map_err(std::io::Error::other)
+        self.reconcile();
+        Ok(())
     }
 }
 
@@ -306,6 +336,7 @@ mod tests {
         storage.truncate("", replacement.len() as u64).unwrap();
         output.seek(SeekFrom::Start(0)).unwrap();
         output.write_all(&replacement).unwrap();
+        storage.sync("").unwrap();
 
         let saves = reconciled.lock();
         let save = Save::new(saves[0].as_slice()).unwrap();
