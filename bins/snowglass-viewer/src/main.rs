@@ -948,9 +948,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             "Vulkan"
                                         };
                                         tracing::info!(
-                                            "snowglass: imported {active_backend} stream {}x{} (surface {:#x}) for window {:#x} with {} slots using {}",
+                                            "snowglass: imported {active_backend} stream {}x{} format {} {:?}/{:?} (surface {:#x}) for window {:#x} with {} slots using {}",
                                             stream.width,
                                             stream.height,
+                                            stream.format,
+                                            stream.image_kind,
+                                            stream.sync_kind,
                                             stream.surface_id.0,
                                             stream.source_window,
                                             stream.slot_count,
