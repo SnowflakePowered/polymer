@@ -685,8 +685,12 @@ struct NamespaceOpenFile {
 }
 
 impl NamespaceOpenFile {
+    fn adoption(&self) -> Option<Adoption> {
+        self.adoption.read().clone()
+    }
+
     fn finalize_adoption(&self) -> VfsResult<()> {
-        match self.adoption.read().clone() {
+        match self.adoption() {
             Some(adoption) => adoption.handle.finalize(),
             None => Ok(()),
         }
@@ -699,11 +703,19 @@ impl OpenFile for NamespaceOpenFile {
     }
 
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
-        self.inner.write(offset, buffer)
+        let written = self.inner.write(offset, buffer)?;
+        if let Some(adoption) = self.adoption() {
+            adoption.handle.write(offset, &buffer[..written])?;
+        }
+        Ok(written)
     }
 
     fn truncate(&self, len: u64) -> VfsResult<()> {
-        self.inner.truncate(len)
+        self.inner.truncate(len)?;
+        if let Some(adoption) = self.adoption() {
+            adoption.handle.truncate(len)?;
+        }
+        Ok(())
     }
 
     fn flush(&self) -> VfsResult<()> {

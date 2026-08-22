@@ -96,6 +96,8 @@ pub trait OpenFile: Send + Sync {
 }
 
 pub trait AdoptHandle: Send + Sync {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<()>;
+    fn truncate(&self, len: u64) -> VfsResult<()>;
     fn finalize(&self) -> VfsResult<()>;
 }
 

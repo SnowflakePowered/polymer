@@ -13,7 +13,8 @@ use jiff::Timestamp;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use self::raw::{BLOCK_SIZE, DATA_BLOCKS, NATIVE_ID_SIZE, RawMemoryStorage};
+use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE, RawMemoryStorage};
+use crate::impls::RawMemoryCardImage;
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -232,25 +233,15 @@ impl PlaystationMemoryCard {
         saves
     }
 
-    fn project(
-        &self,
-        primary: &[SaveDepotId],
-        capacity_blocks: u32,
-    ) -> Result<(Vec<u8>, Vec<SaveDataHandle>), Error> {
-        if capacity_blocks == 0 || capacity_blocks > DATA_BLOCKS as u32 {
-            return Err(Error::Unsupported(format!(
-                "PlayStation cards support 1 through {DATA_BLOCKS} data blocks"
-            )));
-        }
-
+    fn project(&self, primary: &[SaveDepotId]) -> Result<(Vec<u8>, Vec<SaveDataHandle>), Error> {
+        let capacity_blocks = <raw::MemoryCard<'_> as RawMemoryCardImage>::MAX_BLOCKS;
         let primary_ids: HashSet<u64> = primary.iter().map(|id| id.0).collect();
-        let mut card = raw::MemoryCard::formatted();
+        let mut card = raw::MemoryCard::empty(capacity_blocks)?;
         let mut projected = Vec::new();
-        let mut next_block = 0usize;
         for save in self.projection_order(primary) {
             let payload = self.read_payload(&save)?;
             let blocks = payload.len().max(1).div_ceil(BLOCK_SIZE);
-            if next_block + blocks > capacity_blocks as usize {
+            if card.next_block() + blocks > capacity_blocks as usize {
                 if primary_ids.contains(&save.depot_id().0) {
                     return Err(Error::Unsupported(format!(
                         "primary saves require more than {capacity_blocks} PlayStation blocks"
@@ -259,15 +250,15 @@ impl PlaystationMemoryCard {
                 continue;
             }
             let raw_save = raw::Save::new(&save.native_id, &payload)?;
-            card.write_save(next_block, raw_save);
-            next_block += blocks;
+            card.append_save(raw_save)?;
             projected.push(save);
         }
         Ok((card.into_owned(), projected))
     }
 
     fn reconcile(&self, projected: &[SaveDataHandle], image: &[u8]) -> Result<(), Error> {
-        let card = raw::MemoryCard::new(image)?;
+        let blocks = <raw::MemoryCard<'_> as RawMemoryCardImage>::MAX_BLOCKS;
+        let card = raw::MemoryCard::new(image, blocks)?;
         let saves = card.saves()?;
         let decoded_names: HashSet<[u8; NATIVE_ID_SIZE]> =
             saves.iter().map(|save| *save.native_id()).collect();
@@ -410,26 +401,13 @@ impl Storage for PlaystationMemoryCard {
 }
 
 impl MemoryCard for PlaystationMemoryCard {
-    fn block_size(&self) -> u64 {
-        BLOCK_SIZE as u64
-    }
-
-    fn max_blocks(&self) -> u32 {
-        DATA_BLOCKS as u32
-    }
-
-    fn view(
-        &self,
-        primary: &[SaveDepotId],
-        capacity_blocks: u32,
-        format: &str,
-    ) -> Result<MemoryCardView, Error> {
+    fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         if format != "raw" {
             return Err(Error::Unsupported(format!(
                 "PlayStation memory cards do not support the '{format}' format"
             )));
         }
-        let (image, projected) = self.project(primary, capacity_blocks)?;
+        let (image, projected) = self.project(primary)?;
         let card = self.clone();
         let storage: Arc<dyn MountableStorage> = Arc::new(RawMemoryStorage::new(
             self.storage.clone(),

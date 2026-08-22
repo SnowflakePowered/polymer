@@ -34,9 +34,11 @@ const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
 const WIIU_PLATFORM = "NINTENDO_WIIU";
 const PSX_PLATFORM = "SONY_PSX";
+const PS2_PLATFORM = "SONY_PS2";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
 let defaultWiiUNand: Promise<ConsoleStorageNand> | null = null;
 let defaultPs1Card: Promise<ConsoleStorageNand> | null = null;
+let defaultPs2Card: Promise<ConsoleStorageNand> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
 type StartupRequest =
   | { kind: "package"; path: string; emulator?: string }
@@ -95,6 +97,22 @@ function ensureDefaultPs1Card() {
     });
   }
   return defaultPs1Card;
+}
+
+function ensureDefaultPs2Card() {
+  if (!defaultPs2Card) {
+    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+      volumes
+        .filter((volume) => volume.platform === PS2_PLATFORM && volume.label === "Default")
+        .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
+        ?? window.Snowglass.consolestorage.Nand.create(PS2_PLATFORM, { label: "Default" })
+    );
+    defaultPs2Card = pending.catch((error) => {
+      defaultPs2Card = null;
+      throw error;
+    });
+  }
+  return defaultPs2Card;
 }
 
 type LauncherUiState =
@@ -215,7 +233,11 @@ function ShellProvider(props: ParentProps) {
       emulator: emulator.id,
       groups: emulator.groups.map((group) => ({
         name: group.name,
-        ports: group.ports.slice(0, group.connected).map((port) => ({ index: port.index, layout: port.selectedLayout, device: port.selectedDevice })),
+        ports: group.ports.slice(0, group.connected).map((port) => ({
+          index: port.index,
+          layout: port.selectedLayout,
+          device: game.platform === PS2_PLATFORM ? "K" : port.selectedDevice,
+        })),
       })),
       settings: Object.fromEntries(emulator.options.filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
@@ -226,6 +248,8 @@ function ShellProvider(props: ParentProps) {
           selection.storage = { mlc: (await ensureDefaultWiiUNand()).id };
         } else if (game.platform === PSX_PLATFORM) {
           selection.storage = { card1: (await ensureDefaultPs1Card()).id };
+        } else if (game.platform === PS2_PLATFORM) {
+          selection.storage = { mem1: (await ensureDefaultPs2Card()).id };
         }
         const request = await window.Snowglass.configuration.setupLaunch(packageValue, selection);
         setModel("request", request);

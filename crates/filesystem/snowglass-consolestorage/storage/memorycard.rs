@@ -60,14 +60,5 @@ impl fmt::Debug for MemoryCardView {
 }
 
 pub trait MemoryCard: Storage {
-    fn block_size(&self) -> u64;
-
-    fn max_blocks(&self) -> u32;
-
-    fn view(
-        &self,
-        primary: &[SaveDepotId],
-        capacity_blocks: u32,
-        format: &str,
-    ) -> Result<MemoryCardView, Error>;
+    fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error>;
 }

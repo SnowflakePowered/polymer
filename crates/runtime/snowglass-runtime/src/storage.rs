@@ -2,10 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use consolespec::MachineSpec;
 use serde_json::Value;
-use snowglass_consolestorage::{
-    MemoryCard,
-    savegame::{Package, SaveGameSink},
-};
+use snowglass_consolestorage::savegame::{Package, SaveGameSink};
 use snowglass_library::{ConsoleStorage, StorageManager};
 use snowglass_pluginhost::StorageFactories;
 use snowglass_vfs::{MemoryCardStorageFactory, NandVolumeFactory};
@@ -82,7 +79,6 @@ pub async fn launch_storage(
                 storage.insert(name.clone(), Arc::new(NandVolumeFactory::new(nand)));
             }
             ConsoleStorage::PlaystationMemoryCard(card) => {
-                let capacity = card.max_blocks();
                 let package = package.as_ref().ok_or_else(|| {
                     "PlayStation memory cards require a launch package".to_owned()
                 })?;
@@ -94,7 +90,23 @@ pub async fn launch_storage(
                 let primary = vec![card.infer_save_depot(package)];
                 storage.insert(
                     name.clone(),
-                    Arc::new(MemoryCardStorageFactory::new(card, primary, capacity)),
+                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
+                );
+            }
+            ConsoleStorage::Playstation2MemoryCard(card) => {
+                let package = package.as_ref().ok_or_else(|| {
+                    "PlayStation 2 memory cards require a launch package".to_owned()
+                })?;
+                if package.serial().is_none() {
+                    return Err(
+                        "PlayStation 2 package identity does not contain a product serial"
+                            .to_owned(),
+                    );
+                }
+                let primary = vec![card.infer_save_depot(package)];
+                storage.insert(
+                    name.clone(),
+                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
                 );
             }
         }

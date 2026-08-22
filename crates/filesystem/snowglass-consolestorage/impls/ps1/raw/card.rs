@@ -7,6 +7,8 @@ use zerocopy::{
     byteorder::little_endian::{U16, U32},
 };
 
+use crate::impls::RawMemoryCardImage;
+
 pub(crate) const BLOCK_SIZE: usize = 8 * 1024;
 pub(crate) const FRAME_SIZE: usize = 128;
 pub(crate) const DATA_BLOCKS: usize = 15;
@@ -230,9 +232,44 @@ impl<'a> InfoBlock<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct MemoryCard<'a> {
-    bytes: Cow<'a, [u8]>,
+    bytes: CardBytes<'a>,
+    next_block: usize,
+    capacity_blocks: usize,
+}
+
+#[derive(Debug)]
+enum CardBytes<'a> {
+    Borrowed(&'a [u8]),
+    BorrowedMut(&'a mut [u8]),
+    Owned(Vec<u8>),
+}
+
+impl CardBytes<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::BorrowedMut(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
+        match self {
+            Self::Borrowed(_) => None,
+            Self::BorrowedMut(bytes) => Some(bytes),
+            Self::Owned(bytes) => Some(bytes),
+        }
+    }
+
+    fn into_owned(self) -> Vec<u8> {
+        match self {
+            Self::Borrowed(bytes) => bytes.to_vec(),
+            Self::BorrowedMut(bytes) => bytes.to_vec(),
+            Self::Owned(bytes) => bytes,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -311,16 +348,12 @@ impl<'a> Save<'a> {
 }
 
 impl<'a> MemoryCard<'a> {
-    pub(crate) fn formatted() -> MemoryCard<'static> {
-        let mut card = MemoryCard {
-            bytes: Cow::Owned(vec![0; RAW_SIZE]),
-        };
-        card.format();
-        card
-    }
-
     pub(crate) fn format(&mut self) {
-        let bytes = self.bytes.to_mut();
+        self.next_block = 0;
+        let bytes = self
+            .bytes
+            .as_mut_slice()
+            .expect("an immutable memory-card view cannot be formatted");
         bytes.fill(0xff);
         bytes[..BLOCK_SIZE].fill(0);
         bytes[..2].copy_from_slice(b"MC");
@@ -336,18 +369,141 @@ impl<'a> MemoryCard<'a> {
         }
     }
 
-    pub(crate) fn new(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    fn validate_capacity(blocks: u32) -> Result<usize, ParseError> {
+        let blocks = usize::try_from(blocks).map_err(|_| ParseError::InvalidCapacity(blocks))?;
+        if blocks == 0 || blocks > DATA_BLOCKS {
+            return Err(ParseError::InvalidCapacity(blocks as u32));
+        }
+        Ok(blocks)
+    }
+
+    fn find_next_block(bytes: &[u8], capacity_blocks: usize) -> Result<usize, ParseError> {
         if bytes.len() != RAW_SIZE {
             return Err(ParseError::InvalidCardSize(bytes.len()));
         }
-        InfoBlock::new(Block::new(&bytes[..BLOCK_SIZE])?)?;
+        let info = InfoBlock::new(Block::new(&bytes[..BLOCK_SIZE])?)?;
+        let next_block = info
+            .directory_frames()
+            .enumerate()
+            .filter(|(_, directory)| {
+                matches!(
+                    directory.state(),
+                    Some(
+                        AllocationState::AllocFirst
+                            | AllocationState::AllocMid
+                            | AllocationState::AllocLast
+                    )
+                )
+            })
+            .map(|(block, _)| block + 1)
+            .max()
+            .unwrap_or(0);
+        if next_block > capacity_blocks {
+            return Err(ParseError::Full);
+        }
+        Ok(next_block)
+    }
+
+    pub(crate) fn next_block(&self) -> usize {
+        self.next_block
+    }
+
+    fn allocation_chain(
+        info: InfoBlock<'_>,
+        first: usize,
+    ) -> Result<([u8; DATA_BLOCKS], usize), ParseError> {
+        let mut chain = [0; DATA_BLOCKS];
+        let mut seen = [false; DATA_BLOCKS];
+        let mut count = 0;
+        let mut block = first;
+
+        loop {
+            if block >= DATA_BLOCKS || seen[block] {
+                return Err(ParseError::Malformed(
+                    "save contains an invalid allocation chain",
+                ));
+            }
+            seen[block] = true;
+            chain[count] = block as u8;
+            count += 1;
+
+            let entry = info.directory_frame(block).ok_or(ParseError::Malformed(
+                "save contains an invalid allocation chain",
+            ))?;
+            let next = entry.next_block();
+            let expected = if block == first {
+                AllocationState::AllocFirst
+            } else if next == u16::MAX {
+                AllocationState::AllocLast
+            } else {
+                AllocationState::AllocMid
+            };
+            if entry.state() != Some(expected) {
+                return Err(ParseError::Malformed(
+                    "save allocation chain has incompatible states",
+                ));
+            }
+            if next == u16::MAX {
+                return Ok((chain, count));
+            }
+            block = usize::from(next);
+        }
+    }
+
+    pub(crate) fn update_checksum(frame: &mut [u8]) {
+        frame[FRAME_SIZE - 1] = frame[..FRAME_SIZE - 1]
+            .iter()
+            .fold(0, |checksum, byte| checksum ^ byte);
+    }
+
+    pub(crate) fn into_owned(self) -> Vec<u8> {
+        self.bytes.into_owned()
+    }
+}
+
+impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
+    type Error = ParseError;
+    type Save<'card> = Save<'card>;
+
+    const BLOCK_SIZE: u64 = BLOCK_SIZE as u64;
+    const MAX_BLOCKS: u32 = DATA_BLOCKS as u32;
+
+    fn empty(blocks: u32) -> Result<Self, Self::Error> {
+        let capacity_blocks = Self::validate_capacity(blocks)?;
+        let mut card = Self {
+            bytes: CardBytes::Owned(vec![0; RAW_SIZE]),
+            next_block: 0,
+            capacity_blocks,
+        };
+        card.format();
+        Ok(card)
+    }
+
+    fn new(bytes: &'a [u8], blocks: u32) -> Result<Self, Self::Error> {
+        let capacity_blocks = Self::validate_capacity(blocks)?;
+        if bytes.len() != RAW_SIZE {
+            return Err(ParseError::InvalidCardSize(bytes.len()));
+        }
+        let next_block = Self::find_next_block(bytes, capacity_blocks)?;
         Ok(Self {
-            bytes: Cow::Borrowed(bytes),
+            bytes: CardBytes::Borrowed(bytes),
+            next_block,
+            capacity_blocks,
         })
     }
 
-    pub(crate) fn saves(&self) -> Result<Vec<Save<'_>>, ParseError> {
-        let bytes = self.bytes.as_ref();
+    fn new_mut(bytes: &'a mut [u8], blocks: u32) -> Result<Self, Self::Error> {
+        let capacity_blocks = Self::validate_capacity(blocks)?;
+        let next_block = Self::find_next_block(bytes, capacity_blocks)?;
+        Ok(Self {
+            bytes: CardBytes::BorrowedMut(bytes),
+            next_block,
+            capacity_blocks,
+        })
+    }
+
+    fn saves(&self) -> Result<Vec<Self::Save<'_>>, Self::Error> {
+        let bytes = self.bytes.as_slice();
         let info = InfoBlock::new(Block::new(&bytes[..BLOCK_SIZE])?)?;
         let mut saves = Vec::<Save<'_>>::new();
         let mut claimed = [false; DATA_BLOCKS];
@@ -408,57 +564,13 @@ impl<'a> MemoryCard<'a> {
         Ok(saves)
     }
 
-    fn allocation_chain(
-        info: InfoBlock<'_>,
-        first: usize,
-    ) -> Result<([u8; DATA_BLOCKS], usize), ParseError> {
-        let mut chain = [0; DATA_BLOCKS];
-        let mut seen = [false; DATA_BLOCKS];
-        let mut count = 0;
-        let mut block = first;
-
-        loop {
-            if block >= DATA_BLOCKS || seen[block] {
-                return Err(ParseError::Malformed(
-                    "save contains an invalid allocation chain",
-                ));
-            }
-            seen[block] = true;
-            chain[count] = block as u8;
-            count += 1;
-
-            let entry = info.directory_frame(block).ok_or(ParseError::Malformed(
-                "save contains an invalid allocation chain",
-            ))?;
-            let next = entry.next_block();
-            let expected = if block == first {
-                AllocationState::AllocFirst
-            } else if next == u16::MAX {
-                AllocationState::AllocLast
-            } else {
-                AllocationState::AllocMid
-            };
-            if entry.state() != Some(expected) {
-                return Err(ParseError::Malformed(
-                    "save allocation chain has incompatible states",
-                ));
-            }
-            if next == u16::MAX {
-                return Ok((chain, count));
-            }
-            block = usize::from(next);
-        }
-    }
-
-    pub(crate) fn update_checksum(frame: &mut [u8]) {
-        frame[FRAME_SIZE - 1] = frame[..FRAME_SIZE - 1]
-            .iter()
-            .fold(0, |checksum, byte| checksum ^ byte);
-    }
-
-    pub(crate) fn write_save(&mut self, first_block: usize, save: Save<'_>) {
-        let bytes = self.bytes.to_mut();
+    fn append_save(&mut self, save: Self::Save<'_>) -> Result<(), Self::Error> {
+        let first_block = self.next_block;
         let block_count = save.block_count();
+        if first_block + block_count > self.capacity_blocks {
+            return Err(ParseError::Full);
+        }
+        let bytes = self.bytes.as_mut_slice().ok_or(ParseError::ReadOnly)?;
         for (chain_index, payload) in save.blocks().enumerate() {
             let block = first_block + chain_index;
             let data_start = (block + 1) * BLOCK_SIZE;
@@ -487,15 +599,14 @@ impl<'a> MemoryCard<'a> {
             frame[8..10].copy_from_slice(&next.to_le_bytes());
             Self::update_checksum(frame);
         }
-    }
-
-    pub(crate) fn into_owned(self) -> Vec<u8> {
-        self.bytes.into_owned()
+        self.next_block += block_count;
+        Ok(())
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ParseError {
+    InvalidCapacity(u32),
     InvalidCardSize(usize),
     InvalidBlockSize(usize),
     InvalidCardHeader([u8; 2]),
@@ -504,11 +615,17 @@ pub(crate) enum ParseError {
     InvalidChecksum(usize),
     InvalidLayout(&'static str),
     Malformed(&'static str),
+    ReadOnly,
+    Full,
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCapacity(blocks) => write!(
+                formatter,
+                "PlayStation memory cards support 1 through {DATA_BLOCKS} blocks, not {blocks}"
+            ),
             Self::InvalidCardSize(size) => {
                 write!(formatter, "raw image is {size} bytes instead of {RAW_SIZE}")
             }
@@ -538,6 +655,33 @@ impl fmt::Display for ParseError {
             }
             Self::InvalidLayout(name) => write!(formatter, "{name} has an invalid byte layout"),
             Self::Malformed(reason) => formatter.write_str(reason),
+            Self::ReadOnly => formatter.write_str("memory-card view is read-only"),
+            Self::Full => formatter.write_str("memory card is full"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_image_trait_appends_to_mutable_backing() {
+        let mut image = MemoryCard::empty(DATA_BLOCKS as u32).unwrap().into_owned();
+        let mut native_id = [0; NATIVE_ID_SIZE];
+        native_id[..12].copy_from_slice(b"BASCUS-00001");
+        let save = Save::new(&native_id, b"payload").unwrap();
+
+        {
+            let mut card: MemoryCard<'_> =
+                RawMemoryCardImage::new_mut(&mut image, DATA_BLOCKS as u32).unwrap();
+            RawMemoryCardImage::append_save(&mut card, save).unwrap();
+        }
+
+        let card: MemoryCard<'_> = RawMemoryCardImage::new(&image, DATA_BLOCKS as u32).unwrap();
+        let saves = RawMemoryCardImage::saves(&card).unwrap();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0].native_id(), &native_id);
+        assert_eq!(saves[0].byte_len(), BLOCK_SIZE);
     }
 }

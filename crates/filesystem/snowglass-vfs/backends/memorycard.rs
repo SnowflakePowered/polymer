@@ -86,16 +86,11 @@ fn vfs_path(path: &str) -> VfsPathBuf {
 pub struct MemoryCardStorageFactory<M: ?Sized> {
     card: Arc<M>,
     primary: Vec<SaveDepotId>,
-    capacity_blocks: u32,
 }
 
 impl<M: ?Sized> MemoryCardStorageFactory<M> {
-    pub fn new(card: Arc<M>, primary: Vec<SaveDepotId>, capacity_blocks: u32) -> Self {
-        Self {
-            card,
-            primary,
-            capacity_blocks,
-        }
+    pub fn new(card: Arc<M>, primary: Vec<SaveDepotId>) -> Self {
+        Self { card, primary }
     }
 }
 
@@ -107,7 +102,6 @@ where
         let volume = Arc::new(MemoryCardStorageVolume {
             card: self.card.clone(),
             primary: self.primary.clone(),
-            capacity_blocks: self.capacity_blocks,
             views: Mutex::new(HashMap::new()),
         });
         Ok(Materialized {
@@ -120,7 +114,6 @@ where
 struct MemoryCardStorageVolume<M: ?Sized> {
     card: Arc<M>,
     primary: Vec<SaveDepotId>,
-    capacity_blocks: u32,
     views: Mutex<HashMap<String, MountedMemoryCardView>>,
 }
 
@@ -149,7 +142,7 @@ where
         }
         let view = self
             .card
-            .view(&self.primary, self.capacity_blocks, format)
+            .view(&self.primary, format)
             .map_err(|error| VfsError::Unsupported(error.to_string()))?;
         let (node, volume) = match view.kind() {
             EntryKind::File => (
@@ -333,21 +326,8 @@ mod tests {
     }
 
     impl MemoryCard for TestCard {
-        fn block_size(&self) -> u64 {
-            8192
-        }
-
-        fn max_blocks(&self) -> u32 {
-            15
-        }
-
-        fn view(
-            &self,
-            _primary: &[SaveDepotId],
-            capacity_blocks: u32,
-            format: &str,
-        ) -> Result<MemoryCardView, Error> {
-            if capacity_blocks != self.max_blocks() || format != "raw" {
+        fn view(&self, _primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
+            if format != "raw" {
                 return Err(Error::Unsupported(format!(
                     "unsupported test card view '{format}'"
                 )));
@@ -373,7 +353,7 @@ mod tests {
 
         let resource = || {
             Arc::new(crate::Resource::new(
-                Arc::new(MemoryCardStorageFactory::new(card.clone(), Vec::new(), 15)),
+                Arc::new(MemoryCardStorageFactory::new(card.clone(), Vec::new())),
                 crate::Permissions::ALL,
                 crate::ResourceOrigin::Other("test-card".into()),
             ))
