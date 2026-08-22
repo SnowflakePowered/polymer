@@ -9,19 +9,34 @@ pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
 
-/// Returns the linear UNORM member of an sRGB DXGI format family.
+/// Returns a sampleable linear member of a typeless or sRGB DXGI color family.
 ///
 /// Shared transport images carry presentation bytes without applying a color
-/// transfer function. Advertising their resource as sRGB would make consumers
-/// decode those bytes a second time.
+/// transfer function. They also need a typed format so consumers can create a
+/// shader-resource view without reconstructing the producer's view.
 pub const fn transport_unorm_dxgi_format(format: u32) -> u32 {
     match format {
+        9 => 11,  // R16G16B16A16_TYPELESS -> R16G16B16A16_UNORM
+        23 => 24, // R10G10B10A2_TYPELESS -> R10G10B10A2_UNORM
+        27 => 28, // R8G8B8A8_TYPELESS -> R8G8B8A8_UNORM
         29 => 28, // R8G8B8A8_UNORM_SRGB -> R8G8B8A8_UNORM
+        33 => 35, // R16G16_TYPELESS -> R16G16_UNORM
+        48 => 49, // R8G8_TYPELESS -> R8G8_UNORM
+        53 => 56, // R16_TYPELESS -> R16_UNORM
+        60 => 61, // R8_TYPELESS -> R8_UNORM
+        70 => 71, // BC1_TYPELESS -> BC1_UNORM
         72 => 71, // BC1_UNORM_SRGB -> BC1_UNORM
+        73 => 74, // BC2_TYPELESS -> BC2_UNORM
         75 => 74, // BC2_UNORM_SRGB -> BC2_UNORM
+        76 => 77, // BC3_TYPELESS -> BC3_UNORM
         78 => 77, // BC3_UNORM_SRGB -> BC3_UNORM
+        79 => 80, // BC4_TYPELESS -> BC4_UNORM
+        82 => 83, // BC5_TYPELESS -> BC5_UNORM
+        90 => 87, // B8G8R8A8_TYPELESS -> B8G8R8A8_UNORM
         91 => 87, // B8G8R8A8_UNORM_SRGB -> B8G8R8A8_UNORM
+        92 => 88, // B8G8R8X8_TYPELESS -> B8G8R8X8_UNORM
         93 => 88, // B8G8R8X8_UNORM_SRGB -> B8G8R8X8_UNORM
+        97 => 98, // BC7_TYPELESS -> BC7_UNORM
         99 => 98, // BC7_UNORM_SRGB -> BC7_UNORM
         _ => format,
     }
@@ -319,8 +334,17 @@ mod tests {
 
     #[test]
     fn transport_formats_use_linear_unorm_members() {
+        assert_eq!(transport_unorm_dxgi_format(9), 11);
+        assert_eq!(transport_unorm_dxgi_format(23), 24);
+        assert_eq!(transport_unorm_dxgi_format(27), 28);
         assert_eq!(transport_unorm_dxgi_format(29), 28);
+        assert_eq!(transport_unorm_dxgi_format(33), 35);
+        assert_eq!(transport_unorm_dxgi_format(48), 49);
+        assert_eq!(transport_unorm_dxgi_format(53), 56);
+        assert_eq!(transport_unorm_dxgi_format(60), 61);
+        assert_eq!(transport_unorm_dxgi_format(70), 71);
         assert_eq!(transport_unorm_dxgi_format(91), 87);
+        assert_eq!(transport_unorm_dxgi_format(97), 98);
         assert_eq!(transport_unorm_dxgi_format(99), 98);
         assert_eq!(transport_unorm_dxgi_format(10), 10);
     }
