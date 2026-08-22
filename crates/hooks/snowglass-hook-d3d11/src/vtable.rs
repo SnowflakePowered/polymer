@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use windows::{
     Win32::Graphics::Direct3D11::{
-        ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext1, ID3D11DeviceContext2,
+        D3D11_BOX, ID3D11Device, ID3D11DeviceContext, ID3D11DeviceContext1, ID3D11DeviceContext2,
         ID3D11DeviceContext3, ID3D11DeviceContext4,
     },
     core::Interface,
@@ -94,6 +94,25 @@ snowglass_hook::impl_com_hook! {
             this: *mut c_void,
             argument_buffer: *mut c_void,
             argument_offset: u32,
+        );
+
+        #[base = ID3D11DeviceContext::UpdateSubresource]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_update_subresource(
+                destination_resource,
+                destination_subresource,
+                destination_box,
+                source_data,
+            )
+        })]
+        unsafe extern "system" fn update_subresource(
+            this: *mut c_void,
+            destination_resource: *mut c_void,
+            destination_subresource: u32,
+            destination_box: *const D3D11_BOX,
+            source_data: *const c_void,
+            source_row_pitch: u32,
+            source_depth_pitch: u32,
         );
     }
 }

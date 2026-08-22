@@ -24,9 +24,10 @@ mod tests {
     use windows::{
         Win32::Graphics::{
             Direct3D11::{
-                D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-                D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
-                ID3D11ShaderResourceView, ID3D11Texture2D,
+                D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_SHADER_RESOURCE, D3D11_BUFFER_DESC,
+                D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIEWPORT, ID3D11Device,
+                ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11ShaderResourceView,
+                ID3D11Texture2D,
             },
             Dxgi::{
                 CreateDXGIFactory1, DXGI_SWAP_CHAIN_DESC, DXGI_SWAP_EFFECT_DISCARD,
@@ -343,23 +344,53 @@ mod tests {
         }
         .expect("D3D11 did not create the unrelated shader resource view");
         let unrelated_view = unrelated_view.expect("D3D11 returned a null shader resource view");
+        // PCSX2 presents through a full-backbuffer viewport and puts the game
+        // quad's actual pixel rectangle in a 96-byte display constant buffer.
+        // Reproduce that shape so this test covers the UpdateSubresource hook
+        // as well as the present-time crop.
+        let constant_desc = D3D11_BUFFER_DESC {
+            ByteWidth: 96,
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+            ..Default::default()
+        };
+        let mut constant_buffer = None;
+        unsafe { device.CreateBuffer(&raw const constant_desc, None, Some(&mut constant_buffer)) }
+            .expect("D3D11 did not create the presentation constant buffer");
+        let constant_buffer = constant_buffer.expect("D3D11 returned a null constant buffer");
+        let mut constants = [0.0f32; 24];
+        constants[4..8].copy_from_slice(&[8.0, 0.0, 56.0, 64.0]);
+        constants[10..12].copy_from_slice(&[48.0, 64.0]);
+        constants[12..14].copy_from_slice(&[64.0, 64.0]);
+        constants[14..16].copy_from_slice(&[1.0 / 64.0, 1.0 / 64.0]);
         unsafe {
             context_ref.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
             // Bound shader inputs are not sufficient evidence that a resource
             // is safe to transition into the capture path at Present.
             context_ref.PSSetShaderResources(0, Some(&[Some(unrelated_view)]));
             context_ref.RSSetViewports(Some(&[D3D11_VIEWPORT {
-                TopLeftX: 8.0,
-                TopLeftY: 4.0,
-                Width: 48.0,
-                Height: 48.0,
-                MinDepth: 0.0,
+                Width: 64.0,
+                Height: 64.0,
                 MaxDepth: 1.0,
+                ..Default::default()
             }]));
+            context_ref.PSSetConstantBuffers(0, Some(&[Some(constant_buffer.clone())]));
+            context_ref.UpdateSubresource(
+                &constant_buffer,
+                0,
+                None,
+                constants.as_ptr().cast(),
+                0,
+                0,
+            );
+            vtable::device_tracking(device.as_raw())
+                .expect("D3D11 context was not associated with its tracker")
+                .record_context_draw(context);
+            // The test intentionally omits shaders; restore deterministic
+            // pixels after recording while retaining the tracking data.
+            context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]);
+            context_ref.OMSetRenderTargets(None, None);
         }
-        let tracking = unsafe { vtable::device_tracking(device.as_raw()) }
-            .expect("hooked D3D11 device has no tracking context");
-        unsafe { tracking.record_context_draw(context) };
         let swapchain_raw = swapchain.as_raw();
         let vtable = unsafe { *swapchain_raw.cast::<*const usize>() };
         let present = unsafe {
@@ -384,16 +415,16 @@ mod tests {
         let Message::FrameReady(frame) = frame else {
             panic!("expected FrameReady, got {frame:?}");
         };
-        assert_eq!((frame.render_width, frame.render_height), (48, 48));
-        assert_eq!((frame.capture_x, frame.capture_y), (8, 4));
-        assert_eq!((frame.capture_width, frame.capture_height), (48, 48));
+        assert_eq!((frame.render_width, frame.render_height), (48, 64));
+        assert_eq!((frame.capture_x, frame.capture_y), (8, 0));
+        assert_eq!((frame.capture_width, frame.capture_height), (48, 64));
         assert_eq!(
             (frame.presentation_width, frame.presentation_height),
             (64, 64)
         );
         assert_eq!(
             frame.presentation_transform,
-            snowglass_protocol::PresentationTransform::axis_aligned(8, 4, 48, 48)
+            snowglass_protocol::PresentationTransform::axis_aligned(8, 0, 48, 64)
         );
         assert_eq!(frame.sync_value, 1);
 
