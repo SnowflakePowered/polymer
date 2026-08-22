@@ -71,13 +71,23 @@ pub struct Presentation {
 }
 
 /// Device-scoped state shared by the D3D11 hook contexts.
-#[derive(Default)]
 pub struct Tracking {
     /// Strongest observed composition edge keyed by destination texture.
     edges: DashMap<usize, Candidate>,
     /// Backbuffers that are graph sinks. Restricting dependency queries and
     /// tiny geometry readbacks to these targets keeps ordinary draws cheap.
     swapchain_targets: DashSet<usize>,
+    graph_tracking: bool,
+}
+
+impl Default for Tracking {
+    fn default() -> Self {
+        Self {
+            edges: DashMap::new(),
+            swapchain_targets: DashSet::new(),
+            graph_tracking: snowglass_hook::config::graph_tracking_enabled(),
+        }
+    }
 }
 
 impl Tracking {
@@ -122,15 +132,19 @@ impl Tracking {
         let mut target_desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { target_texture.GetDesc(&mut target_desc) };
         let target_key = Self::identity_key(&target_resource);
-        if !self.swapchain_targets.contains(&target_key) {
+        if self.graph_tracking && !self.swapchain_targets.contains(&target_key) {
             return;
         }
         let Some(mut region) = Self::current_region(context) else {
             return;
         };
-        let mut source = Self::dominant_sampled_texture(context, target_key);
+        let mut source = self
+            .graph_tracking
+            .then(|| Self::dominant_sampled_texture(context, target_key))
+            .flatten();
         let mut exact = false;
-        if let (Some((vertex_count, start_vertex)), Some(sampled)) = (vertices, source.as_mut())
+        if self.graph_tracking
+            && let (Some((vertex_count, start_vertex)), Some(sampled)) = (vertices, source.as_mut())
             && let Some((quad_region, source_region)) =
                 presentation_quad(context, vertex_count, start_vertex, region, sampled)
         {

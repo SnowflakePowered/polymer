@@ -206,6 +206,7 @@ mod tests {
         let listener = LocalSocketListener::bind(&session).unwrap();
         unsafe { std::env::set_var(snowglass_hook::config::SESSION, &session) };
         unsafe { std::env::set_var(snowglass_hook::config::TRACK_RENDER_TARGET, "1") };
+        unsafe { std::env::set_var(snowglass_hook::config::GRAPH_TRACKING, "1") };
         let (message_sender, message_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for _ in 0..2 {
@@ -512,6 +513,7 @@ mod tests {
             DestroyWindow(window);
             std::env::remove_var(snowglass_hook::config::SESSION);
             std::env::remove_var(snowglass_hook::config::TRACK_RENDER_TARGET);
+            std::env::remove_var(snowglass_hook::config::GRAPH_TRACKING);
         }
     }
 
