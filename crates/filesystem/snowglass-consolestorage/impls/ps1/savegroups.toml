@@ -1,0 +1,2247 @@
+# 3x3 Eyes - Kyuusei Koushu (Japan)
+[[savegroup]]
+ids = ["SLPS-00071", "SLPS-00072"]
+
+# 3x3 Eyes - Tenrinou Genmu (Japan)
+[[savegroup]]
+ids = ["SLPS-01497", "SLPS-01498", "SLPS-01499"]
+
+# 70's Robot Anime - Geppy-X - The Super Boosted Armor (Japan)
+[[savegroup]]
+ids = ["SLPS-01995", "SLPS-01996", "SLPS-01997", "SLPS-01998"]
+
+# A Sangre Fria (Spain)
+[[savegroup]]
+ids = ["SCES-02153", "SCES-12153"]
+
+# A Sangue Freddo (Italy)
+[[savegroup]]
+ids = ["SCES-02152", "SCES-12152"]
+
+# Abe '99 (Japan)
+[[savegroup]]
+ids = ["SLPS-02095", "SLPS-02096"]
+
+# Ace Combat 3 - Electrosphere (Japan)
+[[savegroup]]
+ids = ["SLPS-02020", "SLPS-02021"]
+
+# Aconcagua (Japan)
+[[savegroup]]
+ids = ["SCPS-10131", "SCPS-10132"]
+
+# Aitakute... - Your Smiles in My Heart (Japan)
+[[savegroup]]
+ids = ["SLPM-86254", "SLPM-86255", "SLPM-86256", "SLPM-86257"]
+
+# Alive (Japan)
+[[savegroup]]
+ids = ["SLPS-01527", "SLPS-01528", "SLPS-01529"]
+
+# All Star Action (Europe)
+[[savegroup]]
+ids = ["SLES-04107", "SLES-14107"]
+
+# Alnam no Tsubasa - Shoujin no Sora no Kanata e (Japan)
+[[savegroup]]
+ids = ["SLPS-01187", "SLPS-01188", "SLPS-01189"]
+
+# Alone in the Dark - The New Nightmare (Europe)
+[[savegroup]]
+ids = ["SLES-02801", "SLES-12801"]
+
+# Alone in the Dark - The New Nightmare (France)
+[[savegroup]]
+ids = ["SLES-02802", "SLES-12802"]
+
+# Alone in the Dark - The New Nightmare (Germany)
+[[savegroup]]
+ids = ["SLES-02803", "SLES-12803"]
+
+# Alone in the Dark - The New Nightmare (Italy)
+[[savegroup]]
+ids = ["SLES-02805", "SLES-12805"]
+
+# Alone in the Dark - The New Nightmare (Spain)
+[[savegroup]]
+ids = ["SLES-02804", "SLES-12804"]
+
+# Alone in the Dark - The New Nightmare (USA)
+[[savegroup]]
+ids = ["SLUS-01201", "SLUS-01377"]
+
+# Amerzone - Das Testament des Forschungsreisenden (Germany)
+[[savegroup]]
+ids = ["SLES-02348", "SLES-12348"]
+
+# Amerzone - El Legado del Explorador (Spain)
+[[savegroup]]
+ids = ["SLES-02349", "SLES-12349"]
+
+# Amerzone - Il Testamento dell'Esploratore (Italy)
+[[savegroup]]
+ids = ["SLES-02350", "SLES-12350"]
+
+# Amerzone - O Testamento do Explorador (Portugal)
+[[savegroup]]
+ids = ["SLES-02429", "SLES-12429"]
+
+# Amerzone - The Explorer's Legacy (Europe)
+[[savegroup]]
+ids = ["SLES-02347", "SLES-12347"]
+
+# Amerzone, L' (France)
+[[savegroup]]
+ids = ["SLES-02346", "SLES-12346"]
+
+# Ancient Roman - Power of Dark Side (Japan)
+[[savegroup]]
+ids = ["SLPS-01108", "SLPS-01109"]
+
+# Animetic Story Game 1 - Cardcaptor Sakura (Japan)
+[[savegroup]]
+ids = ["SLPS-01830", "SLPS-01831"]
+
+# Ankh - Tutankhamen no Nazo (Japan)
+[[savegroup]]
+ids = ["SLPS-01068", "SLPS-01069"]
+
+# Ao no 6-gou - Antarctica (Japan)
+[[savegroup]]
+ids = ["SLPS-02940", "SLPS-02941"]
+
+# Arc the Lad - Monster Game with Casino Game (Japan)
+[[savegroup]]
+ids = ["SCPS-10040", "SCPS-10041"]
+
+# Arc the Lad Collection - Arc the Lad III (USA)
+[[savegroup]]
+ids = ["SLUS-01253", "SLUS-01254"]
+
+# Arc the Lad III (Japan)
+[[savegroup]]
+ids = ["SCPS-10106", "SCPS-10107"]
+
+# Arc the Lad III (Japan) (Rev 1)
+[[savegroup]]
+ids = ["SCPS-91228", "SCPS-91229"]
+
+# Armored Core - Master of Arena (Japan)
+[[savegroup]]
+ids = ["SLPS-01855", "SLPS-01856"]
+
+# Armored Core - Master of Arena (Japan) (PSone Books)
+[[savegroup]]
+ids = ["SLPS-91444", "SLPS-91445"]
+
+# Armored Core - Master of Arena (USA)
+[[savegroup]]
+ids = ["SLUS-01030", "SLUS-01081"]
+
+# Athena - Awakening from the Ordinary Life (Japan)
+[[savegroup]]
+ids = ["SLPM-86185", "SLPM-86186", "SLPM-86187"]
+
+# Atlantis - Das sagenhafte Abenteuer (Germany)
+[[savegroup]]
+ids = ["SLES-01603", "SLES-11603", "SLES-21603"]
+
+# Atlantis - Secrets d'un Monde Oublie (France)
+[[savegroup]]
+ids = ["SLES-01602", "SLES-11602", "SLES-21602"]
+
+# Atlantis - Segreti d'un Mondo Perduto (Italy)
+[[savegroup]]
+ids = ["SLES-01604", "SLES-11604", "SLES-21604"]
+
+# Atlantis - The Lost Tales (Europe)
+[[savegroup]]
+ids = ["SLES-01291", "SLES-11291", "SLES-21291"]
+
+# Atlantis - The Lost Tales (Europe) (En,Es,Nl,Sv)
+[[savegroup]]
+ids = ["SLES-01605", "SLES-11605", "SLES-21605"]
+
+# Ayakashi Ninden Kunoichiban (Japan)
+[[savegroup]]
+ids = ["SLPS-00946", "SLPS-00947"]
+
+# B Senjou no Alice - Alice on Borderlines (Japan)
+[[savegroup]]
+ids = ["SLPS-01003", "SLPS-01004", "SLPS-01005"]
+
+# Back Guiner - Yomigaeru Yuusha Tachi - Hishou Hen 'Uragiri no Senjou' (Japan)
+[[savegroup]]
+ids = ["SLPS-01446", "SLPS-01447"]
+
+# Back Guiner - Yomigaeru Yuusha Tachi - Kakusei Hen 'Guiner Tensei' (Japan)
+[[savegroup]]
+ids = ["SLPS-01217", "SLPS-01218"]
+
+# Beat Mania (Japan)
+[[savegroup]]
+ids = ["SLPM-86126", "SLPM-86127"]
+
+# Biohazard 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-01222", "SLPS-01223"]
+
+# Biohazard 2 - Dual Shock Ver. (Japan)
+[[savegroup]]
+ids = ["SLPS-01510", "SLPS-01511"]
+
+# Black-Matrix + (Japan)
+[[savegroup]]
+ids = ["SLPS-02962", "SLPS-02963"]
+
+# Black-Matrix 00 (Japan)
+[[savegroup]]
+ids = ["SLPS-03573", "SLPS-03574"]
+
+# Black-Matrix 00 (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPS-03571", "SLPS-03572"]
+
+# Book of Watermarks, The (Japan)
+[[savegroup]]
+ids = ["SCPS-10094", "SCPS-10095"]
+
+# BrainDead 13 (Japan)
+[[savegroup]]
+ids = ["SLPS-00514", "SLPS-00515"]
+
+# BrainDead 13 (USA)
+[[savegroup]]
+ids = ["SLUS-00083", "SLUS-00171"]
+
+# Brave Saga 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-02580", "SLPS-02581"]
+
+# Brigandine - Grand Edition (Japan)
+[[savegroup]]
+ids = ["SLPS-02661", "SLPS-02662"]
+
+# Bust A Move (Japan) (Genteiban)
+[[savegroup]]
+ids = ["SLPS-01232", "SLPS-01233"]
+
+# Capcom Generations (Europe)
+[[savegroup]]
+ids = ["SLES-01881", "SLES-11881", "SLES-21881", "SLES-31881"]
+
+# Capcom Generations (Germany)
+[[savegroup]]
+ids = ["SLES-02098", "SLES-12098", "SLES-22098"]
+
+# Chase the Express (Europe)
+[[savegroup]]
+ids = ["SCES-02812", "SCES-12812"]
+
+# Chase the Express (France)
+[[savegroup]]
+ids = ["SCES-02813", "SCES-12813"]
+
+# Chase the Express (Germany)
+[[savegroup]]
+ids = ["SCES-02814", "SCES-12814"]
+
+# Chase the Express (Italy)
+[[savegroup]]
+ids = ["SCES-02815", "SCES-12815"]
+
+# Chase the Express (Japan, Asia)
+[[savegroup]]
+ids = ["SCPS-10109", "SCPS-10110"]
+
+# Chase the Express - El Expreso de la Muerte (Spain)
+[[savegroup]]
+ids = ["SCES-02816", "SCES-12816"]
+
+# Chibi Chara Game - Ginga Eiyuu Densetsu (Japan) (Shokai Tokuten Reinhart Genteiban)
+[[savegroup]]
+ids = ["SLPS-01834", "SLPS-01835"]
+
+# Chibi Chara Game - Ginga Eiyuu Densetsu (Japan) (Shokai Tokuten Yan Genteiban)
+[[savegroup]]
+ids = ["SLPS-02025", "SLPS-02026"]
+
+# Chou Jikuu Yousai Macross - Ai Oboete Imasu ka (Japan)
+[[savegroup]]
+ids = ["SLPS-02005", "SLPS-02006"]
+
+# Chou-Kousoku Gran Doll (Japan) (Premium Edition)
+[[savegroup]]
+ids = ["SLPS-00869", "SLPS-00870"]
+
+# Chronicles of the Sword (Europe)
+[[savegroup]]
+ids = ["SLES-00165", "SLES-10165"]
+
+# Chronicles of the Sword (France)
+[[savegroup]]
+ids = ["SLES-00166", "SLES-10166"]
+
+# Chronicles of the Sword (Germany)
+[[savegroup]]
+ids = ["SLES-00167", "SLES-10167"]
+
+# Chronicles of the Sword (Italy)
+[[savegroup]]
+ids = ["SLES-00192", "SLES-10192"]
+
+# Chronicles of the Sword (Spain)
+[[savegroup]]
+ids = ["SLES-00191", "SLES-10191"]
+
+# Chronicles of the Sword (USA)
+[[savegroup]]
+ids = ["SCUS-94700", "SCUS-94701"]
+
+# Chrono Cross (Japan)
+[[savegroup]]
+ids = ["SLPM-87395", "SLPM-87396"]
+
+# Chrono Cross (USA)
+[[savegroup]]
+ids = ["SLUS-01041", "SLUS-01080"]
+
+# Cinema Eikaiwa Series Dai-1-dan - Tengoku ni Ikenai Papa (Japan)
+[[savegroup]]
+ids = ["SLPM-86565", "SLPM-86566", "SLPM-86567"]
+
+# Cinema Eikaiwa Series Dai-2-dan - Interceptor (Japan)
+[[savegroup]]
+ids = ["SLPM-86554", "SLPM-86555", "SLPM-86556"]
+
+# Cinema Eikaiwa Series Dai-3-dan - Arashigaoka (Japan)
+[[savegroup]]
+ids = ["SLPM-86551", "SLPM-86552", "SLPM-86553"]
+
+# Cinema Eikaiwa Series Dai-4-dan - Boy's Life (Japan)
+[[savegroup]]
+ids = ["SLPM-86568", "SLPM-86569", "SLPM-86570", "SLPM-86571"]
+
+# Cinema Eikaiwa Series Dai-5-dan - Zombie (Japan)
+[[savegroup]]
+ids = ["SLPM-86557", "SLPM-86558", "SLPM-86559", "SLPM-86560"]
+
+# Cinema Eikaiwa Series Dai-6-dan - Ai no Hate ni (Japan)
+[[savegroup]]
+ids = ["SLPM-86241", "SLPM-86242", "SLPM-86243", "SLPM-86564"]
+
+# Circadia (Japan)
+[[savegroup]]
+ids = ["SCPS-10077", "SCPS-10078"]
+
+# Cold Blood (Germany)
+[[savegroup]]
+ids = ["SCES-02151", "SCES-12151"]
+
+# Colony Wars (Europe)
+[[savegroup]]
+ids = ["SLES-00860", "SLES-10860"]
+
+# Colony Wars (France)
+[[savegroup]]
+ids = ["SLES-00861", "SLES-10861"]
+
+# Colony Wars (Germany)
+[[savegroup]]
+ids = ["SLES-00862", "SLES-10862"]
+
+# Colony Wars (Italy)
+[[savegroup]]
+ids = ["SLES-00863", "SLES-10863"]
+
+# Colony Wars (Japan)
+[[savegroup]]
+ids = ["SLPS-01403", "SLPS-01404"]
+
+# Colony Wars (Spain)
+[[savegroup]]
+ids = ["SLES-00864", "SLES-10864"]
+
+# Colony Wars (USA)
+[[savegroup]]
+ids = ["SLUS-00543", "SLUS-00554"]
+
+# Command & Conquer (Europe)
+[[savegroup]]
+ids = ["SLES-00530", "SLES-10530"]
+
+# Command & Conquer (France)
+[[savegroup]]
+ids = ["SLES-00531", "SLES-10531"]
+
+# Command & Conquer (USA)
+[[savegroup]]
+ids = ["SLUS-00379", "SLUS-00410"]
+
+# Command & Conquer - Alarmstufe Rot (Germany)
+[[savegroup]]
+ids = ["SLES-01007", "SLES-11007"]
+
+# Command & Conquer - Alarmstufe Rot - Gegenschlag (Germany)
+[[savegroup]]
+ids = ["SLES-01345", "SLES-11345"]
+
+# Command & Conquer - Alerte Rouge (France)
+[[savegroup]]
+ids = ["SLES-01006", "SLES-11006"]
+
+# Command & Conquer - Alerte Rouge - Mission Tesla (France)
+[[savegroup]]
+ids = ["SLES-01344", "SLES-11344"]
+
+# Command & Conquer - Red Alert (Europe)
+[[savegroup]]
+ids = ["SLES-00949", "SLES-10949"]
+
+# Command & Conquer - Red Alert (USA)
+[[savegroup]]
+ids = ["SLUS-00431", "SLUS-00485"]
+
+# Command & Conquer - Red Alert - Retaliation (Europe)
+[[savegroup]]
+ids = ["SLES-01343", "SLES-11343"]
+
+# Command & Conquer - Red Alert - Retaliation (USA)
+[[savegroup]]
+ids = ["SLUS-00665", "SLUS-00667"]
+
+# Command & Conquer - Teil 1 - Der Tiberiumkonflikt (Germany)
+[[savegroup]]
+ids = ["SLES-00532", "SLES-10532"]
+
+# Command & Conquer Complete (Japan)
+[[savegroup]]
+ids = ["SLPS-00976", "SLPS-00977"]
+
+# Countdown Vampires (Japan)
+[[savegroup]]
+ids = ["SLPS-02504", "SLPS-02505"]
+
+# Countdown Vampires (USA)
+[[savegroup]]
+ids = ["SLUS-00898", "SLUS-01199"]
+
+# Covert Ops - Nuclear Dawn (USA)
+[[savegroup]]
+ids = ["SLUS-01151", "SLUS-01157"]
+
+# Creature Shock (Japan)
+[[savegroup]]
+ids = ["SLPS-00120", "SLPS-00121"]
+
+# Cross Tantei Monogatari (Japan)
+[[savegroup]]
+ids = ["SLPM-86280", "SLPM-86281"]
+
+# Cybernetic Empire (Japan)
+[[savegroup]]
+ids = ["SLPS-01912", "SLPS-01913"]
+
+# Cyberwar (Japan)
+[[savegroup]]
+ids = ["SLPS-00055", "SLPS-00056", "SLPS-00057"]
+
+# D (Europe)
+[[savegroup]]
+ids = ["SLES-00065", "SLES-10065", "SLES-20065"]
+
+# D (France)
+[[savegroup]]
+ids = ["SLES-00161", "SLES-10161", "SLES-20161"]
+
+# D (Germany)
+[[savegroup]]
+ids = ["SLES-00160", "SLES-10160", "SLES-20160"]
+
+# D (USA)
+[[savegroup]]
+ids = ["SLUS-00128", "SLUS-00173", "SLUS-00174"]
+
+# D no Shokutaku - Complete Graphics (Japan)
+[[savegroup]]
+ids = ["SLPS-00133", "SLPS-00134", "SLPS-00135"]
+
+# Dancing Blade Katte ni Momotenshi II - Tears of Eden (Japan)
+[[savegroup]]
+ids = ["SLPM-86210", "SLPM-86211", "SLPM-86212"]
+
+# Dancing Blade Katte ni Momotenshi! (Japan)
+[[savegroup]]
+ids = ["SLPM-86100", "SLPM-86101", "SLPM-86102"]
+
+# De Sang Froid (France)
+[[savegroup]]
+ids = ["SCES-02150", "SCES-12150"]
+
+# DeathMask (Japan)
+[[savegroup]]
+ids = ["SLPS-00225", "SLPS-00226", "SLPS-00227"]
+
+# Deep Sea Adventure - Kaitei-kyuu Pantarassa no Nazo (Japan)
+[[savegroup]]
+ids = ["SLPS-00660", "SLPS-00661"]
+
+# Devil Summoner - Soul Hackers (Japan)
+[[savegroup]]
+ids = ["SLPM-87184", "SLPM-87185"]
+
+# Doki Doki Pretty League - Nekketsu Otome Seishunki (Japan)
+[[savegroup]]
+ids = ["SLPS-01507", "SLPS-01508", "SLPS-01509"]
+
+# Dracula - A Ressurreicao (Portugal)
+[[savegroup]]
+ids = ["SLES-02762", "SLES-12762"]
+
+# Dracula - La Risurrezione (Italy)
+[[savegroup]]
+ids = ["SLES-02761", "SLES-12761"]
+
+# Dracula - Resurreccion (Spain)
+[[savegroup]]
+ids = ["SLES-02760", "SLES-12760"]
+
+# Dracula - Resurrection (France)
+[[savegroup]]
+ids = ["SLES-02758", "SLES-12758"]
+
+# Dracula - Resurrection (Germany)
+[[savegroup]]
+ids = ["SLES-02759", "SLES-12759"]
+
+# Dracula - The Last Sanctuary (USA)
+[[savegroup]]
+ids = ["SLUS-01440", "SLUS-01443"]
+
+# Dracula - The Resurrection (Europe)
+[[savegroup]]
+ids = ["SLES-02757", "SLES-12757"]
+
+# Dracula - The Resurrection (USA)
+[[savegroup]]
+ids = ["SLUS-01284", "SLUS-01316"]
+
+# Dracula 2 - Die letzte Zufluchtsstaette (Germany)
+[[savegroup]]
+ids = ["SLES-03350", "SLES-13350"]
+
+# Dracula 2 - El Ultimo Santuario (Spain)
+[[savegroup]]
+ids = ["SLES-03352", "SLES-13352"]
+
+# Dracula 2 - L'Ultimo Santuario (Italy)
+[[savegroup]]
+ids = ["SLES-03351", "SLES-13351"]
+
+# Dracula 2 - Le Dernier Sanctuaire (France)
+[[savegroup]]
+ids = ["SLES-03349", "SLES-13349"]
+
+# Dracula 2 - The Last Sanctuary (Europe)
+[[savegroup]]
+ids = ["SLES-03348", "SLES-13348"]
+
+# Dragon Quest VII - Eden no Senshi-tachi (Japan)
+[[savegroup]]
+ids = ["SLPM-86500", "SLPM-86501"]
+
+# Dragon Quest VII - Eden no Senshi-tachi (Japan) (Rev 1)
+[[savegroup]]
+ids = ["SLPM-87352", "SLPM-87353"]
+
+# Dragon Valor (Europe)
+[[savegroup]]
+ids = ["SCES-01705", "SCES-11705"]
+
+# Dragon Valor (France)
+[[savegroup]]
+ids = ["SCES-02565", "SCES-12565"]
+
+# Dragon Valor (Germany)
+[[savegroup]]
+ids = ["SCES-02566", "SCES-12566"]
+
+# Dragon Valor (Italy)
+[[savegroup]]
+ids = ["SCES-02567", "SCES-12567"]
+
+# Dragon Valor (Japan)
+[[savegroup]]
+ids = ["SLPS-02190", "SLPS-02191"]
+
+# Dragon Valor (Spain)
+[[savegroup]]
+ids = ["SCES-02568", "SCES-12568"]
+
+# Dragon Valor (USA)
+[[savegroup]]
+ids = ["SLUS-01092", "SLUS-01164"]
+
+# Dragon Warrior VII (USA)
+[[savegroup]]
+ids = ["SLUS-01206", "SLUS-01346"]
+
+# Driver 2 (USA)
+[[savegroup]]
+ids = ["SLUS-01161", "SLUS-01318"]
+
+# Driver 2 - Back on the Streets (Europe)
+[[savegroup]]
+ids = ["SLES-02993", "SLES-12993"]
+
+# Driver 2 - Back on the Streets (France)
+[[savegroup]]
+ids = ["SLES-02994", "SLES-12994"]
+
+# Driver 2 - Back on the Streets (Germany)
+[[savegroup]]
+ids = ["SLES-02995", "SLES-12995"]
+
+# Driver 2 - Back on the Streets (Italy)
+[[savegroup]]
+ids = ["SLES-02996", "SLES-12996"]
+
+# Driver 2 - Back on the Streets (Spain)
+[[savegroup]]
+ids = ["SLES-02997", "SLES-12997"]
+
+# Dungeon Creator (Japan)
+[[savegroup]]
+ids = ["SLPS-00370", "SLPS-00371"]
+
+# Eberouge (Japan)
+[[savegroup]]
+ids = ["SLPS-00844", "SLPS-00845"]
+
+# Ecsaform (Japan)
+[[savegroup]]
+ids = ["SLPS-01791", "SLPS-01792"]
+
+# Eithea (Japan)
+[[savegroup]]
+ids = ["SLPS-03058", "SLPS-03059"]
+
+# Eithea (Japan) (Rev 1)
+[[savegroup]]
+ids = ["SLPM-87091", "SLPM-87092"]
+
+# Elf o Karu Monotachi - Kanzenban (Japan)
+[[savegroup]]
+ids = ["SLPS-00973", "SLPS-00974"]
+
+# Elf wo Karu Monotachi II (Japan)
+[[savegroup]]
+ids = ["SLPS-01456", "SLPS-01457", "SLPS-01458"]
+
+# Emit Value Pack (Japan)
+[[savegroup]]
+ids = ["SLPS-00117", "SLPS-00118", "SLPS-00119"]
+
+# Enigma (Japan)
+[[savegroup]]
+ids = ["SLPS-01351", "SLPS-01352"]
+
+# Eurasia Express Satsujin Jiken (Japan)
+[[savegroup]]
+ids = ["SLPM-86135", "SLPM-86136", "SLPM-86137", "SLPM-86138"]
+
+# Eve - The Fatal Attraction (Japan)
+[[savegroup]]
+ids = ["SLPM-86826", "SLPM-86827", "SLPM-86828"]
+
+# Eve - The Fatal Attraction (Japan) (Premium Box)
+[[savegroup]]
+ids = ["SLPM-86821", "SLPM-86822", "SLPM-86823"]
+
+# Eve - The Lost One (Japan)
+[[savegroup]]
+ids = ["SLPS-01805", "SLPS-01806", "SLPS-01807", "SLPS-01808"]
+
+# Eve - The Lost One (Japan) (GameVillage The Best)
+[[savegroup]]
+ids = ["SLPM-87246", "SLPM-87247", "SLPM-87248"]
+
+# Eve Zero (Japan)
+[[savegroup]]
+ids = ["SLPM-86478", "SLPM-86479", "SLPM-86480"]
+
+# Eve Zero (Japan) (Premium Box)
+[[savegroup]]
+ids = ["SLPM-86475", "SLPM-86476", "SLPM-86477"]
+
+# Evil Dead - Hail to the King (Europe)
+[[savegroup]]
+ids = ["SLES-03428", "SLES-13428"]
+
+# Evil Dead - Hail to the King (USA)
+[[savegroup]]
+ids = ["SLUS-01072", "SLUS-01326"]
+
+# e-Jump (Japan)
+[[savegroup]]
+ids = ["PCPX-96178", "PCPX-96179"]
+
+# Family Games Compendium (Europe)
+[[savegroup]]
+ids = ["SLES-03485", "SLES-13485"]
+
+# Fear Effect (Europe) (En,Es,It)
+[[savegroup]]
+ids = ["SLES-02166", "SLES-12166", "SLES-22166", "SLES-32166"]
+
+# Fear Effect (France)
+[[savegroup]]
+ids = ["SLES-02167", "SLES-12167", "SLES-22167", "SLES-32167"]
+
+# Fear Effect (Germany)
+[[savegroup]]
+ids = ["SLES-02168", "SLES-12168", "SLES-22168", "SLES-32168"]
+
+# Fear Effect (USA)
+[[savegroup]]
+ids = ["SLUS-00920", "SLUS-01056", "SLUS-01057", "SLUS-01058"]
+
+# Fear Effect 2 - Retro Helix (Europe) (En,Fr,De)
+[[savegroup]]
+ids = ["SLES-03386", "SLES-13386", "SLES-23386", "SLES-33386"]
+
+# Fear Effect 2 - Retro Helix (USA)
+[[savegroup]]
+ids = ["SLUS-01266", "SLUS-01275", "SLUS-01276", "SLUS-01277"]
+
+# Final Fantasy IX (Europe)
+[[savegroup]]
+ids = ["SLES-02965", "SLES-12965", "SLES-22965", "SLES-32965"]
+
+# Final Fantasy IX (France)
+[[savegroup]]
+ids = ["SLES-02966", "SLES-12966", "SLES-22966", "SLES-32966"]
+
+# Final Fantasy IX (Germany)
+[[savegroup]]
+ids = ["SLES-02967", "SLES-12967", "SLES-22967", "SLES-32967"]
+
+# Final Fantasy IX (Italy)
+[[savegroup]]
+ids = ["SLES-02968", "SLES-12968", "SLES-22968", "SLES-32968"]
+
+# Final Fantasy IX (Japan, Asia)
+[[savegroup]]
+ids = ["SCPS-45500", "SCPS-45501", "SCPS-45502", "SCPS-45503"]
+
+# Final Fantasy IX (Spain)
+[[savegroup]]
+ids = ["SLES-02969", "SLES-12969", "SLES-22969", "SLES-32969"]
+
+# Final Fantasy IX (USA)
+[[savegroup]]
+ids = ["SLUS-01251", "SLUS-01295", "SLUS-01296", "SLUS-01297"]
+
+# Final Fantasy VII (Europe)
+[[savegroup]]
+ids = ["SCES-00867", "SCES-10867", "SCES-20867"]
+
+# Final Fantasy VII (France)
+[[savegroup]]
+ids = ["SCES-00868", "SCES-10868", "SCES-20868"]
+
+# Final Fantasy VII (Germany)
+[[savegroup]]
+ids = ["SCES-00869", "SCES-10869", "SCES-20869"]
+
+# Final Fantasy VII (Japan)
+[[savegroup]]
+ids = ["SLPS-00700", "SLPS-00701", "SLPS-00702"]
+
+# Final Fantasy VII (Spain)
+[[savegroup]]
+ids = ["SCES-00900", "SCES-10900", "SCES-20900"]
+
+# Final Fantasy VII (USA)
+[[savegroup]]
+ids = ["SCUS-94163", "SCUS-94164", "SCUS-94165"]
+
+# Final Fantasy VII International (Japan)
+[[savegroup]]
+ids = ["SLPM-84020", "SLPM-84021", "SLPM-84022", "SLPM-87383"]
+
+# Final Fantasy VIII (Europe, Australia)
+[[savegroup]]
+ids = ["SCES-02080", "SCES-12080", "SCES-22080", "SCES-32080"]
+
+# Final Fantasy VIII (France)
+[[savegroup]]
+ids = ["SLES-02081", "SLES-12081", "SLES-22081", "SLES-32081"]
+
+# Final Fantasy VIII (Germany)
+[[savegroup]]
+ids = ["SLES-02082", "SLES-12082", "SLES-22082", "SLES-32082"]
+
+# Final Fantasy VIII (Italy)
+[[savegroup]]
+ids = ["SLES-02083", "SLES-12083", "SLES-22083", "SLES-32083"]
+
+# Final Fantasy VIII (Japan)
+[[savegroup]]
+ids = ["SLPM-87384", "SLPM-87385", "SLPM-87386", "SLPM-87387"]
+
+# Final Fantasy VIII (Spain)
+[[savegroup]]
+ids = ["SLES-02084", "SLES-12084", "SLES-22084", "SLES-32084"]
+
+# Final Fantasy VIII (USA)
+[[savegroup]]
+ids = ["SLUS-00892", "SLUS-00908", "SLUS-00909", "SLUS-00910"]
+
+# First Kiss Story (Japan)
+[[savegroup]]
+ids = ["SLPS-01708", "SLPS-01709"]
+
+# Fox Hunt (USA)
+[[savegroup]]
+ids = ["SLUS-00101", "SLUS-00175", "SLUS-00176"]
+
+# G-Police (Europe)
+[[savegroup]]
+ids = ["SLES-00082", "SLES-10082"]
+
+# G-Police (France)
+[[savegroup]]
+ids = ["SLES-00853", "SLES-10853"]
+
+# G-Police (Germany)
+[[savegroup]]
+ids = ["SLES-00854", "SLES-10854"]
+
+# G-Police (Italy)
+[[savegroup]]
+ids = ["SLES-00855", "SLES-10855"]
+
+# G-Police (Japan)
+[[savegroup]]
+ids = ["SCPS-10065", "SCPS-10066"]
+
+# G-Police (Spain)
+[[savegroup]]
+ids = ["SLES-00856", "SLES-10856"]
+
+# G-Police (USA)
+[[savegroup]]
+ids = ["SLUS-00544", "SLUS-00556"]
+
+# GZSZ Vol. 2 (Germany)
+[[savegroup]]
+ids = ["SLES-02441", "SLES-12441"]
+
+# Gadget - Past as Future (Japan)
+[[savegroup]]
+ids = ["SLPS-01082", "SLPS-01083", "SLPS-01084", "SLPS-01085"]
+
+# Galerians (Europe)
+[[savegroup]]
+ids = ["SLES-02328", "SLES-12328", "SLES-22328"]
+
+# Galerians (France)
+[[savegroup]]
+ids = ["SLES-02329", "SLES-12329", "SLES-22329"]
+
+# Galerians (Germany)
+[[savegroup]]
+ids = ["SLES-02330", "SLES-12330", "SLES-22330"]
+
+# Galerians (Japan)
+[[savegroup]]
+ids = ["SLPS-02192", "SLPS-02193", "SLPS-02194"]
+
+# Galerians (USA)
+[[savegroup]]
+ids = ["SLUS-00986", "SLUS-01098", "SLUS-01099"]
+
+# Gate Keepers (Japan)
+[[savegroup]]
+ids = ["SLPS-02246", "SLPS-02247"]
+
+# Glay - Complete Works (Japan)
+[[savegroup]]
+ids = ["SLPM-86226", "SLPM-86227"]
+
+# Go Go I Land (Japan)
+[[savegroup]]
+ids = ["SLPS-03061", "SLPS-03062"]
+
+# Golden Nugget (USA)
+[[savegroup]]
+ids = ["SLUS-00319", "SLUS-00555"]
+
+# Gran Turismo 2 (USA)
+[[savegroup]]
+ids = ["SCUS-94455", "SCUS-94488"]
+
+# Gran Turismo 2 (Europe) (En,Fr,De,Es,It)
+[[savegroup]]
+ids = ["SCES-02380", "SCES-12380"]
+
+# Gran Turismo 2 (Japan, Asia)
+[[savegroup]]
+ids = ["SCPS-10116", "SCPS-10117"]
+
+# Grand Theft Auto (Europe) (En,Fr,De,It)
+[[savegroup]]
+ids = ["SLES-00032", "SLES-01714"]
+
+# Grand Theft Auto (USA)
+[[savegroup]]
+ids = ["SLUS-00106", "SLUS-00846"]
+
+# Grandia (Europe)
+[[savegroup]]
+ids = ["SLES-02397", "SLES-12397"]
+
+# Grandia (France)
+[[savegroup]]
+ids = ["SLES-02398", "SLES-12398"]
+
+# Grandia (Germany)
+[[savegroup]]
+ids = ["SLES-02399", "SLES-12399"]
+
+# Grandia (Japan)
+[[savegroup]]
+ids = ["SLPS-02124", "SLPS-02125"]
+
+# Grandia (USA)
+[[savegroup]]
+ids = ["SCUS-94457", "SCUS-94465"]
+
+# Growlanser (Japan)
+[[savegroup]]
+ids = ["SLPM-87333", "SLPM-87334"]
+
+# Guardian Recall - Shugojuu Shoukan (Japan)
+[[savegroup]]
+ids = ["SLPS-01297", "SLPS-01298"]
+
+# Gundam 0079 - The War for Earth (Japan)
+[[savegroup]]
+ids = ["SLPS-00815", "SLPS-00816"]
+
+# Harukaze Sentai V-Force (Japan)
+[[savegroup]]
+ids = ["SLPS-00578", "SLPS-00579", "SLPS-00580"]
+
+# Heart of Darkness (Europe)
+[[savegroup]]
+ids = ["SLES-00461", "SLES-10461"]
+
+# Heart of Darkness (France)
+[[savegroup]]
+ids = ["SLES-00462", "SLES-10462"]
+
+# Heart of Darkness (Germany)
+[[savegroup]]
+ids = ["SLES-00463", "SLES-10463"]
+
+# Heart of Darkness (Italy)
+[[savegroup]]
+ids = ["SLES-00464", "SLES-10464"]
+
+# Heart of Darkness (Spain)
+[[savegroup]]
+ids = ["SLES-00465", "SLES-10465"]
+
+# Heart of Darkness (USA)
+[[savegroup]]
+ids = ["SLUS-00696", "SLUS-00741"]
+
+# Helix - Fear Effect (Japan)
+[[savegroup]]
+ids = ["SLPS-03340", "SLPS-03341", "SLPS-03342", "SLPS-03343"]
+
+# Hexamoon Guardians (Japan)
+[[savegroup]]
+ids = ["SLPS-02641", "SLPS-02642"]
+
+# Himiko-den - Renge (Japan)
+[[savegroup]]
+ids = ["SLPS-01890", "SLPS-01891", "SLPS-01892"]
+
+# Himitsu Sentai Metamor V Deluxe (Japan)
+[[savegroup]]
+ids = ["SLPS-01626", "SLPS-01627"]
+
+# Hive Wars, The (Japan)
+[[savegroup]]
+ids = ["SLPS-00325", "SLPS-00326"]
+
+# Hive, The (USA)
+[[savegroup]]
+ids = ["SLUS-00120", "SLUS-00182"]
+
+# Hyper PlayStation Re-mix 1998 No. 11 (Japan)
+[[savegroup]]
+ids = ["SLPM-80317", "PAPX-90059"]
+
+# Hyper PlayStation Re-mix 1998 No. 7 (Japan)
+[[savegroup]]
+ids = ["SLPM-80248", "PCPX-96115"]
+
+# Hyper PlayStation Re-mix 1999 No. 9 (Japan)
+[[savegroup]]
+ids = ["SLPM-80470", "PCPX-96170"]
+
+# Hyper PlayStation Re-mix No. 7 (Japan)
+[[savegroup]]
+ids = ["SLPM-80113", "SLPM-80114"]
+
+# Idol Janshi Suchie-Pai II Limited (Japan)
+[[savegroup]]
+ids = ["SLPS-00290", "SLPS-00291", "SLPS-00292"]
+
+# In Cold Blood (Europe)
+[[savegroup]]
+ids = ["SCES-02149", "SCES-12149"]
+
+# In Cold Blood (USA)
+[[savegroup]]
+ids = ["SLUS-01294", "SLUS-01314"]
+
+# J. B. Harold - Blue Chicago Blues (Japan)
+[[savegroup]]
+ids = ["SLPS-00144", "SLPS-00145"]
+
+# JailBreaker (Japan)
+[[savegroup]]
+ids = ["SLPS-02076", "SLPS-02077"]
+
+# Jikuu Tantei DD - Maboroshi no Lorelei (Japan)
+[[savegroup]]
+ids = ["SLPS-00397", "SLPS-00398"]
+
+# Jikuu Tantei DD 2 - Hangyaku no Apusararu (Japan)
+[[savegroup]]
+ids = ["SLPS-01533", "SLPS-01534"]
+
+# Jissen Pachi-Slot Hisshouhou! Single - Kamen Rider & Gallop (Japan)
+[[savegroup]]
+ids = ["SLPM-86342", "SLPM-86343"]
+
+# Juggernaut (USA)
+[[savegroup]]
+ids = ["SLUS-00894", "SLUS-00988", "SLUS-00989"]
+
+# Juggernaut - Senritsu no Tobira (Japan)
+[[savegroup]]
+ids = ["SLPS-01671", "SLPS-01672", "SLPS-01673"]
+
+# Kagayaku Kisetsu e (Japan)
+[[savegroup]]
+ids = ["SLPS-01972", "SLPS-01973"]
+
+# Karyuujou (Japan)
+[[savegroup]]
+ids = ["SLPS-00563", "SLPS-00564"]
+
+# Kidou Senshi Gundam - Gihren no Yabou - Zeon no Keifu (Japan)
+[[savegroup]]
+ids = ["SLPS-02570", "SLPS-02571"]
+
+# Kindaichi Shounen no Jikenbo - Jigoku Yuuen Satsujin Jiken (Japan)
+[[savegroup]]
+ids = ["SLPS-01340", "SLPS-01341"]
+
+# Kindaichi Shounen no Jikenbo 3 - Seiryuu Densetsu Satsujin Jiken (Japan)
+[[savegroup]]
+ids = ["SLPS-02223", "SLPS-02224"]
+
+# Kizuna toyuu Na no Pendant with Toybox Stories (Japan)
+[[savegroup]]
+ids = ["SLPS-02681", "SLPS-02682"]
+
+# Koudelka (Europe)
+[[savegroup]]
+ids = ["SLES-02897", "SLES-12897", "SLES-22897", "SLES-32897"]
+
+# Koudelka (France)
+[[savegroup]]
+ids = ["SLES-02898", "SLES-12898", "SLES-22898", "SLES-32898"]
+
+# Koudelka (Germany)
+[[savegroup]]
+ids = ["SLES-02899", "SLES-12899", "SLES-22899", "SLES-32899"]
+
+# Koudelka (Italy)
+[[savegroup]]
+ids = ["SLES-02900", "SLES-12900", "SLES-22900", "SLES-32900"]
+
+# Koudelka (Japan)
+[[savegroup]]
+ids = ["SLPS-02460", "SLPS-02461", "SLPS-02462", "SLPS-02463"]
+
+# Koudelka (Spain)
+[[savegroup]]
+ids = ["SLES-02901", "SLES-12901", "SLES-22901", "SLES-32901"]
+
+# Koudelka (USA)
+[[savegroup]]
+ids = ["SLUS-01051", "SLUS-01100", "SLUS-01101", "SLUS-01102"]
+
+# Kowloon's Gate - Kowloon Fuusuiden (Japan, Asia)
+[[savegroup]]
+ids = ["SCPS-45014", "SCPS-45015", "SCPS-45016", "SCPS-45017"]
+
+# Langrisser IV & V - Final Edition (Japan)
+[[savegroup]]
+ids = ["SLPS-01818", "SLPS-01819"]
+
+# Legend of Dragoon, The (Europe)
+[[savegroup]]
+ids = ["SCES-03043", "SCES-13043", "SCES-23043", "SCES-33043"]
+
+# Legend of Dragoon, The (France)
+[[savegroup]]
+ids = ["SCES-03044", "SCES-13044", "SCES-23044", "SCES-33044"]
+
+# Legend of Dragoon, The (Germany)
+[[savegroup]]
+ids = ["SCES-03045", "SCES-13045", "SCES-23045", "SCES-33045"]
+
+# Legend of Dragoon, The (Italy)
+[[savegroup]]
+ids = ["SCES-03046", "SCES-13046", "SCES-23046", "SCES-33046"]
+
+# Legend of Dragoon, The (Japan)
+[[savegroup]]
+ids = ["SCPS-10119", "SCPS-10120", "SCPS-10121", "SCPS-10122"]
+
+# Legend of Dragoon, The (Spain)
+[[savegroup]]
+ids = ["SCES-03047", "SCES-13047", "SCES-23047", "SCES-33047"]
+
+# Legend of Dragoon, The (USA)
+[[savegroup]]
+ids = ["SCUS-94491", "SCUS-94584", "SCUS-94585", "SCUS-94586"]
+
+# LifeScape - Seimei 40-okunen Haruka na Tabi (Japan)
+[[savegroup]]
+ids = ["SLPS-00185", "SLPS-00186"]
+
+# Little Lovers - She So Game (Japan)
+[[savegroup]]
+ids = ["SLPM-86757", "SLPM-86758"]
+
+# Little Princess - Marl Oukoku no Ningyou-hime 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-03012", "SLPS-03013"]
+
+# Louvre - A Maldicao (Portugal)
+[[savegroup]]
+ids = ["SLES-03159", "SLES-13159"]
+
+# Louvre - L'Ultime Malediction (France)
+[[savegroup]]
+ids = ["SLES-03174", "SLES-13174"]
+
+# Louvre - La Maledizione Finale (Italy)
+[[savegroup]]
+ids = ["SLES-03160", "SLES-13160"]
+
+# Louvre - La maldicion final (Spain)
+[[savegroup]]
+ids = ["SLES-03161", "SLES-13161"]
+
+# Louvre - The Final Curse (Europe)
+[[savegroup]]
+ids = ["SLES-03158", "SLES-13158"]
+
+# Lunar - Silver Star Story (Japan, Asia)
+[[savegroup]]
+ids = ["SCPS-45249", "SCPS-45250"]
+
+# Lunar - Silver Star Story Complete (USA)
+[[savegroup]]
+ids = ["SLUS-00628", "SLUS-00899"]
+
+# Lunar 2 - Eternal Blue (Japan)
+[[savegroup]]
+ids = ["SLPS-02081", "SLPS-02082", "SLPS-02083"]
+
+# Lunar 2 - Eternal Blue Complete (USA)
+[[savegroup]]
+ids = ["SLUS-01071", "SLUS-01239", "SLUS-01240"]
+
+# Lupin 3sei - Cagliostro no Shiro - Saikai (Japan)
+[[savegroup]]
+ids = ["SLPS-91060", "SLPS-91061", "SLPS-91062"]
+
+# Maboroshi Tsukiyo - Tsukiyono Kitan (Japan)
+[[savegroup]]
+ids = ["SLPS-02705", "SLPS-02706"]
+
+# Magical Drop III (Europe) (En,Fr,De,Es,It,Nl)
+[[savegroup]]
+ids = ["SLES-02964", "SLES-12964"]
+
+# Mahou Shoujo Pretty Samy - Part 1 - In the Earth (Japan)
+[[savegroup]]
+ids = ["SLPS-00645", "SLPS-00646"]
+
+# Mahou Shoujo Pretty Samy - Part 2 - In the Julyhelm (Japan)
+[[savegroup]]
+ids = ["SLPS-00760", "SLPS-00761"]
+
+# Maria - Kimitachi ga Umareta Wake (Japan)
+[[savegroup]]
+ids = ["SLPS-01136", "SLPS-01137", "SLPS-01138"]
+
+# Maria 2 - Jutai Kokuchi no Nazo (Japan)
+[[savegroup]]
+ids = ["SLPS-02240", "SLPS-02241", "SLPS-02242"]
+
+# Martialbeat 2 (Japan)
+[[savegroup]]
+ids = ["SLPM-87148", "SLPM-87149"]
+
+# Martialbeat 2 (Japan) (Controller Doukon Set)
+[[savegroup]]
+ids = ["SLPM-87146", "SLPM-87147"]
+
+# Matsumoto Reiji 999 - Story of Galaxy Express 999 (Japan)
+[[savegroup]]
+ids = ["SLPS-03220", "SLPS-03221"]
+
+# MeltyLancer - Re-inforce (Japan)
+[[savegroup]]
+ids = ["SLPS-01147", "SLPS-01148"]
+
+# MeltyLancer - The 3rd Planet (Japan)
+[[savegroup]]
+ids = ["SLPM-86231", "SLPM-86232"]
+
+# Memories Off 2nd (Japan)
+[[savegroup]]
+ids = ["SLPS-03292", "SLPS-03293"]
+
+# Memories Off 2nd (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPS-03289", "SLPS-03290", "SLPS-03291"]
+
+# Mermaid no Kisetsu (Japan)
+[[savegroup]]
+ids = ["SLPM-86934", "SLPM-86935", "SLPM-86936"]
+
+# Mermaid no Kisetsu - Curtain Call (Japan)
+[[savegroup]]
+ids = ["SLPM-87108", "SLPM-87109"]
+
+# Meta-Ph-List Mu.X.2297 (Japan)
+[[savegroup]]
+ids = ["SLPS-00680", "SLPS-00681"]
+
+# Metal Angel 3 (Japan)
+[[savegroup]]
+ids = ["SLPS-00867", "SLPS-00868"]
+
+# Metal Gear Solid (Japan, Asia) (Premium Package)
+[[savegroup]]
+ids = ["SCPS-45317", "SCPS-45318"]
+
+# Metal Gear Solid (Europe)
+[[savegroup]]
+ids = ["SLES-01370", "SLES-11370"]
+
+# Metal Gear Solid (France)
+[[savegroup]]
+ids = ["SLES-01506", "SLES-11506"]
+
+# Metal Gear Solid (Germany)
+[[savegroup]]
+ids = ["SLES-01507", "SLES-11507"]
+
+# Metal Gear Solid (Italy)
+[[savegroup]]
+ids = ["SLES-01508", "SLES-11508"]
+
+# Metal Gear Solid (Japan)
+[[savegroup]]
+ids = ["SLPM-86114", "SLPM-86115"]
+
+# Metal Gear Solid (Spain)
+[[savegroup]]
+ids = ["SLES-01734", "SLES-11734"]
+
+# Metal Gear Solid (USA)
+[[savegroup]]
+ids = ["SLUS-00594", "SLUS-00776"]
+
+# Metal Gear Solid - Integral (Japan, Asia) (En,Ja)
+[[savegroup]]
+ids = ["SCPS-45412", "SCPS-45413", "SCPS-45414"]
+
+# Mikagura Shoujo Tanteidan (Japan)
+[[savegroup]]
+ids = ["SLPS-01611", "SLPS-01612", "SLPS-01613", "SLPS-01614"]
+
+# Million Classic (Japan)
+[[savegroup]]
+ids = ["SLPS-01609", "SLPS-01610"]
+
+# Million Classic (Japan) (Nescafe-ban)
+[[savegroup]]
+ids = ["SLPM-80397", "SLPM-80398"]
+
+# Minakata Hakudou Toujou (Japan)
+[[savegroup]]
+ids = ["SLPS-00951", "SLPS-00952"]
+
+# Misa no Mahou Monogatari (Japan)
+[[savegroup]]
+ids = ["SLPS-01276", "SLPS-01277"]
+
+# Misa no Mahou Monogatari (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPS-01274", "SLPS-01275"]
+
+# Mobile Suit Z-Gundam (Japan)
+[[savegroup]]
+ids = ["SLPS-01142", "SLPS-01143"]
+
+# Mobile Suit Z-Gundam (Japan) (Bandai the Best)
+[[savegroup]]
+ids = ["SLPS-03232", "SLPS-03233"]
+
+# Monte Carlo Games Compendium (Europe)
+[[savegroup]]
+ids = ["SLES-03813", "SLES-13813"]
+
+# Moonlight Syndrome (Japan)
+[[savegroup]]
+ids = ["SLPS-01001", "SLPS-01002"]
+
+# Moritaka Chisato - Safari Tokyo (Japan)
+[[savegroup]]
+ids = ["SLPM-86130", "SLPM-86131"]
+
+# Motor Toon Grand Prix 2 (Japan)
+[[savegroup]]
+ids = ["SCPS-10018", "SCPS-10019"]
+
+# Murakoshi Seikai no Bakuchou SeaBass Fishing (Japan)
+[[savegroup]]
+ids = ["SLPS-01988", "SLPS-01989"]
+
+# My Dream - On Air ga Matenakute (Japan)
+[[savegroup]]
+ids = ["SLPS-00996", "SLPS-00997"]
+
+# Mystic Mind - Yureru Omoi (Japan)
+[[savegroup]]
+ids = ["SLPS-01562", "SLPS-01563"]
+
+# NOeL - La Neige (Japan)
+[[savegroup]]
+ids = ["SLPS-01193", "SLPS-01194", "SLPS-01195"]
+
+# NOeL - La Neige (Japan) (Special Edition)
+[[savegroup]]
+ids = ["SLPS-01190", "SLPS-01191", "SLPS-01192"]
+
+# NOeL - Not Digital (Japan)
+[[savegroup]]
+ids = ["SLPS-00304", "SLPS-00305"]
+
+# NOeL 3 - Mission on the Line (Japan)
+[[savegroup]]
+ids = ["SLPS-01895", "SLPS-01896", "SLPS-01897"]
+
+# NOeL 3 - Mission on the Line (Japan) (Major Wave)
+[[savegroup]]
+ids = ["SLPM-86609", "SLPM-86610", "SLPM-86611"]
+
+# Nanatsu no Hikan (Japan)
+[[savegroup]]
+ids = ["SLPM-86179", "SLPM-86180", "SLPM-86181"]
+
+# Natsuiro Kenjutsu Komachi (Japan)
+[[savegroup]]
+ids = ["SLPS-02665", "SLPS-02666"]
+
+# Necronomicon - Das Mysterium der Daemmerung (Germany)
+[[savegroup]]
+ids = ["SLES-03495", "SLES-13495"]
+
+# Necronomicon - El Alba de las Tinieblas (Spain)
+[[savegroup]]
+ids = ["SLES-03497", "SLES-13497"]
+
+# Necronomicon - Ispirato alle opere di H.P. Lovecraft (Italy)
+[[savegroup]]
+ids = ["SLES-03496", "SLES-13496"]
+
+# Necronomicon - L'Aube des Tenebres (France)
+[[savegroup]]
+ids = ["SLES-03494", "SLES-13494"]
+
+# Necronomicon - O Despertar das Trevas (Portugal)
+[[savegroup]]
+ids = ["SLES-03498", "SLES-13498"]
+
+# Necronomicon - The Dawning of Darkness (Europe)
+[[savegroup]]
+ids = ["SLES-03493", "SLES-13493"]
+
+# Neko Zamurai (Japan)
+[[savegroup]]
+ids = ["SLPS-01543", "SLPS-01544", "SLPS-01545"]
+
+# Neorude (Japan)
+[[savegroup]]
+ids = ["SLPS-00823", "SLPS-00824"]
+
+# Nessa no Hoshi (Japan)
+[[savegroup]]
+ids = ["SLPS-00913", "SLPS-00914"]
+
+# Nightmare Project - Yakata (Japan)
+[[savegroup]]
+ids = ["SLPS-01045", "SLPS-01046", "SLPS-01047"]
+
+# Novastorm (Europe)
+[[savegroup]]
+ids = ["SCES-00011", "SCES-10011"]
+
+# Novastorm (Japan)
+[[savegroup]]
+ids = ["SLPS-00314", "SLPS-00315"]
+
+# Novastorm (USA)
+[[savegroup]]
+ids = ["SCUS-94404", "SCUS-94407"]
+
+# Oddworld - Abe's Exoddus (Europe)
+[[savegroup]]
+ids = ["SLES-01480", "SLES-11480"]
+
+# Oddworld - Abe's Exoddus (Germany)
+[[savegroup]]
+ids = ["SLES-01503", "SLES-11503"]
+
+# Oddworld - Abe's Exoddus (Italy)
+[[savegroup]]
+ids = ["SLES-01504", "SLES-11504"]
+
+# Oddworld - Abe's Exoddus (Spain)
+[[savegroup]]
+ids = ["SLES-01505", "SLES-11505"]
+
+# Oddworld - Abe's Exoddus (USA)
+[[savegroup]]
+ids = ["SLUS-00710", "SLUS-00731"]
+
+# Oddworld - L'Exode d'Abe (France)
+[[savegroup]]
+ids = ["SLES-01502", "SLES-11502"]
+
+# Ojousama Express (Japan)
+[[savegroup]]
+ids = ["SLPS-01495", "SLPS-01496"]
+
+# Our Graduation - Mahjong de Pon! Hanafuda de Koi! (Japan)
+[[savegroup]]
+ids = ["SLPS-02576", "SLPS-02577"]
+
+# OverBlood 2 (Europe)
+[[savegroup]]
+ids = ["SLES-01879", "SLES-11879"]
+
+# OverBlood 2 (Germany) (Rev 1)
+[[savegroup]]
+ids = ["SLES-02187", "SLES-12187"]
+
+# OverBlood 2 (Italy)
+[[savegroup]]
+ids = ["SLES-01880", "SLES-11880"]
+
+# OverBlood 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-01261", "SLPS-01262"]
+
+# Parasite Eve (Japan)
+[[savegroup]]
+ids = ["SLPS-01230", "SLPS-01231"]
+
+# Parasite Eve (USA)
+[[savegroup]]
+ids = ["SLUS-00662", "SLUS-00668"]
+
+# Parasite Eve II (Europe)
+[[savegroup]]
+ids = ["SLES-02558", "SLES-12558"]
+
+# Parasite Eve II (France)
+[[savegroup]]
+ids = ["SLES-02559", "SLES-12559"]
+
+# Parasite Eve II (Germany)
+[[savegroup]]
+ids = ["SLES-02560", "SLES-12560"]
+
+# Parasite Eve II (Italy)
+[[savegroup]]
+ids = ["SLES-02562", "SLES-12562"]
+
+# Parasite Eve II (Japan, Asia)
+[[savegroup]]
+ids = ["SCPS-45467", "SCPS-45468"]
+
+# Parasite Eve II (Spain)
+[[savegroup]]
+ids = ["SLES-02561", "SLES-12561"]
+
+# Parasite Eve II (USA)
+[[savegroup]]
+ids = ["SLUS-01042", "SLUS-01055"]
+
+# Persona 2 - Batsu - Eternal Punishment (Japan)
+[[savegroup]]
+ids = ["SLPM-86967", "SLPS-02826"]
+
+# Persona 2 - Batsu - Eternal Punishment (Japan) (Deluxe Pack)
+[[savegroup]]
+ids = ["SLPS-02785", "SLPS-02786"]
+
+# Persona 2 - Eternal Punishment (USA)
+[[savegroup]]
+ids = ["SLUS-01158", "SLUS-01339"]
+
+# Pixygarden (Japan)
+[[savegroup]]
+ids = ["SLPS-02290", "SLPS-02291"]
+
+# PlayStation Underground 3.1 (USA)
+[[savegroup]]
+ids = ["SCUS-94440", "SCUS-94441"]
+
+# PlayStation Underground 3.2 (USA)
+[[savegroup]]
+ids = ["SCUS-94442", "SCUS-94443"]
+
+# PlayStation Underground 3.3 (USA)
+[[savegroup]]
+ids = ["SCUS-94444", "SCUS-94445"]
+
+# PlayStation Underground 3.4 (USA)
+[[savegroup]]
+ids = ["SCUS-94446", "SCUS-94447"]
+
+# PlayStation Underground 4.1 (USA)
+[[savegroup]]
+ids = ["SCUS-94565", "SCUS-94566"]
+
+# PlayStation Underground 4.2 (USA)
+[[savegroup]]
+ids = ["SCUS-94612", "SCUS-94613"]
+
+# PlayStation Underground 4.3 (USA)
+[[savegroup]]
+ids = ["SCUS-94620", "SCUS-94621"]
+
+# PlayStation Underground Number 3 (USA)
+[[savegroup]]
+ids = ["SCUS-94191", "SCUS-94192"]
+
+# PlayStation Underground Number 4 (USA)
+[[savegroup]]
+ids = ["SCUS-94225", "SCUS-94226"]
+
+# PlayStation Underground Volume 2 Issue 1 (USA)
+[[savegroup]]
+ids = ["SCUS-94237", "SCUS-94238"]
+
+# PlayStation Underground Volume 2 Issue 2 (USA)
+[[savegroup]]
+ids = ["SCUS-94259", "SCUS-94260"]
+
+# PlayStation Underground Volume 2 Issue 4 (USA)
+[[savegroup]]
+ids = ["SCUS-94298", "SCUS-94299"]
+
+# PlayStation Underground Volume 2.3 (USA)
+[[savegroup]]
+ids = ["SCUS-94269", "SCUS-94270"]
+
+# PoPoLoCrois Monogatari II (Japan)
+[[savegroup]]
+ids = ["SCPS-10112", "SCPS-10113", "SCPS-10114"]
+
+# Policenauts (Japan)
+[[savegroup]]
+ids = ["SLPM-86048", "SLPM-86049"]
+
+# PrePre Plus 001 - 1999 October (Japan)
+[[savegroup]]
+ids = ["PCPX-96173", "PCPX-96174"]
+
+# PrePre Plus 002 - 1999 December (Japan)
+[[savegroup]]
+ids = ["PCPX-96186", "PCPX-96187"]
+
+# PrePre Vol. 10 (Japan)
+[[savegroup]]
+ids = ["PCPX-96103", "PCPX-96104"]
+
+# PrePre Vol. 13 (Japan)
+[[savegroup]]
+ids = ["PCPX-96118", "PCPX-96119"]
+
+# PrePre Vol. 14 (Japan)
+[[savegroup]]
+ids = ["PCPX-96126", "PCPX-96127"]
+
+# PrePre Vol. 15 (Japan)
+[[savegroup]]
+ids = ["PCPX-96133", "PCPX-96134"]
+
+# PrePre Vol. 16 (Japan)
+[[savegroup]]
+ids = ["PCPX-96142", "PCPX-96143"]
+
+# PrePre Vol. 17 (Japan)
+[[savegroup]]
+ids = ["PCPX-96148", "PCPX-96149"]
+
+# PrePre Vol. 18 (Japan)
+[[savegroup]]
+ids = ["PCPX-96156", "PCPX-96157"]
+
+# PrePre Vol. 19 (Japan)
+[[savegroup]]
+ids = ["PCPX-96167", "PCPX-96168"]
+
+# PrePre Vol. 5 (Japan)
+[[savegroup]]
+ids = ["PCPX-96054", "PCPX-96055"]
+
+# PrePre Vol. 6 (Japan)
+[[savegroup]]
+ids = ["PCPX-96063", "PCPX-96064"]
+
+# PrePre Vol. 9 (Japan)
+[[savegroup]]
+ids = ["PCPX-96093", "PCPX-96094"]
+
+# Psychic Detective (Europe)
+[[savegroup]]
+ids = ["SLES-00070", "SLES-10070", "SLES-20070"]
+
+# Psychic Detective (USA)
+[[savegroup]]
+ids = ["SLUS-00165", "SLUS-00166", "SLUS-00167"]
+
+# Psychic Force - Puzzle Taisen (Japan)
+[[savegroup]]
+ids = ["SLPS-01018", "SLPS-01019"]
+
+# Quest for Fame - Be a Virtual Rock Legend (Japan)
+[[savegroup]]
+ids = ["SCPS-18004", "SCPS-18005"]
+
+# Quiz Show (Italy)
+[[savegroup]]
+ids = ["SLES-03752", "SLES-13752"]
+
+# R (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPS-02045", "SLPS-02046"]
+
+# RMJ - The Mystery Hospital (Japan)
+[[savegroup]]
+ids = ["SLPS-01087", "SLPS-01088"]
+
+# RPG Tkool 4 (Japan)
+[[savegroup]]
+ids = ["SLPS-02861", "SLPS-02862"]
+
+# Raven Project, The (Europe) (En,Fr,De)
+[[savegroup]]
+ids = ["SLES-00039", "SLES-10039"]
+
+# Raven Project, The (France) (En,Fr,De)
+[[savegroup]]
+ids = ["SLES-00518", "SLES-10518"]
+
+# Raven Project, The (Germany) (En,Fr,De)
+[[savegroup]]
+ids = ["SLES-00519", "SLES-10519"]
+
+# Refrain Love 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-01840", "SLPS-01841"]
+
+# Resident Evil 2 (Europe)
+[[savegroup]]
+ids = ["SLES-00972", "SLES-10972"]
+
+# Resident Evil 2 (France)
+[[savegroup]]
+ids = ["SLES-00973", "SLES-10973"]
+
+# Resident Evil 2 (Germany)
+[[savegroup]]
+ids = ["SLES-00974", "SLES-10974"]
+
+# Resident Evil 2 (Italy)
+[[savegroup]]
+ids = ["SLES-00975", "SLES-10975"]
+
+# Resident Evil 2 (Spain)
+[[savegroup]]
+ids = ["SLES-00976", "SLES-10976"]
+
+# Resident Evil 2 (USA)
+[[savegroup]]
+ids = ["SLUS-00421", "SLUS-00592"]
+
+# Resident Evil 2 - Dual Shock Ver. (USA)
+[[savegroup]]
+ids = ["SLUS-00748", "SLUS-00756"]
+
+# Return to Zork (Japan)
+[[savegroup]]
+ids = ["SLPS-00192", "SLPS-00193"]
+
+# Ridegear Guybrave II (Japan)
+[[savegroup]]
+ids = ["SLPS-01643", "SLPS-01644"]
+
+# Rival Schools - United by Fate (Europe)
+[[savegroup]]
+ids = ["SLES-01436", "SLES-11436"]
+
+# Rival Schools - United by Fate (USA)
+[[savegroup]]
+ids = ["SLUS-00681", "SLUS-00771"]
+
+# Riven - The Sequel to Myst (Europe)
+[[savegroup]]
+ids = ["SLES-00963", "SLES-10963", "SLES-20963", "SLES-30963", "SLES-40963"]
+
+# Riven - The Sequel to Myst (France)
+[[savegroup]]
+ids = ["SLES-01099", "SLES-11099", "SLES-21099", "SLES-31099", "SLES-41099"]
+
+# Riven - The Sequel to Myst (Germany)
+[[savegroup]]
+ids = ["SLES-01100", "SLES-11100", "SLES-21100", "SLES-31100", "SLES-41100"]
+
+# Riven - The Sequel to Myst (Japan)
+[[savegroup]]
+ids = ["SLPS-01180", "SLPS-01181", "SLPS-01182", "SLPS-01183", "SLPS-01184"]
+
+# Riven - The Sequel to Myst (USA)
+[[savegroup]]
+ids = ["SLUS-00535", "SLUS-00563", "SLUS-00564", "SLUS-00565", "SLUS-00580"]
+
+# Romance wa Tsurugi no Kagayaki II - Gin no Niji o Sagashite (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPM-87111", "SLPM-87112"]
+
+# SD Gundam - GGeneration-0 (Japan)
+[[savegroup]]
+ids = ["SLPS-02200", "SLPS-02201"]
+
+# SD Gundam - GGeneration-0 (Japan) (Rev 1)
+[[savegroup]]
+ids = ["SLPS-03206", "SLPS-03207"]
+
+# SD Gundam - GGeneration-F (Japan)
+[[savegroup]]
+ids = ["SLPS-02900", "SLPS-02901", "SLPS-02902", "SLPS-02915", "SLPS-02903"]
+
+# SD Gundam - GGeneration-F (Japan) (Tokubetsu-ban)
+[[savegroup]]
+ids = ["SLPM-84004", "SLPM-84005", "SLPM-84006", "SLPM-84007"]
+
+# Saraba Uchuu Senkan Yamato - Ai no Senshi-tachi (Japan)
+[[savegroup]]
+ids = ["SLPS-02761", "SLPS-02762", "SLPS-02763"]
+
+# Serial Experiments Lain (Japan)
+[[savegroup]]
+ids = ["SLPS-01603", "SLPS-01604"]
+
+# Shadow Madness (Europe)
+[[savegroup]]
+ids = ["SCES-02099", "SCES-12099"]
+
+# Shadow Madness (France)
+[[savegroup]]
+ids = ["SCES-02100", "SCES-12100"]
+
+# Shadow Madness (Germany)
+[[savegroup]]
+ids = ["SCES-02101", "SCES-12101"]
+
+# Shadow Madness (Italy)
+[[savegroup]]
+ids = ["SCES-02102", "SCES-12102"]
+
+# Shadow Madness (Spain)
+[[savegroup]]
+ids = ["SCES-02103", "SCES-12103"]
+
+# Shadow Madness (USA)
+[[savegroup]]
+ids = ["SLUS-00468", "SLUS-00718"]
+
+# Shin Seiki Evangelion - Koutetsu no Girlfriend (Japan)
+[[savegroup]]
+ids = ["SLPS-01377", "SLPS-01378"]
+
+# Shin Seiki GPX Cyber Formula - Aratanaru Chousensha (Japan)
+[[savegroup]]
+ids = ["SLPS-01958", "SLPS-01959"]
+
+# Shiritsu Justice Gakuen - Legion of Heroes (Japan)
+[[savegroup]]
+ids = ["SLPS-01240", "SLPS-01241"]
+
+# Shockwave Assault (Europe)
+[[savegroup]]
+ids = ["SLES-00071", "SLES-10071"]
+
+# Shockwave Assault (USA)
+[[savegroup]]
+ids = ["SLUS-00028", "SLUS-00137"]
+
+# Shuukan Gallop - Blood Master (Japan)
+[[savegroup]]
+ids = ["SLPS-02401", "SLPS-02402"]
+
+# Sister Princess (Japan)
+[[savegroup]]
+ids = ["SLPS-03156", "SLPS-03157"]
+
+# Sister Princess (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPS-03154", "SLPS-03155"]
+
+# Sister Princess 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-03523", "SLPS-03524"]
+
+# Sister Princess 2 (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPS-03521", "SLPS-03522"]
+
+# Sister Princess 2 - Premium Fan Disc (Japan)
+[[savegroup]]
+ids = ["SLPS-03556", "SLPS-03557"]
+
+# Sonata (Japan)
+[[savegroup]]
+ids = ["SLPS-01843", "SLPS-01844"]
+
+# Sotsugyou M - Seito Kaichou no Karei naru Inbou (Japan)
+[[savegroup]]
+ids = ["SLPS-01444", "SLPS-01445"]
+
+# Sougaku Toshi Osaka (Japan)
+[[savegroup]]
+ids = ["SLPS-01722", "SLPS-01723"]
+
+# Soukaigi (Japan)
+[[savegroup]]
+ids = ["SLPS-01291", "SLPS-01292", "SLPS-01293"]
+
+# Soukuu no Tsubasa - Gotha World (Japan)
+[[savegroup]]
+ids = ["SLPS-01041", "SLPS-01042"]
+
+# Sound Novel Evolution 3 - Machi - Unmei no Kousaten (Japan)
+[[savegroup]]
+ids = ["SLPS-01845", "SLPS-01846"]
+
+# Southern All Stars - Space MOSA Space Museum of Southern Art (Japan)
+[[savegroup]]
+ids = ["SLPM-86408", "SLPM-86409", "SLPM-86410"]
+
+# Star Bowling DX, The (Japan)
+[[savegroup]]
+ids = ["SLPS-01196", "SLPS-01197", "SLPS-01198", "SLPS-01199"]
+
+# Star Ocean - The Second Story (Europe)
+[[savegroup]]
+ids = ["SCES-02159", "SCES-12159"]
+
+# Star Ocean - The Second Story (France)
+[[savegroup]]
+ids = ["SCES-02160", "SCES-12160"]
+
+# Star Ocean - The Second Story (Germany)
+[[savegroup]]
+ids = ["SCES-02161", "SCES-12161"]
+
+# Star Ocean - The Second Story (Japan)
+[[savegroup]]
+ids = ["SLPM-86105", "SLPM-86106"]
+
+# Star Ocean - The Second Story (Japan) (Rev 1)
+[[savegroup]]
+ids = ["SLPM-87357", "SLPM-87358"]
+
+# Star Ocean - The Second Story (USA)
+[[savegroup]]
+ids = ["SCUS-94421", "SCUS-94422"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (Europe)
+[[savegroup]]
+ids = ["SLES-00654", "SLES-10654"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (France)
+[[savegroup]]
+ids = ["SLES-00656", "SLES-10656"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (Germany)
+[[savegroup]]
+ids = ["SLES-00584", "SLES-10584"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (Italy)
+[[savegroup]]
+ids = ["SLES-00643", "SLES-10643"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (Japan)
+[[savegroup]]
+ids = ["SLPS-00638", "SLPS-00639"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (Spain)
+[[savegroup]]
+ids = ["SLES-00644", "SLES-10644"]
+
+# Star Wars - Rebel Assault II - The Hidden Empire (USA)
+[[savegroup]]
+ids = ["SLUS-00381", "SLUS-00386"]
+
+# Street Fighter Collection (Europe)
+[[savegroup]]
+ids = ["SLES-00998", "SLES-10998"]
+
+# Street Fighter Collection (Japan)
+[[savegroup]]
+ids = ["SLPS-00800", "SLPS-00801"]
+
+# Street Fighter Collection (USA)
+[[savegroup]]
+ids = ["SLUS-00423", "SLUS-00584"]
+
+# Street Fighter II Movie (Japan)
+[[savegroup]]
+ids = ["SLPS-00080", "SLPS-00081"]
+
+# Strider Hiryuu 1 & 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-02620", "SLPS-02621"]
+
+# Suchie-Pai Adventure - Doki Doki Nightmare (Japan)
+[[savegroup]]
+ids = ["SLPS-01264", "SLPS-01265"]
+
+# Summon Night 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-03237", "SLPS-03238"]
+
+# Super Adventure Rockman (Japan)
+[[savegroup]]
+ids = ["SLPS-01051", "SLPS-01052", "SLPS-01053"]
+
+# Super Robot Taisen - Complete Box (Japan)
+[[savegroup]]
+ids = ["SLPS-02070", "SLPS-02071"]
+
+# Syphon Filter 2 (Europe)
+[[savegroup]]
+ids = ["SCES-02285", "SCES-12285"]
+
+# Syphon Filter 2 (France)
+[[savegroup]]
+ids = ["SCES-02286", "SCES-12286"]
+
+# Syphon Filter 2 (Germany)
+[[savegroup]]
+ids = ["SCES-02287", "SCES-12287"]
+
+# Syphon Filter 2 (Italy)
+[[savegroup]]
+ids = ["SCES-02288", "SCES-12288"]
+
+# Syphon Filter 2 (USA)
+[[savegroup]]
+ids = ["SCUS-94451", "SCUS-94492", "PSRM-017100"]
+
+# Syphon Filter 2 - Conspiracion Mortal (Spain)
+[[savegroup]]
+ids = ["SCES-02289", "SCES-12289"]
+
+# Taiho Shichau zo - You're Under Arrest (Japan)
+[[savegroup]]
+ids = ["SLPM-86782", "SLPM-86783"]
+
+# Taiho Shichau zo - You're Under Arrest (Japan) (Shokai Genteiban)
+[[savegroup]]
+ids = ["SLPM-86780", "SLPM-86781"]
+
+# Tales of Destiny II (USA)
+[[savegroup]]
+ids = ["SLUS-01355", "SLUS-01367", "SLUS-01368"]
+
+# Tales of Eternia (Japan)
+[[savegroup]]
+ids = ["SLPS-03050", "SLPS-03051", "SLPS-03052"]
+
+# Tales of Eternia (Japan) (Premium Box)
+[[savegroup]]
+ids = ["SLPS-03045", "SLPS-03046", "SLPS-03047"]
+
+# Tenchi Muyou! Toukou Muyou (Japan)
+[[savegroup]]
+ids = ["SLPS-00451", "SLPS-00452"]
+
+# Thousand Arms (Japan)
+[[savegroup]]
+ids = ["SLPS-01780", "SLPS-01781"]
+
+# Thousand Arms (USA)
+[[savegroup]]
+ids = ["SLUS-00845", "SLUS-00858"]
+
+# Thunder Storm & Road Blaster (Japan)
+[[savegroup]]
+ids = ["SLPS-00094", "SLPS-00095"]
+
+# Time Gal & Ninja Hayate (Japan) (En,Ja)
+[[savegroup]]
+ids = ["SLPS-00383", "SLPS-00384"]
+
+# ToHeart (Japan)
+[[savegroup]]
+ids = ["SLPS-01919", "SLPS-01920"]
+
+# Tokimeki Memorial 2 (Japan)
+[[savegroup]]
+ids = ["SLPM-86355", "SLPM-86356", "SLPM-86357", "SLPM-86358", "SLPM-86359", "SLPM-86350", "SLPM-86351", "SLPM-86352", "SLPM-86353", "SLPM-86354", "SCPS-45451", "SCPS-45452", "SCPS-45453", "SCPS-45454", "SCPS-45455", "SLPM-80527", "SLPM-80544", "SLPM-80550"]
+
+# Tokimeki Memorial 2 Substories - Dancing Summer Vacation (Japan)
+[[savegroup]]
+ids = ["SLPM-86549", "SLPM-86550"]
+
+# Tokimeki Memorial 2 Substories - Leaping School Festival (Japan)
+[[savegroup]]
+ids = ["SLPM-86775", "SLPM-86776"]
+
+# Tokimeki Memorial 2 Substories - Memories Ringing On (Japan)
+[[savegroup]]
+ids = ["SLPM-86881", "SLPM-86882"]
+
+# Tokimeki Memorial Drama Series Vol. 2 - Irodori no Love Song (Japan)
+[[savegroup]]
+ids = ["SLPM-86070", "SLPM-86071"]
+
+# Tokimeki Memorial Drama Series Vol. 3 - Tabidachi no Uta (Japan)
+[[savegroup]]
+ids = ["SLPM-86224", "SLPM-86225"]
+
+# Tokyo Majin Gakuen - Gehouchou (Japan)
+[[savegroup]]
+ids = ["SLPS-03333", "SLPS-03334", "SLPS-03335"]
+
+# Tokyo Majin Gakuen - Gehouchou (Japan) (Genteiban)
+[[savegroup]]
+ids = ["SLPS-03330", "SLPS-03331", "SLPS-03332"]
+
+# Tokyo Majin Gakuen - Kenpuuchou (Japan)
+[[savegroup]]
+ids = ["SLPS-01432", "SLPS-01433"]
+
+# Tokyo Shadow (Japan)
+[[savegroup]]
+ids = ["SLPS-00285", "SLPS-00286", "SLPS-00287"]
+
+# Tokyo Wakusei Planetokio (Japan)
+[[savegroup]]
+ids = ["SLPS-02182", "SLPS-02183", "SLPS-02184"]
+
+# Tomb Raider III - Adventures of Lara Croft (Asia)
+[[savegroup]]
+ids = ["SCPS-45385", "SCPS-45386"]
+
+# Tomb Raider III - Adventures of Lara Croft (Japan)
+[[savegroup]]
+ids = ["SLPM-86196", "SLPM-86197"]
+
+# Tomoyasu Hotei - Stolen Song (Japan)
+[[savegroup]]
+ids = ["SCPS-18009", "SCPS-18010"]
+
+# Tomoyasu Hotei - Stolen Song (Japan) (VPick Included)
+[[savegroup]]
+ids = ["SCPS-18007", "SCPS-18008"]
+
+# True Love Story 2 (Japan)
+[[savegroup]]
+ids = ["SLPS-01743", "SLPS-01744", "SLPS-01745"]
+
+# Uchuu no Rendezvous - Rama (Japan)
+[[savegroup]]
+ids = ["SLPS-00826", "SLPS-00827"]
+
+# Unsolved, The - Hyper Science Adventure (Japan)
+[[savegroup]]
+ids = ["SLPS-00846", "SLPS-00847", "SLPS-00848"]
+
+# Valkyrie Profile (Japan)
+[[savegroup]]
+ids = ["SLPM-86379", "SLPM-86380"]
+
+# Valkyrie Profile (Japan) (Deluxe Pack)
+[[savegroup]]
+ids = ["SLPM-86371", "SLPM-86372"]
+
+# Valkyrie Profile (USA)
+[[savegroup]]
+ids = ["SLUS-01156", "SLUS-01179"]
+
+# Voice Idol Collection - Pool Bar Story (Japan)
+[[savegroup]]
+ids = ["SLPS-00775", "SLPS-00776"]
+
+# Voice Paradice Excella (Japan)
+[[savegroup]]
+ids = ["SLPS-00590", "SLPS-00591"]
+
+# Wangan Trial (Japan)
+[[savegroup]]
+ids = ["SLPS-01213", "SLPS-01214"]
+
+# Wild Arms - 2nd Ignition (Japan)
+[[savegroup]]
+ids = ["SCPS-10089", "SCPS-10090"]
+
+# Wild Arms - 2nd Ignition (Japan) (Rev 1)
+[[savegroup]]
+ids = ["SCPS-91208", "SCPS-91209"]
+
+# Wild Arms 2 (USA)
+[[savegroup]]
+ids = ["SCUS-94484", "SCUS-94498"]
+
+# Wing Commander III - Heart of the Tiger (Europe)
+[[savegroup]]
+ids = ["SLES-00074", "SLES-10074", "SLES-20074", "SLES-30074"]
+
+# Wing Commander III - Heart of the Tiger (France)
+[[savegroup]]
+ids = ["SLES-00104", "SLES-10104", "SLES-20104", "SLES-30104"]
+
+# Wing Commander III - Heart of the Tiger (Germany)
+[[savegroup]]
+ids = ["SLES-00105", "SLES-10105", "SLES-20105", "SLES-30105"]
+
+# Wing Commander III - Heart of the Tiger (Japan)
+[[savegroup]]
+ids = ["SLPS-00477", "SLPS-00478", "SLPS-00479", "SLPS-00480"]
+
+# Wing Commander III - Heart of the Tiger (USA)
+[[savegroup]]
+ids = ["SLUS-00019", "SLUS-00134", "SLUS-00135", "SLUS-00136"]
+
+# Wing Commander IV - The Price of Freedom (Europe)
+[[savegroup]]
+ids = ["SLES-00659", "SLES-10659", "SLES-20659", "SLES-30659"]
+
+# Wing Commander IV - The Price of Freedom (France)
+[[savegroup]]
+ids = ["SLES-00660", "SLES-10660", "SLES-20660", "SLES-30660"]
+
+# Wing Commander IV - The Price of Freedom (Germany)
+[[savegroup]]
+ids = ["SLES-00661", "SLES-10661", "SLES-20661", "SLES-30661"]
+
+# Wing Commander IV - The Price of Freedom (USA)
+[[savegroup]]
+ids = ["SLUS-00270", "SLUS-00271", "SLUS-00272", "SLUS-00273"]
+
+# X-Files, The (Europe)
+[[savegroup]]
+ids = ["SCES-01565", "SCES-11565", "SCES-21565", "SCES-31565"]
+
+# X-Files, The (France)
+[[savegroup]]
+ids = ["SCES-01566", "SCES-11566", "SCES-21566", "SCES-31566"]
+
+# X-Files, The (Germany)
+[[savegroup]]
+ids = ["SCES-01567", "SCES-11567", "SCES-21567", "SCES-31567"]
+
+# X-Files, The (Italy)
+[[savegroup]]
+ids = ["SCES-01568", "SCES-11568", "SCES-21568", "SCES-31568"]
+
+# X-Files, The (Spain)
+[[savegroup]]
+ids = ["SCES-01569", "SCES-11569", "SCES-21569", "SCES-31569"]
+
+# X-Files, The (USA)
+[[savegroup]]
+ids = ["SLUS-00915", "SLUS-00949", "SLUS-00950", "SLUS-00951"]
+
+# Xenogears (Japan)
+[[savegroup]]
+ids = ["SLPS-01160", "SLPS-01161"]
+
+# Xenogears (USA)
+[[savegroup]]
+ids = ["SLUS-00664", "SLUS-00669"]
+
+# Yamagata Digital Museum (Japan)
+[[savegroup]]
+ids = ["SLPS-02393", "SLPS-02394", "SLPS-02395", "SLPS-02396"]
+
+# Yarudora Series Vol. 1 - Double Cast (Japan)
+[[savegroup]]
+ids = ["SCPS-10053", "SCPS-10054"]
+
+# Yarudora Series Vol. 2 - Kisetsu o Dakishimete (Japan)
+[[savegroup]]
+ids = ["SCPS-10056", "SCPS-10057"]
+
+# Yarudora Series Vol. 3 - Sampaguita (Japan)
+[[savegroup]]
+ids = ["SCPS-10067", "SCPS-10068"]
+
+# Yarudora Series Vol. 4 - Yukiwari no Hana (Japan)
+[[savegroup]]
+ids = ["SCPS-10069", "SCPS-10070"]
+
+# You Don't Know Jack (USA)
+[[savegroup]]
+ids = ["SLUS-00716", "SLUS-00762"]
+
+# Zen Nihon GT Senshuken Max Rev. (Japan)
+[[savegroup]]
+ids = ["SLPS-00715", "SLPS-00716"]
+
+# Zen Super Robot Taisen Denshi Daihyakka (Japan)
+[[savegroup]]
+ids = ["SLPS-01657", "SLPS-01658"]
+
+# Zoku Hatsukoi Monogatari - Shuugaku Ryokou (Japan)
+[[savegroup]]
+ids = ["SLPS-01326", "SLPS-01327", "SLPS-01328", "SLPS-01329"]
+
+# Zoku Mikagura Shoujo Tanteidan - Kanketsuhen (Japan)
+[[savegroup]]
+ids = ["SLPS-02266", "SLPS-02267", "SLPS-02268", "SLPS-02269"]
