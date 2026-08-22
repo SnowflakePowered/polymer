@@ -6,6 +6,9 @@ use image::RgbaImage;
 use crate::BoxFuture;
 use crate::error::Error;
 use crate::storage::ChangeSignal;
+pub use id::SaveDepotId;
+
+pub mod id;
 
 pub struct SaveDescriptor {
     pub id: SaveDepotId,
@@ -15,11 +18,6 @@ pub struct SaveDescriptor {
     pub timestamp: jiff::Timestamp,
     pub root_path: String,
 }
-
-/// A unique ID for the save. This ID only has meaning
-/// relative to the NAND it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SaveDepotId(pub u64);
 
 pub struct SaveDepot {
     pub save_descriptor: SaveDescriptor,

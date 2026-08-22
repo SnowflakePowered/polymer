@@ -22,9 +22,11 @@ use self::psu::Save;
 use self::raw::RawMemoryStorage;
 #[cfg(test)]
 use crate::impls::RawMemoryCardImage;
+use crate::impls::SonyProductCode;
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
+use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, MemoryCard,
     MemoryCardView, Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead,
@@ -123,10 +125,9 @@ impl SaveDataHandle {
 
     fn depot_id(&self) -> SaveDepotId {
         let product_code = self.name.get(..PRODUCT_CODE_SIZE).unwrap_or(&self.name);
-        let digest = blake3::hash(product_code);
-        SaveDepotId(u64::from_le_bytes(
-            digest.as_bytes()[..8].try_into().expect("eight bytes"),
-        ))
+        SonyProductCode::new(product_code)
+            .expect("a PlayStation 2 save has a product-code native name")
+            .into()
     }
 
     fn depot_id_from_serial(serial: &str) -> SaveDepotId {
@@ -145,10 +146,9 @@ impl SaveDataHandle {
         let mut product_code = [0; PRODUCT_CODE_SIZE];
         product_code[..key.len()].copy_from_slice(key);
         product_code[key.len()..].copy_from_slice(serial.as_bytes());
-        let digest = blake3::hash(&product_code);
-        SaveDepotId(u64::from_le_bytes(
-            digest.as_bytes()[..8].try_into().expect("eight bytes"),
-        ))
+        SonyProductCode::new(&product_code)
+            .expect("a package serial forms a product code")
+            .into()
     }
 }
 
@@ -264,10 +264,22 @@ impl Playstation2MemoryCard {
         Ok(save)
     }
 
-    fn projection_order(&self, primary: &[SaveDepotId]) -> Vec<SaveDataHandle> {
-        let primary = primary.iter().map(|id| id.0).collect::<HashSet<_>>();
+    fn projection_order(
+        &self,
+        primary: &HashSet<u64>,
+        grouped: &HashSet<u64>,
+    ) -> Vec<SaveDataHandle> {
         let mut saves = self.saves();
-        saves.sort_by_key(|save| !primary.contains(&save.depot_id().0));
+        saves.sort_by_key(|save| {
+            let id = save.depot_id().0;
+            if primary.contains(&id) {
+                0
+            } else if grouped.contains(&id) {
+                1
+            } else {
+                2
+            }
+        });
         saves
     }
 
@@ -277,18 +289,24 @@ impl Playstation2MemoryCard {
         capacity_blocks: u32,
     ) -> Result<Vec<Save<'static>>, Error> {
         let primary_ids = primary.iter().map(|id| id.0).collect::<HashSet<_>>();
+        let grouped_ids = PS2_SAVE_GROUPS.members(primary);
+        let target_blocks = capacity_blocks * TARGET_CAPACITY_PERCENT / 100;
         let mut projected = Vec::<Save<'static>>::new();
-        for handle in self.projection_order(primary) {
+        for handle in self.projection_order(&primary_ids, &grouped_ids) {
             let save = self.read_save(&handle)?;
+            let id = handle.depot_id().0;
+            let preferred = primary_ids.contains(&id) || grouped_ids.contains(&id);
             projected.push(save);
             if !raw::card::MemoryCard::fits(capacity_blocks, &projected)? {
                 projected.pop();
-                if primary_ids.contains(&handle.depot_id().0) {
+                if primary_ids.contains(&id) {
                     return Err(Error::Unsupported(format!(
                         "primary PlayStation 2 save `{}` does not fit the requested card capacity",
                         handle.display_name()
                     )));
                 }
+            } else if !preferred && !raw::card::MemoryCard::fits(target_blocks, &projected)? {
+                projected.pop();
             }
         }
         Ok(projected)
@@ -613,6 +631,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overlapping_save_groups_are_unioned() {
+        let primary = SaveDataHandle::depot_id_from_serial("SLUS-20249");
+        let grouped = PS2_SAVE_GROUPS.members(&[primary]);
+        for serial in ["SLUS-20014", "SLUS-20435", "SLUS-20644"] {
+            assert!(grouped.contains(&SaveDataHandle::depot_id_from_serial(serial).0));
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_save_group_takes_precedence_over_free_space_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let card = Playstation2MemoryCard::new_empty(storage, Uuid::now_v7(), None)
+            .await
+            .unwrap();
+        let serials = ["SLUS-20267", "SLUS-20562", "SLUS-20563", "SLUS-20564"];
+        for (index, serial) in serials.iter().enumerate() {
+            let name = format!("BA{serial} GROUP{index}");
+            let payload = vec![index as u8; 1_700_000];
+            card.write_save(
+                &Save::from_files(&name, &[], [("data.bin", &[][..], payload.as_slice())]).unwrap(),
+            )
+            .unwrap();
+        }
+        card.write_save(
+            &Save::from_files(
+                "BASLUS-99999 EXTRA",
+                &[],
+                [("data.bin", &[][..], &b"unrelated"[..])],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let primary = SaveDataHandle::depot_id_from_serial(serials[0]);
+        let grouped = PS2_SAVE_GROUPS.members(&[primary]);
+        assert!(
+            serials[1..]
+                .iter()
+                .all(|serial| grouped.contains(&SaveDataHandle::depot_id_from_serial(serial).0))
+        );
+        let projected = card.project_saves(&[primary], CAPACITY_BLOCKS).unwrap();
+        assert_eq!(projected.len(), serials.len());
+        assert!(projected.iter().all(|save| save.name().contains("GROUP")));
+    }
+
+    #[test]
     fn save_data_handle_round_trips_native_name_bytes() {
         let ascii = SaveDataHandle::from_name(b"BASLUS-21782Save0").unwrap();
         assert_eq!(ascii.path(), "card/BASLUS-21782Save0.psu");
@@ -637,17 +702,18 @@ mod tests {
             .unwrap()
             .as_bytes()
             .to_vec();
+        let native_name = b"BASLUS-00001\x82\xffA";
         bytes[0x40..0x60].fill(0);
-        bytes[0x40..0x43].copy_from_slice(&[0x82, 0xff, b'A']);
+        bytes[0x40..0x40 + native_name.len()].copy_from_slice(native_name);
         let save = Save::new(bytes).unwrap();
 
         card.write_save(&save).unwrap();
-        assert!(card.exists("card/~82ff41.psu"));
+        assert!(card.exists("card/~4241534c55532d303030303182ff41.psu"));
         assert_eq!(
-            card.read_save(&SaveDataHandle::from_name(&[0x82, 0xff, b'A']).unwrap())
+            card.read_save(&SaveDataHandle::from_name(native_name).unwrap())
                 .unwrap()
                 .name_bytes(),
-            &[0x82, 0xff, b'A']
+            native_name
         );
 
         let raw = card.view(&[], "raw").unwrap();
@@ -659,7 +725,7 @@ mod tests {
             .unwrap();
         let image = raw::card::MemoryCard::new(&image, CAPACITY_BLOCKS).unwrap();
         let saves = image.saves().unwrap();
-        assert_eq!(saves[0].name_bytes(), &[0x82, 0xff, b'A']);
+        assert_eq!(saves[0].name_bytes(), native_name);
     }
 
     fn dirent(name: &str, mode: u32, attributes: u32, second: u8) -> Vec<u8> {
