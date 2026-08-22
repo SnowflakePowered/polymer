@@ -5,7 +5,7 @@
 
 use crate::D3d11CaptureRegion;
 use dashmap::DashMap;
-use std::ffi::c_void;
+use std::{ffi::c_void, mem::size_of};
 use windows::{
     Win32::Graphics::{
         Direct3D11::{
@@ -37,10 +37,11 @@ impl Candidate {
     }
 }
 
-const DISPLAY_CONSTANT_BUFFER_SIZE: usize = 96;
+const MAX_PRESENTATION_CONSTANT_BUFFER_SIZE: usize = 4096;
+const CONSTANT_BUFFER_SLOTS: usize = 14;
 
 struct ConstantBuffer {
-    bytes: [u8; DISPLAY_CONSTANT_BUFFER_SIZE],
+    bytes: Box<[u8]>,
 }
 
 /// Device-scoped state shared by the D3D11 hook contexts.
@@ -57,7 +58,7 @@ impl Tracking {
     /// # Safety
     ///
     /// `context` must be null or point to a live `ID3D11DeviceContext`.
-    pub unsafe fn record_context_draw(&self, context: *mut c_void) {
+    pub unsafe fn record_context_draw(&self, context: *mut c_void, element_count: Option<u32>) {
         let Some(context) = (unsafe { ID3D11DeviceContext::from_raw_borrowed(&context) }) else {
             return;
         };
@@ -77,8 +78,10 @@ impl Tracking {
         let Some(raster_region) = Self::current_region(context) else {
             return;
         };
-        let exact_region = self
-            .constant_buffer_region(context, (target_desc.Width, target_desc.Height))
+        let exact_region = element_count
+            .is_some_and(|count| (3..=6).contains(&count))
+            .then(|| self.constant_buffer_region(context, (target_desc.Width, target_desc.Height)))
+            .flatten()
             .and_then(|region| intersect_regions(region, raster_region));
         let (region, exact) = exact_region.map_or((raster_region, false), |region| (region, true));
         let area = u64::from(region.width) * u64::from(region.height);
@@ -100,9 +103,9 @@ impl Tracking {
     }
 
     /// Retains small constant-buffer uploads which may describe a presentation
-    /// quad. PCSX2 keeps a full-backbuffer viewport and carries the actual game
-    /// rectangle in its 96-byte display constants, so viewport/scissor state
-    /// alone cannot exclude its pillarbox bars.
+    /// quad. Some renderers use a full-backbuffer viewport and carry the actual
+    /// centered content rectangle in shader constants, so viewport/scissor
+    /// state alone cannot exclude letterbox or pillarbox bars.
     ///
     /// # Safety
     ///
@@ -131,18 +134,16 @@ impl Tracking {
         };
         let mut desc = D3D11_BUFFER_DESC::default();
         unsafe { buffer.GetDesc(&mut desc) };
-        if desc.ByteWidth as usize != DISPLAY_CONSTANT_BUFFER_SIZE
+        let byte_width = desc.ByteWidth as usize;
+        if byte_width < size_of::<[f32; 4]>()
+            || byte_width > MAX_PRESENTATION_CONSTANT_BUFFER_SIZE
             || desc.BindFlags & D3D11_BIND_CONSTANT_BUFFER.0 as u32 == 0
         {
             return;
         }
-        let mut bytes = [0; DISPLAY_CONSTANT_BUFFER_SIZE];
+        let mut bytes = vec![0; byte_width].into_boxed_slice();
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                source_data.cast::<u8>(),
-                bytes.as_mut_ptr(),
-                DISPLAY_CONSTANT_BUFFER_SIZE,
-            )
+            std::ptr::copy_nonoverlapping(source_data.cast::<u8>(), bytes.as_mut_ptr(), byte_width)
         };
         self.constant_buffers
             .insert(Self::identity_key(resource), ConstantBuffer { bytes });
@@ -206,12 +207,45 @@ impl Tracking {
         context: &ID3D11DeviceContext,
         target_extent: (u32, u32),
     ) -> Option<D3d11CaptureRegion> {
-        let mut buffers: [Option<ID3D11Buffer>; 1] = [None];
+        let mut best = None;
+        let mut inspect = |buffers: &[Option<ID3D11Buffer>]| {
+            for buffer in buffers.iter().flatten() {
+                let Ok(resource) = buffer.cast::<ID3D11Resource>() else {
+                    continue;
+                };
+                let Some(constants) = self.constant_buffers.get(&Self::identity_key(&resource))
+                else {
+                    continue;
+                };
+                let Some(region) = infer_centered_content_region(&constants.bytes, target_extent)
+                else {
+                    continue;
+                };
+                let area = u64::from(region.width) * u64::from(region.height);
+                if best.is_none_or(|(_, best_area)| area > best_area) {
+                    best = Some((region, area));
+                }
+            }
+        };
+        let mut buffers: [Option<ID3D11Buffer>; CONSTANT_BUFFER_SLOTS] = Default::default();
+        unsafe { context.VSGetConstantBuffers(0, Some(&mut buffers)) };
+        inspect(&buffers);
+        buffers.fill(None);
+        unsafe { context.HSGetConstantBuffers(0, Some(&mut buffers)) };
+        inspect(&buffers);
+        buffers.fill(None);
+        unsafe { context.DSGetConstantBuffers(0, Some(&mut buffers)) };
+        inspect(&buffers);
+        buffers.fill(None);
+        unsafe { context.GSGetConstantBuffers(0, Some(&mut buffers)) };
+        inspect(&buffers);
+        buffers.fill(None);
         unsafe { context.PSGetConstantBuffers(0, Some(&mut buffers)) };
-        let buffer = buffers[0].as_ref()?;
-        let resource: ID3D11Resource = buffer.cast().ok()?;
-        let constants = self.constant_buffers.get(&Self::identity_key(&resource))?;
-        display_constant_region(&constants.bytes, target_extent)
+        inspect(&buffers);
+        buffers.fill(None);
+        unsafe { context.CSGetConstantBuffers(0, Some(&mut buffers)) };
+        inspect(&buffers);
+        best.map(|(region, _)| region)
     }
 
     fn identity_key(resource: &ID3D11Resource) -> usize {
@@ -245,55 +279,78 @@ fn intersect_regions(
     })
 }
 
-fn display_constant_region(
-    bytes: &[u8; DISPLAY_CONSTANT_BUFFER_SIZE],
+fn infer_centered_content_region(
+    bytes: &[u8],
     target_extent: (u32, u32),
 ) -> Option<D3d11CaptureRegion> {
-    let read = |offset: usize| {
-        let raw: [u8; 4] = bytes.get(offset..offset + 4)?.try_into().ok()?;
-        let value = f32::from_ne_bytes(raw);
-        value.is_finite().then_some(value)
-    };
-    // PCSX2's DisplayConstantBuffer stores TargetRect at +16, TargetSize at
-    // +40, TargetResolution at +48, and its reciprocal at +56. Check all four
-    // fields so an unrelated 96-byte constant buffer cannot be mistaken for a
-    // presentation rectangle.
-    let rect = [read(16)?, read(20)?, read(24)?, read(28)?];
-    let size = [read(40)?, read(44)?];
-    let resolution = [read(48)?, read(52)?];
-    let reciprocal = [read(56)?, read(60)?];
-    let expected_width = target_extent.0 as f32;
-    let expected_height = target_extent.1 as f32;
-    let close = |left: f32, right: f32, tolerance: f32| (left - right).abs() <= tolerance;
+    let mut best = None;
+    for offset in (0..=bytes.len().saturating_sub(size_of::<[f32; 4]>())).step_by(4) {
+        let mut values = [0.0; 4];
+        for (index, value) in values.iter_mut().enumerate() {
+            let start = offset + index * size_of::<f32>();
+            let raw: [u8; 4] = bytes[start..start + 4].try_into().ok()?;
+            *value = f32::from_ne_bytes(raw);
+        }
+        for edges in [
+            values,
+            [
+                values[0],
+                values[1],
+                values[0] + values[2],
+                values[1] + values[3],
+            ],
+        ] {
+            let Some(region) = centered_bar_region(edges, target_extent) else {
+                continue;
+            };
+            let area = u64::from(region.width) * u64::from(region.height);
+            if best.is_none_or(|(_, best_area)| area > best_area) {
+                best = Some((region, area));
+            }
+        }
+    }
+    best.map(|(region, _)| region)
+}
+
+fn centered_bar_region(edges: [f32; 4], target_extent: (u32, u32)) -> Option<D3d11CaptureRegion> {
     if target_extent.0 == 0
         || target_extent.1 == 0
-        || !close(resolution[0], expected_width, 0.5)
-        || !close(resolution[1], expected_height, 0.5)
-        || !close(reciprocal[0], expected_width.recip(), 0.000_01)
-        || !close(reciprocal[1], expected_height.recip(), 0.000_01)
-        || !close(size[0], rect[2] - rect[0], 0.25)
-        || !close(size[1], rect[3] - rect[1], 0.25)
+        || edges.iter().any(|value| !value.is_finite())
+        || edges
+            .iter()
+            .any(|value| (value.round() - value).abs() > 0.25)
     {
         return None;
     }
-    let left = rect[0].round() as i64;
-    let top = rect[1].round() as i64;
-    let right = rect[2].round() as i64;
-    let bottom = rect[3].round() as i64;
+    let [left, top, right, bottom] = edges.map(|value| value.round() as i64);
+    let target_width = i64::from(target_extent.0);
+    let target_height = i64::from(target_extent.1);
     if left < 0
         || top < 0
-        || right > i64::from(target_extent.0)
-        || bottom > i64::from(target_extent.1)
+        || right > target_width
+        || bottom > target_height
         || right <= left
         || bottom <= top
     {
         return None;
     }
-    Some(D3d11CaptureRegion {
+    let width = right - left;
+    let height = bottom - top;
+    let fills_width = left == 0 && right == target_width;
+    let fills_height = top == 0 && bottom == target_height;
+    let centered_pillarbox = fills_height
+        && !fills_width
+        && (left - (target_width - right)).abs() <= 1
+        && width >= target_width / 4;
+    let centered_letterbox = fills_width
+        && !fills_height
+        && (top - (target_height - bottom)).abs() <= 1
+        && height >= target_height / 4;
+    (centered_pillarbox || centered_letterbox).then_some(D3d11CaptureRegion {
         x: left as u32,
         y: top as u32,
-        width: (right - left) as u32,
-        height: (bottom - top) as u32,
+        width: width as u32,
+        height: height as u32,
     })
 }
 
@@ -305,25 +362,19 @@ mod tests {
         bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
     }
 
-    fn display_constants(rect: [f32; 4], extent: (u32, u32)) -> [u8; 96] {
-        let mut bytes = [0; 96];
+    fn constants_with(rect: [f32; 4], offset: usize) -> [u8; 128] {
+        let mut bytes = [0; 128];
         for (index, value) in rect.into_iter().enumerate() {
-            write_f32(&mut bytes, 16 + index * 4, value);
+            write_f32(&mut bytes, offset + index * 4, value);
         }
-        write_f32(&mut bytes, 40, rect[2] - rect[0]);
-        write_f32(&mut bytes, 44, rect[3] - rect[1]);
-        write_f32(&mut bytes, 48, extent.0 as f32);
-        write_f32(&mut bytes, 52, extent.1 as f32);
-        write_f32(&mut bytes, 56, (extent.0 as f32).recip());
-        write_f32(&mut bytes, 60, (extent.1 as f32).recip());
         bytes
     }
 
     #[test]
-    fn pcsx2_display_constants_recover_a_pillarboxed_rectangle() {
-        let constants = display_constants([160.0, 0.0, 1760.0, 900.0], (1920, 900));
+    fn infers_centered_pillarbox_rectangle_at_an_arbitrary_offset() {
+        let constants = constants_with([160.0, 0.0, 1760.0, 900.0], 28);
         assert_eq!(
-            display_constant_region(&constants, (1920, 900)),
+            infer_centered_content_region(&constants, (1920, 900)),
             Some(D3d11CaptureRegion {
                 x: 160,
                 y: 0,
@@ -334,10 +385,31 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_constant_data_is_not_a_presentation_rectangle() {
-        let mut constants = display_constants([160.0, 0.0, 1760.0, 900.0], (1920, 900));
-        write_f32(&mut constants, 56, 1.0);
-        assert_eq!(display_constant_region(&constants, (1920, 900)), None);
+    fn infers_centered_letterbox_rectangle_encoded_as_xywh() {
+        let constants = constants_with([0.0, 90.0, 1920.0, 720.0], 44);
+        assert_eq!(
+            infer_centered_content_region(&constants, (1920, 900)),
+            Some(D3d11CaptureRegion {
+                x: 0,
+                y: 90,
+                width: 1920,
+                height: 720,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_off_center_and_full_surface_rectangles() {
+        let off_center = constants_with([100.0, 0.0, 1700.0, 900.0], 12);
+        let full_surface = constants_with([0.0, 0.0, 1920.0, 900.0], 64);
+        assert_eq!(
+            infer_centered_content_region(&off_center, (1920, 900)),
+            None
+        );
+        assert_eq!(
+            infer_centered_content_region(&full_surface, (1920, 900)),
+            None
+        );
     }
 
     #[test]

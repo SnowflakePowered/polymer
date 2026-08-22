@@ -344,12 +344,12 @@ mod tests {
         }
         .expect("D3D11 did not create the unrelated shader resource view");
         let unrelated_view = unrelated_view.expect("D3D11 returned a null shader resource view");
-        // PCSX2 presents through a full-backbuffer viewport and puts the game
-        // quad's actual pixel rectangle in a 96-byte display constant buffer.
-        // Reproduce that shape so this test covers the UpdateSubresource hook
-        // as well as the present-time crop.
+        // Some presentation passes keep a full-backbuffer viewport and put the
+        // centered content rectangle in shader constants. Use an arbitrary
+        // buffer size, offset, stage, and slot so this exercises the generic
+        // inference rather than an application's constant-buffer layout.
         let constant_desc = D3D11_BUFFER_DESC {
-            ByteWidth: 96,
+            ByteWidth: 128,
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
             ..Default::default()
@@ -358,11 +358,8 @@ mod tests {
         unsafe { device.CreateBuffer(&raw const constant_desc, None, Some(&mut constant_buffer)) }
             .expect("D3D11 did not create the presentation constant buffer");
         let constant_buffer = constant_buffer.expect("D3D11 returned a null constant buffer");
-        let mut constants = [0.0f32; 24];
-        constants[4..8].copy_from_slice(&[8.0, 0.0, 56.0, 64.0]);
-        constants[10..12].copy_from_slice(&[48.0, 64.0]);
-        constants[12..14].copy_from_slice(&[64.0, 64.0]);
-        constants[14..16].copy_from_slice(&[1.0 / 64.0, 1.0 / 64.0]);
+        let mut constants = [0.0f32; 32];
+        constants[7..11].copy_from_slice(&[8.0, 0.0, 56.0, 64.0]);
         unsafe {
             context_ref.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
             // Bound shader inputs are not sufficient evidence that a resource
@@ -374,7 +371,7 @@ mod tests {
                 MaxDepth: 1.0,
                 ..Default::default()
             }]));
-            context_ref.PSSetConstantBuffers(0, Some(&[Some(constant_buffer.clone())]));
+            context_ref.VSSetConstantBuffers(3, Some(&[Some(constant_buffer.clone())]));
             context_ref.UpdateSubresource(
                 &constant_buffer,
                 0,
@@ -385,7 +382,7 @@ mod tests {
             );
             vtable::device_tracking(device.as_raw())
                 .expect("D3D11 context was not associated with its tracker")
-                .record_context_draw(context);
+                .record_context_draw(context, Some(4));
             // The test intentionally omits shaders; restore deterministic
             // pixels after recording while retaining the tracking data.
             context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]);

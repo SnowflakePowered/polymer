@@ -43,11 +43,15 @@ snowglass_hook::impl_com_hook! {
         unsafe extern "system" fn context_release(this: *mut c_void) -> u32;
 
         #[base = ID3D11DeviceContext::Draw]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(this, Some(vertex_count))
+        })]
         unsafe extern "system" fn draw(this: *mut c_void, vertex_count: u32, start_vertex: u32);
 
         #[base = ID3D11DeviceContext::DrawIndexed]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(this, Some(index_count))
+        })]
         unsafe extern "system" fn draw_indexed(
             this: *mut c_void,
             index_count: u32,
@@ -56,7 +60,12 @@ snowglass_hook::impl_com_hook! {
         );
 
         #[base = ID3D11DeviceContext::DrawIndexedInstanced]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(
+                this,
+                (instance_count == 1).then_some(index_count_per_instance),
+            )
+        })]
         unsafe extern "system" fn draw_indexed_instanced(
             this: *mut c_void,
             index_count_per_instance: u32,
@@ -67,7 +76,12 @@ snowglass_hook::impl_com_hook! {
         );
 
         #[base = ID3D11DeviceContext::DrawInstanced]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(
+                this,
+                (instance_count == 1).then_some(vertex_count_per_instance),
+            )
+        })]
         unsafe extern "system" fn draw_instanced(
             this: *mut c_void,
             vertex_count_per_instance: u32,
@@ -77,11 +91,15 @@ snowglass_hook::impl_com_hook! {
         );
 
         #[base = ID3D11DeviceContext::DrawAuto]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(this, None)
+        })]
         unsafe extern "system" fn draw_auto(this: *mut c_void);
 
         #[base = ID3D11DeviceContext::DrawIndexedInstancedIndirect]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(this, None)
+        })]
         unsafe extern "system" fn draw_indexed_instanced_indirect(
             this: *mut c_void,
             argument_buffer: *mut c_void,
@@ -89,7 +107,9 @@ snowglass_hook::impl_com_hook! {
         );
 
         #[base = ID3D11DeviceContext::DrawInstancedIndirect]
-        #[postfix(|_result, context| unsafe { context.state.tracking.record_context_draw(this) })]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.record_context_draw(this, None)
+        })]
         unsafe extern "system" fn draw_instanced_indirect(
             this: *mut c_void,
             argument_buffer: *mut c_void,
