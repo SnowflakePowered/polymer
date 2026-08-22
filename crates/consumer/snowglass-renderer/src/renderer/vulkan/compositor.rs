@@ -1,7 +1,6 @@
 use crate::renderer::{CompositingPlan, RenderWindow, SurfacePlacement};
 use ash::{Entry, vk};
 use snowglass_consumer_vulkan::ImportedImageRing;
-use snowglass_input::mouse::layout::Extent;
 use snowglass_ipc::StreamReady;
 use snowglass_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use std::error::Error;
@@ -619,17 +618,12 @@ impl VulkanCompositor {
             .iter()
             .filter_map(|surface| {
                 let frame = surface.latest?;
-                let (width, height) = fit_inside(
-                    frame.render_width.max(1),
-                    frame.render_height.max(1),
+                let image_extent = super::super::frame_image_extent(
+                    frame,
                     surface.imported.width,
                     surface.imported.height,
+                    surface.quarter_turns,
                 );
-                let image_extent = if surface.quarter_turns % 2 == 1 {
-                    Extent::new(height, width)
-                } else {
-                    Extent::new(width, height)
-                };
                 Some(ReceivedSurface {
                     connection: surface.connection,
                     surface_id: surface.surface_id,

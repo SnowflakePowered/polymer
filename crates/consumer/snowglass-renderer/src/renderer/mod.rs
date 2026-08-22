@@ -2,7 +2,7 @@ use std::error::Error;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use snowglass_input::mouse::layout::{Extent, Point, Rect};
-use snowglass_protocol::{FrameReady, ResizeWindow};
+use snowglass_protocol::{FrameReady, PresentationMappingKind, ResizeWindow};
 use snowglass_runtime::SurfaceOffer;
 
 pub mod d3d12;
@@ -152,6 +152,38 @@ pub struct ReceivedSurface {
     pub quarter_turns: u8,
     pub flip_y: bool,
     pub frame: FrameReady,
+}
+
+/// Returns the visual extent of a received image. A pre-composition capture
+/// can have a storage aspect ratio that differs from the quad that displayed
+/// it (for example, emulated pixels with a non-square pixel aspect ratio), so
+/// prefer the graph-provided presentation bounds when they are available.
+pub(crate) fn frame_image_extent(
+    frame: FrameReady,
+    imported_width: u32,
+    imported_height: u32,
+    quarter_turns: u8,
+) -> Extent {
+    let (stored_width, stored_height) = crate::fit_inside(
+        frame.render_width.max(1),
+        frame.render_height.max(1),
+        imported_width,
+        imported_height,
+    );
+    let (width, height) = if frame.presentation_transform.kind
+        != PresentationMappingKind::Unavailable
+        && frame.capture_width > 0
+        && frame.capture_height > 0
+    {
+        (frame.capture_width, frame.capture_height)
+    } else {
+        (stored_width, stored_height)
+    };
+    if quarter_turns % 2 == 1 {
+        Extent::new(height, width)
+    } else {
+        Extent::new(width, height)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -374,6 +406,23 @@ mod tests {
                 width: 1280,
                 height: 720,
             }]
+        );
+    }
+
+    #[test]
+    fn graph_placement_controls_precomposition_image_aspect() {
+        let mut frame = surface(0).frame;
+        frame.render_width = 1536;
+        frame.render_height = 1344;
+        frame.capture_x = 166;
+        frame.capture_width = 1090;
+        frame.capture_height = 817;
+        frame.presentation_width = 1422;
+        frame.presentation_height = 817;
+        frame.presentation_transform = PresentationTransform::axis_aligned(166, 0, 1090, 817);
+        assert_eq!(
+            frame_image_extent(frame, 1536, 1344, 0),
+            Extent::new(1090, 817)
         );
     }
 

@@ -62,6 +62,7 @@ pub unsafe fn claim(
     if !is_d3d11 {
         return None;
     }
+    unsafe { tracking.register_swapchain(swapchain) };
     Some(SwapchainOwnerHandle::new(SwapchainCapture {
         stream_id: swapchain as u64,
         tracking,
@@ -76,6 +77,7 @@ impl SwapchainOwner for SwapchainCapture {
     ///
     /// `swapchain` must point to the live swapchain being presented.
     unsafe fn before_present(&self, swapchain: *mut c_void) {
+        unsafe { self.tracking.register_swapchain(swapchain) };
         let presentation = self.tracking.take_swapchain_presentation(swapchain);
         let tracked_source = presentation
             .as_ref()

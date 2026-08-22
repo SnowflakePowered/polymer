@@ -381,7 +381,7 @@ mod tests {
             }]));
             vtable::device_tracking(device.as_raw())
                 .expect("D3D11 context was not associated with its tracker")
-                .record_context_draw(context);
+                .record_context_draw(context, None);
             // The test intentionally omits shaders; restore deterministic
             // pixels after recording while retaining the tracking data.
             context_ref.ClearRenderTargetView(&target, &[0.25, 0.5, 0.75, 1.0]);

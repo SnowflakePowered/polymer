@@ -902,17 +902,12 @@ impl D3d12Compositor {
             .iter()
             .filter_map(|surface| {
                 let frame = surface.latest.or(surface.display_frame)?;
-                let (width, height) = crate::fit_inside(
-                    frame.render_width.max(1),
-                    frame.render_height.max(1),
+                let image_extent = super::super::frame_image_extent(
+                    frame,
                     surface.imported.width,
                     surface.imported.height,
+                    surface.quarter_turns,
                 );
-                let image_extent = if surface.quarter_turns % 2 == 1 {
-                    crate::Extent::new(height, width)
-                } else {
-                    crate::Extent::new(width, height)
-                };
                 Some(ReceivedSurface {
                     connection: surface.connection,
                     surface_id: surface.surface_id,

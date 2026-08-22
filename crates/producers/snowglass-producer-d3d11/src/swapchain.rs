@@ -128,8 +128,8 @@ impl D3d11SwapchainCapture {
                 clamp_region(region, self.source_desc.Width, self.source_desc.Height)
             })
             .unwrap_or(D3d11CaptureRegion {
-                x: 0,
-                y: 0,
+                x: tracked_source.map_or(0, |source| source.x),
+                y: tracked_source.map_or(0, |source| source.y),
                 width: self.source_desc.Width,
                 height: self.source_desc.Height,
             });
@@ -209,12 +209,12 @@ impl D3d11SwapchainCapture {
             unsafe {
                 self.context.CopySubresourceRegion(
                     destination,
-                    source_subresource,
+                    0,
                     0,
                     0,
                     0,
                     &source,
-                    0,
+                    source_subresource,
                     Some(&raw const source_box),
                 )
             };
