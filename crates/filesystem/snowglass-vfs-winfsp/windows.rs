@@ -110,7 +110,7 @@ impl FilesystemHost for WinFspFilesystemHost {
                 .persistent_acls(false)
                 .read_only_volume(false)
                 .post_cleanup_when_modified_only(true)
-                .supports_posix_unlink_rename(false);
+                .supports_posix_unlink_rename(true);
             let mut host: NativeFileSystemHost<SnowglassFileSystem> =
                 NativeFileSystemHost::new(parameters, context)
                     .map_err(|error| host_error("create filesystem", error))?;

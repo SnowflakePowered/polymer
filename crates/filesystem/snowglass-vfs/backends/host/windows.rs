@@ -18,7 +18,8 @@ use windows::{
         Storage::FileSystem::{
             FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
             FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
-            FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation,
+            FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+            FILE_SYNCHRONOUS_IO_NONALERT, FileRenameInformation, FileRenameInformationEx,
             NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile,
             NtSetInformationFile, RtlNtStatusToDosErrorNoTeb,
         },
@@ -702,7 +703,13 @@ fn rename_handle(
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     let mut io_status = IO_STATUS_BLOCK::default();
     unsafe {
-        (*info).Anonymous.ReplaceIfExists = replace_if_exists;
+        let information_class = if replace_if_exists {
+            (*info).Anonymous.Flags = FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS;
+            FileRenameInformationEx
+        } else {
+            (*info).Anonymous.ReplaceIfExists = false;
+            FileRenameInformation
+        };
         (*info).RootDirectory = raw_handle(target_parent);
         (*info).FileNameLength = name_bytes as u32;
         ptr::addr_of_mut!((*info).FileName)
@@ -713,7 +720,7 @@ fn rename_handle(
             &mut io_status,
             info.cast(),
             total as u32,
-            FileRenameInformation,
+            information_class,
         );
         if status.is_err() {
             return Err(nt_error(status));
