@@ -315,27 +315,6 @@ impl<'a> Save<'a> {
 }
 
 impl<'a> MemoryCard<'a> {
-    pub(crate) fn format(&mut self) {
-        self.next_block = 0;
-        let bytes = self
-            .bytes
-            .as_mut_slice()
-            .expect("an immutable memory-card view cannot be formatted");
-        bytes.fill(0xff);
-        bytes[..BLOCK_SIZE].fill(0);
-        bytes[..2].copy_from_slice(b"MC");
-        for frame in 0..64 {
-            Self::update_checksum(&mut bytes[frame * FRAME_SIZE..(frame + 1) * FRAME_SIZE]);
-        }
-        for block in 0..DATA_BLOCKS {
-            let frame = &mut bytes[(block + 1) * FRAME_SIZE..(block + 2) * FRAME_SIZE];
-            frame.fill(0);
-            frame[..4].copy_from_slice(&AllocationState::Free.raw().to_le_bytes());
-            frame[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
-            Self::update_checksum(frame);
-        }
-    }
-
     fn validate_capacity(blocks: u32) -> Result<usize, ParseError> {
         let blocks = usize::try_from(blocks).map_err(|_| ParseError::InvalidCapacity(blocks))?;
         if blocks == 0 || blocks > DATA_BLOCKS {
@@ -433,13 +412,24 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
 
     fn empty(blocks: u32) -> Result<Self, Self::Error> {
         let capacity_blocks = Self::validate_capacity(blocks)?;
-        let mut card = Self {
-            bytes: CardBytes::Owned(vec![0; RAW_SIZE]),
+        let mut bytes = vec![0xff; RAW_SIZE];
+        bytes[..BLOCK_SIZE].fill(0);
+        bytes[..2].copy_from_slice(b"MC");
+        for frame in 0..64 {
+            Self::update_checksum(&mut bytes[frame * FRAME_SIZE..(frame + 1) * FRAME_SIZE]);
+        }
+        for block in 0..DATA_BLOCKS {
+            let frame = &mut bytes[(block + 1) * FRAME_SIZE..(block + 2) * FRAME_SIZE];
+            frame.fill(0);
+            frame[..4].copy_from_slice(&AllocationState::Free.raw().to_le_bytes());
+            frame[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
+            Self::update_checksum(frame);
+        }
+        Ok(Self {
+            bytes: CardBytes::Owned(bytes),
             next_block: 0,
             capacity_blocks,
-        };
-        card.format();
-        Ok(card)
+        })
     }
 
     fn new(bytes: &'a [u8], blocks: u32) -> Result<Self, Self::Error> {

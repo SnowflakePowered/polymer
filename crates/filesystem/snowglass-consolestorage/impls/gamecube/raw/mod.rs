@@ -1,13 +1,13 @@
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
 use super::gci::{Region, Save};
-use crate::impls::RawMemoryCardImage;
+use crate::impls::memorycard::{RawMemoryCardImage, ReconcileWorker};
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, InstallResult, Metadata, MountableStorage,
     ReadDir, Storage, StorageFile, StorageRead,
@@ -20,27 +20,21 @@ type Reconcile = dyn for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send +
 pub(super) struct RawMemoryStorage {
     backing: Arc<DirectoryStorage>,
     image: Arc<CardImage>,
+    worker: ReconcileWorker,
 }
 
 struct CardImage {
     bytes: Mutex<Vec<u8>>,
     blocks: u32,
     reconcile: Arc<Reconcile>,
-    reconciling: Mutex<()>,
-    dirty: mpsc::SyncSender<()>,
 }
 
 impl CardImage {
     fn reconcile(&self) -> Result<(), Error> {
-        let _reconciling = self.reconciling.lock();
         let image = self.bytes.lock().clone();
         let card = card::MemoryCard::new(&image, self.blocks).map_err(Error::from)?;
         let saves = card.saves().map_err(Error::from)?;
         (self.reconcile)(&saves)
-    }
-
-    fn schedule_reconcile(&self) {
-        let _ = self.dirty.try_send(());
     }
 }
 
@@ -58,27 +52,21 @@ impl RawMemoryStorage {
         for save in saves {
             card.append_save(Save::new(save.as_bytes())?)?;
         }
-        let (dirty, pending) = mpsc::sync_channel(1);
         let image = Arc::new(CardImage {
             bytes: Mutex::new(card.into_owned()),
             blocks,
             reconcile: Arc::new(reconcile),
-            reconciling: Mutex::new(()),
-            dirty,
         });
-        let worker = image.clone();
-        std::thread::Builder::new()
-            .name("gamecube-memory-card".to_owned())
-            .spawn(move || {
-                while pending.recv().is_ok() {
-                    let _ = worker.reconcile();
-                }
-            })
-            .map_err(|source| Error::Io {
-                path: "GameCube memory card".to_owned(),
-                source,
+        let background = image.clone();
+        let worker =
+            ReconcileWorker::spawn("gamecube-memory-card", "GameCube memory card", move || {
+                background.reconcile()
             })?;
-        Ok(Self { backing, image })
+        Ok(Self {
+            backing,
+            image,
+            worker,
+        })
     }
 
     fn handle(&self, path: &str) -> Result<Handle, Error> {
@@ -87,6 +75,7 @@ impl RawMemoryStorage {
         }
         Ok(Handle {
             image: self.image.clone(),
+            worker: self.worker.clone(),
             position: 0,
         })
     }
@@ -197,12 +186,13 @@ impl MountableStorage for RawMemoryStorage {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.image.reconcile()
+        self.worker.reconcile()
     }
 }
 
 struct Handle {
     image: Arc<CardImage>,
+    worker: ReconcileWorker,
     position: u64,
 }
 
@@ -234,12 +224,12 @@ impl Write for Handle {
             bytes[start..end].copy_from_slice(input);
             self.position = end as u64;
         }
-        self.image.schedule_reconcile();
+        self.worker.schedule();
         Ok(input.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.image.reconcile().map_err(std::io::Error::other)
+        self.worker.reconcile().map_err(std::io::Error::other)
     }
 }
 

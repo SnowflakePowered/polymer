@@ -1,3 +1,9 @@
+use std::sync::{Arc, mpsc};
+
+use parking_lot::Mutex;
+
+use crate::Error;
+
 #[derive(Debug)]
 pub enum CardBytes<'a> {
     Borrowed(&'a [u8]),
@@ -63,4 +69,51 @@ pub trait RawMemoryCardImage<'a>: Sized {
 
     /// Append a save to the memory card.
     fn append_save(&mut self, save: Self::Save<'_>) -> Result<(), Self::Error>;
+}
+
+#[derive(Clone)]
+pub(crate) struct ReconcileWorker {
+    dirty: mpsc::SyncSender<()>,
+    reconcile: Arc<dyn Fn() -> Result<(), Error> + Send + Sync>,
+    running: Arc<Mutex<()>>,
+}
+
+impl ReconcileWorker {
+    pub(crate) fn spawn(
+        thread_name: &str,
+        error_path: &str,
+        reconcile: impl Fn() -> Result<(), Error> + Send + Sync + 'static,
+    ) -> Result<Self, Error> {
+        let (dirty, pending) = mpsc::sync_channel(1);
+        let reconcile: Arc<dyn Fn() -> Result<(), Error> + Send + Sync> = Arc::new(reconcile);
+        let running = Arc::new(Mutex::new(()));
+        let background_reconcile = reconcile.clone();
+        let background_running = running.clone();
+        std::thread::Builder::new()
+            .name(thread_name.to_owned())
+            .spawn(move || {
+                while pending.recv().is_ok() {
+                    let _running = background_running.lock();
+                    let _ = background_reconcile();
+                }
+            })
+            .map_err(|source| Error::Io {
+                path: error_path.to_owned(),
+                source,
+            })?;
+        Ok(Self {
+            dirty,
+            reconcile,
+            running,
+        })
+    }
+
+    pub(crate) fn schedule(&self) {
+        let _ = self.dirty.try_send(());
+    }
+
+    pub(crate) fn reconcile(&self) -> Result<(), Error> {
+        let _running = self.running.lock();
+        (self.reconcile)()
+    }
 }
