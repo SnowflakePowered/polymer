@@ -33,10 +33,12 @@ type AudioState = { available: boolean; volume: number; muted: boolean };
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
 const WIIU_PLATFORM = "NINTENDO_WIIU";
+const GAMECUBE_PLATFORM = "NINTENDO_GCN";
 const PSX_PLATFORM = "SONY_PSX";
 const PS2_PLATFORM = "SONY_PS2";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
 let defaultWiiUNand: Promise<ConsoleStorageNand> | null = null;
+let defaultGameCubeCard: Promise<ConsoleStorageNand> | null = null;
 let defaultPs1Card: Promise<ConsoleStorageNand> | null = null;
 let defaultPs2Card: Promise<ConsoleStorageNand> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
@@ -97,6 +99,22 @@ function ensureDefaultPs1Card() {
     });
   }
   return defaultPs1Card;
+}
+
+function ensureDefaultGameCubeCard() {
+  if (!defaultGameCubeCard) {
+    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+      volumes
+        .filter((volume) => volume.platform === GAMECUBE_PLATFORM && volume.label === "Default")
+        .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
+        ?? window.Snowglass.consolestorage.Nand.create(GAMECUBE_PLATFORM, { label: "Default" })
+    );
+    defaultGameCubeCard = pending.catch((error) => {
+      defaultGameCubeCard = null;
+      throw error;
+    });
+  }
+  return defaultGameCubeCard;
 }
 
 function ensureDefaultPs2Card() {
@@ -246,6 +264,8 @@ function ShellProvider(props: ParentProps) {
       try {
         if (game.platform === WIIU_PLATFORM) {
           selection.storage = { mlc: (await ensureDefaultWiiUNand()).id };
+        } else if (game.platform === GAMECUBE_PLATFORM) {
+          selection.storage = { slotA: (await ensureDefaultGameCubeCard()).id };
         } else if (game.platform === PSX_PLATFORM) {
           selection.storage = { card1: (await ensureDefaultPs1Card()).id };
         } else if (game.platform === PS2_PLATFORM) {

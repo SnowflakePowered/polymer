@@ -5,7 +5,7 @@ use std::sync::{Arc, mpsc};
 use jiff::Timestamp;
 use parking_lot::Mutex;
 
-use crate::impls::RawMemoryCardImage;
+use crate::impls::memorycard::RawMemoryCardImage;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, InstallResult, Metadata, MountableStorage,
     ReadDir, Storage, StorageFile, StorageRead,
@@ -281,6 +281,7 @@ impl Seek for MemoryHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::impls::memorycard::RawMemoryCardImage;
 
     fn save(name: &str, data: &[u8]) -> Save<'static> {
         Save::from_files(name, &[], [("data.bin", &[][..], data)]).unwrap()

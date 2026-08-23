@@ -25,6 +25,7 @@ type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 type Filesystem = {
     mountHostFile(target: string, source: string, options: { mode: string }): void,
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
+    mountStorage(target: string, source: Resource, options: { mode: string, format: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
     path(path: string): string,
     setWorkingDirectory(path: string): void,
@@ -43,6 +44,7 @@ type SetupLaunchArgs = {
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
+    storage: Readonly<{ slotA?: Resource, slotB?: Resource }>,
 }
 
 function basename(path: string): string {
@@ -56,8 +58,13 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
 
     args.filesystem.mountTree("/Dolphin", args.resources.runtime, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    // This scratch tree is the future mountMemoryCard(..., { format: "gci" }) target.
     args.filesystem.mountScratch("/MemoryCard", { mode: "rwx", backing: "temporary" });
+    if (args.storage.slotA) {
+        args.filesystem.mountStorage("/MemoryCard/USA", args.storage.slotA, {
+            mode: "rwx",
+            format: "dolphin",
+        });
+    }
     args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
     args.filesystem.setWorkingDirectory("/Dolphin");
     args.filesystem.setProfile({
@@ -87,7 +94,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
             "-b", "-e", args.filesystem.path(`/Game/${gameName}`),
         ],
         configRoot: args.filesystem.path("/User"),
-        isolate: true,
+        isolate: false,
         hooks: ["d3d11"],
         graphTracking: true,
         config: args.configuration,

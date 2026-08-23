@@ -7,7 +7,7 @@ use zerocopy::{
     byteorder::little_endian::{U16, U32},
 };
 
-use crate::impls::RawMemoryCardImage;
+use crate::impls::memorycard::{CardBytes, RawMemoryCardImage};
 
 pub(crate) const BLOCK_SIZE: usize = 8 * 1024;
 pub(crate) const FRAME_SIZE: usize = 128;
@@ -239,39 +239,6 @@ pub(crate) struct MemoryCard<'a> {
     capacity_blocks: usize,
 }
 
-#[derive(Debug)]
-enum CardBytes<'a> {
-    Borrowed(&'a [u8]),
-    BorrowedMut(&'a mut [u8]),
-    Owned(Vec<u8>),
-}
-
-impl CardBytes<'_> {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            Self::BorrowedMut(bytes) => bytes,
-            Self::Owned(bytes) => bytes,
-        }
-    }
-
-    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        match self {
-            Self::Borrowed(_) => None,
-            Self::BorrowedMut(bytes) => Some(bytes),
-            Self::Owned(bytes) => Some(bytes),
-        }
-    }
-
-    fn into_owned(self) -> Vec<u8> {
-        match self {
-            Self::Borrowed(bytes) => bytes.to_vec(),
-            Self::BorrowedMut(bytes) => bytes.to_vec(),
-            Self::Owned(bytes) => bytes,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct Save<'a> {
     native_id: &'a [u8; NATIVE_ID_SIZE],
@@ -455,10 +422,6 @@ impl<'a> MemoryCard<'a> {
             .iter()
             .fold(0, |checksum, byte| checksum ^ byte);
     }
-
-    pub(crate) fn into_owned(self) -> Vec<u8> {
-        self.bytes.into_owned()
-    }
 }
 
 impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
@@ -500,6 +463,10 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
             next_block,
             capacity_blocks,
         })
+    }
+
+    fn into_owned(self) -> Vec<u8> {
+        self.bytes.into_owned()
     }
 
     fn saves(&self) -> Result<Vec<Self::Save<'_>>, Self::Error> {

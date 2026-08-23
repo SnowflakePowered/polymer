@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE, RawMemoryStorage};
-use crate::impls::{RawMemoryCardImage, SonyProductCode};
+use crate::impls::{SonyProductCode, memorycard::RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };

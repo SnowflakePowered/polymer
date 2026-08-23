@@ -28,6 +28,22 @@ impl NintendoTitleId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameCubeDiscId([u8; 6]);
+
+impl GameCubeDiscId {
+    pub fn new(code: &[u8]) -> Option<Self> {
+        let code: [u8; 6] = code.try_into().ok()?;
+        code.iter()
+            .all(u8::is_ascii_alphanumeric)
+            .then_some(Self(code))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 6] {
+        &self.0
+    }
+}
+
 impl From<SonyProductCode<'_>> for SaveDepotId {
     fn from(code: SonyProductCode<'_>) -> SaveDepotId {
         let product_code = code.0;
@@ -53,6 +69,27 @@ impl From<SonyProductCode<'_>> for SaveDepotId {
 impl From<NintendoTitleId> for SaveDepotId {
     fn from(title_id: NintendoTitleId) -> Self {
         Self(title_id.0)
+    }
+}
+
+impl From<GameCubeDiscId> for SaveDepotId {
+    fn from(game_code: GameCubeDiscId) -> Self {
+        let mut encoded = [0; 8];
+        encoded[..6].copy_from_slice(&game_code.0);
+        encoded[6..].copy_from_slice(b"GC");
+        Self(u64::from_le_bytes(encoded))
+    }
+}
+
+impl TryFrom<SaveDepotId> for GameCubeDiscId {
+    type Error = ();
+
+    fn try_from(id: SaveDepotId) -> Result<Self, Self::Error> {
+        let encoded = id.0.to_le_bytes();
+        if &encoded[6..] != b"GC" {
+            return Err(());
+        }
+        Self::new(&encoded[..6]).ok_or(())
     }
 }
 
@@ -92,5 +129,12 @@ mod tests {
     fn nintendo_title_ids_preserve_the_native_id() {
         let depot: SaveDepotId = NintendoTitleId::new(0x0005_0000_101c_9500).into();
         assert_eq!(depot.0, 0x0005_0000_101c_9500);
+    }
+
+    #[test]
+    fn nintendo_game_codes_are_reversible() {
+        let code = GameCubeDiscId::new(b"GALE01").unwrap();
+        let depot: SaveDepotId = code.into();
+        assert_eq!(GameCubeDiscId::try_from(depot).unwrap(), code);
     }
 }
