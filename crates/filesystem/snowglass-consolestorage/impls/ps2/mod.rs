@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use atomic_write_file::AtomicWriteFile;
 use encoding_rs::SHIFT_JIS;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use jiff::Timestamp;
 use parking_lot::Mutex;
 use uuid::Uuid;
@@ -22,12 +22,14 @@ use self::psu::Save;
 use crate::impls::SonyProductCode;
 use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
 use crate::savegame::{
-    Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
+    Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
+    SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
+use crate::storage::BackedVolumeStorage;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
-    Storage, VolumeStorage,
+    SaveRepo, Storage, VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
@@ -158,6 +160,15 @@ pub struct Playstation2MemoryCard {
     storage: Arc<DirectoryStorage>,
 }
 
+impl BackedVolumeStorage for Playstation2MemoryCard {
+    fn backing_volume(&self) -> &dyn VolumeStorage {
+        self.storage.as_ref()
+    }
+}
+
+#[async_trait::async_trait]
+impl SaveRepo for Playstation2MemoryCard {}
+
 impl Playstation2MemoryCard {
     pub const PLATFORM: &str = "SONY_PS2";
 
@@ -183,15 +194,6 @@ impl Playstation2MemoryCard {
         }
         storage.create_dir_all(SAVE_ROOT)?;
         Ok(Self { storage })
-    }
-
-    pub async fn metadata(&self) -> Result<crate::NandMetadata, Error> {
-        self.storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)
-    }
-
-    pub async fn game_saved(&self) -> Result<(), Error> {
-        self.watch_saves(&[])?.changed().await;
-        Ok(())
     }
 
     fn saves(&self) -> Vec<SaveDataHandle> {
@@ -469,14 +471,16 @@ impl SaveGameSink for Playstation2MemoryCard {
         SaveDataHandle::depot_id_from_serial(serial)
     }
 
-    fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {
+    fn enumerate_saves(&self) -> SaveDescriptors<'_> {
         let mut seen = HashSet::new();
-        self.saves()
-            .into_iter()
-            .filter(|save| seen.insert(save.depot_id().0))
-            .filter_map(|save| self.describe_save(&save).ok())
-            .collect::<Vec<_>>()
-            .into_iter()
+        Box::new(
+            self.saves()
+                .into_iter()
+                .filter(|save| seen.insert(save.depot_id().0))
+                .filter_map(|save| self.describe_save(&save).ok())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
     }
 
     fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
@@ -505,10 +509,10 @@ impl SaveGameSink for Playstation2MemoryCard {
 
     fn install_save<'a>(
         &'a self,
-        blobs: impl Stream<Item = SaveBlob> + Send + 'a,
+        blobs: SaveBlobStream<'a>,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>> {
         Box::pin(async move {
-            let mut blobs = std::pin::pin!(blobs);
+            let mut blobs = blobs;
             let mut installed = None::<SaveDepotId>;
             let mut representative = None;
             while let Some(blob) = blobs.next().await {
@@ -702,8 +706,9 @@ mod tests {
         assert!(pcsx2.storage().exists("_pcsx2_superblock"));
         assert!(!card.storage.exists("card/_pcsx2_superblock"));
 
-        let watcher = card.watch_saves(&[]).unwrap();
-        let notification = tokio::spawn(async move { watcher.changed().await });
+        let notification_card = card.clone();
+        let notification =
+            tokio::spawn(async move { notification_card.game_saved().await.unwrap() });
         tokio::task::yield_now().await;
         pcsx2.storage().create_dir_all("BASLUS-00002").unwrap();
         pcsx2

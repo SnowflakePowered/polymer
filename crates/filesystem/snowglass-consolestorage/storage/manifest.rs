@@ -47,7 +47,7 @@ pub struct ArtifactSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NandMetadata {
+pub struct VolumeInfo {
     pub id: Uuid,
     pub platform: String,
     pub label: Option<String>,
@@ -186,7 +186,7 @@ impl ArtifactDb {
         Ok(files)
     }
 
-    async fn read_identity(&self) -> Result<Option<NandMetadata>, Error> {
+    async fn read_identity(&self) -> Result<Option<VolumeInfo>, Error> {
         let mut rows = self
             .connection
             .query("SELECT id, platform, label, created FROM nand LIMIT 1", ())
@@ -206,7 +206,7 @@ impl ArtifactDb {
             reason: format!("`{created}` is not a timestamp"),
         })?;
 
-        Ok(Some(NandMetadata {
+        Ok(Some(VolumeInfo {
             id,
             platform: text(&row, 1)?,
             label: optional_text(&row, 2)?,
@@ -221,12 +221,12 @@ impl ArtifactDb {
         id: Uuid,
         platform: &str,
         label: Option<&str>,
-    ) -> Result<NandMetadata, Error> {
+    ) -> Result<VolumeInfo, Error> {
         if let Some(identity) = self.read_identity().await? {
             return Ok(identity);
         }
 
-        let identity = NandMetadata {
+        let identity = VolumeInfo {
             id,
             platform: platform.to_string(),
             label: label.map(str::to_string),
@@ -316,11 +316,11 @@ impl ArtifactDb {
         id: Uuid,
         platform: &'a str,
         label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
+    ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
         Box::pin(self.claim_identity(id, platform, label))
     }
 
-    pub(super) fn identity(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
+    pub(super) fn identity(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
         Box::pin(self.read_identity())
     }
 

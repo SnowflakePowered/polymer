@@ -1,8 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use snowglass_consolestorage::{
-    ConsoleStorage, DirectoryStorage, Error, NandMetadata, StorageKind, VolumeStorage,
-    create_console_storage, open_console_storage, supports_console_storage,
+    ConsoleStorage, DirectoryStorage, Error, StorageKind, VolumeInfo, VolumeStorage,
 };
 use uuid::Uuid;
 
@@ -32,7 +31,7 @@ impl StorageManager {
         platform: &str,
         label: Option<String>,
     ) -> Result<ConsoleStorage, Error> {
-        if !supports_console_storage(kind, platform) {
+        if !ConsoleStorage::supports(kind, platform) {
             return Err(Error::Unsupported(format!(
                 "no {} layout for `{platform}`",
                 kind.as_str()
@@ -41,8 +40,7 @@ impl StorageManager {
 
         let id = Uuid::now_v7();
         let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
-
-        create_console_storage(kind, platform, storage, id, label).await
+        ConsoleStorage::create(kind, platform, storage, id, label).await
     }
 
     pub async fn open(
@@ -61,7 +59,7 @@ impl StorageManager {
             )));
         }
 
-        open_console_storage(kind, storage).await
+        ConsoleStorage::open(kind, storage).await
     }
 
     pub async fn set_label(
@@ -73,11 +71,10 @@ impl StorageManager {
     ) -> Result<ConsoleStorage, Error> {
         let storage = self.open(kind, platform, id).await?;
         storage.set_label(label.as_deref()).await?;
-
         Ok(storage)
     }
 
-    pub async fn list(&self) -> Result<Vec<(StorageKind, NandMetadata)>, Error> {
+    pub async fn list(&self) -> Result<Vec<(StorageKind, VolumeInfo)>, Error> {
         let mut storages = Vec::new();
 
         for kind in StorageKind::ALL {

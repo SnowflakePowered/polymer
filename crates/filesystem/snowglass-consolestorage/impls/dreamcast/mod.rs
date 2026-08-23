@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use atomic_write_file::AtomicWriteFile;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use jiff::Timestamp;
 use uuid::Uuid;
 
@@ -21,11 +21,13 @@ use crate::impls::{
     memorycard::{MemoryCardStorage, RawMemoryCardImage},
 };
 use crate::savegame::{
-    Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
+    Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
+    SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::{DREAMCAST_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
+use crate::storage::BackedVolumeStorage;
 use crate::{
-    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, Storage,
+    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, Storage,
     VolumeStorage,
 };
 
@@ -34,6 +36,15 @@ const SAVE_ROOT: &str = "card";
 pub struct DreamcastMemoryCard {
     storage: Arc<DirectoryStorage>,
 }
+
+impl BackedVolumeStorage for DreamcastMemoryCard {
+    fn backing_volume(&self) -> &dyn VolumeStorage {
+        self.storage.as_ref()
+    }
+}
+
+#[async_trait::async_trait]
+impl SaveRepo for DreamcastMemoryCard {}
 
 impl DreamcastMemoryCard {
     pub const PLATFORM: &str = "SEGA_DC";
@@ -60,15 +71,6 @@ impl DreamcastMemoryCard {
         }
         storage.create_dir_all(SAVE_ROOT)?;
         Ok(Self { storage })
-    }
-
-    pub async fn metadata(&self) -> Result<crate::NandMetadata, Error> {
-        self.storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)
-    }
-
-    pub async fn game_saved(&self) -> Result<(), Error> {
-        self.watch_saves(&[])?.changed().await;
-        Ok(())
     }
 
     fn product_path(product: DreamcastProductId) -> String {
@@ -430,14 +432,16 @@ impl SaveGameSink for DreamcastMemoryCard {
         .into()
     }
 
-    fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {
+    fn enumerate_saves(&self) -> SaveDescriptors<'_> {
         let mut seen = HashSet::new();
-        self.saves()
-            .into_iter()
-            .filter(|(product, _)| seen.insert(*product))
-            .filter_map(|(product, save)| self.describe_save(product, &save).ok())
-            .collect::<Vec<_>>()
-            .into_iter()
+        Box::new(
+            self.saves()
+                .into_iter()
+                .filter(|(product, _)| seen.insert(*product))
+                .filter_map(|(product, save)| self.describe_save(product, &save).ok())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
     }
 
     fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
@@ -473,10 +477,10 @@ impl SaveGameSink for DreamcastMemoryCard {
 
     fn install_save<'a>(
         &'a self,
-        blobs: impl Stream<Item = SaveBlob> + Send + 'a,
+        blobs: SaveBlobStream<'a>,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>> {
         Box::pin(async move {
-            let mut blobs = std::pin::pin!(blobs);
+            let mut blobs = blobs;
             let mut product = None;
             let mut pairs = BTreeMap::<String, (Option<Vec<u8>>, Option<Vec<u8>>)>::new();
             while let Some(blob) = blobs.next().await {
