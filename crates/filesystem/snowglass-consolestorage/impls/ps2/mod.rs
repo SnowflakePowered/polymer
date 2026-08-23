@@ -20,9 +20,8 @@ use uuid::Uuid;
 use self::pcsx2::Pcsx2MemoryStorage;
 use self::psu::Save;
 use self::raw::RawMemoryStorage;
-#[cfg(test)]
-use crate::impls::RawMemoryCardImage;
 use crate::impls::SonyProductCode;
+use crate::impls::memorycard::RawMemoryCardImage;
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };

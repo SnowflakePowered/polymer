@@ -9,7 +9,7 @@ use zerocopy::{
 };
 
 use super::super::psu::{self, Encoder, Save};
-use crate::impls::RawMemoryCardImage;
+use crate::impls::memorycard::{CardBytes, RawMemoryCardImage};
 
 const MAGIC: &[u8; 28] = b"Sony PS2 Memory Card Format ";
 const HEADER_SIZE: usize = 0x154;
@@ -361,31 +361,6 @@ pub(in crate::impls::ps2) struct MemoryCard<'a> {
     free_clusters: Vec<usize>,
 }
 
-#[derive(Debug)]
-enum CardBytes<'a> {
-    Borrowed(&'a [u8]),
-    BorrowedMut(&'a mut [u8]),
-    Owned(Vec<u8>),
-}
-
-impl CardBytes<'_> {
-    fn as_slice(&self) -> &[u8] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            Self::BorrowedMut(bytes) => bytes,
-            Self::Owned(bytes) => bytes,
-        }
-    }
-
-    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        match self {
-            Self::Borrowed(_) => None,
-            Self::BorrowedMut(bytes) => Some(bytes),
-            Self::Owned(bytes) => Some(bytes),
-        }
-    }
-}
-
 impl<'a> MemoryCard<'a> {
     fn validate(bytes: &[u8], blocks: u32) -> Result<usize, ParseError> {
         if blocks > MAX_BLOCKS {
@@ -704,6 +679,10 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         };
         card.free_clusters = card.scan_free_clusters()?;
         Ok(card)
+    }
+
+    fn into_owned(self) -> Vec<u8> {
+        self.bytes.into_owned()
     }
 
     fn saves(&self) -> Result<Vec<Self::Save<'_>>, Self::Error> {

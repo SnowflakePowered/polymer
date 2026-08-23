@@ -9,7 +9,7 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use parking_lot::Mutex;
 
-use crate::impls::RawMemoryCardImage;
+use crate::impls::memorycard::RawMemoryCardImage;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, InstallResult, Metadata, MountableStorage,
     ReadDir, Storage, StorageFile, StorageRead,
