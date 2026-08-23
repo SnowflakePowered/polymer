@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use snowglass_consolestorage::impls::dreamcast::DreamcastMemoryCard;
 use snowglass_consolestorage::impls::gamecube::GameCubeMemoryCard;
 use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
 use snowglass_consolestorage::impls::ps2::Playstation2MemoryCard;
@@ -13,6 +14,7 @@ pub type Nand = Arc<dyn VirtualNand>;
 
 pub enum ConsoleStorage {
     Nand(Nand),
+    DreamcastMemoryCard(Arc<DreamcastMemoryCard>),
     GameCubeMemoryCard(Arc<GameCubeMemoryCard>),
     PlaystationMemoryCard(Arc<PlaystationMemoryCard>),
     Playstation2MemoryCard(Arc<Playstation2MemoryCard>),
@@ -22,6 +24,7 @@ impl ConsoleStorage {
     pub async fn metadata(&self) -> Result<NandMetadata, Error> {
         match self {
             Self::Nand(nand) => nand.metadata().await,
+            Self::DreamcastMemoryCard(card) => card.metadata().await,
             Self::GameCubeMemoryCard(card) => card.metadata().await,
             Self::PlaystationMemoryCard(card) => card.metadata().await,
             Self::Playstation2MemoryCard(card) => card.metadata().await,
@@ -31,6 +34,7 @@ impl ConsoleStorage {
     pub async fn set_label(&self, label: Option<&str>) -> Result<(), Error> {
         match self {
             Self::Nand(nand) => nand.set_label(label).await,
+            Self::DreamcastMemoryCard(card) => card.set_label(label).await,
             Self::GameCubeMemoryCard(card) => card.set_label(label).await,
             Self::PlaystationMemoryCard(card) => card.set_label(label).await,
             Self::Playstation2MemoryCard(card) => card.set_label(label).await,
@@ -40,6 +44,7 @@ impl ConsoleStorage {
     pub async fn game_saved(&self) -> Result<(), Error> {
         match self {
             Self::Nand(nand) => nand.game_saved().await,
+            Self::DreamcastMemoryCard(card) => card.game_saved().await,
             Self::GameCubeMemoryCard(card) => card.game_saved().await,
             Self::PlaystationMemoryCard(card) => card.game_saved().await,
             Self::Playstation2MemoryCard(card) => card.game_saved().await,
@@ -63,7 +68,8 @@ impl StorageManager {
     pub fn path(&self, platform: &str, id: Uuid) -> PathBuf {
         self.root
             .join(match platform {
-                GameCubeMemoryCard::PLATFORM
+                DreamcastMemoryCard::PLATFORM
+                | GameCubeMemoryCard::PLATFORM
                 | PlaystationMemoryCard::PLATFORM
                 | Playstation2MemoryCard::PLATFORM => "memorycards",
                 _ => "nands",
@@ -76,6 +82,7 @@ impl StorageManager {
         matches!(
             platform,
             WiiUNand::PLATFORM
+                | DreamcastMemoryCard::PLATFORM
                 | GameCubeMemoryCard::PLATFORM
                 | PlaystationMemoryCard::PLATFORM
                 | Playstation2MemoryCard::PLATFORM
@@ -100,6 +107,9 @@ impl StorageManager {
             WiiUNand::PLATFORM => {
                 ConsoleStorage::Nand(Arc::new(WiiUNand::new_empty(storage, id, label).await?))
             }
+            DreamcastMemoryCard::PLATFORM => ConsoleStorage::DreamcastMemoryCard(Arc::new(
+                DreamcastMemoryCard::new_empty(storage, id, label).await?,
+            )),
             GameCubeMemoryCard::PLATFORM => ConsoleStorage::GameCubeMemoryCard(Arc::new(
                 GameCubeMemoryCard::new_empty(storage, id, label).await?,
             )),
@@ -121,6 +131,9 @@ impl StorageManager {
         match metadata.platform.as_str() {
             WiiUNand::PLATFORM => Ok(ConsoleStorage::Nand(Arc::new(
                 WiiUNand::open(storage).await?,
+            ))),
+            DreamcastMemoryCard::PLATFORM => Ok(ConsoleStorage::DreamcastMemoryCard(Arc::new(
+                DreamcastMemoryCard::open(storage).await?,
             ))),
             GameCubeMemoryCard::PLATFORM => Ok(ConsoleStorage::GameCubeMemoryCard(Arc::new(
                 GameCubeMemoryCard::open(storage).await?,
@@ -178,6 +191,7 @@ impl StorageManager {
     async fn platforms(&self) -> Vec<String> {
         vec![
             WiiUNand::PLATFORM.to_owned(),
+            DreamcastMemoryCard::PLATFORM.to_owned(),
             GameCubeMemoryCard::PLATFORM.to_owned(),
             PlaystationMemoryCard::PLATFORM.to_owned(),
             Playstation2MemoryCard::PLATFORM.to_owned(),
@@ -186,7 +200,8 @@ impl StorageManager {
 
     async fn ids(&self, platform: &str) -> Vec<Uuid> {
         let collection = match platform {
-            GameCubeMemoryCard::PLATFORM
+            DreamcastMemoryCard::PLATFORM
+            | GameCubeMemoryCard::PLATFORM
             | PlaystationMemoryCard::PLATFORM
             | Playstation2MemoryCard::PLATFORM => self.root.join("memorycards"),
             _ => self.root.join("nands"),
@@ -266,5 +281,32 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(reopened, ConsoleStorage::GameCubeMemoryCard(_)));
+    }
+
+    #[tokio::test]
+    async fn creates_and_reopens_dreamcast_memory_cards() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = StorageManager::new(root.path());
+        let created = manager
+            .create(
+                DreamcastMemoryCard::PLATFORM,
+                Some("Dreamcast VMU".to_owned()),
+            )
+            .await
+            .unwrap();
+        let metadata = created.metadata().await.unwrap();
+        assert_eq!(metadata.platform, DreamcastMemoryCard::PLATFORM);
+        assert_eq!(metadata.label.as_deref(), Some("Dreamcast VMU"));
+        assert!(
+            manager
+                .path(&metadata.platform, metadata.id)
+                .starts_with(root.path().join("memorycards"))
+        );
+
+        let reopened = manager
+            .open(DreamcastMemoryCard::PLATFORM, metadata.id)
+            .await
+            .unwrap();
+        assert!(matches!(reopened, ConsoleStorage::DreamcastMemoryCard(_)));
     }
 }

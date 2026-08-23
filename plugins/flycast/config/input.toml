@@ -1,0 +1,84 @@
+[bool_style.lower]
+true = "true"
+false = "false"
+
+[targets.settings]
+output = { format = "ini", path = "flycast-input.ini" }
+
+[targets.settings.controller1]
+[targets.settings.controller2]
+[targets.settings.controller3]
+[targets.settings.controller4]
+
+[sections.controllers]
+title = "Controllers"
+target = "settings.controller1"
+
+[[sections.controllers.options]]
+key = "connected"
+title = "Controller 1 Connected"
+type = "bool"
+default = true
+emit = { key = "Connected", bool_style = "lower" }
+
+[input]
+driver = "sdl2"
+device = "SDL-{index}"
+
+[input.mapping]
+"button.a" = "A"
+"button.b" = "B"
+"button.x" = "X"
+"button.y" = "Y"
+"button.start" = "Start"
+"directional.n" = "DPadUp"
+"directional.s" = "DPadDown"
+"directional.w" = "DPadLeft"
+"directional.e" = "DPadRight"
+"analog.stick.left.x-" = "LeftX-"
+"analog.stick.left.x+" = "LeftX+"
+"analog.stick.left.y-" = "LeftY-"
+"analog.stick.left.y+" = "LeftY+"
+"trigger.left" = "LeftTrigger"
+"trigger.right" = "RightTrigger"
+
+[input.layouts.DC_CONTROLLER]
+"button.a" = "A"
+"button.b" = "B"
+"button.x" = "X"
+"button.y" = "Y"
+"button.start" = "Start"
+"directional.n" = "DPadUp"
+"directional.s" = "DPadDown"
+"directional.w" = "DPadLeft"
+"directional.e" = "DPadRight"
+"analog.stick.left.x-" = "LeftX-"
+"analog.stick.left.x+" = "LeftX+"
+"analog.stick.left.y-" = "LeftY-"
+"analog.stick.left.y+" = "LeftY+"
+"trigger.left" = "LeftTrigger"
+"trigger.right" = "RightTrigger"
+
+[platforms.SEGA_DC.ports.controller.0]
+target = "settings.controller1"
+layouts = ["DC_CONTROLLER"]
+emit.unplugged = [{ key = "Connected", value = "false" }]
+emit.DC_CONTROLLER = [{ key = "Connected", value = "true" }]
+
+[platforms.SEGA_DC.ports.controller.1]
+target = "settings.controller2"
+layouts = ["DC_CONTROLLER"]
+emit.unplugged = [{ key = "Connected", value = "false" }]
+emit.DC_CONTROLLER = [{ key = "Connected", value = "true" }]
+
+[platforms.SEGA_DC.ports.controller.2]
+target = "settings.controller3"
+layouts = ["DC_CONTROLLER"]
+emit.unplugged = [{ key = "Connected", value = "false" }]
+emit.DC_CONTROLLER = [{ key = "Connected", value = "true" }]
+
+[platforms.SEGA_DC.ports.controller.3]
+target = "settings.controller4"
+layouts = ["DC_CONTROLLER"]
+emit.unplugged = [{ key = "Connected", value = "false" }]
+emit.DC_CONTROLLER = [{ key = "Connected", value = "true" }]
