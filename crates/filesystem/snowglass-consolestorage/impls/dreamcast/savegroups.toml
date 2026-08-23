@@ -1,0 +1,35 @@
+# Dreamcast discs in a single pressing normally repeat the same ten-byte IP.BIN
+# product number. These groups cover compatible alternate pressings whose product
+# numbers differ, so every member's saves are projected when any member is primary.
+
+# D2 / D no Shokutaku 2
+[[savegroup]]
+ids = ["T-30004M", "T-30005M"]
+
+# Comic Party
+[[savegroup]]
+ids = ["T-38301M", "T-38302M"]
+
+# Eternal Arcadia
+[[savegroup]]
+ids = ["HDR-0076", "HDR-0109", "HDR-0119"]
+
+# Sakura Taisen
+[[savegroup]]
+ids = ["HDR-0089", "HDR-0192", "HDR-0201"]
+
+# Sakura Taisen 2 - Kimi, Shinitamou Koto Nakare
+[[savegroup]]
+ids = ["HDR-0082", "HDR-0108", "HDR-0193", "HDR-0201"]
+
+# Sakura Taisen 3 - Paris wa Moeteiru ka
+[[savegroup]]
+ids = ["HDR-0147", "HDR-0148", "HDR-0152", "HDR-0194", "HDR-0201"]
+
+# Shenmue - Isshou Yokosuka
+[[savegroup]]
+ids = ["HDR-0016", "HDR-0031"]
+
+# Shenmue II
+[[savegroup]]
+ids = ["HDR-0164", "HDR-0179"]

@@ -20,6 +20,7 @@ use windows_sys::Win32::{
 pub(crate) struct Sdl2TableState {
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
+    logged_attachment: AtomicBool,
     logged_enumeration: AtomicBool,
     logged_gamepad_poll: AtomicBool,
     logged_gamepad_update: AtomicBool,
@@ -75,6 +76,7 @@ const SDL2_COMPAT_DLL: &[u16] = &[
 // dependent. These are the Windows-preprocessed slots from
 // SDL_dynapi_procs.h in the runtime staged with this hook.
 const DYNAPI_NUM_JOYSTICKS: usize = 158;
+const DYNAPI_POLL_EVENT: usize = 85;
 const DYNAPI_GAME_CONTROLLER_GET_AXIS: usize = 112;
 const DYNAPI_GAME_CONTROLLER_GET_BUTTON: usize = 116;
 const DYNAPI_JOYSTICK_UPDATE: usize = 172;
@@ -93,6 +95,7 @@ fn create_table_state() -> Result<Sdl2TableState, &'static str> {
     Ok(Sdl2TableState {
         backend: Mutex::new(backend),
         runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+        logged_attachment: AtomicBool::new(false),
         logged_enumeration: AtomicBool::new(false),
         logged_gamepad_poll: AtomicBool::new(false),
         logged_gamepad_update: AtomicBool::new(false),
@@ -119,6 +122,12 @@ snowglass_hook::function_table_hook! {
     #[state: Sdl2TableState = create_table_state()?]
     pub(crate) struct Sdl2DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_JOYSTICK_UPDATE + 1;
+
+        #[slot = DYNAPI_POLL_EVENT]
+        #[prefix(|next| poll_events(
+            next.state,
+        ))]
+        unsafe extern "C" fn poll_event_dispatch(event: *mut c_void) -> i32;
 
         #[slot = DYNAPI_NUM_JOYSTICKS]
         #[infix(enumerate_joysticks)]
@@ -223,11 +232,7 @@ unsafe fn captured_dynapi_table(
 }
 
 unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 {
-    let mut backend = next.state.backend.lock();
-    if let Err(error) = next.state.runtime.prepare_enumeration(&mut *backend) {
-        tracing::debug!(message = %(error.0));
-    }
-    drop(backend);
+    prepare_joysticks(next.state);
     // Virtual joysticks are appended to SDL's existing device list. Returning
     // only the virtual-device count makes callers inspect the wrong indices
     // whenever the process already has a physical joystick.
@@ -237,6 +242,25 @@ unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 
         tracing::debug!("enumerated {count} SDL2 joystick(s)");
     }
     count
+}
+
+fn announce_joysticks(state: &Sdl2TableState) {
+    prepare_joysticks(state);
+    if !state.logged_attachment.swap(true, Ordering::AcqRel) {
+        tracing::debug!("announced SDL2 virtual gamepads through the event queue");
+    }
+}
+
+fn poll_events(state: &Sdl2TableState) {
+    announce_joysticks(state);
+    flush_gamepads(state);
+}
+
+fn prepare_joysticks(state: &Sdl2TableState) {
+    let mut backend = state.backend.lock();
+    if let Err(error) = state.runtime.prepare_enumeration(&mut *backend) {
+        tracing::debug!(message = %(error.0));
+    }
 }
 
 fn flush_gamepads(state: &Sdl2TableState) {

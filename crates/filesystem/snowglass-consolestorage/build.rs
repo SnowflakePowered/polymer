@@ -24,17 +24,25 @@ fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let ps1 = manifest.join("impls/ps1/savegroups.toml");
     let ps2 = manifest.join("impls/ps2/savegroups.toml");
+    let dreamcast = manifest.join("impls/dreamcast/savegroups.toml");
     println!("cargo:rerun-if-changed={}", ps1.display());
     println!("cargo:rerun-if-changed={}", ps2.display());
+    println!("cargo:rerun-if-changed={}", dreamcast.display());
 
     let mut generated = String::new();
-    generate_map(&mut generated, "PS1_SAVE_GROUPS_MAP", &ps1);
-    generate_map(&mut generated, "PS2_SAVE_GROUPS_MAP", &ps2);
+    generate_map(&mut generated, "PS1_SAVE_GROUPS_MAP", &ps1, sony_depot_ids);
+    generate_map(&mut generated, "PS2_SAVE_GROUPS_MAP", &ps2, sony_depot_ids);
+    generate_map(
+        &mut generated,
+        "DREAMCAST_SAVE_GROUPS_MAP",
+        &dreamcast,
+        dreamcast_depot_ids,
+    );
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("build output directory"));
     fs::write(output.join("savegroups.rs"), generated).expect("write generated save groups");
 }
 
-fn generate_map(output: &mut String, name: &str, path: &Path) {
+fn generate_map(output: &mut String, name: &str, path: &Path, depot_ids: fn(&str) -> Vec<u64>) {
     let source = fs::read_to_string(path).expect("read save groups");
     let groups: SaveGroups = toml::from_str(&source).expect("deserialize save groups");
     let mut lookup = BTreeMap::<u64, BTreeSet<u64>>::new();
@@ -45,7 +53,7 @@ fn generate_map(output: &mut String, name: &str, path: &Path) {
         let members = group
             .ids
             .iter()
-            .flat_map(|serial| candidate_depot_ids(serial))
+            .flat_map(|serial| depot_ids(serial))
             .collect::<BTreeSet<_>>();
         for id in &members {
             lookup.entry(*id).or_default().extend(&members);
@@ -69,7 +77,7 @@ fn generate_map(output: &mut String, name: &str, path: &Path) {
     .expect("write generated save-group map");
 }
 
-fn candidate_depot_ids(serial: &str) -> Vec<u64> {
+fn sony_depot_ids(serial: &str) -> Vec<u64> {
     if serial.len() != 10 || !serial.is_ascii() {
         return Vec::new();
     }
@@ -87,5 +95,15 @@ fn candidate_depot_ids(serial: &str) -> Vec<u64> {
                 .into();
             id.0
         })
+        .collect()
+}
+
+fn dreamcast_depot_ids(product: &str) -> Vec<u64> {
+    save_depot_id::DreamcastProductId::new(product.as_bytes())
+        .map(|product| {
+            let id: save_depot_id::SaveDepotId = product.into();
+            id.0
+        })
+        .into_iter()
         .collect()
 }

@@ -26,3 +26,4 @@ include!(concat!(env!("OUT_DIR"), "/savegroups.rs"));
 
 pub(crate) static PS1_SAVE_GROUPS: SaveGroups = SaveGroups::new(&PS1_SAVE_GROUPS_MAP);
 pub(crate) static PS2_SAVE_GROUPS: SaveGroups = SaveGroups::new(&PS2_SAVE_GROUPS_MAP);
+pub(crate) static DREAMCAST_SAVE_GROUPS: SaveGroups = SaveGroups::new(&DREAMCAST_SAVE_GROUPS_MAP);

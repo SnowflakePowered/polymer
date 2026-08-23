@@ -34,11 +34,13 @@ const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
 const WIIU_PLATFORM = "NINTENDO_WIIU";
 const GAMECUBE_PLATFORM = "NINTENDO_GCN";
+const DREAMCAST_PLATFORM = "SEGA_DC";
 const PSX_PLATFORM = "SONY_PSX";
 const PS2_PLATFORM = "SONY_PS2";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
 let defaultWiiUNand: Promise<ConsoleStorageNand> | null = null;
 let defaultGameCubeCard: Promise<ConsoleStorageNand> | null = null;
+let defaultDreamcastCard: Promise<ConsoleStorageNand> | null = null;
 let defaultPs1Card: Promise<ConsoleStorageNand> | null = null;
 let defaultPs2Card: Promise<ConsoleStorageNand> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
@@ -115,6 +117,22 @@ function ensureDefaultGameCubeCard() {
     });
   }
   return defaultGameCubeCard;
+}
+
+function ensureDefaultDreamcastCard() {
+  if (!defaultDreamcastCard) {
+    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+      volumes
+        .filter((volume) => volume.platform === DREAMCAST_PLATFORM && volume.label === "Default")
+        .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
+        ?? window.Snowglass.consolestorage.Nand.create(DREAMCAST_PLATFORM, { label: "Default" })
+    );
+    defaultDreamcastCard = pending.catch((error) => {
+      defaultDreamcastCard = null;
+      throw error;
+    });
+  }
+  return defaultDreamcastCard;
 }
 
 function ensureDefaultPs2Card() {
@@ -266,6 +284,8 @@ function ShellProvider(props: ParentProps) {
           selection.storage = { mlc: (await ensureDefaultWiiUNand()).id };
         } else if (game.platform === GAMECUBE_PLATFORM) {
           selection.storage = { slotA: (await ensureDefaultGameCubeCard()).id };
+        } else if (game.platform === DREAMCAST_PLATFORM) {
+          selection.storage = { vmu: (await ensureDefaultDreamcastCard()).id };
         } else if (game.platform === PSX_PLATFORM) {
           selection.storage = { card1: (await ensureDefaultPs1Card()).id };
         } else if (game.platform === PS2_PLATFORM) {

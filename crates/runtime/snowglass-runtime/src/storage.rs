@@ -78,6 +78,21 @@ pub async fn launch_storage(
             ConsoleStorage::Nand(nand) => {
                 storage.insert(name.clone(), Arc::new(NandVolumeFactory::new(nand)));
             }
+            ConsoleStorage::DreamcastMemoryCard(card) => {
+                let package = package
+                    .as_ref()
+                    .ok_or_else(|| "Dreamcast memory cards require a launch package".to_owned())?;
+                if package.serial().is_none() {
+                    return Err(
+                        "Dreamcast package identity does not contain a product ID".to_owned()
+                    );
+                }
+                let primary = vec![card.infer_save_depot(package)];
+                storage.insert(
+                    name.clone(),
+                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
+                );
+            }
             ConsoleStorage::GameCubeMemoryCard(card) => {
                 let package = package
                     .as_ref()
