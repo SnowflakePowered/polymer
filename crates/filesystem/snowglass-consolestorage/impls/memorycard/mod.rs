@@ -4,6 +4,10 @@ use parking_lot::Mutex;
 
 use crate::Error;
 
+mod raw;
+
+pub(crate) use raw::MemoryCardStorage;
+
 #[derive(Debug)]
 pub enum CardBytes<'a> {
     Borrowed(&'a [u8]),

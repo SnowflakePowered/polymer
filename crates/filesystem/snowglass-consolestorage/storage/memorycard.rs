@@ -4,6 +4,8 @@ use std::sync::Arc;
 use crate::savegame::SaveDepotId;
 use crate::{EntryKind, Error, MountableStorage, Storage};
 
+pub type Reconcile = Arc<dyn Fn(&[u8]) -> Result<(), Error> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct MemoryCardView {
     storage: Arc<dyn MountableStorage>,
@@ -61,4 +63,6 @@ impl fmt::Debug for MemoryCardView {
 
 pub trait MemoryCard: Storage {
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error>;
+
+    fn reconcile(&self, primary: &[SaveDepotId]) -> Result<Reconcile, Error>;
 }
