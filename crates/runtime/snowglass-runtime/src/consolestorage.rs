@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use snowglass_deno::snowglass::ConsoleStorageRequest;
-use snowglass_library::{Directories, NandMetadata, StorageKind, StorageManager};
+use snowglass_library::{Directories, StorageKind, StorageManager, VolumeInfo};
 use uuid::Uuid;
 
 pub fn manager() -> Option<Arc<StorageManager>> {
@@ -81,7 +81,7 @@ fn parse(id: &str) -> Result<Uuid, String> {
     Uuid::parse_str(id).map_err(|_| format!("`{id}` is not a console storage id"))
 }
 
-fn describe(manager: &StorageManager, kind: StorageKind, metadata: &NandMetadata) -> Value {
+fn describe(manager: &StorageManager, kind: StorageKind, metadata: &VolumeInfo) -> Value {
     json!({
         "kind": kind.as_str(),
         "id": metadata.id.simple().to_string(),

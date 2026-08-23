@@ -25,7 +25,7 @@ pub(crate) mod permissions;
 
 pub use composed::ComposedStorage;
 
-use crate::storage::manifest::NandMetadata;
+use crate::storage::manifest::VolumeInfo;
 use manifest::{ArtifactDb, ArtifactRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +213,7 @@ pub trait VolumeStorage: MountableStorage {
     fn artifacts(&self) -> &dyn ArtifactRegistry;
 
     /// Who this volume is, or `None` if nothing has branded it yet.
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>>;
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>>;
 
     /// Establish an identity if there is none, returning it either way.
     fn brand<'a>(
@@ -221,7 +221,111 @@ pub trait VolumeStorage: MountableStorage {
         id: Uuid,
         platform: &'a str,
         label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandMetadata, Error>>;
+    ) -> BoxFuture<'a, Result<VolumeInfo, Error>>;
+}
+
+/// A volume whose filesystem operations are provided by another volume.
+pub(crate) trait BackedVolumeStorage: fmt::Debug + Send + Sync {
+    fn backing_volume(&self) -> &dyn VolumeStorage;
+
+    fn claims_backing_path(&self, path: &str) -> bool {
+        self.backing_volume().claims(path)
+    }
+}
+
+impl<T: BackedVolumeStorage> Storage for T {
+    fn exists(&self, path: &str) -> bool {
+        self.backing_volume().exists(path)
+    }
+
+    fn metadata(&self, path: &str) -> Result<Metadata, Error> {
+        self.backing_volume().metadata(path)
+    }
+
+    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
+        self.backing_volume().read_dir(path, recursive)
+    }
+
+    fn create_dir_all(&self, path: &str) -> Result<(), Error> {
+        self.backing_volume().create_dir_all(path)
+    }
+
+    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+        self.backing_volume().create(path)
+    }
+
+    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+        self.backing_volume().open(path)
+    }
+
+    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
+        self.backing_volume().open_read(path)
+    }
+
+    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+        self.backing_volume().append(path)
+    }
+
+    fn remove(&self, path: &str) -> Result<(), Error> {
+        self.backing_volume().remove(path)
+    }
+
+    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
+        self.backing_volume().watch(paths)
+    }
+
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
+        self.backing_volume().label()
+    }
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
+        self.backing_volume().set_label(label)
+    }
+
+    fn install_file<'a>(
+        &'a self,
+        source: Box<dyn AsyncRead + Send + Unpin>,
+        dest: &str,
+    ) -> BoxFuture<'a, Result<InstallResult, Error>> {
+        self.backing_volume().install_file(source, dest)
+    }
+}
+
+impl<T: BackedVolumeStorage> MountableStorage for T {
+    fn claims(&self, path: &str) -> bool {
+        self.claims_backing_path(path)
+    }
+
+    fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        self.backing_volume().rename(from, to)
+    }
+
+    fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
+        self.backing_volume().truncate(path, len)
+    }
+
+    fn sync(&self, path: &str) -> Result<(), Error> {
+        self.backing_volume().sync(path)
+    }
+}
+
+impl<T: BackedVolumeStorage> VolumeStorage for T {
+    fn artifacts(&self) -> &dyn ArtifactRegistry {
+        self.backing_volume().artifacts()
+    }
+
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
+        self.backing_volume().volumeinfo()
+    }
+
+    fn brand<'a>(
+        &'a self,
+        id: Uuid,
+        platform: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
+        self.backing_volume().brand(id, platform, label)
+    }
 }
 
 pub struct DirectoryStorage {
@@ -624,7 +728,7 @@ impl VolumeStorage for DirectoryStorage {
         &self.artifacts
     }
 
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
+    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
         self.artifacts.identity()
     }
 
@@ -633,7 +737,7 @@ impl VolumeStorage for DirectoryStorage {
         id: Uuid,
         platform: &'a str,
         label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
+    ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
         self.artifacts.brand(id, platform, label)
     }
 }

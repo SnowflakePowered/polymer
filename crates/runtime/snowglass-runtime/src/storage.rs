@@ -2,6 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use consolespec::MachineSpec;
 use serde_json::Value;
+use snowglass_consolestorage::impls::dreamcast::DreamcastMemoryCard;
+use snowglass_consolestorage::impls::gamecube::GameCubeMemoryCard;
+use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
+use snowglass_consolestorage::impls::ps2::Playstation2MemoryCard;
 use snowglass_consolestorage::savegame::{Package, SaveGameSink};
 use snowglass_library::{ConsoleStorage, StorageKind, StorageManager};
 use snowglass_pluginhost::StorageFactories;
@@ -110,66 +114,36 @@ pub async fn launch_storage(
                     "save repository `{id}` must be composed with a nand for '{name}'"
                 ));
             }
-            ConsoleStorage::DreamcastMemoryCard(card) => {
+            memory_card @ ConsoleStorage::MemoryCard(_) => {
                 let package = package
                     .as_ref()
-                    .ok_or_else(|| "Dreamcast memory cards require a launch package".to_owned())?;
+                    .ok_or_else(|| format!("{console} memory cards require a launch package"))?;
                 if package.serial().is_none() {
-                    return Err(
-                        "Dreamcast package identity does not contain a product ID".to_owned()
-                    );
+                    return Err(format!(
+                        "{console} package identity does not contain a memory-card product ID"
+                    ));
                 }
-                let primary = vec![card.infer_save_depot(package)];
-                storage.insert(
-                    name.clone(),
-                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
-                );
-            }
-            ConsoleStorage::GameCubeMemoryCard(card) => {
-                let package = package
-                    .as_ref()
-                    .ok_or_else(|| "GameCube memory cards require a launch package".to_owned())?;
-                if package.serial().is_none() {
-                    return Err(
-                        "GameCube package identity does not contain a product code".to_owned()
-                    );
+
+                macro_rules! mount_card {
+                    ($card:ty) => {{
+                        let card = memory_card.downcast::<$card>().ok_or_else(|| {
+                            format!("storage `{id}` is not a {console} memory card")
+                        })?;
+                        let primary = vec![card.infer_save_depot(package)];
+                        storage.insert(
+                            name.clone(),
+                            Arc::new(MemoryCardStorageFactory::new(card, primary)),
+                        );
+                    }};
                 }
-                let primary = vec![card.infer_save_depot(package)];
-                storage.insert(
-                    name.clone(),
-                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
-                );
-            }
-            ConsoleStorage::PlaystationMemoryCard(card) => {
-                let package = package.as_ref().ok_or_else(|| {
-                    "PlayStation memory cards require a launch package".to_owned()
-                })?;
-                if package.serial().is_none() {
-                    return Err(
-                        "PlayStation package identity does not contain a product serial".to_owned(),
-                    );
+
+                match console {
+                    DreamcastMemoryCard::PLATFORM => mount_card!(DreamcastMemoryCard),
+                    GameCubeMemoryCard::PLATFORM => mount_card!(GameCubeMemoryCard),
+                    PlaystationMemoryCard::PLATFORM => mount_card!(PlaystationMemoryCard),
+                    Playstation2MemoryCard::PLATFORM => mount_card!(Playstation2MemoryCard),
+                    _ => return Err(format!("unsupported memory-card platform `{console}`")),
                 }
-                let primary = vec![card.infer_save_depot(package)];
-                storage.insert(
-                    name.clone(),
-                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
-                );
-            }
-            ConsoleStorage::Playstation2MemoryCard(card) => {
-                let package = package.as_ref().ok_or_else(|| {
-                    "PlayStation 2 memory cards require a launch package".to_owned()
-                })?;
-                if package.serial().is_none() {
-                    return Err(
-                        "PlayStation 2 package identity does not contain a product serial"
-                            .to_owned(),
-                    );
-                }
-                let primary = vec![card.infer_save_depot(package)];
-                storage.insert(
-                    name.clone(),
-                    Arc::new(MemoryCardStorageFactory::new(card, primary)),
-                );
             }
         }
     }

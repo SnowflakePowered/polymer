@@ -2,16 +2,15 @@ use crate::impls::NintendoTitleId;
 use crate::impls::wiiu::xml;
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::savegame::{
-    Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
+    Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
+    SaveGameSink, SaveWatcher,
 };
-use crate::storage::ChangeSignal;
+use crate::storage::{BackedVolumeStorage, ChangeSignal};
 use crate::{
-    ArtifactRegistry, BoxFuture, ComposedStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, NandMetadata, Permissions, PermissionsTable, ReadDir, SaveRepo, Storage,
-    StorageFile, StorageRead, VolumeStorage, ensure_structure, requires_structure,
+    BoxFuture, ComposedStorage, EntryKind, Error, MountableStorage, Permissions, PermissionsTable,
+    SaveRepo, Storage, VolumeStorage, ensure_structure, requires_structure,
 };
 use async_trait::async_trait;
-use futures::Stream;
 use futures::{FutureExt, StreamExt};
 use image::DynamicImage;
 use image::codecs::tga::TgaDecoder;
@@ -20,7 +19,6 @@ use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncRead;
 use uuid::Uuid;
 
 const COUNTRY_FILE: &str = include_str!("./static/country.txt");
@@ -44,98 +42,13 @@ pub struct WiiUSaveRepo {
     root: Arc<dyn VolumeStorage>,
 }
 
-impl Storage for WiiUSaveRepo {
-    fn exists(&self, path: &str) -> bool {
-        self.root.exists(path)
+impl BackedVolumeStorage for WiiUSaveRepo {
+    fn backing_volume(&self) -> &dyn VolumeStorage {
+        self.root.as_ref()
     }
 
-    fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        self.root.metadata(path)
-    }
-
-    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        self.root.read_dir(path, recursive)
-    }
-
-    fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        self.root.create_dir_all(path)
-    }
-
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.root.create(path)
-    }
-
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.root.open(path)
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.root.open_read(path)
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.root.append(path)
-    }
-
-    fn remove(&self, path: &str) -> Result<(), Error> {
-        self.root.remove(path)
-    }
-
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.root.watch(paths)
-    }
-
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.root.label()
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.root.set_label(label)
-    }
-
-    fn install_file<'a>(
-        &'a self,
-        source: Box<dyn AsyncRead + Send + Unpin>,
-        dest: &str,
-    ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        self.root.install_file(source, dest)
-    }
-}
-
-impl MountableStorage for WiiUSaveRepo {
-    fn claims(&self, path: &str) -> bool {
+    fn claims_backing_path(&self, path: &str) -> bool {
         WiiUNand::is_save_path(path)
-    }
-
-    fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        self.root.rename(from, to)
-    }
-
-    fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        self.root.truncate(path, len)
-    }
-
-    fn sync(&self, path: &str) -> Result<(), Error> {
-        self.root.sync(path)
-    }
-}
-
-impl VolumeStorage for WiiUSaveRepo {
-    fn artifacts(&self) -> &dyn ArtifactRegistry {
-        self.root.artifacts()
-    }
-
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<NandMetadata>, Error>> {
-        self.root.volumeinfo()
-    }
-
-    fn brand<'a>(
-        &'a self,
-        id: Uuid,
-        platform: &'a str,
-        label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<NandMetadata, Error>> {
-        self.root.brand(id, platform, label)
     }
 }
 
@@ -299,12 +212,7 @@ impl WiiUNand {
 }
 
 #[async_trait]
-impl SaveRepo for WiiUSaveRepo {
-    async fn game_saved(&self) -> Result<(), Error> {
-        self.watch_saves(&[])?.changed().await;
-        Ok(())
-    }
-}
+impl SaveRepo for WiiUSaveRepo {}
 
 impl WiiUSaveRepo {
     const SAVE_ROOT: &str = WiiUNand::SAVE_ROOT;
@@ -408,12 +316,14 @@ impl SaveGameSink for WiiUSaveRepo {
         NintendoTitleId::new(title_id).into()
     }
 
-    fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {
-        self.save_ids()
-            .into_iter()
-            .filter_map(|id| self.describe_save(id).ok())
-            .collect::<Vec<_>>()
-            .into_iter()
+    fn enumerate_saves(&self) -> SaveDescriptors<'_> {
+        Box::new(
+            self.save_ids()
+                .into_iter()
+                .filter_map(|id| self.describe_save(id).ok())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
     }
 
     fn export_save<'a>(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error> {
@@ -485,10 +395,10 @@ impl SaveGameSink for WiiUSaveRepo {
 
     fn install_save<'a>(
         &'a self,
-        blobs: impl Stream<Item = SaveBlob> + Send + 'a,
+        blobs: SaveBlobStream<'a>,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>> {
         Box::pin(async move {
-            let mut blobs = std::pin::pin!(blobs);
+            let mut blobs = blobs;
             let mut id = None;
 
             while let Some(blob) = blobs.next().await {

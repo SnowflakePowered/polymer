@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
 
 use futures::Stream;
@@ -121,16 +122,19 @@ where
     }
 }
 
-pub trait SaveGameSink {
+pub type SaveDescriptors<'a> = Box<dyn Iterator<Item = SaveDescriptor> + 'a>;
+pub type SaveBlobStream<'a> = Pin<Box<dyn Stream<Item = SaveBlob> + Send + 'a>>;
+
+pub trait SaveGameSink: Send + Sync {
     fn infer_save_depot(&self, package: &Package) -> SaveDepotId;
 
-    fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_;
+    fn enumerate_saves(&self) -> SaveDescriptors<'_>;
 
     fn export_save<'a>(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error>;
 
     fn install_save<'a>(
         &'a self,
-        blobs: impl Stream<Item = SaveBlob> + Send + 'a,
+        blobs: SaveBlobStream<'a>,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>>;
 
     fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error>;

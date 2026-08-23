@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use image::RgbaImage;
 use jiff::Timestamp;
 use uuid::Uuid;
@@ -18,12 +18,14 @@ use crate::impls::{
     memorycard::{MemoryCardStorage, RawMemoryCardImage},
 };
 use crate::savegame::{
-    Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
+    Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
+    SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::{PS1_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
+use crate::storage::BackedVolumeStorage;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
-    Storage, VolumeStorage,
+    SaveRepo, Storage, VolumeStorage,
 };
 
 const SAVE_HEADER_SIZE: usize = 12;
@@ -114,6 +116,15 @@ pub struct PlaystationMemoryCard {
     storage: Arc<DirectoryStorage>,
 }
 
+impl BackedVolumeStorage for PlaystationMemoryCard {
+    fn backing_volume(&self) -> &dyn VolumeStorage {
+        self.storage.as_ref()
+    }
+}
+
+#[async_trait::async_trait]
+impl SaveRepo for PlaystationMemoryCard {}
+
 impl PlaystationMemoryCard {
     pub const PLATFORM: &str = "SONY_PSX";
 
@@ -141,13 +152,8 @@ impl PlaystationMemoryCard {
         Ok(Self { storage })
     }
 
-    pub async fn metadata(&self) -> Result<crate::NandMetadata, Error> {
+    pub async fn metadata(&self) -> Result<crate::VolumeInfo, Error> {
         self.storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)
-    }
-
-    pub async fn game_saved(&self) -> Result<(), Error> {
-        self.watch_saves(&[])?.changed().await;
-        Ok(())
     }
 
     fn saves(&self) -> Vec<SaveDataHandle> {
@@ -397,14 +403,16 @@ impl SaveGameSink for PlaystationMemoryCard {
         SaveDataHandle::depot_id_from_serial(serial)
     }
 
-    fn enumerate_saves(&self) -> impl Iterator<Item = SaveDescriptor> + '_ {
+    fn enumerate_saves(&self) -> SaveDescriptors<'_> {
         let mut seen = HashSet::new();
-        self.saves()
-            .into_iter()
-            .filter(|save| seen.insert(save.depot_id().0))
-            .filter_map(|save| self.describe_save(&save).ok())
-            .collect::<Vec<_>>()
-            .into_iter()
+        Box::new(
+            self.saves()
+                .into_iter()
+                .filter(|save| seen.insert(save.depot_id().0))
+                .filter_map(|save| self.describe_save(&save).ok())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
     }
 
     fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
@@ -430,10 +438,10 @@ impl SaveGameSink for PlaystationMemoryCard {
 
     fn install_save<'a>(
         &'a self,
-        blobs: impl Stream<Item = SaveBlob> + Send + 'a,
+        blobs: SaveBlobStream<'a>,
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>> {
         Box::pin(async move {
-            let mut blobs = std::pin::pin!(blobs);
+            let mut blobs = blobs;
             let mut installed = None::<SaveDepotId>;
             let mut representative = None;
             while let Some(blob) = blobs.next().await {

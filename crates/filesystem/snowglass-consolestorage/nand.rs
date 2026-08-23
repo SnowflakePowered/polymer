@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
 use crate::storage::VolumeStorage;
-use crate::storage::manifest::{ArtifactSummary, NandMetadata};
+use crate::storage::manifest::{ArtifactSummary, VolumeInfo};
 use crate::{Error, MountableStorage, Permissions, SaveRepo};
 
 pub enum NandCompletion {
@@ -53,7 +53,7 @@ pub trait VirtualNand: Send + Sync {
     where
         Self: Sized;
 
-    async fn metadata(&self) -> Result<NandMetadata, Error> {
+    async fn metadata(&self) -> Result<VolumeInfo, Error> {
         self.root().volumeinfo().await?.ok_or(Error::UnclaimedNand)
     }
 
