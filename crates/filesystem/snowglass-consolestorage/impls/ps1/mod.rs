@@ -10,11 +10,13 @@ use std::time::Duration;
 use futures::{Stream, StreamExt};
 use image::RgbaImage;
 use jiff::Timestamp;
-use parking_lot::Mutex;
 use uuid::Uuid;
 
-use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE, RawMemoryStorage};
-use crate::impls::{SonyProductCode, memorycard::RawMemoryCardImage};
+use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE};
+use crate::impls::{
+    SonyProductCode,
+    memorycard::{MemoryCardStorage, RawMemoryCardImage},
+};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -418,19 +420,26 @@ impl Storage for PlaystationMemoryCard {
 }
 
 impl MemoryCard for PlaystationMemoryCard {
+    fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
+        let (_, projected) = self.project(primary)?;
+        let card = self.clone();
+        Ok(Arc::new(move |bytes| card.reconcile(&projected, bytes)))
+    }
+
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         if format != "raw" {
             return Err(Error::Unsupported(format!(
                 "PlayStation memory cards do not support the '{format}' format"
             )));
         }
-        let (image, projected) = self.project(primary)?;
-        let card = self.clone();
-        let storage: Arc<dyn MountableStorage> = Arc::new(RawMemoryStorage::new(
-            self.storage.clone(),
+        let (image, _) = self.project(primary)?;
+        let storage: Arc<dyn MountableStorage> = Arc::new(MemoryCardStorage::<Self>::new(
+            self.clone(),
+            primary,
             image,
-            move |bytes| card.reconcile(&projected, bytes),
-        ));
+            "ps1-memory-card",
+            "PlayStation memory card",
+        )?);
         MemoryCardView::new(storage, "")
     }
 }
@@ -510,37 +519,14 @@ impl SaveGameSink for PlaystationMemoryCard {
         let activity = self.storage.watch(&[SAVE_ROOT])?.ok_or_else(|| {
             Error::Unsupported("PlayStation storage cannot watch saves".to_owned())
         })?;
-        let signal = SaveSignal {
-            card: self.clone(),
-            saves: saves.to_vec(),
+        let card = self.clone();
+        let selected = saves.to_vec();
+        Ok(SaveWatcher::with_fingerprint(
+            selected.clone(),
             activity,
-            last: Mutex::new(self.snapshot(saves)),
-        };
-        Ok(SaveWatcher::new(saves.to_vec(), Box::new(signal)))
-    }
-}
-
-struct SaveSignal {
-    card: PlaystationMemoryCard,
-    saves: Vec<SaveDepotId>,
-    activity: Box<dyn ChangeSignal>,
-    last: Mutex<Vec<(u64, Option<(u64, Timestamp)>)>>,
-}
-
-impl ChangeSignal for SaveSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            loop {
-                self.activity.changed().await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                let current = self.card.snapshot(&self.saves);
-                let mut last = self.last.lock();
-                if *last != current {
-                    *last = current;
-                    return;
-                }
-            }
-        })
+            Duration::from_millis(50),
+            move || card.snapshot(&selected),
+        ))
     }
 }
 

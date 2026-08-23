@@ -12,13 +12,12 @@ use std::time::Duration;
 use atomic_write_file::AtomicWriteFile;
 use futures::{Stream, StreamExt};
 use jiff::Timestamp;
-use parking_lot::Mutex;
 use uuid::Uuid;
 
 use self::dolphin::DolphinMemoryStorage;
 use self::gci::{Region, Save};
-use self::raw::RawMemoryStorage;
 use crate::impls::GameCubeDiscId;
+use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -348,6 +347,21 @@ impl Storage for GameCubeMemoryCard {
 }
 
 impl MemoryCard for GameCubeMemoryCard {
+    fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
+        let (region, projected) = self.project(primary)?;
+        let projected_paths = projected
+            .iter()
+            .map(|save| (save.identity(), format!("{SAVE_ROOT}/{}", save.file_name())))
+            .collect::<HashMap<_, _>>();
+        let card = self.clone();
+        let blocks = u32::from(raw::card::MC251_BLOCKS);
+        Ok(Arc::new(move |bytes| {
+            let image = raw::card::MemoryCard::new(bytes, blocks)?;
+            let saves = image.saves()?;
+            card.reconcile(region, &projected_paths, &saves)
+        }))
+    }
+
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         let (region, projected) = self.project(primary)?;
         let projected_paths = projected
@@ -362,14 +376,21 @@ impl MemoryCard for GameCubeMemoryCard {
                 &projected,
                 reconcile,
             )),
-            "raw" => Arc::new(RawMemoryStorage::new(
-                self.storage.clone(),
-                self.id,
-                region,
-                u32::from(raw::card::MC251_BLOCKS),
-                &projected,
-                reconcile,
-            )?),
+            "raw" => {
+                let blocks = u32::from(raw::card::MC251_BLOCKS);
+                let mut image = raw::card::MemoryCard::empty(blocks)?;
+                image.initialize_header(self.id, region)?;
+                for save in &projected {
+                    image.append_save(Save::new(save.as_bytes())?)?;
+                }
+                Arc::new(MemoryCardStorage::<Self>::new(
+                    self.clone(),
+                    primary,
+                    image.into_owned(),
+                    "gamecube-memory-card",
+                    "GameCube memory card",
+                )?)
+            }
             _ => {
                 return Err(Error::Unsupported(format!(
                     "GameCube memory cards do not support the '{format}' format"
@@ -458,37 +479,14 @@ impl SaveGameSink for GameCubeMemoryCard {
             .storage
             .watch(&[SAVE_ROOT])?
             .ok_or_else(|| Error::Unsupported("GameCube storage cannot watch saves".to_owned()))?;
-        let signal = SaveSignal {
-            card: self.clone(),
-            saves: saves.to_vec(),
+        let card = self.clone();
+        let selected = saves.to_vec();
+        Ok(SaveWatcher::with_fingerprint(
+            selected.clone(),
             activity,
-            last: Mutex::new(self.snapshot(saves)),
-        };
-        Ok(SaveWatcher::new(saves.to_vec(), Box::new(signal)))
-    }
-}
-
-struct SaveSignal {
-    card: GameCubeMemoryCard,
-    saves: Vec<SaveDepotId>,
-    activity: Box<dyn ChangeSignal>,
-    last: Mutex<Vec<(Vec<u8>, Option<(u64, Timestamp)>)>>,
-}
-
-impl ChangeSignal for SaveSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            loop {
-                self.activity.changed().await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let snapshot = self.card.snapshot(&self.saves);
-                let mut last = self.last.lock();
-                if *last != snapshot {
-                    *last = snapshot;
-                    return;
-                }
-            }
-        })
+            Duration::from_millis(100),
+            move || card.snapshot(&selected),
+        ))
     }
 }
 

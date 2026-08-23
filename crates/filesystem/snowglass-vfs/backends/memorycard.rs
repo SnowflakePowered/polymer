@@ -326,6 +326,13 @@ mod tests {
     }
 
     impl MemoryCard for TestCard {
+        fn reconcile(
+            &self,
+            _primary: &[SaveDepotId],
+        ) -> Result<snowglass_consolestorage::Reconcile, Error> {
+            Ok(Arc::new(|_| Ok(())))
+        }
+
         fn view(&self, _primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
             if format != "raw" {
                 return Err(Error::Unsupported(format!(

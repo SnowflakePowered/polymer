@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use futures::Stream;
 use image::RgbaImage;
+use parking_lot::Mutex;
 
 use crate::BoxFuture;
 use crate::error::Error;
@@ -61,12 +63,61 @@ impl SaveWatcher {
         Self { saves, signal }
     }
 
+    pub fn with_fingerprint<State>(
+        saves: Vec<SaveDepotId>,
+        activity: Box<dyn ChangeSignal>,
+        settle: Duration,
+        fingerprint: impl Fn() -> State + Send + Sync + 'static,
+    ) -> Self
+    where
+        State: Eq + Send + 'static,
+    {
+        let last = fingerprint();
+        Self::new(
+            saves,
+            Box::new(FingerprintSignal {
+                activity,
+                settle,
+                fingerprint,
+                last: Mutex::new(last),
+            }),
+        )
+    }
+
     pub fn saves(&self) -> &[SaveDepotId] {
         &self.saves
     }
 
     pub fn changed(&self) -> BoxFuture<'_, ()> {
         self.signal.changed()
+    }
+}
+
+struct FingerprintSignal<State, Fingerprint> {
+    activity: Box<dyn ChangeSignal>,
+    settle: Duration,
+    fingerprint: Fingerprint,
+    last: Mutex<State>,
+}
+
+impl<State, Fingerprint> ChangeSignal for FingerprintSignal<State, Fingerprint>
+where
+    State: Eq + Send,
+    Fingerprint: Fn() -> State + Send + Sync,
+{
+    fn changed(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                self.activity.changed().await;
+                tokio::time::sleep(self.settle).await;
+                let current = (self.fingerprint)();
+                let mut last = self.last.lock();
+                if *last != current {
+                    *last = current;
+                    return;
+                }
+            }
+        })
     }
 }
 

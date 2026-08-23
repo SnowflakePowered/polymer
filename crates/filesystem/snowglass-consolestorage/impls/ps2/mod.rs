@@ -19,9 +19,8 @@ use uuid::Uuid;
 
 use self::pcsx2::Pcsx2MemoryStorage;
 use self::psu::Save;
-use self::raw::RawMemoryStorage;
 use crate::impls::SonyProductCode;
-use crate::impls::memorycard::RawMemoryCardImage;
+use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -442,6 +441,35 @@ impl Storage for Playstation2MemoryCard {
 }
 
 impl MemoryCard for Playstation2MemoryCard {
+    fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
+        Self::validate_capacity(CAPACITY_BLOCKS)?;
+        let projected = self
+            .project_saves(primary, CAPACITY_BLOCKS)?
+            .iter()
+            .map(|save| save.name_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let card = self.clone();
+        let owned = Arc::new(Mutex::new(projected));
+        Ok(Arc::new(move |bytes| {
+            let image = raw::card::MemoryCard::new(bytes, CAPACITY_BLOCKS)?;
+            let Ok(mut saves) = image.saves() else {
+                return Ok(());
+            };
+            let had_incomplete = saves.iter().any(|save| save.files().len() == 0);
+            saves.retain(|save| save.files().len() != 0);
+            if had_incomplete && saves.is_empty() {
+                return Ok(());
+            }
+            let previous = owned.lock().clone();
+            card.reconcile(&previous, &saves)?;
+            *owned.lock() = saves
+                .iter()
+                .map(|save| save.name_bytes().to_vec())
+                .collect();
+            Ok(())
+        }))
+    }
+
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         Self::validate_capacity(CAPACITY_BLOCKS)?;
         let saves = self.project_saves(primary, CAPACITY_BLOCKS)?;
@@ -451,21 +479,13 @@ impl MemoryCard for Playstation2MemoryCard {
             .collect::<Vec<_>>();
         let storage: Arc<dyn MountableStorage> = match format {
             "raw" => {
-                let card = self.clone();
-                let owned = Arc::new(Mutex::new(projected));
-                Arc::new(RawMemoryStorage::new(
-                    self.storage.clone(),
-                    CAPACITY_BLOCKS,
-                    saves,
-                    move |saves| {
-                        let previous = owned.lock().clone();
-                        card.reconcile(&previous, saves)?;
-                        *owned.lock() = saves
-                            .iter()
-                            .map(|save| save.name_bytes().to_vec())
-                            .collect();
-                        Ok(())
-                    },
+                let bytes = raw::card::MemoryCard::format(CAPACITY_BLOCKS, &saves, true)?;
+                Arc::new(MemoryCardStorage::<Self>::new(
+                    self.clone(),
+                    primary,
+                    bytes,
+                    "ps2-memory-card",
+                    "PlayStation 2 memory card",
                 )?)
             }
             "pcsx2" => {
@@ -591,37 +611,14 @@ impl SaveGameSink for Playstation2MemoryCard {
         let activity = self.storage.watch(&[SAVE_ROOT])?.ok_or_else(|| {
             Error::Unsupported("PlayStation 2 storage cannot watch saves".to_owned())
         })?;
-        let signal = SaveSignal {
-            card: self.clone(),
-            saves: saves.to_vec(),
+        let card = self.clone();
+        let selected = saves.to_vec();
+        Ok(SaveWatcher::with_fingerprint(
+            selected.clone(),
             activity,
-            last: Mutex::new(self.snapshot(saves)),
-        };
-        Ok(SaveWatcher::new(saves.to_vec(), Box::new(signal)))
-    }
-}
-
-struct SaveSignal {
-    card: Playstation2MemoryCard,
-    saves: Vec<SaveDepotId>,
-    activity: Box<dyn ChangeSignal>,
-    last: Mutex<Vec<(String, u64, Timestamp)>>,
-}
-
-impl ChangeSignal for SaveSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            loop {
-                self.activity.changed().await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                let current = self.card.snapshot(&self.saves);
-                let mut last = self.last.lock();
-                if *last != current {
-                    *last = current;
-                    return;
-                }
-            }
-        })
+            Duration::from_millis(50),
+            move || card.snapshot(&selected),
+        ))
     }
 }
 

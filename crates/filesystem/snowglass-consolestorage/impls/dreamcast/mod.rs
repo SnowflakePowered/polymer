@@ -12,12 +12,14 @@ use std::time::Duration;
 use atomic_write_file::AtomicWriteFile;
 use futures::{Stream, StreamExt};
 use jiff::Timestamp;
-use parking_lot::Mutex;
 use uuid::Uuid;
 
 use self::vmi::Vmi;
 use self::vms::Save;
-use crate::impls::DreamcastProductId;
+use crate::impls::{
+    DreamcastProductId,
+    memorycard::{MemoryCardStorage, RawMemoryCardImage},
+};
 use crate::savegame::{
     Package, SaveBlob, SaveDepot, SaveDepotId, SaveDescriptor, SaveGameSink, SaveWatcher,
 };
@@ -28,8 +30,6 @@ use crate::{
 };
 
 const SAVE_ROOT: &str = "card";
-type SaveSnapshot = Vec<([u8; 12], Option<(u64, Timestamp)>)>;
-
 #[derive(Clone)]
 pub struct DreamcastMemoryCard {
     storage: Arc<DirectoryStorage>,
@@ -314,7 +314,7 @@ impl DreamcastMemoryCard {
         })
     }
 
-    fn snapshot(&self, selected: &[SaveDepotId]) -> SaveSnapshot {
+    fn snapshot(&self, selected: &[SaveDepotId]) -> Vec<([u8; 12], [Option<(u64, Timestamp)>; 2])> {
         let selected = selected.iter().map(|id| id.0).collect::<HashSet<_>>();
         self.saves()
             .into_iter()
@@ -322,13 +322,14 @@ impl DreamcastMemoryCard {
                 selected.is_empty() || selected.contains(&SaveDepotId::from(*product).0)
             })
             .map(|(product, save)| {
-                let (vmi_path, _) = Self::save_paths(product, &save);
-                let metadata = self
-                    .storage
-                    .metadata(&vmi_path)
-                    .ok()
-                    .map(|metadata| (metadata.len, metadata.mtime));
-                (save.identity(), metadata)
+                let (vmi_path, vms_path) = Self::save_paths(product, &save);
+                let metadata = |path| {
+                    self.storage
+                        .metadata(path)
+                        .ok()
+                        .map(|metadata| (metadata.len, metadata.mtime))
+                };
+                (save.identity(), [metadata(&vmi_path), metadata(&vms_path)])
             })
             .collect()
     }
@@ -417,28 +418,42 @@ impl Storage for DreamcastMemoryCard {
 }
 
 impl MemoryCard for DreamcastMemoryCard {
+    fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
+        let (mounted_product, projected) = self.project(primary)?;
+        let originals = projected
+            .iter()
+            .map(|(product, save)| (save.identity(), (*product, save.vmi().clone().into_owned())))
+            .collect::<HashMap<_, _>>();
+        let card = self.clone();
+        Ok(Arc::new(move |bytes| {
+            let image = raw::card::VmuMemory::new(bytes, raw::card::USER_BLOCKS)?;
+            let saves = image.saves()?;
+            card.reconcile(mounted_product, &originals, &saves)
+        }))
+    }
+
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         if format != "raw" {
             return Err(Error::Unsupported(format!(
                 "Dreamcast memory cards do not support the '{format}' format"
             )));
         }
-        let (primary, projected) = self.project(primary)?;
-        let originals = projected
-            .iter()
-            .map(|(product, save)| (save.identity(), (*product, save.vmi().clone().into_owned())))
-            .collect::<HashMap<_, _>>();
+        let (_, projected) = self.project(primary)?;
         let saves = projected
             .iter()
             .map(|(_, save)| save.clone())
             .collect::<Vec<_>>();
-        let card = self.clone();
-        let reconcile = move |saves: &[Save<'_>]| card.reconcile(primary, &originals, saves);
+        let mut image = raw::card::VmuMemory::empty(raw::card::USER_BLOCKS)?;
+        for save in &saves {
+            image.append_save(Save::new(save.vmi().as_bytes(), save.vms())?)?;
+        }
         MemoryCardView::new(
-            Arc::new(raw::RawMemoryStorage::new(
-                self.storage.clone(),
-                &saves,
-                reconcile,
+            Arc::new(MemoryCardStorage::<Self>::new(
+                self.clone(),
+                primary,
+                image.into_owned(),
+                "dreamcast-vmu",
+                "Dreamcast VMU",
             )?),
             "",
         )
@@ -557,39 +572,14 @@ impl SaveGameSink for DreamcastMemoryCard {
             .storage
             .watch(&[SAVE_ROOT])?
             .ok_or_else(|| Error::Unsupported("Dreamcast storage cannot watch saves".to_owned()))?;
-        Ok(SaveWatcher::new(
-            saves.to_vec(),
-            Box::new(SaveSignal {
-                card: self.clone(),
-                saves: saves.to_vec(),
-                activity,
-                last: Mutex::new(self.snapshot(saves)),
-            }),
+        let card = self.clone();
+        let selected = saves.to_vec();
+        Ok(SaveWatcher::with_fingerprint(
+            selected.clone(),
+            activity,
+            Duration::from_millis(100),
+            move || card.snapshot(&selected),
         ))
-    }
-}
-
-struct SaveSignal {
-    card: DreamcastMemoryCard,
-    saves: Vec<SaveDepotId>,
-    activity: Box<dyn ChangeSignal>,
-    last: Mutex<SaveSnapshot>,
-}
-
-impl ChangeSignal for SaveSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            loop {
-                self.activity.changed().await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let snapshot = self.card.snapshot(&self.saves);
-                let mut last = self.last.lock();
-                if *last != snapshot {
-                    *last = snapshot;
-                    return;
-                }
-            }
-        })
     }
 }
 
@@ -716,7 +706,7 @@ mod tests {
         let image = image.into_owned();
         let mut output = view.storage().open("").unwrap();
         output.write_all(&image).unwrap();
-        output.flush().unwrap();
+        view.storage().sync("").unwrap();
 
         assert!(card.storage.exists("card/MK-51117/NEWSAVE1.vmi"));
         assert!(card.storage.exists("card/MK-51117/NEWSAVE1.vms"));
