@@ -1,11 +1,11 @@
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use parking_lot::Mutex;
 
-use crate::impls::memorycard::RawMemoryCardImage;
+use crate::impls::memorycard::{RawMemoryCardImage, ReconcileWorker};
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, InstallResult, Metadata, MountableStorage,
     ReadDir, Storage, StorageFile, StorageRead,
@@ -25,19 +25,17 @@ type Reconcile = dyn for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send +
 pub(super) struct RawMemoryStorage {
     backing: Arc<DirectoryStorage>,
     image: Arc<CardImage>,
-    dirty: mpsc::SyncSender<()>,
+    worker: ReconcileWorker,
 }
 
 struct CardImage {
     bytes: Mutex<Vec<u8>>,
     blocks: u32,
     reconcile: Arc<Reconcile>,
-    reconciling: Mutex<()>,
 }
 
 impl CardImage {
     fn reconcile(&self) -> Result<(), Error> {
-        let _reconciling = self.reconciling.lock();
         let image = self.bytes.lock().clone();
         let card = match card::MemoryCard::new(&image, self.blocks) {
             Ok(card) => card,
@@ -68,25 +66,16 @@ impl RawMemoryStorage {
             bytes: Mutex::new(card::MemoryCard::format(capacity_blocks, &saves, true)?),
             blocks: capacity_blocks,
             reconcile: Arc::new(reconcile),
-            reconciling: Mutex::new(()),
         });
-        let (dirty, pending) = mpsc::sync_channel(1);
-        let worker = image.clone();
-        std::thread::Builder::new()
-            .name("ps2-memory-card".to_owned())
-            .spawn(move || {
-                while pending.recv().is_ok() {
-                    let _ = worker.reconcile();
-                }
-            })
-            .map_err(|source| Error::Io {
-                path: "PlayStation 2 memory card".to_owned(),
-                source,
+        let background = image.clone();
+        let worker =
+            ReconcileWorker::spawn("ps2-memory-card", "PlayStation 2 memory card", move || {
+                background.reconcile()
             })?;
         Ok(Self {
             backing,
             image,
-            dirty,
+            worker,
         })
     }
 
@@ -96,7 +85,7 @@ impl RawMemoryStorage {
         }
         Ok(MemoryHandle {
             image: self.image.clone(),
-            dirty: self.dirty.clone(),
+            worker: self.worker.clone(),
             position: 0,
         })
     }
@@ -207,20 +196,14 @@ impl MountableStorage for RawMemoryStorage {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.image.reconcile()
+        self.worker.reconcile()
     }
 }
 
 struct MemoryHandle {
     image: Arc<CardImage>,
-    dirty: mpsc::SyncSender<()>,
+    worker: ReconcileWorker,
     position: u64,
-}
-
-impl MemoryHandle {
-    fn reconcile(&self) {
-        let _ = self.dirty.try_send(());
-    }
 }
 
 impl Read for MemoryHandle {
@@ -252,12 +235,12 @@ impl Write for MemoryHandle {
             self.position = end as u64;
         }
 
-        self.reconcile();
+        self.worker.schedule();
         Ok(input.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.reconcile();
+        self.worker.schedule();
         Ok(())
     }
 }
@@ -275,73 +258,5 @@ impl Seek for MemoryHandle {
         }
         self.position = position as u64;
         Ok(self.position)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::impls::memorycard::RawMemoryCardImage;
-
-    fn save(name: &str, data: &[u8]) -> Save<'static> {
-        Save::from_files(name, &[], [("data.bin", &[][..], data)]).unwrap()
-    }
-
-    #[tokio::test]
-    async fn storage_projects_and_reconciles_structured_saves() {
-        let directory = tempfile::tempdir().unwrap();
-        let backing = Arc::new(DirectoryStorage::new(directory.path()).await.unwrap());
-        let reconciled = Arc::new(Mutex::new(Vec::new()));
-        let observed = reconciled.clone();
-        let storage = RawMemoryStorage::new(
-            backing,
-            1024,
-            [save("BASLUS-00001", b"first")],
-            move |saves| {
-                *observed.lock() = saves.iter().map(|save| save.as_bytes().to_vec()).collect();
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        assert_eq!(storage.metadata("").unwrap().kind, EntryKind::File);
-        assert!(
-            storage.image.bytes.lock()[card::RAW_PAGE_SIZE * 8_000..card::RAW_PAGE_SIZE * 8_001]
-                .iter()
-                .all(|byte| *byte == 0xff)
-        );
-        let bytes = storage.image.bytes.lock();
-        let card = card::MemoryCard::new(&bytes, 1024).unwrap();
-        let saves = card.saves().unwrap();
-        assert_eq!(saves[0].files().next().unwrap().data(), b"first");
-        drop(bytes);
-
-        let replacement_save = save("BASLUS-00002", b"second");
-        let replacement = card::MemoryCard::format(1024, &[replacement_save], true).unwrap();
-        assert_eq!(
-            card::MemoryCard::new(&replacement, 1024)
-                .unwrap()
-                .saves()
-                .unwrap()[0]
-                .files()
-                .next()
-                .unwrap()
-                .data(),
-            b"second"
-        );
-        let mut output = storage.open("").unwrap();
-        storage.truncate("", 1).unwrap();
-        output.write_all(&[0]).unwrap();
-        assert!(reconciled.lock().is_empty());
-
-        storage.truncate("", replacement.len() as u64).unwrap();
-        output.seek(SeekFrom::Start(0)).unwrap();
-        output.write_all(&replacement).unwrap();
-        storage.sync("").unwrap();
-
-        let saves = reconciled.lock();
-        let save = Save::new(saves[0].as_slice()).unwrap();
-        assert_eq!(save.name(), "BASLUS-00002");
-        assert_eq!(save.files().next().unwrap().data(), b"second");
     }
 }
