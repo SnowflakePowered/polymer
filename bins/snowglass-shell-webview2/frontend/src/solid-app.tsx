@@ -17,7 +17,7 @@ import { createStore, unwrap } from "solid-js/store";
 import type {
   ConfigurationOption,
   ConfigurationSelection,
-  ConsoleStorageNand,
+  ConsoleStorageVolume,
   EmulatorConfiguration,
   HTMLTrackedSurfaceElement,
   LaunchInstance,
@@ -38,11 +38,12 @@ const DREAMCAST_PLATFORM = "SEGA_DC";
 const PSX_PLATFORM = "SONY_PSX";
 const PS2_PLATFORM = "SONY_PS2";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
-let defaultWiiUNand: Promise<ConsoleStorageNand> | null = null;
-let defaultGameCubeCard: Promise<ConsoleStorageNand> | null = null;
-let defaultDreamcastCard: Promise<ConsoleStorageNand> | null = null;
-let defaultPs1Card: Promise<ConsoleStorageNand> | null = null;
-let defaultPs2Card: Promise<ConsoleStorageNand> | null = null;
+let defaultWiiUNand: Promise<ConsoleStorageVolume> | null = null;
+let defaultWiiUSave: Promise<ConsoleStorageVolume> | null = null;
+let defaultGameCubeCard: Promise<ConsoleStorageVolume> | null = null;
+let defaultDreamcastCard: Promise<ConsoleStorageVolume> | null = null;
+let defaultPs1Card: Promise<ConsoleStorageVolume> | null = null;
+let defaultPs2Card: Promise<ConsoleStorageVolume> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
 type StartupRequest =
   | { kind: "package"; path: string; emulator?: string }
@@ -75,9 +76,9 @@ function cloneGame(game: PackageConfiguration) { return structuredClone(unwrap(g
 
 function ensureDefaultWiiUNand() {
   if (!defaultWiiUNand) {
-    const pending = window.Snowglass.consolestorage.Nand.list().then((nands) =>
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
       nands.find((nand) => nand.platform === WIIU_PLATFORM)
-        ?? window.Snowglass.consolestorage.Nand.create(WIIU_PLATFORM, { label: "Default" })
+        ?? window.Snowglass.consolestorage.Storage.create("nand", WIIU_PLATFORM, { label: "Default" })
     );
     defaultWiiUNand = pending.catch((error) => {
       defaultWiiUNand = null;
@@ -87,13 +88,27 @@ function ensureDefaultWiiUNand() {
   return defaultWiiUNand;
 }
 
+function ensureDefaultWiiUSave() {
+  if (!defaultWiiUSave) {
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "saveRepo" }).then((saves) =>
+      saves.find((save) => save.platform === WIIU_PLATFORM)
+        ?? window.Snowglass.consolestorage.Storage.create("saveRepo", WIIU_PLATFORM, { label: "Default" })
+    );
+    defaultWiiUSave = pending.catch((error) => {
+      defaultWiiUSave = null;
+      throw error;
+    });
+  }
+  return defaultWiiUSave;
+}
+
 function ensureDefaultPs1Card() {
   if (!defaultPs1Card) {
-    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === PSX_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Nand.create(PSX_PLATFORM, { label: "Default" })
+        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", PSX_PLATFORM, { label: "Default" })
     );
     defaultPs1Card = pending.catch((error) => {
       defaultPs1Card = null;
@@ -105,11 +120,11 @@ function ensureDefaultPs1Card() {
 
 function ensureDefaultGameCubeCard() {
   if (!defaultGameCubeCard) {
-    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === GAMECUBE_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Nand.create(GAMECUBE_PLATFORM, { label: "Default" })
+        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", GAMECUBE_PLATFORM, { label: "Default" })
     );
     defaultGameCubeCard = pending.catch((error) => {
       defaultGameCubeCard = null;
@@ -121,11 +136,11 @@ function ensureDefaultGameCubeCard() {
 
 function ensureDefaultDreamcastCard() {
   if (!defaultDreamcastCard) {
-    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === DREAMCAST_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Nand.create(DREAMCAST_PLATFORM, { label: "Default" })
+        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", DREAMCAST_PLATFORM, { label: "Default" })
     );
     defaultDreamcastCard = pending.catch((error) => {
       defaultDreamcastCard = null;
@@ -137,11 +152,11 @@ function ensureDefaultDreamcastCard() {
 
 function ensureDefaultPs2Card() {
   if (!defaultPs2Card) {
-    const pending = window.Snowglass.consolestorage.Nand.list().then((volumes) =>
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === PS2_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Nand.create(PS2_PLATFORM, { label: "Default" })
+        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", PS2_PLATFORM, { label: "Default" })
     );
     defaultPs2Card = pending.catch((error) => {
       defaultPs2Card = null;
@@ -281,7 +296,8 @@ function ShellProvider(props: ParentProps) {
     void (async () => {
       try {
         if (game.platform === WIIU_PLATFORM) {
-          selection.storage = { mlc: (await ensureDefaultWiiUNand()).id };
+          const [save, nand] = await Promise.all([ensureDefaultWiiUSave(), ensureDefaultWiiUNand()]);
+          selection.storage = { mlc: [save.id, nand.id] };
         } else if (game.platform === GAMECUBE_PLATFORM) {
           selection.storage = { slotA: (await ensureDefaultGameCubeCard()).id };
         } else if (game.platform === DREAMCAST_PLATFORM) {

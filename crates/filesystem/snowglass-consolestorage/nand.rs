@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::installable::artifacts::Artifact;
 use crate::storage::VolumeStorage;
 use crate::storage::manifest::{ArtifactSummary, NandMetadata};
-use crate::{Error, Permissions};
+use crate::{Error, MountableStorage, Permissions, SaveRepo};
 
 pub enum NandCompletion {
     /// The NAND is complete as far as minimally required to run a game.
@@ -35,11 +35,12 @@ pub trait VirtualNand: Send + Sync {
 
     fn root(&self) -> Arc<dyn VolumeStorage>;
 
+    /// Compose this immutable NAND with its writable save repository. The
+    /// returned storage is fixed for the lifetime of the emulating instance.
+    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error>;
+
     /// The consolespec platform ID this NAND was created for.
     fn platform(&self) -> &str;
-
-    /// Wait until a game save anywhere on this NAND has settled on disk.
-    async fn game_saved(&self) -> Result<(), Error>;
 
     fn is_complete(&self, completion_criteria: NandCompletion) -> bool;
 

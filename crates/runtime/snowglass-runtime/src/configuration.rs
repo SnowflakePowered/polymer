@@ -165,7 +165,7 @@ pub struct ConfigurationRequest {
     #[serde(default)]
     pub settings: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
-    pub storage: BTreeMap<String, String>,
+    pub storage: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]

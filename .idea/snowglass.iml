@@ -47,6 +47,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/filesystem/snowglass-vfs/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-library/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-pluginhost/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-shell-webview2/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

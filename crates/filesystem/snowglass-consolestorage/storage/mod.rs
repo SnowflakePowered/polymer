@@ -18,9 +18,12 @@ use atomic_write_file::AtomicWriteFile;
 
 use crate::error::Error;
 
+mod composed;
 pub mod manifest;
 pub mod memorycard;
 pub(crate) mod permissions;
+
+pub use composed::ComposedStorage;
 
 use crate::storage::manifest::NandMetadata;
 use manifest::{ArtifactDb, ArtifactRegistry};
@@ -189,6 +192,14 @@ pub trait Storage: fmt::Debug + Send + Sync {
 /// The operations a guest filesystem needs that plain enumeration does not.
 /// A volume only has to satisfy these to be mounted.
 pub trait MountableStorage: Storage {
+    /// Whether this storage owns `path` when it participates in an ordered
+    /// composition. Claiming is independent of whether the path exists: an
+    /// empty higher-priority storage must still hide lower-priority contents.
+    fn claims(&self, path: &str) -> bool {
+        let _ = path;
+        true
+    }
+
     fn rename(&self, from: &str, to: &str) -> Result<(), Error>;
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error>;

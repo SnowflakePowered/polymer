@@ -143,7 +143,7 @@ export type ConfigurationSelection = {
     ports: Array<{ index: number; layout: string; device: string }>;
   }>;
   settings: Record<string, unknown>;
-  storage?: Record<string, string>;
+  storage?: Record<string, string | string[]>;
 };
 
 export interface ConfigurationApi {
@@ -152,21 +152,24 @@ export interface ConfigurationApi {
   setupLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
-export interface ConsoleStorageNand extends EventTarget {
+export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard";
+
+export interface ConsoleStorageVolume extends EventTarget {
+  readonly kind: ConsoleStorageKind;
   readonly id: string;
   readonly platform: string;
   readonly label: string | null;
   readonly created: Date;
   readonly path: string;
-  setLabel(label: string | null): Promise<ConsoleStorageNand>;
+  setLabel(label: string | null): Promise<ConsoleStorageVolume>;
   delete(): Promise<void>;
 }
 
 export interface ConsoleStorageApi {
-  readonly Nand: {
-    readonly prototype: ConsoleStorageNand;
-    create(platform: string, options?: { label?: string }): Promise<ConsoleStorageNand>;
-    list(): Promise<ConsoleStorageNand[]>;
+  readonly Storage: {
+    readonly prototype: ConsoleStorageVolume;
+    create(kind: ConsoleStorageKind, platform: string, options?: { label?: string }): Promise<ConsoleStorageVolume>;
+    list(options?: { kind?: ConsoleStorageKind }): Promise<ConsoleStorageVolume[]>;
   };
 }
 
