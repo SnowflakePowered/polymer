@@ -34,8 +34,8 @@ pub use plan::{
 };
 pub(crate) use resource::NoopResourceLease;
 pub use resource::{
-    FinalizationReason, Materialized, PreparedFilesystem, Resource, ResourceFactory, ResourceLease,
-    ResourceOrigin,
+    CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized,
+    PreparedFilesystem, Resource, ResourceFactory, ResourceLease, ResourceOrigin,
 };
 pub use traits::{
     AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,

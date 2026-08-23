@@ -45,9 +45,19 @@ impl FileNode for HostFile {
 
 struct HostOpen {
     file: File,
+    writable: bool,
 }
 
 impl OpenFile for HostOpen {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        let metadata = self.file.metadata()?;
+        Ok(Metadata {
+            kind: FileKind::File,
+            len: metadata.len(),
+            readonly: !self.writable || metadata.permissions().readonly(),
+        })
+    }
+
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         use std::os::unix::fs::FileExt;
         Ok(self.file.read_at(buffer, offset)?)
@@ -260,7 +270,19 @@ impl DirectoryNode for HostDirectory {
             }
             entries.push(Ok(DirectoryEntry {
                 name: component_from_os(entry.file_name())?,
-                node: self.volume.node(entry.path())?,
+                metadata: Metadata {
+                    kind: if metadata.is_dir() {
+                        FileKind::Directory
+                    } else if metadata.is_file() {
+                        FileKind::File
+                    } else {
+                        return Err(VfsError::Unsupported(
+                            "host volume exposes only files and directories".into(),
+                        ));
+                    },
+                    len: metadata.len(),
+                    readonly: !self.volume.writable,
+                },
             }));
         }
         Ok(Box::new(entries.into_iter()))
@@ -350,7 +372,7 @@ fn open_path(path: &Path, writable: bool, options: OpenOptions) -> VfsResult<Box
         .write(options.write)
         .truncate(options.truncate)
         .open(path)?;
-    Ok(Box::new(HostOpen { file }))
+    Ok(Box::new(HostOpen { file, writable }))
 }
 
 fn file_metadata(metadata: &fs::Metadata, writable: bool) -> VfsResult<Metadata> {

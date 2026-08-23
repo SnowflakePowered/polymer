@@ -137,16 +137,16 @@ impl MountedFilesystem {
         &self.filesystem
     }
 
-    pub fn finish(mut self, reason: FinalizationReason) {
+    pub fn finish(mut self, reason: FinalizationReason) -> VfsResult<()> {
         self.backend.take();
-        self.filesystem.finalize(reason);
+        self.filesystem.finalize(reason)
     }
 }
 
 impl Drop for MountedFilesystem {
     fn drop(&mut self) {
         self.backend.take();
-        self.filesystem.finalize(FinalizationReason::Cancelled);
+        let _ = self.filesystem.finalize(FinalizationReason::Cancelled);
     }
 }
 

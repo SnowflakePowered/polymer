@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use snowglass_consolestorage::{
-    EntryKind, Error as StorageError, MountableStorage, StorageFile, StorageRead,
-};
+use snowglass_consolestorage::{EntryKind, Error as StorageError, MountableStorage, StorageFile};
 
 use crate::{
     AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,
@@ -129,7 +127,6 @@ impl DirectoryNode for StorageDirectoryNode {
             .storage
             .read_dir(&self.path, false)
             .map_err(|error| storage_error(error, &self.path))?;
-        let storage = self.storage.clone();
         let filter_permissions = self.permissions.clone();
         let node_permissions = self.permissions.clone();
         let entries = listing
@@ -137,7 +134,14 @@ impl DirectoryNode for StorageDirectoryNode {
             .map(move |entry| {
                 VfsComponent::new(&entry.name).map(|name| DirectoryEntry {
                     name,
-                    node: node(&storage, &node_permissions, entry.path, entry.kind),
+                    metadata: Metadata {
+                        kind: match entry.metadata.kind {
+                            EntryKind::Directory => FileKind::Directory,
+                            EntryKind::File => FileKind::File,
+                        },
+                        len: entry.metadata.len,
+                        readonly: !can_write(&node_permissions, &entry.path),
+                    },
                 })
             })
             .collect::<Vec<_>>();
@@ -254,20 +258,13 @@ impl FileNode for StorageFileNode {
 
     fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
         require_read(&self.permissions, &self.path)?;
-        let handle = if options.write {
+        if options.write {
             require_write(&self.permissions, &self.path)?;
-            StorageHandle::Writable(Mutex::new(
-                self.storage
-                    .open(&self.path)
-                    .map_err(|error| storage_error(error, &self.path))?,
-            ))
-        } else {
-            StorageHandle::ReadOnly(Mutex::new(
-                self.storage
-                    .open_read(&self.path)
-                    .map_err(|error| storage_error(error, &self.path))?,
-            ))
-        };
+        }
+        let handle = self
+            .storage
+            .open(&self.path, options.write)
+            .map_err(|error| storage_error(error, &self.path))?;
         if options.truncate {
             require_write(&self.permissions, &self.path)?;
             self.storage
@@ -275,7 +272,6 @@ impl FileNode for StorageFileNode {
                 .map_err(|error| storage_error(error, &self.path))?;
         }
         Ok(Box::new(StorageOpenFile {
-            storage: self.storage.clone(),
             path: self.path.clone(),
             permissions: self.permissions.clone(),
             handle,
@@ -309,15 +305,20 @@ struct StorageFileAdoption {
 
 impl AdoptHandle for StorageFileAdoption {
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<()> {
-        use std::io::{Seek, SeekFrom, Write};
-
         let _finalizing = self.finalizing.lock();
-        let mut writer = self
+        let writer = self
             .storage
-            .open(&self.path)
+            .open(&self.path, true)
             .map_err(|error| storage_error(error, &self.path))?;
-        writer.seek(SeekFrom::Start(offset))?;
-        writer.write_all(buffer)?;
+        let written = writer
+            .write_at(offset, buffer)
+            .map_err(|error| storage_error(error, &self.path))?;
+        if written != buffer.len() {
+            return Err(VfsError::Io(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "storage adoption write was incomplete",
+            )));
+        }
         Ok(())
     }
 
@@ -329,8 +330,6 @@ impl AdoptHandle for StorageFileAdoption {
     }
 
     fn finalize(&self) -> VfsResult<()> {
-        use std::io::{Seek, SeekFrom, Write};
-
         let _finalizing = self.finalizing.lock();
         let len = self.source.metadata()?.len;
         let reader = self.source.open(OpenOptions {
@@ -341,11 +340,10 @@ impl AdoptHandle for StorageFileAdoption {
         self.storage
             .truncate(&self.path, len)
             .map_err(|error| storage_error(error, &self.path))?;
-        let mut writer = self
+        let writer = self
             .storage
-            .open(&self.path)
+            .open(&self.path, true)
             .map_err(|error| storage_error(error, &self.path))?;
-        writer.seek(SeekFrom::Start(0))?;
         let mut offset = 0_u64;
         let mut buffer = vec![0_u8; 64 * 1024];
         while offset < len {
@@ -358,74 +356,73 @@ impl AdoptHandle for StorageFileAdoption {
                     "adopted source became shorter while reconciling",
                 )));
             }
-            writer.write_all(&buffer[..read])?;
+            let written = writer
+                .write_at(offset, &buffer[..read])
+                .map_err(|error| storage_error(error, &self.path))?;
+            if written != read {
+                return Err(VfsError::Io(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "storage adoption write was incomplete",
+                )));
+            }
             offset += read as u64;
         }
-        writer.flush()?;
-        self.storage
-            .sync(&self.path)
+        writer
+            .sync()
             .map_err(|error| storage_error(error, &self.path))
     }
 }
 
-enum StorageHandle {
-    ReadOnly(Mutex<Box<dyn StorageRead>>),
-    Writable(Mutex<Box<dyn StorageFile>>),
-}
-
 struct StorageOpenFile {
-    storage: Arc<dyn MountableStorage>,
     path: String,
     permissions: StoragePermissions,
-    handle: StorageHandle,
+    handle: Arc<dyn StorageFile>,
 }
 
 impl OpenFile for StorageOpenFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        let metadata = self
+            .handle
+            .metadata()
+            .map_err(|error| storage_error(error, &self.path))?;
+        Ok(Metadata {
+            kind: FileKind::File,
+            len: metadata.len,
+            readonly: !can_write(&self.permissions, &self.path),
+        })
+    }
+
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
-        use std::io::{Read, Seek, SeekFrom};
-        match &self.handle {
-            StorageHandle::ReadOnly(file) => {
-                let mut file = file.lock();
-                file.seek(SeekFrom::Start(offset))?;
-                Ok(file.read(buffer)?)
-            }
-            StorageHandle::Writable(file) => {
-                let mut file = file.lock();
-                file.seek(SeekFrom::Start(offset))?;
-                Ok(file.read(buffer)?)
-            }
-        }
+        self.handle
+            .read_at(offset, buffer)
+            .map_err(|error| storage_error(error, &self.path))
     }
 
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
-        use std::io::{Seek, SeekFrom, Write};
-        let StorageHandle::Writable(file) = &self.handle else {
+        if !can_write(&self.permissions, &self.path) {
             return Err(VfsError::PermissionDenied(vfs_path(&self.path)));
-        };
-        let mut file = file.lock();
-        file.seek(SeekFrom::Start(offset))?;
-        Ok(file.write(buffer)?)
+        }
+        self.handle
+            .write_at(offset, buffer)
+            .map_err(|error| storage_error(error, &self.path))
     }
 
     fn truncate(&self, len: u64) -> VfsResult<()> {
         require_write(&self.permissions, &self.path)?;
-        self.storage
-            .truncate(&self.path, len)
+        self.handle
+            .set_len(len)
             .map_err(|error| storage_error(error, &self.path))
     }
 
     fn flush(&self) -> VfsResult<()> {
-        use std::io::Write;
-        match &self.handle {
-            StorageHandle::ReadOnly(_) => Ok(()),
-            StorageHandle::Writable(file) => Ok(file.lock().flush()?),
-        }
+        self.handle
+            .flush()
+            .map_err(|error| storage_error(error, &self.path))
     }
 
     fn sync(&self) -> VfsResult<()> {
-        self.flush()?;
-        self.storage
-            .sync(&self.path)
+        self.handle
+            .sync()
             .map_err(|error| storage_error(error, &self.path))
     }
 }

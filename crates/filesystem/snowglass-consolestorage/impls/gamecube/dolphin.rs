@@ -8,9 +8,10 @@ use parking_lot::Mutex;
 use tokio::io::AsyncReadExt;
 
 use super::gci::{self, Save};
+use crate::impls::memorycard::ReconcileWorker;
 use crate::{
     BoxFuture, DirEntry, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile, StorageRead,
+    MountableStorage, ReadDir, Storage, StorageFile, StorageRead, StorageStream,
 };
 
 type Reconcile = dyn for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send + Sync;
@@ -90,6 +91,7 @@ impl Projection {
 pub(super) struct DolphinMemoryStorage {
     backing: Arc<DirectoryStorage>,
     projection: Arc<Projection>,
+    worker: ReconcileWorker,
 }
 
 impl DolphinMemoryStorage {
@@ -97,7 +99,7 @@ impl DolphinMemoryStorage {
         backing: Arc<DirectoryStorage>,
         saves: &[Save<'_>],
         reconcile: impl for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send + Sync + 'static,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let mut entries = BTreeMap::new();
         for save in saves {
             let mut name = save.file_name();
@@ -106,13 +108,25 @@ impl DolphinMemoryStorage {
             }
             entries.insert(name, Entry::new(save.as_bytes().to_vec()));
         }
-        Self {
+        let projection = Arc::new(Projection {
+            entries: Mutex::new(entries),
+            reconcile: Box::new(reconcile),
+        });
+        let background = Arc::downgrade(&projection);
+        let worker = ReconcileWorker::spawn(
+            "snowglass-gci-writeback",
+            "Dolphin memory card",
+            move || {
+                background
+                    .upgrade()
+                    .map_or(Ok(()), |projection| projection.commit())
+            },
+        )?;
+        Ok(Self {
             backing,
-            projection: Arc::new(Projection {
-                entries: Mutex::new(entries),
-                reconcile: Box::new(reconcile),
-            }),
-        }
+            projection,
+            worker,
+        })
     }
 
     fn entry(&self, path: &str) -> Result<Entry, Error> {
@@ -129,7 +143,7 @@ impl DolphinMemoryStorage {
         Ok(Handle {
             entry,
             position,
-            projection: self.projection.clone(),
+            worker: self.worker.clone(),
         })
     }
 }
@@ -171,10 +185,10 @@ impl Storage for DolphinMemoryStorage {
             .entries
             .lock()
             .iter()
-            .map(|(name, _)| DirEntry {
+            .map(|(name, entry)| DirEntry {
                 name: name.clone(),
                 path: name.clone(),
-                kind: EntryKind::File,
+                metadata: entry.metadata(),
             })
             .collect::<Vec<_>>();
         Ok(ReadDir::surface(entries.into_iter()))
@@ -190,7 +204,7 @@ impl Storage for DolphinMemoryStorage {
         }
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         if path.is_empty() || path.contains('/') {
             return Err(Error::InvalidPath(path.to_owned()));
         }
@@ -202,19 +216,23 @@ impl Storage for DolphinMemoryStorage {
         Ok(Box::new(Handle {
             entry,
             position: 0,
-            projection: self.projection.clone(),
+            worker: self.worker.clone(),
         }))
-    }
-
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        Ok(Box::new(self.handle(path, 0)?))
     }
 
     fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
         Ok(Box::new(self.handle(path, 0)?))
     }
 
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
+        Ok(Arc::new(DolphinStorageFile {
+            entry: self.entry(path)?,
+            worker: self.worker.clone(),
+            writable: write,
+        }))
+    }
+
+    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         if !self.exists(path) {
             return self.create(path);
         }
@@ -223,7 +241,8 @@ impl Storage for DolphinMemoryStorage {
 
     fn remove(&self, path: &str) -> Result<(), Error> {
         self.projection.entries.lock().remove(path);
-        self.projection.commit()
+        self.worker.schedule();
+        Ok(())
     }
 
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
@@ -269,7 +288,8 @@ impl MountableStorage for DolphinMemoryStorage {
             entries.insert(to.to_owned(), entry);
         }
         drop(entries);
-        self.projection.commit()
+        self.worker.schedule();
+        Ok(())
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
@@ -281,6 +301,8 @@ impl MountableStorage for DolphinMemoryStorage {
             0,
         );
         state.mtime = Timestamp::now();
+        drop(state);
+        self.worker.schedule();
         Ok(())
     }
 
@@ -288,14 +310,21 @@ impl MountableStorage for DolphinMemoryStorage {
         if !path.is_empty() {
             self.entry(path)?;
         }
-        self.projection.commit()
+        self.worker.reconcile()
+    }
+
+    fn finish(&self, path: &str) -> Result<(), Error> {
+        if !path.is_empty() {
+            self.entry(path)?;
+        }
+        self.worker.shutdown()
     }
 }
 
 struct Handle {
     entry: Entry,
     position: u64,
-    projection: Arc<Projection>,
+    worker: ReconcileWorker,
 }
 
 impl Read for Handle {
@@ -327,12 +356,81 @@ impl Write for Handle {
             state.mtime = Timestamp::now();
         }
         self.position = end as u64;
-        self.projection.commit().map_err(std::io::Error::other)?;
+        self.worker.schedule();
         Ok(input.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.projection.commit().map_err(std::io::Error::other)
+        self.worker.reconcile().map_err(std::io::Error::other)
+    }
+}
+
+struct DolphinStorageFile {
+    entry: Entry,
+    worker: ReconcileWorker,
+    writable: bool,
+}
+
+impl StorageFile for DolphinStorageFile {
+    fn metadata(&self) -> Result<Metadata, Error> {
+        Ok(self.entry.metadata())
+    }
+
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, Error> {
+        let state = self.entry.0.lock();
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(state.bytes.len());
+        let copied = output.len().min(state.bytes.len() - start);
+        output[..copied].copy_from_slice(&state.bytes[start..start + copied]);
+        Ok(copied)
+    }
+
+    fn write_at(&self, offset: u64, input: &[u8]) -> Result<usize, Error> {
+        if !self.writable {
+            return Err(Error::Unsupported(
+                "Dolphin file handle is read-only".to_owned(),
+            ));
+        }
+        let start = usize::try_from(offset)
+            .map_err(|_| Error::Unsupported("GCI offset is too large".to_owned()))?;
+        let end = start
+            .checked_add(input.len())
+            .ok_or_else(|| Error::Unsupported("GCI write is too large".to_owned()))?;
+        let mut state = self.entry.0.lock();
+        if end > state.bytes.len() {
+            state.bytes.resize(end, 0);
+        }
+        state.bytes[start..end].copy_from_slice(input);
+        state.mtime = Timestamp::now();
+        drop(state);
+        self.worker.schedule();
+        Ok(input.len())
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), Error> {
+        if !self.writable {
+            return Err(Error::Unsupported(
+                "Dolphin file handle is read-only".to_owned(),
+            ));
+        }
+        let len = usize::try_from(len)
+            .map_err(|_| Error::Unsupported("GCI file is too large".to_owned()))?;
+        let mut state = self.entry.0.lock();
+        state.bytes.resize(len, 0);
+        state.mtime = Timestamp::now();
+        drop(state);
+        self.worker.schedule();
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        self.worker.schedule();
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        self.worker.reconcile()
     }
 }
 

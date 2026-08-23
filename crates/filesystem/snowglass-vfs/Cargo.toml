@@ -17,6 +17,7 @@ rand.workspace = true
 snowglass-consolestorage = { version = "0.1.0", path = "../snowglass-consolestorage" }
 tempfile.workspace = true
 thiserror.workspace = true
+uuid = "1.24.1"
 widestring = "1"
 
 [target.'cfg(windows)'.dependencies]
@@ -31,7 +32,6 @@ windows = { workspace = true, features = [
 [dev-dependencies]
 asar = "0.3.0"
 tokio = { version = "1.53.1", features = ["rt", "macros"] }
-uuid = "1.24.1"
 
 [lints]
 workspace = true

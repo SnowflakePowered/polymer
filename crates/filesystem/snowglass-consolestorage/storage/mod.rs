@@ -62,7 +62,7 @@ pub struct InstallResult {
 pub struct DirEntry {
     pub name: String,
     pub path: String,
-    pub kind: EntryKind,
+    pub metadata: Metadata,
 }
 
 /// A directory listing.
@@ -112,7 +112,7 @@ impl Iterator for ReadDir<'_> {
                 pending,
             } => loop {
                 if let Some(entry) = current.next() {
-                    if entry.kind == EntryKind::Directory {
+                    if entry.metadata.kind == EntryKind::Directory {
                         pending.push(entry.path.clone());
                     }
 
@@ -133,17 +133,43 @@ pub trait ChangeSignal: Send + Sync {
     fn changed(&self) -> BoxFuture<'_, ()>;
 }
 
-pub trait StorageFile: Read + Write + Seek + Send {}
+/// Cursor-based stream used by console-storage creation and import helpers.
+/// Mounted filesystem I/O uses [`StorageFile`] instead.
+pub trait StorageStream: Read + Write + Seek + Send {}
 
-impl<T: Read + Write + Seek + Send> StorageFile for T {}
+impl<T: Read + Write + Seek + Send> StorageStream for T {}
 
 pub trait StorageRead: Read + Seek + Send {}
 
 impl<T: Read + Seek + Send> StorageRead for T {}
 
+/// A position-independent file handle suitable for concurrent filesystem
+/// callbacks. Implementations must not maintain a shared cursor.
+pub trait StorageFile: Send + Sync {
+    fn metadata(&self) -> Result<Metadata, Error>;
+
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Result<usize, Error>;
+
+    fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error>;
+
+    fn set_len(&self, len: u64) -> Result<(), Error>;
+
+    fn flush(&self) -> Result<(), Error>;
+
+    fn sync(&self) -> Result<(), Error>;
+}
+
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait Storage: fmt::Debug + Send + Sync {
+    /// Whether this storage owns `path` when it participates in an ordered
+    /// composition. Claiming is independent of whether the path exists: an
+    /// empty higher-priority storage must still hide lower-priority contents.
+    fn claims(&self, path: &str) -> bool {
+        let _ = path;
+        true
+    }
+
     fn exists(&self, path: &str) -> bool;
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error>;
@@ -154,16 +180,17 @@ pub trait Storage: fmt::Debug + Send + Sync {
     fn create_dir_all(&self, path: &str) -> Result<(), Error>;
 
     /// Create or truncate a file, creating parent directories.
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error>;
+    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error>;
 
-    /// Open for reading and writing.
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error>;
+    /// Open a cursor-free handle. Reads are always available; `write` controls
+    /// whether mutation methods are permitted.
+    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error>;
 
     /// Open for reading only, which succeeds on entries [`Self::open`] rejects.
     fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error>;
 
     /// Open for appending, creating the file and its parents if absent.
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error>;
+    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error>;
 
     /// Remove a file, or an empty directory. A path that is already gone is not
     /// an error, so uninstalling twice is safe.
@@ -192,19 +219,16 @@ pub trait Storage: fmt::Debug + Send + Sync {
 /// The operations a guest filesystem needs that plain enumeration does not.
 /// A volume only has to satisfy these to be mounted.
 pub trait MountableStorage: Storage {
-    /// Whether this storage owns `path` when it participates in an ordered
-    /// composition. Claiming is independent of whether the path exists: an
-    /// empty higher-priority storage must still hide lower-priority contents.
-    fn claims(&self, path: &str) -> bool {
-        let _ = path;
-        true
-    }
-
     fn rename(&self, from: &str, to: &str) -> Result<(), Error>;
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error>;
 
     fn sync(&self, path: &str) -> Result<(), Error>;
+
+    /// Flushes final state and stops backend work owned by this mounted view.
+    fn finish(&self, path: &str) -> Result<(), Error> {
+        self.sync(path)
+    }
 }
 
 /// A mountable filesystem with persistent volume identity and artifact metadata.
@@ -225,61 +249,65 @@ pub trait VolumeStorage: MountableStorage {
 }
 
 /// A volume whose filesystem operations are provided by another volume.
-pub(crate) trait BackedVolumeStorage: fmt::Debug + Send + Sync {
-    fn backing_volume(&self) -> &dyn VolumeStorage;
+pub(crate) trait VolumeOverlay: fmt::Debug + Send + Sync {
+    fn inner(&self) -> &dyn VolumeStorage;
 
-    fn claims_backing_path(&self, path: &str) -> bool {
-        self.backing_volume().claims(path)
+    fn claims(&self, path: &str) -> bool {
+        self.inner().claims(path)
     }
 }
 
-impl<T: BackedVolumeStorage> Storage for T {
+impl<T: VolumeOverlay> Storage for T {
+    fn claims(&self, path: &str) -> bool {
+        VolumeOverlay::claims(self, path)
+    }
+
     fn exists(&self, path: &str) -> bool {
-        self.backing_volume().exists(path)
+        self.inner().exists(path)
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        self.backing_volume().metadata(path)
+        self.inner().metadata(path)
     }
 
     fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        self.backing_volume().read_dir(path, recursive)
+        self.inner().read_dir(path, recursive)
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        self.backing_volume().create_dir_all(path)
+        self.inner().create_dir_all(path)
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.backing_volume().create(path)
+    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+        self.inner().create(path)
     }
 
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.backing_volume().open(path)
+    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
+        self.inner().open(path, write)
     }
 
     fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.backing_volume().open_read(path)
+        self.inner().open_read(path)
     }
 
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.backing_volume().append(path)
+    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+        self.inner().append(path)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
-        self.backing_volume().remove(path)
+        self.inner().remove(path)
     }
 
     fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.backing_volume().watch(paths)
+        self.inner().watch(paths)
     }
 
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.backing_volume().label()
+        self.inner().label()
     }
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.backing_volume().set_label(label)
+        self.inner().set_label(label)
     }
 
     fn install_file<'a>(
@@ -287,35 +315,35 @@ impl<T: BackedVolumeStorage> Storage for T {
         source: Box<dyn AsyncRead + Send + Unpin>,
         dest: &str,
     ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        self.backing_volume().install_file(source, dest)
+        self.inner().install_file(source, dest)
     }
 }
 
-impl<T: BackedVolumeStorage> MountableStorage for T {
-    fn claims(&self, path: &str) -> bool {
-        self.claims_backing_path(path)
-    }
-
+impl<T: VolumeOverlay> MountableStorage for T {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        self.backing_volume().rename(from, to)
+        self.inner().rename(from, to)
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        self.backing_volume().truncate(path, len)
+        self.inner().truncate(path, len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
-        self.backing_volume().sync(path)
+        self.inner().sync(path)
+    }
+
+    fn finish(&self, path: &str) -> Result<(), Error> {
+        self.inner().finish(path)
     }
 }
 
-impl<T: BackedVolumeStorage> VolumeStorage for T {
+impl<T: VolumeOverlay> VolumeStorage for T {
     fn artifacts(&self) -> &dyn ArtifactRegistry {
-        self.backing_volume().artifacts()
+        self.inner().artifacts()
     }
 
     fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        self.backing_volume().volumeinfo()
+        self.inner().volumeinfo()
     }
 
     fn brand<'a>(
@@ -324,7 +352,7 @@ impl<T: BackedVolumeStorage> VolumeStorage for T {
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
-        self.backing_volume().brand(id, platform, label)
+        self.inner().brand(id, platform, label)
     }
 }
 
@@ -417,12 +445,24 @@ impl Storage for DirectoryStorage {
                 false => format!("{parent}/{name}"),
             };
 
+            let meta = entry.metadata().ok()?;
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|value| jiff::Timestamp::try_from(value).ok())?;
             Some(DirEntry {
                 name,
                 path,
-                kind: match entry.file_type().ok()?.is_dir() {
-                    true => EntryKind::Directory,
-                    false => EntryKind::File,
+                metadata: Metadata {
+                    kind: if meta.is_dir() {
+                        EntryKind::Directory
+                    } else if meta.is_file() {
+                        EntryKind::File
+                    } else {
+                        return None;
+                    },
+                    len: meta.len(),
+                    mtime,
                 },
             })
         })))
@@ -433,7 +473,7 @@ impl Storage for DirectoryStorage {
         fs::create_dir_all(&resolved).map_err(|e| Error::io(&resolved, e))
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         let resolved = self.resolve(path)?;
         Self::ensure_directory(&resolved)?;
         let file = OpenOptions::new()
@@ -441,16 +481,6 @@ impl Storage for DirectoryStorage {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&resolved)
-            .map_err(|e| Error::io(&resolved, e))?;
-        Ok(Box::new(file))
-    }
-
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        let resolved = self.resolve(path)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
             .open(&resolved)
             .map_err(|e| Error::io(&resolved, e))?;
         Ok(Box::new(file))
@@ -465,7 +495,21 @@ impl Storage for DirectoryStorage {
         Ok(Box::new(file))
     }
 
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
+        let resolved = self.resolve(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(write)
+            .open(&resolved)
+            .map_err(|error| Error::io(&resolved, error))?;
+        Ok(Arc::new(NativeStorageFile {
+            file,
+            path: resolved,
+            writable: write,
+        }))
+    }
+
+    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         let resolved = self.resolve(path)?;
         Self::ensure_directory(&resolved)?;
         let file = OpenOptions::new()
@@ -555,6 +599,89 @@ impl Storage for DirectoryStorage {
             DirectoryStorage::copy_hashed(source, &resolved, &dest).await
         })
     }
+}
+
+struct NativeStorageFile {
+    file: fs::File,
+    path: PathBuf,
+    writable: bool,
+}
+
+impl StorageFile for NativeStorageFile {
+    fn metadata(&self) -> Result<Metadata, Error> {
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|error| Error::io(&self.path, error))?;
+        let modified = metadata
+            .modified()
+            .map_err(|error| Error::io(&self.path, error))?;
+        Ok(Metadata {
+            kind: EntryKind::File,
+            len: metadata.len(),
+            mtime: jiff::Timestamp::try_from(modified)?,
+        })
+    }
+
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Result<usize, Error> {
+        native_read_at(&self.file, offset, buffer).map_err(|error| Error::io(&self.path, error))
+    }
+
+    fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error> {
+        if !self.writable {
+            return Err(Error::io(
+                &self.path,
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "read-only handle"),
+            ));
+        }
+        native_write_at(&self.file, offset, buffer).map_err(|error| Error::io(&self.path, error))
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), Error> {
+        if !self.writable {
+            return Err(Error::io(
+                &self.path,
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "read-only handle"),
+            ));
+        }
+        self.file
+            .set_len(len)
+            .map_err(|error| Error::io(&self.path, error))
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        self.file
+            .sync_all()
+            .map_err(|error| Error::io(&self.path, error))
+    }
+}
+
+#[cfg(windows)]
+fn native_read_at(file: &fs::File, offset: u64, buffer: &mut [u8]) -> std::io::Result<usize> {
+    use std::os::windows::fs::FileExt;
+    file.seek_read(buffer, offset)
+}
+
+#[cfg(windows)]
+fn native_write_at(file: &fs::File, offset: u64, buffer: &[u8]) -> std::io::Result<usize> {
+    use std::os::windows::fs::FileExt;
+    file.seek_write(buffer, offset)
+}
+
+#[cfg(unix)]
+fn native_read_at(file: &fs::File, offset: u64, buffer: &mut [u8]) -> std::io::Result<usize> {
+    use std::os::unix::fs::FileExt;
+    file.read_at(buffer, offset)
+}
+
+#[cfg(unix)]
+fn native_write_at(file: &fs::File, offset: u64, buffer: &[u8]) -> std::io::Result<usize> {
+    use std::os::unix::fs::FileExt;
+    file.write_at(buffer, offset)
 }
 
 impl DirectoryStorage {
@@ -681,6 +808,21 @@ mod tests {
             std::fs::read(dir.path().join("save/data.bin")).unwrap(),
             b"new"
         );
+    }
+
+    #[tokio::test]
+    async fn positional_handle_reads_writes_and_observes_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = DirectoryStorage::new(dir.path()).await.unwrap();
+        storage.create("file.bin").unwrap();
+        let handle = storage.open("file.bin", true).unwrap();
+
+        handle.write_at(4, b"data").unwrap();
+        let mut output = [0; 4];
+        handle.read_at(4, &mut output).unwrap();
+
+        assert_eq!(&output, b"data");
+        assert_eq!(handle.metadata().unwrap().len, 8);
     }
 }
 

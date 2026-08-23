@@ -31,17 +31,17 @@ use windows::{
             STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
         },
         Storage::FileSystem::{
-            CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL,
-            FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
-            FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-            FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
-            FILE_DISPOSITION_INFO_EX_FLAGS, FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
-            FILE_GENERIC_WRITE, FILE_ID_BOTH_DIR_INFO, FILE_SHARE_DELETE, FILE_SHARE_MODE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo,
-            FileDispositionInfoEx, FileEndOfFileInfo, FileIdBothDirectoryInfo,
-            FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx, OPEN_EXISTING,
-            ReOpenFile, SetFileInformationByHandle,
+            CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY,
+            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
+            FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+            FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS,
+            FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+            FILE_ID_BOTH_DIR_INFO, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx,
+            FileEndOfFileInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
+            GetFileInformationByHandleEx, OPEN_EXISTING, ReOpenFile, SetFileInformationByHandle,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -83,9 +83,14 @@ impl FileNode for HostFile {
 
 struct HostOpen {
     file: File,
+    writable: bool,
 }
 
 impl OpenFile for HostOpen {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        metadata_for(&self.file, self.writable)
+    }
+
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         use std::os::windows::fs::FileExt;
         Ok(self.file.seek_read(buffer, offset)?)
@@ -134,6 +139,11 @@ struct HostTreeFile {
 struct CapturedNode {
     handle: Arc<File>,
     kind: FileKind,
+}
+
+struct HostDirectoryEntry {
+    name: VfsComponent,
+    metadata: Metadata,
 }
 
 impl HostVolume {
@@ -319,15 +329,13 @@ impl DirectoryNode for HostDirectory {
 
     fn read_dir(&self) -> VfsResult<Box<DirectoryIterator>> {
         let _enumeration = self.enumeration.lock();
-        let names = directory_names(&self.handle)?;
-        let entries = names
+        let entries = directory_entries(&self.handle, self.volume.writable)?
             .into_iter()
-            .map(|name| {
-                let node = self
-                    .volume
-                    .open_child(&self.handle, &name)?
-                    .ok_or_else(|| VfsError::NotFound(VfsPathBuf::root()))?;
-                Ok(DirectoryEntry { name, node })
+            .map(|entry| {
+                Ok(DirectoryEntry {
+                    name: entry.name,
+                    metadata: entry.metadata,
+                })
             })
             .collect::<Vec<_>>();
         Ok(Box::new(entries.into_iter()))
@@ -529,11 +537,10 @@ fn open_captured(
     if options.write || options.truncate {
         VfsError::require_writable(writable)?;
     }
-    let access = if options.read || !options.write {
-        GENERIC_READ.0
-    } else {
-        0
-    } | if options.write { GENERIC_WRITE.0 } else { 0 };
+    // Cached write-only Windows handles may generate paging reads. Keep the
+    // captured backend handle readable; WinFSP still enforces the user-visible
+    // granted access before dispatching ordinary reads.
+    let access = GENERIC_READ.0 | if options.write { GENERIC_WRITE.0 } else { 0 };
     let handle = unsafe {
         ReOpenFile(
             raw_handle(source),
@@ -547,7 +554,7 @@ fn open_captured(
     if options.truncate {
         file.set_len(0)?;
     }
-    Ok(Box::new(HostOpen { file }))
+    Ok(Box::new(HostOpen { file, writable }))
 }
 
 fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
@@ -560,7 +567,7 @@ fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
     Ok(Metadata {
         kind: FileKind::File,
         len: metadata.len(),
-        readonly: !writable,
+        readonly: !writable || metadata.file_attributes() & FILE_ATTRIBUTE_READONLY.0 != 0,
     })
 }
 
@@ -622,11 +629,11 @@ fn reject_reparse_point(file: &File) -> VfsResult<()> {
     Ok(())
 }
 
-fn directory_names(directory: &File) -> VfsResult<Vec<VfsComponent>> {
+fn directory_entries(directory: &File, writable: bool) -> VfsResult<Vec<HostDirectoryEntry>> {
     const BUFFER_SIZE: usize = 64 * 1024;
     let mut storage = vec![0_u64; BUFFER_SIZE / size_of::<u64>()];
     let mut restart = true;
-    let mut names = Vec::new();
+    let mut entries = Vec::new();
     loop {
         storage.fill(0);
         let class = if restart {
@@ -676,7 +683,24 @@ fn directory_names(directory: &File) -> VfsResult<Vec<VfsComponent>> {
                 std::slice::from_raw_parts(ptr::addr_of!(entry.FileName).cast::<u16>(), name_len)
             };
             if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
-                names.push(VfsComponent::from_units(name.to_vec())?);
+                let kind = if entry.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+                    FileKind::Directory
+                } else {
+                    FileKind::File
+                };
+                entries.push(HostDirectoryEntry {
+                    name: VfsComponent::from_units(name.to_vec())?,
+                    metadata: Metadata {
+                        kind,
+                        len: if kind == FileKind::File {
+                            entry.EndOfFile as u64
+                        } else {
+                            0
+                        },
+                        readonly: !writable
+                            || entry.FileAttributes & FILE_ATTRIBUTE_READONLY.0 != 0,
+                    },
+                });
             }
             if entry.NextEntryOffset == 0 {
                 break;
@@ -688,7 +712,7 @@ fn directory_names(directory: &File) -> VfsResult<Vec<VfsComponent>> {
                 })?;
         }
     }
-    Ok(names)
+    Ok(entries)
 }
 
 fn rename_handle(

@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use super::ReconcileWorker;
 use crate::{
     BoxFuture, EntryKind, Error, InstallResult, MemoryCard, Metadata, MountableStorage, ReadDir,
-    Reconcile, Storage, StorageFile, StorageRead,
+    Reconcile, Storage, StorageFile, StorageRead, StorageStream,
 };
 
 pub(crate) struct CardImage {
@@ -100,12 +100,8 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         ))
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         self.truncate(path, 0)?;
-        Ok(Box::new(self.handle(path)?))
-    }
-
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
         Ok(Box::new(self.handle(path)?))
     }
 
@@ -113,7 +109,18 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         Ok(Box::new(self.handle(path)?))
     }
 
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
+        if !path.is_empty() {
+            return Err(Error::not_found(path));
+        }
+        Ok(Arc::new(RawStorageFile {
+            image: self.image.clone(),
+            worker: self.worker.clone(),
+            writable: write,
+        }))
+    }
+
+    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         let mut handle = self.handle(path)?;
         handle.position = self.image.bytes.lock().len() as u64;
         Ok(Box::new(handle))
@@ -148,6 +155,75 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
     }
 }
 
+struct RawStorageFile {
+    image: Arc<CardImage>,
+    worker: ReconcileWorker,
+    writable: bool,
+}
+
+impl StorageFile for RawStorageFile {
+    fn metadata(&self) -> Result<Metadata, Error> {
+        Ok(Metadata {
+            kind: EntryKind::File,
+            len: self.image.bytes.lock().len() as u64,
+            mtime: Timestamp::now(),
+        })
+    }
+
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, Error> {
+        let bytes = self.image.bytes.lock();
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let copied = output.len().min(bytes.len() - start);
+        output[..copied].copy_from_slice(&bytes[start..start + copied]);
+        Ok(copied)
+    }
+
+    fn write_at(&self, offset: u64, input: &[u8]) -> Result<usize, Error> {
+        if !self.writable {
+            return Err(Error::Unsupported(
+                "raw memory-card handle is read-only".to_owned(),
+            ));
+        }
+        let start = usize::try_from(offset)
+            .map_err(|_| Error::Unsupported("memory-card offset is too large".to_owned()))?;
+        let end = start
+            .checked_add(input.len())
+            .ok_or_else(|| Error::Unsupported("memory-card write is too large".to_owned()))?;
+        let mut bytes = self.image.bytes.lock();
+        if end > bytes.len() {
+            bytes.resize(end, 0);
+        }
+        bytes[start..end].copy_from_slice(input);
+        drop(bytes);
+        self.worker.schedule();
+        Ok(input.len())
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), Error> {
+        if !self.writable {
+            return Err(Error::Unsupported(
+                "raw memory-card handle is read-only".to_owned(),
+            ));
+        }
+        let len = usize::try_from(len)
+            .map_err(|_| Error::Unsupported("raw memory-card image is too large".to_owned()))?;
+        self.image.bytes.lock().resize(len, 0);
+        self.worker.schedule();
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        self.worker.schedule();
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        self.worker.reconcile()
+    }
+}
+
 impl<T: MemoryCard + 'static> MountableStorage for MemoryCardStorage<T> {
     fn rename(&self, _from: &str, _to: &str) -> Result<(), Error> {
         Err(Error::Unsupported(
@@ -170,6 +246,13 @@ impl<T: MemoryCard + 'static> MountableStorage for MemoryCardStorage<T> {
             return Err(Error::not_found(path));
         }
         self.worker.reconcile()
+    }
+
+    fn finish(&self, path: &str) -> Result<(), Error> {
+        if !path.is_empty() {
+            return Err(Error::not_found(path));
+        }
+        self.worker.shutdown()
     }
 }
 
@@ -212,8 +295,7 @@ impl Write for Handle {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.worker.schedule();
-        Ok(())
+        self.worker.reconcile().map_err(std::io::Error::other)
     }
 }
 

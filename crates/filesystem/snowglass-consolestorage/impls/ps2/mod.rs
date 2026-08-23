@@ -26,7 +26,7 @@ use crate::savegame::{
     SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
-use crate::storage::BackedVolumeStorage;
+use crate::storage::VolumeOverlay;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
     SaveRepo, Storage, VolumeStorage,
@@ -160,8 +160,8 @@ pub struct Playstation2MemoryCard {
     storage: Arc<DirectoryStorage>,
 }
 
-impl BackedVolumeStorage for Playstation2MemoryCard {
-    fn backing_volume(&self) -> &dyn VolumeStorage {
+impl VolumeOverlay for Playstation2MemoryCard {
+    fn inner(&self) -> &dyn VolumeStorage {
         self.storage.as_ref()
     }
 }
@@ -201,7 +201,7 @@ impl Playstation2MemoryCard {
             return Vec::new();
         };
         let mut saves = entries
-            .filter(|entry| entry.kind == EntryKind::File)
+            .filter(|entry| entry.metadata.kind == EntryKind::File)
             .filter_map(|entry| SaveDataHandle::from_path(&entry.name))
             .collect::<Vec<_>>();
         saves.sort_by(|left, right| left.name.cmp(&right.name));
@@ -771,9 +771,9 @@ mod tests {
             .truncate("", replacement.len() as u64)
             .unwrap();
         raw.storage()
-            .open("")
+            .open("", true)
             .unwrap()
-            .write_all(&replacement)
+            .write_at(0, &replacement)
             .unwrap();
         raw.storage().sync("").unwrap();
 
@@ -816,9 +816,9 @@ mod tests {
             .truncate("", replacement.len() as u64)
             .unwrap();
         raw.storage()
-            .open("")
+            .open("", true)
             .unwrap()
-            .write_all(&replacement)
+            .write_at(0, &replacement)
             .unwrap();
         raw.storage().sync("").unwrap();
         assert!(directory.path().join("card/BASLUS-12345.psu").is_file());
@@ -843,9 +843,9 @@ mod tests {
         projected_metadata[0x20..0x24].copy_from_slice(&0xfeed_beefu32.to_le_bytes());
         pcsx2
             .storage()
-            .open(metadata_path)
+            .open(metadata_path, true)
             .unwrap()
-            .write_all(&projected_metadata)
+            .write_at(0, &projected_metadata)
             .unwrap();
         pcsx2.storage().sync(metadata_path).unwrap();
 

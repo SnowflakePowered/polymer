@@ -3,10 +3,12 @@ use std::{collections::HashMap, sync::Arc};
 use parking_lot::Mutex;
 use snowglass_consolestorage::savegame::SaveDepotId;
 use snowglass_consolestorage::{EntryKind, MemoryCard, MemoryCardView};
+use uuid::Uuid;
 
 use crate::{
-    FileNode, FinalizationReason, Materialized, Node, NoopResourceLease, PathStr, ResourceFactory,
-    ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume,
+    CompositeResourceLease, ExclusiveResourceKey, FileNode, FinalizationReason, Materialized, Node,
+    NoopResourceLease, PathStr, ResourceFactory, ResourceLease, VfsComponent, VfsError, VfsPath,
+    VfsPathBuf, VfsResult, Volume,
 };
 
 use super::storage::{materialize_file, materialize_volume, unrestricted};
@@ -14,26 +16,32 @@ use super::storage::{materialize_file, materialize_volume, unrestricted};
 /// Adapts a file entry from a [`MemoryCardView`] into a VFS resource.
 pub struct MemoryCardFileFactory {
     view: MemoryCardView,
+    resource_id: Uuid,
 }
 
 impl MemoryCardFileFactory {
-    pub fn new(view: MemoryCardView) -> VfsResult<Self> {
+    pub fn new(view: MemoryCardView, resource_id: Uuid) -> VfsResult<Self> {
         if view.kind() != EntryKind::File {
             return Err(VfsError::IsDirectory(vfs_path(view.entry())));
         }
-        Ok(Self { view })
+        Ok(Self { view, resource_id })
     }
 }
 
 impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
+        let ownership = ExclusiveResourceKey::Resource(self.resource_id).acquire()?;
+        let lease = CompositeResourceLease::new(vec![
+            ownership,
+            Arc::new(MemoryCardLease {
+                view: self.view.clone(),
+            }),
+        ]);
         Ok(materialize_file(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
-            Arc::new(MemoryCardLease {
-                view: self.view.clone(),
-            }),
+            lease,
         ))
     }
 }
@@ -41,26 +49,32 @@ impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
 /// Adapts a directory entry from a [`MemoryCardView`] into a VFS volume.
 pub struct MemoryCardVolumeFactory {
     view: MemoryCardView,
+    resource_id: Uuid,
 }
 
 impl MemoryCardVolumeFactory {
-    pub fn new(view: MemoryCardView) -> VfsResult<Self> {
+    pub fn new(view: MemoryCardView, resource_id: Uuid) -> VfsResult<Self> {
         if view.kind() != EntryKind::Directory {
             return Err(VfsError::NotDirectory(vfs_path(view.entry())));
         }
-        Ok(Self { view })
+        Ok(Self { view, resource_id })
     }
 }
 
 impl ResourceFactory<dyn Volume> for MemoryCardVolumeFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        let ownership = ExclusiveResourceKey::Resource(self.resource_id).acquire()?;
+        let lease = CompositeResourceLease::new(vec![
+            ownership,
+            Arc::new(MemoryCardLease {
+                view: self.view.clone(),
+            }),
+        ]);
         Ok(materialize_volume(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
-            Arc::new(MemoryCardLease {
-                view: self.view.clone(),
-            }),
+            lease,
         ))
     }
 }
@@ -70,10 +84,14 @@ struct MemoryCardLease {
 }
 
 impl ResourceLease for MemoryCardLease {
-    fn finalize(&self, reason: FinalizationReason) {
-        if reason != FinalizationReason::LaunchFailed && self.view.kind() == EntryKind::File {
-            let _ = self.view.storage().sync(self.view.entry());
+    fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
+        if reason != FinalizationReason::LaunchFailed {
+            self.view
+                .storage()
+                .finish(self.view.entry())
+                .map_err(console_storage_error)?;
         }
+        Ok(())
     }
 }
 
@@ -86,11 +104,16 @@ fn vfs_path(path: &str) -> VfsPathBuf {
 pub struct MemoryCardStorageFactory<M: ?Sized> {
     card: Arc<M>,
     primary: Vec<SaveDepotId>,
+    resource_id: Uuid,
 }
 
 impl<M: ?Sized> MemoryCardStorageFactory<M> {
-    pub fn new(card: Arc<M>, primary: Vec<SaveDepotId>) -> Self {
-        Self { card, primary }
+    pub fn new(card: Arc<M>, primary: Vec<SaveDepotId>, resource_id: Uuid) -> Self {
+        Self {
+            card,
+            primary,
+            resource_id,
+        }
     }
 }
 
@@ -104,9 +127,11 @@ where
             primary: self.primary.clone(),
             views: Mutex::new(HashMap::new()),
         });
+        let ownership = ExclusiveResourceKey::Resource(self.resource_id).acquire()?;
+        let lease = CompositeResourceLease::new(vec![ownership, volume.clone()]);
         Ok(Materialized {
             backend: volume.clone(),
-            lease: volume,
+            lease,
         })
     }
 }
@@ -229,9 +254,9 @@ impl<M> ResourceLease for MemoryCardStorageVolume<M>
 where
     M: MemoryCard + ?Sized,
 {
-    fn finalize(&self, reason: FinalizationReason) {
+    fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
         if reason == FinalizationReason::LaunchFailed {
-            return;
+            return Ok(());
         }
         let views = self
             .views
@@ -240,10 +265,18 @@ where
             .map(|mounted| mounted.view.clone())
             .collect::<Vec<_>>();
         for view in views {
-            if view.kind() == EntryKind::File {
-                let _ = view.storage().sync(view.entry());
-            }
+            view.storage()
+                .finish(view.entry())
+                .map_err(console_storage_error)?;
         }
+        Ok(())
+    }
+}
+
+fn console_storage_error(error: snowglass_consolestorage::Error) -> VfsError {
+    match error {
+        snowglass_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
+        error => VfsError::Unsupported(error.to_string()),
     }
 }
 
@@ -303,7 +336,11 @@ mod tests {
 
         let resource = || {
             Arc::new(crate::Resource::new(
-                Arc::new(MemoryCardStorageFactory::new(card.clone(), Vec::new())),
+                Arc::new(MemoryCardStorageFactory::new(
+                    card.clone(),
+                    Vec::new(),
+                    Uuid::nil(),
+                )),
                 crate::Permissions::ALL,
                 crate::ResourceOrigin::Other("test-card".into()),
             ))

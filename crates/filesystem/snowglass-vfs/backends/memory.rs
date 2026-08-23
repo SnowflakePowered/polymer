@@ -85,6 +85,14 @@ struct MemoryOpen {
 }
 
 impl OpenFile for MemoryOpen {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            kind: FileKind::File,
+            len: self.bytes.read().len() as u64,
+            readonly: !self.writable,
+        })
+    }
+
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         let offset = offset as usize;
         let bytes = self.bytes.read();
@@ -470,9 +478,21 @@ impl DirectoryNode for MemoryDirectory {
         let entries = children
             .values()
             .map(|(name, child)| {
+                let child = state.nodes.get(child).ok_or(VfsError::StaleNode)?;
+                let metadata = Metadata {
+                    kind: match &child.kind {
+                        MemoryKind::Directory(_) => FileKind::Directory,
+                        MemoryKind::File(_) => FileKind::File,
+                    },
+                    len: match &child.kind {
+                        MemoryKind::Directory(_) => 0,
+                        MemoryKind::File(bytes) => bytes.read().len() as u64,
+                    },
+                    readonly: child.readonly,
+                };
                 Ok(DirectoryEntry {
                     name: name.clone(),
-                    node: state.node(&self.state, *child)?,
+                    metadata,
                 })
             })
             .collect::<Vec<_>>();

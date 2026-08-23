@@ -5,7 +5,7 @@ use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher,
 };
-use crate::storage::{BackedVolumeStorage, ChangeSignal};
+use crate::storage::{ChangeSignal, VolumeOverlay};
 use crate::{
     BoxFuture, ComposedStorage, EntryKind, Error, MountableStorage, Permissions, PermissionsTable,
     SaveRepo, Storage, VolumeStorage, ensure_structure, requires_structure,
@@ -42,12 +42,12 @@ pub struct WiiUSaveRepo {
     root: Arc<dyn VolumeStorage>,
 }
 
-impl BackedVolumeStorage for WiiUSaveRepo {
-    fn backing_volume(&self) -> &dyn VolumeStorage {
+impl VolumeOverlay for WiiUSaveRepo {
+    fn inner(&self) -> &dyn VolumeStorage {
         self.root.as_ref()
     }
 
-    fn claims_backing_path(&self, path: &str) -> bool {
+    fn claims(&self, path: &str) -> bool {
         WiiUNand::is_save_path(path)
     }
 }
@@ -223,7 +223,7 @@ impl WiiUSaveRepo {
         let timestamp = self
             .root
             .read_dir(&root, true)?
-            .filter(|entry| entry.kind == EntryKind::File)
+            .filter(|entry| entry.metadata.kind == EntryKind::File)
             .filter_map(|entry| self.root.metadata(&entry.path).ok())
             .map(|metadata| metadata.mtime)
             .max()
@@ -334,7 +334,7 @@ impl SaveGameSink for WiiUSaveRepo {
         let mut paths: Vec<String> = self
             .root
             .read_dir(&root, true)?
-            .filter(|entry| entry.kind == EntryKind::File)
+            .filter(|entry| entry.metadata.kind == EntryKind::File)
             .map(|entry| entry.path)
             .collect();
         paths.sort();

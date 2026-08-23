@@ -22,7 +22,7 @@ use crate::savegame::{
     SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::{PS1_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
-use crate::storage::BackedVolumeStorage;
+use crate::storage::VolumeOverlay;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
     SaveRepo, Storage, VolumeStorage,
@@ -116,8 +116,8 @@ pub struct PlaystationMemoryCard {
     storage: Arc<DirectoryStorage>,
 }
 
-impl BackedVolumeStorage for PlaystationMemoryCard {
-    fn backing_volume(&self) -> &dyn VolumeStorage {
+impl VolumeOverlay for PlaystationMemoryCard {
+    fn inner(&self) -> &dyn VolumeStorage {
         self.storage.as_ref()
     }
 }
@@ -161,7 +161,7 @@ impl PlaystationMemoryCard {
             return Vec::new();
         };
         let mut saves = entries
-            .filter(|entry| entry.kind == EntryKind::File)
+            .filter(|entry| entry.metadata.kind == EntryKind::File)
             .filter_map(|entry| SaveDataHandle::from_native_name(&entry.name))
             .collect::<Vec<_>>();
         saves.sort_by(|left, right| left.native_id.cmp(&right.native_id));

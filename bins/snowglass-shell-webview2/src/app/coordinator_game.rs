@@ -95,6 +95,13 @@ impl ShellCoordinator {
         let _ = self.window.commit();
         self.set_input_priority(InputPriority::Ui);
         self.publish_targets_for(finished.token);
+        if let Some(error) = finished.finalization_error {
+            self.emit_instance_event(
+                finished.token,
+                "error",
+                &instance_events::error(format!("filesystem finalization failed: {error}")),
+            );
+        }
         self.emit_instance_event(finished.token, "closed", &serde_json::Value::Null);
     }
 

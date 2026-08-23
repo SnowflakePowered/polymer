@@ -7,7 +7,7 @@ use tokio::io::AsyncRead;
 
 use crate::{
     BoxFuture, ChangeSignal, DirEntry, Error, InstallResult, Metadata, MountableStorage, ReadDir,
-    Storage, StorageFile, StorageRead,
+    Storage, StorageFile, StorageRead, StorageStream,
 };
 
 /// A fixed-lifetime, ordered composition. The first storage that claims a path
@@ -73,7 +73,7 @@ impl ComposedStorage {
                 Ok(metadata) => entries.push(DirEntry {
                     name,
                     path: child,
-                    kind: metadata.kind,
+                    metadata,
                 }),
                 Err(error) if Self::is_not_found(&error) => {}
                 Err(error) => return Err(error),
@@ -112,19 +112,19 @@ impl Storage for ComposedStorage {
         self.owner(path)?.create_dir_all(path)
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         self.owner(path)?.create(path)
     }
 
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.owner(path)?.open(path)
+    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
+        self.owner(path)?.open(path, write)
     }
 
     fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
         self.owner(path)?.open_read(path)
     }
 
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
+    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
         self.owner(path)?.append(path)
     }
 
@@ -200,6 +200,10 @@ impl MountableStorage for ComposedStorage {
 
     fn sync(&self, path: &str) -> Result<(), Error> {
         self.owner(path)?.sync(path)
+    }
+
+    fn finish(&self, path: &str) -> Result<(), Error> {
+        self.owner(path)?.finish(path)
     }
 }
 

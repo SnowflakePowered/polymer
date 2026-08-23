@@ -66,10 +66,15 @@ impl SessionController {
         let instance = match EmulatorInstance::launch_with_waker(config, wake) {
             Ok(instance) => instance,
             Err(error) => {
-                if let Some(filesystem) = filesystem.take() {
-                    filesystem.finish(snowglass_vfs::FinalizationReason::LaunchFailed);
+                let mut message = error.to_string();
+                if let Some(filesystem) = filesystem.take()
+                    && let Err(finalization) =
+                        filesystem.finish(snowglass_vfs::FinalizationReason::LaunchFailed)
+                {
+                    message.push_str("; filesystem finalization failed: ");
+                    message.push_str(&finalization.to_string());
                 }
-                return Err(error.to_string());
+                return Err(message);
             }
         };
         let audio = instance.audio_state();
@@ -125,14 +130,21 @@ impl SessionController {
             .is_some_and(|active| matches!(active.instance.state(), InstanceState::Exited(_)))
     }
 
-    pub fn finish(&mut self, reason: snowglass_vfs::FinalizationReason) -> Option<u32> {
-        let mut active = self.active.take()?;
+    pub fn finish(
+        &mut self,
+        reason: snowglass_vfs::FinalizationReason,
+    ) -> Result<Option<u32>, String> {
+        let Some(mut active) = self.active.take() else {
+            return Ok(None);
+        };
         let token = active.token;
         drop(active.instance);
         if let Some(filesystem) = active.filesystem.take() {
-            filesystem.finish(reason);
+            filesystem
+                .finish(reason)
+                .map_err(|error| error.to_string())?;
         }
-        Some(token)
+        Ok(Some(token))
     }
 }
 
@@ -141,6 +153,6 @@ impl Drop for SessionController {
         if let Some(active) = self.active.as_mut() {
             active.instance.close();
         }
-        self.finish(snowglass_vfs::FinalizationReason::Cancelled);
+        let _ = self.finish(snowglass_vfs::FinalizationReason::Cancelled);
     }
 }
