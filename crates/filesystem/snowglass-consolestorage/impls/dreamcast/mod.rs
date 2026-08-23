@@ -25,8 +25,8 @@ use crate::savegame::{
 };
 use crate::savegroups::{DREAMCAST_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::{
-    BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, MemoryCard,
-    MemoryCardView, Metadata, ReadDir, Storage, StorageFile, StorageRead, VolumeStorage,
+    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, Storage,
+    VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
@@ -371,53 +371,11 @@ impl fmt::Debug for DreamcastMemoryCard {
     }
 }
 
-impl Storage for DreamcastMemoryCard {
-    fn exists(&self, path: &str) -> bool {
-        self.storage.exists(path)
-    }
-    fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        self.storage.metadata(path)
-    }
-    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        self.storage.read_dir(path, recursive)
-    }
-    fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        self.storage.create_dir_all(path)
-    }
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.storage.create(path)
-    }
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.storage.open(path)
-    }
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.storage.open_read(path)
-    }
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.storage.append(path)
-    }
-    fn remove(&self, path: &str) -> Result<(), Error> {
-        self.storage.remove(path)
-    }
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.storage.watch(paths)
-    }
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.storage.label()
-    }
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.storage.set_label(label)
-    }
-    fn install_file<'a>(
-        &'a self,
-        source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
-        dest: &str,
-    ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        self.storage.install_file(source, dest)
-    }
-}
-
 impl MemoryCard for DreamcastMemoryCard {
+    fn storage(&self) -> &dyn Storage {
+        self.storage.as_ref()
+    }
+
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
         let (mounted_product, projected) = self.project(primary)?;
         let originals = projected
