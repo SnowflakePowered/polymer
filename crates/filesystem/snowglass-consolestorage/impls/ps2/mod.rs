@@ -26,9 +26,8 @@ use crate::savegame::{
 };
 use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::{
-    BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, MemoryCard,
-    MemoryCardView, Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead,
-    VolumeStorage,
+    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
+    Storage, VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
@@ -382,65 +381,11 @@ impl fmt::Debug for Playstation2MemoryCard {
     }
 }
 
-impl Storage for Playstation2MemoryCard {
-    fn exists(&self, path: &str) -> bool {
-        self.storage.exists(path)
-    }
-
-    fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        self.storage.metadata(path)
-    }
-
-    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        self.storage.read_dir(path, recursive)
-    }
-
-    fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        self.storage.create_dir_all(path)
-    }
-
-    fn create(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.storage.create(path)
-    }
-
-    fn open(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.storage.open(path)
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.storage.open_read(path)
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageFile>, Error> {
-        self.storage.append(path)
-    }
-
-    fn remove(&self, path: &str) -> Result<(), Error> {
-        self.storage.remove(path)
-    }
-
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.storage.watch(paths)
-    }
-
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.storage.label()
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.storage.set_label(label)
-    }
-
-    fn install_file<'a>(
-        &'a self,
-        source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
-        dest: &str,
-    ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        self.storage.install_file(source, dest)
-    }
-}
-
 impl MemoryCard for Playstation2MemoryCard {
+    fn storage(&self) -> &dyn Storage {
+        self.storage.as_ref()
+    }
+
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
         Self::validate_capacity(CAPACITY_BLOCKS)?;
         let projected = self
@@ -704,7 +649,10 @@ mod tests {
         let save = Save::new(bytes).unwrap();
 
         card.write_save(&save).unwrap();
-        assert!(card.exists("card/~4241534c55532d303030303182ff41.psu"));
+        assert!(
+            card.storage
+                .exists("card/~4241534c55532d303030303182ff41.psu")
+        );
         assert_eq!(
             card.read_save(&SaveDataHandle::from_name(native_name).unwrap())
                 .unwrap()
@@ -746,13 +694,13 @@ mod tests {
             &Save::from_files("BASLUS-00001", &[], [("data.bin", &[][..], &b"first"[..])]).unwrap(),
         )
         .unwrap();
-        assert!(card.exists("card/BASLUS-00001.psu"));
+        assert!(card.storage.exists("card/BASLUS-00001.psu"));
 
         let pcsx2 = card.view(&[], "pcsx2").unwrap();
         assert_eq!(pcsx2.kind(), EntryKind::Directory);
         assert!(pcsx2.storage().exists("BASLUS-00001/data.bin"));
         assert!(pcsx2.storage().exists("_pcsx2_superblock"));
-        assert!(!card.exists("card/_pcsx2_superblock"));
+        assert!(!card.storage.exists("card/_pcsx2_superblock"));
 
         let watcher = card.watch_saves(&[]).unwrap();
         let notification = tokio::spawn(async move { watcher.changed().await });
@@ -781,8 +729,8 @@ mod tests {
             .unwrap();
         pcsx2.storage().rename("index.tmp", "_pcsx2_index").unwrap();
         assert!(pcsx2.storage().exists("_pcsx2_index"));
-        assert!(!card.exists("card/index.tmp"));
-        assert!(!card.exists("card/_pcsx2_index"));
+        assert!(!card.storage.exists("card/index.tmp"));
+        assert!(!card.storage.exists("card/_pcsx2_index"));
 
         pcsx2.storage().create_dir_all("BASLUS-DELETE").unwrap();
         pcsx2.storage().create("BASLUS-DELETE/save.dat").unwrap();
@@ -790,7 +738,7 @@ mod tests {
             .storage()
             .rename("BASLUS-DELETE", "_pcsx2_deleted_BASLUS-DELETE")
             .unwrap();
-        assert!(!card.exists("card/BASLUS-DELETE.psu"));
+        assert!(!card.storage.exists("card/BASLUS-DELETE.psu"));
 
         let raw = card.view(&[], "raw").unwrap();
         assert_eq!(raw.kind(), EntryKind::File);
@@ -828,7 +776,7 @@ mod tests {
             .read_save(&SaveDataHandle::from_name(b"BASLUS-00001").unwrap())
             .unwrap();
         assert_eq!(written.files().next().unwrap().data(), b"raw write");
-        assert!(!card.exists("card/BASLUS-00002.psu"));
+        assert!(!card.storage.exists("card/BASLUS-00002.psu"));
         let pcsx2 = card.view(&[], "pcsx2").unwrap();
         let mut payload = Vec::new();
         pcsx2

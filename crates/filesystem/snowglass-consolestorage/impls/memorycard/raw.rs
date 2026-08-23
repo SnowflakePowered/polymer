@@ -128,11 +128,11 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
     }
 
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.backing.label()
+        self.backing.storage().label()
     }
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.backing.set_label(label)
+        self.backing.storage().set_label(label)
     }
 
     fn install_file<'a>(

@@ -7,7 +7,7 @@ use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
 use snowglass_consolestorage::impls::ps2::Playstation2MemoryCard;
 use snowglass_consolestorage::impls::wiiu::nand::WiiUNand;
 use snowglass_consolestorage::nand::VirtualNand;
-use snowglass_consolestorage::{DirectoryStorage, Error, NandMetadata, Storage, VolumeStorage};
+use snowglass_consolestorage::{DirectoryStorage, Error, MemoryCard, NandMetadata, VolumeStorage};
 use uuid::Uuid;
 
 pub type Nand = Arc<dyn VirtualNand>;
@@ -34,10 +34,10 @@ impl ConsoleStorage {
     pub async fn set_label(&self, label: Option<&str>) -> Result<(), Error> {
         match self {
             Self::Nand(nand) => nand.set_label(label).await,
-            Self::DreamcastMemoryCard(card) => card.set_label(label).await,
-            Self::GameCubeMemoryCard(card) => card.set_label(label).await,
-            Self::PlaystationMemoryCard(card) => card.set_label(label).await,
-            Self::Playstation2MemoryCard(card) => card.set_label(label).await,
+            Self::DreamcastMemoryCard(card) => card.storage().set_label(label).await,
+            Self::GameCubeMemoryCard(card) => card.storage().set_label(label).await,
+            Self::PlaystationMemoryCard(card) => card.storage().set_label(label).await,
+            Self::Playstation2MemoryCard(card) => card.storage().set_label(label).await,
         }
     }
 

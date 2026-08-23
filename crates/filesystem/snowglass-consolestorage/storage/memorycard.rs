@@ -61,7 +61,9 @@ impl fmt::Debug for MemoryCardView {
     }
 }
 
-pub trait MemoryCard: Storage {
+pub trait MemoryCard: fmt::Debug + Send + Sync {
+    fn storage(&self) -> &dyn Storage;
+
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error>;
 
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<Reconcile, Error>;
