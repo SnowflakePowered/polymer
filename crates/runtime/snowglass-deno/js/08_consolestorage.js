@@ -7,31 +7,31 @@ import {
 } from "ext:core/ops";
 
 export function createConsoleStorage() {
-  const nandData = new WeakMap();
+  const storageData = new WeakMap();
   const watching = new WeakSet();
   const deleted = new WeakSet();
-  const internal = Symbol("Snowglass.consolestorage.Nand");
+  const internal = Symbol("Snowglass.consolestorage.Storage");
 
-  async function receiveGameSaved(nand) {
-    const data = nandData.get(nand);
-    while (!deleted.has(nand)) {
+  async function receiveGameSaved(storage) {
+    const data = storageData.get(storage);
+    while (!deleted.has(storage)) {
       try {
-        await op_consolestorage_game_saved(data.platform, data.id);
+        await op_consolestorage_game_saved(data.kind, data.platform, data.id);
       } catch (error) {
-        if (!deleted.has(nand)) {
-          nand.dispatchEvent(new CustomEvent("error", { detail: error }));
+        if (!deleted.has(storage)) {
+          storage.dispatchEvent(new CustomEvent("error", { detail: error }));
         }
         return;
       }
-      if (!deleted.has(nand)) nand.dispatchEvent(new Event("gamesaved"));
+      if (!deleted.has(storage)) storage.dispatchEvent(new Event("gamesaved"));
     }
   }
 
-  class Nand extends EventTarget {
+  class Storage extends EventTarget {
     constructor(token, data) {
       super();
-      if (token !== internal) throw new TypeError("Use Snowglass.consolestorage.Nand.create()");
-      nandData.set(this, Object.freeze({ ...data }));
+      if (token !== internal) throw new TypeError("Use Snowglass.consolestorage.Storage.create()");
+      storageData.set(this, Object.freeze({ ...data }));
     }
 
     addEventListener(type, callback, options) {
@@ -42,40 +42,46 @@ export function createConsoleStorage() {
       }
     }
 
-    static async create(platform, options = undefined) {
+    static async create(kind, platform, options = undefined) {
+      if (!["nand", "saveRepo", "memoryCard"].includes(kind)) {
+        throw new TypeError("Unknown console storage kind");
+      }
       if (typeof platform !== "string" || platform.length === 0) {
-        throw new TypeError("A nand requires a platform id");
+        throw new TypeError("Console storage requires a platform id");
       }
       const label = options?.label === undefined ? null : String(options.label);
-      return new Nand(internal, await op_consolestorage_create(platform, label));
+      return new Storage(internal, await op_consolestorage_create(kind, platform, label));
     }
 
-    static async list() {
-      const nands = await op_consolestorage_list();
-      return nands.map((data) => new Nand(internal, data));
+    static async list(options = undefined) {
+      const storages = (await op_consolestorage_list()).map((data) => new Storage(internal, data));
+      return options?.kind === undefined
+        ? storages
+        : storages.filter((storage) => storage.kind === options.kind);
     }
 
-    get id() { return nandData.get(this).id; }
-    get platform() { return nandData.get(this).platform; }
-    get label() { return nandData.get(this).label; }
-    get created() { return new Date(nandData.get(this).created); }
-    get path() { return nandData.get(this).path; }
+    get kind() { return storageData.get(this).kind; }
+    get id() { return storageData.get(this).id; }
+    get platform() { return storageData.get(this).platform; }
+    get label() { return storageData.get(this).label; }
+    get created() { return new Date(storageData.get(this).created); }
+    get path() { return storageData.get(this).path; }
 
     async setLabel(label) {
-      const data = nandData.get(this);
+      const data = storageData.get(this);
       const next = label === null || label === undefined ? null : String(label);
-      return new Nand(internal, await op_consolestorage_set_label(data.platform, data.id, next));
+      return new Storage(internal, await op_consolestorage_set_label(data.kind, data.platform, data.id, next));
     }
 
     async delete() {
-      const data = nandData.get(this);
+      const data = storageData.get(this);
       deleted.add(this);
-      await op_consolestorage_delete(data.platform, data.id);
+      await op_consolestorage_delete(data.kind, data.platform, data.id);
     }
 
-    toJSON() { return { ...nandData.get(this) }; }
+    toJSON() { return { ...storageData.get(this) }; }
   }
 
-  const ConsoleStorage = Object.freeze({ Nand });
+  const ConsoleStorage = Object.freeze({ Storage });
   return Object.freeze({ ConsoleStorage });
 }

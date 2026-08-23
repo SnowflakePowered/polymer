@@ -381,16 +381,20 @@ impl SnowglassHost for FrontendServices {
 
     fn consolestorage_game_saved(
         &self,
+        kind: String,
         platform: String,
         id: String,
     ) -> ApiFuture<Result<(), String>> {
         let storage = self.storage.clone();
         Box::pin(async move {
             let storage = storage.ok_or_else(|| "console storage is unavailable".to_owned())?;
+            let kind = kind
+                .parse::<snowglass_library::StorageKind>()
+                .map_err(|error| error.to_string())?;
             let id = uuid::Uuid::parse_str(&id)
                 .map_err(|_| format!("`{id}` is not a console storage id"))?;
             let volume = storage
-                .open(&platform, id)
+                .open(kind, &platform, id)
                 .await
                 .map_err(|error| error.to_string())?;
             volume.game_saved().await.map_err(|error| error.to_string())

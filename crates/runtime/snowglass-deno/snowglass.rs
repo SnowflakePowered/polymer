@@ -43,6 +43,7 @@ pub trait SnowglassHost: Send + Sync {
     fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>>;
     fn consolestorage_game_saved(
         &self,
+        kind: String,
         platform: String,
         id: String,
     ) -> ApiFuture<Result<(), String>>;
@@ -70,14 +71,17 @@ pub trait SnowglassHost: Send + Sync {
 pub enum ConsoleStorageRequest {
     List,
     Create {
+        kind: String,
         platform: String,
         label: Option<String>,
     },
     Delete {
+        kind: String,
         platform: String,
         id: String,
     },
     SetLabel {
+        kind: String,
         platform: String,
         id: String,
         label: Option<String>,
@@ -178,26 +182,37 @@ async fn op_consolestorage_list(
 #[serde]
 async fn op_consolestorage_create(
     state: Rc<RefCell<OpState>>,
+    #[string] kind: String,
     #[string] platform: String,
     #[string] label: Option<String>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(&state, ConsoleStorageRequest::Create { platform, label }).await
+    consolestorage(
+        &state,
+        ConsoleStorageRequest::Create {
+            kind,
+            platform,
+            label,
+        },
+    )
+    .await
 }
 
 #[op2]
 #[serde]
 async fn op_consolestorage_delete(
     state: Rc<RefCell<OpState>>,
+    #[string] kind: String,
     #[string] platform: String,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(&state, ConsoleStorageRequest::Delete { platform, id }).await
+    consolestorage(&state, ConsoleStorageRequest::Delete { kind, platform, id }).await
 }
 
 #[op2]
 #[serde]
 async fn op_consolestorage_set_label(
     state: Rc<RefCell<OpState>>,
+    #[string] kind: String,
     #[string] platform: String,
     #[string] id: String,
     #[string] label: Option<String>,
@@ -205,6 +220,7 @@ async fn op_consolestorage_set_label(
     consolestorage(
         &state,
         ConsoleStorageRequest::SetLabel {
+            kind,
             platform,
             id,
             label,
@@ -216,11 +232,12 @@ async fn op_consolestorage_set_label(
 #[op2]
 async fn op_consolestorage_game_saved(
     state: Rc<RefCell<OpState>>,
+    #[string] kind: String,
     #[string] platform: String,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
-    host.consolestorage_game_saved(platform, id)
+    host.consolestorage_game_saved(kind, platform, id)
         .await
         .map_err(JsErrorBox::generic)
 }
