@@ -75,12 +75,12 @@ impl<S: PathSemantics> fmt::Debug for Node<S> {
 #[derive(Clone, Debug)]
 pub struct DirectoryEntry<S: PathSemantics = NativePathSemantics> {
     pub name: VfsComponent<S>,
-    pub node: Node<S>,
+    pub metadata: Metadata,
 }
 
 impl<S: PathSemantics> DirectoryEntry<S> {
     pub const fn kind(&self) -> FileKind {
-        self.node.kind()
+        self.metadata.kind
     }
 }
 
@@ -88,6 +88,7 @@ pub type DirectoryIterator<S = NativePathSemantics> =
     dyn Iterator<Item = VfsResult<DirectoryEntry<S>>> + Send;
 
 pub trait OpenFile: Send + Sync {
+    fn metadata(&self) -> VfsResult<Metadata>;
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize>;
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize>;
     fn truncate(&self, len: u64) -> VfsResult<()>;

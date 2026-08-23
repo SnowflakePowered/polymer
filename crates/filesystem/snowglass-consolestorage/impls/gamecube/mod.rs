@@ -23,7 +23,7 @@ use crate::savegame::{
     SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::TARGET_CAPACITY_PERCENT;
-use crate::storage::BackedVolumeStorage;
+use crate::storage::VolumeOverlay;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
     SaveRepo, Storage, VolumeStorage,
@@ -37,8 +37,8 @@ pub struct GameCubeMemoryCard {
     id: Uuid,
 }
 
-impl BackedVolumeStorage for GameCubeMemoryCard {
-    fn backing_volume(&self) -> &dyn VolumeStorage {
+impl VolumeOverlay for GameCubeMemoryCard {
+    fn inner(&self) -> &dyn VolumeStorage {
         self.storage.as_ref()
     }
 }
@@ -82,7 +82,8 @@ impl GameCubeMemoryCard {
         };
         let mut saves = entries
             .filter(|entry| {
-                entry.kind == EntryKind::File && entry.name.to_ascii_lowercase().ends_with(".gci")
+                entry.metadata.kind == EntryKind::File
+                    && entry.name.to_ascii_lowercase().ends_with(".gci")
             })
             .filter_map(|entry| {
                 let mut bytes = Vec::new();
@@ -334,7 +335,7 @@ impl MemoryCard for GameCubeMemoryCard {
                 self.storage.clone(),
                 &projected,
                 reconcile,
-            )),
+            )?),
             "raw" => {
                 let blocks = u32::from(raw::card::MC251_BLOCKS);
                 let mut image = raw::card::MemoryCard::empty(blocks)?;
@@ -454,7 +455,6 @@ impl SaveGameSink for GameCubeMemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Seek, SeekFrom};
 
     use crate::impls::memorycard::RawMemoryCardImage;
 
@@ -592,9 +592,8 @@ mod tests {
         replacement_card.append_save(replacement).unwrap();
         let image = replacement_card.into_owned();
         raw.storage().truncate("", image.len() as u64).unwrap();
-        let mut output = raw.storage().open("").unwrap();
-        output.seek(SeekFrom::Start(0)).unwrap();
-        output.write_all(&image).unwrap();
+        let output = raw.storage().open("", true).unwrap();
+        assert_eq!(output.write_at(0, &image).unwrap(), image.len());
         raw.storage().sync("").unwrap();
 
         let dolphin = card.view(&[primary], "dolphin").unwrap();
@@ -630,8 +629,8 @@ mod tests {
         pal_card.append_save(pal).unwrap();
         let image = pal_card.into_owned();
         raw.storage().truncate("", image.len() as u64).unwrap();
-        let mut output = raw.storage().open("").unwrap();
-        output.write_all(&image).unwrap();
+        let output = raw.storage().open("", true).unwrap();
+        assert_eq!(output.write_at(0, &image).unwrap(), image.len());
         assert!(raw.storage().sync("").is_err());
         assert!(card.saves().is_empty());
     }

@@ -89,7 +89,11 @@ pub async fn launch_storage(
             let composed = nand.compose(save).map_err(|error| error.to_string())?;
             storage.insert(
                 name.clone(),
-                Arc::new(NandVolumeFactory::new(nand, composed)),
+                Arc::new(NandVolumeFactory::new(
+                    nand,
+                    composed,
+                    vec![save_id, nand_id],
+                )),
             );
             continue;
         }
@@ -107,7 +111,10 @@ pub async fn launch_storage(
         match volume {
             ConsoleStorage::Nand(nand) => {
                 let root = nand.root();
-                storage.insert(name.clone(), Arc::new(NandVolumeFactory::new(nand, root)));
+                storage.insert(
+                    name.clone(),
+                    Arc::new(NandVolumeFactory::new(nand, root, vec![id])),
+                );
             }
             ConsoleStorage::SaveRepo(_) => {
                 return Err(format!(
@@ -132,7 +139,7 @@ pub async fn launch_storage(
                         let primary = vec![card.infer_save_depot(package)];
                         storage.insert(
                             name.clone(),
-                            Arc::new(MemoryCardStorageFactory::new(card, primary)),
+                            Arc::new(MemoryCardStorageFactory::new(card, primary, id)),
                         );
                     }};
                 }

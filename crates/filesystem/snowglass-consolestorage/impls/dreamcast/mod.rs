@@ -25,7 +25,7 @@ use crate::savegame::{
     SaveGameSink, SaveWatcher,
 };
 use crate::savegroups::{DREAMCAST_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
-use crate::storage::BackedVolumeStorage;
+use crate::storage::VolumeOverlay;
 use crate::{
     BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, Storage,
     VolumeStorage,
@@ -37,8 +37,8 @@ pub struct DreamcastMemoryCard {
     storage: Arc<DirectoryStorage>,
 }
 
-impl BackedVolumeStorage for DreamcastMemoryCard {
-    fn backing_volume(&self) -> &dyn VolumeStorage {
+impl VolumeOverlay for DreamcastMemoryCard {
+    fn inner(&self) -> &dyn VolumeStorage {
         self.storage.as_ref()
     }
 }
@@ -95,7 +95,7 @@ impl DreamcastMemoryCard {
             return Vec::new();
         };
         let mut saves = Vec::new();
-        for product_entry in products.filter(|entry| entry.kind == EntryKind::Directory) {
+        for product_entry in products.filter(|entry| entry.metadata.kind == EntryKind::Directory) {
             let Some(product) = DreamcastProductId::new(product_entry.name.as_bytes()) else {
                 continue;
             };
@@ -103,7 +103,8 @@ impl DreamcastMemoryCard {
                 continue;
             };
             for entry in entries.filter(|entry| {
-                entry.kind == EntryKind::File && entry.name.to_ascii_lowercase().ends_with(".vmi")
+                entry.metadata.kind == EntryKind::File
+                    && entry.name.to_ascii_lowercase().ends_with(".vmi")
             }) {
                 let stem = &entry.name[..entry.name.len() - 4];
                 let vms_path = format!("{}/{stem}.vms", product_entry.path);
@@ -666,8 +667,8 @@ mod tests {
             .append_save(fixture(*b"NEWSAVE1DATA", *b"IGNORED_", 1))
             .unwrap();
         let image = image.into_owned();
-        let mut output = view.storage().open("").unwrap();
-        output.write_all(&image).unwrap();
+        let output = view.storage().open("", true).unwrap();
+        assert_eq!(output.write_at(0, &image).unwrap(), image.len());
         view.storage().sync("").unwrap();
 
         assert!(card.storage.exists("card/MK-51117/NEWSAVE1.vmi"));

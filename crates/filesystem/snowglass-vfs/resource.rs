@@ -4,7 +4,16 @@ use crate::{
     VfsError, VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
 use parking_lot::{Mutex, RwLock};
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use uuid::Uuid;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResourceOrigin {
@@ -76,14 +85,146 @@ pub enum FinalizationReason {
 }
 
 pub trait ResourceLease: Send + Sync {
-    fn finalize(&self, reason: FinalizationReason);
+    fn finalize(&self, reason: FinalizationReason) -> VfsResult<()>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExclusiveResourceKey {
+    HostPath(PathBuf),
+    Resource(Uuid),
+}
+
+impl ExclusiveResourceKey {
+    pub fn acquire(self) -> VfsResult<Arc<dyn ResourceLease>> {
+        ExclusiveResourceLease::acquire(self)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ActiveResourceKey {
+    HostPath(String),
+    Resource(Uuid),
+}
+
+static EXCLUSIVE_RESOURCES: OnceLock<Mutex<Vec<ActiveResourceKey>>> = OnceLock::new();
+
+pub(crate) struct ExclusiveResourceLease {
+    key: ActiveResourceKey,
+    released: AtomicBool,
+}
+
+impl ExclusiveResourceLease {
+    pub(crate) fn acquire(key: ExclusiveResourceKey) -> VfsResult<Arc<dyn ResourceLease>> {
+        let display = format!("{key:?}");
+        let key = match key {
+            ExclusiveResourceKey::HostPath(path) => {
+                let canonical = path.canonicalize()?;
+                ActiveResourceKey::HostPath(normalize_host_path(&canonical))
+            }
+            ExclusiveResourceKey::Resource(id) => ActiveResourceKey::Resource(id),
+        };
+        let mut active = EXCLUSIVE_RESOURCES.get_or_init(Mutex::default).lock();
+        if let Some(existing) = active
+            .iter()
+            .find(|existing| resource_keys_overlap(existing, &key))
+        {
+            return Err(VfsError::Unsupported(format!(
+                "resource {display} overlaps the active resource {existing:?}"
+            )));
+        }
+        active.push(key.clone());
+        Ok(Arc::new(Self {
+            key,
+            released: AtomicBool::new(false),
+        }))
+    }
+
+    fn release(&self) {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(active) = EXCLUSIVE_RESOURCES.get() {
+            active.lock().retain(|key| key != &self.key);
+        }
+    }
+}
+
+impl ResourceLease for ExclusiveResourceLease {
+    fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
+        self.release();
+        Ok(())
+    }
+}
+
+impl Drop for ExclusiveResourceLease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+pub struct CompositeResourceLease {
+    leases: Vec<Arc<dyn ResourceLease>>,
+}
+
+impl CompositeResourceLease {
+    pub fn new(leases: Vec<Arc<dyn ResourceLease>>) -> Arc<Self> {
+        Arc::new(Self { leases })
+    }
+}
+
+impl ResourceLease for CompositeResourceLease {
+    fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
+        let mut failure = None;
+        for lease in self.leases.iter().rev() {
+            if let Err(error) = lease.finalize(reason)
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
+
+fn normalize_host_path(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('/', "\\");
+    #[cfg(windows)]
+    {
+        normalized.to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
+}
+
+fn resource_keys_overlap(left: &ActiveResourceKey, right: &ActiveResourceKey) -> bool {
+    match (left, right) {
+        (ActiveResourceKey::Resource(left), ActiveResourceKey::Resource(right)) => left == right,
+        (ActiveResourceKey::HostPath(left), ActiveResourceKey::HostPath(right)) => {
+            path_keys_overlap(left, right)
+        }
+        _ => false,
+    }
+}
+
+fn path_keys_overlap(left: &str, right: &str) -> bool {
+    fn contains(parent: &str, child: &str) -> bool {
+        child == parent
+            || child
+                .strip_prefix(parent)
+                .is_some_and(|suffix| suffix.starts_with('\\'))
+    }
+    contains(left, right) || contains(right, left)
 }
 
 #[derive(Default)]
 pub struct NoopResourceLease;
 
 impl ResourceLease for NoopResourceLease {
-    fn finalize(&self, _reason: FinalizationReason) {}
+    fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
+        Ok(())
+    }
 }
 
 pub struct PreparedFilesystem {
@@ -158,9 +299,11 @@ impl PreparedFilesystem {
         Ok(())
     }
 
-    pub fn finalize(&self, reason: FinalizationReason) {
+    pub fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
         if let Some(resources) = self.materialized.lock().as_mut() {
-            resources.finalize(reason);
+            resources.finalize(reason)
+        } else {
+            Ok(())
         }
     }
 
@@ -182,6 +325,47 @@ impl PreparedFilesystem {
 
     pub fn open(&self, path: &VfsPathBuf, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
         let resolved = self.resolve_node(path)?;
+        self.open_resolved(path, resolved, options)
+    }
+
+    /// Resolves a namespace path once and returns both its metadata and, for files,
+    /// an open handle. Files report metadata through the captured handle so callers
+    /// do not have to repeat the namespace walk after opening.
+    pub fn open_with_metadata(
+        &self,
+        path: &VfsPathBuf,
+        options: OpenOptions,
+    ) -> VfsResult<(Metadata, Option<Box<dyn OpenFile>>)> {
+        let resolved = self.resolve_node(path)?;
+        if (options.read && !resolved.permissions.can_read())
+            || ((options.write || options.truncate) && !resolved.permissions.can_write())
+        {
+            return Err(VfsError::PermissionDenied(path.clone()));
+        }
+        match resolved.node {
+            Node::File(file) => {
+                let handle = file.open(options)?;
+                let metadata = handle.metadata()?;
+                Ok((metadata, Some(handle)))
+            }
+            Node::Directory(directory) => Ok((directory.metadata()?, None)),
+            Node::SyntheticDirectory => Ok((
+                Metadata {
+                    kind: crate::FileKind::Directory,
+                    len: 0,
+                    readonly: true,
+                },
+                None,
+            )),
+        }
+    }
+
+    fn open_resolved(
+        &self,
+        path: &VfsPathBuf,
+        resolved: ResolvedNode,
+        options: OpenOptions,
+    ) -> VfsResult<Box<dyn OpenFile>> {
         if (options.read && !resolved.permissions.can_read())
             || ((options.write || options.truncate) && !resolved.permissions.can_write())
         {
@@ -214,7 +398,8 @@ impl PreparedFilesystem {
         for (name, _) in self.compiled.mount_children(path)? {
             let child_path = path.as_path().join(&name);
             let node = self.resolve_node(&child_path)?.node;
-            entries.insert(name.normalized()?, DirectoryEntry { name, node });
+            let metadata = node.metadata()?;
+            entries.insert(name.normalized()?, DirectoryEntry { name, metadata });
         }
         Ok(entries.into_values().collect())
     }
@@ -698,6 +883,10 @@ impl NamespaceOpenFile {
 }
 
 impl OpenFile for NamespaceOpenFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        self.inner.metadata()
+    }
+
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         self.inner.read(offset, buffer)
     }
@@ -790,7 +979,7 @@ fn materialize_directory(
 impl Drop for PreparedFilesystem {
     fn drop(&mut self) {
         if let Some(resources) = self.materialized.get_mut().as_mut() {
-            resources.finalize(FinalizationReason::Cancelled);
+            let _ = resources.finalize(FinalizationReason::Cancelled);
         }
     }
 }
@@ -845,19 +1034,32 @@ impl MaterializedStorageMount {
 }
 
 impl MaterializedResources {
-    fn finalize(&mut self, reason: FinalizationReason) {
+    fn finalize(&mut self, reason: FinalizationReason) -> VfsResult<()> {
         if self.finalized {
-            return;
+            return Ok(());
         }
+        let mut failure = None;
         if reason != FinalizationReason::LaunchFailed {
             for file in self.files.values().chain(self.tree_files.values()) {
-                let _ = file.finalize_adoption();
+                if let Err(error) = file.finalize_adoption()
+                    && failure.is_none()
+                {
+                    failure = Some(error);
+                }
             }
         }
         for lease in self.leases.iter().rev() {
-            lease.finalize(reason);
+            if let Err(error) = lease.finalize(reason)
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
         }
         self.finalized = true;
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -884,6 +1086,45 @@ mod tests {
             Permissions::ALL,
             ResourceOrigin::Scratch,
         ))
+    }
+
+    struct FailingFinalizationFactory;
+
+    struct FailingFinalizationLease;
+
+    impl ResourceLease for FailingFinalizationLease {
+        fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
+            Err(VfsError::Unsupported("finalization failed".into()))
+        }
+    }
+
+    impl ResourceFactory<dyn FileNode> for FailingFinalizationFactory {
+        fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
+            let file = MemoryFileFactory::writable(Vec::new()).materialize()?;
+            Ok(Materialized {
+                backend: file.backend,
+                lease: Arc::new(FailingFinalizationLease),
+            })
+        }
+    }
+
+    #[test]
+    fn mounted_filesystem_returns_finalization_failures() {
+        let resource = Arc::new(Resource::new(
+            Arc::new(FailingFinalizationFactory),
+            Permissions::ALL,
+            ResourceOrigin::Memory,
+        ));
+        let mut plan = FilesystemPlan::default();
+        plan.mount_file("/file".parse().unwrap(), resource, Permissions::ALL);
+        let filesystem = Arc::new(plan.seal().unwrap());
+        let host = MockFilesystemHost;
+        let mounted = host.mount(host.allocate_endpoint(), filesystem).unwrap();
+
+        assert!(matches!(
+            mounted.finish(FinalizationReason::ProcessExited),
+            Err(VfsError::Unsupported(message)) if message == "finalization failed"
+        ));
     }
 
     #[test]

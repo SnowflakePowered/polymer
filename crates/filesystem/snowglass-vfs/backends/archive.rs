@@ -257,7 +257,7 @@ impl DirectoryNode for AsarDirectory {
             .map(|(name, child)| {
                 Ok(DirectoryEntry {
                     name: name.clone(),
-                    node: self.archive.node(*child)?,
+                    metadata: self.archive.node(*child)?.metadata()?,
                 })
             })
             .collect::<Vec<_>>();
@@ -327,6 +327,14 @@ struct AsarOpen {
 }
 
 impl OpenFile for AsarOpen {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            kind: FileKind::File,
+            len: self.range.len() as u64,
+            readonly: true,
+        })
+    }
+
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
         let offset = usize::try_from(offset)
             .map_err(|_| VfsError::Unsupported("file offset exceeds host address space".into()))?;

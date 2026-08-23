@@ -18,6 +18,6 @@ pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 pub use storage::memorycard::{MemoryCard, MemoryCardView, Reconcile};
 pub use storage::{
     BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind, InstallResult,
-    Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead, VolumeStorage,
-    permissions::*,
+    Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageRead, StorageStream,
+    VolumeStorage, permissions::*,
 };

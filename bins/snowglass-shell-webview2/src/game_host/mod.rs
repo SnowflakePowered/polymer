@@ -280,6 +280,7 @@ pub(crate) enum GameHostCaptureEvent {
 pub(crate) struct FinishedGame {
     pub token: crate::shell_runtime::InstanceToken,
     pub connections: Vec<u64>,
+    pub finalization_error: Option<String>,
 }
 
 pub(crate) struct GameSurfaceTarget {
@@ -1001,12 +1002,16 @@ impl GameHost {
         self.surfaces.clear();
         self.pending_offer = None;
         self.mark_composition_dirty();
-        let token = crate::shell_runtime::InstanceToken(
-            self.session
-                .finish(snowglass_vfs::FinalizationReason::ProcessExited)
-                .expect("presentation and runtime sessions finish together"),
-        );
-        Some(FinishedGame { token, connections })
+        let token = active.token;
+        let finalization_error = self
+            .session
+            .finish(snowglass_vfs::FinalizationReason::ProcessExited)
+            .err();
+        Some(FinishedGame {
+            token,
+            connections,
+            finalization_error,
+        })
     }
 
     fn next_target_configuration(&self) -> Option<(u32, u8)> {

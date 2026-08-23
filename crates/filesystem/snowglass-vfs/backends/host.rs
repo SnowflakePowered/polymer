@@ -1,5 +1,6 @@
 use crate::{
-    FileNode, FinalizationReason, Materialized, ResourceFactory, ResourceLease, VfsResult, Volume,
+    ExclusiveResourceKey, FileNode, FinalizationReason, Materialized, ResourceFactory,
+    ResourceLease, VfsResult, Volume,
 };
 use parking_lot::Mutex;
 use std::{path::PathBuf, sync::Arc};
@@ -26,9 +27,10 @@ impl HostFileFactory {
 
 impl ResourceFactory<dyn FileNode> for HostFileFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
+        let lease = ExclusiveResourceKey::HostPath(self.path.clone()).acquire()?;
         Ok(Materialized {
             backend: Arc::new(HostFile::new(&self.path, self.writable)?),
-            lease: Arc::new(crate::NoopResourceLease),
+            lease,
         })
     }
 }
@@ -45,9 +47,10 @@ impl PackageDirectoryFactory {
 
 impl ResourceFactory<dyn Volume> for PackageDirectoryFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
         Ok(Materialized {
             backend: Arc::new(HostVolume::new(&self.root, false)?),
-            lease: Arc::new(crate::NoopResourceLease),
+            lease,
         })
     }
 }
@@ -70,9 +73,10 @@ impl HostDirectoryFactory {
 
 impl ResourceFactory<dyn Volume> for HostDirectoryFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
         Ok(Materialized {
             backend: Arc::new(HostVolume::new(&self.root, self.writable)?),
-            lease: Arc::new(crate::NoopResourceLease),
+            lease,
         })
     }
 }
@@ -89,7 +93,31 @@ pub(super) fn temporary_volume() -> VfsResult<Materialized<dyn Volume>> {
 struct TemporaryLease(Mutex<Option<tempfile::TempDir>>);
 
 impl ResourceLease for TemporaryLease {
-    fn finalize(&self, _reason: FinalizationReason) {
+    fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
         self.0.lock().take();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn host_path_leases_reject_overlapping_trees_until_released() {
+        let root = tempfile::tempdir().unwrap();
+        let child = root.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let lease = ExclusiveResourceKey::HostPath(root.path().to_owned())
+            .acquire()
+            .unwrap();
+
+        assert!(
+            ExclusiveResourceKey::HostPath(child.clone())
+                .acquire()
+                .is_err()
+        );
+        lease.finalize(FinalizationReason::Cancelled).unwrap();
+        assert!(ExclusiveResourceKey::HostPath(child).acquire().is_ok());
     }
 }

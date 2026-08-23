@@ -1,14 +1,13 @@
 use parking_lot::RwLock;
 use snowglass_vfs::{
     CreateOptions, FileKind, FilesystemEndpoint, FilesystemHost, FinalizationReason, Metadata,
-    MetadataChanges, MountedFilesystem, OpenFile, OpenOptions, PathSemantics, PreparedFilesystem,
-    RemoveKind, VfsError, VfsPathBuf, VfsResult, WindowsPathSemantics,
+    MetadataChanges, MountedFilesystem, OpenFile, OpenOptions, PreparedFilesystem, RemoveKind,
+    VfsError, VfsPathBuf, VfsResult,
 };
 use std::{
-    cmp::Ordering,
     ffi::c_void,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -39,8 +38,8 @@ use winfsp::{
     FspError, U16CStr,
     constants::FspCleanupFlags,
     filesystem::{
-        DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo, VolumeInfo,
-        WideNameInfo,
+        DirBuffer, DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo,
+        VolumeInfo, WideNameInfo,
     },
     host::{FileSystemHost as NativeFileSystemHost, VolumeParams},
 };
@@ -103,13 +102,15 @@ impl FilesystemHost for WinFspFilesystemHost {
                 .max_component_length(255)
                 .volume_creation_time(context.created_at)
                 .volume_serial_number(endpoint_serial(&root))
-                .file_info_timeout(1_000)
+                .file_info_timeout(u32::MAX)
                 .case_sensitive_search(false)
                 .case_preserved_names(true)
                 .unicode_on_disk(true)
                 .persistent_acls(false)
                 .read_only_volume(false)
+                .allow_open_in_kernel_mode(true)
                 .post_cleanup_when_modified_only(true)
+                .post_disposition_only_when_necessary(true)
                 .supports_posix_unlink_rename(true);
             let mut host: NativeFileSystemHost<SnowglassFileSystem> =
                 NativeFileSystemHost::new(parameters, context)
@@ -122,7 +123,7 @@ impl FilesystemHost for WinFspFilesystemHost {
         match mounted {
             Ok(host) => Ok(MountedFilesystem::new(endpoint, filesystem, host)),
             Err(error) => {
-                filesystem.finalize(FinalizationReason::LaunchFailed);
+                let _ = filesystem.finalize(FinalizationReason::LaunchFailed);
                 Err(error)
             }
         }
@@ -140,8 +141,9 @@ struct SecurityDescriptor(Vec<u8>);
 struct SnowglassFileContext {
     path: RwLock<VfsPathBuf>,
     kind: FileKind,
+    metadata: RwLock<Metadata>,
     file: Option<Box<dyn OpenFile>>,
-    can_read: bool,
+    directory_buffer: OnceLock<DirBuffer>,
     can_write: bool,
     delete_pending: AtomicBool,
 }
@@ -167,44 +169,50 @@ impl SnowglassFileSystem {
         create_options: u32,
         granted_access: u32,
     ) -> winfsp::Result<SnowglassFileContext> {
-        let metadata = self.filesystem.metadata(&path).map_err(map_vfs_error)?;
+        let can_read = granted_access & (FILE_READ_DATA | FILE_EXECUTE) != 0;
+        let can_write = granted_access & (FILE_WRITE_DATA | FILE_APPEND_DATA) != 0;
+        let (metadata, file) = self
+            .filesystem
+            .open_with_metadata(
+                &path,
+                OpenOptions {
+                    read: can_read,
+                    write: can_write,
+                    truncate: false,
+                },
+            )
+            .map_err(map_vfs_error)?;
         if create_options & FILE_DIRECTORY_FILE != 0 && metadata.kind != FileKind::Directory {
             return Err(STATUS_NOT_A_DIRECTORY.into());
         }
         if create_options & FILE_NON_DIRECTORY_FILE != 0 && metadata.kind == FileKind::Directory {
             return Err(STATUS_FILE_IS_A_DIRECTORY.into());
         }
-        let can_read = granted_access & (FILE_READ_DATA | FILE_EXECUTE) != 0;
-        let can_write = granted_access & (FILE_WRITE_DATA | FILE_APPEND_DATA) != 0;
-        let file = if metadata.kind == FileKind::File {
-            Some(
-                self.filesystem
-                    .open(
-                        &path,
-                        OpenOptions {
-                            read: can_read,
-                            write: can_write,
-                            truncate: false,
-                        },
-                    )
-                    .map_err(map_vfs_error)?,
-            )
-        } else {
-            None
-        };
         Ok(SnowglassFileContext {
             path: RwLock::new(path),
             kind: metadata.kind,
+            metadata: RwLock::new(metadata),
             file,
-            can_read,
+            directory_buffer: OnceLock::new(),
             can_write,
             delete_pending: AtomicBool::new(false),
         })
     }
 
-    fn file_info(&self, path: &VfsPathBuf) -> winfsp::Result<FileInfo> {
-        let metadata = self.filesystem.metadata(path).map_err(map_vfs_error)?;
-        Ok(to_file_info(&metadata, path, self.created_at))
+    fn context_metadata(&self, context: &SnowglassFileContext) -> winfsp::Result<Metadata> {
+        match &context.file {
+            Some(file) => file.metadata().map_err(map_vfs_error),
+            None => Ok(context.metadata.read().clone()),
+        }
+    }
+
+    fn context_file_info(&self, context: &SnowglassFileContext) -> winfsp::Result<FileInfo> {
+        let metadata = self.context_metadata(context)?;
+        Ok(to_file_info(
+            &metadata,
+            &context.path.read(),
+            self.created_at,
+        ))
     }
 
     fn directory_entries(&self, path: &VfsPathBuf) -> winfsp::Result<Vec<ListedEntry>> {
@@ -231,7 +239,7 @@ impl SnowglassFileSystem {
             entries.push(ListedEntry {
                 name: entry.name.as_slice().to_vec(),
                 path: child_path,
-                metadata: entry.node.metadata().map_err(map_vfs_error)?,
+                metadata: entry.metadata,
             });
         }
         Ok(entries)
@@ -306,7 +314,7 @@ impl FileSystemContext for SnowglassFileSystem {
     ) -> winfsp::Result<Self::FileContext> {
         let path = vfs_path(file_name)?;
         let context = self.open_path(path.clone(), create_options, granted_access)?;
-        *file_info.as_mut() = self.file_info(&path)?;
+        *file_info.as_mut() = self.context_file_info(&context)?;
         file_info.set_normalized_name(file_name.as_slice(), Some(b'\\' as u16));
         Ok(context)
     }
@@ -352,8 +360,9 @@ impl FileSystemContext for SnowglassFileSystem {
                         },
                     )
                     .map_err(map_vfs_error)?;
+                context.metadata.write().readonly = true;
             }
-            *file_info.as_mut() = self.file_info(&path)?;
+            *file_info.as_mut() = self.context_file_info(&context)?;
             file_info.set_normalized_name(file_name.as_slice(), Some(b'\\' as u16));
             Ok(context)
         })();
@@ -388,9 +397,9 @@ impl FileSystemContext for SnowglassFileSystem {
             return Ok(());
         };
         if let Some(file) = &context.file {
-            file.flush().map_err(map_vfs_error)?;
+            file.sync().map_err(map_vfs_error)?;
         }
-        *file_info = self.file_info(&context.path.read())?;
+        *file_info = self.context_file_info(context)?;
         Ok(())
     }
 
@@ -399,7 +408,7 @@ impl FileSystemContext for SnowglassFileSystem {
         context: &Self::FileContext,
         file_info: &mut FileInfo,
     ) -> winfsp::Result<()> {
-        *file_info = self.file_info(&context.path.read())?;
+        *file_info = self.context_file_info(context)?;
         Ok(())
     }
 
@@ -441,7 +450,8 @@ impl FileSystemContext for SnowglassFileSystem {
                 },
             )
             .map_err(map_vfs_error)?;
-        *file_info = self.file_info(&context.path.read())?;
+        context.metadata.write().readonly = file_attributes & FILE_ATTRIBUTE_READONLY.0 != 0;
+        *file_info = self.context_file_info(context)?;
         Ok(())
     }
 
@@ -455,20 +465,22 @@ impl FileSystemContext for SnowglassFileSystem {
         if context.kind != FileKind::Directory {
             return Err(STATUS_NOT_A_DIRECTORY.into());
         }
-        let path = context.path.read();
-        let entries = self.directory_entries(&path)?;
-        let start = marker_start(&entries, marker.inner());
-        let mut cursor = 0;
-        for entry in entries.iter().skip(start) {
-            let mut info = DirInfo::<255>::new();
-            *info.file_info_mut() = to_file_info(&entry.metadata, &entry.path, self.created_at);
-            info.set_name_raw(entry.name.as_slice())?;
-            if !info.append_to_buffer(buffer, &mut cursor) {
-                break;
+        let directory_buffer = context.directory_buffer.get_or_init(DirBuffer::new);
+        match directory_buffer.acquire(marker.is_none(), None) {
+            Ok(directory_buffer) => {
+                let path = context.path.read();
+                for entry in self.directory_entries(&path)? {
+                    let mut info = DirInfo::<255>::new();
+                    *info.file_info_mut() =
+                        to_file_info(&entry.metadata, &entry.path, self.created_at);
+                    info.set_name_raw(entry.name.as_slice())?;
+                    directory_buffer.write(&mut info)?;
+                }
             }
+            Err(error) if error.to_ntstatus() == 0 => {}
+            Err(error) => return Err(error),
         }
-        let _ = DirInfo::<255>::finalize_buffer(buffer, &mut cursor);
-        Ok(cursor)
+        Ok(directory_buffer.read(marker, buffer))
     }
 
     fn rename(
@@ -507,8 +519,9 @@ impl FileSystemContext for SnowglassFileSystem {
                     },
                 )
                 .map_err(map_vfs_error)?;
+            context.metadata.write().readonly = file_attributes & FILE_ATTRIBUTE_READONLY.0 != 0;
         }
-        *file_info = self.file_info(&context.path.read())?;
+        *file_info = self.context_file_info(context)?;
         Ok(())
     }
 
@@ -544,8 +557,7 @@ impl FileSystemContext for SnowglassFileSystem {
         if !context.can_write {
             return Err(STATUS_ACCESS_DENIED.into());
         }
-        let path = context.path.read();
-        let current = self.filesystem.metadata(&path).map_err(map_vfs_error)?;
+        let current = self.context_metadata(context)?;
         if !set_allocation_size || new_size < current.len {
             context
                 .file
@@ -554,7 +566,7 @@ impl FileSystemContext for SnowglassFileSystem {
                 .truncate(new_size)
                 .map_err(map_vfs_error)?;
         }
-        *file_info = self.file_info(&path)?;
+        *file_info = self.context_file_info(context)?;
         Ok(())
     }
 
@@ -569,9 +581,9 @@ impl FileSystemContext for SnowglassFileSystem {
             TEST_READ_CALLS.fetch_add(1, AtomicOrdering::Relaxed);
             TEST_READ_BYTES.fetch_add(buffer.len() as u64, AtomicOrdering::Relaxed);
         }
-        if !context.can_read {
-            return Err(STATUS_ACCESS_DENIED.into());
-        }
+        // Windows has already checked the user handle's granted access. Cached
+        // write-only handles can issue paging reads here, so rechecking the
+        // original user access would incorrectly fail Cache Manager I/O.
         let read = context
             .file
             .as_ref()
@@ -596,8 +608,7 @@ impl FileSystemContext for SnowglassFileSystem {
         if !context.can_write {
             return Err(STATUS_ACCESS_DENIED.into());
         }
-        let path = context.path.read();
-        let metadata = self.filesystem.metadata(&path).map_err(map_vfs_error)?;
+        let metadata = self.context_metadata(context)?;
         let offset = if write_to_eof { metadata.len } else { offset };
         let buffer = if constrained_io {
             if offset >= metadata.len {
@@ -614,7 +625,7 @@ impl FileSystemContext for SnowglassFileSystem {
             .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
             .write(offset, buffer)
             .map_err(map_vfs_error)?;
-        *file_info = self.file_info(&path)?;
+        *file_info = self.context_file_info(context)?;
         u32::try_from(written).map_err(|_| STATUS_INVALID_DEVICE_REQUEST.into())
     }
 
@@ -672,37 +683,6 @@ fn path_index(path: &VfsPathBuf) -> u64 {
         .fold(0xcbf2_9ce4_8422_2325, |hash, unit| {
             (hash ^ u64::from(*unit)).wrapping_mul(0x1000_0000_01b3)
         })
-}
-
-fn marker_start(entries: &[ListedEntry], marker: Option<&[u16]>) -> usize {
-    let Some(marker) = marker else {
-        return 0;
-    };
-    if let Some(position) = entries
-        .iter()
-        .position(|entry| compare_names(&entry.name, marker) == Ordering::Equal)
-    {
-        return position + 1;
-    }
-    entries
-        .iter()
-        .position(|entry| compare_names(&entry.name, marker) == Ordering::Greater)
-        .unwrap_or(entries.len())
-}
-
-fn compare_names(left: &[u16], right: &[u16]) -> Ordering {
-    name_key(left).cmp(&name_key(right))
-}
-
-fn name_key(name: &[u16]) -> (u8, Vec<u16>) {
-    match name {
-        [dot] if *dot == b'.' as u16 => (0, Vec::new()),
-        [first, second] if *first == b'.' as u16 && *second == b'.' as u16 => (1, Vec::new()),
-        _ => (
-            2,
-            WindowsPathSemantics::normalized_component(name).unwrap_or_else(|_| name.to_vec()),
-        ),
-    }
 }
 
 fn map_vfs_error(error: VfsError) -> FspError {
