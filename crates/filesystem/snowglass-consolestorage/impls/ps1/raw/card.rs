@@ -85,25 +85,11 @@ impl DirectoryFrame {
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-pub(crate) struct Frame {
-    data: [u8; FRAME_SIZE],
-}
-
-impl Frame {
-    pub(crate) fn data(&self) -> &[u8; FRAME_SIZE] {
-        &self.data
-    }
-}
-
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
 pub(crate) struct TitleFrame {
     id: [u8; 2],
-    display: u8,
-    block_number: u8,
+    metadata: [u8; 2],
     title: [u8; 64],
-    reserved: [u8; 28],
-    icon_palette: [U16; 16],
+    remaining_metadata: [u8; 60],
 }
 
 impl TitleFrame {
@@ -116,22 +102,10 @@ impl TitleFrame {
         let (title, _) = SHIFT_JIS.decode_without_bom_handling(&self.title[..end]);
         title
     }
-
-    fn palette(&self) -> &[u8] {
-        self.icon_palette.as_bytes()
-    }
-
-    fn icon_count(&self) -> Result<usize, ParseError> {
-        match usize::from(self.display & 0x03) {
-            count @ 1..=3 => Ok(count),
-            _ => Err(ParseError::InvalidIconCount(self.display)),
-        }
-    }
 }
 
 const _: () = assert!(size_of::<HeaderFrame>() == FRAME_SIZE);
 const _: () = assert!(size_of::<DirectoryFrame>() == FRAME_SIZE);
-const _: () = assert!(size_of::<Frame>() == FRAME_SIZE);
 const _: () = assert!(size_of::<TitleFrame>() == FRAME_SIZE);
 
 #[derive(Clone, Copy, Debug)]
@@ -150,37 +124,22 @@ impl<'a> Block<'a> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct DataBlock<'a> {
-    block: Block<'a>,
     title: &'a TitleFrame,
-    icon_count: usize,
 }
 
 impl<'a> DataBlock<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let block = Block::new(bytes)?;
+        Block::new(bytes)?;
         let title = TitleFrame::ref_from_bytes(&bytes[..FRAME_SIZE])
             .map_err(|_| ParseError::InvalidLayout("title frame"))?;
         if title.id != *b"SC" {
             return Err(ParseError::InvalidDataBlockHeader(title.id));
         }
-        let icon_count = title.icon_count()?;
-        Ok(Self {
-            block,
-            title,
-            icon_count,
-        })
+        Ok(Self { title })
     }
 
     pub(crate) fn title(&self) -> &'a TitleFrame {
         self.title
-    }
-
-    pub(crate) fn icon_frames(&self) -> impl ExactSizeIterator<Item = &'a Frame> + '_ {
-        (0..self.icon_count).map(|index| {
-            let start = (index + 1) * FRAME_SIZE;
-            Frame::ref_from_bytes(&self.block.bytes[start..start + FRAME_SIZE])
-                .expect("a frame has a statically verified byte layout")
-        })
     }
 }
 
@@ -249,8 +208,6 @@ pub(crate) struct Save<'a> {
 
 pub(crate) struct SaveHeader<'a> {
     pub(crate) title: Cow<'a, str>,
-    pub(crate) icon: Option<&'a [u8]>,
-    pub(crate) palette: &'a [u8],
 }
 
 impl<'a> Save<'a> {
@@ -305,11 +262,6 @@ impl<'a> Save<'a> {
         )?;
         Ok(SaveHeader {
             title: block.title().decode_title(),
-            icon: block
-                .icon_frames()
-                .next()
-                .map(|icon| icon.data().as_slice()),
-            palette: block.title().palette(),
         })
     }
 }
@@ -568,7 +520,6 @@ pub(crate) enum ParseError {
     InvalidBlockSize(usize),
     InvalidCardHeader([u8; 2]),
     InvalidDataBlockHeader([u8; 2]),
-    InvalidIconCount(u8),
     InvalidChecksum(usize),
     InvalidLayout(&'static str),
     Malformed(&'static str),
@@ -597,12 +548,6 @@ impl fmt::Display for ParseError {
             }
             Self::InvalidDataBlockHeader(header) => {
                 write!(formatter, "save data has invalid header {header:02x?}")
-            }
-            Self::InvalidIconCount(display) => {
-                write!(
-                    formatter,
-                    "save title frame has invalid icon display {display:#04x}"
-                )
             }
             Self::InvalidChecksum(frame) => {
                 write!(

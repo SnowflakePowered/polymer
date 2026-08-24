@@ -9,7 +9,7 @@ impl SaveVersioning {
         format!("{}/{}", &id[..2], &id[2..])
     }
 
-    pub(super) fn attachment(
+    pub(crate) fn attachment(
         &self,
         depot: SaveDepotId,
         commit: SaveCommitId,
@@ -25,7 +25,7 @@ impl SaveVersioning {
         Ok(Self::tree_files(&repo, tree)?.remove(&Self::note_path(commit)))
     }
 
-    pub(super) async fn attach(
+    pub(crate) async fn attach(
         &self,
         depot: SaveDepotId,
         commit: SaveCommitId,

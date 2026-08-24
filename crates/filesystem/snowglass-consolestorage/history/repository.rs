@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::{
-    AttachmentTips, HistoryInner, MARKER_FILE, Marker, SCHEMA_VERSION, SaveDepotId, SaveRefState,
-    SaveRefs, SaveVersioning,
+    AttachmentTips, HistoryInner, MARKER_FILE, Marker, SCHEMA_VERSION, SaveCommitId, SaveDepotId,
+    SaveRefState, SaveRefs, SaveVersioning,
 };
 use crate::Error;
 use crate::savegame::SaveBlob;
@@ -157,6 +157,10 @@ impl SaveVersioning {
 
     pub(super) fn tip(&self, depot: SaveDepotId) -> Result<Option<gix::ObjectId>, Error> {
         Ok(self.ref_state(depot)?.map(|state| state.tip))
+    }
+
+    pub(crate) fn tip_id(&self, depot: SaveDepotId) -> Result<Option<SaveCommitId>, Error> {
+        self.tip(depot).map(|tip| tip.map(SaveCommitId))
     }
 
     pub(super) fn ref_state_in(

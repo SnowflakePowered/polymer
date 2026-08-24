@@ -292,7 +292,7 @@ impl SaveVersioning {
     ) -> Result<Option<SaveCommitInfo>, Error> {
         self.recover(owner).await?;
         let exported = owner.export_save(&depot)?;
-        let _guard = self.inner.operation.lock().await;
+        let guard = self.inner.operation.lock().await;
         let repo = self.inner.repository.to_thread_local();
         let reference = self.refs(depot).head;
         let parent = Self::tip_in(&repo, &reference)?;
@@ -300,6 +300,8 @@ impl SaveVersioning {
         if let Some(parent) = parent {
             let current_tree = Self::commit_tree(&repo, parent)?;
             if current_tree == tree {
+                drop(guard);
+                owner.save_icon(depot).await?;
                 return Ok(None);
             }
         }
@@ -317,7 +319,10 @@ impl SaveVersioning {
             .commit_as(signature, signature, reference, message, tree, parents)
             .map_err(|error| Error::git("commit save snapshot", error))?
             .detach();
-        Self::commit_info(&repo, id).map(Some)
+        let info = Self::commit_info(&repo, id)?;
+        drop(guard);
+        owner.save_icon(depot).await?;
+        Ok(Some(info))
     }
 
     fn history(&self, depot: SaveDepotId) -> Result<Vec<SaveCommitInfo>, Error> {
@@ -352,7 +357,7 @@ impl SaveVersioning {
     ) -> Result<SaveCommitInfo, Error> {
         self.checkpoint(owner, depot, SaveCommitOperation::Manual)
             .await?;
-        let _guard = self.inner.operation.lock().await;
+        let guard = self.inner.operation.lock().await;
         self.ensure_member(depot, wanted)?;
         let refs = self.refs(depot);
         let operation = SaveCommitOperation::Restore {
@@ -391,7 +396,10 @@ impl SaveVersioning {
         )
         .await?;
         let repo = self.inner.repository.to_thread_local();
-        Self::commit_info(&repo, after.tip)
+        let info = Self::commit_info(&repo, after.tip)?;
+        drop(guard);
+        owner.save_icon(depot).await?;
+        Ok(info)
     }
 }
 

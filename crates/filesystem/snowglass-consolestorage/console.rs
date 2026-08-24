@@ -221,11 +221,4 @@ impl ConsoleStorage {
             }
         }
     }
-
-    pub async fn game_saved(&self) -> Result<(), Error> {
-        let repo = self
-            .save_repo()
-            .ok_or_else(|| Error::Unsupported("immutable NANDs do not contain saves".to_owned()))?;
-        repo.game_saved().await
-    }
 }

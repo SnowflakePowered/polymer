@@ -182,11 +182,7 @@ fn watch_save_history(
     saves: Arc<dyn SaveRepo>,
     notification: GameSavedNotification,
 ) -> Arc<dyn ResourceFactory<dyn Volume>> {
-    Arc::new(SaveWatchFactory::new(
-        factory,
-        saves,
-        notification,
-    ))
+    Arc::new(SaveWatchFactory::new(factory, saves, notification))
 }
 
 fn is_setup_launch(export_path: &[String]) -> bool {

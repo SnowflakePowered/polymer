@@ -147,12 +147,12 @@ impl Encoder {
 
 /// A borrowed or owned EMS Adapter PSU save.
 #[derive(Clone, Debug)]
-pub(super) struct Save<'a> {
+pub(crate) struct Save<'a> {
     bytes: Cow<'a, [u8]>,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct File<'a> {
+pub(crate) struct File<'a> {
     dirent: &'a Dirent,
     data: &'a [u8],
 }
@@ -214,7 +214,7 @@ impl<'a> Save<'a> {
         self.directory().as_bytes()
     }
 
-    pub(super) fn files(&self) -> impl ExactSizeIterator<Item = File<'_>> {
+    pub(crate) fn files(&self) -> impl ExactSizeIterator<Item = File<'_>> {
         self.parse()
             .expect("a Save is validated when it is constructed")
             .into_iter()
@@ -286,7 +286,7 @@ impl<'a> File<'a> {
         self.dirent.name()
     }
 
-    pub(super) fn name_bytes(&self) -> &'a [u8] {
+    pub(crate) fn name_bytes(&self) -> &'a [u8] {
         self.dirent.name_bytes()
     }
 
@@ -294,7 +294,7 @@ impl<'a> File<'a> {
         self.dirent.as_bytes()
     }
 
-    pub(super) fn data(&self) -> &'a [u8] {
+    pub(crate) fn data(&self) -> &'a [u8] {
         self.data
     }
 }
