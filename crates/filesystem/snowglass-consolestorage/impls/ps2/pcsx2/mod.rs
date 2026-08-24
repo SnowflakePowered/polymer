@@ -1,16 +1,15 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use jiff::Timestamp;
 use parking_lot::Mutex;
 use tokio::io::AsyncReadExt;
 
-use crate::impls::memorycard::ReconcileWorker;
+use crate::impls::memorycard::{MemoryFile, ReconcileWorker};
 use crate::{
     BoxFuture, ChangeSignal, DirEntry, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile, StorageRead, StorageStream,
+    MountableStorage, ReadDir, Storage, StorageFile,
 };
 
 use super::psu::Save;
@@ -23,13 +22,8 @@ type Reconcile = dyn Fn(&[Save<'static>]) -> Result<(), Error> + Send + Sync;
 
 #[derive(Clone)]
 enum Entry {
-    Directory {
-        mtime: Arc<Mutex<Timestamp>>,
-    },
-    File {
-        bytes: Arc<Mutex<Vec<u8>>>,
-        mtime: Arc<Mutex<Timestamp>>,
-    },
+    Directory { mtime: Arc<Mutex<Timestamp>> },
+    File { file: MemoryFile },
 }
 
 impl Entry {
@@ -41,8 +35,7 @@ impl Entry {
 
     fn file(bytes: Vec<u8>) -> Self {
         Self::File {
-            bytes: Arc::new(Mutex::new(bytes)),
-            mtime: Arc::new(Mutex::new(Timestamp::now())),
+            file: MemoryFile::new(bytes),
         }
     }
 
@@ -53,11 +46,7 @@ impl Entry {
                 len: 0,
                 mtime: *mtime.lock(),
             },
-            Self::File { bytes, mtime } => Metadata {
-                kind: EntryKind::File,
-                len: bytes.lock().len() as u64,
-                mtime: *mtime.lock(),
-            },
+            Self::File { file } => file.metadata(),
         }
     }
 }
@@ -178,7 +167,7 @@ impl Pcsx2MemoryStorage {
 
     fn bytes(entries: &BTreeMap<String, Entry>, path: &str) -> Vec<u8> {
         match entries.get(path) {
-            Some(Entry::File { bytes, .. }) => bytes.lock().clone(),
+            Some(Entry::File { file }) => file.bytes(),
             _ => Vec::new(),
         }
     }
@@ -259,19 +248,6 @@ impl Pcsx2MemoryStorage {
         Ok(saves)
     }
 
-    fn handle(&self, path: &str, position: u64) -> Result<Handle, Error> {
-        let Entry::File { bytes, mtime } = self.entry(path)? else {
-            return Err(Error::Unsupported(format!("`{path}` is not a file")));
-        };
-        Ok(Handle {
-            bytes,
-            mtime,
-            position,
-            worker: self.worker.clone(),
-            writeback: path.contains('/'),
-        })
-    }
-
     fn remove_tree(entries: &mut BTreeMap<String, Entry>, path: &str) {
         let prefix = format!("{path}/");
         entries.retain(|entry, _| entry != path && !entry.starts_with(&prefix));
@@ -332,7 +308,7 @@ impl Storage for Pcsx2MemoryStorage {
         Ok(())
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
         let entry = {
             let mut entries = self.entries.lock();
             Self::create_parents(&mut entries, path);
@@ -341,40 +317,17 @@ impl Storage for Pcsx2MemoryStorage {
             entry
         };
         self.worker.schedule();
-        let Entry::File { bytes, mtime } = entry else {
+        let Entry::File { file } = entry else {
             unreachable!()
         };
-        Ok(Box::new(Handle {
-            bytes,
-            mtime,
-            position: 0,
-            worker: self.worker.clone(),
-            writeback: path.contains('/'),
-        }))
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        Ok(Box::new(self.handle(path, 0)?))
+        Ok(file.handle(self.worker.clone(), true, path.contains('/')))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        let Entry::File { bytes, mtime } = self.entry(path)? else {
+        let Entry::File { file } = self.entry(path)? else {
             return Err(Error::Unsupported(format!("`{path}` is not a file")));
         };
-        Ok(Arc::new(Pcsx2StorageFile {
-            bytes,
-            mtime,
-            worker: self.worker.clone(),
-            writable: write,
-            writeback: path.contains('/'),
-        }))
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
-        if !self.exists(path) {
-            return self.create(path);
-        }
-        Ok(Box::new(self.handle(path, self.metadata(path)?.len)?))
+        Ok(file.handle(self.worker.clone(), write, path.contains('/')))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -413,9 +366,7 @@ impl Storage for Pcsx2MemoryStorage {
                 blake3: *blake3::hash(&bytes).as_bytes(),
                 byte_length: bytes.len() as u64,
             };
-            self.create(&dest)?
-                .write_all(&bytes)
-                .map_err(|source| Error::Io { path: dest, source })?;
+            self.create(&dest)?.write_all_at(0, &bytes)?;
             Ok(result)
         })
     }
@@ -454,17 +405,11 @@ impl MountableStorage for Pcsx2MemoryStorage {
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        let Entry::File { bytes, mtime } = self.entry(path)? else {
+        let Entry::File { file } = self.entry(path)? else {
             return Err(Error::Unsupported(format!("`{path}` is not a file")));
         };
-        bytes.lock().resize(
-            usize::try_from(len)
-                .map_err(|_| Error::Unsupported("PCSX2 file is too large".to_owned()))?,
-            0,
-        );
-        *mtime.lock() = Timestamp::now();
-        self.worker.schedule();
-        Ok(())
+        file.handle(self.worker.clone(), true, path.contains('/'))
+            .set_len(len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
@@ -479,160 +424,5 @@ impl MountableStorage for Pcsx2MemoryStorage {
             self.entry(path)?;
         }
         self.worker.shutdown()
-    }
-}
-
-struct Handle {
-    bytes: Arc<Mutex<Vec<u8>>>,
-    mtime: Arc<Mutex<Timestamp>>,
-    position: u64,
-    worker: ReconcileWorker,
-    writeback: bool,
-}
-
-impl Handle {
-    fn commit(&self) -> Result<(), Error> {
-        if !self.writeback {
-            return Ok(());
-        }
-        self.worker.schedule();
-        Ok(())
-    }
-}
-
-struct Pcsx2StorageFile {
-    bytes: Arc<Mutex<Vec<u8>>>,
-    mtime: Arc<Mutex<Timestamp>>,
-    worker: ReconcileWorker,
-    writable: bool,
-    writeback: bool,
-}
-
-impl StorageFile for Pcsx2StorageFile {
-    fn metadata(&self) -> Result<Metadata, Error> {
-        Ok(Metadata {
-            kind: EntryKind::File,
-            len: self.bytes.lock().len() as u64,
-            mtime: *self.mtime.lock(),
-        })
-    }
-
-    fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, Error> {
-        let bytes = self.bytes.lock();
-        let start = usize::try_from(offset)
-            .unwrap_or(usize::MAX)
-            .min(bytes.len());
-        let copied = output.len().min(bytes.len() - start);
-        output[..copied].copy_from_slice(&bytes[start..start + copied]);
-        Ok(copied)
-    }
-
-    fn write_at(&self, offset: u64, input: &[u8]) -> Result<usize, Error> {
-        if !self.writable {
-            return Err(Error::Unsupported(
-                "PCSX2 file handle is read-only".to_owned(),
-            ));
-        }
-        let start = usize::try_from(offset)
-            .map_err(|_| Error::Unsupported("PCSX2 file offset is too large".to_owned()))?;
-        let end = start
-            .checked_add(input.len())
-            .ok_or_else(|| Error::Unsupported("PCSX2 file write is too large".to_owned()))?;
-        let mut bytes = self.bytes.lock();
-        if end > bytes.len() {
-            bytes.resize(end, 0);
-        }
-        bytes[start..end].copy_from_slice(input);
-        drop(bytes);
-        *self.mtime.lock() = Timestamp::now();
-        if self.writeback {
-            self.worker.schedule();
-        }
-        Ok(input.len())
-    }
-
-    fn set_len(&self, len: u64) -> Result<(), Error> {
-        if !self.writable {
-            return Err(Error::Unsupported(
-                "PCSX2 file handle is read-only".to_owned(),
-            ));
-        }
-        let len = usize::try_from(len)
-            .map_err(|_| Error::Unsupported("PCSX2 file is too large".to_owned()))?;
-        self.bytes.lock().resize(len, 0);
-        *self.mtime.lock() = Timestamp::now();
-        if self.writeback {
-            self.worker.schedule();
-        }
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        if self.writeback {
-            self.worker.schedule();
-        }
-        Ok(())
-    }
-
-    fn sync(&self) -> Result<(), Error> {
-        self.worker.reconcile()
-    }
-}
-
-impl Read for Handle {
-    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        let bytes = self.bytes.lock();
-        let start = usize::try_from(self.position)
-            .unwrap_or(usize::MAX)
-            .min(bytes.len());
-        let copied = output.len().min(bytes.len() - start);
-        output[..copied].copy_from_slice(&bytes[start..start + copied]);
-        self.position += copied as u64;
-        Ok(copied)
-    }
-}
-
-impl Write for Handle {
-    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
-        let start = usize::try_from(self.position)
-            .map_err(|_| std::io::Error::other("PCSX2 file offset is too large"))?;
-        let end = start
-            .checked_add(input.len())
-            .ok_or_else(|| std::io::Error::other("PCSX2 file write is too large"))?;
-        {
-            let mut bytes = self.bytes.lock();
-            if end > bytes.len() {
-                bytes.resize(end, 0);
-            }
-            bytes[start..end].copy_from_slice(input);
-        }
-        self.position = end as u64;
-        *self.mtime.lock() = Timestamp::now();
-        self.commit().map_err(std::io::Error::other)?;
-        Ok(input.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if self.writeback {
-            self.worker.reconcile().map_err(std::io::Error::other)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl Seek for Handle {
-    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
-        let len = self.bytes.lock().len() as i128;
-        let position = match position {
-            SeekFrom::Start(offset) => i128::from(offset),
-            SeekFrom::End(offset) => len + i128::from(offset),
-            SeekFrom::Current(offset) => i128::from(self.position) + i128::from(offset),
-        };
-        if !(0..=i128::from(u64::MAX)).contains(&position) {
-            return Err(std::io::Error::other("invalid PCSX2 file seek"));
-        }
-        self.position = position as u64;
-        Ok(self.position)
     }
 }

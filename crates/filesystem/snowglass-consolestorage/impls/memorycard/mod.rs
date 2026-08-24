@@ -9,8 +9,10 @@ use parking_lot::Mutex;
 
 use crate::Error;
 
+mod file;
 mod raw;
 
+pub(crate) use file::MemoryFile;
 pub(crate) use raw::MemoryCardStorage;
 
 #[derive(Debug)]

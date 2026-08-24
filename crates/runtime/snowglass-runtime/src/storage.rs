@@ -172,8 +172,6 @@ mod tests {
     use snowglass_vfs::{
         CreateOptions, FilesystemPlan, OpenOptions, Permissions, Resource, ResourceOrigin, VfsError,
     };
-    use std::io::Write;
-
     #[tokio::test]
     async fn wiiu_launch_composes_save_before_immutable_nand() {
         let root = tempfile::tempdir().unwrap();
@@ -191,11 +189,8 @@ mod tests {
         let ConsoleStorage::Nand(nand) = nand else {
             unreachable!()
         };
-        nand.root()
-            .create("usr/title/immutable.bin")
-            .unwrap()
-            .write_all(b"installed")
-            .unwrap();
+        let file = nand.root().create("usr/title/immutable.bin").unwrap();
+        assert_eq!(file.write_at(0, b"installed").unwrap(), 9);
 
         let arguments = serde_json::json!({
             "console": "NINTENDO_WIIU",
