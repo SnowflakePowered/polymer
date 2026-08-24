@@ -82,6 +82,13 @@ impl Clone for Error {
 }
 
 impl Error {
+    pub fn malformed(file: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::MalformedMetadata {
+            file: file.into(),
+            reason: reason.into(),
+        }
+    }
+
     pub fn git(operation: &'static str, error: impl std::fmt::Display) -> Self {
         Error::Git {
             operation,

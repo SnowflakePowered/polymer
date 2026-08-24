@@ -116,6 +116,16 @@ impl ProcessWaitHandle {
             ))),
         }
     }
+
+    pub fn exit_code(&self) -> std::io::Result<u32> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::{Foundation::HANDLE, System::Threading::GetExitCodeProcess};
+
+        let mut exit_code = 0;
+        unsafe { GetExitCodeProcess(HANDLE(self.0.as_raw_handle()), &mut exit_code) }
+            .map_err(std::io::Error::other)?;
+        Ok(exit_code)
+    }
 }
 
 impl TargetProcess {

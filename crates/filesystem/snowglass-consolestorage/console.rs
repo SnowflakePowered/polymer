@@ -7,6 +7,7 @@ use crate::impls::dreamcast::DreamcastMemoryCard;
 use crate::impls::gamecube::GameCubeMemoryCard;
 use crate::impls::ps1::PlaystationMemoryCard;
 use crate::impls::ps2::Playstation2MemoryCard;
+use crate::impls::wii::nand::WiiNand;
 use crate::impls::wiiu::nand::WiiUNand;
 use crate::nand::VirtualNand;
 use crate::{DirectoryStorage, Error, SaveRepo, VersionedStorage, VolumeInfo, VolumeStorage};
@@ -69,7 +70,9 @@ pub enum ConsoleStorageBacking {
 impl ConsoleStorage {
     pub fn supports(kind: StorageKind, platform: &str) -> bool {
         match kind {
-            StorageKind::Nand | StorageKind::SaveRepo => platform == WiiUNand::PLATFORM,
+            StorageKind::Nand | StorageKind::SaveRepo => {
+                matches!(platform, WiiNand::PLATFORM | WiiUNand::PLATFORM)
+            }
             StorageKind::MemoryCard => matches!(
                 platform,
                 DreamcastMemoryCard::PLATFORM
@@ -93,12 +96,24 @@ impl ConsoleStorage {
                     WiiUNand::new_empty(storage, id, label).await?,
                 )))
             }
+            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
+                Ok(Self::Nand(Arc::new(
+                    WiiNand::new_empty(storage, id, label).await?,
+                )))
+            }
             (
                 StorageKind::SaveRepo,
                 WiiUNand::PLATFORM,
                 ConsoleStorageBacking::Versioned(storage),
             ) => Ok(Self::SaveRepo(
                 WiiUNand::new_save_repo(storage, id, label).await?,
+            )),
+            (
+                StorageKind::SaveRepo,
+                WiiNand::PLATFORM,
+                ConsoleStorageBacking::Versioned(storage),
+            ) => Ok(Self::SaveRepo(
+                WiiNand::new_save_repo(storage, id, label).await?,
             )),
             (
                 StorageKind::MemoryCard,
@@ -145,11 +160,19 @@ impl ConsoleStorage {
             (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
                 Ok(Self::Nand(Arc::new(WiiUNand::open(storage).await?)))
             }
+            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
+                Ok(Self::Nand(Arc::new(WiiNand::open(storage).await?)))
+            }
             (
                 StorageKind::SaveRepo,
                 WiiUNand::PLATFORM,
                 ConsoleStorageBacking::Versioned(storage),
             ) => Ok(Self::SaveRepo(WiiUNand::open_save_repo(storage).await?)),
+            (
+                StorageKind::SaveRepo,
+                WiiNand::PLATFORM,
+                ConsoleStorageBacking::Versioned(storage),
+            ) => Ok(Self::SaveRepo(WiiNand::open_save_repo(storage).await?)),
             (
                 StorageKind::MemoryCard,
                 DreamcastMemoryCard::PLATFORM,
@@ -220,5 +243,23 @@ impl ConsoleStorage {
                 VolumeStorage::set_label(&**repo, label).await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wii_exposes_system_and_save_volumes() {
+        assert!(ConsoleStorage::supports(StorageKind::Nand, "NINTENDO_WII"));
+        assert!(ConsoleStorage::supports(
+            StorageKind::SaveRepo,
+            "NINTENDO_WII"
+        ));
+        assert!(!ConsoleStorage::supports(
+            StorageKind::MemoryCard,
+            "NINTENDO_WII"
+        ));
     }
 }

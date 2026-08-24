@@ -505,7 +505,7 @@ impl PreparedFilesystem {
                 target.child_relative.as_path(),
             )?;
         }
-        self.move_tree_files(source_path, target_path)?;
+        self.forget_renamed_tree_files(source_path, target_path)?;
         Ok(())
     }
 
@@ -592,28 +592,19 @@ impl PreparedFilesystem {
         Ok(())
     }
 
-    fn move_tree_files(&self, source: VfsPathBuf, target: VfsPathBuf) -> VfsResult<()> {
+    fn forget_renamed_tree_files(&self, source: VfsPathBuf, target: VfsPathBuf) -> VfsResult<()> {
         let source = source.normalized_components()?;
         let target = target.normalized_components()?;
         let mut state = self.materialized.lock();
         let resources = state.as_mut().ok_or_else(not_materialized)?;
+        // File nodes supplied by storage-backed volumes are bound to the path
+        // at which they were materialized. Moving their cache entries would
+        // leave the destination backed by a node that still resolves the old
+        // path. Existing open handles retain their own Arc, so only invalidate
+        // namespace cache entries and materialize fresh nodes on the next walk.
         resources
             .tree_files
-            .retain(|path, _| !path.starts_with(&target));
-        let moved = resources
-            .tree_files
-            .iter()
-            .filter(|(path, _)| path.starts_with(&source))
-            .map(|(path, file)| {
-                let mut rebased = target.clone();
-                rebased.extend_from_slice(&path[source.len()..]);
-                (path.clone(), rebased, file.clone())
-            })
-            .collect::<Vec<_>>();
-        for (old, new, file) in moved {
-            resources.tree_files.remove(&old);
-            resources.tree_files.insert(new, file);
-        }
+            .retain(|path, _| !path.starts_with(&source) && !path.starts_with(&target));
         Ok(())
     }
 
@@ -1066,10 +1057,12 @@ impl MaterializedResources {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backends::{materialize_volume, unrestricted};
     use crate::{
         AsarVolumeFactory, FilesystemHost, FilesystemPlan, MemoryFileFactory, MockFilesystemHost,
         ResourceOrigin, ScratchBacking, ScratchVolumeFactory,
     };
+    use snowglass_consolestorage::{DirectoryStorage, MountableStorage};
     use std::io::Write;
 
     fn file(bytes: &[u8]) -> Arc<Resource<dyn FileNode>> {
@@ -1086,6 +1079,19 @@ mod tests {
             Permissions::ALL,
             ResourceOrigin::Scratch,
         ))
+    }
+
+    struct StorageVolumeFactory(Arc<dyn MountableStorage>);
+
+    impl ResourceFactory<dyn Volume> for StorageVolumeFactory {
+        fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+            Ok(materialize_volume(
+                self.0.clone(),
+                String::new(),
+                unrestricted(),
+                Arc::new(NoopResourceLease),
+            ))
+        }
     }
 
     struct FailingFinalizationFactory;
@@ -1241,6 +1247,86 @@ mod tests {
             .rename_with_options(&source, &target, true)
             .unwrap();
 
+        let mut contents = [0; 3];
+        filesystem
+            .open(
+                &target,
+                OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .read(0, &mut contents)
+            .unwrap();
+        assert_eq!(&contents, b"new");
+        assert!(matches!(
+            filesystem.metadata(&source),
+            Err(VfsError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn storage_files_rebind_after_atomic_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage: Arc<dyn MountableStorage> =
+            Arc::new(DirectoryStorage::new(directory.path()).await.unwrap());
+        let resource = Arc::new(Resource::new(
+            Arc::new(StorageVolumeFactory(storage)),
+            Permissions::ALL,
+            ResourceOrigin::Other("storage regression".to_owned()),
+        ));
+        let mut plan = FilesystemPlan::default();
+        plan.mount_storage(
+            "/Storage".parse().unwrap(),
+            resource,
+            Permissions::ALL,
+            None,
+        );
+        let prepared = Arc::new(plan.seal().unwrap());
+        let host = MockFilesystemHost;
+        let mounted = host.mount(host.allocate_endpoint(), prepared).unwrap();
+        let filesystem = mounted.filesystem();
+        let source = "/Storage/SYSCONF.new".parse().unwrap();
+        let target = "/Storage/SYSCONF".parse().unwrap();
+
+        filesystem
+            .create_file(&source, CreateOptions { exclusive: true })
+            .unwrap();
+        filesystem
+            .open(
+                &source,
+                OpenOptions {
+                    read: false,
+                    write: true,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .write(0, b"new")
+            .unwrap();
+        filesystem
+            .create_file(&target, CreateOptions { exclusive: true })
+            .unwrap();
+        filesystem
+            .open(
+                &target,
+                OpenOptions {
+                    read: false,
+                    write: true,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .write(0, b"old")
+            .unwrap();
+
+        filesystem
+            .rename_with_options(&source, &target, true)
+            .unwrap();
+
+        assert_eq!(filesystem.metadata(&target).unwrap().len, 3);
         let mut contents = [0; 3];
         filesystem
             .open(

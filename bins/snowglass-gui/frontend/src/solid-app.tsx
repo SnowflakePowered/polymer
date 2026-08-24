@@ -32,14 +32,18 @@ type RecentGame = { path: string; name: string; platform: string; emulator: stri
 type AudioState = { available: boolean; volume: number; muted: boolean };
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 8;
+const WII_PLATFORM = "NINTENDO_WII";
 const WIIU_PLATFORM = "NINTENDO_WIIU";
 const GAMECUBE_PLATFORM = "NINTENDO_GCN";
 const DREAMCAST_PLATFORM = "SEGA_DC";
 const PSX_PLATFORM = "SONY_PSX";
 const PS2_PLATFORM = "SONY_PS2";
+const WII_REMOTE_LAYOUT = "WII_REMOTE_CONTROLLER";
 const DEFAULT_AUDIO: AudioState = { available: false, volume: 1, muted: false };
 let defaultWiiUNand: Promise<ConsoleStorageVolume> | null = null;
 let defaultWiiUSave: Promise<ConsoleStorageVolume> | null = null;
+let defaultWiiNand: Promise<ConsoleStorageVolume> | null = null;
+let defaultWiiSave: Promise<ConsoleStorageVolume> | null = null;
 let defaultGameCubeCard: Promise<ConsoleStorageVolume> | null = null;
 let defaultDreamcastCard: Promise<ConsoleStorageVolume> | null = null;
 let defaultPs1Card: Promise<ConsoleStorageVolume> | null = null;
@@ -74,6 +78,29 @@ function friendly(value: string) {
 
 function cloneGame(game: PackageConfiguration) { return structuredClone(unwrap(game)); }
 
+function applyFrontendDefaults(game: PackageConfiguration) {
+  if (game.platform !== WII_PLATFORM) return game;
+  for (const emulator of game.candidates) {
+    for (const group of emulator.groups) {
+      if (group.name === "gamecube") group.connected = 0;
+      if (group.name !== "wii") continue;
+      group.connected = Math.min(1, group.ports.length);
+      const first = group.ports[0];
+      if (first?.layouts.includes(WII_REMOTE_LAYOUT)) first.selectedLayout = WII_REMOTE_LAYOUT;
+    }
+  }
+  return game;
+}
+
+function activeOptions(emulator: EmulatorConfiguration, platform: string) {
+  const activePorts = emulator.groups.flatMap((group) =>
+    group.ports.slice(0, group.connected).map((port) => `ports.${platform}.${group.name}.${port.index}.`)
+  );
+  return emulator.options.filter((option) =>
+    !option.path.startsWith("ports.") || activePorts.some((prefix) => option.path.startsWith(prefix))
+  );
+}
+
 function ensureDefaultWiiUNand() {
   if (!defaultWiiUNand) {
     const pending = window.Snowglass.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
@@ -100,6 +127,34 @@ function ensureDefaultWiiUSave() {
     });
   }
   return defaultWiiUSave;
+}
+
+function ensureDefaultWiiNand() {
+  if (!defaultWiiNand) {
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
+      nands.find((nand) => nand.platform === WII_PLATFORM)
+        ?? window.Snowglass.consolestorage.Storage.create("nand", WII_PLATFORM, { label: "Default" })
+    );
+    defaultWiiNand = pending.catch((error) => {
+      defaultWiiNand = null;
+      throw error;
+    });
+  }
+  return defaultWiiNand;
+}
+
+function ensureDefaultWiiSave() {
+  if (!defaultWiiSave) {
+    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "saveRepo" }).then((saves) =>
+      saves.find((save) => save.platform === WII_PLATFORM)
+        ?? window.Snowglass.consolestorage.Storage.create("saveRepo", WII_PLATFORM, { label: "Default" })
+    );
+    defaultWiiSave = pending.catch((error) => {
+      defaultWiiSave = null;
+      throw error;
+    });
+  }
+  return defaultWiiSave;
 }
 
 function ensureDefaultPs1Card() {
@@ -247,7 +302,7 @@ function ShellProvider(props: ParentProps) {
         const description = await window.Snowglass.configuration.describe(packageValue, { emulator });
         if (signal.aborted) return;
         setModel("package", packageValue);
-        setModel("draft", cloneGame(description));
+        setModel("draft", applyFrontendDefaults(cloneGame(description)));
         setModel("launcher", { kind: "configure" });
         navigateMemory("/configure", true);
       } catch (error) {
@@ -290,12 +345,15 @@ function ShellProvider(props: ParentProps) {
           device: game.platform === PS2_PLATFORM ? "K" : port.selectedDevice,
         })),
       })),
-      settings: Object.fromEntries(emulator.options.filter((option) => option.value != null).map((option) => [option.path, option.value])),
+      settings: Object.fromEntries(activeOptions(emulator, game.platform).filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
     setModel("launcher", { kind: "launching", name: game.name });
     void (async () => {
       try {
-        if (game.platform === WIIU_PLATFORM) {
+        if (game.platform === WII_PLATFORM) {
+          const [save, nand] = await Promise.all([ensureDefaultWiiSave(), ensureDefaultWiiNand()]);
+          selection.storage = { nand: [save.id, nand.id] };
+        } else if (game.platform === WIIU_PLATFORM) {
           const [save, nand] = await Promise.all([ensureDefaultWiiUSave(), ensureDefaultWiiUNand()]);
           selection.storage = { mlc: [save.id, nand.id] };
         } else if (game.platform === GAMECUBE_PLATFORM) {
@@ -414,7 +472,7 @@ function ConfigurePage() {
       </section>
       <aside class="settings-pane">
         <Choice label="Emulator" value={current().selectedEmulator} items={current().candidates.map((item) => ({ value: item.id, label: friendly(item.id) }))} onChange={(value) => shell.setModel("draft", "selectedEmulator", value)} />
-        <Collapsible.Root><Collapsible.Trigger class="settings-trigger">Settings <Collapsible.Indicator class="symbol-glyph">⌄</Collapsible.Indicator></Collapsible.Trigger><Collapsible.Content class="settings-content"><For each={emulator()?.options}>{(option, index) => <OptionControl option={option} onChange={(value) => updateEmulator((target) => target.options[index()].value = value)} />}</For></Collapsible.Content></Collapsible.Root>
+        <Collapsible.Root><Collapsible.Trigger class="settings-trigger">Settings <Collapsible.Indicator class="symbol-glyph">⌄</Collapsible.Indicator></Collapsible.Trigger><Collapsible.Content class="settings-content"><For each={activeOptions(emulator()!, current().platform)}>{(option) => <OptionControl option={option} onChange={(value) => updateEmulator((target) => { const targetOption = target.options.find((candidate) => candidate.path === option.path); if (targetOption) targetOption.value = value; })} />}</For></Collapsible.Content></Collapsible.Root>
       </aside>
     </div>
   </main>}</Show>;

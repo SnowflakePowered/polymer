@@ -11,9 +11,13 @@ use crate::Error;
 
 mod dreamcast;
 mod gamecube;
+mod nintendo;
 mod ps1;
 pub(crate) mod ps2;
+pub(crate) mod wii;
 mod wiiu;
+
+pub use nintendo::FromNintendoIcon;
 
 pub enum SaveIcon {
     Image(RgbaImage),
