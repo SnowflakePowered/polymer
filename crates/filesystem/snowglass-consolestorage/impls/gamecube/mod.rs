@@ -4,12 +4,11 @@ mod raw;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use atomic_write_file::AtomicWriteFile;
 use futures::StreamExt;
 use jiff::Timestamp;
 use uuid::Uuid;
@@ -237,13 +236,10 @@ impl GameCubeMemoryCard {
                 return Ok(());
             }
         }
-        let path = self.storage.directory().root().join(path);
-        let mut output = AtomicWriteFile::open(&path).map_err(|source| Error::io(&path, source))?;
-        output
-            .write_all(bytes)
-            .map_err(|source| Error::io(&path, source))?;
-        output.flush().map_err(|source| Error::io(&path, source))?;
-        output.commit().map_err(|source| Error::io(&path, source))
+        let output = self.storage.create(path)?;
+        output.write_all_at(0, bytes)?;
+        output.set_len(bytes.len() as u64)?;
+        output.sync()
     }
 
     fn describe_save(&self, save: &Save<'_>) -> Result<SaveDescriptor, Error> {
@@ -345,11 +341,7 @@ impl MemoryCard for GameCubeMemoryCard {
         let card = self.clone();
         let reconcile = move |saves: &[Save<'_>]| card.reconcile(region, &projected_paths, saves);
         let storage: Arc<dyn MountableStorage> = match format {
-            "dolphin" => Arc::new(DolphinMemoryStorage::new(
-                self.storage.directory(),
-                &projected,
-                reconcile,
-            )?),
+            "dolphin" => Arc::new(DolphinMemoryStorage::new(&projected, reconcile)?),
             "raw" => {
                 let blocks = u32::from(raw::card::MC251_BLOCKS);
                 let mut image = raw::card::MemoryCard::empty(blocks)?;

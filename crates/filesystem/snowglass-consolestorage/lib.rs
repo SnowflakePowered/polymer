@@ -22,7 +22,7 @@ pub use save_repo::SaveRepo;
 pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 pub use storage::memorycard::{MemoryCard, MemoryCardView, Reconcile};
 pub use storage::{
-    BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind, InstallResult,
-    Metadata, MountableStorage, ReadDir, Storage, StorageFile, StorageReader, VolumeStorage,
-    permissions::*,
+    BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind, GitVolumeKind,
+    GitVolumeStorage, InstallResult, Metadata, MountableStorage, PlatformRepository, ReadDir,
+    Storage, StorageFile, StorageReader, VolumeStorage, permissions::*,
 };

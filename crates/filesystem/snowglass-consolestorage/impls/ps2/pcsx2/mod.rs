@@ -8,8 +8,8 @@ use tokio::io::AsyncReadExt;
 
 use crate::impls::memorycard::{MemoryFile, ReconcileWorker};
 use crate::{
-    BoxFuture, ChangeSignal, DirEntry, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile,
+    BoxFuture, ChangeSignal, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage,
+    ReadDir, Storage, StorageFile,
 };
 
 use super::psu::Save;
@@ -53,14 +53,12 @@ impl Entry {
 
 /// An in-memory PCSX2 folder-card projection of PSU-backed saves.
 pub(super) struct Pcsx2MemoryStorage {
-    backing: Arc<DirectoryStorage>,
     entries: Arc<Mutex<BTreeMap<String, Entry>>>,
     worker: ReconcileWorker,
 }
 
 impl Pcsx2MemoryStorage {
     pub(super) fn new<'a>(
-        backing: Arc<DirectoryStorage>,
         capacity_blocks: u32,
         saves: impl IntoIterator<Item = Save<'a>>,
         reconcile: impl Fn(&[Save<'static>]) -> Result<(), Error> + Send + Sync + 'static,
@@ -79,11 +77,7 @@ impl Pcsx2MemoryStorage {
             "PCSX2 memory card",
             move || background_reconcile(&Self::saves(&background_entries)?),
         )?;
-        Ok(Self {
-            backing,
-            entries,
-            worker,
-        })
+        Ok(Self { entries, worker })
     }
 
     fn project_save(entries: &mut BTreeMap<String, Entry>, save: &Save<'_>) {
@@ -258,7 +252,7 @@ impl fmt::Debug for Pcsx2MemoryStorage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Pcsx2MemoryStorage")
-            .field("backing", &self.backing)
+            .field("entries", &self.entries.lock().len())
             .finish_non_exhaustive()
     }
 }

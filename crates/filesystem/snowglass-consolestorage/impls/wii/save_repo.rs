@@ -31,6 +31,18 @@ pub(crate) struct Save<'a> {
 }
 
 impl WiiSaveRepo {
+    const HIDDEN_RESOURCES: [&'static str; 3] = [
+        "shared2/menu/FaceLib",
+        "shared2/sys/SYSCONF",
+        "title/00000001/00000002/data",
+    ];
+
+    fn is_hidden_resource(path: &str) -> bool {
+        Self::HIDDEN_RESOURCES
+            .iter()
+            .any(|root| path == *root || path.starts_with(&format!("{root}/")))
+    }
+
     pub(crate) async fn create(
         storage: VersionedStorage,
         id: Uuid,
@@ -38,6 +50,9 @@ impl WiiSaveRepo {
     ) -> Result<Arc<dyn SaveRepo>, Error> {
         let root = Arc::new(storage);
         root.create_dir_all("title")?;
+        root.create_dir_all("shared2/menu/FaceLib")?;
+        root.create_dir_all("shared2/sys")?;
+        root.create_dir_all("title/00000001/00000002/data")?;
         root.brand(id, WiiNand::PLATFORM, label.as_deref()).await?;
         Ok(Arc::new(Self { root }))
     }
@@ -123,7 +138,9 @@ impl VolumeOverlay for WiiSaveRepo {
     }
 
     fn claims(&self, path: &str) -> bool {
-        save_id_from_path(path).is_some() || (path.starts_with("title") && self.root.exists(path))
+        Self::is_hidden_resource(path)
+            || save_id_from_path(path).is_some()
+            || (path.starts_with("title") && self.root.exists(path))
     }
 }
 

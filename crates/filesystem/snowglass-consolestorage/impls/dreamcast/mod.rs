@@ -4,12 +4,11 @@ pub mod vms;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use atomic_write_file::AtomicWriteFile;
 use futures::StreamExt;
 use jiff::Timestamp;
 use uuid::Uuid;
@@ -130,13 +129,19 @@ impl DreamcastMemoryCard {
                     .open_read(&entry.path)
                     .and_then(|mut file| {
                         file.read_to_end(&mut vmi)
-                            .map_err(|source| Error::io(self.storage.directory().root(), source))?;
+                            .map_err(|source| Error::MalformedMetadata {
+                                file: entry.path.clone(),
+                                reason: source.to_string(),
+                            })?;
                         Ok(())
                     })
                     .and_then(|()| self.storage.open_read(&vms_path))
                     .and_then(|mut file| {
                         file.read_to_end(&mut vms)
-                            .map_err(|source| Error::io(self.storage.directory().root(), source))?;
+                            .map_err(|source| Error::MalformedMetadata {
+                                file: vms_path.clone(),
+                                reason: source.to_string(),
+                            })?;
                         Ok(())
                     })
                     .and_then(|()| Save::new(vmi, vms).map_err(Error::from));
@@ -286,16 +291,10 @@ impl DreamcastMemoryCard {
                 return Ok(());
             }
         }
-        let path = self.storage.directory().root().join(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| Error::io(parent, source))?;
-        }
-        let mut output = AtomicWriteFile::open(&path).map_err(|source| Error::io(&path, source))?;
-        output
-            .write_all(bytes)
-            .map_err(|source| Error::io(&path, source))?;
-        output.flush().map_err(|source| Error::io(&path, source))?;
-        output.commit().map_err(|source| Error::io(&path, source))
+        let output = self.storage.create(path)?;
+        output.write_all_at(0, bytes)?;
+        output.set_len(bytes.len() as u64)?;
+        output.sync()
     }
 
     fn write_save(&self, product: DreamcastProductId, save: &Save<'_>) -> Result<(), Error> {

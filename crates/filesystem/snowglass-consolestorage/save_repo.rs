@@ -82,6 +82,7 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
             .versioning()
             .archive_missing_saves(self, &present)
             .await?;
+        changed |= self.versioning().checkpoint_profile()?;
         Ok(changed)
     }
 

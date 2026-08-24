@@ -231,7 +231,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{DirectoryStorage, VersionedStorage};
+    use crate::{DirectoryStorage, GitVolumeKind, PlatformRepository, VersionedStorage};
 
     #[tokio::test]
     async fn composes_installed_content_and_versioned_save_data() {
@@ -322,5 +322,48 @@ mod tests {
         assert!(!super::super::is_user_data_path(
             "title/00000001/00000002/data/setting.txt"
         ));
+    }
+
+    #[tokio::test]
+    async fn explicitly_claimed_hidden_resources_follow_the_profile() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform =
+            PlatformRepository::open(directory.path().join("NINTENDO_WII.git"), WiiNand::PLATFORM)
+                .unwrap();
+        let nand_id = Uuid::now_v7();
+        let nand = WiiNand::new_empty(platform.volume(GitVolumeKind::Nand, nand_id), nand_id, None)
+            .await
+            .unwrap();
+        let profile_id = Uuid::now_v7();
+        let profile =
+            VersionedStorage::from_git(platform.volume(GitVolumeKind::SaveRepo, profile_id))
+                .unwrap();
+        let saves = WiiNand::new_save_repo(profile, profile_id, None)
+            .await
+            .unwrap();
+        let composed = nand.compose(saves.clone()).unwrap();
+        let mii = composed.create("shared2/menu/FaceLib/RFL_DB.dat").unwrap();
+        mii.write_all_at(0, b"mii profile").unwrap();
+        let transient = composed.create("tmp/runtime-only").unwrap();
+        transient.write_all_at(0, b"discard me").unwrap();
+
+        assert!(saves.checkpoint_saves().await.unwrap());
+        drop(composed);
+        drop(saves);
+        drop(nand);
+
+        let reopened = platform.volume(GitVolumeKind::SaveRepo, profile_id);
+        let mut bytes = Vec::new();
+        reopened
+            .open_read("shared2/menu/FaceLib/RFL_DB.dat")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"mii profile");
+        assert!(
+            !platform
+                .volume(GitVolumeKind::Nand, nand_id)
+                .exists("tmp/runtime-only")
+        );
     }
 }

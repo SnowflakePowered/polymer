@@ -10,7 +10,7 @@ use crate::impls::ps2::Playstation2MemoryCard;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wiiu::nand::WiiUNand;
 use crate::nand::VirtualNand;
-use crate::{DirectoryStorage, Error, SaveRepo, VersionedStorage, VolumeInfo, VolumeStorage};
+use crate::{Error, GitVolumeStorage, SaveRepo, VersionedStorage, VolumeInfo, VolumeStorage};
 
 pub type Nand = Arc<dyn VirtualNand>;
 
@@ -29,14 +29,6 @@ impl StorageKind {
             Self::Nand => "nand",
             Self::SaveRepo => "saveRepo",
             Self::MemoryCard => "memoryCard",
-        }
-    }
-
-    pub const fn collection(self) -> &'static str {
-        match self {
-            Self::Nand => "nands",
-            Self::SaveRepo => "saverepo",
-            Self::MemoryCard => "memorycards",
         }
     }
 }
@@ -63,7 +55,7 @@ pub enum ConsoleStorage {
 }
 
 pub enum ConsoleStorageBacking {
-    Directory(DirectoryStorage),
+    Nand(GitVolumeStorage),
     Versioned(VersionedStorage),
 }
 
@@ -91,16 +83,12 @@ impl ConsoleStorage {
         label: Option<String>,
     ) -> Result<Self, Error> {
         match (kind, platform, storage) {
-            (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
-                Ok(Self::Nand(Arc::new(
-                    WiiUNand::new_empty(storage, id, label).await?,
-                )))
-            }
-            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
-                Ok(Self::Nand(Arc::new(
-                    WiiNand::new_empty(storage, id, label).await?,
-                )))
-            }
+            (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => Ok(
+                Self::Nand(Arc::new(WiiUNand::new_empty(storage, id, label).await?)),
+            ),
+            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => Ok(
+                Self::Nand(Arc::new(WiiNand::new_empty(storage, id, label).await?)),
+            ),
             (
                 StorageKind::SaveRepo,
                 WiiUNand::PLATFORM,
@@ -152,15 +140,15 @@ impl ConsoleStorage {
 
     pub async fn open(kind: StorageKind, storage: ConsoleStorageBacking) -> Result<Self, Error> {
         let metadata = match &storage {
-            ConsoleStorageBacking::Directory(storage) => storage.volumeinfo().await?,
+            ConsoleStorageBacking::Nand(storage) => storage.volumeinfo().await?,
             ConsoleStorageBacking::Versioned(storage) => storage.volumeinfo().await?,
         }
         .ok_or(Error::UnclaimedNand)?;
         match (kind, metadata.platform.as_str(), storage) {
-            (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
+            (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => {
                 Ok(Self::Nand(Arc::new(WiiUNand::open(storage).await?)))
             }
-            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Directory(storage)) => {
+            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => {
                 Ok(Self::Nand(Arc::new(WiiNand::open(storage).await?)))
             }
             (
