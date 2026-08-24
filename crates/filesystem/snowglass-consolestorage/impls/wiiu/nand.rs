@@ -128,7 +128,7 @@ impl VirtualNand for WiiUNand {
         }
     }
 
-    async fn clone<St: VolumeStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
+    async fn clone<St: VolumeStorage + 'static>(&self, _storage: St) -> Result<Self, Error> {
         todo!()
     }
 }

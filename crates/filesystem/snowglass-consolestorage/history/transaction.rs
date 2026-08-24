@@ -2,11 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AttachmentTips, JOURNAL_FILE, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning,
-};
+use super::{AttachmentTips, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning};
 use crate::{Error, SaveRepo};
 
 #[derive(Serialize, Deserialize)]
@@ -26,7 +25,17 @@ enum MaterializationFailure {
 
 impl SaveVersioning {
     fn journal_path(&self) -> PathBuf {
-        self.inner.repository.git_dir().join(JOURNAL_FILE)
+        self.inner
+            .repository
+            .git_dir()
+            .join("snowglass-transaction.json")
+    }
+
+    fn journal_ref(&self) -> String {
+        format!(
+            "refs/snowglass/transactions/v2/{}",
+            self.inner.volume_id.simple()
+        )
     }
 
     fn parse_journal_id(value: Option<String>) -> Result<Option<gix::ObjectId>, Error> {
@@ -39,6 +48,9 @@ impl SaveVersioning {
     }
 
     fn read_journal(&self) -> Result<Option<MaterializationJournal>, Error> {
+        if self.inner.profile.is_some() {
+            return self.read_git_journal();
+        }
         let path = self.journal_path();
         match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -65,6 +77,9 @@ impl SaveVersioning {
                 .and_then(|state| state.attachments.note)
                 .map(|id| id.to_string()),
         };
+        if self.inner.profile.is_some() {
+            return self.write_git_journal(&journal);
+        }
         let path = self.journal_path();
         let temporary = path.with_extension("json.tmp");
         let bytes = serde_json::to_vec_pretty(&journal)
@@ -74,12 +89,118 @@ impl SaveVersioning {
     }
 
     fn clear_journal(&self) -> Result<(), Error> {
+        if self.inner.profile.is_some() {
+            return self.clear_git_journal();
+        }
         let path = self.journal_path();
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(Error::io(&path, error)),
         }
+    }
+
+    fn read_git_journal(&self) -> Result<Option<MaterializationJournal>, Error> {
+        let repo = self.inner.repository.to_thread_local();
+        let Some(tip) = Self::tip_in(&repo, &self.journal_ref())? else {
+            return Ok(None);
+        };
+        let tree = Self::commit_tree(&repo, tip)?;
+        let mut values = Self::tree_files(&repo, tree)?;
+        let required = |values: &mut BTreeMap<String, Vec<u8>>, name: &str| {
+            String::from_utf8(values.remove(name).ok_or_else(|| {
+                Error::HistoryConflict(format!("profile transaction has no `{name}`"))
+            })?)
+            .map_err(|error| Error::git("decode profile transaction", error))
+        };
+        let optional = |values: &mut BTreeMap<String, Vec<u8>>, name: &str| {
+            values
+                .remove(name)
+                .map(String::from_utf8)
+                .transpose()
+                .map_err(|error| Error::git("decode profile transaction", error))
+        };
+        Ok(Some(MaterializationJournal {
+            depot: required(&mut values, "depot")?
+                .parse()
+                .map_err(|error| Error::git("parse profile transaction depot", error))?,
+            old: optional(&mut values, "old")?,
+            target: optional(&mut values, "target")?,
+            screenshot: optional(&mut values, "screenshot")?,
+            icon: optional(&mut values, "icon")?,
+            note: optional(&mut values, "note")?,
+        }))
+    }
+
+    fn write_git_journal(&self, journal: &MaterializationJournal) -> Result<(), Error> {
+        let repo = self.inner.repository.to_thread_local();
+        let reference = self.journal_ref();
+        let parent = Self::tip_in(&repo, &reference)?;
+        let mut editor = repo
+            .empty_tree()
+            .edit()
+            .map_err(|error| Error::git("edit profile transaction", error))?;
+        let depot = journal.depot.to_string();
+        let values = [
+            ("depot", Some(depot.as_str())),
+            ("old", journal.old.as_deref()),
+            ("target", journal.target.as_deref()),
+            ("screenshot", journal.screenshot.as_deref()),
+            ("icon", journal.icon.as_deref()),
+            ("note", journal.note.as_deref()),
+        ];
+        for (name, value) in values {
+            let Some(value) = value else { continue };
+            let blob = repo
+                .write_blob(value.as_bytes())
+                .map_err(|error| Error::git("write profile transaction value", error))?
+                .detach();
+            editor
+                .upsert(name, gix::objs::tree::EntryKind::Blob, blob)
+                .map_err(|error| Error::git("update profile transaction", error))?;
+        }
+        let tree = editor
+            .write()
+            .map_err(|error| Error::git("write profile transaction tree", error))?
+            .detach();
+        let signature = Self::signature();
+        let mut time = gix::date::parse::TimeBuf::default();
+        let signature = signature.to_ref(&mut time);
+        repo.commit_as(
+            signature,
+            signature,
+            reference,
+            "Snowglass profile materialization transaction",
+            tree,
+            parent,
+        )
+        .map(|_| ())
+        .map_err(|error| Error::git("commit profile transaction", error))
+    }
+
+    fn clear_git_journal(&self) -> Result<(), Error> {
+        let repo = self.inner.repository.to_thread_local();
+        let reference = self.journal_ref();
+        let Some(existing) = repo
+            .try_find_reference(&reference)
+            .map_err(|error| Error::git("find profile transaction", error))?
+        else {
+            return Ok(());
+        };
+        let edit = RefEdit {
+            change: Change::Delete {
+                expected: PreviousValue::MustExistAndMatch(existing.target().to_owned().into()),
+                log: RefLog::AndReference,
+            },
+            name: gix::refs::FullName::try_from(reference.as_str())
+                .map_err(|error| Error::git("validate profile transaction ref", error))?,
+            deref: false,
+        };
+        let signature = Self::signature();
+        let mut time = gix::date::parse::TimeBuf::default();
+        repo.edit_references_as([edit], Some(signature.to_ref(&mut time)))
+            .map(|_| ())
+            .map_err(|error| Error::git("clear profile transaction", error))
     }
 
     pub(super) async fn recover_locked<R: SaveRepo + ?Sized>(
@@ -159,6 +280,10 @@ impl SaveVersioning {
                     )))
                 }
             };
+        }
+        if let Some(profile) = &self.inner.profile {
+            profile.set_save_tip(transition.depot.0, transition.after.map(|state| state.tip));
+            profile.commit_pending("Snowglass profile save transition", None)?;
         }
         self.clear_journal()
     }

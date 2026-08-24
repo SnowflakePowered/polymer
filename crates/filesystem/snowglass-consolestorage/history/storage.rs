@@ -6,16 +6,31 @@ use tokio::io::AsyncRead;
 use uuid::Uuid;
 
 use super::{SaveVersioning, VOLUME_REF};
-use crate::storage::manifest::EMPTY_ARTIFACTS;
 use crate::{
-    ArtifactRegistry, BoxFuture, ChangeSignal, DirectoryStorage, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile, VolumeInfo, VolumeStorage,
+    ArtifactRegistry, BoxFuture, ChangeSignal, DirectoryStorage, Error, GitVolumeStorage,
+    InstallResult, Metadata, MountableStorage, ReadDir, Storage, StorageFile, VolumeInfo,
+    VolumeStorage,
 };
+
+#[derive(Clone, Debug)]
+enum VersionedBackend {
+    Directory(Arc<DirectoryStorage>),
+    Git(GitVolumeStorage),
+}
+
+impl VersionedBackend {
+    fn storage(&self) -> &dyn VolumeStorage {
+        match self {
+            Self::Directory(storage) => &**storage,
+            Self::Git(storage) => storage,
+        }
+    }
+}
 
 /// A directory-backed volume with a colocated Git history database.
 #[derive(Clone, Debug)]
 pub struct VersionedStorage {
-    storage: Arc<DirectoryStorage>,
+    storage: VersionedBackend,
     history: SaveVersioning,
 }
 
@@ -23,7 +38,19 @@ impl VersionedStorage {
     pub fn new(storage: DirectoryStorage, platform: &str, volume_id: Uuid) -> Result<Self, Error> {
         let history = SaveVersioning::open(storage.root(), platform, volume_id)?;
         Ok(Self {
-            storage: Arc::new(storage),
+            storage: VersionedBackend::Directory(Arc::new(storage)),
+            history,
+        })
+    }
+
+    pub fn from_git(storage: GitVolumeStorage) -> Result<Self, Error> {
+        let history = SaveVersioning::open_platform(
+            storage.platform_repository(),
+            storage.clone(),
+            storage.id(),
+        )?;
+        Ok(Self {
+            storage: VersionedBackend::Git(storage),
             history,
         })
     }
@@ -32,42 +59,42 @@ impl VersionedStorage {
         &self.history
     }
 
-    pub(crate) fn directory(&self) -> Arc<DirectoryStorage> {
-        self.storage.clone()
+    fn storage(&self) -> &dyn VolumeStorage {
+        self.storage.storage()
     }
 }
 
 impl Storage for VersionedStorage {
     fn exists(&self, path: &str) -> bool {
-        self.storage.exists(path)
+        self.storage().exists(path)
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        self.storage.metadata(path)
+        self.storage().metadata(path)
     }
 
     fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        self.storage.read_dir(path, recursive)
+        self.storage().read_dir(path, recursive)
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        self.storage.create_dir_all(path)
+        self.storage().create_dir_all(path)
     }
 
     fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
-        self.storage.create(path)
+        self.storage().create(path)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        self.storage.open(path, write)
+        self.storage().open(path, write)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
-        self.storage.remove(path)
+        self.storage().remove(path)
     }
 
     fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.storage.watch(paths)
+        self.storage().watch(paths)
     }
 
     fn install_file<'a>(
@@ -75,43 +102,54 @@ impl Storage for VersionedStorage {
         source: Box<dyn AsyncRead + Send + Unpin>,
         dest: &str,
     ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        self.storage.install_file(source, dest)
+        self.storage().install_file(source, dest)
     }
 }
 
 impl MountableStorage for VersionedStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        self.storage.rename(from, to)
+        self.storage().rename(from, to)
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        self.storage.truncate(path, len)
+        self.storage().truncate(path, len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
-        self.storage.sync(path)
+        self.storage().sync(path)
     }
 
     fn finish(&self, path: &str) -> Result<(), Error> {
-        self.storage.finish(path)
+        self.storage().finish(path)
     }
 }
 
 impl VolumeStorage for VersionedStorage {
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        Box::pin(async move { Ok(self.history.volume_info()?.and_then(|info| info.label)) })
+        match &self.storage {
+            VersionedBackend::Git(storage) => storage.label(),
+            VersionedBackend::Directory(_) => {
+                Box::pin(async move { Ok(self.history.volume_info()?.and_then(|info| info.label)) })
+            }
+        }
     }
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        Box::pin(self.history.set_volume_label(label))
+        match &self.storage {
+            VersionedBackend::Git(storage) => storage.set_label(label),
+            VersionedBackend::Directory(_) => Box::pin(self.history.set_volume_label(label)),
+        }
     }
 
     fn artifacts(&self) -> &dyn ArtifactRegistry {
-        &EMPTY_ARTIFACTS
+        self.storage().artifacts()
     }
 
     fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        Box::pin(async move { self.history.volume_info() })
+        match &self.storage {
+            VersionedBackend::Git(storage) => storage.volumeinfo(),
+            VersionedBackend::Directory(_) => Box::pin(async move { self.history.volume_info() }),
+        }
     }
 
     fn brand<'a>(
@@ -120,7 +158,12 @@ impl VolumeStorage for VersionedStorage {
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
-        Box::pin(self.history.brand_volume(id, platform, label))
+        match &self.storage {
+            VersionedBackend::Git(storage) => storage.brand(id, platform, label),
+            VersionedBackend::Directory(_) => {
+                Box::pin(self.history.brand_volume(id, platform, label))
+            }
+        }
     }
 }
 

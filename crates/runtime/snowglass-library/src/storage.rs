@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use snowglass_consolestorage::{
-    ConsoleStorage, ConsoleStorageBacking, DirectoryStorage, Error, StorageKind, VersionedStorage,
-    VolumeInfo, VolumeStorage,
+    ConsoleStorage, ConsoleStorageBacking, Error, GitVolumeKind, PlatformRepository, StorageKind,
+    VersionedStorage, VolumeInfo,
 };
 use uuid::Uuid;
 
@@ -20,10 +20,23 @@ impl StorageManager {
     }
 
     pub fn path(&self, kind: StorageKind, platform: &str, id: Uuid) -> PathBuf {
-        self.root
-            .join(kind.collection())
-            .join(platform)
-            .join(id.simple().to_string())
+        let _ = (kind, id);
+        self.root.join("platforms").join(format!("{platform}.git"))
+    }
+
+    fn repository(&self, platform: &str) -> Result<PlatformRepository, Error> {
+        PlatformRepository::open(
+            self.root.join("platforms").join(format!("{platform}.git")),
+            platform,
+        )
+    }
+
+    const fn git_kind(kind: StorageKind) -> GitVolumeKind {
+        match kind {
+            StorageKind::Nand => GitVolumeKind::Nand,
+            StorageKind::SaveRepo => GitVolumeKind::SaveRepo,
+            StorageKind::MemoryCard => GitVolumeKind::MemoryCard,
+        }
     }
 
     pub async fn create(
@@ -40,14 +53,11 @@ impl StorageManager {
         }
 
         let id = Uuid::now_v7();
+        let storage = self.repository(platform)?.volume(Self::git_kind(kind), id);
         let storage = match kind {
-            StorageKind::Nand => ConsoleStorageBacking::Directory(
-                DirectoryStorage::new(self.path(kind, platform, id)).await?,
-            ),
+            StorageKind::Nand => ConsoleStorageBacking::Nand(storage),
             StorageKind::SaveRepo | StorageKind::MemoryCard => {
-                let storage =
-                    DirectoryStorage::new_unmanaged(self.path(kind, platform, id)).await?;
-                ConsoleStorageBacking::Versioned(VersionedStorage::new(storage, platform, id)?)
+                ConsoleStorageBacking::Versioned(VersionedStorage::from_git(storage)?)
             }
         };
         ConsoleStorage::create(kind, platform, storage, id, label).await
@@ -59,22 +69,11 @@ impl StorageManager {
         platform: &str,
         id: Uuid,
     ) -> Result<ConsoleStorage, Error> {
+        let storage = self.repository(platform)?.volume(Self::git_kind(kind), id);
         let storage = match kind {
-            StorageKind::Nand => {
-                let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
-                let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
-                if metadata.platform != platform {
-                    return Err(Error::Unsupported(format!(
-                        "`{storage:?}` is a {} volume",
-                        metadata.platform
-                    )));
-                }
-                ConsoleStorageBacking::Directory(storage)
-            }
+            StorageKind::Nand => ConsoleStorageBacking::Nand(storage),
             StorageKind::SaveRepo | StorageKind::MemoryCard => {
-                let storage =
-                    DirectoryStorage::new_unmanaged(self.path(kind, platform, id)).await?;
-                ConsoleStorageBacking::Versioned(VersionedStorage::new(storage, platform, id)?)
+                ConsoleStorageBacking::Versioned(VersionedStorage::from_git(storage)?)
             }
         };
         ConsoleStorage::open(kind, storage).await
@@ -92,12 +91,35 @@ impl StorageManager {
         Ok(storage)
     }
 
+    pub async fn fork(
+        &self,
+        kind: StorageKind,
+        platform: &str,
+        source: Uuid,
+        label: Option<String>,
+    ) -> Result<ConsoleStorage, Error> {
+        if kind == StorageKind::Nand {
+            return Err(Error::Unsupported(
+                "NAND volumes are not save profiles".to_owned(),
+            ));
+        }
+        let destination = Uuid::now_v7();
+        self.repository(platform)?.fork_profile(
+            Self::git_kind(kind),
+            source,
+            destination,
+            label.as_deref(),
+        )?;
+        self.open(kind, platform, destination).await
+    }
+
     pub async fn list(&self) -> Result<Vec<(StorageKind, VolumeInfo)>, Error> {
         let mut storages = Vec::new();
 
-        for kind in StorageKind::ALL {
-            for platform in Self::names(&self.root.join(kind.collection())).await {
-                for id in self.ids(kind, &platform).await {
+        for platform in Self::platforms(&self.root.join("platforms")).await {
+            let repository = self.repository(&platform)?;
+            for kind in StorageKind::ALL {
+                for id in repository.ids(Self::git_kind(kind))? {
                     if let Ok(storage) = self.open(kind, &platform, id).await
                         && let Ok(metadata) = storage.metadata().await
                     {
@@ -112,23 +134,10 @@ impl StorageManager {
     }
 
     pub async fn delete(&self, kind: StorageKind, platform: &str, id: Uuid) -> Result<(), Error> {
-        let path = self.path(kind, platform, id);
-        match tokio::fs::remove_dir_all(&path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::io(&path, e)),
-        }
+        self.repository(platform)?.delete(Self::git_kind(kind), id)
     }
 
-    async fn ids(&self, kind: StorageKind, platform: &str) -> Vec<Uuid> {
-        Self::names(&self.root.join(kind.collection()).join(platform))
-            .await
-            .iter()
-            .filter_map(|name| Uuid::parse_str(name).ok())
-            .collect()
-    }
-
-    async fn names(path: &Path) -> Vec<String> {
+    async fn platforms(path: &Path) -> Vec<String> {
         let Ok(mut listing) = tokio::fs::read_dir(path).await else {
             return Vec::new();
         };
@@ -136,7 +145,10 @@ impl StorageManager {
         let mut names = Vec::new();
         while let Ok(Some(entry)) = listing.next_entry().await {
             if entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
-                names.push(entry.file_name().to_string_lossy().into_owned());
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if let Some(platform) = name.strip_suffix(".git") {
+                    names.push(platform.to_owned());
+                }
             }
         }
 
@@ -154,22 +166,15 @@ mod tests {
         let manager = StorageManager::new(root.path());
         let id = Uuid::now_v7();
 
+        let repository = root.path().join("platforms").join("PLATFORM.git");
+        assert_eq!(manager.path(StorageKind::Nand, "PLATFORM", id), repository);
         assert_eq!(
-            manager.path(StorageKind::Nand, "PLATFORM", id),
-            root.path()
-                .join("nands")
-                .join("PLATFORM")
-                .join(id.simple().to_string())
+            manager.path(StorageKind::SaveRepo, "PLATFORM", id),
+            repository
         );
-        assert!(
-            manager
-                .path(StorageKind::SaveRepo, "PLATFORM", id)
-                .starts_with(root.path().join("saverepo"))
-        );
-        assert!(
-            manager
-                .path(StorageKind::MemoryCard, "PLATFORM", id)
-                .starts_with(root.path().join("memorycards"))
+        assert_eq!(
+            manager.path(StorageKind::MemoryCard, "PLATFORM", id),
+            repository
         );
     }
 
@@ -192,8 +197,6 @@ mod tests {
         assert!(!path.join(".manifest.db").exists());
         assert!(!path.join(".manifest.db-wal").exists());
 
-        std::fs::write(path.join(".manifest.db"), b"legacy").unwrap();
-        std::fs::write(path.join(".manifest.db-wal"), b"legacy").unwrap();
         let reopened = manager
             .open(StorageKind::SaveRepo, "NINTENDO_WII", info.id)
             .await
@@ -202,7 +205,6 @@ mod tests {
             reopened.metadata().await.unwrap().label.as_deref(),
             Some("Wii saves")
         );
-        assert!(!path.join(".manifest.db").exists());
-        assert!(!path.join(".manifest.db-wal").exists());
+        assert!(path.join("objects").is_dir());
     }
 }

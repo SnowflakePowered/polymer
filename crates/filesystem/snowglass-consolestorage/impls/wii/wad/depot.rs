@@ -348,7 +348,7 @@ mod tests {
     use super::*;
     use crate::impls::wii::nand::WiiNand;
     use crate::nand::VirtualNand;
-    use crate::{DirectoryStorage, VolumeStorage};
+    use crate::{DirectoryStorage, GitVolumeKind, PlatformRepository, VolumeStorage};
 
     const COMMON_KEY: [u8; 16] = [
         0xeb, 0xe4, 0x2a, 0x22, 0x5e, 0x85, 0x93, 0xe4, 0x48, 0xd9, 0xc5, 0x45, 0x73, 0x81, 0xaa,
@@ -376,10 +376,14 @@ mod tests {
         assert!(!wad.satisfies(&incomplete));
 
         let destination = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(destination.path()).await.unwrap();
-        let nand = WiiNand::new_empty(storage, Uuid::now_v7(), None)
-            .await
-            .unwrap();
+        let platform = PlatformRepository::open(
+            destination.path().join("NINTENDO_WII.git"),
+            WiiNand::PLATFORM,
+        )
+        .unwrap();
+        let id = Uuid::now_v7();
+        let storage = platform.volume(GitVolumeKind::Nand, id);
+        let nand = WiiNand::new_empty(storage, id, None).await.unwrap();
         assert!(wad.satisfies(&nand));
         let (artifact, progress) = wad.install(&nand);
         let mut progress = Box::into_pin(progress);

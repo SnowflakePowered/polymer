@@ -25,9 +25,7 @@ use crate::savegame::{SaveDepotId, SaveDescriptor};
 use crate::{Error, SaveRepo};
 
 const SCHEMA_VERSION: u32 = 1;
-const ARCHIVE_REF: &str = "refs/snowglass/archive/v1/recently-deleted";
 const MARKER_FILE: &str = "snowglass.json";
-const JOURNAL_FILE: &str = "snowglass-transaction.json";
 const VOLUME_REF: &str = "refs/snowglass/volume/v1";
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -199,6 +197,7 @@ struct HistoryInner {
     platform: String,
     volume_id: Uuid,
     repository: gix::ThreadSafeRepository,
+    profile: Option<crate::GitVolumeStorage>,
     operation: Mutex<()>,
 }
 
@@ -219,6 +218,13 @@ impl fmt::Debug for SaveVersioning {
 }
 
 impl SaveVersioning {
+    fn archive_ref(&self) -> String {
+        format!(
+            "refs/snowglass/archive/v2/{}/recently-deleted",
+            self.inner.volume_id.simple()
+        )
+    }
+
     pub fn platform(&self) -> &str {
         &self.inner.platform
     }
@@ -300,6 +306,9 @@ impl SaveVersioning {
         if let Some(parent) = parent {
             let current_tree = Self::commit_tree(&repo, parent)?;
             if current_tree == tree {
+                if let Some(profile) = &self.inner.profile {
+                    profile.commit_pending("Snowglass profile autosave", None)?;
+                }
                 drop(guard);
                 owner.save_icon(depot).await?;
                 return Ok(None);
@@ -319,10 +328,22 @@ impl SaveVersioning {
             .commit_as(signature, signature, reference, message, tree, parents)
             .map_err(|error| Error::git("commit save snapshot", error))?
             .detach();
+        if let Some(profile) = &self.inner.profile {
+            profile.set_save_tip(depot.0, Some(id));
+            profile.commit_pending("Snowglass profile autosave", None)?;
+        }
         let info = Self::commit_info(&repo, id)?;
         drop(guard);
         owner.save_icon(depot).await?;
         Ok(Some(info))
+    }
+
+    pub(crate) fn checkpoint_profile(&self) -> Result<bool, Error> {
+        self.inner.profile.as_ref().map_or(Ok(false), |profile| {
+            profile
+                .commit_pending("Snowglass profile autosave", None)
+                .map(|commit| commit.is_some())
+        })
     }
 
     fn history(&self, depot: SaveDepotId) -> Result<Vec<SaveCommitInfo>, Error> {

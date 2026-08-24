@@ -1,21 +1,15 @@
 use crate::installable::{DepotFile, DepotType, IconHint};
 
 pub struct Artifact {
-    /// Identifies the artifact to the NAND it is installed in. Wii U NANDs use
-    /// the 16 hex digit title id.
     id: String,
     depot_type: DepotType,
     manifest: Vec<DepotFile>,
     label: String,
     version: Option<String>,
     icon: IconHint,
-    /// The total byte length of the artifact installed on disk.
     byte_length: u64,
 }
 
-/// Supplies everything about an [`Artifact`] that the install walk cannot
-/// work out for itself. The returned artifact carries no manifest; the walk
-/// fills that in with [`Artifact::with_manifest`].
 pub trait DescribeArtifact {
     fn describe(&self) -> Artifact;
 }

@@ -16,6 +16,7 @@ use super::{
 };
 use crate::Error;
 use crate::savegame::SaveBlob;
+use crate::{GitVolumeStorage, PlatformRepository};
 
 impl SaveVersioning {
     pub(super) fn open(root: &Path, platform: &str, volume_id: Uuid) -> Result<Self, Error> {
@@ -81,6 +82,30 @@ impl SaveVersioning {
                 platform: platform.to_owned(),
                 volume_id,
                 repository,
+                profile: None,
+                operation: Mutex::new(()),
+            }),
+        })
+    }
+
+    pub(crate) fn open_platform(
+        platform_repository: &PlatformRepository,
+        profile: GitVolumeStorage,
+        volume_id: Uuid,
+    ) -> Result<Self, Error> {
+        if profile.id() != volume_id {
+            return Err(Error::HistoryConflict(format!(
+                "profile {} cannot provide history for volume {volume_id}",
+                profile.id()
+            )));
+        }
+        Ok(Self {
+            inner: Arc::new(HistoryInner {
+                root: platform_repository.path().to_owned(),
+                platform: platform_repository.platform().to_owned(),
+                volume_id,
+                repository: platform_repository.repository().clone(),
+                profile: Some(profile),
                 operation: Mutex::new(()),
             }),
         })
@@ -106,12 +131,14 @@ impl SaveVersioning {
 
     pub(super) fn refs(&self, depot: SaveDepotId) -> SaveRefs {
         let save = format!(
-            "refs/snowglass/saves/v1/{}/{:016x}",
-            self.inner.platform, depot.0
+            "refs/snowglass/saves/v2/{}/{:016x}",
+            self.inner.volume_id.simple(),
+            depot.0
         );
         let attachments = format!(
-            "refs/notes/snowglass/v1/{}/{:016x}",
-            self.inner.platform, depot.0
+            "refs/notes/snowglass/v2/{}/{:016x}",
+            self.inner.volume_id.simple(),
+            depot.0
         );
         SaveRefs {
             head: save,
@@ -123,7 +150,7 @@ impl SaveVersioning {
 
     pub(super) fn tracked_depots(&self) -> Result<Vec<SaveDepotId>, Error> {
         let repo = self.inner.repository.to_thread_local();
-        let prefix = format!("refs/snowglass/saves/v1/{}/", self.inner.platform);
+        let prefix = format!("refs/snowglass/saves/v2/{}/", self.inner.volume_id.simple());
         let mut depots = Vec::new();
         let references = repo
             .references()

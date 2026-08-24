@@ -7,7 +7,7 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use super::{
-    ARCHIVE_REF, AttachmentTips, DeletedSaveInfo, SaveAttachmentKind, SaveCommitId, SaveCommitInfo,
+    AttachmentTips, DeletedSaveInfo, SaveAttachmentKind, SaveCommitId, SaveCommitInfo,
     SaveCommitOperation, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning,
 };
 use crate::{Error, SaveRepo};
@@ -26,8 +26,9 @@ enum ArchiveRecord {
 impl SaveVersioning {
     pub fn recently_deleted(&self) -> Result<Vec<DeletedSaveInfo>, Error> {
         let repo = self.inner.repository.to_thread_local();
+        let archive_ref = self.archive_ref();
         let Some(reference) = repo
-            .try_find_reference(ARCHIVE_REF)
+            .try_find_reference(&archive_ref)
             .map_err(|error| Error::git("find archive reference", error))?
         else {
             return Ok(Vec::new());
@@ -35,7 +36,7 @@ impl SaveVersioning {
         let mut platform = reference.log_iter();
         let Some(lines) = platform
             .rev()
-            .map_err(|error| Error::io(&repo.git_dir().join("logs").join(ARCHIVE_REF), error))?
+            .map_err(|error| Error::io(&repo.git_dir().join("logs").join(&archive_ref), error))?
         else {
             return Ok(Vec::new());
         };
@@ -194,7 +195,8 @@ impl SaveVersioning {
     }
 
     fn ensure_archive_sentinel(&self, repo: &gix::Repository) -> Result<gix::ObjectId, Error> {
-        if let Some(id) = Self::tip_in(repo, ARCHIVE_REF)? {
+        let archive_ref = self.archive_ref();
+        if let Some(id) = Self::tip_in(repo, &archive_ref)? {
             return Ok(id);
         }
         let signature = Self::signature();
@@ -203,7 +205,7 @@ impl SaveVersioning {
         repo.commit_as(
             signature,
             signature,
-            ARCHIVE_REF,
+            archive_ref,
             "Snowglass recently-deleted archive sentinel",
             repo.empty_tree().id,
             std::iter::empty::<gix::ObjectId>(),
@@ -250,6 +252,7 @@ impl SaveVersioning {
         parents: impl IntoIterator<Item = gix::ObjectId>,
     ) -> Result<gix::ObjectId, Error> {
         let sentinel = self.ensure_archive_sentinel(repo)?;
+        let archive_ref = self.archive_ref();
         let signature = Self::signature();
         let mut signature_time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut signature_time);
@@ -257,8 +260,8 @@ impl SaveVersioning {
             .new_commit_as(signature, signature, message, repo.empty_tree().id, parents)
             .map_err(|error| Error::git("write archive record", error))?
             .id;
-        Self::forced_ref_update(repo, ARCHIVE_REF, record, "snowglass: archive record")?;
-        Self::forced_ref_update(repo, ARCHIVE_REF, sentinel, "snowglass: archive sentinel")?;
+        Self::forced_ref_update(repo, &archive_ref, record, "snowglass: archive record")?;
+        Self::forced_ref_update(repo, &archive_ref, sentinel, "snowglass: archive sentinel")?;
         Ok(record)
     }
 
@@ -311,15 +314,15 @@ impl SaveVersioning {
         wanted: Uuid,
     ) -> Result<Option<DeletedRecord>, Error> {
         let Some(reference) = repo
-            .try_find_reference(ARCHIVE_REF)
+            .try_find_reference(&self.archive_ref())
             .map_err(|error| Error::git("find archive", error))?
         else {
             return Ok(None);
         };
         let mut platform = reference.log_iter();
-        let Some(lines) = platform
-            .rev()
-            .map_err(|error| Error::io(&repo.git_dir().join("logs").join(ARCHIVE_REF), error))?
+        let Some(lines) = platform.rev().map_err(|error| {
+            Error::io(&repo.git_dir().join("logs").join(self.archive_ref()), error)
+        })?
         else {
             return Ok(None);
         };

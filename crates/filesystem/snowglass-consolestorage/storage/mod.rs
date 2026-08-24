@@ -15,18 +15,21 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use atomic_write_file::AtomicWriteFile;
+use parking_lot::RwLock;
 
 use crate::error::Error;
 
 mod composed;
+mod git;
 pub mod manifest;
 pub mod memorycard;
 pub(crate) mod permissions;
 
 pub use composed::ComposedStorage;
+pub use git::{GitVolumeKind, GitVolumeStorage, PlatformRepository};
 
 use crate::storage::manifest::VolumeInfo;
-use manifest::{ArtifactDb, ArtifactRegistry, EMPTY_ARTIFACTS};
+use manifest::{ArtifactRegistry, EMPTY_ARTIFACTS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -399,7 +402,7 @@ impl<T: VolumeOverlay> VolumeStorage for T {
 
 pub struct DirectoryStorage {
     root: PathBuf,
-    artifacts: Option<ArtifactDb>,
+    volume: RwLock<Option<VolumeInfo>>,
 }
 
 impl DirectoryStorage {
@@ -407,12 +410,9 @@ impl DirectoryStorage {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
 
-        let database = root.join(".manifest.db");
-        let artifacts = ArtifactDb::open(&database.to_string_lossy()).await?;
-
         Ok(Self {
             root,
-            artifacts: Some(artifacts),
+            volume: RwLock::new(None),
         })
     }
 
@@ -421,17 +421,9 @@ impl DirectoryStorage {
     pub async fn new_unmanaged(root: impl Into<PathBuf>) -> Result<Self, Error> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
-        for name in [".manifest.db", ".manifest.db-wal", ".manifest.db-shm"] {
-            let path = root.join(name);
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(Error::io(&path, error)),
-            }
-        }
         Ok(Self {
             root,
-            artifacts: None,
+            volume: RwLock::new(None),
         })
     }
 
@@ -906,35 +898,29 @@ impl MountableStorage for DirectoryStorage {
 impl VolumeStorage for DirectoryStorage {
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
         Box::pin(async move {
-            match &self.artifacts {
-                Some(artifacts) => Ok(artifacts
-                    .identity()
-                    .await?
-                    .and_then(|metadata| metadata.label)),
-                None => Ok(None),
-            }
+            Ok(self
+                .volume
+                .read()
+                .as_ref()
+                .and_then(|info| info.label.clone()))
         })
     }
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        match &self.artifacts {
-            Some(artifacts) => artifacts.set_label(label),
-            None => Box::pin(async { Ok(()) }),
-        }
+        Box::pin(async move {
+            let mut volume = self.volume.write();
+            let info = volume.as_mut().ok_or(Error::UnclaimedNand)?;
+            info.label = label.map(str::to_owned);
+            Ok(())
+        })
     }
 
     fn artifacts(&self) -> &dyn ArtifactRegistry {
-        match &self.artifacts {
-            Some(artifacts) => artifacts,
-            None => &EMPTY_ARTIFACTS,
-        }
+        &EMPTY_ARTIFACTS
     }
 
     fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        match &self.artifacts {
-            Some(artifacts) => artifacts.identity(),
-            None => Box::pin(async { Ok(None) }),
-        }
+        Box::pin(async move { Ok(self.volume.read().clone()) })
     }
 
     fn brand<'a>(
@@ -943,13 +929,19 @@ impl VolumeStorage for DirectoryStorage {
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
-        match &self.artifacts {
-            Some(artifacts) => artifacts.brand(id, platform, label),
-            None => Box::pin(async {
-                Err(Error::Unsupported(
-                    "an unmanaged directory cannot be branded directly".to_owned(),
-                ))
-            }),
-        }
+        Box::pin(async move {
+            let mut volume = self.volume.write();
+            if let Some(info) = &*volume {
+                return Ok(info.clone());
+            }
+            let info = VolumeInfo {
+                id,
+                platform: platform.to_owned(),
+                label: label.map(str::to_owned),
+                created: jiff::Timestamp::now(),
+            };
+            *volume = Some(info.clone());
+            Ok(info)
+        })
     }
 }

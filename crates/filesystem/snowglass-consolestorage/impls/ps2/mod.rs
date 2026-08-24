@@ -5,12 +5,11 @@ mod raw;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use atomic_write_file::AtomicWriteFile;
 use encoding_rs::SHIFT_JIS;
 use futures::StreamExt;
 use jiff::Timestamp;
@@ -347,13 +346,11 @@ impl Playstation2MemoryCard {
     fn write_save(&self, save: &Save<'_>) -> Result<(), Error> {
         let handle = SaveDataHandle::from_name(save.name_bytes())
             .ok_or_else(|| Error::InvalidPath(save.name().into_owned()))?;
-        let path = self.storage.directory().root().join(handle.path());
-        let mut output = AtomicWriteFile::open(&path).map_err(|source| Error::io(&path, source))?;
-        output
-            .write_all(save.as_bytes())
-            .map_err(|source| Error::io(&path, source))?;
-        output.flush().map_err(|source| Error::io(&path, source))?;
-        output.commit().map_err(|source| Error::io(&path, source))
+        let path = handle.path();
+        let output = self.storage.create(&path)?;
+        output.write_all_at(0, save.as_bytes())?;
+        output.set_len(save.as_bytes().len() as u64)?;
+        output.sync()
     }
 
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(String, u64, Timestamp)> {
@@ -453,7 +450,6 @@ impl MemoryCard for Playstation2MemoryCard {
                 let card = self.clone();
                 let owned = Arc::new(Mutex::new(projected));
                 Arc::new(Pcsx2MemoryStorage::new(
-                    self.storage.directory(),
                     CAPACITY_BLOCKS,
                     saves,
                     move |saves| {

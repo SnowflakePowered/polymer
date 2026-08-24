@@ -9,8 +9,8 @@ use tokio::io::AsyncReadExt;
 use super::gci::{self, Save};
 use crate::impls::memorycard::{MemoryFile, ReconcileWorker};
 use crate::{
-    BoxFuture, DirEntry, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile,
+    BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
+    Storage, StorageFile,
 };
 
 type Reconcile = dyn for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send + Sync;
@@ -61,14 +61,12 @@ impl Projection {
 }
 
 pub(super) struct DolphinMemoryStorage {
-    backing: Arc<DirectoryStorage>,
     projection: Arc<Projection>,
     worker: ReconcileWorker,
 }
 
 impl DolphinMemoryStorage {
     pub(super) fn new(
-        backing: Arc<DirectoryStorage>,
         saves: &[Save<'_>],
         reconcile: impl for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Result<Self, Error> {
@@ -94,11 +92,7 @@ impl DolphinMemoryStorage {
                     .map_or(Ok(()), |projection| projection.commit())
             },
         )?;
-        Ok(Self {
-            backing,
-            projection,
-            worker,
-        })
+        Ok(Self { projection, worker })
     }
 
     fn entry(&self, path: &str) -> Result<MemoryFile, Error> {
@@ -115,7 +109,7 @@ impl fmt::Debug for DolphinMemoryStorage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DolphinMemoryStorage")
-            .field("backing", &self.backing)
+            .field("entries", &self.projection.entries.lock().len())
             .finish_non_exhaustive()
     }
 }

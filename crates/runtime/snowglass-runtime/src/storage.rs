@@ -364,12 +364,15 @@ fn parse_id(name: &str, value: &Value) -> Result<Uuid, String> {
 mod tests {
     use super::*;
     use snowglass_consolestorage::Save;
+    use snowglass_consolestorage::installable::artifacts::Artifact;
+    use snowglass_consolestorage::installable::{DepotType, IconHint};
     use snowglass_consolestorage::savegame::SaveDepotId;
     use snowglass_library::StorageKind;
     use snowglass_vfs::{
         CreateOptions, FilesystemPlan, FinalizationReason, OpenOptions, Permissions, Resource,
         ResourceOrigin, VfsError,
     };
+    use std::io::Read;
 
     #[tokio::test]
     async fn wiiu_launch_composes_save_before_immutable_nand() {
@@ -390,6 +393,16 @@ mod tests {
         };
         let file = nand.root().create("usr/title/immutable.bin").unwrap();
         assert_eq!(file.write_at(0, b"installed").unwrap(), 9);
+        nand.record(&Artifact::new(
+            "test-title".to_owned(),
+            DepotType::App,
+            Vec::new(),
+            "Test title".to_owned(),
+            None,
+            IconHint::Builtin(DepotType::App),
+        ))
+        .await
+        .unwrap();
 
         let arguments = serde_json::json!({
             "console": "NINTENDO_WIIU",
@@ -455,22 +468,6 @@ mod tests {
             .unwrap()
             .write(0, b"save")
             .unwrap();
-        assert_eq!(
-            std::fs::read(
-                manager
-                    .path(StorageKind::SaveRepo, "NINTENDO_WIIU", save_id)
-                    .join("usr/save/00050000/12345678/user/common/data.bin")
-            )
-            .unwrap(),
-            b"save"
-        );
-        assert!(
-            !manager
-                .path(StorageKind::Nand, "NINTENDO_WIIU", nand_id)
-                .join("usr/save/00050000/12345678/user/common/data.bin")
-                .exists()
-        );
-
         let forbidden = "/Mlc/usr/title/forbidden.bin".parse().unwrap();
         assert!(matches!(
             filesystem.create_file(&forbidden, CreateOptions::default()),
@@ -499,6 +496,25 @@ mod tests {
         else {
             unreachable!()
         };
+        let mut saved_bytes = Vec::new();
+        saves
+            .open_read("usr/save/00050000/12345678/user/common/data.bin")
+            .unwrap()
+            .read_to_end(&mut saved_bytes)
+            .unwrap();
+        assert_eq!(saved_bytes, b"save");
+        let ConsoleStorage::Nand(reopened_nand) = manager
+            .open(StorageKind::Nand, "NINTENDO_WIIU", nand_id)
+            .await
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(
+            !reopened_nand
+                .root()
+                .exists("usr/save/00050000/12345678/user/common/data.bin")
+        );
         let history = Save::new(saves.as_ref(), SaveDepotId(0x0005_0000_1234_5678))
             .history()
             .unwrap();
