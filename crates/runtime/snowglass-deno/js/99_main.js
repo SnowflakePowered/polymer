@@ -46,6 +46,9 @@ function dispatch(event) {
     case "emulatorInstance":
       emulator.dispatch(event.detail);
       break;
+    case "gameSaved":
+      consolestorage.gameSaved(event.detail);
+      break;
     default:
       throw new TypeError(`Unknown Snowglass event '${event?.type}'`);
   }

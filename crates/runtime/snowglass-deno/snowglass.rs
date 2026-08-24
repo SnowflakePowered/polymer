@@ -41,12 +41,6 @@ pub trait SnowglassHost: Send + Sync {
     ) -> ApiFuture<Value>;
     fn release_prepared_filesystem(&self, token: String) -> bool;
     fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>>;
-    fn consolestorage_game_saved(
-        &self,
-        kind: String,
-        platform: String,
-        id: String,
-    ) -> ApiFuture<Result<(), String>>;
     fn emulator_launch(
         &self,
         token: InstanceToken,
@@ -115,6 +109,11 @@ pub enum SnowglassNotification {
         result: Value,
     },
     EmulatorInstance(Value),
+    GameSaved {
+        kind: String,
+        platform: String,
+        id: String,
+    },
 }
 
 /// Cloneable native-to-JavaScript notification endpoint.
@@ -227,19 +226,6 @@ async fn op_consolestorage_set_label(
         },
     )
     .await
-}
-
-#[op2]
-async fn op_consolestorage_game_saved(
-    state: Rc<RefCell<OpState>>,
-    #[string] kind: String,
-    #[string] platform: String,
-    #[string] id: String,
-) -> Result<(), JsErrorBox> {
-    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
-    host.consolestorage_game_saved(kind, platform, id)
-        .await
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -403,7 +389,6 @@ deno_core::extension!(
         op_consolestorage_create,
         op_consolestorage_delete,
         op_consolestorage_set_label,
-        op_consolestorage_game_saved,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,
@@ -441,5 +426,13 @@ pub fn init(
     host: impl SnowglassHost + 'static,
 ) -> (deno_core::Extension, SnowglassNotificationSender) {
     let (sender, inbox) = notification_channel();
+    (snowglass_api::init(Arc::new(host), inbox), sender)
+}
+
+pub fn init_with_notifications<H: SnowglassHost + 'static>(
+    host: impl FnOnce(SnowglassNotificationSender) -> H,
+) -> (deno_core::Extension, SnowglassNotificationSender) {
+    let (sender, inbox) = notification_channel();
+    let host = host(sender.clone());
     (snowglass_api::init(Arc::new(host), inbox), sender)
 }

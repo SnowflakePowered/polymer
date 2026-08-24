@@ -6,7 +6,9 @@
 use crate::ConfigurationDefaults;
 use parking_lot::Mutex;
 use serde_json::Value;
-use snowglass_deno::snowglass::{ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost};
+use snowglass_deno::snowglass::{
+    ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
+};
 use snowglass_library::StorageManager;
 use std::{
     collections::HashMap,
@@ -259,6 +261,7 @@ pub struct FrontendServices {
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
     platform: Arc<dyn RuntimePlatform>,
+    notifications: SnowglassNotificationSender,
 }
 
 impl FrontendServices {
@@ -266,6 +269,7 @@ impl FrontendServices {
         plugins: Arc<snowglass_pluginhost::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
         platform: Arc<dyn RuntimePlatform>,
+        notifications: SnowglassNotificationSender,
     ) -> Self {
         Self {
             plugins,
@@ -273,6 +277,7 @@ impl FrontendServices {
             storage: crate::console_storage_manager(),
             prepared_filesystems: PreparedFilesystemStore::default(),
             platform,
+            notifications,
         }
     }
 
@@ -340,18 +345,20 @@ impl SnowglassHost for FrontendServices {
         let handle = self.plugins.handle();
         let storage = self.storage.clone();
         let prepared_filesystems = self.prepared_filesystems.clone();
+        let notifications = self.notifications.clone();
         Box::pin(async move {
-            let storage = match crate::launch_storage(storage, &path, &arguments).await {
-                Ok(storage) => storage,
-                Err(error) => {
-                    let error = snowglass_pluginhost::PluginInvocationError::new(
-                        "Error",
-                        "STORAGE_UNAVAILABLE",
-                        error,
-                    );
-                    return serde_json::json!({ "ok": false, "error": error });
-                }
-            };
+            let storage =
+                match crate::launch_storage(storage, &path, &arguments, notifications).await {
+                    Ok(storage) => storage,
+                    Err(error) => {
+                        let error = snowglass_pluginhost::PluginInvocationError::new(
+                            "Error",
+                            "STORAGE_UNAVAILABLE",
+                            error,
+                        );
+                        return serde_json::json!({ "ok": false, "error": error });
+                    }
+                };
             match handle
                 .invoke_with_storage_owned(&plugin, &path, arguments, storage)
                 .await
@@ -377,28 +384,6 @@ impl SnowglassHost for FrontendServices {
     fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>> {
         let storage = self.storage.clone();
         Box::pin(async move { crate::serve_console_storage(storage, request).await })
-    }
-
-    fn consolestorage_game_saved(
-        &self,
-        kind: String,
-        platform: String,
-        id: String,
-    ) -> ApiFuture<Result<(), String>> {
-        let storage = self.storage.clone();
-        Box::pin(async move {
-            let storage = storage.ok_or_else(|| "console storage is unavailable".to_owned())?;
-            let kind = kind
-                .parse::<snowglass_library::StorageKind>()
-                .map_err(|error| error.to_string())?;
-            let id = uuid::Uuid::parse_str(&id)
-                .map_err(|_| format!("`{id}` is not a console storage id"))?;
-            let volume = storage
-                .open(kind, &platform, id)
-                .await
-                .map_err(|error| error.to_string())?;
-            volume.game_saved().await.map_err(|error| error.to_string())
-        })
     }
 
     fn emulator_launch(
