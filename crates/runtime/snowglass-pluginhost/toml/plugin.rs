@@ -322,6 +322,12 @@ pub enum PackageError {
     InvalidCacheLabel(String),
     #[error("duplicate plugin cache '{0}'")]
     DuplicateCache(String),
+    #[error("theme main document must be a confined package-relative path: {}", .0.display())]
+    InvalidThemeMain(PathBuf),
+    #[error("theme debug serve command must not be empty")]
+    InvalidThemeServe,
+    #[error("theme debug URL must be an absolute HTTP(S) URL: {0}")]
+    InvalidThemeDebugUrl(String),
     #[error("the user-local cache directory is unavailable")]
     CacheStorageUnavailable,
     #[error(

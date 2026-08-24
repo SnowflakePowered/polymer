@@ -41,11 +41,11 @@ impl ShellApplication {
             && self.error.is_none()
             && let Some(window) = self.pending_window.take()
         {
-            let options = self
+            let mut options = self
                 .options
                 .take()
                 .expect("shell options are consumed exactly once");
-            let shell_document = load_shell_document(&options.ui_url).await;
+            let shell_document = options.theme.load_document().await;
             let statistics_recorder = self
                 .statistics_recorder
                 .take()

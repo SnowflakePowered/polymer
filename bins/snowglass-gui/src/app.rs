@@ -68,6 +68,7 @@ struct ShellCoordinator {
     shell_compositor: ShellCompositor,
     input: InputRouter,
     notifications: Option<SnowglassNotificationSender>,
+    _theme: crate::theme::SelectedTheme,
     startup_request: Option<serde_json::Value>,
     viewer: snowglass_renderer::cli::ViewerOptions,
 }
@@ -83,7 +84,7 @@ impl ShellCoordinator {
     ) -> Result<Self, Box<dyn Error>> {
         let ShellOptions {
             viewer: options,
-            ui_url: _,
+            theme,
             plugins: _,
             game_launch,
         } = options;
@@ -130,6 +131,7 @@ impl ShellCoordinator {
             shell_compositor,
             input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
             notifications: None,
+            _theme: theme,
             startup_request,
             viewer: options,
         };
@@ -240,24 +242,4 @@ fn unique_session() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("snowglass-{}-{nonce:x}", std::process::id())
-}
-
-async fn load_shell_document(url: &str) -> Result<ShellDocumentSource, Box<dyn Error>> {
-    let specifier = deno_core::ModuleSpecifier::parse(url)?;
-    let html = if specifier.scheme() == "file" {
-        let path = specifier
-            .to_file_path()
-            .map_err(|_| format!("invalid shell file URL: {url}"))?;
-        tokio::fs::read_to_string(path).await?
-    } else {
-        reqwest::get(specifier.clone())
-            .await?
-            .error_for_status()?
-            .text()
-            .await?
-    };
-    Ok(ShellDocumentSource {
-        html,
-        base_url: specifier.to_string(),
-    })
 }

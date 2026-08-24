@@ -226,9 +226,7 @@ impl Runtime {
         let document_url = ModuleSpecifier::parse(&source_name)?;
         start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
-        let storage_dir = std::env::var_os("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .map(|path| path.join("Snowglass").join("webstorage"));
+        let storage_dir = crate::theme::web_storage_dir();
         let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
             emulator_commands,
             input_commands,

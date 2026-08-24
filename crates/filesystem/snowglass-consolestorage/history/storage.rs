@@ -6,44 +6,11 @@ use tokio::io::AsyncRead;
 use uuid::Uuid;
 
 use super::{SaveVersioning, VOLUME_REF};
+use crate::storage::manifest::EMPTY_ARTIFACTS;
 use crate::{
-    ArtifactRegistry, ArtifactSummary, BoxFuture, ChangeSignal, DirectoryStorage, Error,
-    InstallResult, Metadata, MountableStorage, ReadDir, Storage, StorageFile, VolumeInfo,
-    VolumeStorage,
+    ArtifactRegistry, BoxFuture, ChangeSignal, DirectoryStorage, Error, InstallResult, Metadata,
+    MountableStorage, ReadDir, Storage, StorageFile, VolumeInfo, VolumeStorage,
 };
-
-#[derive(Debug)]
-struct EmptyArtifactRegistry;
-
-static EMPTY_ARTIFACTS: EmptyArtifactRegistry = EmptyArtifactRegistry;
-
-impl ArtifactRegistry for EmptyArtifactRegistry {
-    fn record<'a>(
-        &'a self,
-        _artifact: &'a crate::installable::artifacts::Artifact,
-    ) -> BoxFuture<'a, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn artifact<'a>(
-        &'a self,
-        _id: &'a str,
-    ) -> BoxFuture<'a, Result<Option<crate::installable::artifacts::Artifact>, Error>> {
-        Box::pin(async { Ok(None) })
-    }
-
-    fn contains<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Result<bool, Error>> {
-        Box::pin(async { Ok(false) })
-    }
-
-    fn forget<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
-    }
-}
 
 /// A directory-backed volume with a colocated Git history database.
 #[derive(Clone, Debug)]

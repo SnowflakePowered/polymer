@@ -40,10 +40,13 @@ impl StorageManager {
         }
 
         let id = Uuid::now_v7();
-        let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
         let storage = match kind {
-            StorageKind::Nand => ConsoleStorageBacking::Directory(storage),
+            StorageKind::Nand => ConsoleStorageBacking::Directory(
+                DirectoryStorage::new(self.path(kind, platform, id)).await?,
+            ),
             StorageKind::SaveRepo | StorageKind::MemoryCard => {
+                let storage =
+                    DirectoryStorage::new_unmanaged(self.path(kind, platform, id)).await?;
                 ConsoleStorageBacking::Versioned(VersionedStorage::new(storage, platform, id)?)
             }
         };
@@ -56,9 +59,9 @@ impl StorageManager {
         platform: &str,
         id: Uuid,
     ) -> Result<ConsoleStorage, Error> {
-        let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
         let storage = match kind {
             StorageKind::Nand => {
+                let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
                 let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
                 if metadata.platform != platform {
                     return Err(Error::Unsupported(format!(
@@ -69,6 +72,8 @@ impl StorageManager {
                 ConsoleStorageBacking::Directory(storage)
             }
             StorageKind::SaveRepo | StorageKind::MemoryCard => {
+                let storage =
+                    DirectoryStorage::new_unmanaged(self.path(kind, platform, id)).await?;
                 ConsoleStorageBacking::Versioned(VersionedStorage::new(storage, platform, id)?)
             }
         };
@@ -166,5 +171,38 @@ mod tests {
                 .path(StorageKind::MemoryCard, "PLATFORM", id)
                 .starts_with(root.path().join("memorycards"))
         );
+    }
+
+    #[tokio::test]
+    async fn versioned_storage_uses_git_metadata_without_a_manifest_database() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = StorageManager::new(root.path());
+        let created = manager
+            .create(
+                StorageKind::SaveRepo,
+                "NINTENDO_WII",
+                Some("Wii saves".to_owned()),
+            )
+            .await
+            .unwrap();
+        let info = created.metadata().await.unwrap();
+        let path = manager.path(StorageKind::SaveRepo, "NINTENDO_WII", info.id);
+
+        assert_eq!(info.label.as_deref(), Some("Wii saves"));
+        assert!(!path.join(".manifest.db").exists());
+        assert!(!path.join(".manifest.db-wal").exists());
+
+        std::fs::write(path.join(".manifest.db"), b"legacy").unwrap();
+        std::fs::write(path.join(".manifest.db-wal"), b"legacy").unwrap();
+        let reopened = manager
+            .open(StorageKind::SaveRepo, "NINTENDO_WII", info.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.metadata().await.unwrap().label.as_deref(),
+            Some("Wii saves")
+        );
+        assert!(!path.join(".manifest.db").exists());
+        assert!(!path.join(".manifest.db-wal").exists());
     }
 }
