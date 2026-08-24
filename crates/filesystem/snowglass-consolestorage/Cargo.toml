@@ -10,6 +10,7 @@ path = "lib.rs"
 
 [dependencies]
 async-trait.workspace = true
+aes = "0.8.4"
 atomic-write-file.workspace = true
 thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "tga"] }
@@ -20,6 +21,7 @@ vfs = "0.13.0"
 quick-xml = { version = "0.39.4", features = ["serialize"] }
 serde.workspace = true
 serde_json.workspace = true
+sha1 = "0.10.6"
 futures = { version = "0.3", features = []}
 gix.workspace = true
 blake3 = { version = "1", features = ["rayon"] }

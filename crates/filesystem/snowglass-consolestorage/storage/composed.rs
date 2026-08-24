@@ -164,12 +164,56 @@ impl MountableStorage for ComposedStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
         let from_owner = self.owner(from)?;
         let to_owner = self.owner(to)?;
-        if !Arc::ptr_eq(from_owner, to_owner) {
+        if Arc::ptr_eq(from_owner, to_owner) {
+            return from_owner.rename(from, to);
+        }
+
+        let metadata = from_owner.metadata(from)?;
+        if metadata.kind != crate::EntryKind::File {
             return Err(Error::Unsupported(
-                "rename crosses composed storage layers".to_owned(),
+                "renaming a directory across composed storage layers is unsupported".to_owned(),
             ));
         }
-        from_owner.rename(from, to)
+
+        // Stage the complete file beside its destination, then use the
+        // destination layer's native rename for the visible replacement. A
+        // guest never observes a partially copied file even when a rename
+        // crosses the composition boundary (for example Wii /tmp -> save data).
+        let (parent, name) = to.rsplit_once('/').unwrap_or(("", to));
+        let staged_name = format!(".{name}.snowglass-{}", uuid::Uuid::now_v7().simple());
+        let staged = Self::child(parent, &staged_name);
+        let copy = (|| {
+            let source = from_owner.open(from, false)?;
+            let target = to_owner.create(&staged)?;
+            let mut offset = 0_u64;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            while offset < metadata.len {
+                let remaining = usize::try_from((metadata.len - offset).min(buffer.len() as u64))
+                    .expect("a bounded buffer length fits usize");
+                let read = source.read_at(offset, &mut buffer[..remaining])?;
+                if read == 0 {
+                    return Err(Error::Unsupported(format!(
+                        "storage file `{from}` ended before its declared length"
+                    )));
+                }
+                target.write_all_at(offset, &buffer[..read])?;
+                offset += read as u64;
+            }
+            target.set_len(metadata.len)?;
+            target.flush()?;
+            target.sync()?;
+            to_owner.rename(&staged, to)
+        })();
+        if let Err(error) = copy {
+            let _ = to_owner.remove(&staged);
+            return Err(error);
+        }
+
+        // The destination is already complete and visible. Failure to clean
+        // the old temporary file must not turn a successful atomic publish
+        // into a guest-visible failed rename.
+        let _ = from_owner.remove(from);
+        Ok(())
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
@@ -284,13 +328,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_cross_layer_renames() {
-        let (_save_root, _nand_root, nand, saves) = wiiu().await;
+    async fn atomically_moves_files_across_layers() {
+        let (save_root, _nand_root, nand, saves) = wiiu().await;
+        nand.root()
+            .create_dir_all("usr/title/game")
+            .unwrap();
+        nand.root()
+            .create("usr/title/game/temporary.bin")
+            .unwrap()
+            .write_all_at(0, b"save data")
+            .unwrap();
         let composed = nand.compose(saves).unwrap();
 
-        assert!(matches!(
-            composed.rename("usr/save/a", "usr/title/a"),
-            Err(Error::Unsupported(_))
-        ));
+        composed
+            .rename(
+                "usr/title/game/temporary.bin",
+                "usr/save/game/data.bin",
+            )
+            .unwrap();
+
+        assert!(!nand.root().exists("usr/title/game/temporary.bin"));
+        assert_eq!(
+            std::fs::read(save_root.path().join("usr/save/game/data.bin")).unwrap(),
+            b"save data"
+        );
+        assert_eq!(
+            std::fs::read_dir(save_root.path().join("usr/save/game"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }

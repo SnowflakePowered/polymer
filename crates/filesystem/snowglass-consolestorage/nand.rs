@@ -35,8 +35,8 @@ pub trait VirtualNand: Send + Sync {
 
     fn root(&self) -> Arc<dyn VolumeStorage>;
 
-    /// Compose this immutable NAND with its writable save repository. The
-    /// returned storage is fixed for the lifetime of the emulating instance.
+    /// Compose this system NAND with its writable save repository. The returned
+    /// storage is fixed for the lifetime of the emulating instance.
     fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error>;
 
     /// The consolespec platform ID this NAND was created for.

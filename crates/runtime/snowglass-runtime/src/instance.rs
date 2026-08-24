@@ -1304,7 +1304,17 @@ impl InstanceLifecycle {
             .spawn(move || {
                 let exit = wait.wait().map_or_else(
                     |error| InstanceExit::Failed(Arc::from(error.to_string())),
-                    |()| InstanceExit::Natural,
+                    |()| {
+                        match wait.exit_code() {
+                            Ok(code) => tracing::info!(
+                                "snowglass: emulator process exited with code 0x{code:08x}"
+                            ),
+                            Err(error) => tracing::warn!(
+                                "snowglass: failed to read emulator process exit code: {error}"
+                            ),
+                        }
+                        InstanceExit::Natural
+                    },
                 );
                 if let Some(lifecycle) = lifecycle.upgrade() {
                     lifecycle.finish(exit);

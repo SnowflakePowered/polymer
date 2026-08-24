@@ -11,3 +11,4 @@
 .smoke-artifacts/
 s*.log
 smoke-*.png
+/.tmp-dolphin-debug/

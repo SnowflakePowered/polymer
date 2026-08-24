@@ -140,6 +140,12 @@ impl SessionController {
         let token = active.token;
         drop(active.instance);
         if let Some(filesystem) = active.filesystem.take() {
+            if let Ok(path) = snowglass_vfs::VfsPathBuf::new("/User/Logs/dolphin.log") {
+                let projected = filesystem.endpoint().project(path.as_path());
+                if let Ok(log) = std::fs::read_to_string(projected) {
+                    tracing::info!("snowglass: Dolphin log before unmount:\n{log}");
+                }
+            }
             filesystem
                 .finish(reason)
                 .map_err(|error| error.to_string())?;
