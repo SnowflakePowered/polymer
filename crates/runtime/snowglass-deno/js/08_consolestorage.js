@@ -1,45 +1,22 @@
 import {
   op_consolestorage_create,
   op_consolestorage_delete,
-  op_consolestorage_game_saved,
   op_consolestorage_list,
   op_consolestorage_set_label,
 } from "ext:core/ops";
 
 export function createConsoleStorage() {
   const storageData = new WeakMap();
-  const watching = new WeakSet();
+  const storages = new Set();
   const deleted = new WeakSet();
   const internal = Symbol("Snowglass.consolestorage.Storage");
-
-  async function receiveGameSaved(storage) {
-    const data = storageData.get(storage);
-    while (!deleted.has(storage)) {
-      try {
-        await op_consolestorage_game_saved(data.kind, data.platform, data.id);
-      } catch (error) {
-        if (!deleted.has(storage)) {
-          storage.dispatchEvent(new CustomEvent("error", { detail: error }));
-        }
-        return;
-      }
-      if (!deleted.has(storage)) storage.dispatchEvent(new Event("gamesaved"));
-    }
-  }
 
   class Storage extends EventTarget {
     constructor(token, data) {
       super();
       if (token !== internal) throw new TypeError("Use Snowglass.consolestorage.Storage.create()");
       storageData.set(this, Object.freeze({ ...data }));
-    }
-
-    addEventListener(type, callback, options) {
-      super.addEventListener(type, callback, options);
-      if (String(type) === "gamesaved" && !watching.has(this)) {
-        watching.add(this);
-        void receiveGameSaved(this);
-      }
+      storages.add(this);
     }
 
     static async create(kind, platform, options = undefined) {
@@ -76,12 +53,22 @@ export function createConsoleStorage() {
     async delete() {
       const data = storageData.get(this);
       deleted.add(this);
+      storages.delete(this);
       await op_consolestorage_delete(data.kind, data.platform, data.id);
     }
 
     toJSON() { return { ...storageData.get(this) }; }
   }
 
+  function gameSaved(detail) {
+    for (const storage of storages) {
+      const data = storageData.get(storage);
+      if (data.kind === detail.kind && data.platform === detail.platform && data.id === detail.id) {
+        storage.dispatchEvent(new Event("gamesaved"));
+      }
+    }
+  }
+
   const ConsoleStorage = Object.freeze({ Storage });
-  return Object.freeze({ ConsoleStorage });
+  return Object.freeze({ ConsoleStorage, gameSaved });
 }

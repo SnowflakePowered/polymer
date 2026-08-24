@@ -28,7 +28,7 @@ snowglass-statistics.workspace = true
 snowglass-vfs.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.53.0", features = ["rt", "sync"] }
+tokio = { version = "1.53.0", features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true
 url = "2"
 uuid = "1.24.1"

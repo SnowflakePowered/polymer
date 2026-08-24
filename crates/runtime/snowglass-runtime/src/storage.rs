@@ -1,16 +1,193 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use consolespec::MachineSpec;
+use parking_lot::Mutex;
 use serde_json::Value;
+use snowglass_consolestorage::SaveRepo;
 use snowglass_consolestorage::impls::dreamcast::DreamcastMemoryCard;
 use snowglass_consolestorage::impls::gamecube::GameCubeMemoryCard;
 use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
 use snowglass_consolestorage::impls::ps2::Playstation2MemoryCard;
 use snowglass_consolestorage::savegame::{Package, SaveGameSink};
+use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
 use snowglass_library::{ConsoleStorage, StorageKind, StorageManager};
 use snowglass_pluginhost::StorageFactories;
-use snowglass_vfs::{MemoryCardStorageFactory, NandVolumeFactory};
+use snowglass_vfs::{
+    CompositeResourceLease, FinalizationReason, Materialized, MemoryCardStorageFactory,
+    NandVolumeFactory, ResourceFactory, ResourceLease, VfsError, VfsResult, Volume,
+};
 use uuid::Uuid;
+
+struct SaveWatchFactory {
+    inner: Arc<dyn ResourceFactory<dyn Volume>>,
+    saves: Arc<dyn SaveRepo>,
+    notification: GameSavedNotification,
+}
+
+impl SaveWatchFactory {
+    fn new(
+        inner: Arc<dyn ResourceFactory<dyn Volume>>,
+        saves: Arc<dyn SaveRepo>,
+        notification: GameSavedNotification,
+    ) -> Self {
+        Self {
+            inner,
+            saves,
+            notification,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GameSavedNotification {
+    sender: SnowglassNotificationSender,
+    kind: StorageKind,
+    platform: String,
+    id: Uuid,
+}
+
+impl GameSavedNotification {
+    fn publish(&self) {
+        let notification = SnowglassNotification::GameSaved {
+            kind: self.kind.as_str().to_owned(),
+            platform: self.platform.clone(),
+            id: self.id.simple().to_string(),
+        };
+        if self.sender.send(notification).is_err() {
+            tracing::debug!("gamesaved notification receiver is unavailable");
+        }
+    }
+}
+
+impl ResourceFactory<dyn Volume> for SaveWatchFactory {
+    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        // Register before the emulator can access the mount so no save write
+        // can race watcher creation.
+        let watcher = self.saves.watch_saves(&[]).map_err(console_storage_error)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let materialized = self.inner.materialize()?;
+        let saves = self.saves.clone();
+        let notification = self.notification.clone();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let thread = match std::thread::Builder::new()
+            .name("snowglass-save-history".to_owned())
+            .spawn(move || {
+                runtime.block_on(async move {
+                    // Reconcile once on mount as well. This recovers a save
+                    // left canonical but uncommitted by an interrupted session.
+                    checkpoint_saves_logged(&*saves).await;
+                    loop {
+                        tokio::select! {
+                            _ = &mut stopped => {
+                                let changed = saves.checkpoint_saves().await?;
+                                if changed {
+                                    notification.publish();
+                                }
+                                return Ok(());
+                            },
+                            _ = watcher.changed() => {
+                                if checkpoint_saves_logged(&*saves).await {
+                                    notification.publish();
+                                }
+                            },
+                        }
+                    }
+                })
+            }) {
+            Ok(thread) => thread,
+            Err(source) => {
+                materialized
+                    .lease
+                    .finalize(FinalizationReason::LaunchFailed)?;
+                return Err(VfsError::Io(source));
+            }
+        };
+        let history_lease: Arc<dyn ResourceLease> = Arc::new(SaveWatchingLease {
+            task: Mutex::new(SaveWatchingTask {
+                stop: Some(stop),
+                thread: Some(thread),
+            }),
+        });
+
+        Ok(Materialized {
+            backend: materialized.backend,
+            // Composite leases finalize in reverse: flush the mounted storage,
+            // then stop the watcher after one final synchronous checkpoint.
+            lease: CompositeResourceLease::new(vec![history_lease, materialized.lease]),
+        })
+    }
+}
+
+struct SaveWatchingLease {
+    task: Mutex<SaveWatchingTask>,
+}
+
+struct SaveWatchingTask {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<Result<(), snowglass_consolestorage::Error>>>,
+}
+
+impl SaveWatchingLease {
+    fn stop(&self) -> VfsResult<()> {
+        let (stop, thread) = {
+            let mut task = self.task.lock();
+            (task.stop.take(), task.thread.take())
+        };
+        let Some(thread) = thread else {
+            return Ok(());
+        };
+        if let Some(stop) = stop {
+            let _ = stop.send(());
+        }
+        thread
+            .join()
+            .map_err(|_| VfsError::Unsupported("save history watcher panicked".to_owned()))?
+            .map_err(console_storage_error)
+    }
+}
+
+impl ResourceLease for SaveWatchingLease {
+    fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
+        self.stop()
+    }
+}
+
+impl Drop for SaveWatchingLease {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+async fn checkpoint_saves_logged(saves: &dyn SaveRepo) -> bool {
+    match saves.checkpoint_saves().await {
+        Ok(changed) => changed,
+        Err(error) => {
+            tracing::error!(%error, "failed to checkpoint console save history");
+            false
+        }
+    }
+}
+
+fn console_storage_error(error: snowglass_consolestorage::Error) -> VfsError {
+    match error {
+        snowglass_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
+        error => VfsError::Unsupported(error.to_string()),
+    }
+}
+
+fn watch_save_history(
+    factory: Arc<dyn ResourceFactory<dyn Volume>>,
+    saves: Arc<dyn SaveRepo>,
+    notification: GameSavedNotification,
+) -> Arc<dyn ResourceFactory<dyn Volume>> {
+    Arc::new(SaveWatchFactory::new(
+        factory,
+        saves,
+        notification,
+    ))
+}
 
 fn is_setup_launch(export_path: &[String]) -> bool {
     matches!(export_path, [name] if name == "setupLaunch")
@@ -21,6 +198,7 @@ pub async fn launch_storage(
     manager: Option<Arc<StorageManager>>,
     export_path: &[String],
     arguments: &[Value],
+    notifications: SnowglassNotificationSender,
 ) -> Result<StorageFactories, String> {
     if !is_setup_launch(export_path) {
         return Ok(BTreeMap::new());
@@ -86,14 +264,25 @@ pub async fn launch_storage(
             let (ConsoleStorage::SaveRepo(save), ConsoleStorage::Nand(nand)) = (save, nand) else {
                 return Err(format!("storage device '{name}' requires [save, nand]"));
             };
-            let composed = nand.compose(save).map_err(|error| error.to_string())?;
+            let composed = nand
+                .compose(save.clone())
+                .map_err(|error| error.to_string())?;
             storage.insert(
                 name.clone(),
-                Arc::new(NandVolumeFactory::new(
-                    nand,
-                    composed,
-                    vec![save_id, nand_id],
-                )),
+                watch_save_history(
+                    Arc::new(NandVolumeFactory::new(
+                        nand,
+                        composed,
+                        vec![save_id, nand_id],
+                    )),
+                    save,
+                    GameSavedNotification {
+                        sender: notifications.clone(),
+                        kind: StorageKind::SaveRepo,
+                        platform: console.to_owned(),
+                        id: save_id,
+                    },
+                ),
             );
             continue;
         }
@@ -137,9 +326,19 @@ pub async fn launch_storage(
                             format!("storage `{id}` is not a {console} memory card")
                         })?;
                         let primary = vec![card.infer_save_depot(package)];
+                        let saves: Arc<dyn SaveRepo> = card.clone();
                         storage.insert(
                             name.clone(),
-                            Arc::new(MemoryCardStorageFactory::new(card, primary, id)),
+                            watch_save_history(
+                                Arc::new(MemoryCardStorageFactory::new(card, primary, id)),
+                                saves,
+                                GameSavedNotification {
+                                    sender: notifications.clone(),
+                                    kind: StorageKind::MemoryCard,
+                                    platform: console.to_owned(),
+                                    id,
+                                },
+                            ),
                         );
                     }};
                 }
@@ -168,9 +367,12 @@ fn parse_id(name: &str, value: &Value) -> Result<Uuid, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snowglass_consolestorage::Save;
+    use snowglass_consolestorage::savegame::SaveDepotId;
     use snowglass_library::StorageKind;
     use snowglass_vfs::{
-        CreateOptions, FilesystemPlan, OpenOptions, Permissions, Resource, ResourceOrigin, VfsError,
+        CreateOptions, FilesystemPlan, FinalizationReason, OpenOptions, Permissions, Resource,
+        ResourceOrigin, VfsError,
     };
     #[tokio::test]
     async fn wiiu_launch_composes_save_before_immutable_nand() {
@@ -196,10 +398,12 @@ mod tests {
             "console": "NINTENDO_WIIU",
             "storage": { "mlc": [save_id, nand_id] },
         });
+        let (notifications, mut saved) = tokio::sync::mpsc::unbounded_channel();
         let factories = launch_storage(
             Some(manager.clone()),
             &["setupLaunch".to_owned()],
             &[arguments],
+            notifications,
         )
         .await
         .unwrap();
@@ -228,7 +432,17 @@ mod tests {
         assert_eq!(file.read(0, &mut contents).unwrap(), contents.len());
         assert_eq!(&contents, b"installed");
 
-        let save_file = "/Mlc/usr/save/runtime.bin".parse().unwrap();
+        for directory in [
+            "/Mlc/usr/save/00050000",
+            "/Mlc/usr/save/00050000/12345678",
+            "/Mlc/usr/save/00050000/12345678/user",
+            "/Mlc/usr/save/00050000/12345678/user/common",
+        ] {
+            filesystem.create_dir(&directory.parse().unwrap()).unwrap();
+        }
+        let save_file = "/Mlc/usr/save/00050000/12345678/user/common/data.bin"
+            .parse()
+            .unwrap();
         filesystem
             .create_file(&save_file, CreateOptions::default())
             .unwrap();
@@ -248,7 +462,7 @@ mod tests {
             std::fs::read(
                 manager
                     .path(StorageKind::SaveRepo, "NINTENDO_WIIU", save_id)
-                    .join("usr/save/runtime.bin")
+                    .join("usr/save/00050000/12345678/user/common/data.bin")
             )
             .unwrap(),
             b"save"
@@ -256,7 +470,7 @@ mod tests {
         assert!(
             !manager
                 .path(StorageKind::Nand, "NINTENDO_WIIU", nand_id)
-                .join("usr/save/runtime.bin")
+                .join("usr/save/00050000/12345678/user/common/data.bin")
                 .exists()
         );
 
@@ -265,5 +479,36 @@ mod tests {
             filesystem.create_file(&forbidden, CreateOptions::default()),
             Err(VfsError::PermissionDenied(_))
         ));
+
+        // Finalization flushes the mounted save storage before the host-owned
+        // watcher performs its last checkpoint.
+        filesystem
+            .finalize(FinalizationReason::ProcessExited)
+            .unwrap();
+        assert!(matches!(
+            saved.try_recv().unwrap(),
+            SnowglassNotification::GameSaved {
+                kind,
+                platform,
+                id: notified_id,
+            } if kind == "saveRepo"
+                && platform == "NINTENDO_WIIU"
+                && notified_id == save_id.simple().to_string()
+        ));
+        let ConsoleStorage::SaveRepo(saves) = manager
+            .open(StorageKind::SaveRepo, "NINTENDO_WIIU", save_id)
+            .await
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let history = Save::new(saves.as_ref(), SaveDepotId(0x0005_0000_1234_5678))
+            .history()
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].operation,
+            snowglass_consolestorage::SaveCommitOperation::InitialImport
+        );
     }
 }
