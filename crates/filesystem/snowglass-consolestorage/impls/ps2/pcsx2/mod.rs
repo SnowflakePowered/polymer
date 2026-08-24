@@ -394,13 +394,6 @@ impl Storage for Pcsx2MemoryStorage {
     fn watch(&self, _paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
         Ok(None)
     }
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.backing.label()
-    }
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.backing.set_label(label)
-    }
-
     fn install_file<'a>(
         &'a self,
         mut source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,

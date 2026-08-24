@@ -25,15 +25,15 @@ use crate::savegame::{
 use crate::savegroups::TARGET_CAPACITY_PERCENT;
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
-    SaveRepo, Storage, VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage, SaveRepo,
+    SaveVersioning, Storage, VersionedStorage, VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
 
 #[derive(Clone)]
 pub struct GameCubeMemoryCard {
-    storage: Arc<DirectoryStorage>,
+    storage: Arc<VersionedStorage>,
     id: Uuid,
 }
 
@@ -44,13 +44,17 @@ impl VolumeOverlay for GameCubeMemoryCard {
 }
 
 #[async_trait::async_trait]
-impl SaveRepo for GameCubeMemoryCard {}
+impl SaveRepo for GameCubeMemoryCard {
+    fn versioning(&self) -> &SaveVersioning {
+        self.storage.versioning()
+    }
+}
 
 impl GameCubeMemoryCard {
     pub const PLATFORM: &str = "NINTENDO_GCN";
 
     pub async fn new_empty(
-        storage: DirectoryStorage,
+        storage: VersionedStorage,
         id: Uuid,
         label: Option<String>,
     ) -> Result<Self, Error> {
@@ -60,7 +64,7 @@ impl GameCubeMemoryCard {
         Ok(Self { storage, id })
     }
 
-    pub async fn open(storage: DirectoryStorage) -> Result<Self, Error> {
+    pub async fn open(storage: VersionedStorage) -> Result<Self, Error> {
         let storage = Arc::new(storage);
         let identity = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         if identity.platform != Self::PLATFORM {
@@ -222,7 +226,7 @@ impl GameCubeMemoryCard {
                 return Ok(());
             }
         }
-        let path = self.storage.root().join(path);
+        let path = self.storage.directory().root().join(path);
         let mut output = AtomicWriteFile::open(&path).map_err(|source| Error::io(&path, source))?;
         output
             .write_all(bytes)
@@ -332,7 +336,7 @@ impl MemoryCard for GameCubeMemoryCard {
         let reconcile = move |saves: &[Save<'_>]| card.reconcile(region, &projected_paths, saves);
         let storage: Arc<dyn MountableStorage> = match format {
             "dolphin" => Arc::new(DolphinMemoryStorage::new(
-                self.storage.clone(),
+                self.storage.directory(),
                 &projected,
                 reconcile,
             )?),
@@ -455,6 +459,7 @@ impl SaveGameSink for GameCubeMemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DirectoryStorage;
 
     use crate::impls::memorycard::RawMemoryCardImage;
 
@@ -469,7 +474,12 @@ mod tests {
     #[tokio::test]
     async fn projections_keep_regions_strictly_separate() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            GameCubeMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = GameCubeMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -508,7 +518,12 @@ mod tests {
     #[tokio::test]
     async fn dolphin_writes_are_visible_in_raw_projection() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            GameCubeMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = GameCubeMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -536,7 +551,12 @@ mod tests {
     #[tokio::test]
     async fn selection_keeps_multidisc_saves_and_twenty_percent_free() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            GameCubeMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = GameCubeMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -575,7 +595,12 @@ mod tests {
     #[tokio::test]
     async fn raw_writes_are_visible_in_dolphin_projection() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            GameCubeMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = GameCubeMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -616,7 +641,12 @@ mod tests {
     #[tokio::test]
     async fn projections_reject_cross_region_writes() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            GameCubeMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = GameCubeMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();

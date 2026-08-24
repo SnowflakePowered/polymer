@@ -245,14 +245,6 @@ impl Storage for DolphinMemoryStorage {
         Ok(())
     }
 
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.backing.label()
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.backing.set_label(label)
-    }
-
     fn install_file<'a>(
         &'a self,
         mut source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,

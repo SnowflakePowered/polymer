@@ -27,14 +27,14 @@ use crate::savegame::{
 use crate::savegroups::{DREAMCAST_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, Storage,
-    VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, SaveVersioning, Storage,
+    VersionedStorage, VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
 #[derive(Clone)]
 pub struct DreamcastMemoryCard {
-    storage: Arc<DirectoryStorage>,
+    storage: Arc<VersionedStorage>,
 }
 
 impl VolumeOverlay for DreamcastMemoryCard {
@@ -44,13 +44,17 @@ impl VolumeOverlay for DreamcastMemoryCard {
 }
 
 #[async_trait::async_trait]
-impl SaveRepo for DreamcastMemoryCard {}
+impl SaveRepo for DreamcastMemoryCard {
+    fn versioning(&self) -> &SaveVersioning {
+        self.storage.versioning()
+    }
+}
 
 impl DreamcastMemoryCard {
     pub const PLATFORM: &str = "SEGA_DC";
 
     pub async fn new_empty(
-        storage: DirectoryStorage,
+        storage: VersionedStorage,
         id: Uuid,
         label: Option<String>,
     ) -> Result<Self, Error> {
@@ -60,7 +64,7 @@ impl DreamcastMemoryCard {
         Ok(Self { storage })
     }
 
-    pub async fn open(storage: DirectoryStorage) -> Result<Self, Error> {
+    pub async fn open(storage: VersionedStorage) -> Result<Self, Error> {
         let storage = Arc::new(storage);
         let identity = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         if identity.platform != Self::PLATFORM {
@@ -115,13 +119,13 @@ impl DreamcastMemoryCard {
                     .open_read(&entry.path)
                     .and_then(|mut file| {
                         file.read_to_end(&mut vmi)
-                            .map_err(|source| Error::io(self.storage.root(), source))?;
+                            .map_err(|source| Error::io(self.storage.directory().root(), source))?;
                         Ok(())
                     })
                     .and_then(|()| self.storage.open_read(&vms_path))
                     .and_then(|mut file| {
                         file.read_to_end(&mut vms)
-                            .map_err(|source| Error::io(self.storage.root(), source))?;
+                            .map_err(|source| Error::io(self.storage.directory().root(), source))?;
                         Ok(())
                     })
                     .and_then(|()| Save::new(vmi, vms).map_err(Error::from));
@@ -271,7 +275,7 @@ impl DreamcastMemoryCard {
                 return Ok(());
             }
         }
-        let path = self.storage.root().join(path);
+        let path = self.storage.directory().root().join(path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| Error::io(parent, source))?;
         }
@@ -549,6 +553,7 @@ impl SaveGameSink for DreamcastMemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DirectoryStorage;
     use crate::impls::memorycard::RawMemoryCardImage;
 
     fn fixture(file_name: [u8; 12], resource: [u8; 8], blocks: usize) -> Save<'static> {
@@ -572,7 +577,12 @@ mod tests {
     #[tokio::test]
     async fn canonical_saves_are_grouped_by_product_id_and_project_to_raw() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            DreamcastMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = DreamcastMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -596,7 +606,12 @@ mod tests {
     #[tokio::test]
     async fn selection_keeps_whole_product_groups() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            DreamcastMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = DreamcastMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -615,7 +630,12 @@ mod tests {
     #[tokio::test]
     async fn selection_includes_savegroup_products_in_one_vmu() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            DreamcastMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = DreamcastMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();
@@ -656,7 +676,12 @@ mod tests {
     #[tokio::test]
     async fn new_raw_saves_are_assigned_to_the_primary_product() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
+        let storage = VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            DreamcastMemoryCard::PLATFORM,
+            Uuid::nil(),
+        )
+        .unwrap();
         let card = DreamcastMemoryCard::new_empty(storage, Uuid::nil(), None)
             .await
             .unwrap();

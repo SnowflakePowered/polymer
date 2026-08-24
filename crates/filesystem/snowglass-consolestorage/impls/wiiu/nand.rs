@@ -8,7 +8,8 @@ use crate::savegame::{
 use crate::storage::{ChangeSignal, VolumeOverlay};
 use crate::{
     BoxFuture, ComposedStorage, EntryKind, Error, MountableStorage, Permissions, PermissionsTable,
-    SaveRepo, Storage, VolumeStorage, ensure_structure, requires_structure,
+    SaveRepo, SaveVersioning, Storage, VersionedStorage, VolumeStorage, ensure_structure,
+    requires_structure,
 };
 use async_trait::async_trait;
 use futures::{FutureExt, StreamExt};
@@ -39,7 +40,7 @@ pub struct WiiUNand {
 
 #[derive(Debug)]
 pub struct WiiUSaveRepo {
-    root: Arc<dyn VolumeStorage>,
+    root: Arc<VersionedStorage>,
 }
 
 impl VolumeOverlay for WiiUSaveRepo {
@@ -181,12 +182,12 @@ impl WiiUNand {
         path == Self::SAVE_ROOT || path.starts_with("usr/save/")
     }
 
-    pub async fn new_save_repo<St: VolumeStorage + 'static>(
-        storage: St,
+    pub async fn new_save_repo(
+        storage: VersionedStorage,
         id: Uuid,
         label: Option<String>,
     ) -> Result<Arc<dyn SaveRepo>, Error> {
-        let storage: Arc<dyn VolumeStorage> = Arc::new(storage);
+        let storage = Arc::new(storage);
         storage.create_dir_all(Self::SAVE_ROOT)?;
         // Mii Maker save folders {0x500101004A000, 0x500101004A100, 0x500101004A200}.
         storage.create_dir_all("usr/save/00050010/1004a000/user/common/db")?;
@@ -196,10 +197,8 @@ impl WiiUNand {
         Ok(Arc::new(WiiUSaveRepo { root: storage }))
     }
 
-    pub async fn open_save_repo<St: VolumeStorage + 'static>(
-        storage: St,
-    ) -> Result<Arc<dyn SaveRepo>, Error> {
-        let storage: Arc<dyn VolumeStorage> = Arc::new(storage);
+    pub async fn open_save_repo(storage: VersionedStorage) -> Result<Arc<dyn SaveRepo>, Error> {
+        let storage = Arc::new(storage);
         let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         if metadata.platform != Self::PLATFORM {
             return Err(Error::Unsupported(format!(
@@ -212,7 +211,11 @@ impl WiiUNand {
 }
 
 #[async_trait]
-impl SaveRepo for WiiUSaveRepo {}
+impl SaveRepo for WiiUSaveRepo {
+    fn versioning(&self) -> &SaveVersioning {
+        self.root.versioning()
+    }
+}
 
 impl WiiUSaveRepo {
     const SAVE_ROOT: &str = WiiUNand::SAVE_ROOT;

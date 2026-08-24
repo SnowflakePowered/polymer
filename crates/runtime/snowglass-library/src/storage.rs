@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use snowglass_consolestorage::{
-    ConsoleStorage, DirectoryStorage, Error, StorageKind, VolumeInfo, VolumeStorage,
+    ConsoleStorage, ConsoleStorageBacking, DirectoryStorage, Error, StorageKind, VersionedStorage,
+    VolumeInfo, VolumeStorage,
 };
 use uuid::Uuid;
 
@@ -40,6 +41,12 @@ impl StorageManager {
 
         let id = Uuid::now_v7();
         let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
+        let storage = match kind {
+            StorageKind::Nand => ConsoleStorageBacking::Directory(storage),
+            StorageKind::SaveRepo | StorageKind::MemoryCard => {
+                ConsoleStorageBacking::Versioned(VersionedStorage::new(storage, platform, id)?)
+            }
+        };
         ConsoleStorage::create(kind, platform, storage, id, label).await
     }
 
@@ -50,15 +57,21 @@ impl StorageManager {
         id: Uuid,
     ) -> Result<ConsoleStorage, Error> {
         let storage = DirectoryStorage::new(self.path(kind, platform, id)).await?;
-        let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
-
-        if metadata.platform != platform {
-            return Err(Error::Unsupported(format!(
-                "`{storage:?}` is a {} volume",
-                metadata.platform
-            )));
-        }
-
+        let storage = match kind {
+            StorageKind::Nand => {
+                let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
+                if metadata.platform != platform {
+                    return Err(Error::Unsupported(format!(
+                        "`{storage:?}` is a {} volume",
+                        metadata.platform
+                    )));
+                }
+                ConsoleStorageBacking::Directory(storage)
+            }
+            StorageKind::SaveRepo | StorageKind::MemoryCard => {
+                ConsoleStorageBacking::Versioned(VersionedStorage::new(storage, platform, id)?)
+            }
+        };
         ConsoleStorage::open(kind, storage).await
     }
 

@@ -1,5 +1,6 @@
 mod console;
 pub mod error;
+pub mod history;
 pub mod impls;
 pub mod installable;
 pub mod structure;
@@ -10,8 +11,12 @@ pub mod savegame;
 mod savegroups;
 mod storage;
 
-pub use console::{ConsoleStorage, Nand, StorageKind};
+pub use console::{ConsoleStorage, ConsoleStorageBacking, Nand, StorageKind};
 pub use error::Error;
+pub use history::{
+    AttachmentInfo, DeletedSaveInfo, Save, SaveAttachmentKind, SaveCommit, SaveCommitId,
+    SaveCommitInfo, SaveCommitOperation, SaveVersioning, VersionedStorage,
+};
 
 pub use save_repo::SaveRepo;
 pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};

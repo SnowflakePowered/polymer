@@ -134,14 +134,6 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         Ok(())
     }
 
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.backing.storage().label()
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.backing.storage().set_label(label)
-    }
-
     fn install_file<'a>(
         &'a self,
         _source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,

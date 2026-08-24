@@ -1,5 +1,5 @@
 /// A unique ID for a save.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct SaveDepotId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

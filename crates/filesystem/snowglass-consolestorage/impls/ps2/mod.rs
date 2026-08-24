@@ -157,7 +157,7 @@ impl SaveDataHandle {
 /// files and raw filesystem structures are materialized by [`MemoryCard::view`].
 #[derive(Clone)]
 pub struct Playstation2MemoryCard {
-    storage: Arc<DirectoryStorage>,
+    storage: Arc<crate::VersionedStorage>,
 }
 
 impl VolumeOverlay for Playstation2MemoryCard {
@@ -167,13 +167,17 @@ impl VolumeOverlay for Playstation2MemoryCard {
 }
 
 #[async_trait::async_trait]
-impl SaveRepo for Playstation2MemoryCard {}
+impl SaveRepo for Playstation2MemoryCard {
+    fn versioning(&self) -> &crate::SaveVersioning {
+        self.storage.versioning()
+    }
+}
 
 impl Playstation2MemoryCard {
     pub const PLATFORM: &str = "SONY_PS2";
 
     pub async fn new_empty(
-        storage: DirectoryStorage,
+        storage: crate::VersionedStorage,
         id: Uuid,
         label: Option<String>,
     ) -> Result<Self, Error> {
@@ -183,7 +187,7 @@ impl Playstation2MemoryCard {
         Ok(Self { storage })
     }
 
-    pub async fn open(storage: DirectoryStorage) -> Result<Self, Error> {
+    pub async fn open(storage: crate::VersionedStorage) -> Result<Self, Error> {
         let storage = Arc::new(storage);
         let identity = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         if identity.platform != Self::PLATFORM {
@@ -333,7 +337,7 @@ impl Playstation2MemoryCard {
     fn write_save(&self, save: &Save<'_>) -> Result<(), Error> {
         let handle = SaveDataHandle::from_name(save.name_bytes())
             .ok_or_else(|| Error::InvalidPath(save.name().into_owned()))?;
-        let path = self.storage.root().join(handle.path());
+        let path = self.storage.directory().root().join(handle.path());
         let mut output = AtomicWriteFile::open(&path).map_err(|source| Error::io(&path, source))?;
         output
             .write_all(save.as_bytes())
@@ -439,7 +443,7 @@ impl MemoryCard for Playstation2MemoryCard {
                 let card = self.clone();
                 let owned = Arc::new(Mutex::new(projected));
                 Arc::new(Pcsx2MemoryStorage::new(
-                    self.storage.clone(),
+                    self.storage.directory(),
                     CAPACITY_BLOCKS,
                     saves,
                     move |saves| {
@@ -574,6 +578,173 @@ impl SaveGameSink for Playstation2MemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DirectoryStorage;
+
+    async fn versioned(path: &std::path::Path, id: Uuid) -> crate::VersionedStorage {
+        crate::VersionedStorage::new(
+            DirectoryStorage::new(path).await.unwrap(),
+            Playstation2MemoryCard::PLATFORM,
+            id,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn git_history_restores_attaches_copies_and_undeletes_saves() {
+        let source_directory = tempfile::tempdir().unwrap();
+        let source_id = Uuid::now_v7();
+        let source_storage = versioned(source_directory.path(), source_id).await;
+        let source = Playstation2MemoryCard::new_empty(source_storage, source_id, None)
+            .await
+            .unwrap();
+        let depot = SaveDataHandle::depot_id_from_serial("SLUS-12345");
+
+        source
+            .write_save(
+                &Save::from_files("BASLUS-12345", &[], [("data.bin", &[][..], &b"first"[..])])
+                    .unwrap(),
+            )
+            .unwrap();
+        let first = source.save(depot).checkpoint().await.unwrap().unwrap();
+        let journal_path = source_directory
+            .path()
+            .join(".git/snowglass-transaction.json");
+        std::fs::write(
+            &journal_path,
+            serde_json::to_vec(&serde_json::json!({
+                "depot": depot.0,
+                "old": first.id.to_string(),
+                "target": first.id.to_string(),
+                "screenshot": null,
+                "icon": null,
+                "note": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(source_directory.path().join("card/BASLUS-12345.psu")).unwrap();
+        assert!(source.save(depot).checkpoint().await.unwrap().is_none());
+        assert!(source.storage.exists("card/BASLUS-12345.psu"));
+        assert!(!journal_path.exists());
+
+        source
+            .write_save(
+                &Save::from_files("BASLUS-12345", &[], [("data.bin", &[][..], &b"second"[..])])
+                    .unwrap(),
+            )
+            .unwrap();
+        let second = source.save(depot).checkpoint().await.unwrap().unwrap();
+        assert_eq!(source.save(depot).history().unwrap().len(), 2);
+        assert_eq!(second.parent, Some(first.id));
+
+        let screenshot = b"\x89PNG\r\n\x1a\npreview".to_vec();
+        let commit = source.save(depot).commit(first.id).unwrap();
+        let attachment = commit
+            .attach(
+                crate::SaveAttachmentKind::Screenshot,
+                Box::new(std::io::Cursor::new(screenshot.clone())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(attachment.media_type, Some("image/png"));
+        let mut attached = Vec::new();
+        commit
+            .open_attachment(crate::SaveAttachmentKind::Screenshot)
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut attached)
+            .unwrap();
+        assert_eq!(attached, screenshot);
+        commit.set_note("before the boss fight").await.unwrap();
+        assert_eq!(
+            commit.note().unwrap().as_deref(),
+            Some("before the boss fight")
+        );
+
+        let restored = source.save(depot).restore(first.id).await.unwrap();
+        assert_eq!(restored.parent, Some(second.id));
+        assert_eq!(
+            source
+                .read_save(&SaveDataHandle::from_name(b"BASLUS-12345").unwrap())
+                .unwrap()
+                .files()
+                .next()
+                .unwrap()
+                .data(),
+            b"first"
+        );
+
+        let destination_directory = tempfile::tempdir().unwrap();
+        let destination_id = Uuid::now_v7();
+        let destination_storage = versioned(destination_directory.path(), destination_id).await;
+        let destination =
+            Playstation2MemoryCard::new_empty(destination_storage, destination_id, None)
+                .await
+                .unwrap();
+        destination
+            .write_save(
+                &Save::from_files(
+                    "BASLUS-12345",
+                    &[],
+                    [("data.bin", &[][..], &b"destination version"[..])],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        destination
+            .write_save(
+                &Save::from_files(
+                    "BASLUS-99999",
+                    &[],
+                    [("other.bin", &[][..], &b"unrelated"[..])],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let copied = source.save(depot).copy_to(&destination).await.unwrap();
+        assert_eq!(copied.id, restored.id);
+        assert_eq!(destination.save(depot).history().unwrap().len(), 3);
+        assert!(destination.storage.exists("card/BASLUS-99999.psu"));
+        let replaced = destination.recently_deleted().unwrap();
+        assert_eq!(replaced.len(), 1);
+        assert_eq!(
+            destination
+                .save(depot)
+                .commit(first.id)
+                .unwrap()
+                .note()
+                .unwrap()
+                .as_deref(),
+            Some("before the boss fight")
+        );
+        destination
+            .restore_deleted(replaced[0].deletion_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            destination
+                .read_save(&SaveDataHandle::from_name(b"BASLUS-12345").unwrap())
+                .unwrap()
+                .files()
+                .next()
+                .unwrap()
+                .data(),
+            b"destination version"
+        );
+        assert_eq!(destination.recently_deleted().unwrap().len(), 1);
+        assert!(destination.storage.exists("card/BASLUS-99999.psu"));
+
+        source.save(depot).delete().await.unwrap();
+        assert!(!source.storage.exists("card/BASLUS-12345.psu"));
+        let deleted = source.recently_deleted().unwrap();
+        assert_eq!(deleted.len(), 1);
+        source
+            .restore_deleted(deleted[0].deletion_id)
+            .await
+            .unwrap();
+        assert!(source.storage.exists("card/BASLUS-12345.psu"));
+        assert!(source.recently_deleted().unwrap().is_empty());
+    }
 
     #[test]
     fn overlapping_save_groups_are_unioned() {
@@ -587,8 +758,9 @@ mod tests {
     #[tokio::test]
     async fn primary_save_group_takes_precedence_over_free_space_target() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
-        let card = Playstation2MemoryCard::new_empty(storage, Uuid::now_v7(), None)
+        let id = Uuid::now_v7();
+        let storage = versioned(directory.path(), id).await;
+        let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
         let serials = ["SLUS-20267", "SLUS-20562", "SLUS-20563", "SLUS-20564"];
@@ -639,8 +811,9 @@ mod tests {
     #[tokio::test]
     async fn canonical_and_raw_views_preserve_non_utf8_names() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
-        let card = Playstation2MemoryCard::new_empty(storage, Uuid::now_v7(), None)
+        let id = Uuid::now_v7();
+        let storage = versioned(directory.path(), id).await;
+        let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
         let mut bytes = Save::from_files("placeholder", &[], [])
@@ -690,8 +863,9 @@ mod tests {
     #[tokio::test]
     async fn raw_and_pcsx2_views_reconcile_through_the_canonical_card() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
-        let card = Playstation2MemoryCard::new_empty(storage, Uuid::now_v7(), None)
+        let id = Uuid::now_v7();
+        let storage = versioned(directory.path(), id).await;
+        let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
         card.write_save(
@@ -796,8 +970,9 @@ mod tests {
     #[tokio::test]
     async fn dirent_metadata_survives_reopening_the_card() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
-        let card = Playstation2MemoryCard::new_empty(storage, Uuid::now_v7(), None)
+        let id = Uuid::now_v7();
+        let storage = versioned(directory.path(), id).await;
+        let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
         let raw = card.view(&[], "raw").unwrap();
@@ -826,10 +1001,9 @@ mod tests {
 
         drop(raw);
         drop(card);
-        let reopened =
-            Playstation2MemoryCard::open(DirectoryStorage::new(directory.path()).await.unwrap())
-                .await
-                .unwrap();
+        let reopened = Playstation2MemoryCard::open(versioned(directory.path(), id).await)
+            .await
+            .unwrap();
         let pcsx2 = reopened.view(&[], "pcsx2").unwrap();
         let metadata_path = "BASLUS-12345/_pcsx2_meta/save.dat";
         let mut projected_metadata = Vec::new();
