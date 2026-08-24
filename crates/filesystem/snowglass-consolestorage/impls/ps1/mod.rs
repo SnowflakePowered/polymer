@@ -2,7 +2,7 @@ mod raw;
 
 use std::collections::HashSet;
 use std::fmt;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +24,8 @@ use crate::savegame::{
 use crate::savegroups::{PS1_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
-    SaveRepo, Storage, VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage, SaveRepo, Storage,
+    VolumeStorage,
 };
 
 const SAVE_HEADER_SIZE: usize = 12;
@@ -327,14 +327,13 @@ impl PlaystationMemoryCard {
             }
         }
 
-        let mut output = self.storage.create(&path)?;
+        let output = self.storage.create(&path)?;
+        let mut offset = 0;
         for block in raw_save.blocks() {
-            output.write_all(block).map_err(|source| Error::Io {
-                path: path.clone(),
-                source,
-            })?;
+            output.write_all_at(offset, block)?;
+            offset += block.len() as u64;
         }
-        output.flush().map_err(|source| Error::Io { path, source })
+        output.sync()
     }
 
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(u64, Option<(u64, Timestamp)>)> {
@@ -490,6 +489,7 @@ impl SaveGameSink for PlaystationMemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DirectoryStorage;
 
     #[tokio::test]
     async fn projection_keeps_primary_group_and_twenty_percent_free() {
@@ -507,20 +507,17 @@ mod tests {
         let primary = SaveDataHandle::from_native_name("BASLUS-01201 PRIMARY").unwrap();
         let grouped = SaveDataHandle::from_native_name("BASLUS-01377 RELATED").unwrap();
         for save in [&primary, &grouped] {
-            card.storage
-                .create(&save.data_path())
-                .unwrap()
-                .write_all(&vec![0; BLOCK_SIZE])
-                .unwrap();
+            let file = card.storage.create(&save.data_path()).unwrap();
+            assert_eq!(file.write_at(0, &vec![0; BLOCK_SIZE]).unwrap(), BLOCK_SIZE);
         }
         for index in 0..13 {
             let save =
                 SaveDataHandle::from_native_name(&format!("BASLUS-9{index:04} EXTRA")).unwrap();
-            card.storage
-                .create(&save.data_path())
-                .unwrap()
-                .write_all(&vec![index as u8; BLOCK_SIZE])
-                .unwrap();
+            let file = card.storage.create(&save.data_path()).unwrap();
+            assert_eq!(
+                file.write_at(0, &vec![index as u8; BLOCK_SIZE]).unwrap(),
+                BLOCK_SIZE
+            );
         }
 
         let primary_id = primary.depot_id();

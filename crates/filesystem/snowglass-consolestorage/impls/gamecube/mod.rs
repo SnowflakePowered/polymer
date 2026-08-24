@@ -530,9 +530,12 @@ mod tests {
         let primary: SaveDepotId = GameCubeDiscId::new(b"GALE01").unwrap().into();
         let dolphin = card.view(&[primary], "dolphin").unwrap();
         let save = gci::fixture(b"GALE01", b"Created", 1);
-        let mut file = dolphin.storage().create("01-GALE-Created.gci").unwrap();
-        file.write_all(save.as_bytes()).unwrap();
-        file.flush().unwrap();
+        let file = dolphin.storage().create("01-GALE-Created.gci").unwrap();
+        assert_eq!(
+            file.write_at(0, save.as_bytes()).unwrap(),
+            save.as_bytes().len()
+        );
+        file.sync().unwrap();
 
         let raw = card.view(&[primary], "raw").unwrap();
         let mut image = Vec::new();

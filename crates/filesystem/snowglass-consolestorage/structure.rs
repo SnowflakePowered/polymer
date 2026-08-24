@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
@@ -183,14 +182,9 @@ impl StructureRoot for dyn Storage + '_ {
 
         match entry.kind() {
             EntryKind::Directory => self.create_dir_all(entry.path()),
-            EntryKind::File => {
-                let mut file = self.create(entry.path())?;
-                file.write_all(contents.unwrap_or_default())
-                    .map_err(|e| Error::Io {
-                        path: entry.path().to_string(),
-                        source: e,
-                    })
-            }
+            EntryKind::File => self
+                .create(entry.path())?
+                .write_all_at(0, contents.unwrap_or_default()),
         }
     }
 }

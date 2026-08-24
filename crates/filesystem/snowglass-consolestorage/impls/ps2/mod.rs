@@ -28,8 +28,8 @@ use crate::savegame::{
 use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, DirectoryStorage, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage,
-    SaveRepo, Storage, VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage, SaveRepo, Storage,
+    VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
@@ -885,12 +885,8 @@ mod tests {
             tokio::spawn(async move { notification_card.game_saved().await.unwrap() });
         tokio::task::yield_now().await;
         pcsx2.storage().create_dir_all("BASLUS-00002").unwrap();
-        pcsx2
-            .storage()
-            .create("BASLUS-00002/save.dat")
-            .unwrap()
-            .write_all(b"folder write")
-            .unwrap();
+        let file = pcsx2.storage().create("BASLUS-00002/save.dat").unwrap();
+        assert_eq!(file.write_at(0, b"folder write").unwrap(), 12);
         tokio::time::timeout(Duration::from_secs(2), notification)
             .await
             .expect("folder write should publish a save notification")
@@ -900,12 +896,8 @@ mod tests {
             .unwrap();
         assert_eq!(written.files().next().unwrap().data(), b"folder write");
 
-        pcsx2
-            .storage()
-            .create("index.tmp")
-            .unwrap()
-            .write_all(b"projection metadata")
-            .unwrap();
+        let file = pcsx2.storage().create("index.tmp").unwrap();
+        assert_eq!(file.write_at(0, b"projection metadata").unwrap(), 19);
         pcsx2.storage().rename("index.tmp", "_pcsx2_index").unwrap();
         assert!(pcsx2.storage().exists("_pcsx2_index"));
         assert!(!card.storage.exists("card/index.tmp"));

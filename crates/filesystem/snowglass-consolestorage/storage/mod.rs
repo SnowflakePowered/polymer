@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::future::Future;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek};
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -133,16 +133,6 @@ pub trait ChangeSignal: Send + Sync {
     fn changed(&self) -> BoxFuture<'_, ()>;
 }
 
-/// Cursor-based stream used by console-storage creation and import helpers.
-/// Mounted filesystem I/O uses [`StorageFile`] instead.
-pub trait StorageStream: Read + Write + Seek + Send {}
-
-impl<T: Read + Write + Seek + Send> StorageStream for T {}
-
-pub trait StorageRead: Read + Seek + Send {}
-
-impl<T: Read + Seek + Send> StorageRead for T {}
-
 /// A position-independent file handle suitable for concurrent filesystem
 /// callbacks. Implementations must not maintain a shared cursor.
 pub trait StorageFile: Send + Sync {
@@ -152,11 +142,71 @@ pub trait StorageFile: Send + Sync {
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error>;
 
+    fn write_all_at(&self, mut offset: u64, mut buffer: &[u8]) -> Result<(), Error> {
+        while !buffer.is_empty() {
+            let written = self.write_at(offset, buffer)?;
+            if written == 0 {
+                return Err(Error::Unsupported(
+                    "storage file write made no progress".to_owned(),
+                ));
+            }
+            offset = offset
+                .checked_add(written as u64)
+                .ok_or_else(|| Error::Unsupported("storage file offset is too large".to_owned()))?;
+            buffer = &buffer[written..];
+        }
+        Ok(())
+    }
+
     fn set_len(&self, len: u64) -> Result<(), Error>;
 
     fn flush(&self) -> Result<(), Error>;
 
     fn sync(&self) -> Result<(), Error>;
+}
+
+/// A sequential cursor over a position-independent storage handle. This exists
+/// for parsers that consume [`Read`] and [`Seek`]; mounted I/O continues to use
+/// [`StorageFile`] directly.
+pub struct StorageReader {
+    file: Arc<dyn StorageFile>,
+    position: u64,
+}
+
+impl StorageReader {
+    pub fn new(file: Arc<dyn StorageFile>) -> Self {
+        Self { file, position: 0 }
+    }
+}
+
+impl Read for StorageReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let read = self
+            .file
+            .read_at(self.position, output)
+            .map_err(std::io::Error::other)?;
+        self.position = self
+            .position
+            .checked_add(read as u64)
+            .ok_or_else(|| std::io::Error::other("storage file position is too large"))?;
+        Ok(read)
+    }
+}
+
+impl Seek for StorageReader {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        let len = i128::from(self.file.metadata().map_err(std::io::Error::other)?.len);
+        let position = match position {
+            std::io::SeekFrom::Start(offset) => i128::from(offset),
+            std::io::SeekFrom::End(offset) => len + i128::from(offset),
+            std::io::SeekFrom::Current(offset) => i128::from(self.position) + i128::from(offset),
+        };
+        if !(0..=i128::from(u64::MAX)).contains(&position) {
+            return Err(std::io::Error::other("invalid storage file seek"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
 }
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -180,17 +230,16 @@ pub trait Storage: fmt::Debug + Send + Sync {
     fn create_dir_all(&self, path: &str) -> Result<(), Error>;
 
     /// Create or truncate a file, creating parent directories.
-    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error>;
+    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error>;
 
     /// Open a cursor-free handle. Reads are always available; `write` controls
     /// whether mutation methods are permitted.
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error>;
 
-    /// Open for reading only, which succeeds on entries [`Self::open`] rejects.
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error>;
-
-    /// Open for appending, creating the file and its parents if absent.
-    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error>;
+    /// Open a sequential cursor for parsers that consume [`Read`] and [`Seek`].
+    fn open_read(&self, path: &str) -> Result<StorageReader, Error> {
+        Ok(StorageReader::new(self.open(path, false)?))
+    }
 
     /// Remove a file, or an empty directory. A path that is already gone is not
     /// an error, so uninstalling twice is safe.
@@ -278,20 +327,12 @@ impl<T: VolumeOverlay> Storage for T {
         self.inner().create_dir_all(path)
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
         self.inner().create(path)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
         self.inner().open(path, write)
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.inner().open_read(path)
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
-        self.inner().append(path)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -479,7 +520,7 @@ impl Storage for DirectoryStorage {
         fs::create_dir_all(&resolved).map_err(|e| Error::io(&resolved, e))
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
         let resolved = self.resolve(path)?;
         Self::ensure_directory(&resolved)?;
         let file = OpenOptions::new()
@@ -489,16 +530,11 @@ impl Storage for DirectoryStorage {
             .truncate(true)
             .open(&resolved)
             .map_err(|e| Error::io(&resolved, e))?;
-        Ok(Box::new(file))
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        let resolved = self.resolve(path)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .open(&resolved)
-            .map_err(|e| Error::io(&resolved, e))?;
-        Ok(Box::new(file))
+        Ok(Arc::new(NativeStorageFile {
+            file,
+            path: resolved,
+            writable: true,
+        }))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
@@ -513,18 +549,6 @@ impl Storage for DirectoryStorage {
             path: resolved,
             writable: write,
         }))
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
-        let resolved = self.resolve(path)?;
-        Self::ensure_directory(&resolved)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&resolved)
-            .map_err(|e| Error::io(&resolved, e))?;
-        Ok(Box::new(file))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {

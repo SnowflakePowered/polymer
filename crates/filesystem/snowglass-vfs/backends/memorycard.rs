@@ -285,8 +285,6 @@ mod tests {
     use super::*;
     use snowglass_consolestorage::{Error, Storage};
     use std::fmt;
-    use std::io::Write;
-
     struct TestCard {
         storage: Arc<snowglass_consolestorage::DirectoryStorage>,
     }
@@ -327,11 +325,8 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        storage
-            .create("card.mcd")
-            .unwrap()
-            .write_all(b"card")
-            .unwrap();
+        let file = storage.create("card.mcd").unwrap();
+        assert_eq!(file.write_at(0, b"card").unwrap(), 4);
         let card = Arc::new(TestCard { storage });
 
         let resource = || {

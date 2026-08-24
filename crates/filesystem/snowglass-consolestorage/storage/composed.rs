@@ -7,7 +7,7 @@ use tokio::io::AsyncRead;
 
 use crate::{
     BoxFuture, ChangeSignal, DirEntry, Error, InstallResult, Metadata, MountableStorage, ReadDir,
-    Storage, StorageFile, StorageRead, StorageStream,
+    Storage, StorageFile,
 };
 
 /// A fixed-lifetime, ordered composition. The first storage that claims a path
@@ -112,20 +112,12 @@ impl Storage for ComposedStorage {
         self.owner(path)?.create_dir_all(path)
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
         self.owner(path)?.create(path)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
         self.owner(path)?.open(path, write)
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.owner(path)?.open_read(path)
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
-        self.owner(path)?.append(path)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -216,7 +208,7 @@ mod tests {
     use crate::DirectoryStorage;
     use crate::impls::wiiu::nand::WiiUNand;
     use crate::nand::VirtualNand;
-    use std::io::{Read, Write};
+    use std::io::Read;
 
     async fn wiiu() -> (
         tempfile::TempDir,
@@ -256,16 +248,13 @@ mod tests {
         nand.root()
             .create_dir_all("usr/title/game/content")
             .unwrap();
-        nand.root()
-            .create("usr/save/game/stale.bin")
-            .unwrap()
-            .write_all(b"stale")
-            .unwrap();
-        nand.root()
+        let file = nand.root().create("usr/save/game/stale.bin").unwrap();
+        assert_eq!(file.write_at(0, b"stale").unwrap(), 5);
+        let file = nand
+            .root()
             .create("usr/title/game/content/app.bin")
-            .unwrap()
-            .write_all(b"game")
             .unwrap();
+        assert_eq!(file.write_at(0, b"game").unwrap(), 4);
 
         let composed = nand.compose(saves).unwrap();
 
@@ -273,11 +262,8 @@ mod tests {
         assert!(composed.exists("usr/title/game/content/app.bin"));
 
         composed.create_dir_all("usr/save/game").unwrap();
-        composed
-            .create("usr/save/game/new.bin")
-            .unwrap()
-            .write_all(b"save")
-            .unwrap();
+        let file = composed.create("usr/save/game/new.bin").unwrap();
+        assert_eq!(file.write_at(0, b"save").unwrap(), 4);
         assert!(save_root.path().join("usr/save/game/new.bin").exists());
         assert!(!nand.root().exists("usr/save/game/new.bin"));
 

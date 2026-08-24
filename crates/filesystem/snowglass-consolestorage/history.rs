@@ -21,8 +21,8 @@ use uuid::Uuid;
 use crate::savegame::{SaveBlob, SaveDepotId, SaveDescriptor};
 use crate::{
     ArtifactRegistry, ArtifactSummary, BoxFuture, ChangeSignal, DirectoryStorage, Error,
-    InstallResult, Metadata, MountableStorage, ReadDir, SaveRepo, Storage, StorageFile, StorageRead,
-    StorageStream, VolumeInfo, VolumeStorage,
+    InstallResult, Metadata, MountableStorage, ReadDir, SaveRepo, Storage, StorageFile, VolumeInfo,
+    VolumeStorage,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -210,20 +210,12 @@ impl Storage for VersionedStorage {
         self.storage.create_dir_all(path)
     }
 
-    fn create(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
+    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
         self.storage.create(path)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
         self.storage.open(path, write)
-    }
-
-    fn open_read(&self, path: &str) -> Result<Box<dyn StorageRead>, Error> {
-        self.storage.open_read(path)
-    }
-
-    fn append(&self, path: &str) -> Result<Box<dyn StorageStream>, Error> {
-        self.storage.append(path)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
