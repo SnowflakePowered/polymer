@@ -3,8 +3,6 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-injector/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-shell-webview2/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-viewer/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/consumer/snowglass-consumer-core/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/consumer/snowglass-consumer-d3d12/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/consumer/snowglass-consumer-vulkan/src" isTestSource="false" />
@@ -47,7 +45,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/filesystem/snowglass-vfs/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-library/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-pluginhost/examples" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-shell-webview2/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-debug-viewer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-gui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-gui/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

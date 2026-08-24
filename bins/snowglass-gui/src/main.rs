@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // V8's conservative default JavaScript stack during evaluation.
     // Keep this below the executable's 8 MiB stack while giving Deno's
     // primordials, the shell document, and fresh plugin isolates enough room.
-    let v8_program = "snowglass-shell-webview2".to_owned();
+    let v8_program = "snowglass-gui".to_owned();
     let unknown_v8_flags =
         deno_core::v8_set_flags(vec![v8_program.clone(), "--stack-size=4096".to_owned()]);
     debug_assert_eq!(unknown_v8_flags, [v8_program], "unknown V8 flags");

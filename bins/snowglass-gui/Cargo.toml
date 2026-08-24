@@ -1,5 +1,5 @@
 [package]
-name = "snowglass-shell-webview2"
+name = "snowglass-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

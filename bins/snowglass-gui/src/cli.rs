@@ -76,7 +76,7 @@ pub fn launch_from_viewer(options: &ViewerOptions) -> Result<Option<UnattachedLa
 }
 
 pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
-    let matches = viewer_command_named("snowglass-shell-webview2")
+    let matches = viewer_command_named("snowglass-gui")
         .arg(
             Arg::new("url")
                 .long("url")

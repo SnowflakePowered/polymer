@@ -10998,6 +10998,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-debug-viewer"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "consolespec",
+ "cssparser 0.37.0",
+ "cssparser-color",
+ "egui",
+ "egui-winit",
+ "parking_lot",
+ "raw-window-handle",
+ "regex",
+ "serde_json",
+ "snowglass-egui",
+ "snowglass-input",
+ "snowglass-input-dinput",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
+ "snowglass-protocol",
+ "snowglass-renderer",
+ "snowglass-runtime",
+ "snowglass-statistics",
+ "snowglass-ui",
+ "taffy",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "webrtc",
+ "windows 0.61.3",
+ "winit",
+]
+
+[[package]]
 name = "snowglass-deno"
 version = "0.1.0"
 dependencies = [
@@ -11031,6 +11064,67 @@ dependencies = [
  "snowglass-renderer",
  "snowglass-statistics",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "snowglass-gui"
+version = "0.1.0"
+dependencies = [
+ "anyrender",
+ "anyrender_vello",
+ "arboard",
+ "blitz-dom",
+ "blitz-html",
+ "blitz-net",
+ "blitz-paint",
+ "blitz-traits",
+ "clap",
+ "consolespec",
+ "cursor-icon",
+ "deno_core",
+ "deno_error",
+ "egui",
+ "egui-winit",
+ "keyboard-types",
+ "kurbo",
+ "parking_lot",
+ "peniko",
+ "pollster",
+ "raw-window-handle",
+ "regex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "snowglass-deno",
+ "snowglass-egui",
+ "snowglass-input",
+ "snowglass-input-dinput",
+ "snowglass-ipc",
+ "snowglass-platform-windows",
+ "snowglass-pluginhost",
+ "snowglass-protocol",
+ "snowglass-renderer",
+ "snowglass-runtime",
+ "snowglass-statistics",
+ "snowglass-vfs",
+ "snowglass-vfs-winfsp",
+ "stylo",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vello",
+ "vello_encoding",
+ "wgpu-hal",
+ "winapi",
+ "windows 0.61.3",
+ "windows 0.62.2",
+ "windows-core 0.61.2",
+ "windows-numerics 0.2.0",
+ "winit",
 ]
 
 [[package]]
@@ -11465,67 +11559,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snowglass-shell-webview2"
-version = "0.1.0"
-dependencies = [
- "anyrender",
- "anyrender_vello",
- "arboard",
- "blitz-dom",
- "blitz-html",
- "blitz-net",
- "blitz-paint",
- "blitz-traits",
- "clap",
- "consolespec",
- "cursor-icon",
- "deno_core",
- "deno_error",
- "egui",
- "egui-winit",
- "keyboard-types",
- "kurbo",
- "parking_lot",
- "peniko",
- "pollster",
- "raw-window-handle",
- "regex",
- "reqwest",
- "rustls",
- "serde",
- "serde_bytes",
- "serde_json",
- "snowglass-deno",
- "snowglass-egui",
- "snowglass-input",
- "snowglass-input-dinput",
- "snowglass-ipc",
- "snowglass-platform-windows",
- "snowglass-pluginhost",
- "snowglass-protocol",
- "snowglass-renderer",
- "snowglass-runtime",
- "snowglass-statistics",
- "snowglass-vfs",
- "snowglass-vfs-winfsp",
- "stylo",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vello",
- "vello_encoding",
- "wgpu-hal",
- "winapi",
- "windows 0.61.3",
- "windows 0.62.2",
- "windows-core 0.61.2",
- "windows-numerics 0.2.0",
- "winit",
-]
-
-[[package]]
 name = "snowglass-statistics"
 version = "0.1.0"
 dependencies = [
@@ -11568,39 +11601,6 @@ dependencies = [
  "snowglass-vfs",
  "windows 0.61.3",
  "winfsp",
-]
-
-[[package]]
-name = "snowglass-viewer"
-version = "0.1.0"
-dependencies = [
- "ash",
- "consolespec",
- "cssparser 0.37.0",
- "cssparser-color",
- "egui",
- "egui-winit",
- "parking_lot",
- "raw-window-handle",
- "regex",
- "serde_json",
- "snowglass-egui",
- "snowglass-input",
- "snowglass-input-dinput",
- "snowglass-ipc",
- "snowglass-platform-windows",
- "snowglass-protocol",
- "snowglass-renderer",
- "snowglass-runtime",
- "snowglass-statistics",
- "snowglass-ui",
- "taffy",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "webrtc",
- "windows 0.61.3",
- "winit",
 ]
 
 [[package]]
