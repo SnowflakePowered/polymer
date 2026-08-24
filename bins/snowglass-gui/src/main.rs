@@ -12,6 +12,7 @@ mod shell_compositor;
 mod shell_document;
 mod shell_dom;
 mod shell_runtime;
+mod theme;
 mod window_manager;
 
 #[tokio::main(flavor = "current_thread")]

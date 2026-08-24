@@ -2,6 +2,9 @@
 /bins/snowglass-gui/frontend/node_modules/
 /bins/snowglass-gui/frontend/dist/
 /bins/snowglass-gui/frontend/*.tsbuildinfo
+/plugins/theme/*/node_modules/
+/plugins/theme/*/dist/
+/plugins/theme/*/*.tsbuildinfo
 *.pdb
 *.dll
 *.lib

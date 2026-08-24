@@ -26,7 +26,7 @@ pub(crate) mod permissions;
 pub use composed::ComposedStorage;
 
 use crate::storage::manifest::VolumeInfo;
-use manifest::{ArtifactDb, ArtifactRegistry};
+use manifest::{ArtifactDb, ArtifactRegistry, EMPTY_ARTIFACTS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -399,7 +399,7 @@ impl<T: VolumeOverlay> VolumeStorage for T {
 
 pub struct DirectoryStorage {
     root: PathBuf,
-    artifacts: ArtifactDb,
+    artifacts: Option<ArtifactDb>,
 }
 
 impl DirectoryStorage {
@@ -410,7 +410,29 @@ impl DirectoryStorage {
         let database = root.join(".manifest.db");
         let artifacts = ArtifactDb::open(&database.to_string_lossy()).await?;
 
-        Ok(Self { root, artifacts })
+        Ok(Self {
+            root,
+            artifacts: Some(artifacts),
+        })
+    }
+
+    /// Opens a directory strictly as a data store. Volume identity and other
+    /// metadata are supplied by an outer storage implementation.
+    pub async fn new_unmanaged(root: impl Into<PathBuf>) -> Result<Self, Error> {
+        let root = root.into();
+        fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
+        for name in [".manifest.db", ".manifest.db-wal", ".manifest.db-shm"] {
+            let path = root.join(name);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::io(&path, error)),
+            }
+        }
+        Ok(Self {
+            root,
+            artifacts: None,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -884,24 +906,35 @@ impl MountableStorage for DirectoryStorage {
 impl VolumeStorage for DirectoryStorage {
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
         Box::pin(async move {
-            Ok(self
-                .artifacts
-                .identity()
-                .await?
-                .and_then(|metadata| metadata.label))
+            match &self.artifacts {
+                Some(artifacts) => Ok(artifacts
+                    .identity()
+                    .await?
+                    .and_then(|metadata| metadata.label)),
+                None => Ok(None),
+            }
         })
     }
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.artifacts.set_label(label)
+        match &self.artifacts {
+            Some(artifacts) => artifacts.set_label(label),
+            None => Box::pin(async { Ok(()) }),
+        }
     }
 
     fn artifacts(&self) -> &dyn ArtifactRegistry {
-        &self.artifacts
+        match &self.artifacts {
+            Some(artifacts) => artifacts,
+            None => &EMPTY_ARTIFACTS,
+        }
     }
 
     fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        self.artifacts.identity()
+        match &self.artifacts {
+            Some(artifacts) => artifacts.identity(),
+            None => Box::pin(async { Ok(None) }),
+        }
     }
 
     fn brand<'a>(
@@ -910,6 +943,13 @@ impl VolumeStorage for DirectoryStorage {
         platform: &'a str,
         label: Option<&'a str>,
     ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
-        self.artifacts.brand(id, platform, label)
+        match &self.artifacts {
+            Some(artifacts) => artifacts.brand(id, platform, label),
+            None => Box::pin(async {
+                Err(Error::Unsupported(
+                    "an unmanaged directory cannot be branded directly".to_owned(),
+                ))
+            }),
+        }
     }
 }

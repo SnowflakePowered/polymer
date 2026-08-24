@@ -17,6 +17,36 @@ use std::{
     time::Duration,
 };
 
+/// Reads one value from the SQLite database backing a runtime's persistent
+/// `localStorage` without creating the database when it does not yet exist.
+pub fn read_local_storage(
+    storage_dir: impl AsRef<Path>,
+    key: &str,
+) -> Result<Option<String>, deno_webstorage::rusqlite::Error> {
+    use deno_webstorage::rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+
+    let database = storage_dir.as_ref().join("local_storage");
+    if !database.is_file() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_table = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data')",
+        params![],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    connection
+        .query_row(
+            "SELECT value FROM data WHERE key = ?",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+}
+
 pub mod snowglass;
 
 pub use deno_inspector_server::{InspectPublishUid, InspectorServerError, create_inspector_server};
@@ -234,6 +264,37 @@ mod tests {
     use deno_core::{ModuleLoadResponse, ResolutionKind, resolve_import};
 
     struct EmptyLoader;
+
+    #[test]
+    fn reads_existing_local_storage_without_creating_missing_storage() {
+        use deno_webstorage::rusqlite::{Connection, params};
+
+        let root = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            read_local_storage(root.path(), "Snowglass.theme").unwrap(),
+            None
+        );
+        assert!(!root.path().join("local_storage").exists());
+
+        let connection = Connection::open(root.path().join("local_storage")).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE data (key VARCHAR UNIQUE, value VARCHAR)",
+                params![],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO data (key, value) VALUES (?, ?)",
+                params!["Snowglass.theme", "chipotle"],
+            )
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            read_local_storage(root.path(), "Snowglass.theme").unwrap(),
+            Some("chipotle".to_owned())
+        );
+    }
 
     impl ModuleLoader for EmptyLoader {
         fn resolve(

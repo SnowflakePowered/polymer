@@ -1,6 +1,6 @@
 use crate::{
     EmulatorPlugin, EmulatorPluginInstance, PackageError, PluginCache, PluginModuleLoader,
-    PluginResource, descriptor::PluginDescriptor,
+    PluginResource, ThemeDebug, ThemePlugin, descriptor::PluginDescriptor,
 };
 use serde::Deserialize;
 use std::{
@@ -24,6 +24,13 @@ pub trait PluginInstance: Send + Sync + 'static {
     fn caches(&self) -> &[PluginCache] {
         &[]
     }
+}
+
+/// Theme capability projected from a registered plugin package.
+pub trait ThemePluginInstance: PluginInstance {
+    fn root(&self) -> &Path;
+    fn main(&self) -> &Path;
+    fn debug(&self) -> Option<&ThemeDebug>;
 }
 
 struct RegisteredPlugin {
@@ -95,6 +102,15 @@ impl PluginRegistry {
                 let emulator: Arc<dyn EmulatorPluginInstance> = concrete;
                 let mut registered = RegisteredPlugin::new(instance.clone());
                 registered.insert(emulator);
+                self.register(instance.id(), registered)?;
+                Ok(instance)
+            }
+            "theme" => {
+                let concrete = Arc::new(ThemePlugin::load(root)?);
+                let instance: Arc<dyn PluginInstance> = concrete.clone();
+                let theme: Arc<dyn ThemePluginInstance> = concrete;
+                let mut registered = RegisteredPlugin::new(instance.clone());
+                registered.insert(theme);
                 self.register(instance.id(), registered)?;
                 Ok(instance)
             }

@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use futures::future::select_all;
+use parking_lot::{Mutex, RwLock};
 use tokio::io::AsyncRead;
 
 use crate::{
@@ -15,6 +16,13 @@ use crate::{
 /// they exist in their winning storage.
 pub struct ComposedStorage {
     layers: Box<[Arc<dyn MountableStorage>]>,
+    files: Mutex<HashMap<String, Weak<ComposedFileBinding>>>,
+}
+
+#[derive(Default)]
+struct ComposedFileBinding {
+    /// Set when a native handle could not follow a rename across layers.
+    redirected_to: RwLock<Option<String>>,
 }
 
 impl ComposedStorage {
@@ -26,7 +34,39 @@ impl ComposedStorage {
         }
         Ok(Self {
             layers: layers.into_boxed_slice(),
+            files: Mutex::new(HashMap::new()),
         })
+    }
+
+    fn binding(&self, path: &str) -> Arc<ComposedFileBinding> {
+        let mut files = self.files.lock();
+        if let Some(binding) = files.get(path).and_then(Weak::upgrade) {
+            return binding;
+        }
+        let binding = Arc::new(ComposedFileBinding::default());
+        files.insert(path.to_owned(), Arc::downgrade(&binding));
+        binding
+    }
+
+    fn file(&self, path: &str, handle: Arc<dyn StorageFile>) -> Arc<dyn StorageFile> {
+        Arc::new(ComposedFile {
+            layers: self.layers.clone(),
+            opened_at: path.to_owned(),
+            handle,
+            binding: self.binding(path),
+        })
+    }
+
+    fn move_binding(&self, from: &str, to: &str, crossed_layers: bool) {
+        let mut files = self.files.lock();
+        let source = files.remove(from).and_then(|binding| binding.upgrade());
+        files.remove(to);
+        if let Some(binding) = source {
+            if crossed_layers || binding.redirected_to.read().is_some() {
+                *binding.redirected_to.write() = Some(to.to_owned());
+            }
+            files.insert(to.to_owned(), Arc::downgrade(&binding));
+        }
     }
 
     fn owner(&self, path: &str) -> Result<&Arc<dyn MountableStorage>, Error> {
@@ -113,11 +153,13 @@ impl Storage for ComposedStorage {
     }
 
     fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
-        self.owner(path)?.create(path)
+        let handle = self.owner(path)?.create(path)?;
+        Ok(self.file(path, handle))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        self.owner(path)?.open(path, write)
+        let handle = self.owner(path)?.open(path, write)?;
+        Ok(self.file(path, handle))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -165,7 +207,9 @@ impl MountableStorage for ComposedStorage {
         let from_owner = self.owner(from)?;
         let to_owner = self.owner(to)?;
         if Arc::ptr_eq(from_owner, to_owner) {
-            return from_owner.rename(from, to);
+            from_owner.rename(from, to)?;
+            self.move_binding(from, to, false);
+            return Ok(());
         }
 
         let metadata = from_owner.metadata(from)?;
@@ -213,6 +257,7 @@ impl MountableStorage for ComposedStorage {
         // the old temporary file must not turn a successful atomic publish
         // into a guest-visible failed rename.
         let _ = from_owner.remove(from);
+        self.move_binding(from, to, true);
         Ok(())
     }
 
@@ -226,6 +271,72 @@ impl MountableStorage for ComposedStorage {
 
     fn finish(&self, path: &str) -> Result<(), Error> {
         self.owner(path)?.finish(path)
+    }
+}
+
+struct ComposedFile {
+    layers: Box<[Arc<dyn MountableStorage>]>,
+    opened_at: String,
+    handle: Arc<dyn StorageFile>,
+    binding: Arc<ComposedFileBinding>,
+}
+
+impl ComposedFile {
+    fn redirected(&self) -> Option<(Arc<dyn MountableStorage>, String)> {
+        let path = self.binding.redirected_to.read().clone()?;
+        if path == self.opened_at {
+            return None;
+        }
+        let owner = self
+            .layers
+            .iter()
+            .find(|storage| storage.claims(&path))?
+            .clone();
+        Some((owner, path))
+    }
+}
+
+impl StorageFile for ComposedFile {
+    fn metadata(&self) -> Result<Metadata, Error> {
+        match self.redirected() {
+            Some((owner, path)) => owner.metadata(&path),
+            None => self.handle.metadata(),
+        }
+    }
+
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Result<usize, Error> {
+        match self.redirected() {
+            Some((owner, path)) => owner.open(&path, false)?.read_at(offset, buffer),
+            None => self.handle.read_at(offset, buffer),
+        }
+    }
+
+    fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error> {
+        match self.redirected() {
+            Some((owner, path)) => owner.open(&path, true)?.write_at(offset, buffer),
+            None => self.handle.write_at(offset, buffer),
+        }
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), Error> {
+        match self.redirected() {
+            Some((owner, path)) => owner.truncate(&path, len),
+            None => self.handle.set_len(len),
+        }
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        match self.redirected() {
+            Some((owner, path)) => owner.open(&path, true)?.flush(),
+            None => self.handle.flush(),
+        }
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        match self.redirected() {
+            Some((owner, path)) => owner.sync(&path),
+            None => self.handle.sync(),
+        }
     }
 }
 
@@ -330,27 +441,24 @@ mod tests {
     #[tokio::test]
     async fn atomically_moves_files_across_layers() {
         let (save_root, _nand_root, nand, saves) = wiiu().await;
-        nand.root()
-            .create_dir_all("usr/title/game")
-            .unwrap();
-        nand.root()
-            .create("usr/title/game/temporary.bin")
-            .unwrap()
-            .write_all_at(0, b"save data")
-            .unwrap();
+        nand.root().create_dir_all("usr/title/game").unwrap();
         let composed = nand.compose(saves).unwrap();
+        let temporary = composed.create("usr/title/game/temporary.bin").unwrap();
+        temporary.write_all_at(0, b"save data").unwrap();
 
         composed
-            .rename(
-                "usr/title/game/temporary.bin",
-                "usr/save/game/data.bin",
-            )
+            .rename("usr/title/game/temporary.bin", "usr/save/game/data.bin")
             .unwrap();
 
         assert!(!nand.root().exists("usr/title/game/temporary.bin"));
         assert_eq!(
             std::fs::read(save_root.path().join("usr/save/game/data.bin")).unwrap(),
             b"save data"
+        );
+        temporary.write_all_at(4, b" again").unwrap();
+        assert_eq!(
+            std::fs::read(save_root.path().join("usr/save/game/data.bin")).unwrap(),
+            b"save again"
         );
         assert_eq!(
             std::fs::read_dir(save_root.path().join("usr/save/game"))

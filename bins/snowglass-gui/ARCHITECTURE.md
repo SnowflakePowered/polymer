@@ -6,10 +6,17 @@ one Deno UI isolate and mirrors its DOM into one Blitz document.
 
 ## Startup
 
-`--url` identifies the only UI document. The shell creates the native Winit
-window, fetches that URL (including `file:` URLs), parses it with `blitz-html`,
+The selected `theme` plugin identifies the only UI document. Selection uses a
+temporary `--theme` override, then `localStorage["Snowglass.theme"]`, then the
+first loaded theme by ID. The shell creates the native Winit window, loads the
+theme document, parses it with `blitz-html`,
 starts the Deno runtime, executes the document's module script, applies queued
 DOM mutations, resolves layout, and paints the first frame.
+
+`--debug` starts the selected theme's `[theme.debug].serve` command from its
+package directory, waits for `[theme.debug].url`, and keeps that process alive
+for the shell lifetime. Normal startup loads `[theme].main` as a confined
+`file:` URL. The Deno inspector remains available in either mode.
 
 `blitz-net` is the resource provider for HTTP, file, data, stylesheets, images,
 and fonts. Its waker posts a shell redraw event when a resource arrives.
@@ -104,7 +111,8 @@ identity while child routes move between launching, play, and remapping.
 
 ## Frontend
 
-The frontend has one `index.html` and one `src/main.tsx`. Vite builds Solid 1,
-Solid Router memory history, Ark UI, and Tailwind into static JavaScript and
-CSS. Development uses `http://127.0.0.1:5173/index.html`; a built tree uses a
-`file:` URL pointing at `frontend/dist/index.html`.
+The built-in Chipotle frontend lives in `plugins/theme/chipotle`, with one
+`index.html` and one `src/main.tsx`. Vite builds Solid 1, Solid Router memory
+history, Ark UI, and Tailwind into static JavaScript and CSS. Its development
+document is `http://127.0.0.1:5173`; its built document is
+`dist/index.html` inside the plugin package.

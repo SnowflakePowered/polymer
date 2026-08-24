@@ -1,0 +1,11 @@
+[plugin]
+id = "chipotle"
+version = "0.1.0"
+class = "theme"
+
+[theme]
+main = "dist/index.html"
+
+[theme.debug]
+serve = "vite --host 127.0.0.1 --port 5173"
+url = "http://127.0.0.1:5173"

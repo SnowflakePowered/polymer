@@ -28,9 +28,10 @@ pub use plugin_runtime::{
     PluginCancellationToken, PluginInvocationError, PluginInvocationResult, PluginRuntime,
     PluginRuntimeHandle, PluginRuntimeOptions,
 };
-pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError};
+pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError, ThemePluginInstance};
 pub use toml::{
     EmulatorPlugin, PackageError, PluginCache, PluginPackage, PluginResource, PluginResourceFormat,
+    ThemeDebug, ThemePlugin,
 };
 
 #[cfg(test)]
