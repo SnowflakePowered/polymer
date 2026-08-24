@@ -113,7 +113,7 @@ impl From<raw::ParseError> for Error {
 
 #[derive(Clone)]
 pub struct PlaystationMemoryCard {
-    storage: Arc<DirectoryStorage>,
+    storage: Arc<crate::VersionedStorage>,
 }
 
 impl VolumeOverlay for PlaystationMemoryCard {
@@ -123,13 +123,17 @@ impl VolumeOverlay for PlaystationMemoryCard {
 }
 
 #[async_trait::async_trait]
-impl SaveRepo for PlaystationMemoryCard {}
+impl SaveRepo for PlaystationMemoryCard {
+    fn versioning(&self) -> &crate::SaveVersioning {
+        self.storage.versioning()
+    }
+}
 
 impl PlaystationMemoryCard {
     pub const PLATFORM: &str = "SONY_PSX";
 
     pub async fn new_empty(
-        storage: DirectoryStorage,
+        storage: crate::VersionedStorage,
         id: Uuid,
         label: Option<String>,
     ) -> Result<Self, Error> {
@@ -139,7 +143,7 @@ impl PlaystationMemoryCard {
         Ok(Self { storage })
     }
 
-    pub async fn open(storage: DirectoryStorage) -> Result<Self, Error> {
+    pub async fn open(storage: crate::VersionedStorage) -> Result<Self, Error> {
         let storage = Arc::new(storage);
         let identity = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         if identity.platform != Self::PLATFORM {
@@ -490,8 +494,14 @@ mod tests {
     #[tokio::test]
     async fn projection_keeps_primary_group_and_twenty_percent_free() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
-        let card = PlaystationMemoryCard::new_empty(storage, Uuid::now_v7(), None)
+        let id = Uuid::now_v7();
+        let storage = crate::VersionedStorage::new(
+            DirectoryStorage::new(directory.path()).await.unwrap(),
+            PlaystationMemoryCard::PLATFORM,
+            id,
+        )
+        .unwrap();
+        let card = PlaystationMemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
         let primary = SaveDataHandle::from_native_name("BASLUS-01201 PRIMARY").unwrap();

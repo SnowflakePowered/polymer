@@ -21,6 +21,7 @@ quick-xml = { version = "0.39.4", features = ["serialize"] }
 serde.workspace = true
 serde_json.workspace = true
 futures = { version = "0.3", features = []}
+gix.workspace = true
 blake3 = { version = "1", features = ["rayon"] }
 encoding_rs = "0.8.35"
 turso = "0.7.2"

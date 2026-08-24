@@ -156,20 +156,6 @@ impl Storage for ComposedStorage {
         }
     }
 
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        match self.owner("") {
-            Ok(storage) => storage.label(),
-            Err(error) => Box::pin(async move { Err(error) }),
-        }
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        match self.owner("") {
-            Ok(storage) => storage.set_label(label),
-            Err(error) => Box::pin(async move { Err(error) }),
-        }
-    }
-
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -247,9 +233,15 @@ mod tests {
         )
         .await
         .unwrap();
+        let save_id = uuid::Uuid::now_v7();
         let saves = WiiUNand::new_save_repo(
-            DirectoryStorage::new(save_root.path()).await.unwrap(),
-            uuid::Uuid::now_v7(),
+            crate::VersionedStorage::new(
+                DirectoryStorage::new(save_root.path()).await.unwrap(),
+                WiiUNand::PLATFORM,
+                save_id,
+            )
+            .unwrap(),
+            save_id,
             None,
         )
         .await

@@ -34,6 +34,15 @@ pub enum Error {
     IntegrityMatchFailed { failed: String },
     #[error("time error")]
     TimeError(#[from] jiff::Error),
+    #[error("git history {operation}: {reason}")]
+    Git {
+        operation: &'static str,
+        reason: String,
+    },
+    #[error("save history conflict: {0}")]
+    HistoryConflict(String),
+    #[error("save commit `{0}` was not found in this save's history")]
+    UnknownSaveCommit(String),
 }
 
 impl Clone for Error {
@@ -62,11 +71,24 @@ impl Clone for Error {
                 failed: failed.clone(),
             },
             Error::TimeError(failure) => Error::TimeError(failure.clone()),
+            Error::Git { operation, reason } => Error::Git {
+                operation,
+                reason: reason.clone(),
+            },
+            Error::HistoryConflict(reason) => Error::HistoryConflict(reason.clone()),
+            Error::UnknownSaveCommit(id) => Error::UnknownSaveCommit(id.clone()),
         }
     }
 }
 
 impl Error {
+    pub fn git(operation: &'static str, error: impl std::fmt::Display) -> Self {
+        Error::Git {
+            operation,
+            reason: error.to_string(),
+        }
+    }
+
     pub fn io(path: &Path, source: std::io::Error) -> Self {
         Error::Io {
             path: path.display().to_string(),

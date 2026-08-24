@@ -202,11 +202,6 @@ pub trait Storage: fmt::Debug + Send + Sync {
         Ok(None)
     }
 
-    /// User-facing name for this storage, if one has been assigned.
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
-
     /// Copy `source` to `dest`, returning the blake3 digest and length of what
     /// was written. The file is only visible at `dest` once fully written.
     fn install_file<'a>(
@@ -233,6 +228,11 @@ pub trait MountableStorage: Storage {
 
 /// A mountable filesystem with persistent volume identity and artifact metadata.
 pub trait VolumeStorage: MountableStorage {
+    /// User-facing name for this volume, if one has been assigned.
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>>;
+
     /// The record of what is installed here. Save-only volumes have none.
     fn artifacts(&self) -> &dyn ArtifactRegistry;
 
@@ -248,7 +248,7 @@ pub trait VolumeStorage: MountableStorage {
     ) -> BoxFuture<'a, Result<VolumeInfo, Error>>;
 }
 
-/// A volume whose filesystem operations are provided by another volume.
+/// A volume whose filesystem and volume operations are provided by another volume.
 pub(crate) trait VolumeOverlay: fmt::Debug + Send + Sync {
     fn inner(&self) -> &dyn VolumeStorage;
 
@@ -302,14 +302,6 @@ impl<T: VolumeOverlay> Storage for T {
         self.inner().watch(paths)
     }
 
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        self.inner().label()
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.inner().set_label(label)
-    }
-
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -338,6 +330,14 @@ impl<T: VolumeOverlay> MountableStorage for T {
 }
 
 impl<T: VolumeOverlay> VolumeStorage for T {
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
+        self.inner().label()
+    }
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
+        self.inner().set_label(label)
+    }
+
     fn artifacts(&self) -> &dyn ArtifactRegistry {
         self.inner().artifacts()
     }
@@ -385,6 +385,9 @@ impl DirectoryStorage {
                 return Err(Error::InvalidPath(path.to_string()));
             }
             if component.contains('\\') {
+                return Err(Error::InvalidPath(path.to_string()));
+            }
+            if component == ".git" {
                 return Err(Error::InvalidPath(path.to_string()));
             }
         }
@@ -440,6 +443,9 @@ impl Storage for DirectoryStorage {
         Ok(ReadDir::surface(listing.filter_map(move |entry| {
             let entry = entry.ok()?;
             let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                return None;
+            }
             let path = match parent.is_empty() {
                 true => name.clone(),
                 false => format!("{parent}/{name}"),
@@ -566,20 +572,6 @@ impl Storage for DirectoryStorage {
             _watcher: watcher,
             signal,
         })))
-    }
-
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        Box::pin(async move {
-            Ok(self
-                .artifacts
-                .identity()
-                .await?
-                .and_then(|metadata| metadata.label))
-        })
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        self.artifacts.set_label(label)
     }
 
     fn install_file<'a>(
@@ -779,14 +771,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            Storage::label(&storage).await.unwrap().as_deref(),
+            VolumeStorage::label(&storage).await.unwrap().as_deref(),
             Some("Card One")
         );
-        Storage::set_label(&storage, Some("Card Two"))
+        VolumeStorage::set_label(&storage, Some("Card Two"))
             .await
             .unwrap();
         assert_eq!(
-            Storage::label(&storage).await.unwrap().as_deref(),
+            VolumeStorage::label(&storage).await.unwrap().as_deref(),
             Some("Card Two")
         );
     }
@@ -866,6 +858,20 @@ impl MountableStorage for DirectoryStorage {
 }
 
 impl VolumeStorage for DirectoryStorage {
+    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
+        Box::pin(async move {
+            Ok(self
+                .artifacts
+                .identity()
+                .await?
+                .and_then(|metadata| metadata.label))
+        })
+    }
+
+    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
+        self.artifacts.set_label(label)
+    }
+
     fn artifacts(&self) -> &dyn ArtifactRegistry {
         &self.artifacts
     }
