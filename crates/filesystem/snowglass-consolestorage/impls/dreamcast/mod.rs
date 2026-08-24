@@ -22,7 +22,7 @@ use crate::impls::{
 };
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
-    SaveGameSink, SaveWatcher,
+    SaveGameSink, SaveWatcher, icons::IconSave,
 };
 use crate::savegroups::{DREAMCAST_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
@@ -47,6 +47,17 @@ impl VolumeOverlay for DreamcastMemoryCard {
 impl SaveRepo for DreamcastMemoryCard {
     fn versioning(&self) -> &SaveVersioning {
         self.storage.versioning()
+    }
+
+    fn read_save_icon(
+        &self,
+        id: SaveDepotId,
+    ) -> Result<Option<crate::savegame::icons::SaveIcon>, Error> {
+        Ok(self
+            .saves()
+            .into_iter()
+            .find(|(product, _)| SaveDepotId::from(*product) == id)
+            .and_then(|(_, save)| save.read_icon()))
     }
 }
 
@@ -311,7 +322,6 @@ impl DreamcastMemoryCard {
             .unwrap_or_else(|_| Timestamp::now());
         Ok(SaveDescriptor {
             id: product.into(),
-            banner: header.icon(),
             title: title.into_owned(),
             description: String::from_utf8_lossy(header.application_id())
                 .trim_end_matches(['\0', ' '])

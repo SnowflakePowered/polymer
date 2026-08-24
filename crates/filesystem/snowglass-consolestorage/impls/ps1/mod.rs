@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use image::RgbaImage;
 use jiff::Timestamp;
 use uuid::Uuid;
 
+pub(crate) use self::raw::Save as IconSaveContainer;
 use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE};
 use crate::impls::{
     SonyProductCode,
@@ -19,7 +19,7 @@ use crate::impls::{
 };
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
-    SaveGameSink, SaveWatcher,
+    SaveGameSink, SaveWatcher, icons::IconSave,
 };
 use crate::savegroups::{PS1_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
@@ -127,6 +127,17 @@ impl SaveRepo for PlaystationMemoryCard {
     fn versioning(&self) -> &crate::SaveVersioning {
         self.storage.versioning()
     }
+
+    fn read_save_icon(
+        &self,
+        id: SaveDepotId,
+    ) -> Result<Option<crate::savegame::icons::SaveIcon>, Error> {
+        let Some(save) = self.saves_in_depot(id).into_iter().next() else {
+            return Ok(None);
+        };
+        let payload = self.read_payload(&save)?;
+        Ok(raw::Save::new(&save.native_id, &payload)?.read_icon())
+    }
 }
 
 impl PlaystationMemoryCard {
@@ -194,26 +205,8 @@ impl PlaystationMemoryCard {
 
     fn describe_save(&self, save: &SaveDataHandle) -> Result<SaveDescriptor, Error> {
         let payload = self.read_payload(save)?;
-        let header = raw::Save::new(&save.native_id, &payload)?.describe()?;
-        let banner = header.icon.and_then(|icon| {
-            let mut pixels = Vec::with_capacity(16 * 16 * 4);
-            for &byte in icon {
-                for shift in [0, 4] {
-                    let palette_offset = ((byte >> shift) & 0x0f) as usize * 2;
-                    let color = u16::from_le_bytes([
-                        header.palette[palette_offset],
-                        header.palette[palette_offset + 1],
-                    ]);
-                    pixels.extend_from_slice(&[
-                        ((color & 0x1f) * 255 / 31) as u8,
-                        (((color >> 5) & 0x1f) * 255 / 31) as u8,
-                        (((color >> 10) & 0x1f) * 255 / 31) as u8,
-                        if color == 0 { 0 } else { 255 },
-                    ]);
-                }
-            }
-            RgbaImage::from_raw(16, 16, pixels)
-        });
+        let parsed = raw::Save::new(&save.native_id, &payload)?;
+        let header = parsed.describe()?;
         let title = header.title.into_owned();
         let title = if title.is_empty() {
             save.native_name()
@@ -227,7 +220,6 @@ impl PlaystationMemoryCard {
             .unwrap_or_else(|_| Timestamp::now());
         Ok(SaveDescriptor {
             id: save.depot_id(),
-            banner,
             title,
             description: save.native_name(),
             timestamp,

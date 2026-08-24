@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures::Stream;
-use image::RgbaImage;
 use parking_lot::Mutex;
 
 use crate::BoxFuture;
@@ -11,11 +10,11 @@ use crate::error::Error;
 use crate::storage::ChangeSignal;
 pub use id::SaveDepotId;
 
+pub mod icons;
 pub mod id;
 
 pub struct SaveDescriptor {
     pub id: SaveDepotId,
-    pub banner: Option<RgbaImage>,
     pub title: String,
     pub description: String,
     pub timestamp: jiff::Timestamp,

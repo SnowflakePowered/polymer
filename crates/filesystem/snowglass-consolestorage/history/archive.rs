@@ -119,16 +119,18 @@ impl SaveVersioning {
         &self,
         owner: &R,
         present: &HashSet<SaveDepotId>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.recover(owner).await?;
         let tracked = self.tracked_depots()?;
         let _guard = self.inner.operation.lock().await;
+        let mut changed = false;
         for depot in tracked {
             if !present.contains(&depot) {
                 self.archive_and_remove_locked(owner, depot).await?;
+                changed = true;
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     fn parse_trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {

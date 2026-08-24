@@ -20,7 +20,7 @@ use crate::impls::GameCubeDiscId;
 use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
-    SaveGameSink, SaveWatcher,
+    SaveGameSink, SaveWatcher, icons::IconSave,
 };
 use crate::savegroups::TARGET_CAPACITY_PERCENT;
 use crate::storage::VolumeOverlay;
@@ -47,6 +47,17 @@ impl VolumeOverlay for GameCubeMemoryCard {
 impl SaveRepo for GameCubeMemoryCard {
     fn versioning(&self) -> &SaveVersioning {
         self.storage.versioning()
+    }
+
+    fn read_save_icon(
+        &self,
+        id: SaveDepotId,
+    ) -> Result<Option<crate::savegame::icons::SaveIcon>, Error> {
+        Ok(self
+            .saves()
+            .into_iter()
+            .find(|save| save.depot_id() == id)
+            .and_then(|save| save.read_icon()))
     }
 }
 
@@ -253,7 +264,6 @@ impl GameCubeMemoryCard {
             .unwrap_or_else(|_| Timestamp::now());
         Ok(SaveDescriptor {
             id: save.depot_id(),
-            banner: None,
             title,
             description,
             timestamp,

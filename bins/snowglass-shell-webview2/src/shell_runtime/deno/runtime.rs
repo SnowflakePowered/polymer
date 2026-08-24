@@ -234,12 +234,15 @@ impl Runtime {
             input_commands,
             webrtc_commands,
         ));
-        let services = snowglass_runtime::FrontendServices::new(
-            plugin_runtime.clone(),
-            viewer.as_ref().map(configuration_defaults),
-            platform,
-        );
-        let (snowglass_extension, notifications) = snowglass_deno::snowglass::init(services);
+        let (snowglass_extension, notifications) =
+            snowglass_deno::snowglass::init_with_notifications(|notifications| {
+                snowglass_runtime::FrontendServices::new(
+                    plugin_runtime.clone(),
+                    viewer.as_ref().map(configuration_defaults),
+                    platform,
+                    notifications,
+                )
+            });
         let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
             main_module: document_url.clone(),
             module_loader: browser_loader.clone(),

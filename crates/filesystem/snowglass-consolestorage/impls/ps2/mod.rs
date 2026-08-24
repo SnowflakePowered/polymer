@@ -18,12 +18,13 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use self::pcsx2::Pcsx2MemoryStorage;
+pub(crate) use self::psu::Save as IconSaveContainer;
 use self::psu::Save;
 use crate::impls::SonyProductCode;
 use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
-    SaveGameSink, SaveWatcher,
+    SaveGameSink, SaveWatcher, icons::IconSave,
 };
 use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
@@ -171,6 +172,16 @@ impl SaveRepo for Playstation2MemoryCard {
     fn versioning(&self) -> &crate::SaveVersioning {
         self.storage.versioning()
     }
+
+    fn read_save_icon(
+        &self,
+        id: SaveDepotId,
+    ) -> Result<Option<crate::savegame::icons::SaveIcon>, Error> {
+        let Some(save) = self.saves_in_depot(id).into_iter().next() else {
+            return Ok(None);
+        };
+        Ok(self.read_save(&save)?.read_icon())
+    }
 }
 
 impl Playstation2MemoryCard {
@@ -239,7 +250,6 @@ impl Playstation2MemoryCard {
             .unwrap_or_else(|_| Timestamp::now());
         Ok(SaveDescriptor {
             id: save.depot_id(),
-            banner: None,
             title: save.display_name().into_owned(),
             description: save.display_name().into_owned(),
             timestamp,
@@ -637,6 +647,24 @@ mod tests {
         assert_eq!(source.save(depot).history().unwrap().len(), 2);
         assert_eq!(second.parent, Some(first.id));
 
+        let unrelated_depot = SaveDataHandle::depot_id_from_serial("SLUS-54321");
+        source
+            .write_save(
+                &Save::from_files(
+                    "BASLUS-54321",
+                    &[],
+                    [("other.bin", &[][..], &b"unrelated"[..])],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let unrelated_tip = source
+            .save(unrelated_depot)
+            .checkpoint()
+            .await
+            .unwrap()
+            .unwrap();
+
         let screenshot = b"\x89PNG\r\n\x1a\npreview".to_vec();
         let commit = source.save(depot).commit(first.id).unwrap();
         let attachment = commit
@@ -672,6 +700,20 @@ mod tests {
                 .unwrap()
                 .data(),
             b"first"
+        );
+        assert_eq!(
+            source
+                .read_save(&SaveDataHandle::from_name(b"BASLUS-54321").unwrap())
+                .unwrap()
+                .files()
+                .next()
+                .unwrap()
+                .data(),
+            b"unrelated"
+        );
+        assert_eq!(
+            source.save(unrelated_depot).history().unwrap(),
+            vec![unrelated_tip]
         );
 
         let destination_directory = tempfile::tempdir().unwrap();
@@ -880,9 +922,8 @@ mod tests {
         assert!(pcsx2.storage().exists("_pcsx2_superblock"));
         assert!(!card.storage.exists("card/_pcsx2_superblock"));
 
-        let notification_card = card.clone();
-        let notification =
-            tokio::spawn(async move { notification_card.game_saved().await.unwrap() });
+        let watcher = card.watch_saves(&[]).unwrap();
+        let notification = tokio::spawn(async move { watcher.changed().await });
         tokio::task::yield_now().await;
         pcsx2.storage().create_dir_all("BASLUS-00002").unwrap();
         let file = pcsx2.storage().create("BASLUS-00002/save.dat").unwrap();

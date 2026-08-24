@@ -3,7 +3,7 @@ use crate::impls::wiiu::xml;
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
-    SaveGameSink, SaveWatcher,
+    SaveGameSink, SaveWatcher, icons::IconSave,
 };
 use crate::storage::{ChangeSignal, VolumeOverlay};
 use crate::{
@@ -13,8 +13,6 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::{FutureExt, StreamExt};
-use image::DynamicImage;
-use image::codecs::tga::TgaDecoder;
 use jiff::Timestamp;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
@@ -215,6 +213,22 @@ impl SaveRepo for WiiUSaveRepo {
     fn versioning(&self) -> &SaveVersioning {
         self.root.versioning()
     }
+
+    fn read_save_icon(
+        &self,
+        id: SaveDepotId,
+    ) -> Result<Option<crate::savegame::icons::SaveIcon>, Error> {
+        Ok(Save {
+            storage: self.root.as_ref(),
+            root: id.save_root(),
+        }
+        .read_icon())
+    }
+}
+
+pub(crate) struct Save<'a> {
+    pub(crate) storage: &'a dyn Storage,
+    pub(crate) root: String,
 }
 
 impl WiiUSaveRepo {
@@ -222,7 +236,6 @@ impl WiiUSaveRepo {
 
     fn describe_save(&self, id: SaveDepotId) -> Result<SaveDescriptor, Error> {
         let root = id.save_root();
-
         let timestamp = self
             .root
             .read_dir(&root, true)?
@@ -238,14 +251,6 @@ impl WiiUSaveRepo {
             .ok()
             .and_then(|source| xml::read_from(BufReader::new(source), &root).ok());
 
-        let banner = self
-            .root
-            .open_read(&format!("{root}/meta/iconTex.tga"))
-            .ok()
-            .and_then(|source| TgaDecoder::new(BufReader::new(source)).ok())
-            .and_then(|decoder| DynamicImage::from_decoder(decoder).ok())
-            .map(|image| image.to_rgba8());
-
         let title = meta
             .as_ref()
             .map(|meta| meta.longname_en.0.clone())
@@ -259,7 +264,6 @@ impl WiiUSaveRepo {
 
         Ok(SaveDescriptor {
             id,
-            banner,
             title,
             description,
             timestamp,

@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use encoding_rs::SHIFT_JIS;
-use image::{Rgba, RgbaImage};
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -164,26 +163,16 @@ impl Header<'_> {
         &self.raw.application_id
     }
 
-    pub fn icon(&self) -> Option<RgbaImage> {
-        let icon = self.icons.get(..512)?;
-        let mut image = RgbaImage::new(32, 32);
-        for (index, pixel) in image.pixels_mut().enumerate() {
-            let byte = icon[index / 2];
-            let palette_index = if index % 2 == 0 {
-                byte >> 4
-            } else {
-                byte & 0x0f
-            };
-            let color = self.raw.palette[usize::from(palette_index)].get();
-            let expand = |value: u16| ((value << 4) | value) as u8;
-            *pixel = Rgba([
-                expand((color >> 8) & 0x0f),
-                expand((color >> 4) & 0x0f),
-                expand(color & 0x0f),
-                expand((color >> 12) & 0x0f),
-            ]);
-        }
-        Some(image)
+    pub(crate) fn icons(&self) -> &[u8] {
+        self.icons
+    }
+
+    pub(crate) fn animation_speed(&self) -> u16 {
+        self.raw.animation_speed.get()
+    }
+
+    pub(crate) fn icon_color(&self, index: u8) -> u16 {
+        self.raw.palette[usize::from(index)].get()
     }
 }
 
