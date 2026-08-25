@@ -7,10 +7,9 @@ use crate::{
     hub::{AxisTransform, PointerAxis, SourceControl},
     layout::{
         EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, InputBinding, InputLayout,
-        KeyboardMapping, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
+        KeyboardMapping, ProjectionMode, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
     },
-    projection::{Projection, Target},
-    sdl::{self, Wire},
+    sdl::Wire,
 };
 use consolespec::input::{
     Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign,
@@ -52,6 +51,7 @@ impl Default for ProviderConfig {
                 selector: DeviceSelector::Index(0),
                 layout_id: "XBOX_CONTROLLER".to_owned(),
                 force_mouse: false,
+                projection_mode: ProjectionMode::Position,
             }],
             gamecontroller_database: None,
             keyboard_mapping_directory: None,
@@ -64,6 +64,7 @@ pub struct SlotConfig {
     pub selector: DeviceSelector,
     pub layout_id: String,
     pub force_mouse: bool,
+    pub projection_mode: ProjectionMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -356,6 +357,7 @@ struct Pad {
     gamepad: Gamepad,
     identity: DeviceIdentity,
     layout_id: String,
+    projection_mode: ProjectionMode,
     mapping: CompiledMapping,
     last: GamepadState,
     has_touchpad: bool,
@@ -1064,6 +1066,7 @@ fn refresh_devices(
                     &gamepad,
                     &identity,
                     layout,
+                    slots[slot].projection_mode,
                     remappings,
                     &interactive_remappings[slot],
                 );
@@ -1072,6 +1075,7 @@ fn refresh_devices(
                     gamepad,
                     identity,
                     layout_id: slots[slot].layout_id.clone(),
+                    projection_mode: slots[slot].projection_mode,
                     mapping,
                     last: state,
                     has_touchpad,
@@ -1192,8 +1196,14 @@ fn recompile_pad(
         return;
     };
     let layout = InputLayout::get(&pad.layout_id).expect("pinned layout remains available");
-    pad.mapping =
-        compiled_with_overrides(&pad.gamepad, &pad.identity, layout, remappings, overrides);
+    pad.mapping = compiled_with_overrides(
+        &pad.gamepad,
+        &pad.identity,
+        layout,
+        pad.projection_mode,
+        remappings,
+        overrides,
+    );
     pad.last.buttons = !pad.last.buttons;
 }
 
@@ -1201,12 +1211,18 @@ fn compiled_with_overrides(
     gamepad: &Gamepad,
     identity: &DeviceIdentity,
     layout: &InputLayout,
+    projection_mode: ProjectionMode,
     remappings: &RemapDatabase,
     overrides: &HashMap<BindingKey, InputBinding>,
 ) -> CompiledMapping {
-    let mut effective = remappings.clone();
-    effective.bindings.extend(overrides.clone());
-    CompiledMapping::new(gamepad, identity, layout, &effective)
+    CompiledMapping::new(
+        gamepad,
+        identity,
+        layout,
+        projection_mode,
+        remappings,
+        overrides,
+    )
 }
 
 fn physical_state(pad: &Pad, mapped: GamepadState) -> PhysicalGamepadState {
@@ -1290,24 +1306,35 @@ impl CompiledMapping {
         gamepad: &Gamepad,
         identity: &DeviceIdentity,
         layout: &InputLayout,
+        projection_mode: ProjectionMode,
         database: &RemapDatabase,
+        overrides: &HashMap<BindingKey, InputBinding>,
     ) -> Self {
         let mut targets = HashMap::<BindingKey, InputBinding>::new();
-        for button in ALL_BUTTONS {
-            if let Some(target) = default_button_target(gamepad, button, layout) {
-                targets.insert(target, InputBinding::Button { button });
+        if projection_mode != ProjectionMode::Custom {
+            for button in ALL_BUTTONS {
+                if let Some(target) =
+                    default_button_target(gamepad, button, layout, projection_mode)
+                {
+                    targets.insert(target, InputBinding::Button { button });
+                }
+            }
+            apply_default_axes(&mut targets, layout);
+            targets.extend(database.bindings.clone());
+            for profile in &database.profiles {
+                if profile_matches(profile, identity, layout) {
+                    targets.extend(profile.bindings.clone());
+                }
             }
         }
-        apply_default_axes(&mut targets, layout);
-        targets.extend(database.bindings.clone());
-        for profile in &database.profiles {
-            if profile_matches(profile, identity, layout) {
-                targets.extend(profile.bindings.clone());
-            }
-        }
+        targets.extend(overrides.clone());
 
         let mut buttons = Vec::new();
-        let mut axes = DEFAULT_AXES;
+        let mut axes = if projection_mode == ProjectionMode::Custom {
+            [None; 6]
+        } else {
+            DEFAULT_AXES
+        };
         let mut digital_triggers = Vec::new();
         for (element, binding) in targets {
             if !layout.has(element) {
@@ -1487,18 +1514,8 @@ fn projected_from(layout: &InputLayout, wire: Wire) -> Option<BindingKey> {
 /// press for "A" depends on what their hardware prints, not on where the pad
 /// puts it. A Nintendo pad prints A on the east position, so east is what
 /// should drive the emulated A.
-fn labelled_face_target(
-    gamepad: &Gamepad,
-    source: SdlButton,
-    layout: &InputLayout,
-) -> Option<BindingKey> {
-    if !matches!(
-        source,
-        SdlButton::South | SdlButton::East | SdlButton::West | SdlButton::North
-    ) {
-        return None;
-    }
-    let label = match gamepad.button_label_for_gamepad_type(to_sdl_button(source)) {
+fn labelled_face_target_for(label: ButtonLabel, layout: &InputLayout) -> Option<BindingKey> {
+    let label = match label {
         ButtonLabel::A => "A",
         ButtonLabel::B => "B",
         ButtonLabel::X => "X",
@@ -1521,8 +1538,29 @@ fn default_button_target(
     gamepad: &Gamepad,
     source: SdlButton,
     layout: &InputLayout,
+    projection_mode: ProjectionMode,
 ) -> Option<BindingKey> {
-    if let Some(target) = labelled_face_target(gamepad, source, layout) {
+    default_button_target_for(
+        gamepad.button_label_for_gamepad_type(to_sdl_button(source)),
+        source,
+        layout,
+        projection_mode,
+    )
+}
+
+fn default_button_target_for(
+    label: ButtonLabel,
+    source: SdlButton,
+    layout: &InputLayout,
+    projection_mode: ProjectionMode,
+) -> Option<BindingKey> {
+    if projection_mode == ProjectionMode::Name
+        && matches!(
+            source,
+            SdlButton::South | SdlButton::East | SdlButton::West | SdlButton::North
+        )
+        && let Some(target) = labelled_face_target_for(label, layout)
+    {
         return Some(target);
     }
     projected_from(layout, Wire::Button(source)).or_else(|| positional_face_target(source, layout))
@@ -1616,15 +1654,7 @@ fn profile_matches(
 /// right shoulder, and an N64 C-button the right stick, neither of which a
 /// key-shaped match could have known.
 fn element_wire(layout: &InputLayout, key: BindingKey) -> Option<Wire> {
-    match Projection::shared().target(&layout.id, key)? {
-        Target::Key(target) => sdl::wire(target),
-        // A composite is at no *single* location: an eight-way stick's
-        // north-east is the pad's up and right together, which one binding
-        // cannot drive and one physical button cannot be. It still claims both
-        // in the advertised mask — see `InputLayout::sdl_output`.
-        Target::Both(..) => None,
-        Target::Transport(_) | Target::None => None,
-    }
+    layout.sdl_wire(key)
 }
 
 fn element_button(layout: &InputLayout, key: BindingKey) -> Option<GamepadButton> {
@@ -1711,6 +1741,9 @@ fn load_keyboard_mappings(
                 return Ok(None);
             }
             let layout = InputLayout::get(&slot.layout_id).expect("slot layout was validated");
+            if slot.projection_mode == ProjectionMode::Custom {
+                return CompiledKeyboardMapping::new(KeyboardMapping::default(), layout).map(Some);
+            }
             let controller_path = directory.join(format!("{}.kb.toml", slot.layout_id));
             let source = if controller_path.is_file() {
                 fs::read_to_string(&controller_path).map_err(|error| {
@@ -1729,18 +1762,68 @@ fn load_keyboard_mappings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::projection::Projection;
     use consolespec::input::key;
 
+    fn face_order(
+        layout: &InputLayout,
+        mode: ProjectionMode,
+        labels: [ButtonLabel; 4],
+    ) -> Vec<&str> {
+        [
+            SdlButton::South,
+            SdlButton::East,
+            SdlButton::West,
+            SdlButton::North,
+        ]
+        .into_iter()
+        .zip(labels)
+        .map(|(source, label)| {
+            let target = default_button_target_for(label, source, layout, mode).unwrap();
+            layout
+                .elements
+                .iter()
+                .find(|element| element.key == target)
+                .unwrap()
+                .label
+                .as_str()
+        })
+        .collect()
+    }
+
     #[test]
-    fn switch_face_labels_are_not_positional() {
+    fn nintendo_face_buttons_can_follow_names_or_positions() {
         let layout = InputLayout::get("SWITCH_PRO_CONTROLLER").unwrap();
+        let labels = [
+            ButtonLabel::B,
+            ButtonLabel::A,
+            ButtonLabel::Y,
+            ButtonLabel::X,
+        ];
         assert_eq!(
-            layout.elements.iter().find(|e| e.label == "B").unwrap().key,
-            key!(button.b)
+            face_order(layout, ProjectionMode::Name, labels),
+            ["B", "A", "Y", "X"]
         );
         assert_eq!(
-            element_button(layout, key!(button.b)),
-            Some(GamepadButton::B)
+            face_order(layout, ProjectionMode::Position, labels),
+            ["A", "B", "X", "Y"]
+        );
+    }
+
+    #[test]
+    fn playstation_face_buttons_keep_cross_circle_square_triangle_order() {
+        let layout = InputLayout::get("DUALSENSE_CONTROLLER").unwrap();
+        let labels = [
+            ButtonLabel::Cross,
+            ButtonLabel::Circle,
+            ButtonLabel::Square,
+            ButtonLabel::Triangle,
+        ];
+        let expected = ["Cross", "Circle", "Square", "Triangle"];
+        assert_eq!(face_order(layout, ProjectionMode::Name, labels), expected);
+        assert_eq!(
+            face_order(layout, ProjectionMode::Position, labels),
+            expected
         );
     }
 

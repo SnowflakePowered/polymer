@@ -3,6 +3,7 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
 }
 
 export type GraphicsHook = "opengl" | "vulkan" | "d3d11" | "d3d12";
+export type ProjectionMode = "name" | "position" | "custom";
 
 export type TrackedSurface = {
   index: number;
@@ -18,6 +19,7 @@ export type GamePadMapping = {
   slot: number;
   port?: string;
   layout: string;
+  projectionMode?: ProjectionMode;
   mapping: Record<string, string>;
 };
 
@@ -140,7 +142,13 @@ export type ConfigurationSelection = {
   emulator: string;
   groups: Array<{
     name: string;
-    ports: Array<{ index: number; layout: string; device: string }>;
+    ports: Array<{
+      index: number;
+      layout: string;
+      device: string;
+      projectionMode?: ProjectionMode;
+      mapping?: Record<string, string>;
+    }>;
   }>;
   settings: Record<string, unknown>;
   storage?: Record<string, string | string[]>;

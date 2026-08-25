@@ -1487,6 +1487,7 @@ fn start_target_session(
                     selector: pad.selector.clone(),
                     layout_id: pad.layout.clone(),
                     force_mouse: pad.force_mouse,
+                    projection_mode: snowglass_input::layout::ProjectionMode::Position,
                 })
                 .collect(),
             gamecontroller_database,

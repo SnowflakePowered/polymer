@@ -58,6 +58,7 @@ export function createEmulator(webrtc) {
       })),
       gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
         ...mapping,
+        projectionMode: mapping.projectionMode ?? "position",
         mapping: { ...(mapping.mapping || {}) },
       })),
       machine: options.machine,
