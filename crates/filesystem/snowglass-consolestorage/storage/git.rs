@@ -13,6 +13,7 @@ use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 use jiff::Timestamp;
 use parking_lot::{Mutex, RwLock};
 use tokio::io::AsyncRead;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
@@ -429,6 +430,7 @@ struct GitVolumeInner {
     checkout: DirectoryStorage,
     index_path: PathBuf,
     cache_ready: Mutex<bool>,
+    changes: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -460,6 +462,7 @@ impl GitVolumeStorage {
             checkout: DirectoryStorage::unmanaged(checkout_root),
             index_path,
             cache_ready: Mutex::new(false),
+            changes: Arc::new(Notify::new()),
         });
         Self {
             artifacts: GitArtifactRegistry(inner.clone()),
@@ -1202,7 +1205,11 @@ impl Storage for GitVolumeStorage {
             .write()
             .entries
             .insert(path.to_owned(), OverlayEntry::File);
-        Ok(file)
+        self.inner.changes.notify_one();
+        Ok(Arc::new(GitVolumeFile::new(
+            file,
+            self.inner.changes.clone(),
+        )))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
@@ -1216,7 +1223,14 @@ impl Storage for GitVolumeStorage {
                 .entries
                 .insert(path.to_owned(), OverlayEntry::File);
         }
-        Ok(file)
+        if write {
+            Ok(Arc::new(GitVolumeFile::new(
+                file,
+                self.inner.changes.clone(),
+            )))
+        } else {
+            Ok(file)
+        }
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -1231,13 +1245,16 @@ impl Storage for GitVolumeStorage {
             .write()
             .entries
             .insert(path.to_owned(), OverlayEntry::Deleted);
+        self.inner.changes.notify_one();
         Ok(())
     }
 
     fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
         let _ = paths;
         self.ensure_checkout()?;
-        self.inner.checkout.watch(&[""])
+        Ok(Some(Box::new(GitVolumeSignal {
+            changes: self.inner.changes.clone(),
+        })))
     }
 
     fn install_file<'a>(
@@ -1255,6 +1272,7 @@ impl Storage for GitVolumeStorage {
                 .write()
                 .entries
                 .insert(dest, OverlayEntry::File);
+            self.inner.changes.notify_one();
             Ok(result)
         })
     }
@@ -1302,6 +1320,7 @@ impl MountableStorage for GitVolumeStorage {
             }
         }
         drop(working);
+        self.inner.changes.notify_one();
         Ok(())
     }
 
@@ -1321,6 +1340,63 @@ impl MountableStorage for GitVolumeStorage {
             let _ = path;
             Ok(())
         }
+    }
+}
+
+struct GitVolumeSignal {
+    changes: Arc<Notify>,
+}
+
+impl ChangeSignal for GitVolumeSignal {
+    fn changed(&self) -> BoxFuture<'_, ()> {
+        Box::pin(self.changes.notified())
+    }
+}
+
+struct GitVolumeFile {
+    file: Arc<dyn StorageFile>,
+    changes: Arc<Notify>,
+}
+
+impl GitVolumeFile {
+    fn new(file: Arc<dyn StorageFile>, changes: Arc<Notify>) -> Self {
+        Self { file, changes }
+    }
+}
+
+impl StorageFile for GitVolumeFile {
+    fn metadata(&self) -> Result<Metadata, Error> {
+        self.file.metadata()
+    }
+
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> Result<usize, Error> {
+        self.file.read_at(offset, buffer)
+    }
+
+    fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error> {
+        let written = self.file.write_at(offset, buffer)?;
+        if written != 0 {
+            self.changes.notify_one();
+        }
+        Ok(written)
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), Error> {
+        self.file.set_len(len)?;
+        self.changes.notify_one();
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        self.file.flush()?;
+        self.changes.notify_one();
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), Error> {
+        self.file.sync()?;
+        self.changes.notify_one();
+        Ok(())
     }
 }
 

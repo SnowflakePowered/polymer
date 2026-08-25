@@ -200,6 +200,7 @@ impl WiiNand {
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, Read};
+    use std::time::Duration;
 
     use uuid::Uuid;
 
@@ -339,5 +340,46 @@ mod tests {
                 .volume(GitVolumeKind::Nand, nand_id)
                 .exists("tmp/runtime-only")
         );
+    }
+
+    #[tokio::test]
+    async fn watches_same_size_save_writes_with_an_unchanged_timestamp() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform =
+            PlatformRepository::open(directory.path().join("NINTENDO_WII"), WiiNand::PLATFORM)
+                .unwrap();
+        let id = Uuid::now_v7();
+        let storage = platform.volume(GitVolumeKind::SaveRepo, id);
+        let checkout = storage.checkout_path().to_owned();
+        let versioned = VersionedStorage::from_git(storage).unwrap();
+        let saves = WiiNand::new_save_repo(versioned, id, None).await.unwrap();
+        let path = "title/00010001/57474f45/data/pers2.dat";
+        saves
+            .install_file(Box::new(Cursor::new(b"old!")), path)
+            .await
+            .unwrap();
+        assert!(saves.checkpoint_saves().await.unwrap());
+
+        let modified = std::fs::metadata(checkout.join(path))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let watcher = saves.watch_saves(&[]).unwrap();
+        saves
+            .open(path, true)
+            .unwrap()
+            .write_all_at(0, b"new!")
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(checkout.join(path))
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), watcher.changed())
+            .await
+            .unwrap();
+        assert!(saves.checkpoint_saves().await.unwrap());
     }
 }

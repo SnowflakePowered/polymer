@@ -109,27 +109,6 @@ impl WiiSaveRepo {
         ids.dedup();
         ids
     }
-
-    fn fingerprint(&self, selected: &[SaveDepotId]) -> Vec<(String, u64, Timestamp)> {
-        let ids = if selected.is_empty() {
-            self.save_ids()
-        } else {
-            selected.to_vec()
-        };
-        let mut state = Vec::new();
-        for id in ids {
-            let root = data_path(id.0);
-            if let Ok(entries) = self.root.read_dir(&root, true) {
-                state.extend(
-                    entries
-                        .filter(|entry| entry.metadata.kind == EntryKind::File)
-                        .map(|entry| (entry.path, entry.metadata.len, entry.metadata.mtime)),
-                );
-            }
-        }
-        state.sort_by(|left, right| left.0.cmp(&right.0));
-        state
-    }
 }
 
 impl VolumeOverlay for WiiSaveRepo {
@@ -260,16 +239,10 @@ impl SaveGameSink for WiiSaveRepo {
         let activity = self.root.watch(&watched)?.ok_or_else(|| {
             Error::Unsupported(format!("{} cannot watch saves", WiiNand::PLATFORM))
         })?;
-        let selected = saves.to_vec();
-        let root = self.root.clone();
-        Ok(SaveWatcher::with_fingerprint(
+        Ok(SaveWatcher::with_settle(
             saves.to_vec(),
             activity,
             Duration::from_secs(2),
-            move || {
-                let owner = Self { root: root.clone() };
-                owner.fingerprint(&selected)
-            },
         ))
     }
 }
