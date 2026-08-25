@@ -149,33 +149,6 @@ impl VirtualNand for WiiNand {
         }
         Ok(cloned)
     }
-
-    async fn uninstall(&self, id: &str) -> Result<(), Error> {
-        let Some(artifact) = self.storage.artifacts().artifact(id).await? else {
-            return Ok(());
-        };
-        let title_id = u64::from_str_radix(id, 16)
-            .map_err(|_| Error::InvalidPath(format!("`{id}` is not a Wii title ID")))?;
-
-        for file in artifact.manifest() {
-            let path = file.path().to_string_lossy();
-            if !path.starts_with("shared1/") {
-                self.storage.remove(&path)?;
-            }
-        }
-        let title_root = super::title_path(title_id);
-        for path in [format!("{title_root}/content"), title_root] {
-            if self
-                .storage
-                .read_dir(&path, false)
-                .is_ok_and(|mut entries| entries.next().is_none())
-            {
-                let _ = self.storage.remove(&path);
-            }
-        }
-
-        self.storage.artifacts().forget(id).await
-    }
 }
 
 impl WiiNand {
@@ -348,6 +321,7 @@ mod tests {
         transient.write_all_at(0, b"discard me").unwrap();
 
         assert!(saves.checkpoint_saves().await.unwrap());
+        composed.finish("").unwrap();
         drop(composed);
         drop(saves);
         drop(nand);

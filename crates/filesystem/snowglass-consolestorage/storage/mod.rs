@@ -406,14 +406,18 @@ pub struct DirectoryStorage {
 }
 
 impl DirectoryStorage {
+    pub(crate) fn unmanaged(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            volume: RwLock::new(None),
+        }
+    }
+
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, Error> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
 
-        Ok(Self {
-            root,
-            volume: RwLock::new(None),
-        })
+        Ok(Self::unmanaged(root))
     }
 
     /// Opens a directory strictly as a data store. Volume identity and other
@@ -421,10 +425,7 @@ impl DirectoryStorage {
     pub async fn new_unmanaged(root: impl Into<PathBuf>) -> Result<Self, Error> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(|e| Error::io(&root, e))?;
-        Ok(Self {
-            root,
-            volume: RwLock::new(None),
-        })
+        Ok(Self::unmanaged(root))
     }
 
     pub fn root(&self) -> &Path {

@@ -270,7 +270,10 @@ impl MountableStorage for ComposedStorage {
     }
 
     fn finish(&self, path: &str) -> Result<(), Error> {
-        self.owner(path)?.finish(path)
+        for layer in &self.layers {
+            layer.finish(path)?;
+        }
+        Ok(())
     }
 }
 
