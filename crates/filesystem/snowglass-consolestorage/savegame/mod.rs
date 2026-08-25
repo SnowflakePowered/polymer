@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use parking_lot::Mutex;
 
 use crate::BoxFuture;
@@ -84,12 +84,39 @@ impl SaveWatcher {
         )
     }
 
+    pub fn with_settle(
+        saves: Vec<SaveDepotId>,
+        activity: Box<dyn ChangeSignal>,
+        settle: Duration,
+    ) -> Self {
+        Self::new(saves, Box::new(SettledActivitySignal { activity, settle }))
+    }
+
     pub fn saves(&self) -> &[SaveDepotId] {
         &self.saves
     }
 
     pub fn changed(&self) -> BoxFuture<'_, ()> {
         self.signal.changed()
+    }
+}
+
+struct SettledActivitySignal {
+    activity: Box<dyn ChangeSignal>,
+    settle: Duration,
+}
+
+impl ChangeSignal for SettledActivitySignal {
+    fn changed(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.activity.changed().await;
+            loop {
+                tokio::time::sleep(self.settle).await;
+                if self.activity.changed().now_or_never().is_none() {
+                    return;
+                }
+            }
+        })
     }
 }
 
