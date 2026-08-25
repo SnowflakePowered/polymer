@@ -1,5 +1,4 @@
 use std::rc::Rc;
-#[cfg(not(test))]
 use std::sync::OnceLock;
 use std::{collections::HashMap, sync::Arc};
 
@@ -97,108 +96,6 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    #[cfg(test)]
-    pub async fn new(
-        document: &BaseDocument,
-        html: &str,
-        source_name: &str,
-        width: u32,
-        height: u32,
-        emulator_commands: EmulatorCommandSink,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let plugin_runtime = std::sync::Arc::new(snowglass_pluginhost::PluginRuntime::new(
-            snowglass_pluginhost::PluginRegistry::new(),
-            snowglass_pluginhost::PluginRuntimeOptions::default(),
-        ));
-        Self::new_with_plugin_runtime(
-            document,
-            html,
-            source_name,
-            width,
-            height,
-            emulator_commands,
-            plugin_runtime,
-        )
-        .await
-    }
-
-    #[cfg(test)]
-    pub async fn new_with_plugin_runtime(
-        document: &BaseDocument,
-        html: &str,
-        source_name: &str,
-        width: u32,
-        height: u32,
-        emulator_commands: EmulatorCommandSink,
-        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_with_command_sinks(
-            document,
-            html,
-            source_name,
-            width,
-            height,
-            emulator_commands,
-            InputCommandSink::default(),
-            WebRtcCommandSink::default(),
-            plugin_runtime,
-        )
-        .await
-    }
-
-    #[cfg(test)]
-    pub async fn new_with_command_sinks(
-        document: &BaseDocument,
-        html: &str,
-        source_name: &str,
-        width: u32,
-        height: u32,
-        emulator_commands: EmulatorCommandSink,
-        input_commands: InputCommandSink,
-        webrtc_commands: WebRtcCommandSink,
-        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (runtime, _notifications) = Self::new_with_command_sinks_and_notifications(
-            document,
-            html,
-            source_name,
-            width,
-            height,
-            emulator_commands,
-            input_commands,
-            webrtc_commands,
-            plugin_runtime,
-        )
-        .await?;
-        Ok(runtime)
-    }
-
-    #[cfg(test)]
-    pub async fn new_with_command_sinks_and_notifications(
-        document: &BaseDocument,
-        html: &str,
-        source_name: &str,
-        width: u32,
-        height: u32,
-        emulator_commands: EmulatorCommandSink,
-        input_commands: InputCommandSink,
-        webrtc_commands: WebRtcCommandSink,
-        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
-    ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
-        Self::from_snapshot(
-            Self::serialized_snapshot(document, width, height, 1.0)?,
-            html.to_owned(),
-            source_name.to_owned(),
-            emulator_commands,
-            input_commands,
-            webrtc_commands,
-            None,
-            plugin_runtime,
-            None,
-        )
-        .await
-    }
-
     pub(in crate::shell_runtime) fn serialized_snapshot(
         document: &BaseDocument,
         width: u32,
@@ -392,19 +289,6 @@ impl Runtime {
                 .mutations,
         )
     }
-
-    #[cfg(test)]
-    pub fn take_messages(&mut self) -> Vec<Value> {
-        std::mem::take(
-            &mut self
-                .worker
-                .js_runtime_mut()
-                .op_state()
-                .borrow_mut()
-                .borrow_mut::<BridgeState>()
-                .messages,
-        )
-    }
 }
 
 fn configuration_defaults(
@@ -428,12 +312,7 @@ fn configuration_defaults(
 }
 
 fn start_inspector_server() -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(test)]
-    return Ok(());
-
-    #[cfg(not(test))]
     static INSPECTOR: OnceLock<Result<std::net::SocketAddr, String>> = OnceLock::new();
-    #[cfg(not(test))]
     match INSPECTOR.get_or_init(|| {
         let server = snowglass_deno::create_inspector_server(
             std::net::SocketAddr::from(([127, 0, 0, 1], 0)),

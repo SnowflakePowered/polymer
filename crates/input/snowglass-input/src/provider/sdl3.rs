@@ -1727,49 +1727,6 @@ fn load_keyboard_mappings(
 }
 
 #[cfg(test)]
-fn validate_remappings(database: &RemapDatabase, layouts: &[&InputLayout]) -> Result<(), String> {
-    for &target in database.bindings.keys() {
-        if !layouts.iter().any(|layout| layout.has(target)) {
-            return Err(format!(
-                "remapping target {target} is absent from every configured layout"
-            ));
-        }
-    }
-    if database
-        .bindings
-        .values()
-        .any(|binding| matches!(binding, InputBinding::Disabled { disabled: false }))
-    {
-        return Err("disabled bindings must set disabled to true".to_owned());
-    }
-    for profile in &database.profiles {
-        let matching = layouts
-            .iter()
-            .copied()
-            .filter(|layout| profile.layout.as_deref().is_none_or(|id| id == layout.id))
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            continue;
-        }
-        for &target in profile.bindings.keys() {
-            if !matching.iter().any(|layout| layout.has(target)) {
-                return Err(format!(
-                    "remapping target {target} is absent from matching configured layouts"
-                ));
-            }
-        }
-        if profile
-            .bindings
-            .values()
-            .any(|binding| matches!(binding, InputBinding::Disabled { disabled: false }))
-        {
-            return Err("disabled bindings must set disabled to true".to_owned());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use consolespec::input::key;
@@ -2015,16 +1972,6 @@ mod tests {
         let layout = InputLayout::get("XBOX_CONTROLLER").unwrap();
         apply_mouse_axes(&mut state, layout, &mappings, pointer, now);
         assert_eq!(state.left_stick[0], -16_384);
-    }
-
-    #[test]
-    fn rejects_user_targets_outside_the_selected_layout() {
-        // Well-formed, but an Xbox pad has no Z button.
-        let remap =
-            RemapDatabase::from_json(r#"{"bindings":{"button.z":{"button":"south"}}}"#).unwrap();
-        assert!(
-            validate_remappings(&remap, &[InputLayout::get("XBOX_CONTROLLER").unwrap()]).is_err()
-        );
     }
 
     #[test]

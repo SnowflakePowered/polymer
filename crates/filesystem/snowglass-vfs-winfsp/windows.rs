@@ -53,11 +53,6 @@ const FILE_EXECUTE: u32 = 0x0000_0020;
 const ALLOCATION_UNIT: u64 = 4096;
 const VOLUME_SIZE: u64 = 1 << 40;
 
-#[cfg(test)]
-static TEST_READ_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
-static TEST_READ_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WinFspFilesystemHost {
     dispatcher_threads: u32,
@@ -576,11 +571,6 @@ impl FileSystemContext for SnowglassFileSystem {
         buffer: &mut [u8],
         offset: u64,
     ) -> winfsp::Result<u32> {
-        #[cfg(test)]
-        {
-            TEST_READ_CALLS.fetch_add(1, AtomicOrdering::Relaxed);
-            TEST_READ_BYTES.fetch_add(buffer.len() as u64, AtomicOrdering::Relaxed);
-        }
         // Windows has already checked the user handle's granted access. Cached
         // write-only handles can issue paging reads here, so rechecking the
         // original user access would incorrectly fail Cache Manager I/O.
@@ -730,8 +720,8 @@ fn endpoint_serial(endpoint: &str) -> u32 {
 mod tests {
     use super::*;
     use snowglass_vfs::{
-        FilesystemPlan, HostFileFactory, MemoryFileFactory, Permissions, Resource, ResourceOrigin,
-        ScratchBacking, ScratchVolumeFactory,
+        FilesystemPlan, MemoryFileFactory, Permissions, Resource, ResourceOrigin, ScratchBacking,
+        ScratchVolumeFactory,
     };
     use winfsp::U16CString;
 
@@ -835,190 +825,6 @@ mod tests {
         assert!(std::fs::write(&readonly_path, b"denied").is_err());
         std::fs::remove_file(&target_path).unwrap();
         std::fs::remove_dir(&user_path).unwrap();
-        drop(mounted);
-    }
-
-    #[test]
-    #[ignore = "requires WinFSP and SNOWGLASS_VFS_BENCH_FILE pointing at a large file"]
-    fn measures_host_file_callback_traffic() {
-        use std::io::Read;
-        use std::os::windows::fs::FileExt;
-        use std::time::Instant;
-
-        fn sequential_read(path: &str) -> (u64, std::time::Duration) {
-            let mut file = std::fs::File::open(path).unwrap();
-            let mut buffer = vec![0; 1024 * 1024];
-            let mut bytes = 0;
-            let started = Instant::now();
-            loop {
-                let read = file.read(&mut buffer).unwrap();
-                if read == 0 {
-                    break;
-                }
-                bytes += read as u64;
-            }
-            (bytes, started.elapsed())
-        }
-
-        fn parallel_sequential_read(path: &str, workers: usize) -> (u64, std::time::Duration) {
-            let started = Instant::now();
-            let bytes = std::thread::scope(|scope| {
-                let tasks = (0..workers)
-                    .map(|_| scope.spawn(|| sequential_read(path).0))
-                    .collect::<Vec<_>>();
-                tasks.into_iter().map(|task| task.join().unwrap()).sum()
-            });
-            (bytes, started.elapsed())
-        }
-
-        fn parallel_random_reads(path: &str, workers: usize, reads: u64) -> std::time::Duration {
-            let started = Instant::now();
-            std::thread::scope(|scope| {
-                let tasks = (0..workers)
-                    .map(|worker| {
-                        scope.spawn(move || {
-                            let file = std::fs::File::open(path).unwrap();
-                            let len = file.metadata().unwrap().len();
-                            let mut buffer = [0; 4096];
-                            let mut random = 0x9e37_79b9_7f4a_7c15_u64 ^ worker as u64;
-                            for _ in 0..reads {
-                                random ^= random << 7;
-                                random ^= random >> 9;
-                                let offset = random % (len - buffer.len() as u64);
-                                file.seek_read(&mut buffer, offset).unwrap();
-                            }
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                for task in tasks {
-                    task.join().unwrap();
-                }
-            });
-            started.elapsed()
-        }
-
-        let source = std::env::var_os("SNOWGLASS_VFS_BENCH_FILE")
-            .map(std::path::PathBuf::from)
-            .expect("SNOWGLASS_VFS_BENCH_FILE must point at a large file");
-        let memory_resource = Arc::new(Resource::new(
-            Arc::new(MemoryFileFactory::immutable(
-                std::fs::read(&source).unwrap(),
-            )),
-            Permissions::READ,
-            ResourceOrigin::Memory,
-        ));
-        let resource = Arc::new(Resource::new(
-            Arc::new(HostFileFactory::new(source.clone(), false)),
-            Permissions::READ,
-            ResourceOrigin::HostFile,
-        ));
-        let mut plan = FilesystemPlan::default();
-        plan.mount_file(
-            VfsPathBuf::new("/sample.bin").unwrap(),
-            resource,
-            Permissions::READ,
-        );
-        plan.mount_file(
-            VfsPathBuf::new("/memory.bin").unwrap(),
-            memory_resource,
-            Permissions::READ,
-        );
-        let filesystem = Arc::new(plan.seal().unwrap());
-        let endpoint = FilesystemEndpoint::random();
-        let path = endpoint.project(VfsPathBuf::new("/sample.bin").unwrap().as_path());
-        let memory_path = endpoint.project(VfsPathBuf::new("/memory.bin").unwrap().as_path());
-        let mounted = WinFspFilesystemHost::default()
-            .mount(endpoint, filesystem)
-            .unwrap();
-
-        let _ = sequential_read(&path);
-        TEST_READ_CALLS.store(0, AtomicOrdering::Relaxed);
-        TEST_READ_BYTES.store(0, AtomicOrdering::Relaxed);
-        let (bytes, elapsed) = sequential_read(&path);
-        let calls = TEST_READ_CALLS.load(AtomicOrdering::Relaxed);
-        let callback_bytes = TEST_READ_BYTES.load(AtomicOrdering::Relaxed);
-
-        let mut repeated_file = std::fs::File::open(&path).unwrap();
-        let mut repeated_buffer = vec![0; 1024 * 1024];
-        while repeated_file.read(&mut repeated_buffer).unwrap() != 0 {}
-        std::io::Seek::seek(&mut repeated_file, std::io::SeekFrom::Start(0)).unwrap();
-        TEST_READ_CALLS.store(0, AtomicOrdering::Relaxed);
-        TEST_READ_BYTES.store(0, AtomicOrdering::Relaxed);
-        let repeated_started = Instant::now();
-        while repeated_file.read(&mut repeated_buffer).unwrap() != 0 {}
-        let repeated_elapsed = repeated_started.elapsed();
-        let repeated_calls = TEST_READ_CALLS.load(AtomicOrdering::Relaxed);
-
-        TEST_READ_CALLS.store(0, AtomicOrdering::Relaxed);
-        TEST_READ_BYTES.store(0, AtomicOrdering::Relaxed);
-        let file = std::fs::File::open(&path).unwrap();
-        let len = file.metadata().unwrap().len();
-        let mut buffer = [0; 4096];
-        let mut random = 0x9e37_79b9_7f4a_7c15_u64;
-        let random_started = Instant::now();
-        for _ in 0..5_000 {
-            random ^= random << 7;
-            random ^= random >> 9;
-            let offset = random % (len - buffer.len() as u64);
-            file.seek_read(&mut buffer, offset).unwrap();
-        }
-        let random_elapsed = random_started.elapsed();
-        let random_calls = TEST_READ_CALLS.load(AtomicOrdering::Relaxed);
-        let random_callback_bytes = TEST_READ_BYTES.load(AtomicOrdering::Relaxed);
-
-        let _ = sequential_read(&memory_path);
-        TEST_READ_CALLS.store(0, AtomicOrdering::Relaxed);
-        TEST_READ_BYTES.store(0, AtomicOrdering::Relaxed);
-        let (memory_bytes, memory_elapsed) = sequential_read(&memory_path);
-        let memory_calls = TEST_READ_CALLS.load(AtomicOrdering::Relaxed);
-        let memory_file = std::fs::File::open(&memory_path).unwrap();
-        let memory_len = memory_file.metadata().unwrap().len();
-        let mut memory_buffer = [0; 4096];
-        let mut memory_random = 0x9e37_79b9_7f4a_7c15_u64;
-        let memory_random_started = Instant::now();
-        for _ in 0..5_000 {
-            memory_random ^= memory_random << 7;
-            memory_random ^= memory_random >> 9;
-            let offset = memory_random % (memory_len - memory_buffer.len() as u64);
-            memory_file.seek_read(&mut memory_buffer, offset).unwrap();
-        }
-        let memory_random_elapsed = memory_random_started.elapsed();
-
-        let native_path = source.to_string_lossy();
-        let (native_parallel_bytes, native_parallel_elapsed) =
-            parallel_sequential_read(&native_path, 8);
-        TEST_READ_CALLS.store(0, AtomicOrdering::Relaxed);
-        TEST_READ_BYTES.store(0, AtomicOrdering::Relaxed);
-        let (parallel_bytes, parallel_elapsed) = parallel_sequential_read(&path, 8);
-        let parallel_calls = TEST_READ_CALLS.load(AtomicOrdering::Relaxed);
-
-        let native_parallel_random = parallel_random_reads(&native_path, 8, 5_000);
-        TEST_READ_CALLS.store(0, AtomicOrdering::Relaxed);
-        TEST_READ_BYTES.store(0, AtomicOrdering::Relaxed);
-        let parallel_random = parallel_random_reads(&path, 8, 5_000);
-        let parallel_random_calls = TEST_READ_CALLS.load(AtomicOrdering::Relaxed);
-
-        eprintln!(
-            "WinFSP callback traffic: sequential {:.1} MiB/s, {calls} callbacks/{callback_bytes} bytes; random {:.0} IOPS, {random_calls} callbacks/{random_callback_bytes} bytes",
-            bytes as f64 / 1_048_576.0 / elapsed.as_secs_f64(),
-            5_000.0 / random_elapsed.as_secs_f64(),
-        );
-        eprintln!(
-            "Same-handle second pass: {:.1} MiB/s ({repeated_calls} callbacks)",
-            bytes as f64 / 1_048_576.0 / repeated_elapsed.as_secs_f64(),
-        );
-        eprintln!(
-            "WinFSP memory ceiling: sequential {:.1} MiB/s ({memory_calls} callbacks), random {:.0} IOPS",
-            memory_bytes as f64 / 1_048_576.0 / memory_elapsed.as_secs_f64(),
-            5_000.0 / memory_random_elapsed.as_secs_f64(),
-        );
-        eprintln!(
-            "8-way traffic: native sequential {:.1} MiB/s, WinFSP sequential {:.1} MiB/s ({parallel_calls} callbacks); native random {:.0} IOPS, WinFSP random {:.0} IOPS ({parallel_random_calls} callbacks)",
-            native_parallel_bytes as f64 / 1_048_576.0 / native_parallel_elapsed.as_secs_f64(),
-            parallel_bytes as f64 / 1_048_576.0 / parallel_elapsed.as_secs_f64(),
-            40_000.0 / native_parallel_random.as_secs_f64(),
-            40_000.0 / parallel_random.as_secs_f64(),
-        );
         drop(mounted);
     }
 }

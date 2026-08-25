@@ -1,6 +1,3 @@
-#[cfg(test)]
-use uuid::Uuid;
-
 use super::SaveVersioning;
 use crate::storage::VolumeOverlay;
 use crate::{Error, GitVolumeStorage, VolumeStorage};
@@ -20,17 +17,6 @@ impl VersionedStorage {
 
     pub fn versioning(&self) -> &SaveVersioning {
         &self.history
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(
-        root: &std::path::Path,
-        platform: &str,
-        id: Uuid,
-        kind: crate::StorageKind,
-    ) -> Self {
-        let repository = crate::PlatformRepository::open(root.join("platform"), platform).unwrap();
-        Self::new(repository.volume(kind, id)).unwrap()
     }
 }
 

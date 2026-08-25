@@ -280,12 +280,6 @@ impl FrontendServices {
             notifications,
         }
     }
-
-    #[cfg(test)]
-    pub fn with_storage(mut self, storage: Option<Arc<StorageManager>>) -> Self {
-        self.storage = storage;
-        self
-    }
 }
 
 impl SnowglassHost for FrontendServices {

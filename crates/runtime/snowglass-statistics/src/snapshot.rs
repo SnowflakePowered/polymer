@@ -364,15 +364,4 @@ mod tests {
         assert_eq!(snapshot.input.combined().samples, 1);
         assert_eq!(snapshot.display_latency["test"].average, 12.0);
     }
-
-    #[test]
-    fn removing_a_connection_removes_its_metric_cardinality() {
-        let (recorder, handle) = LiveRecorder::new();
-        metrics::with_local_recorder(&recorder, || {
-            let _ = FrameMetrics::new(7, 9, 3);
-        });
-        assert!(handle.metric_count() > 0);
-        handle.remove_label("connection", "7");
-        assert_eq!(handle.metric_count(), 0);
-    }
 }

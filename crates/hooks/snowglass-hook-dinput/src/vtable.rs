@@ -28,19 +28,6 @@ snowglass_hook::vtable! {
     [IDirectInputDevice8W],
 }
 
-#[cfg(test)]
-pub(crate) const DEVICE_VTABLE_LEN: usize = <IDirectInputDevice8A as Vtable>::SLOTS;
-
-#[cfg(test)]
-pub(crate) type GetDeviceStateFn =
-    unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> HRESULT;
-#[cfg(test)]
-pub(crate) type GetDeviceDataFn =
-    unsafe extern "system" fn(*mut c_void, u32, *mut DIDEVICEOBJECTDATA, *mut u32, u32) -> HRESULT;
-#[cfg(test)]
-pub(crate) type SetEventNotificationFn =
-    unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT;
-
 snowglass_hook::com_vtable! {
     /// Overlays the ABI-identical ANSI and wide `IDirectInput8` vtables.
     pub(crate) union IDirectInputVtable for IDirectInput8A;

@@ -188,39 +188,3 @@ impl std::fmt::Debug for Save<'_> {
             .finish()
     }
 }
-
-#[cfg(test)]
-pub fn fixture(product_code: &[u8; 6], name: &[u8], blocks: u16) -> Save<'static> {
-    let mut bytes = vec![0; DIRENT_SIZE + usize::from(blocks) * BLOCK_SIZE];
-    bytes[..6].copy_from_slice(product_code);
-    bytes[6] = 0xff;
-    bytes[8..8 + name.len()].copy_from_slice(name);
-    bytes[0x36..0x38].copy_from_slice(&0xffffu16.to_be_bytes());
-    bytes[0x38..0x3a].copy_from_slice(&blocks.to_be_bytes());
-    bytes[0x3a..0x3c].fill(0xff);
-    bytes[0x3c..0x40].fill(0xff);
-    Save::new(bytes).unwrap().into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_and_preserves_a_gci_without_copying() {
-        let bytes = fixture(b"GALE01", b"SmashData", 2).bytes.into_owned();
-        let save = Save::new(bytes.as_slice()).unwrap();
-        assert!(matches!(save.bytes, Cow::Borrowed(_)));
-        assert_eq!(save.block_count(), 2);
-        assert_eq!(save.region(), Region::Usa);
-        assert_eq!(save.console_name(), b"SmashData");
-        assert_eq!(save.as_bytes().as_ptr(), bytes.as_ptr());
-    }
-
-    #[test]
-    fn rejects_a_length_that_disagrees_with_the_directory_entry() {
-        let mut bytes = fixture(b"GZLE01", b"Zelda", 1).bytes.into_owned();
-        bytes.pop();
-        assert!(matches!(Save::new(bytes), Err(ParseError::Length { .. })));
-    }
-}

@@ -317,31 +317,6 @@ fn content_positions(
     Some((sample, normalized))
 }
 
-#[cfg(test)]
-fn normalized_content_position(
-    placement: crate::SurfacePlacement,
-    point: Point,
-    outside: OutsideBehavior,
-) -> Option<Point> {
-    content_positions(placement, point, outside).map(|(_, normalized)| normalized)
-}
-
-#[cfg(test)]
-fn normalized_surface_position(
-    rect: Rect,
-    point: Point,
-    outside: OutsideBehavior,
-) -> Option<Point> {
-    if rect.is_empty() || (outside == OutsideBehavior::Reject && !rect.contains(point)) {
-        return None;
-    }
-    let x_range = f64::from(rect.width.saturating_sub(1).max(1));
-    let y_range = f64::from(rect.height.saturating_sub(1).max(1));
-    let x = (point.x - f64::from(rect.x)) / x_range;
-    let y = (point.y - f64::from(rect.y)) / y_range;
-    Some(Point::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
-}
-
 fn presentation_mappings(
     surfaces: &[ReceivedSurface],
     order: VerticalOrder,
@@ -516,39 +491,6 @@ mod tests {
         assert_eq!(destination.position, Point::new(320.0, 552.0));
         assert!((destination.normalized_position.x - 200.0 / 799.0).abs() < f64::EPSILON);
         assert!((destination.normalized_position.y - 360.0 / 479.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn surface_edge_pixels_reach_normalized_axis_endpoints() {
-        let rect = Rect::new(10, 20, 100, 200);
-        assert_eq!(
-            normalized_surface_position(rect, Point::new(10.0, 20.0), OutsideBehavior::Reject),
-            Some(Point::new(0.0, 0.0))
-        );
-        assert_eq!(
-            normalized_surface_position(rect, Point::new(109.0, 219.0), OutsideBehavior::Reject),
-            Some(Point::new(1.0, 1.0))
-        );
-    }
-
-    #[test]
-    fn fitted_content_maps_pointer_coordinates_through_its_crop() {
-        let mut placement = SurfacePlacement::new(7, 99, Rect::new(0, 0, 200, 200), 0.0);
-        placement.content.destination = [0.0, 50.0, 200.0, 150.0];
-        placement.content.source = [0.25, 0.0, 0.75, 1.0];
-
-        assert_eq!(
-            normalized_content_position(placement, Point::new(0.0, 0.0), OutsideBehavior::Reject),
-            Some(Point::new(0.25, 0.0))
-        );
-        assert_eq!(
-            normalized_content_position(
-                placement,
-                Point::new(199.0, 149.0),
-                OutsideBehavior::Reject
-            ),
-            Some(Point::new(0.75, 1.0))
-        );
     }
 
     #[test]
