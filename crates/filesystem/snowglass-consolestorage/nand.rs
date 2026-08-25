@@ -80,17 +80,9 @@ pub trait VirtualNand: Send + Sync {
         self.root().artifacts().record(artifact).await
     }
 
-    /// Delete every file `id` installed, then forget it. The record is only
-    /// dropped once the files are gone, so a failed uninstall can be retried.
-    async fn uninstall(&self, id: &str) -> Result<(), Error> {
-        let Some(artifact) = self.root().artifacts().artifact(id).await? else {
-            return Ok(());
-        };
-
-        for file in artifact.manifest() {
-            self.root().remove(&file.path().to_string_lossy())?;
-        }
-
-        self.root().artifacts().forget(id).await
+    /// Uninstall the provided artifacts. The list of artifacts must uninstall cleanly,
+    /// if there are forward dependencies, the uninstall will fail with an error.
+    async fn uninstall(&self, ids: &[&str]) -> Result<(), Error> {
+        self.root().artifacts().uninstall(ids).await
     }
 }

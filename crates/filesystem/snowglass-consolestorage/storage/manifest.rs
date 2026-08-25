@@ -28,7 +28,7 @@ pub trait ArtifactRegistry: Send + Sync {
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>>;
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>>;
     fn contains<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<bool, Error>>;
-    fn forget<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<(), Error>>;
+    fn uninstall<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<(), Error>>;
 }
 
 #[derive(Debug)]
@@ -53,7 +53,7 @@ impl ArtifactRegistry for EmptyArtifactRegistry {
         Box::pin(async { Ok(false) })
     }
 
-    fn forget<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+    fn uninstall<'a>(&'a self, _ids: &'a [&'a str]) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async { Ok(()) })
     }
 }

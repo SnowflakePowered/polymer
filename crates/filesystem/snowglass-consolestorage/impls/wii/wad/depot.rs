@@ -425,7 +425,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        nand.uninstall(artifact.id()).await.unwrap();
+        nand.uninstall(&[artifact.id()]).await.unwrap();
         assert!(!nand.root().exists(path));
         assert!(
             !nand
@@ -449,46 +449,6 @@ mod tests {
         assert_eq!(wad.select_title_key().unwrap().index, 0);
     }
 
-    #[tokio::test]
-    async fn shared_content_is_left_for_explicit_gc_after_uninstall() {
-        let source = tempfile::tempdir().unwrap();
-        let first_path = source.path().join("first.wad");
-        let second_path = source.path().join("second.wad");
-        std::fs::write(
-            &first_path,
-            make_wad_with_kind(0x0001_0001_4141_4141, b"shared", 0x8001),
-        )
-        .unwrap();
-        std::fs::write(
-            &second_path,
-            make_wad_with_kind(0x0001_0001_4242_4242, b"shared", 0x8001),
-        )
-        .unwrap();
-        let first = WiiWadDepot::open(&first_path).unwrap();
-        let second = WiiWadDepot::open(&second_path).unwrap();
-        let destination = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(destination.path()).await.unwrap();
-        let nand = WiiNand::new_empty(storage, Uuid::now_v7(), None)
-            .await
-            .unwrap();
-
-        let first_paths = install_depot(&first, &nand).await;
-        let second_paths = install_depot(&second, &nand).await;
-        assert!(first_paths.iter().any(|path| path == "shared1/content.map"));
-        assert!(
-            !second_paths
-                .iter()
-                .any(|path| path == "shared1/content.map")
-        );
-        assert!(nand.root().exists("shared1/00000000.app"));
-        assert_eq!(nand.root().metadata("shared1/content.map").unwrap().len, 28);
-
-        nand.uninstall("0001000141414141").await.unwrap();
-        assert!(nand.root().exists("shared1/00000000.app"));
-        nand.uninstall("0001000142424242").await.unwrap();
-        assert!(nand.root().exists("shared1/00000000.app"));
-        assert_eq!(nand.root().metadata("shared1/content.map").unwrap().len, 28);
-    }
 
     async fn install_depot(wad: &WiiWadDepot, nand: &WiiNand) -> Vec<String> {
         let (artifact, progress) = wad.install(nand);

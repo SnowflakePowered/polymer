@@ -21,14 +21,11 @@ impl StorageManager {
 
     pub fn path(&self, kind: StorageKind, platform: &str, id: Uuid) -> PathBuf {
         let _ = (kind, id);
-        self.root.join("platforms").join(format!("{platform}.git"))
+        self.root.join("platforms").join(platform)
     }
 
     fn repository(&self, platform: &str) -> Result<PlatformRepository, Error> {
-        PlatformRepository::open(
-            self.root.join("platforms").join(format!("{platform}.git")),
-            platform,
-        )
+        PlatformRepository::open(self.root.join("platforms").join(platform), platform)
     }
 
     const fn git_kind(kind: StorageKind) -> GitVolumeKind {
@@ -144,11 +141,11 @@ impl StorageManager {
 
         let mut names = Vec::new();
         while let Ok(Some(entry)) = listing.next_entry().await {
-            if entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
+            if entry.file_type().await.is_ok_and(|kind| kind.is_dir())
+                && entry.path().join(".git").is_dir()
+            {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if let Some(platform) = name.strip_suffix(".git") {
-                    names.push(platform.to_owned());
-                }
+                names.push(name);
             }
         }
 
@@ -166,7 +163,7 @@ mod tests {
         let manager = StorageManager::new(root.path());
         let id = Uuid::now_v7();
 
-        let repository = root.path().join("platforms").join("PLATFORM.git");
+        let repository = root.path().join("platforms").join("PLATFORM");
         assert_eq!(manager.path(StorageKind::Nand, "PLATFORM", id), repository);
         assert_eq!(
             manager.path(StorageKind::SaveRepo, "PLATFORM", id),
@@ -205,6 +202,6 @@ mod tests {
             reopened.metadata().await.unwrap().label.as_deref(),
             Some("Wii saves")
         );
-        assert!(path.join("objects").is_dir());
+        assert!(path.join(".git").join("objects").is_dir());
     }
 }

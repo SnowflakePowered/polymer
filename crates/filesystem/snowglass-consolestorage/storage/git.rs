@@ -1,24 +1,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gix::bstr::{BStr, ByteSlice};
+use gix::objs::Write as _;
 use gix::refs::Target;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 use jiff::Timestamp;
 use parking_lot::{Mutex, RwLock};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::Notify;
+use tokio::io::AsyncRead;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
 use crate::installable::{DepotFile, DepotType, IconHint};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
-    BoxFuture, ChangeSignal, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage,
-    ReadDir, Storage, StorageFile, VolumeStorage,
+    BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
+    MountableStorage, ReadDir, Storage, StorageFile, VolumeStorage,
 };
 
 const SCHEMA_VERSION: u32 = 2;
@@ -49,6 +51,14 @@ impl GitVolumeKind {
             Self::MemoryCard => "memory-card",
         }
     }
+
+    fn checkout_namespace(self) -> &'static str {
+        match self {
+            Self::Nand => "nands",
+            Self::SaveRepo => "save-repos",
+            Self::MemoryCard => "memory-cards",
+        }
+    }
 }
 
 struct PlatformInner {
@@ -74,17 +84,16 @@ impl fmt::Debug for PlatformRepository {
 impl PlatformRepository {
     pub fn open(path: impl Into<PathBuf>, platform: &str) -> Result<Self, Error> {
         let path = path.into();
-        let repository = if path.exists() {
+        let repository = if path.join(".git").is_dir() {
             gix::open(&path).map_err(|error| Error::git("open platform repository", error))?
         } else {
-            std::fs::create_dir_all(
-                path.parent()
-                    .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?,
-            )
-            .map_err(|error| Error::io(&path, error))?;
+            let parent = path
+                .parent()
+                .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
             gix::ThreadSafeRepository::init(
                 &path,
-                gix::create::Kind::Bare,
+                gix::create::Kind::WithWorktree,
                 gix::create::Options::default(),
             )
             .map_err(|error| Error::git("initialize platform repository", error))?
@@ -129,6 +138,16 @@ impl PlatformRepository {
 
     pub fn path(&self) -> &Path {
         &self.0.path
+    }
+
+    pub fn checkout_root(&self) -> PathBuf {
+        self.0.path.join("files")
+    }
+
+    fn checkout_path(&self, kind: GitVolumeKind, id: Uuid) -> PathBuf {
+        self.checkout_root()
+            .join(kind.checkout_namespace())
+            .join(id.simple().to_string())
     }
 
     pub fn volume(&self, kind: GitVolumeKind, id: Uuid) -> GitVolumeStorage {
@@ -243,8 +262,14 @@ impl PlatformRepository {
         let signature = signature();
         let mut time = gix::date::parse::TimeBuf::default();
         repo.edit_references_as(edits, Some(signature.to_ref(&mut time)))
-            .map(|_| ())
-            .map_err(|error| Error::git("delete volume reference", error))
+            .map_err(|error| Error::git("delete volume reference", error))?;
+        self.volume(kind, id)
+            .remove_from_index(repo.object_hash())?;
+        let checkout = self.checkout_path(kind, id);
+        if checkout.exists() {
+            fs::remove_dir_all(&checkout).map_err(|error| Error::io(&checkout, error))?;
+        }
+        Ok(())
     }
 
     pub fn fork_profile(
@@ -367,9 +392,9 @@ impl PlatformRepository {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum OverlayEntry {
-    File(GitFile),
+    File,
     Directory,
     Deleted,
 }
@@ -387,12 +412,23 @@ struct WorkingState {
     metadata: PendingMetadata,
 }
 
+impl WorkingState {
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+            && self.metadata.volume.is_none()
+            && self.metadata.artifacts.is_empty()
+            && self.metadata.save_tips.is_empty()
+    }
+}
+
 struct GitVolumeInner {
     platform: PlatformRepository,
     kind: GitVolumeKind,
     id: Uuid,
     working: RwLock<WorkingState>,
-    changed: Arc<Notify>,
+    checkout: DirectoryStorage,
+    index_path: PathBuf,
+    cache_ready: Mutex<bool>,
 }
 
 #[derive(Clone)]
@@ -414,12 +450,16 @@ impl fmt::Debug for GitVolumeStorage {
 
 impl GitVolumeStorage {
     fn new(platform: PlatformRepository, kind: GitVolumeKind, id: Uuid) -> Self {
+        let checkout_root = platform.checkout_path(kind, id);
+        let index_path = platform.repository().git_dir().join("index");
         let inner = Arc::new(GitVolumeInner {
             platform,
             kind,
             id,
             working: RwLock::new(WorkingState::default()),
-            changed: Arc::new(Notify::new()),
+            checkout: DirectoryStorage::unmanaged(checkout_root),
+            index_path,
+            cache_ready: Mutex::new(false),
         });
         Self {
             artifacts: GitArtifactRegistry(inner.clone()),
@@ -439,6 +479,14 @@ impl GitVolumeStorage {
         &self.inner.platform
     }
 
+    pub fn checkout_path(&self) -> &Path {
+        self.inner.checkout.root()
+    }
+
+    pub fn index_path(&self) -> &Path {
+        &self.inner.index_path
+    }
+
     pub(crate) fn ref_name(&self) -> String {
         self.inner.kind.ref_name(self.inner.id)
     }
@@ -456,6 +504,357 @@ impl GitVolumeStorage {
         }) {
             return Err(Error::InvalidPath(path.to_owned()));
         }
+        Ok(())
+    }
+
+    fn files_tree_id(repo: &gix::Repository, root: &gix::Tree<'_>) -> Result<gix::ObjectId, Error> {
+        match root
+            .lookup_entry_by_path("files")
+            .map_err(|error| Error::git("lookup checked-out files tree", error))?
+        {
+            Some(entry) if entry.mode().kind() == gix::objs::tree::EntryKind::Tree => {
+                Ok(entry.object_id())
+            }
+            Some(_) => Err(Error::HistoryConflict(
+                "volume files root is not a tree".to_owned(),
+            )),
+            None => Ok(repo.empty_tree().id),
+        }
+    }
+
+    fn target_index(
+        &self,
+        repo: &gix::Repository,
+        root: &gix::Tree<'_>,
+    ) -> Result<gix::index::File, Error> {
+        let tree = Self::files_tree_id(repo, root)?;
+        repo.index_from_tree(&tree)
+            .map_err(|error| Error::git("build volume checkout index", error))
+    }
+
+    fn index_prefix(&self) -> String {
+        format!(
+            "files/{}/{}/",
+            self.inner.kind.checkout_namespace(),
+            self.inner.id.simple()
+        )
+    }
+
+    fn volume_index_matches(&self, platform: &gix::index::File, target: &gix::index::File) -> bool {
+        let prefix = self.index_prefix();
+        let current = platform
+            .entries()
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .path(platform)
+                    .to_str_lossy()
+                    .strip_prefix(&prefix)
+                    .map(|path| (path.to_owned(), entry))
+            })
+            .collect::<Vec<_>>();
+        current.len() == target.entries().len()
+            && current
+                .iter()
+                .zip(target.entries())
+                .all(|((path, current), wanted)| {
+                    path.as_bytes() == wanted.path(target).as_bytes()
+                        && current.id == wanted.id
+                        && current.mode == wanted.mode
+                })
+    }
+
+    fn checkout_is_complete(&self, index: &gix::index::File) -> bool {
+        self.inner.checkout.root().is_dir()
+            && index.entries().iter().all(|entry| {
+                let path = entry.path(index).to_str_lossy();
+                Self::validate(&path).is_ok()
+                    && self
+                        .inner
+                        .checkout
+                        .root()
+                        .join(path.replace('/', std::path::MAIN_SEPARATOR_STR))
+                        .is_file()
+            })
+    }
+
+    fn write_index(&self, target: gix::index::File) -> Result<(), Error> {
+        let parent = self
+            .inner
+            .index_path
+            .parent()
+            .ok_or_else(|| Error::InvalidPath(self.inner.index_path.display().to_string()))?;
+        fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+        let mut index = if self.inner.index_path.is_file() {
+            gix::index::File::at(
+                &self.inner.index_path,
+                target.object_hash(),
+                false,
+                gix::index::decode::Options::default(),
+            )
+            .map_err(|error| Error::git("read platform checkout index", error))?
+        } else {
+            gix::index::File::from_state(
+                gix::index::State::new(target.object_hash()),
+                &self.inner.index_path,
+            )
+        };
+        let prefix = self.index_prefix();
+        index.remove_entries(|_, path, _| path.to_str_lossy().starts_with(&prefix));
+        for entry in target.entries() {
+            let relative = entry.path(&target).to_str_lossy();
+            Self::validate(&relative)?;
+            let path = self
+                .inner
+                .checkout
+                .root()
+                .join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let metadata = gix::index::fs::Metadata::from_path_no_follow(&path)
+                .map_err(|error| Error::io(&path, error))?;
+            let stat = gix::index::entry::Stat::from_fs(&metadata)
+                .map_err(|error| Error::git("record checkout file metadata", error))?;
+            let path = format!("{prefix}{relative}");
+            index.dangerously_push_entry(
+                stat,
+                entry.id,
+                entry.flags,
+                entry.mode,
+                BStr::new(path.as_bytes()),
+            );
+        }
+        index.remove_tree();
+        index.sort_entries();
+        index.set_path(&self.inner.index_path);
+        index
+            .write(gix::index::write::Options::default())
+            .map_err(|error| Error::git("write volume checkout index", error))
+    }
+
+    fn remove_from_index(&self, object_hash: gix::hash::Kind) -> Result<(), Error> {
+        if !self.inner.index_path.is_file() {
+            return Ok(());
+        }
+        let mut index = gix::index::File::at(
+            &self.inner.index_path,
+            object_hash,
+            false,
+            gix::index::decode::Options::default(),
+        )
+        .map_err(|error| Error::git("read platform checkout index", error))?;
+        let prefix = self.index_prefix();
+        index.remove_entries(|_, path, _| path.to_str_lossy().starts_with(&prefix));
+        index.remove_tree();
+        index.set_path(&self.inner.index_path);
+        index
+            .write(gix::index::write::Options::default())
+            .map_err(|error| Error::git("remove volume from checkout index", error))
+    }
+
+    fn checkout_target(
+        &self,
+        repo: &gix::Repository,
+        root: &gix::Tree<'_>,
+        index: &gix::index::File,
+    ) -> Result<(), Error> {
+        let checkout = self.inner.checkout.root();
+        if checkout.exists() {
+            fs::remove_dir_all(checkout).map_err(|error| Error::io(checkout, error))?;
+        }
+        fs::create_dir_all(checkout).map_err(|error| Error::io(checkout, error))?;
+
+        for entry in index.entries() {
+            let relative = entry.path(index).to_str_lossy();
+            Self::validate(&relative)?;
+            let destination = checkout.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let parent = destination
+                .parent()
+                .ok_or_else(|| Error::InvalidPath(destination.display().to_string()))?;
+            fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+            let blob = repo
+                .find_blob(entry.id)
+                .map_err(|error| Error::git("read checkout blob", error))?;
+            let mut file =
+                fs::File::create(&destination).map_err(|error| Error::io(&destination, error))?;
+            file.write_all(&blob.data)
+                .map_err(|error| Error::io(&destination, error))?;
+        }
+
+        for directory in self.base_directories(repo, root)? {
+            Self::validate(&directory)?;
+            let destination = checkout.join(directory.replace('/', std::path::MAIN_SEPARATOR_STR));
+            fs::create_dir_all(&destination).map_err(|error| Error::io(&destination, error))?;
+        }
+        Ok(())
+    }
+
+    fn refresh_checkout_locked(
+        &self,
+        repo: &gix::Repository,
+        tip: Option<gix::ObjectId>,
+    ) -> Result<(), Error> {
+        let root = Self::root_tree(repo, tip)?;
+        let index = self.target_index(repo, &root)?;
+        self.checkout_target(repo, &root, &index)?;
+        self.write_index(index)?;
+        *self.inner.cache_ready.lock() = true;
+        Ok(())
+    }
+
+    fn restore_checkout_path(
+        &self,
+        repo: &gix::Repository,
+        root: &gix::Tree<'_>,
+        path: &str,
+    ) -> Result<(), Error> {
+        let destination = self
+            .inner
+            .checkout
+            .root()
+            .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.is_dir() => {
+                fs::remove_dir_all(&destination).map_err(|error| Error::io(&destination, error))?;
+            }
+            Ok(_) => {
+                fs::remove_file(&destination).map_err(|error| Error::io(&destination, error))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(Error::io(&destination, error)),
+        }
+
+        let git_path = format!("files/{path}");
+        if let Some(entry) = root
+            .lookup_entry_by_path(&git_path)
+            .map_err(|error| Error::git("lookup discarded NAND path", error))?
+        {
+            match entry.mode().kind() {
+                gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
+                    let parent = destination
+                        .parent()
+                        .ok_or_else(|| Error::InvalidPath(destination.display().to_string()))?;
+                    fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+                    let blob = repo
+                        .find_blob(entry.oid())
+                        .map_err(|error| Error::git("read discarded NAND blob", error))?;
+                    let mut file = fs::File::create(&destination)
+                        .map_err(|error| Error::io(&destination, error))?;
+                    file.write_all(&blob.data)
+                        .map_err(|error| Error::io(&destination, error))?;
+                }
+                gix::objs::tree::EntryKind::Tree => {
+                    fs::create_dir_all(&destination)
+                        .map_err(|error| Error::io(&destination, error))?;
+                    let index = repo
+                        .index_from_tree(entry.oid())
+                        .map_err(|error| Error::git("index discarded NAND tree", error))?;
+                    for child in index.entries() {
+                        let relative = child.path(&index).to_str_lossy();
+                        Self::validate(&relative)?;
+                        let target =
+                            destination.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+                        let parent = target
+                            .parent()
+                            .ok_or_else(|| Error::InvalidPath(target.display().to_string()))?;
+                        fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+                        let blob = repo
+                            .find_blob(child.id)
+                            .map_err(|error| Error::git("read discarded NAND tree blob", error))?;
+                        let mut file =
+                            fs::File::create(&target).map_err(|error| Error::io(&target, error))?;
+                        file.write_all(&blob.data)
+                            .map_err(|error| Error::io(&target, error))?;
+                    }
+                }
+                _ => {
+                    return Err(Error::HistoryConflict(format!(
+                        "unsupported Git entry at `{path}`"
+                    )));
+                }
+            }
+        }
+
+        for directory in self
+            .base_directories(repo, root)?
+            .into_iter()
+            .filter(|directory| directory == path || directory.starts_with(&format!("{path}/")))
+        {
+            let target = self
+                .inner
+                .checkout
+                .root()
+                .join(directory.replace('/', std::path::MAIN_SEPARATOR_STR));
+            fs::create_dir_all(&target).map_err(|error| Error::io(&target, error))?;
+        }
+        Ok(())
+    }
+
+    fn discard_pending_nand_changes(&self) -> Result<(), Error> {
+        if self.inner.kind != GitVolumeKind::Nand {
+            return Ok(());
+        }
+        let entries = {
+            let mut state = self.inner.working.write();
+            if state.entries.is_empty() {
+                return Ok(());
+            }
+            let entries = std::mem::take(&mut state.entries);
+            state.metadata = PendingMetadata::default();
+            entries
+        };
+        let mut roots = Vec::<String>::new();
+        for path in entries.keys() {
+            if !roots
+                .iter()
+                .any(|root| path == root || path.starts_with(&format!("{root}/")))
+            {
+                roots.push(path.clone());
+            }
+        }
+
+        let result = (|| {
+            let _guard = self.inner.platform.0.operation.lock();
+            let repo = self.inner.platform.repository().to_thread_local();
+            let tip = Self::tip_in(&repo, &self.ref_name())?;
+            let root = Self::root_tree(&repo, tip)?;
+            for path in roots {
+                self.restore_checkout_path(&repo, &root, &path)?;
+            }
+            self.write_index(self.target_index(&repo, &root)?)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.inner.working.write().entries.extend(entries);
+        }
+        result
+    }
+
+    fn ensure_checkout(&self) -> Result<(), Error> {
+        if *self.inner.cache_ready.lock() {
+            return Ok(());
+        }
+        let _guard = self.inner.platform.0.operation.lock();
+        let mut ready = self.inner.cache_ready.lock();
+        if *ready {
+            return Ok(());
+        }
+        let repo = self.inner.platform.repository().to_thread_local();
+        let tip = Self::tip_in(&repo, &self.ref_name())?;
+        let root = Self::root_tree(&repo, tip)?;
+        let target = self.target_index(&repo, &root)?;
+        let current = gix::index::File::at(
+            &self.inner.index_path,
+            repo.object_hash(),
+            false,
+            gix::index::decode::Options::default(),
+        );
+        let reusable = current.as_ref().is_ok_and(|current| {
+            self.volume_index_matches(current, &target) && self.checkout_is_complete(&target)
+        });
+        if !reusable {
+            self.checkout_target(&repo, &root, &target)?;
+            self.write_index(target)?;
+        }
+        *ready = true;
         Ok(())
     }
 
@@ -479,61 +878,6 @@ impl GitVolumeStorage {
                 .map_err(|error| Error::git("read volume tree", error)),
             None => Ok(repo.empty_tree()),
         }
-    }
-
-    fn commit_time(repo: &gix::Repository, tip: Option<gix::ObjectId>) -> Timestamp {
-        tip.and_then(|tip| repo.find_commit(tip).ok())
-            .and_then(|commit| commit.time().ok())
-            .and_then(|time| Timestamp::from_second(time.seconds).ok())
-            .unwrap_or_else(Timestamp::now)
-    }
-
-    fn base_entry(&self, path: &str) -> Result<Option<BaseEntry>, Error> {
-        let repo = self.inner.platform.repository().to_thread_local();
-        let tip = Self::tip_in(&repo, &self.ref_name())?;
-        let tree = Self::root_tree(&repo, tip)?;
-        let git_path = if path.is_empty() {
-            "files".to_owned()
-        } else {
-            format!("files/{path}")
-        };
-        let Some(entry) = tree
-            .lookup_entry_by_path(&git_path)
-            .map_err(|error| Error::git("lookup volume path", error))?
-        else {
-            if path.is_empty() || self.base_directories(&repo, &tree)?.contains(path) {
-                return Ok(Some(BaseEntry {
-                    kind: EntryKind::Directory,
-                    id: None,
-                    len: 0,
-                    mtime: Self::commit_time(&repo, tip),
-                }));
-            }
-            return Ok(None);
-        };
-        let kind = entry.mode().kind();
-        let (kind, len) = match kind {
-            gix::objs::tree::EntryKind::Tree => (EntryKind::Directory, 0),
-            gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable => {
-                let len = repo
-                    .find_blob(entry.oid())
-                    .map_err(|error| Error::git("read volume blob", error))?
-                    .data
-                    .len() as u64;
-                (EntryKind::File, len)
-            }
-            _ => {
-                return Err(Error::HistoryConflict(format!(
-                    "unsupported Git entry at `{path}`"
-                )));
-            }
-        };
-        Ok(Some(BaseEntry {
-            kind,
-            id: Some(entry.object_id()),
-            len,
-            mtime: Self::commit_time(&repo, tip),
-        }))
     }
 
     fn base_directories(
@@ -572,49 +916,6 @@ impl GitVolumeStorage {
         Ok(directories)
     }
 
-    fn base_file(&self, path: &str) -> Result<Vec<u8>, Error> {
-        let entry = self
-            .base_entry(path)?
-            .ok_or_else(|| Error::not_found(path))?;
-        if entry.kind != EntryKind::File {
-            return Err(Error::not_found(path));
-        }
-        let repo = self.inner.platform.repository().to_thread_local();
-        repo.find_blob(entry.id.expect("file has an object id"))
-            .map(|blob| blob.data.clone())
-            .map_err(|error| Error::git("read volume file", error))
-    }
-
-    fn hidden_by_delete(entries: &BTreeMap<String, OverlayEntry>, path: &str) -> bool {
-        let mut current = path;
-        loop {
-            if matches!(entries.get(current), Some(OverlayEntry::Deleted)) {
-                return true;
-            }
-            let Some((parent, _)) = current.rsplit_once('/') else {
-                break;
-            };
-            current = parent;
-        }
-        false
-    }
-
-    fn overlay_metadata(entry: &OverlayEntry) -> Option<Metadata> {
-        match entry {
-            OverlayEntry::File(file) => Some(file.metadata()),
-            OverlayEntry::Directory => Some(Metadata {
-                kind: EntryKind::Directory,
-                len: 0,
-                mtime: Timestamp::now(),
-            }),
-            OverlayEntry::Deleted => None,
-        }
-    }
-
-    fn notify(&self) {
-        self.inner.changed.notify_waiters();
-    }
-
     pub(crate) fn commit_pending(
         &self,
         message: &str,
@@ -625,12 +926,7 @@ impl GitVolumeStorage {
         let repo = self.inner.platform.repository().to_thread_local();
         let parent = Self::tip_in(&repo, &reference)?;
         let mut state = self.inner.working.write();
-        if extra_parent.is_none()
-            && state.entries.is_empty()
-            && state.metadata.volume.is_none()
-            && state.metadata.artifacts.is_empty()
-            && state.metadata.save_tips.is_empty()
-        {
+        if extra_parent.is_none() && state.is_empty() {
             return Ok(None);
         }
         let root = Self::root_tree(&repo, parent)?;
@@ -641,11 +937,22 @@ impl GitVolumeStorage {
         for (path, entry) in &state.entries {
             let git_path = format!("files/{path}");
             match entry {
-                OverlayEntry::File(file) => {
+                OverlayEntry::File => {
+                    let source = self
+                        .inner
+                        .checkout
+                        .root()
+                        .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                    let mut file =
+                        fs::File::open(&source).map_err(|error| Error::io(&source, error))?;
+                    let length = file
+                        .metadata()
+                        .map_err(|error| Error::io(&source, error))?
+                        .len();
                     let id = repo
-                        .write_blob(file.bytes())
-                        .map_err(|error| Error::git("write volume blob", error))?
-                        .detach();
+                        .objects
+                        .write_stream(gix::objs::Kind::Blob, length, &mut file)
+                        .map_err(|error| Error::git("write volume blob", error))?;
                     editor
                         .upsert(git_path, gix::objs::tree::EntryKind::Blob, id)
                         .map_err(|error| Error::git("update volume file", error))?;
@@ -764,6 +1071,13 @@ impl GitVolumeStorage {
         };
         repo.edit_references_as([edit], Some(signature))
             .map_err(|error| Error::git("publish volume commit", error))?;
+        let committed_root = repo
+            .find_tree(tree)
+            .map_err(|error| Error::git("read committed volume tree", error))?;
+        fs::create_dir_all(self.inner.checkout.root())
+            .map_err(|error| Error::io(self.inner.checkout.root(), error))?;
+        self.write_index(self.target_index(&repo, &committed_root)?)?;
+        *self.inner.cache_ready.lock() = true;
         *state = WorkingState::default();
         Ok(Some(commit))
     }
@@ -840,244 +1154,27 @@ impl GitVolumeStorage {
     }
 }
 
-struct BaseEntry {
-    kind: EntryKind,
-    id: Option<gix::ObjectId>,
-    len: u64,
-    mtime: Timestamp,
-}
-
-#[derive(Clone)]
-struct GitFile(Arc<RwLock<GitFileState>>);
-
-struct GitFileState {
-    bytes: Vec<u8>,
-    mtime: Timestamp,
-}
-
-impl GitFile {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self(Arc::new(RwLock::new(GitFileState {
-            bytes,
-            mtime: Timestamp::now(),
-        })))
-    }
-
-    fn bytes(&self) -> Vec<u8> {
-        self.0.read().bytes.clone()
-    }
-
-    fn metadata(&self) -> Metadata {
-        let state = self.0.read();
-        Metadata {
-            kind: EntryKind::File,
-            len: state.bytes.len() as u64,
-            mtime: state.mtime,
-        }
-    }
-}
-
-struct GitFileHandle {
-    file: GitFile,
-    writable: bool,
-    changed: Arc<Notify>,
-}
-
-impl GitFileHandle {
-    fn writable(&self) -> Result<(), Error> {
-        self.writable
-            .then_some(())
-            .ok_or_else(|| Error::Unsupported("Git file handle is read-only".to_owned()))
-    }
-}
-
-impl StorageFile for GitFileHandle {
-    fn metadata(&self) -> Result<Metadata, Error> {
-        Ok(self.file.metadata())
-    }
-
-    fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<usize, Error> {
-        let state = self.file.0.read();
-        let start = usize::try_from(offset)
-            .unwrap_or(usize::MAX)
-            .min(state.bytes.len());
-        let copied = output.len().min(state.bytes.len() - start);
-        output[..copied].copy_from_slice(&state.bytes[start..start + copied]);
-        Ok(copied)
-    }
-
-    fn write_at(&self, offset: u64, input: &[u8]) -> Result<usize, Error> {
-        self.writable()?;
-        let start = usize::try_from(offset)
-            .map_err(|_| Error::Unsupported("Git file offset is too large".to_owned()))?;
-        let end = start
-            .checked_add(input.len())
-            .ok_or_else(|| Error::Unsupported("Git file write is too large".to_owned()))?;
-        let mut state = self.file.0.write();
-        if end > state.bytes.len() {
-            state.bytes.resize(end, 0);
-        }
-        state.bytes[start..end].copy_from_slice(input);
-        state.mtime = Timestamp::now();
-        drop(state);
-        self.changed.notify_waiters();
-        Ok(input.len())
-    }
-
-    fn set_len(&self, len: u64) -> Result<(), Error> {
-        self.writable()?;
-        let len = usize::try_from(len)
-            .map_err(|_| Error::Unsupported("Git file is too large".to_owned()))?;
-        let mut state = self.file.0.write();
-        state.bytes.resize(len, 0);
-        state.mtime = Timestamp::now();
-        drop(state);
-        self.changed.notify_waiters();
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn sync(&self) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
 impl Storage for GitVolumeStorage {
     fn exists(&self, path: &str) -> bool {
-        self.metadata(path).is_ok()
+        self.ensure_checkout().is_ok() && self.inner.checkout.exists(path)
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
         Self::validate(path)?;
-        let working = self.inner.working.read();
-        if let Some(entry) = working.entries.get(path) {
-            return Self::overlay_metadata(entry).ok_or_else(|| Error::not_found(path));
-        }
-        if Self::hidden_by_delete(&working.entries, path) {
-            return Err(Error::not_found(path));
-        }
-        drop(working);
-        let entry = self
-            .base_entry(path)?
-            .ok_or_else(|| Error::not_found(path))?;
-        Ok(Metadata {
-            kind: entry.kind,
-            len: entry.len,
-            mtime: entry.mtime,
-        })
+        self.ensure_checkout()?;
+        self.inner.checkout.metadata(path)
     }
 
     fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
         Self::validate(path)?;
-        if recursive {
-            return ReadDir::recursive(self, path);
-        }
-        if self.metadata(path)?.kind != EntryKind::Directory {
-            return Err(Error::not_found(path));
-        }
-        let repo = self.inner.platform.repository().to_thread_local();
-        let tip = Self::tip_in(&repo, &self.ref_name())?;
-        let root = Self::root_tree(&repo, tip)?;
-        let git_path = if path.is_empty() {
-            "files".to_owned()
-        } else {
-            format!("files/{path}")
-        };
-        let mut entries = BTreeMap::<String, DirEntry>::new();
-        if let Some(entry) = root
-            .lookup_entry_by_path(&git_path)
-            .map_err(|error| Error::git("lookup volume directory", error))?
-            && entry.mode().kind() == gix::objs::tree::EntryKind::Tree
-        {
-            let tree = repo
-                .find_tree(entry.oid())
-                .map_err(|error| Error::git("read volume directory", error))?;
-            for child in tree.iter() {
-                let child = child.map_err(|error| Error::git("decode volume directory", error))?;
-                let name = child.filename().to_str_lossy().into_owned();
-                let child_path = join(path, &name);
-                let kind = match child.kind() {
-                    gix::objs::tree::EntryKind::Tree => EntryKind::Directory,
-                    gix::objs::tree::EntryKind::Blob
-                    | gix::objs::tree::EntryKind::BlobExecutable => EntryKind::File,
-                    _ => continue,
-                };
-                let len = if kind == EntryKind::File {
-                    repo.find_blob(child.oid())
-                        .map_err(|error| Error::git("read volume directory blob", error))?
-                        .data
-                        .len() as u64
-                } else {
-                    0
-                };
-                entries.insert(
-                    name.clone(),
-                    DirEntry {
-                        name,
-                        path: child_path,
-                        metadata: Metadata {
-                            kind,
-                            len,
-                            mtime: Self::commit_time(&repo, tip),
-                        },
-                    },
-                );
-            }
-        }
-        for directory in self.base_directories(&repo, &root)? {
-            if let Some(name) = immediate_child(path, &directory) {
-                let child_path = join(path, name);
-                entries.entry(name.to_owned()).or_insert(DirEntry {
-                    name: name.to_owned(),
-                    path: child_path,
-                    metadata: Metadata {
-                        kind: EntryKind::Directory,
-                        len: 0,
-                        mtime: Self::commit_time(&repo, tip),
-                    },
-                });
-            }
-        }
-        let working = self.inner.working.read();
-        for (candidate, entry) in &working.entries {
-            let Some(name) = immediate_child(path, candidate) else {
-                continue;
-            };
-            let child_path = join(path, name);
-            if candidate == &child_path && matches!(entry, OverlayEntry::Deleted) {
-                entries.remove(name);
-                continue;
-            }
-            let metadata = if candidate == &child_path {
-                Self::overlay_metadata(entry)
-            } else if !matches!(entry, OverlayEntry::Deleted) {
-                Some(Metadata {
-                    kind: EntryKind::Directory,
-                    len: 0,
-                    mtime: Timestamp::now(),
-                })
-            } else {
-                None
-            };
-            if let Some(metadata) = metadata {
-                entries.insert(
-                    name.to_owned(),
-                    DirEntry {
-                        name: name.to_owned(),
-                        path: child_path,
-                        metadata,
-                    },
-                );
-            }
-        }
-        Ok(ReadDir::surface(entries.into_values()))
+        self.ensure_checkout()?;
+        self.inner.checkout.read_dir(path, recursive)
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
         Self::validate(path)?;
+        self.ensure_checkout()?;
+        self.inner.checkout.create_dir_all(path)?;
         if path.is_empty() {
             return Ok(());
         }
@@ -1085,25 +1182,11 @@ impl Storage for GitVolumeStorage {
         let mut working = self.inner.working.write();
         for component in path.split('/') {
             current = join(&current, component);
-            if working
-                .entries
-                .get(&current)
-                .is_some_and(|entry| matches!(entry, OverlayEntry::File(_)))
-                || (!working.entries.contains_key(&current)
-                    && self
-                        .base_entry(&current)?
-                        .is_some_and(|entry| entry.kind == EntryKind::File))
-            {
-                return Err(Error::Unsupported(format!(
-                    "file `{current}` cannot be used as a directory"
-                )));
-            }
             working
                 .entries
                 .insert(current.clone(), OverlayEntry::Directory);
         }
         drop(working);
-        self.notify();
         Ok(())
     }
 
@@ -1112,57 +1195,28 @@ impl Storage for GitVolumeStorage {
         if path.is_empty() {
             return Err(Error::InvalidPath(path.to_owned()));
         }
-        if let Some((parent, _)) = path.rsplit_once('/') {
-            self.create_dir_all(parent)?;
-        }
-        let file = GitFile::new(Vec::new());
+        self.ensure_checkout()?;
+        let file = self.inner.checkout.create(path)?;
         self.inner
             .working
             .write()
             .entries
-            .insert(path.to_owned(), OverlayEntry::File(file.clone()));
-        self.notify();
-        Ok(Arc::new(GitFileHandle {
-            file,
-            writable: true,
-            changed: self.inner.changed.clone(),
-        }))
+            .insert(path.to_owned(), OverlayEntry::File);
+        Ok(file)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
         Self::validate(path)?;
-        let file = {
-            let working = self.inner.working.read();
-            match working.entries.get(path) {
-                Some(OverlayEntry::File(file)) => Some(file.clone()),
-                Some(OverlayEntry::Directory | OverlayEntry::Deleted) => {
-                    return Err(Error::not_found(path));
-                }
-                None if Self::hidden_by_delete(&working.entries, path) => {
-                    return Err(Error::not_found(path));
-                }
-                None => None,
-            }
-        };
-        let file = match file {
-            Some(file) => file,
-            None => {
-                let file = GitFile::new(self.base_file(path)?);
-                if write {
-                    self.inner
-                        .working
-                        .write()
-                        .entries
-                        .insert(path.to_owned(), OverlayEntry::File(file.clone()));
-                }
-                file
-            }
-        };
-        Ok(Arc::new(GitFileHandle {
-            file,
-            writable: write,
-            changed: self.inner.changed.clone(),
-        }))
+        self.ensure_checkout()?;
+        let file = self.inner.checkout.open(path, write)?;
+        if write {
+            self.inner
+                .working
+                .write()
+                .entries
+                .insert(path.to_owned(), OverlayEntry::File);
+        }
+        Ok(file)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -1170,56 +1224,37 @@ impl Storage for GitVolumeStorage {
         if path.is_empty() {
             return Err(Error::InvalidPath(path.to_owned()));
         }
-        if self.exists(path)
-            && self.metadata(path)?.kind == EntryKind::Directory
-            && self.read_dir(path, false)?.next().is_some()
-        {
-            return Err(Error::Unsupported(format!(
-                "directory `{path}` is not empty"
-            )));
-        }
+        self.ensure_checkout()?;
+        self.inner.checkout.remove(path)?;
         self.inner
             .working
             .write()
             .entries
             .insert(path.to_owned(), OverlayEntry::Deleted);
-        self.notify();
         Ok(())
     }
 
-    fn watch(&self, _paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        Ok(Some(Box::new(GitChangeSignal(self.inner.changed.clone()))))
+    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
+        let _ = paths;
+        self.ensure_checkout()?;
+        self.inner.checkout.watch(&[""])
     }
 
     fn install_file<'a>(
         &'a self,
-        mut source: Box<dyn AsyncRead + Send + Unpin>,
+        source: Box<dyn AsyncRead + Send + Unpin>,
         dest: &str,
     ) -> BoxFuture<'a, Result<InstallResult, Error>> {
         let dest = dest.to_owned();
         Box::pin(async move {
             Self::validate(&dest)?;
-            let mut bytes = Vec::new();
-            source
-                .read_to_end(&mut bytes)
-                .await
-                .map_err(|error| Error::Io {
-                    path: dest.clone(),
-                    source: error,
-                })?;
-            let result = InstallResult {
-                blake3: *blake3::hash(&bytes).as_bytes(),
-                byte_length: bytes.len() as u64,
-            };
-            if let Some((parent, _)) = dest.rsplit_once('/') {
-                self.create_dir_all(parent)?;
-            }
+            self.ensure_checkout()?;
+            let result = self.inner.checkout.install_file(source, &dest).await?;
             self.inner
                 .working
                 .write()
                 .entries
-                .insert(dest, OverlayEntry::File(GitFile::new(bytes)));
-            self.notify();
+                .insert(dest, OverlayEntry::File);
             Ok(result)
         })
     }
@@ -1229,56 +1264,44 @@ impl MountableStorage for GitVolumeStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
         Self::validate(from)?;
         Self::validate(to)?;
+        self.ensure_checkout()?;
         let metadata = self.metadata(from)?;
-        if metadata.kind == EntryKind::File {
-            let file = {
-                let working = self.inner.working.write();
-                match working.entries.get(from) {
-                    Some(OverlayEntry::File(file)) => file.clone(),
-                    _ => GitFile::new(self.base_file(from)?),
-                }
-            };
-            if let Some((parent, _)) = to.rsplit_once('/') {
-                self.create_dir_all(parent)?;
-            }
-            let mut working = self.inner.working.write();
-            working
-                .entries
-                .insert(from.to_owned(), OverlayEntry::Deleted);
-            working
-                .entries
-                .insert(to.to_owned(), OverlayEntry::File(file));
+        let descendants = if metadata.kind == EntryKind::Directory {
+            self.inner
+                .checkout
+                .read_dir(from, true)?
+                .map(|entry| (entry.path, entry.metadata.kind))
+                .collect::<Vec<_>>()
         } else {
-            let entries = self.read_dir(from, true)?.collect::<Vec<_>>();
-            self.create_dir_all(to)?;
-            for entry in entries {
-                let relative = entry
-                    .path
+            Vec::new()
+        };
+        self.inner.checkout.rename(from, to)?;
+        let mut working = self.inner.working.write();
+        working
+            .entries
+            .insert(from.to_owned(), OverlayEntry::Deleted);
+        if metadata.kind == EntryKind::File {
+            working.entries.insert(to.to_owned(), OverlayEntry::File);
+        } else {
+            working
+                .entries
+                .insert(to.to_owned(), OverlayEntry::Directory);
+            for (path, kind) in descendants {
+                let relative = path
                     .strip_prefix(from)
-                    .unwrap()
+                    .expect("descendant begins with its requested root")
                     .trim_start_matches('/');
                 let target = join(to, relative);
-                match entry.metadata.kind {
-                    EntryKind::Directory => self.create_dir_all(&target)?,
-                    EntryKind::File => {
-                        let file = self.open(&entry.path, false)?;
-                        let mut bytes = vec![0; entry.metadata.len as usize];
-                        file.read_at(0, &mut bytes)?;
-                        self.inner
-                            .working
-                            .write()
-                            .entries
-                            .insert(target, OverlayEntry::File(GitFile::new(bytes)));
-                    }
-                }
+                working.entries.insert(
+                    target,
+                    match kind {
+                        EntryKind::Directory => OverlayEntry::Directory,
+                        EntryKind::File => OverlayEntry::File,
+                    },
+                );
             }
-            self.inner
-                .working
-                .write()
-                .entries
-                .insert(from.to_owned(), OverlayEntry::Deleted);
         }
-        self.notify();
+        drop(working);
         Ok(())
     }
 
@@ -1287,7 +1310,17 @@ impl MountableStorage for GitVolumeStorage {
     }
 
     fn sync(&self, _path: &str) -> Result<(), Error> {
-        Ok(())
+        self.ensure_checkout()?;
+        self.inner.checkout.sync(_path)
+    }
+
+    fn finish(&self, path: &str) -> Result<(), Error> {
+        if self.inner.kind == GitVolumeKind::Nand {
+            self.discard_pending_nand_changes()
+        } else {
+            let _ = path;
+            Ok(())
+        }
     }
 }
 
@@ -1345,14 +1378,6 @@ impl VolumeStorage for GitVolumeStorage {
     }
 }
 
-struct GitChangeSignal(Arc<Notify>);
-
-impl ChangeSignal for GitChangeSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(self.0.notified())
-    }
-}
-
 #[derive(Clone)]
 struct ArtifactRecord {
     id: String,
@@ -1369,6 +1394,19 @@ struct ArtifactFileRecord {
     path: PathBuf,
     blake3: [u8; 32],
     byte_length: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TreeLeaf {
+    kind: gix::objs::tree::EntryKind,
+    id: gix::ObjectId,
+}
+
+#[derive(Clone)]
+struct NandCommit {
+    id: gix::ObjectId,
+    commit: gix::objs::Commit,
+    artifact: Option<String>,
 }
 
 impl From<&Artifact> for ArtifactRecord {
@@ -1506,6 +1544,356 @@ impl GitArtifactRegistry {
         }
         Ok(records)
     }
+
+    fn artifact_from_message(message: &[u8]) -> Option<String> {
+        message
+            .as_bstr()
+            .to_str_lossy()
+            .lines()
+            .next()?
+            .strip_prefix("Snowglass install ")
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn linear_history(
+        repo: &gix::Repository,
+        tip: gix::ObjectId,
+    ) -> Result<Vec<NandCommit>, Error> {
+        let mut current = Some(tip);
+        let mut history = Vec::new();
+        while let Some(id) = current {
+            let object = repo
+                .find_commit(id)
+                .map_err(|error| Error::git("read NAND commit", error))?;
+            let decoded = object
+                .decode()
+                .map_err(|error| Error::git("decode NAND commit", error))?;
+            let commit = gix::objs::Commit::try_from(decoded)
+                .map_err(|error| Error::git("own NAND commit", error))?;
+            if commit.parents.len() > 1 {
+                return Err(Error::HistoryConflict(
+                    "NAND history must be linear to uninstall depots".to_owned(),
+                ));
+            }
+            current = commit.parents.first().copied();
+            history.push(NandCommit {
+                id,
+                artifact: Self::artifact_from_message(&commit.message),
+                commit,
+            });
+        }
+        history.reverse();
+        Ok(history)
+    }
+
+    fn tree_snapshot(
+        repo: &gix::Repository,
+        tree: gix::ObjectId,
+    ) -> Result<BTreeMap<String, TreeLeaf>, Error> {
+        let tree = repo
+            .find_tree(tree)
+            .map_err(|error| Error::git("read NAND tree", error))?;
+        let entries = tree
+            .traverse()
+            .breadthfirst
+            .files()
+            .map_err(|error| Error::git("traverse NAND tree", error))?;
+        let mut snapshot = BTreeMap::new();
+        for entry in entries {
+            let kind = entry.mode.kind();
+            if kind == gix::objs::tree::EntryKind::Tree {
+                continue;
+            }
+            if !matches!(
+                kind,
+                gix::objs::tree::EntryKind::Blob | gix::objs::tree::EntryKind::BlobExecutable
+            ) {
+                return Err(Error::HistoryConflict(format!(
+                    "unsupported entry in NAND tree: {}",
+                    entry.filepath.to_str_lossy()
+                )));
+            }
+            snapshot.insert(
+                entry.filepath.to_str_lossy().into_owned(),
+                TreeLeaf {
+                    kind,
+                    id: entry.oid,
+                },
+            );
+        }
+        Ok(snapshot)
+    }
+
+    fn empty_snapshot() -> BTreeMap<String, TreeLeaf> {
+        BTreeMap::new()
+    }
+
+    fn parent_snapshot(
+        repo: &gix::Repository,
+        commit: &NandCommit,
+    ) -> Result<BTreeMap<String, TreeLeaf>, Error> {
+        match commit.commit.parents.first() {
+            Some(parent) => repo
+                .find_commit(*parent)
+                .map_err(|error| Error::git("read NAND parent", error))?
+                .tree_id()
+                .map_err(|error| Error::git("read NAND parent tree", error))
+                .and_then(|tree| Self::tree_snapshot(repo, tree.detach())),
+            None => Ok(Self::empty_snapshot()),
+        }
+    }
+
+    fn apply_delta(
+        repo: &gix::Repository,
+        commit: &NandCommit,
+        current: &mut BTreeMap<String, TreeLeaf>,
+    ) -> Result<Vec<String>, Error> {
+        let before = Self::parent_snapshot(repo, commit)?;
+        let after = Self::tree_snapshot(repo, commit.commit.tree)?;
+        let paths = before
+            .keys()
+            .chain(after.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut updated = current.clone();
+        let mut conflicts = Vec::new();
+        for path in paths {
+            let before = before.get(&path).copied();
+            let after = after.get(&path).copied();
+            if before == after {
+                continue;
+            }
+            let found = current.get(&path).copied();
+            if found != before && found != after {
+                conflicts.push(path);
+                continue;
+            }
+            match after {
+                Some(entry) => {
+                    updated.insert(path, entry);
+                }
+                None => {
+                    updated.remove(&path);
+                }
+            }
+        }
+        if conflicts.is_empty() {
+            *current = updated;
+        }
+        Ok(conflicts)
+    }
+
+    fn write_snapshot(
+        repo: &gix::Repository,
+        snapshot: &BTreeMap<String, TreeLeaf>,
+    ) -> Result<gix::ObjectId, Error> {
+        let mut editor = repo
+            .empty_tree()
+            .edit()
+            .map_err(|error| Error::git("edit rewritten NAND tree", error))?;
+        for (path, entry) in snapshot {
+            editor
+                .upsert(path, entry.kind, entry.id)
+                .map_err(|error| Error::git("update rewritten NAND tree", error))?;
+        }
+        editor
+            .write()
+            .map(|id| id.detach())
+            .map_err(|error| Error::git("write rewritten NAND tree", error))
+    }
+
+    fn manifest_dependencies(
+        records: &[ArtifactRecord],
+        selected: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        let selected_paths = records
+            .iter()
+            .filter(|record| selected.contains(&record.id))
+            .flat_map(|record| record.manifest.iter())
+            .map(|file| file.path.to_string_lossy().replace('\\', "/"))
+            .collect::<BTreeSet<_>>();
+        records
+            .iter()
+            .filter(|record| !selected.contains(&record.id))
+            .filter(|record| {
+                record.manifest.iter().any(|file| {
+                    selected_paths.contains(&file.path.to_string_lossy().replace('\\', "/"))
+                })
+            })
+            .map(|record| record.id.clone())
+            .collect()
+    }
+
+    fn affected_depots(
+        repo: &gix::Repository,
+        history: &[NandCommit],
+        records: &[ArtifactRecord],
+        requested: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, Error> {
+        let installed = records
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut selected = requested
+            .intersection(&installed)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if selected.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        loop {
+            let mut added = Self::manifest_dependencies(records, &selected);
+            let first = history
+                .iter()
+                .position(|commit| {
+                    commit
+                        .artifact
+                        .as_ref()
+                        .is_some_and(|id| selected.contains(id))
+                })
+                .ok_or_else(|| {
+                    Error::HistoryConflict(format!(
+                        "no installation commit was found for {}",
+                        selected.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ))
+                })?;
+            for id in &selected {
+                if !history
+                    .iter()
+                    .any(|commit| commit.artifact.as_ref() == Some(id))
+                {
+                    return Err(Error::HistoryConflict(format!(
+                        "no installation commit was found for {id}"
+                    )));
+                }
+            }
+            let mut current = Self::parent_snapshot(repo, &history[first])?;
+            for commit in &history[first..] {
+                if commit
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|id| selected.contains(id))
+                {
+                    continue;
+                }
+                let conflicts = Self::apply_delta(repo, commit, &mut current)?;
+                if conflicts.is_empty() {
+                    continue;
+                }
+                if let Some(id) = &commit.artifact {
+                    added.insert(id.clone());
+                    break;
+                } else {
+                    return Err(Error::HistoryConflict(format!(
+                        "dropping depot commits conflicts with commit {} at {}",
+                        commit.id,
+                        conflicts.join(", ")
+                    )));
+                }
+            }
+            added.retain(|id| !selected.contains(id));
+            if added.is_empty() {
+                return Ok(selected.difference(requested).cloned().collect());
+            }
+            selected.extend(added);
+        }
+    }
+
+    fn rewrite_without(
+        &self,
+        repo: &gix::Repository,
+        history: &[NandCommit],
+        removed: &BTreeSet<String>,
+        old_tip: gix::ObjectId,
+    ) -> Result<(), Error> {
+        let first = history
+            .iter()
+            .position(|commit| {
+                commit
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|id| removed.contains(id))
+            })
+            .ok_or_else(|| {
+                Error::HistoryConflict("no installation commits were selected".to_owned())
+            })?;
+        let mut current = Self::parent_snapshot(repo, &history[first])?;
+        let mut parent = history[first].commit.parents.first().copied();
+        for original in &history[first..] {
+            if original
+                .artifact
+                .as_ref()
+                .is_some_and(|id| removed.contains(id))
+            {
+                continue;
+            }
+            let conflicts = Self::apply_delta(repo, original, &mut current)?;
+            if !conflicts.is_empty() {
+                return Err(Error::HistoryConflict(format!(
+                    "rewriting commit {} conflicts at {}",
+                    original.id,
+                    conflicts.join(", ")
+                )));
+            }
+            let mut rewritten = original.commit.clone();
+            rewritten.tree = Self::write_snapshot(repo, &current)?;
+            rewritten.parents.clear();
+            if let Some(parent) = parent {
+                rewritten.parents.push(parent);
+            }
+            parent = Some(
+                repo.write_object(rewritten)
+                    .map_err(|error| Error::git("write rebased NAND commit", error))?
+                    .detach(),
+            );
+        }
+        let new_tip = parent.ok_or_else(|| {
+            Error::HistoryConflict("uninstall cannot remove the entire NAND history".to_owned())
+        })?;
+        let reference = self.storage().ref_name();
+        let name = gix::refs::FullName::try_from(reference.as_str())
+            .map_err(|error| Error::git("validate NAND reference", error))?;
+        let signature = signature();
+        let mut time = gix::date::parse::TimeBuf::default();
+        let signature = signature.to_ref(&mut time);
+        repo.edit_references_as(
+            [RefEdit {
+                change: Change::Update {
+                    log: LogChange {
+                        mode: RefLog::AndReference,
+                        force_create_reflog: true,
+                        message: format!(
+                            "Snowglass uninstall {}",
+                            removed.iter().cloned().collect::<Vec<_>>().join(" ")
+                        )
+                        .into(),
+                    },
+                    expected: PreviousValue::MustExistAndMatch(Target::Object(old_tip)),
+                    new: Target::Object(new_tip),
+                },
+                name: name.clone(),
+                deref: false,
+            }],
+            Some(signature),
+        )
+        .map_err(|error| Error::git("publish rewritten NAND history", error))?;
+        repo.edit_references_as(
+            [RefEdit {
+                change: Change::Delete {
+                    expected: PreviousValue::MustExistAndMatch(Target::Object(new_tip)),
+                    log: RefLog::Only,
+                },
+                name,
+                deref: false,
+            }],
+            Some(signature),
+        )
+        .map_err(|error| Error::git("clear rewritten NAND reflog", error))?;
+        self.storage()
+            .refresh_checkout_locked(repo, Some(new_tip))?;
+        Ok(())
+    }
 }
 
 impl ArtifactRegistry for GitArtifactRegistry {
@@ -1553,17 +1941,46 @@ impl ArtifactRegistry for GitArtifactRegistry {
         Box::pin(async move { Ok(self.records()?.iter().any(|record| record.id == id)) })
     }
 
-    fn forget<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+    fn uninstall<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
-            self.0
-                .working
-                .write()
-                .metadata
-                .artifacts
-                .insert(id.to_owned(), None);
-            self.storage()
-                .commit_pending(&format!("Snowglass uninstall {id}"), None)?;
-            Ok(())
+            let requested = ids
+                .iter()
+                .map(|id| (*id).to_owned())
+                .collect::<BTreeSet<_>>();
+            if requested.is_empty() {
+                return Ok(());
+            }
+            let _guard = self.0.platform.0.operation.lock();
+            if !self.0.working.read().is_empty() {
+                return Err(Error::HistoryConflict(
+                    "cannot uninstall depots while the NAND has uncommitted changes".to_owned(),
+                ));
+            }
+            let repo = self.0.platform.repository().to_thread_local();
+            let storage = self.storage();
+            let Some(tip) = GitVolumeStorage::tip_in(&repo, &storage.ref_name())? else {
+                return Ok(());
+            };
+            let records = self.records()?;
+            let installed = records
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<BTreeSet<_>>();
+            let removed = requested
+                .intersection(&installed)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if removed.is_empty() {
+                return Ok(());
+            }
+            let history = Self::linear_history(&repo, tip)?;
+            let affected = Self::affected_depots(&repo, &history, &records, &removed)?;
+            if !affected.is_empty() {
+                return Err(Error::AffectedDepots {
+                    affected: affected.into_iter().collect(),
+                });
+            }
+            self.rewrite_without(&repo, &history, &removed, tip)
         })
     }
 }
@@ -1703,16 +2120,6 @@ fn join(parent: &str, child: &str) -> String {
     }
 }
 
-fn immediate_child<'a>(parent: &str, candidate: &'a str) -> Option<&'a str> {
-    let relative = if parent.is_empty() {
-        candidate
-    } else {
-        candidate.strip_prefix(parent)?.strip_prefix('/')?
-    };
-    let child = relative.split('/').next()?;
-    (!child.is_empty()).then_some(child)
-}
-
 fn directory_key(path: &str) -> String {
     blake3::hash(path.as_bytes()).to_hex().to_string()
 }
@@ -1757,6 +2164,76 @@ mod tests {
             .unwrap();
         assert_eq!(bytes, b"one");
         assert_eq!(first.label().await.unwrap().as_deref(), Some("First"));
+    }
+
+    #[tokio::test]
+    async fn nands_and_profiles_are_distinct_trees_in_one_native_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
+        let nand = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
+        let profile = platform.volume(GitVolumeKind::SaveRepo, Uuid::now_v7());
+
+        nand.install_file(Box::new(Cursor::new(b"nand")), "deep/content.bin")
+            .await
+            .unwrap();
+        nand.brand(nand.id(), "TEST", None).await.unwrap();
+        profile
+            .install_file(Box::new(Cursor::new(b"profile")), "saves/game/save.bin")
+            .await
+            .unwrap();
+        profile.brand(profile.id(), "TEST", None).await.unwrap();
+
+        assert_ne!(nand.checkout_path(), profile.checkout_path());
+        assert_eq!(nand.index_path(), profile.index_path());
+        assert_eq!(
+            fs::read(nand.checkout_path().join("deep/content.bin")).unwrap(),
+            b"nand"
+        );
+        assert_eq!(
+            fs::read(profile.checkout_path().join("saves/game/save.bin")).unwrap(),
+            b"profile"
+        );
+        assert!(nand.index_path().is_file());
+        assert_eq!(nand.index_path(), platform.path().join(".git/index"));
+
+        let repo = platform.repository().to_thread_local();
+        let index = gix::index::File::at(
+            nand.index_path(),
+            repo.object_hash(),
+            false,
+            gix::index::decode::Options::default(),
+        )
+        .unwrap();
+        let paths = index
+            .entries()
+            .iter()
+            .map(|entry| entry.path(&index).to_str_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                format!("files/nands/{}/deep/content.bin", nand.id().simple()),
+                format!(
+                    "files/save-repos/{}/saves/game/save.bin",
+                    profile.id().simple()
+                ),
+            ]
+        );
+
+        let handle = profile.open("saves/game/save.bin", true).unwrap();
+        handle.set_len(0).unwrap();
+        handle.write_all_at(0, b"updated").unwrap();
+        profile.commit_pending("update profile", None).unwrap();
+        drop(repo);
+
+        let reopened = platform.volume(GitVolumeKind::SaveRepo, profile.id());
+        let mut contents = Vec::new();
+        reopened
+            .open_read("saves/game/save.bin")
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, b"updated");
     }
 
     #[tokio::test]
@@ -1826,6 +2303,78 @@ mod tests {
         assert_eq!(
             platform.ids(GitVolumeKind::MemoryCard).unwrap(),
             [destination_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn uninstall_rebases_independent_later_depots() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
+        let nand = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
+        nand.brand(nand.id(), "TEST", None).await.unwrap();
+
+        for (id, path, bytes) in [
+            ("first", "first/content.bin", b"first".as_slice()),
+            ("second", "second/content.bin", b"second".as_slice()),
+        ] {
+            let installed = nand
+                .install_file(Box::new(Cursor::new(bytes)), path)
+                .await
+                .unwrap();
+            nand.artifacts()
+                .record(&Artifact::new(
+                    id.to_owned(),
+                    DepotType::App,
+                    vec![DepotFile::new(
+                        PathBuf::from(path),
+                        installed.blake3,
+                        installed.byte_length,
+                    )],
+                    id.to_owned(),
+                    None,
+                    IconHint::Builtin(DepotType::App),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let repo = platform.repository().to_thread_local();
+        let old_tip = GitVolumeStorage::tip_in(&repo, &nand.ref_name())
+            .unwrap()
+            .unwrap();
+        nand.artifacts().uninstall(&["first"]).await.unwrap();
+        let new_tip = GitVolumeStorage::tip_in(&repo, &nand.ref_name())
+            .unwrap()
+            .unwrap();
+        assert_ne!(new_tip, old_tip);
+        assert!(!nand.exists("first/content.bin"));
+        let mut bytes = Vec::new();
+        nand.open_read("second/content.bin")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"second");
+        assert_eq!(
+            nand.artifacts()
+                .summaries()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|artifact| artifact.id)
+                .collect::<Vec<_>>(),
+            ["second"]
+        );
+
+        let mut current = Some(new_tip);
+        let mut messages = Vec::new();
+        while let Some(id) = current {
+            let commit = repo.find_commit(id).unwrap();
+            messages.push(commit.message_raw().unwrap().to_string());
+            current = commit.parent_ids().next().map(|id| id.detach());
+        }
+        assert_eq!(
+            messages,
+            ["Snowglass install second", "Snowglass volume created"]
         );
     }
 }

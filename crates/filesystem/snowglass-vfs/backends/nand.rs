@@ -6,8 +6,8 @@ use snowglass_consolestorage::nand::VirtualNand;
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, ExclusiveResourceKey, Materialized, Permissions, ResourceFactory,
-    VfsResult, Volume,
+    CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized, Permissions,
+    ResourceFactory, ResourceLease, VfsError, VfsResult, Volume,
 };
 
 use super::storage::{StoragePermissions, materialize_volume};
@@ -43,11 +43,14 @@ where
         let nand = self.nand.clone();
         let permissions: StoragePermissions = Arc::new(move |path| nand.permissions(path).into());
 
-        let leases = self
+        let mut leases = self
             .resource_ids
             .iter()
             .map(|id| ExclusiveResourceKey::Resource(*id).acquire())
             .collect::<VfsResult<Vec<_>>>()?;
+        leases.push(Arc::new(NandStorageLease {
+            storage: storage.clone(),
+        }));
         let lease = CompositeResourceLease::new(leases);
         Ok(materialize_volume(
             storage,
@@ -55,5 +58,18 @@ where
             permissions,
             lease,
         ))
+    }
+}
+
+struct NandStorageLease {
+    storage: Arc<dyn MountableStorage>,
+}
+
+impl ResourceLease for NandStorageLease {
+    fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
+        self.storage.finish("").map_err(|error| match error {
+            snowglass_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
+            error => VfsError::Unsupported(error.to_string()),
+        })
     }
 }

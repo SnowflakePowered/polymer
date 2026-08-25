@@ -39,8 +39,10 @@ pub enum Error {
         operation: &'static str,
         reason: String,
     },
-    #[error("save history conflict: {0}")]
+    #[error("git history conflict: {0}")]
     HistoryConflict(String),
+    #[error("uninstall also affects these depots: {}", affected.join(", "))]
+    AffectedDepots { affected: Vec<String> },
     #[error("save commit `{0}` was not found in this save's history")]
     UnknownSaveCommit(String),
 }
@@ -76,6 +78,9 @@ impl Clone for Error {
                 reason: reason.clone(),
             },
             Error::HistoryConflict(reason) => Error::HistoryConflict(reason.clone()),
+            Error::AffectedDepots { affected } => Error::AffectedDepots {
+                affected: affected.clone(),
+            },
             Error::UnknownSaveCommit(id) => Error::UnknownSaveCommit(id.clone()),
         }
     }
