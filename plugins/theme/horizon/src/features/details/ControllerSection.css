@@ -1,0 +1,13 @@
+.horizon-controller-section { min-width: 0; }
+.horizon-controller-section > header p { margin: 0 0 0.2rem; color: #e60012; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+.horizon-controller-section > header h2 { margin: 0 0 1rem; font-size: 1.75rem; }
+.horizon-controller-group { margin-bottom: 0.8rem; padding: 1rem; border: 1px solid #383838; border-radius: 0.4rem; background: #181818; }
+.horizon-controller-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.horizon-controller-heading h3 { margin: 0; }
+.horizon-connected { width: 8rem; }
+.horizon-controller-empty { margin: 0.8rem 0 0; color: #8f8f8f; }
+.horizon-port-tabs { display: flex; gap: 0.3rem; margin-top: 0.8rem; border-bottom: 1px solid #404040; }
+.horizon-port-tabs button { padding: 0.55rem 0.8rem; border: 0; color: #aaa; background: transparent; }
+.horizon-port-tabs button[data-selected] { color: white; background: #e60012; }
+.horizon-port-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; padding-top: 0.9rem; }
+@media (max-width: 720px) { .horizon-port-content { grid-template-columns: minmax(0, 1fr); } }

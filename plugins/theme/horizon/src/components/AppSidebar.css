@@ -1,0 +1,4 @@
+.horizon-sidebar { display: flex; width: 6.25rem; height: 100%; flex: none; flex-direction: column; align-items: center; gap: 1rem; padding: 1.35rem 0 1.5rem; background: #e60012; }
+.horizon-sidebar-nav { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; margin-top: 6.5rem; }
+.horizon-sidebar-spacer { min-height: 1rem; flex: 1; }
+@media (max-width: 720px) { .horizon-sidebar { width: 5rem; } .horizon-sidebar-nav { margin-top: 2rem; } }

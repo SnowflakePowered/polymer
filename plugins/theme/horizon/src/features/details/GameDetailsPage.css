@@ -1,0 +1,13 @@
+.horizon-details-shell { display: flex; width: 100%; height: 100%; overflow: hidden; color: white; background: #080808; }
+.horizon-details-page { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
+.horizon-details-header { display: flex; min-height: 5rem; flex: none; align-items: center; gap: 1rem; padding: 0.8rem 1.3rem; border-bottom: 1px solid #333; background: #111; }
+.horizon-details-header > div { min-width: 0; flex: 1; }
+.horizon-details-header p { margin: 0 0 0.12rem; color: #e60012; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+.horizon-details-header h1 { overflow: hidden; margin: 0; font-size: 1.35rem; text-overflow: ellipsis; white-space: nowrap; }
+.horizon-back-button { display: flex; width: 2.8rem; height: 2.8rem; flex: none; align-items: center; justify-content: center; border: 1px solid #555; border-radius: 50%; color: white; background: #242424; }
+.horizon-back-button svg { width: 1.45rem; height: 1.45rem; }
+.horizon-start-button { display: flex; min-height: 2.8rem; align-items: center; gap: 0.45rem; padding: 0.55rem 1rem; border: 2px solid white; border-radius: 0.3rem; color: white; background: #e60012; font-weight: 800; }
+.horizon-start-button svg { width: 1rem; height: 1rem; }
+.horizon-details-columns { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr) minmax(18rem, 25rem); gap: 1rem; overflow: auto; padding: 1.2rem; }
+.horizon-details-missing { display: grid; width: 100%; height: 100%; place-items: center; background: #080808; }
+@media (max-width: 900px) { .horizon-details-columns { grid-template-columns: minmax(0, 1fr); } }
