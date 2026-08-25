@@ -567,7 +567,7 @@ impl SaveGameSink for Playstation2MemoryCard {
     }
 
     fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error> {
-        let activity = self.storage.watch(&[SAVE_ROOT])?.ok_or_else(|| {
+        let activity = self.storage.watch()?.ok_or_else(|| {
             Error::Unsupported("PlayStation 2 storage cannot watch saves".to_owned())
         })?;
         let card = self.clone();
@@ -584,22 +584,21 @@ impl SaveGameSink for Playstation2MemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DirectoryStorage;
 
-    async fn versioned(path: &std::path::Path, id: Uuid) -> crate::VersionedStorage {
-        crate::VersionedStorage::new(
-            DirectoryStorage::new(path).await.unwrap(),
+    fn versioned(path: &std::path::Path, id: Uuid) -> crate::VersionedStorage {
+        crate::VersionedStorage::for_test(
+            path,
             Playstation2MemoryCard::PLATFORM,
             id,
+            crate::StorageKind::MemoryCard,
         )
-        .unwrap()
     }
 
     #[tokio::test]
     async fn git_history_restores_attaches_copies_and_undeletes_saves() {
         let source_directory = tempfile::tempdir().unwrap();
         let source_id = Uuid::now_v7();
-        let source_storage = versioned(source_directory.path(), source_id).await;
+        let source_storage = versioned(source_directory.path(), source_id);
         let source = Playstation2MemoryCard::new_empty(source_storage, source_id, None)
             .await
             .unwrap();
@@ -612,27 +611,6 @@ mod tests {
             )
             .unwrap();
         let first = source.save(depot).checkpoint().await.unwrap().unwrap();
-        let journal_path = source_directory
-            .path()
-            .join(".git/snowglass-transaction.json");
-        std::fs::write(
-            &journal_path,
-            serde_json::to_vec(&serde_json::json!({
-                "depot": depot.0,
-                "old": first.id.to_string(),
-                "target": first.id.to_string(),
-                "screenshot": null,
-                "icon": null,
-                "note": null
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        std::fs::remove_file(source_directory.path().join("card/BASLUS-12345.psu")).unwrap();
-        assert!(source.save(depot).checkpoint().await.unwrap().is_none());
-        assert!(source.storage.exists("card/BASLUS-12345.psu"));
-        assert!(!journal_path.exists());
-
         source
             .write_save(
                 &Save::from_files("BASLUS-12345", &[], [("data.bin", &[][..], &b"second"[..])])
@@ -714,7 +692,7 @@ mod tests {
 
         let destination_directory = tempfile::tempdir().unwrap();
         let destination_id = Uuid::now_v7();
-        let destination_storage = versioned(destination_directory.path(), destination_id).await;
+        let destination_storage = versioned(destination_directory.path(), destination_id);
         let destination =
             Playstation2MemoryCard::new_empty(destination_storage, destination_id, None)
                 .await
@@ -797,7 +775,7 @@ mod tests {
     async fn primary_save_group_takes_precedence_over_free_space_target() {
         let directory = tempfile::tempdir().unwrap();
         let id = Uuid::now_v7();
-        let storage = versioned(directory.path(), id).await;
+        let storage = versioned(directory.path(), id);
         let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
@@ -850,7 +828,7 @@ mod tests {
     async fn canonical_and_raw_views_preserve_non_utf8_names() {
         let directory = tempfile::tempdir().unwrap();
         let id = Uuid::now_v7();
-        let storage = versioned(directory.path(), id).await;
+        let storage = versioned(directory.path(), id);
         let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
@@ -902,7 +880,7 @@ mod tests {
     async fn raw_and_pcsx2_views_reconcile_through_the_canonical_card() {
         let directory = tempfile::tempdir().unwrap();
         let id = Uuid::now_v7();
-        let storage = versioned(directory.path(), id).await;
+        let storage = versioned(directory.path(), id);
         let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
@@ -1000,7 +978,7 @@ mod tests {
     async fn dirent_metadata_survives_reopening_the_card() {
         let directory = tempfile::tempdir().unwrap();
         let id = Uuid::now_v7();
-        let storage = versioned(directory.path(), id).await;
+        let storage = versioned(directory.path(), id);
         let card = Playstation2MemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();
@@ -1025,12 +1003,12 @@ mod tests {
             .write_at(0, &replacement)
             .unwrap();
         raw.storage().sync("").unwrap();
-        assert!(directory.path().join("card/BASLUS-12345.psu").is_file());
-        assert!(!directory.path().join("._dirent").exists());
+        assert!(card.storage.exists("card/BASLUS-12345.psu"));
+        assert!(!card.storage.exists("._dirent"));
 
         drop(raw);
         drop(card);
-        let reopened = Playstation2MemoryCard::open(versioned(directory.path(), id).await)
+        let reopened = Playstation2MemoryCard::open(versioned(directory.path(), id))
             .await
             .unwrap();
         let pcsx2 = reopened.view(&[], "pcsx2").unwrap();

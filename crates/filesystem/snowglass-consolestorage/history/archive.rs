@@ -25,7 +25,7 @@ enum ArchiveRecord {
 
 impl SaveVersioning {
     pub fn recently_deleted(&self) -> Result<Vec<DeletedSaveInfo>, Error> {
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let archive_ref = self.archive_ref();
         let Some(reference) = repo
             .try_find_reference(&archive_ref)
@@ -71,7 +71,7 @@ impl SaveVersioning {
     ) -> Result<SaveCommitInfo, Error> {
         self.recover(owner).await?;
         let depot = {
-            let repo = self.inner.repository.to_thread_local();
+            let repo = self.inner.repository().to_thread_local();
             self.find_deleted_record(&repo, deletion_id)?
                 .ok_or_else(|| {
                     Error::HistoryConflict(format!("unknown or expired deletion {deletion_id}"))
@@ -85,7 +85,7 @@ impl SaveVersioning {
         }
         let _guard = self.inner.operation.lock().await;
         let (record, conflict) = {
-            let repo = self.inner.repository.to_thread_local();
+            let repo = self.inner.repository().to_thread_local();
             let record = self
                 .find_deleted_record(&repo, deletion_id)?
                 .ok_or_else(|| {
@@ -107,7 +107,7 @@ impl SaveVersioning {
             },
         )
         .await?;
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         self.pulse_archive(
             &repo,
             format!("Snowglass archive restore\n\nSnowglass-Deletion-Id: {deletion_id}\n"),
@@ -271,14 +271,16 @@ impl SaveVersioning {
         depot: SaveDepotId,
     ) -> Result<(), Error> {
         let Some(state) = ({
-            let repo = self.inner.repository.to_thread_local();
+            let repo = self.inner.repository().to_thread_local();
             let Some(state) = Self::ref_state_in(&repo, &self.refs(depot))? else {
                 return Ok(());
             };
             let deletion_id = Uuid::new_v4();
             let mut message = format!(
                 "Snowglass archive deletion\n\nSnowglass-Deletion-Id: {deletion_id}\nSnowglass-Platform: {}\nSnowglass-Depot: {:016x}\nSnowglass-Save-Tip: {}\n",
-                self.inner.platform, depot.0, state.tip
+                self.inner.platform(),
+                depot.0,
+                state.tip
             );
             let mut parents = vec![state.tip];
             for (kind, id) in state.attachments.entries() {

@@ -11,12 +11,10 @@ pub use storage::VersionedStorage;
 
 use std::fmt;
 use std::io::{Cursor, Read};
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use jiff::Timestamp;
-use serde::{Deserialize, Serialize};
 use tokio::io::AsyncRead;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -25,8 +23,6 @@ use crate::savegame::{SaveDepotId, SaveDescriptor};
 use crate::{Error, SaveRepo};
 
 const SCHEMA_VERSION: u32 = 1;
-const MARKER_FILE: &str = "snowglass.json";
-const VOLUME_REF: &str = "refs/snowglass/volume/v1";
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SaveCommitId(gix::ObjectId);
@@ -105,13 +101,6 @@ pub struct DeletedSaveInfo {
     pub depot: SaveDepotId,
     pub deleted_at: Timestamp,
     pub tip: SaveCommitId,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Marker {
-    schema: u32,
-    platform: String,
-    volume_id: Uuid,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -193,12 +182,22 @@ impl SaveRefs {
 }
 
 struct HistoryInner {
-    root: PathBuf,
-    platform: String,
-    volume_id: Uuid,
-    repository: gix::ThreadSafeRepository,
-    profile: Option<crate::GitVolumeStorage>,
+    profile: crate::GitVolumeStorage,
     operation: Mutex<()>,
+}
+
+impl HistoryInner {
+    fn repository(&self) -> &gix::ThreadSafeRepository {
+        self.profile.platform_repository().repository()
+    }
+
+    fn platform(&self) -> &str {
+        self.profile.platform_repository().platform()
+    }
+
+    fn volume_id(&self) -> Uuid {
+        self.profile.id()
+    }
 }
 
 #[derive(Clone)]
@@ -210,9 +209,7 @@ impl fmt::Debug for SaveVersioning {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SaveVersioning")
-            .field("root", &self.inner.root)
-            .field("platform", &self.inner.platform)
-            .field("volume_id", &self.inner.volume_id)
+            .field("profile", &self.inner.profile)
             .finish_non_exhaustive()
     }
 }
@@ -221,16 +218,16 @@ impl SaveVersioning {
     fn archive_ref(&self) -> String {
         format!(
             "refs/snowglass/archive/v2/{}/recently-deleted",
-            self.inner.volume_id.simple()
+            self.inner.volume_id().simple()
         )
     }
 
     pub fn platform(&self) -> &str {
-        &self.inner.platform
+        self.inner.platform()
     }
 
     pub fn volume_id(&self) -> Uuid {
-        self.inner.volume_id
+        self.inner.volume_id()
     }
 
     fn commit_message(&self, depot: SaveDepotId, operation: &SaveCommitOperation) -> String {
@@ -244,7 +241,8 @@ impl SaveVersioning {
         };
         format!(
             "Snowglass save {operation}\n\nSnowglass-Schema: {SCHEMA_VERSION}\nSnowglass-Platform: {}\nSnowglass-Depot: {:016x}\n",
-            self.inner.platform, depot.0
+            self.inner.platform(),
+            depot.0
         )
     }
 
@@ -299,16 +297,16 @@ impl SaveVersioning {
         self.recover(owner).await?;
         let exported = owner.export_save(&depot)?;
         let guard = self.inner.operation.lock().await;
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).head;
         let parent = Self::tip_in(&repo, &reference)?;
         let tree = self.write_snapshot(&repo, &exported.blobs)?;
         if let Some(parent) = parent {
             let current_tree = Self::commit_tree(&repo, parent)?;
             if current_tree == tree {
-                if let Some(profile) = &self.inner.profile {
-                    profile.commit_pending("Snowglass profile autosave", None)?;
-                }
+                self.inner
+                    .profile
+                    .commit_pending("Snowglass profile autosave", None)?;
                 drop(guard);
                 owner.save_icon(depot).await?;
                 return Ok(None);
@@ -328,10 +326,10 @@ impl SaveVersioning {
             .commit_as(signature, signature, reference, message, tree, parents)
             .map_err(|error| Error::git("commit save snapshot", error))?
             .detach();
-        if let Some(profile) = &self.inner.profile {
-            profile.set_save_tip(depot.0, Some(id));
-            profile.commit_pending("Snowglass profile autosave", None)?;
-        }
+        self.inner.profile.set_save_tip(depot.0, Some(id));
+        self.inner
+            .profile
+            .commit_pending("Snowglass profile autosave", None)?;
         let info = Self::commit_info(&repo, id)?;
         drop(guard);
         owner.save_icon(depot).await?;
@@ -339,15 +337,14 @@ impl SaveVersioning {
     }
 
     pub(crate) fn checkpoint_profile(&self) -> Result<bool, Error> {
-        self.inner.profile.as_ref().map_or(Ok(false), |profile| {
-            profile
-                .commit_pending("Snowglass profile autosave", None)
-                .map(|commit| commit.is_some())
-        })
+        self.inner
+            .profile
+            .commit_pending("Snowglass profile autosave", None)
+            .map(|commit| commit.is_some())
     }
 
     fn history(&self, depot: SaveDepotId) -> Result<Vec<SaveCommitInfo>, Error> {
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let mut current = Self::tip_in(&repo, &self.refs(depot).head)?;
         let mut history = Vec::new();
         while let Some(id) = current {
@@ -385,7 +382,7 @@ impl SaveVersioning {
             restored_from: wanted,
         };
         let (before, after) = {
-            let repo = self.inner.repository.to_thread_local();
+            let repo = self.inner.repository().to_thread_local();
             let before = Self::ref_state_in(&repo, &refs)?
                 .ok_or_else(|| Error::UnknownSaveCommit(wanted.to_string()))?;
             let signature = Self::signature();
@@ -416,7 +413,7 @@ impl SaveVersioning {
             },
         )
         .await?;
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let info = Self::commit_info(&repo, after.tip)?;
         drop(guard);
         owner.save_icon(depot).await?;
@@ -498,7 +495,7 @@ impl SaveCommit<'_> {
     pub fn info(&self) -> Result<SaveCommitInfo, Error> {
         self.repo.versioning().ensure_member(self.depot, self.id)?;
         SaveVersioning::commit_info(
-            &self.repo.versioning().inner.repository.to_thread_local(),
+            &self.repo.versioning().inner.repository().to_thread_local(),
             self.id.0,
         )
     }
@@ -603,16 +600,16 @@ async fn copy_save_locked(
         let tip = source_core
             .tip(depot)?
             .ok_or_else(|| Error::InvalidPath(format!("unknown save depot {:016x}", depot.0)))?;
-        return SaveVersioning::commit_info(&source_core.inner.repository.to_thread_local(), tip);
+        return SaveVersioning::commit_info(&source_core.inner.repository().to_thread_local(), tip);
     }
 
     let _guard = destination_core.inner.operation.lock().await;
     destination_core.recover_locked(destination).await?;
     let (source_state, conflict) = {
-        let source_repo = source_core.inner.repository.to_thread_local();
+        let source_repo = source_core.inner.repository().to_thread_local();
         let source_state = SaveVersioning::ref_state_in(&source_repo, &source_core.refs(depot))?
             .ok_or_else(|| Error::InvalidPath(format!("unknown save depot {:016x}", depot.0)))?;
-        let destination_repo = destination_core.inner.repository.to_thread_local();
+        let destination_repo = destination_core.inner.repository().to_thread_local();
         for root in source_state.reachable_roots() {
             copy_object_graph(&source_repo, &destination_repo, root)?;
         }
@@ -636,7 +633,7 @@ async fn copy_save_locked(
             },
         )
         .await?;
-    let destination_repo = destination_core.inner.repository.to_thread_local();
+    let destination_repo = destination_core.inner.repository().to_thread_local();
     SaveVersioning::commit_info(&destination_repo, source_state.tip)
 }
 

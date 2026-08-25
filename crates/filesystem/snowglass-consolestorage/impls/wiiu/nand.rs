@@ -5,14 +5,14 @@ use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
 };
-use crate::storage::{ChangeSignal, VolumeOverlay};
+use crate::storage::VolumeOverlay;
 use crate::{
     BoxFuture, ComposedStorage, EntryKind, Error, MountableStorage, Permissions, PermissionsTable,
     SaveRepo, SaveVersioning, Storage, VersionedStorage, VolumeStorage, ensure_structure,
     requires_structure,
 };
 use async_trait::async_trait;
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use jiff::Timestamp;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
@@ -28,8 +28,6 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     ("sys", Permissions::READ_EXECUTE),
     ("usr/title", Permissions::READ_EXECUTE),
     ("usr/save", Permissions::all()),
-    (".manifest.db", Permissions::empty()),
-    (".manifest.db-wal", Permissions::empty()),
 ]);
 
 pub struct WiiUNand {
@@ -370,34 +368,18 @@ impl SaveGameSink for WiiUSaveRepo {
     }
 
     fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error> {
-        let roots = if saves.is_empty() {
-            // An empty filter watches every save
-            vec![Self::SAVE_ROOT.to_owned()]
-        } else {
-            let mut roots = Vec::with_capacity(saves.len());
-            for id in saves {
-                let root = id.save_root();
-                self.root.create_dir_all(&root)?;
-                roots.push(root);
-            }
-            roots
-        };
+        for id in saves {
+            self.root.create_dir_all(&id.save_root())?;
+        }
 
-        let borrowed: Vec<&str> = roots.iter().map(String::as_str).collect();
-        let activity = self.root.watch(&borrowed)?.ok_or_else(|| {
+        let activity = self.root.watch()?.ok_or_else(|| {
             Error::Unsupported(format!("{} cannot watch saves", WiiUNand::PLATFORM))
         })?;
-
-        let signal = FlushSignal {
-            storage: self.root.clone(),
+        Ok(SaveWatcher::with_settle(
+            saves.to_vec(),
             activity,
-            markers: saves
-                .iter()
-                .map(|id| format!("{}/meta/saveinfo.xml", id.save_root()))
-                .collect(),
-        };
-
-        Ok(SaveWatcher::new(saves.to_vec(), Box::new(signal)))
+            Duration::from_secs(2),
+        ))
     }
 
     fn install_save<'a>(
@@ -426,40 +408,6 @@ impl SaveGameSink for WiiUSaveRepo {
 
             let id = id.ok_or(Error::UnclaimedNand)?;
             self.describe_save(id)
-        })
-    }
-}
-
-struct FlushSignal {
-    storage: Arc<dyn MountableStorage>,
-    activity: Box<dyn ChangeSignal>,
-    markers: Vec<String>,
-}
-
-impl FlushSignal {
-    const SAVE_SETTLE: Duration = Duration::from_secs(2);
-    fn markers(&self) -> Vec<Option<Timestamp>> {
-        self.markers
-            .iter()
-            .map(|path| self.storage.metadata(path).ok().map(|meta| meta.mtime))
-            .collect()
-    }
-}
-
-impl ChangeSignal for FlushSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            self.activity.changed().await;
-            let before = self.markers();
-
-            loop {
-                tokio::time::sleep(Self::SAVE_SETTLE).await;
-                let writing = self.activity.changed().now_or_never().is_some();
-
-                if self.markers() != before || !writing {
-                    return;
-                }
-            }
         })
     }
 }

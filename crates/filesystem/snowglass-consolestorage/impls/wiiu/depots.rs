@@ -66,14 +66,6 @@ impl WiiUMetaXmlDepot {
         })
     }
 
-    fn root(&self) -> &Path {
-        &self.root
-    }
-
-    fn meta_xml(&self) -> PathBuf {
-        self.root.join("meta/meta.xml")
-    }
-
     pub fn title_id(&self) -> u64 {
         self.title_id
     }

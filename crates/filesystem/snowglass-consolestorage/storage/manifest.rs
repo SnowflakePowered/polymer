@@ -30,30 +30,3 @@ pub trait ArtifactRegistry: Send + Sync {
     fn contains<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<bool, Error>>;
     fn uninstall<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<(), Error>>;
 }
-
-#[derive(Debug)]
-pub(crate) struct EmptyArtifactRegistry;
-
-pub(crate) static EMPTY_ARTIFACTS: EmptyArtifactRegistry = EmptyArtifactRegistry;
-
-impl ArtifactRegistry for EmptyArtifactRegistry {
-    fn record<'a>(&'a self, _artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-
-    fn artifact<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>> {
-        Box::pin(async { Ok(None) })
-    }
-
-    fn contains<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Result<bool, Error>> {
-        Box::pin(async { Ok(false) })
-    }
-
-    fn uninstall<'a>(&'a self, _ids: &'a [&'a str]) -> BoxFuture<'a, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
-    }
-}

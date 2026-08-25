@@ -111,16 +111,16 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{DirectoryStorage, Storage, VolumeStorage};
+    use crate::{PlatformRepository, Storage, StorageKind, VolumeStorage};
 
     #[tokio::test]
     async fn reads_banner_text_and_icon() {
         let directory = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(directory.path()).await.unwrap();
-        storage
-            .brand(Uuid::now_v7(), "NINTENDO_WII", None)
-            .await
-            .unwrap();
+        let platform =
+            PlatformRepository::open(directory.path().join("platform"), "NINTENDO_WII").unwrap();
+        let id = Uuid::now_v7();
+        let storage = platform.volume(StorageKind::Nand, id);
+        storage.brand(id, "NINTENDO_WII", None).await.unwrap();
         let root = "title/00010000/524d4345/data";
         let mut banner = vec![0; 0xa0 + BANNER_PIXELS * 2 + ICON_PIXELS * 2];
         banner[..4].copy_from_slice(b"WIBN");

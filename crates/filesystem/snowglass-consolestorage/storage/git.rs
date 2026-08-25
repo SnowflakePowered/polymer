@@ -21,19 +21,12 @@ use crate::installable::{DepotFile, DepotType, IconHint};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
-    MountableStorage, ReadDir, Storage, StorageFile, VolumeStorage,
+    MountableStorage, ReadDir, Storage, StorageFile, StorageKind, VolumeStorage,
 };
 
 const SCHEMA_VERSION: u32 = 2;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GitVolumeKind {
-    Nand,
-    SaveRepo,
-    MemoryCard,
-}
-
-impl GitVolumeKind {
+impl StorageKind {
     fn ref_name(self, id: Uuid) -> String {
         let namespace = match self {
             Self::Nand => "nands",
@@ -115,10 +108,21 @@ impl PlatformRepository {
         let mut config = std::fs::read_to_string(&config_path)
             .map_err(|error| Error::io(&config_path, error))?;
         let marker = "# snowglass platform storage v2";
+        let mut changed = false;
         if !config.contains(marker) {
             config.push_str(&format!(
                 "\n{marker}\n[snowglass]\n\tschemaVersion = {SCHEMA_VERSION}\n\tplatform = {platform}\n[core]\n\tlogAllRefUpdates = always\n"
             ));
+            changed = true;
+        }
+        let archive_policy = "# snowglass recently-deleted retention v2";
+        if !config.contains(archive_policy) {
+            config.push_str(&format!(
+                "\n{archive_policy}\n[gc \"refs/snowglass/archive/v{SCHEMA_VERSION}/*/recently-deleted\"]\n\treflogExpireUnreachable = 30 days\n"
+            ));
+            changed = true;
+        }
+        if changed {
             std::fs::write(&config_path, &config)
                 .map_err(|error| Error::io(&config_path, error))?;
         }
@@ -145,28 +149,28 @@ impl PlatformRepository {
         self.0.path.join("files")
     }
 
-    fn checkout_path(&self, kind: GitVolumeKind, id: Uuid) -> PathBuf {
+    fn checkout_path(&self, kind: StorageKind, id: Uuid) -> PathBuf {
         self.checkout_root()
             .join(kind.checkout_namespace())
             .join(id.simple().to_string())
     }
 
-    pub fn volume(&self, kind: GitVolumeKind, id: Uuid) -> GitVolumeStorage {
+    pub fn volume(&self, kind: StorageKind, id: Uuid) -> GitVolumeStorage {
         GitVolumeStorage::new(self.clone(), kind, id)
     }
 
-    pub fn contains(&self, kind: GitVolumeKind, id: Uuid) -> Result<bool, Error> {
+    pub fn contains(&self, kind: StorageKind, id: Uuid) -> Result<bool, Error> {
         let repo = self.0.repository.to_thread_local();
         repo.try_find_reference(&kind.ref_name(id))
             .map(|reference| reference.is_some())
             .map_err(|error| Error::git("find volume reference", error))
     }
 
-    pub fn ids(&self, kind: GitVolumeKind) -> Result<Vec<Uuid>, Error> {
+    pub fn ids(&self, kind: StorageKind) -> Result<Vec<Uuid>, Error> {
         let repo = self.0.repository.to_thread_local();
         let namespace = match kind {
-            GitVolumeKind::Nand => "nands",
-            GitVolumeKind::SaveRepo | GitVolumeKind::MemoryCard => "profiles",
+            StorageKind::Nand => "nands",
+            StorageKind::SaveRepo | StorageKind::MemoryCard => "profiles",
         };
         let prefix = format!("refs/snowglass/{namespace}/v{SCHEMA_VERSION}/");
         let mut ids = Vec::new();
@@ -201,7 +205,7 @@ impl PlatformRepository {
         &self.0.repository
     }
 
-    pub fn delete(&self, kind: GitVolumeKind, id: Uuid) -> Result<(), Error> {
+    pub fn delete(&self, kind: StorageKind, id: Uuid) -> Result<(), Error> {
         let _guard = self.0.operation.lock();
         let repo = self.0.repository.to_thread_local();
         let name = kind.ref_name(id);
@@ -220,7 +224,7 @@ impl PlatformRepository {
                 .map_err(|error| Error::git("validate volume reference", error))?,
             deref: false,
         }];
-        if kind != GitVolumeKind::Nand {
+        if kind != StorageKind::Nand {
             let profile = id.simple().to_string();
             let prefixes = [
                 format!("refs/snowglass/saves/v2/{profile}/"),
@@ -275,12 +279,12 @@ impl PlatformRepository {
 
     pub fn fork_profile(
         &self,
-        kind: GitVolumeKind,
+        kind: StorageKind,
         source: Uuid,
         destination: Uuid,
         label: Option<&str>,
     ) -> Result<GitVolumeStorage, Error> {
-        if kind == GitVolumeKind::Nand {
+        if kind == StorageKind::Nand {
             return Err(Error::Unsupported(
                 "only save profiles and memory cards can be forked".to_owned(),
             ));
@@ -424,7 +428,7 @@ impl WorkingState {
 
 struct GitVolumeInner {
     platform: PlatformRepository,
-    kind: GitVolumeKind,
+    kind: StorageKind,
     id: Uuid,
     working: RwLock<WorkingState>,
     checkout: DirectoryStorage,
@@ -451,7 +455,7 @@ impl fmt::Debug for GitVolumeStorage {
 }
 
 impl GitVolumeStorage {
-    fn new(platform: PlatformRepository, kind: GitVolumeKind, id: Uuid) -> Self {
+    fn new(platform: PlatformRepository, kind: StorageKind, id: Uuid) -> Self {
         let checkout_root = platform.checkout_path(kind, id);
         let index_path = platform.repository().git_dir().join("index");
         let inner = Arc::new(GitVolumeInner {
@@ -474,7 +478,7 @@ impl GitVolumeStorage {
         self.inner.id
     }
 
-    pub fn kind(&self) -> GitVolumeKind {
+    pub fn kind(&self) -> StorageKind {
         self.inner.kind
     }
 
@@ -792,7 +796,7 @@ impl GitVolumeStorage {
     }
 
     fn discard_pending_nand_changes(&self) -> Result<(), Error> {
-        if self.inner.kind != GitVolumeKind::Nand {
+        if self.inner.kind != StorageKind::Nand {
             return Ok(());
         }
         let entries = {
@@ -933,6 +937,7 @@ impl GitVolumeStorage {
             return Ok(None);
         }
         let root = Self::root_tree(&repo, parent)?;
+        let root_id = root.id;
         let mut editor = root
             .edit()
             .map_err(|error| Error::git("edit volume tree", error))?;
@@ -1044,6 +1049,12 @@ impl GitVolumeStorage {
             .write()
             .map_err(|error| Error::git("write volume tree", error))?
             .detach();
+        if extra_parent.is_none() && tree == root_id {
+            self.write_index(self.target_index(&repo, &root)?)?;
+            *self.inner.cache_ready.lock() = true;
+            *state = WorkingState::default();
+            return Ok(None);
+        }
         let signature = signature();
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
@@ -1249,8 +1260,7 @@ impl Storage for GitVolumeStorage {
         Ok(())
     }
 
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        let _ = paths;
+    fn watch(&self) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
         self.ensure_checkout()?;
         Ok(Some(Box::new(GitVolumeSignal {
             changes: self.inner.changes.clone(),
@@ -1334,7 +1344,7 @@ impl MountableStorage for GitVolumeStorage {
     }
 
     fn finish(&self, path: &str) -> Result<(), Error> {
-        if self.inner.kind == GitVolumeKind::Nand {
+        if self.inner.kind == StorageKind::Nand {
             self.discard_pending_nand_changes()
         } else {
             let _ = path;
@@ -2213,8 +2223,8 @@ mod tests {
     async fn platform_repo_keeps_multiple_lazy_git_volumes() {
         let root = tempfile::tempdir().unwrap();
         let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
-        let first = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
-        let second = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
+        let first = platform.volume(StorageKind::Nand, Uuid::now_v7());
+        let second = platform.volume(StorageKind::Nand, Uuid::now_v7());
         first
             .install_file(Box::new(Cursor::new(b"one")), "deep/game/content.bin")
             .await
@@ -2230,8 +2240,8 @@ mod tests {
         second.brand(second.id(), "TEST", None).await.unwrap();
 
         let reopened = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
-        assert_eq!(reopened.ids(GitVolumeKind::Nand).unwrap().len(), 2);
-        let first = reopened.volume(GitVolumeKind::Nand, first.id());
+        assert_eq!(reopened.ids(StorageKind::Nand).unwrap().len(), 2);
+        let first = reopened.volume(StorageKind::Nand, first.id());
         let mut bytes = Vec::new();
         first
             .open_read("deep/game/content.bin")
@@ -2246,8 +2256,8 @@ mod tests {
     async fn nands_and_profiles_are_distinct_trees_in_one_native_checkout() {
         let root = tempfile::tempdir().unwrap();
         let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
-        let nand = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
-        let profile = platform.volume(GitVolumeKind::SaveRepo, Uuid::now_v7());
+        let nand = platform.volume(StorageKind::Nand, Uuid::now_v7());
+        let profile = platform.volume(StorageKind::SaveRepo, Uuid::now_v7());
 
         nand.install_file(Box::new(Cursor::new(b"nand")), "deep/content.bin")
             .await
@@ -2302,7 +2312,7 @@ mod tests {
         profile.commit_pending("update profile", None).unwrap();
         drop(repo);
 
-        let reopened = platform.volume(GitVolumeKind::SaveRepo, profile.id());
+        let reopened = platform.volume(StorageKind::SaveRepo, profile.id());
         let mut contents = Vec::new();
         reopened
             .open_read("saves/game/save.bin")
@@ -2313,16 +2323,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unchanged_checkout_writes_do_not_create_commits() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
+        let profile = platform.volume(StorageKind::SaveRepo, Uuid::now_v7());
+        profile
+            .install_file(Box::new(Cursor::new(b"unchanged")), "save/data.bin")
+            .await
+            .unwrap();
+        profile.brand(profile.id(), "TEST", None).await.unwrap();
+
+        let before = GitVolumeStorage::tip_in(
+            &platform.repository().to_thread_local(),
+            &profile.ref_name(),
+        )
+        .unwrap();
+        profile
+            .open("save/data.bin", true)
+            .unwrap()
+            .write_all_at(0, b"unchanged")
+            .unwrap();
+
+        assert_eq!(profile.commit_pending("no change", None).unwrap(), None);
+        assert_eq!(
+            GitVolumeStorage::tip_in(
+                &platform.repository().to_thread_local(),
+                &profile.ref_name(),
+            )
+            .unwrap(),
+            before
+        );
+    }
+
+    #[tokio::test]
     async fn profile_forks_share_history_then_diverge_without_reaching_nand() {
         let root = tempfile::tempdir().unwrap();
         let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
-        let nand = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
+        let nand = platform.volume(StorageKind::Nand, Uuid::now_v7());
         nand.install_file(Box::new(Cursor::new(b"large base")), "content/game.bin")
             .await
             .unwrap();
         nand.brand(nand.id(), "TEST", None).await.unwrap();
 
-        let source = platform.volume(GitVolumeKind::MemoryCard, Uuid::now_v7());
+        let source = platform.volume(StorageKind::MemoryCard, Uuid::now_v7());
         source
             .install_file(Box::new(Cursor::new(b"save one")), "card/save.bin")
             .await
@@ -2334,7 +2377,7 @@ mod tests {
         let destination_id = Uuid::now_v7();
         let fork = platform
             .fork_profile(
-                GitVolumeKind::MemoryCard,
+                StorageKind::MemoryCard,
                 source.id(),
                 destination_id,
                 Some("Fork"),
@@ -2371,13 +2414,13 @@ mod tests {
             .unwrap();
         assert_eq!(bytes, b"save one");
         assert_eq!(fork.label().await.unwrap().as_deref(), Some("Fork"));
-        assert_eq!(platform.ids(GitVolumeKind::MemoryCard).unwrap().len(), 2);
+        assert_eq!(platform.ids(StorageKind::MemoryCard).unwrap().len(), 2);
 
         platform
-            .delete(GitVolumeKind::MemoryCard, source.id())
+            .delete(StorageKind::MemoryCard, source.id())
             .unwrap();
         assert_eq!(
-            platform.ids(GitVolumeKind::MemoryCard).unwrap(),
+            platform.ids(StorageKind::MemoryCard).unwrap(),
             [destination_id]
         );
     }
@@ -2386,7 +2429,7 @@ mod tests {
     async fn uninstall_rebases_independent_later_depots() {
         let root = tempfile::tempdir().unwrap();
         let platform = PlatformRepository::open(root.path().join("TEST.git"), "TEST").unwrap();
-        let nand = platform.volume(GitVolumeKind::Nand, Uuid::now_v7());
+        let nand = platform.volume(StorageKind::Nand, Uuid::now_v7());
         nand.brand(nand.id(), "TEST", None).await.unwrap();
 
         for (id, path, bytes) in [

@@ -54,11 +54,6 @@ pub enum ConsoleStorage {
     MemoryCard(Arc<dyn SaveRepo>),
 }
 
-pub enum ConsoleStorageBacking {
-    Nand(GitVolumeStorage),
-    Versioned(VersionedStorage),
-}
-
 impl ConsoleStorage {
     pub fn supports(kind: StorageKind, platform: &str) -> bool {
         match kind {
@@ -78,118 +73,82 @@ impl ConsoleStorage {
     pub async fn create(
         kind: StorageKind,
         platform: &str,
-        storage: ConsoleStorageBacking,
+        storage: GitVolumeStorage,
         id: Uuid,
         label: Option<String>,
     ) -> Result<Self, Error> {
-        match (kind, platform, storage) {
-            (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => Ok(
-                Self::Nand(Arc::new(WiiUNand::new_empty(storage, id, label).await?)),
-            ),
-            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => Ok(
-                Self::Nand(Arc::new(WiiNand::new_empty(storage, id, label).await?)),
-            ),
-            (
-                StorageKind::SaveRepo,
-                WiiUNand::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::SaveRepo(
-                WiiUNand::new_save_repo(storage, id, label).await?,
+        match (kind, platform) {
+            (StorageKind::Nand, WiiUNand::PLATFORM) => Ok(Self::Nand(Arc::new(
+                WiiUNand::new_empty(storage, id, label).await?,
+            ))),
+            (StorageKind::Nand, WiiNand::PLATFORM) => Ok(Self::Nand(Arc::new(
+                WiiNand::new_empty(storage, id, label).await?,
+            ))),
+            (StorageKind::SaveRepo, WiiUNand::PLATFORM) => Ok(Self::SaveRepo(
+                WiiUNand::new_save_repo(VersionedStorage::new(storage)?, id, label).await?,
             )),
-            (
-                StorageKind::SaveRepo,
-                WiiNand::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::SaveRepo(
-                WiiNand::new_save_repo(storage, id, label).await?,
+            (StorageKind::SaveRepo, WiiNand::PLATFORM) => Ok(Self::SaveRepo(
+                WiiNand::new_save_repo(VersionedStorage::new(storage)?, id, label).await?,
             )),
-            (
-                StorageKind::MemoryCard,
-                DreamcastMemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                DreamcastMemoryCard::new_empty(storage, id, label).await?,
-            ))),
-            (
-                StorageKind::MemoryCard,
-                GameCubeMemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                GameCubeMemoryCard::new_empty(storage, id, label).await?,
-            ))),
-            (
-                StorageKind::MemoryCard,
-                PlaystationMemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                PlaystationMemoryCard::new_empty(storage, id, label).await?,
-            ))),
-            (
-                StorageKind::MemoryCard,
-                Playstation2MemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                Playstation2MemoryCard::new_empty(storage, id, label).await?,
-            ))),
-            (kind, platform, _) => Err(Error::Unsupported(format!(
+            (StorageKind::MemoryCard, DreamcastMemoryCard::PLATFORM) => {
+                Ok(Self::MemoryCard(Arc::new(
+                    DreamcastMemoryCard::new_empty(VersionedStorage::new(storage)?, id, label)
+                        .await?,
+                )))
+            }
+            (StorageKind::MemoryCard, GameCubeMemoryCard::PLATFORM) => {
+                Ok(Self::MemoryCard(Arc::new(
+                    GameCubeMemoryCard::new_empty(VersionedStorage::new(storage)?, id, label)
+                        .await?,
+                )))
+            }
+            (StorageKind::MemoryCard, PlaystationMemoryCard::PLATFORM) => {
+                Ok(Self::MemoryCard(Arc::new(
+                    PlaystationMemoryCard::new_empty(VersionedStorage::new(storage)?, id, label)
+                        .await?,
+                )))
+            }
+            (StorageKind::MemoryCard, Playstation2MemoryCard::PLATFORM) => {
+                Ok(Self::MemoryCard(Arc::new(
+                    Playstation2MemoryCard::new_empty(VersionedStorage::new(storage)?, id, label)
+                        .await?,
+                )))
+            }
+            (kind, platform) => Err(Error::Unsupported(format!(
                 "no {} layout for `{platform}`",
                 kind.as_str()
             ))),
         }
     }
 
-    pub async fn open(kind: StorageKind, storage: ConsoleStorageBacking) -> Result<Self, Error> {
-        let metadata = match &storage {
-            ConsoleStorageBacking::Nand(storage) => storage.volumeinfo().await?,
-            ConsoleStorageBacking::Versioned(storage) => storage.volumeinfo().await?,
-        }
-        .ok_or(Error::UnclaimedNand)?;
-        match (kind, metadata.platform.as_str(), storage) {
-            (StorageKind::Nand, WiiUNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => {
+    pub async fn open(kind: StorageKind, storage: GitVolumeStorage) -> Result<Self, Error> {
+        let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
+        match (kind, metadata.platform.as_str()) {
+            (StorageKind::Nand, WiiUNand::PLATFORM) => {
                 Ok(Self::Nand(Arc::new(WiiUNand::open(storage).await?)))
             }
-            (StorageKind::Nand, WiiNand::PLATFORM, ConsoleStorageBacking::Nand(storage)) => {
+            (StorageKind::Nand, WiiNand::PLATFORM) => {
                 Ok(Self::Nand(Arc::new(WiiNand::open(storage).await?)))
             }
-            (
-                StorageKind::SaveRepo,
-                WiiUNand::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::SaveRepo(WiiUNand::open_save_repo(storage).await?)),
-            (
-                StorageKind::SaveRepo,
-                WiiNand::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::SaveRepo(WiiNand::open_save_repo(storage).await?)),
-            (
-                StorageKind::MemoryCard,
-                DreamcastMemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                DreamcastMemoryCard::open(storage).await?,
-            ))),
-            (
-                StorageKind::MemoryCard,
-                GameCubeMemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                GameCubeMemoryCard::open(storage).await?,
-            ))),
-            (
-                StorageKind::MemoryCard,
-                PlaystationMemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                PlaystationMemoryCard::open(storage).await?,
-            ))),
-            (
-                StorageKind::MemoryCard,
-                Playstation2MemoryCard::PLATFORM,
-                ConsoleStorageBacking::Versioned(storage),
-            ) => Ok(Self::MemoryCard(Arc::new(
-                Playstation2MemoryCard::open(storage).await?,
-            ))),
-            (other_kind, other_platform, _) => Err(Error::Unsupported(format!(
+            (StorageKind::SaveRepo, WiiUNand::PLATFORM) => Ok(Self::SaveRepo(
+                WiiUNand::open_save_repo(VersionedStorage::new(storage)?).await?,
+            )),
+            (StorageKind::SaveRepo, WiiNand::PLATFORM) => Ok(Self::SaveRepo(
+                WiiNand::open_save_repo(VersionedStorage::new(storage)?).await?,
+            )),
+            (StorageKind::MemoryCard, DreamcastMemoryCard::PLATFORM) => Ok(Self::MemoryCard(
+                Arc::new(DreamcastMemoryCard::open(VersionedStorage::new(storage)?).await?),
+            )),
+            (StorageKind::MemoryCard, GameCubeMemoryCard::PLATFORM) => Ok(Self::MemoryCard(
+                Arc::new(GameCubeMemoryCard::open(VersionedStorage::new(storage)?).await?),
+            )),
+            (StorageKind::MemoryCard, PlaystationMemoryCard::PLATFORM) => Ok(Self::MemoryCard(
+                Arc::new(PlaystationMemoryCard::open(VersionedStorage::new(storage)?).await?),
+            )),
+            (StorageKind::MemoryCard, Playstation2MemoryCard::PLATFORM) => Ok(Self::MemoryCard(
+                Arc::new(Playstation2MemoryCard::open(VersionedStorage::new(storage)?).await?),
+            )),
+            (other_kind, other_platform) => Err(Error::Unsupported(format!(
                 "no {} layout for `{other_platform}`",
                 other_kind.as_str()
             ))),

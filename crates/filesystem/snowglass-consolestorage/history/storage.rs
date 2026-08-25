@@ -1,292 +1,41 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
-use jiff::Timestamp;
-use tokio::io::AsyncRead;
+#[cfg(test)]
 use uuid::Uuid;
 
-use super::{SaveVersioning, VOLUME_REF};
-use crate::{
-    ArtifactRegistry, BoxFuture, ChangeSignal, DirectoryStorage, Error, GitVolumeStorage,
-    InstallResult, Metadata, MountableStorage, ReadDir, Storage, StorageFile, VolumeInfo,
-    VolumeStorage,
-};
+use super::SaveVersioning;
+use crate::storage::VolumeOverlay;
+use crate::{Error, GitVolumeStorage, VolumeStorage};
 
-#[derive(Clone, Debug)]
-enum VersionedBackend {
-    Directory(Arc<DirectoryStorage>),
-    Git(GitVolumeStorage),
-}
-
-impl VersionedBackend {
-    fn storage(&self) -> &dyn VolumeStorage {
-        match self {
-            Self::Directory(storage) => &**storage,
-            Self::Git(storage) => storage,
-        }
-    }
-}
-
-/// A directory-backed volume with a colocated Git history database.
+/// A Git profile volume together with its independently addressable save histories.
 #[derive(Clone, Debug)]
 pub struct VersionedStorage {
-    storage: VersionedBackend,
+    storage: GitVolumeStorage,
     history: SaveVersioning,
 }
 
 impl VersionedStorage {
-    pub fn new(storage: DirectoryStorage, platform: &str, volume_id: Uuid) -> Result<Self, Error> {
-        let history = SaveVersioning::open(storage.root(), platform, volume_id)?;
-        Ok(Self {
-            storage: VersionedBackend::Directory(Arc::new(storage)),
-            history,
-        })
-    }
-
-    pub fn from_git(storage: GitVolumeStorage) -> Result<Self, Error> {
-        let history = SaveVersioning::open_platform(
-            storage.platform_repository(),
-            storage.clone(),
-            storage.id(),
-        )?;
-        Ok(Self {
-            storage: VersionedBackend::Git(storage),
-            history,
-        })
+    pub fn new(storage: GitVolumeStorage) -> Result<Self, Error> {
+        let history = SaveVersioning::open_platform(storage.clone())?;
+        Ok(Self { storage, history })
     }
 
     pub fn versioning(&self) -> &SaveVersioning {
         &self.history
     }
 
-    fn storage(&self) -> &dyn VolumeStorage {
-        self.storage.storage()
-    }
-}
-
-impl Storage for VersionedStorage {
-    fn exists(&self, path: &str) -> bool {
-        self.storage().exists(path)
-    }
-
-    fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        self.storage().metadata(path)
-    }
-
-    fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        self.storage().read_dir(path, recursive)
-    }
-
-    fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        self.storage().create_dir_all(path)
-    }
-
-    fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
-        self.storage().create(path)
-    }
-
-    fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        self.storage().open(path, write)
-    }
-
-    fn remove(&self, path: &str) -> Result<(), Error> {
-        self.storage().remove(path)
-    }
-
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.storage().watch(paths)
-    }
-
-    fn install_file<'a>(
-        &'a self,
-        source: Box<dyn AsyncRead + Send + Unpin>,
-        dest: &str,
-    ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        self.storage().install_file(source, dest)
-    }
-}
-
-impl MountableStorage for VersionedStorage {
-    fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        self.storage().rename(from, to)
-    }
-
-    fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        self.storage().truncate(path, len)
-    }
-
-    fn sync(&self, path: &str) -> Result<(), Error> {
-        self.storage().sync(path)
-    }
-
-    fn finish(&self, path: &str) -> Result<(), Error> {
-        self.storage().finish(path)
-    }
-}
-
-impl VolumeStorage for VersionedStorage {
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        match &self.storage {
-            VersionedBackend::Git(storage) => storage.label(),
-            VersionedBackend::Directory(_) => {
-                Box::pin(async move { Ok(self.history.volume_info()?.and_then(|info| info.label)) })
-            }
-        }
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        match &self.storage {
-            VersionedBackend::Git(storage) => storage.set_label(label),
-            VersionedBackend::Directory(_) => Box::pin(self.history.set_volume_label(label)),
-        }
-    }
-
-    fn artifacts(&self) -> &dyn ArtifactRegistry {
-        self.storage().artifacts()
-    }
-
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        match &self.storage {
-            VersionedBackend::Git(storage) => storage.volumeinfo(),
-            VersionedBackend::Directory(_) => Box::pin(async move { self.history.volume_info() }),
-        }
-    }
-
-    fn brand<'a>(
-        &'a self,
-        id: Uuid,
-        platform: &'a str,
-        label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
-        match &self.storage {
-            VersionedBackend::Git(storage) => storage.brand(id, platform, label),
-            VersionedBackend::Directory(_) => {
-                Box::pin(self.history.brand_volume(id, platform, label))
-            }
-        }
-    }
-}
-
-impl SaveVersioning {
-    fn volume_info(&self) -> Result<Option<VolumeInfo>, Error> {
-        let repo = self.inner.repository.to_thread_local();
-        let Some(tip) = Self::tip_in(&repo, VOLUME_REF)? else {
-            return Ok(None);
-        };
-        let tree = Self::commit_tree(&repo, tip)?;
-        let mut values = Self::tree_files(&repo, tree)?;
-        let id = Self::volume_value(&mut values, "id")?
-            .parse()
-            .map_err(|error| Error::git("parse volume id", error))?;
-        let platform = Self::volume_value(&mut values, "platform")?;
-        let created = Self::volume_value(&mut values, "created")?
-            .parse::<i64>()
-            .map_err(|error| Error::git("parse volume creation time", error))?;
-        let label = values
-            .remove("label")
-            .map(String::from_utf8)
-            .transpose()
-            .map_err(|error| Error::git("decode volume label", error))?;
-        let info = VolumeInfo {
-            id,
-            platform,
-            label,
-            created: Timestamp::from_second(created)?,
-        };
-        if info.id != self.inner.volume_id || info.platform != self.inner.platform {
-            return Err(Error::HistoryConflict(format!(
-                "volume manifest identifies {} {}, expected {} {}",
-                info.platform, info.id, self.inner.platform, self.inner.volume_id
-            )));
-        }
-        Ok(Some(info))
-    }
-
-    fn volume_value(values: &mut BTreeMap<String, Vec<u8>>, key: &str) -> Result<String, Error> {
-        let value = values
-            .remove(key)
-            .ok_or_else(|| Error::HistoryConflict(format!("volume commit has no `{key}` value")))?;
-        String::from_utf8(value).map_err(|error| Error::git("decode volume value", error))
-    }
-
-    fn write_volume_manifest(
-        &self,
-        repo: &gix::Repository,
-        info: &VolumeInfo,
-        parent: Option<gix::ObjectId>,
-        message: &str,
-    ) -> Result<(), Error> {
-        let mut editor = repo
-            .empty_tree()
-            .edit()
-            .map_err(|error| Error::git("edit volume manifest tree", error))?;
-        let id = info.id.to_string();
-        let created = info.created.as_second().to_string();
-        let mut values = vec![
-            ("id", id.as_str()),
-            ("platform", info.platform.as_str()),
-            ("created", created.as_str()),
-        ];
-        if let Some(label) = info.label.as_deref() {
-            values.push(("label", label));
-        }
-        for (key, value) in values {
-            let blob = repo
-                .write_blob(value.as_bytes())
-                .map_err(|error| Error::git("write volume value", error))?
-                .detach();
-            editor
-                .upsert(key, gix::objs::tree::EntryKind::Blob, blob)
-                .map_err(|error| Error::git("add volume value", error))?;
-        }
-        let tree = editor
-            .write()
-            .map_err(|error| Error::git("write volume manifest tree", error))?
-            .detach();
-        let signature = Self::signature();
-        let mut signature_time = gix::date::parse::TimeBuf::default();
-        let signature = signature.to_ref(&mut signature_time);
-        repo.commit_as(signature, signature, VOLUME_REF, message, tree, parent)
-            .map(|_| ())
-            .map_err(|error| Error::git("commit volume manifest", error))
-    }
-
-    async fn brand_volume(
-        &self,
-        id: Uuid,
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        root: &std::path::Path,
         platform: &str,
-        label: Option<&str>,
-    ) -> Result<VolumeInfo, Error> {
-        let _guard = self.inner.operation.lock().await;
-        if let Some(info) = self.volume_info()? {
-            return Ok(info);
-        }
-        if id != self.inner.volume_id || platform != self.inner.platform {
-            return Err(Error::HistoryConflict(format!(
-                "cannot brand {} {} as {platform} {id}",
-                self.inner.platform, self.inner.volume_id
-            )));
-        }
-        let info = VolumeInfo {
-            id,
-            platform: platform.to_owned(),
-            label: label.map(str::to_owned),
-            created: Timestamp::from_second(Timestamp::now().as_second())?,
-        };
-        let repo = self.inner.repository.to_thread_local();
-        self.write_volume_manifest(&repo, &info, None, "Snowglass volume created")?;
-        Ok(info)
+        id: Uuid,
+        kind: crate::StorageKind,
+    ) -> Self {
+        let repository = crate::PlatformRepository::open(root.join("platform"), platform).unwrap();
+        Self::new(repository.volume(kind, id)).unwrap()
     }
+}
 
-    async fn set_volume_label(&self, label: Option<&str>) -> Result<(), Error> {
-        let _guard = self.inner.operation.lock().await;
-        let mut info = self.volume_info()?.ok_or(Error::UnclaimedNand)?;
-        if info.label.as_deref() == label {
-            return Ok(());
-        }
-        info.label = label.map(str::to_owned);
-        let repo = self.inner.repository.to_thread_local();
-        let parent = Self::tip_in(&repo, VOLUME_REF)?;
-        self.write_volume_manifest(&repo, &info, parent, "Snowglass volume label changed")
+impl VolumeOverlay for VersionedStorage {
+    fn inner(&self) -> &dyn VolumeStorage {
+        &self.storage
     }
 }

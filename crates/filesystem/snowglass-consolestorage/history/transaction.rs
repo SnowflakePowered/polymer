@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
 use serde::{Deserialize, Serialize};
@@ -24,17 +24,10 @@ enum MaterializationFailure {
 }
 
 impl SaveVersioning {
-    fn journal_path(&self) -> PathBuf {
-        self.inner
-            .repository
-            .git_dir()
-            .join("snowglass-transaction.json")
-    }
-
     fn journal_ref(&self) -> String {
         format!(
             "refs/snowglass/transactions/v2/{}",
-            self.inner.volume_id.simple()
+            self.inner.volume_id().simple()
         )
     }
 
@@ -45,20 +38,6 @@ impl SaveVersioning {
                     .map_err(|error| Error::git("parse transaction object id", error))
             })
             .transpose()
-    }
-
-    fn read_journal(&self) -> Result<Option<MaterializationJournal>, Error> {
-        if self.inner.profile.is_some() {
-            return self.read_git_journal();
-        }
-        let path = self.journal_path();
-        match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|error| Error::git("read history transaction", error)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(Error::io(&path, error)),
-        }
     }
 
     fn write_journal(&self, transition: SaveTransition) -> Result<(), Error> {
@@ -77,31 +56,11 @@ impl SaveVersioning {
                 .and_then(|state| state.attachments.note)
                 .map(|id| id.to_string()),
         };
-        if self.inner.profile.is_some() {
-            return self.write_git_journal(&journal);
-        }
-        let path = self.journal_path();
-        let temporary = path.with_extension("json.tmp");
-        let bytes = serde_json::to_vec_pretty(&journal)
-            .map_err(|error| Error::git("encode history transaction", error))?;
-        std::fs::write(&temporary, bytes).map_err(|error| Error::io(&temporary, error))?;
-        std::fs::rename(&temporary, &path).map_err(|error| Error::io(&path, error))
+        self.write_journal_ref(&journal)
     }
 
-    fn clear_journal(&self) -> Result<(), Error> {
-        if self.inner.profile.is_some() {
-            return self.clear_git_journal();
-        }
-        let path = self.journal_path();
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(Error::io(&path, error)),
-        }
-    }
-
-    fn read_git_journal(&self) -> Result<Option<MaterializationJournal>, Error> {
-        let repo = self.inner.repository.to_thread_local();
+    fn read_journal(&self) -> Result<Option<MaterializationJournal>, Error> {
+        let repo = self.inner.repository().to_thread_local();
         let Some(tip) = Self::tip_in(&repo, &self.journal_ref())? else {
             return Ok(None);
         };
@@ -132,8 +91,8 @@ impl SaveVersioning {
         }))
     }
 
-    fn write_git_journal(&self, journal: &MaterializationJournal) -> Result<(), Error> {
-        let repo = self.inner.repository.to_thread_local();
+    fn write_journal_ref(&self, journal: &MaterializationJournal) -> Result<(), Error> {
+        let repo = self.inner.repository().to_thread_local();
         let reference = self.journal_ref();
         let parent = Self::tip_in(&repo, &reference)?;
         let mut editor = repo
@@ -178,8 +137,8 @@ impl SaveVersioning {
         .map_err(|error| Error::git("commit profile transaction", error))
     }
 
-    fn clear_git_journal(&self) -> Result<(), Error> {
-        let repo = self.inner.repository.to_thread_local();
+    fn clear_journal(&self) -> Result<(), Error> {
+        let repo = self.inner.repository().to_thread_local();
         let reference = self.journal_ref();
         let Some(existing) = repo
             .try_find_reference(&reference)
@@ -230,7 +189,7 @@ impl SaveVersioning {
                 .transpose()?,
         };
         let (old_files, new_files) = {
-            let repo = self.inner.repository.to_thread_local();
+            let repo = self.inner.repository().to_thread_local();
             (
                 transition
                     .before
@@ -259,7 +218,7 @@ impl SaveVersioning {
                 }
             };
         }
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         if let Err(reference_error) =
             self.install_save_refs(&repo, transition.depot, transition.after)
         {
@@ -281,10 +240,12 @@ impl SaveVersioning {
                 }
             };
         }
-        if let Some(profile) = &self.inner.profile {
-            profile.set_save_tip(transition.depot.0, transition.after.map(|state| state.tip));
-            profile.commit_pending("Snowglass profile save transition", None)?;
-        }
+        self.inner
+            .profile
+            .set_save_tip(transition.depot.0, transition.after.map(|state| state.tip));
+        self.inner
+            .profile
+            .commit_pending("Snowglass profile save transition", None)?;
         self.clear_journal()
     }
 

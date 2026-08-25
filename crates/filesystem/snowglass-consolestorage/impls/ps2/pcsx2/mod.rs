@@ -8,8 +8,8 @@ use tokio::io::AsyncReadExt;
 
 use crate::impls::memorycard::{MemoryFile, ReconcileWorker};
 use crate::{
-    BoxFuture, ChangeSignal, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage,
-    ReadDir, Storage, StorageFile,
+    BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
+    Storage, StorageFile,
 };
 
 use super::psu::Save;
@@ -338,9 +338,6 @@ impl Storage for Pcsx2MemoryStorage {
         Ok(())
     }
 
-    fn watch(&self, _paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        Ok(None)
-    }
     fn install_file<'a>(
         &'a self,
         mut source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
