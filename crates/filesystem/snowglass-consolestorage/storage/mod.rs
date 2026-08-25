@@ -9,15 +9,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use std::sync::Arc;
 
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::Notify;
-
 use uuid::Uuid;
 
-use atomic_write_file::AtomicWriteFile;
-use parking_lot::RwLock;
-
 use crate::error::Error;
+use atomic_write_file::AtomicWriteFile;
 
 mod composed;
 mod git;
@@ -26,10 +21,10 @@ pub mod memorycard;
 pub(crate) mod permissions;
 
 pub use composed::ComposedStorage;
-pub use git::{GitVolumeKind, GitVolumeStorage, PlatformRepository};
+pub use git::{GitVolumeStorage, PlatformRepository};
 
 use crate::storage::manifest::VolumeInfo;
-use manifest::{ArtifactRegistry, EMPTY_ARTIFACTS};
+use manifest::ArtifactRegistry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -248,9 +243,8 @@ pub trait Storage: fmt::Debug + Send + Sync {
     /// an error, so uninstalling twice is safe.
     fn remove(&self, path: &str) -> Result<(), Error>;
 
-    /// Returns a recursive change watcher for the requested paths.
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        let _ = paths;
+    /// Returns a signal for mutations made through this storage.
+    fn watch(&self) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
         Ok(None)
     }
 
@@ -342,8 +336,8 @@ impl<T: VolumeOverlay> Storage for T {
         self.inner().remove(path)
     }
 
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        self.inner().watch(paths)
+    fn watch(&self) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
+        self.inner().watch()
     }
 
     fn install_file<'a>(
@@ -402,15 +396,11 @@ impl<T: VolumeOverlay> VolumeStorage for T {
 
 pub struct DirectoryStorage {
     root: PathBuf,
-    volume: RwLock<Option<VolumeInfo>>,
 }
 
 impl DirectoryStorage {
     pub(crate) fn unmanaged(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            volume: RwLock::new(None),
-        }
+        Self { root: root.into() }
     }
 
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, Error> {
@@ -584,33 +574,6 @@ impl Storage for DirectoryStorage {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::io(&resolved, e)),
         }
-    }
-
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        let signal = Arc::new(Notify::new());
-        let notifier = Arc::clone(&signal);
-
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
-            // Ignore aaccess events
-            if event.is_ok_and(|event| event.kind.is_access()) {
-                return;
-            }
-
-            notifier.notify_one();
-        })
-        .map_err(|e| Error::io(&self.root, std::io::Error::other(e)))?;
-
-        for path in paths {
-            let resolved = self.resolve(path)?;
-            watcher
-                .watch(&resolved, RecursiveMode::Recursive)
-                .map_err(|e| Error::io(&self.root, std::io::Error::other(e)))?;
-        }
-
-        Ok(Some(Box::new(DirectoryWatch {
-            _watcher: watcher,
-            signal,
-        })))
     }
 
     fn install_file<'a>(
@@ -801,28 +764,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn labels_are_available_through_storage() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = DirectoryStorage::new(dir.path()).await.unwrap();
-        storage
-            .brand(Uuid::now_v7(), "TEST", Some("Card One"))
-            .await
-            .unwrap();
-
-        assert_eq!(
-            VolumeStorage::label(&storage).await.unwrap().as_deref(),
-            Some("Card One")
-        );
-        VolumeStorage::set_label(&storage, Some("Card Two"))
-            .await
-            .unwrap();
-        assert_eq!(
-            VolumeStorage::label(&storage).await.unwrap().as_deref(),
-            Some("Card Two")
-        );
-    }
-
-    #[tokio::test]
     async fn install_file_atomically_replaces_its_destination() {
         let dir = tempfile::tempdir().unwrap();
         let storage = DirectoryStorage::new(dir.path()).await.unwrap();
@@ -857,18 +798,6 @@ mod tests {
     }
 }
 
-/// Keeps the OS watch alive; dropping it stops the watch.
-struct DirectoryWatch {
-    _watcher: RecommendedWatcher,
-    signal: Arc<Notify>,
-}
-
-impl ChangeSignal for DirectoryWatch {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(self.signal.notified())
-    }
-}
-
 impl MountableStorage for DirectoryStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
         let from = self.resolve(from)?;
@@ -893,56 +822,5 @@ impl MountableStorage for DirectoryStorage {
             .open(&resolved)
             .and_then(|file| file.sync_all())
             .map_err(|e| Error::io(&resolved, e))
-    }
-}
-
-impl VolumeStorage for DirectoryStorage {
-    fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
-        Box::pin(async move {
-            Ok(self
-                .volume
-                .read()
-                .as_ref()
-                .and_then(|info| info.label.clone()))
-        })
-    }
-
-    fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
-        Box::pin(async move {
-            let mut volume = self.volume.write();
-            let info = volume.as_mut().ok_or(Error::UnclaimedNand)?;
-            info.label = label.map(str::to_owned);
-            Ok(())
-        })
-    }
-
-    fn artifacts(&self) -> &dyn ArtifactRegistry {
-        &EMPTY_ARTIFACTS
-    }
-
-    fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        Box::pin(async move { Ok(self.volume.read().clone()) })
-    }
-
-    fn brand<'a>(
-        &'a self,
-        id: Uuid,
-        platform: &'a str,
-        label: Option<&'a str>,
-    ) -> BoxFuture<'a, Result<VolumeInfo, Error>> {
-        Box::pin(async move {
-            let mut volume = self.volume.write();
-            if let Some(info) = &*volume {
-                return Ok(info.clone());
-            }
-            let info = VolumeInfo {
-                id,
-                platform: platform.to_owned(),
-                label: label.map(str::to_owned),
-                created: jiff::Timestamp::now(),
-            };
-            *volume = Some(info.clone());
-            Ok(info)
-        })
     }
 }

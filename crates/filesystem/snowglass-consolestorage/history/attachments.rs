@@ -16,7 +16,7 @@ impl SaveVersioning {
         kind: SaveAttachmentKind,
     ) -> Result<Option<Vec<u8>>, Error> {
         self.ensure_member(depot, commit)?;
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let refs = self.refs(depot);
         let Some(notes_tip) = Self::tip_in(&repo, refs.attachment(kind))? else {
             return Ok(None);
@@ -47,7 +47,7 @@ impl SaveVersioning {
         }
         let _guard = self.inner.operation.lock().await;
         self.ensure_member(depot, commit)?;
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).attachment(kind).to_owned();
         let parent = Self::tip_in(&repo, &reference)?;
         let root = match parent {
@@ -105,7 +105,7 @@ impl SaveVersioning {
     ) -> Result<bool, Error> {
         let _guard = self.inner.operation.lock().await;
         self.ensure_member(depot, commit)?;
-        let repo = self.inner.repository.to_thread_local();
+        let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).attachment(kind).to_owned();
         let Some(parent) = Self::tip_in(&repo, &reference)? else {
             return Ok(false);

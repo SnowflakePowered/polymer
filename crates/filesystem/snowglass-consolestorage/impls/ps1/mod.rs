@@ -464,7 +464,7 @@ impl SaveGameSink for PlaystationMemoryCard {
     }
 
     fn watch_saves(&self, saves: &[SaveDepotId]) -> Result<SaveWatcher, Error> {
-        let activity = self.storage.watch(&[SAVE_ROOT])?.ok_or_else(|| {
+        let activity = self.storage.watch()?.ok_or_else(|| {
             Error::Unsupported("PlayStation storage cannot watch saves".to_owned())
         })?;
         let card = self.clone();
@@ -481,18 +481,17 @@ impl SaveGameSink for PlaystationMemoryCard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DirectoryStorage;
 
     #[tokio::test]
     async fn projection_keeps_primary_group_and_twenty_percent_free() {
         let directory = tempfile::tempdir().unwrap();
         let id = Uuid::now_v7();
-        let storage = crate::VersionedStorage::new(
-            DirectoryStorage::new(directory.path()).await.unwrap(),
+        let storage = crate::VersionedStorage::for_test(
+            directory.path(),
             PlaystationMemoryCard::PLATFORM,
             id,
-        )
-        .unwrap();
+            crate::StorageKind::MemoryCard,
+        );
         let card = PlaystationMemoryCard::new_empty(storage, id, None)
             .await
             .unwrap();

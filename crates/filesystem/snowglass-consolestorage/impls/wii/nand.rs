@@ -21,8 +21,6 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     ("sys/uid.sys", Permissions::all()),
     ("title/00000001", Permissions::READ_EXECUTE),
     ("title/00000001/00000002/data", Permissions::all()),
-    (".manifest.db", Permissions::empty()),
-    (".manifest.db-wal", Permissions::empty()),
 ]);
 
 pub struct WiiNand {
@@ -115,9 +113,7 @@ impl VirtualNand for WiiNand {
         let cloned = Self::new_empty(storage, Uuid::now_v7(), label).await?;
         for entry in self.storage.read_dir("", true)? {
             let path = entry.path;
-            if path == ".manifest.db"
-                || path.starts_with(".manifest.db-")
-                || path == "import"
+            if path == "import"
                 || path.starts_with("import/")
                 || path == "tmp"
                 || path.starts_with("tmp/")
@@ -205,13 +201,15 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{DirectoryStorage, GitVolumeKind, PlatformRepository, VersionedStorage};
+    use crate::{PlatformRepository, StorageKind, VersionedStorage};
 
     #[tokio::test]
     async fn composes_installed_content_and_versioned_save_data() {
         let nand_dir = tempfile::tempdir().unwrap();
-        let nand_storage = DirectoryStorage::new(nand_dir.path()).await.unwrap();
-        let nand = WiiNand::new_empty(nand_storage, Uuid::now_v7(), None)
+        let platform =
+            PlatformRepository::open(nand_dir.path().join("platform"), WiiNand::PLATFORM).unwrap();
+        let nand_id = Uuid::now_v7();
+        let nand = WiiNand::new_empty(platform.volume(StorageKind::Nand, nand_id), nand_id, None)
             .await
             .unwrap();
         for path in ["shared2/ec/shopsetu.log", "shared2/succession/shop.log"] {
@@ -232,9 +230,13 @@ mod tests {
             .unwrap();
 
         let saves_dir = tempfile::tempdir().unwrap();
-        let saves_storage = DirectoryStorage::new(saves_dir.path()).await.unwrap();
         let saves_id = Uuid::now_v7();
-        let versioned = VersionedStorage::new(saves_storage, WiiNand::PLATFORM, saves_id).unwrap();
+        let versioned = VersionedStorage::for_test(
+            saves_dir.path(),
+            WiiNand::PLATFORM,
+            saves_id,
+            StorageKind::SaveRepo,
+        );
         let saves = WiiNand::new_save_repo(versioned, saves_id, None)
             .await
             .unwrap();
@@ -305,13 +307,12 @@ mod tests {
             PlatformRepository::open(directory.path().join("NINTENDO_WII.git"), WiiNand::PLATFORM)
                 .unwrap();
         let nand_id = Uuid::now_v7();
-        let nand = WiiNand::new_empty(platform.volume(GitVolumeKind::Nand, nand_id), nand_id, None)
+        let nand = WiiNand::new_empty(platform.volume(StorageKind::Nand, nand_id), nand_id, None)
             .await
             .unwrap();
         let profile_id = Uuid::now_v7();
         let profile =
-            VersionedStorage::from_git(platform.volume(GitVolumeKind::SaveRepo, profile_id))
-                .unwrap();
+            VersionedStorage::new(platform.volume(StorageKind::SaveRepo, profile_id)).unwrap();
         let saves = WiiNand::new_save_repo(profile, profile_id, None)
             .await
             .unwrap();
@@ -327,7 +328,7 @@ mod tests {
         drop(saves);
         drop(nand);
 
-        let reopened = platform.volume(GitVolumeKind::SaveRepo, profile_id);
+        let reopened = platform.volume(StorageKind::SaveRepo, profile_id);
         let mut bytes = Vec::new();
         reopened
             .open_read("shared2/menu/FaceLib/RFL_DB.dat")
@@ -337,7 +338,7 @@ mod tests {
         assert_eq!(bytes, b"mii profile");
         assert!(
             !platform
-                .volume(GitVolumeKind::Nand, nand_id)
+                .volume(StorageKind::Nand, nand_id)
                 .exists("tmp/runtime-only")
         );
     }
@@ -349,9 +350,9 @@ mod tests {
             PlatformRepository::open(directory.path().join("NINTENDO_WII"), WiiNand::PLATFORM)
                 .unwrap();
         let id = Uuid::now_v7();
-        let storage = platform.volume(GitVolumeKind::SaveRepo, id);
+        let storage = platform.volume(StorageKind::SaveRepo, id);
         let checkout = storage.checkout_path().to_owned();
-        let versioned = VersionedStorage::from_git(storage).unwrap();
+        let versioned = VersionedStorage::new(storage).unwrap();
         let saves = WiiNand::new_save_repo(versioned, id, None).await.unwrap();
         let path = "title/00010001/57474f45/data/pers2.dat";
         saves

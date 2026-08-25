@@ -348,7 +348,7 @@ mod tests {
     use super::*;
     use crate::impls::wii::nand::WiiNand;
     use crate::nand::VirtualNand;
-    use crate::{DirectoryStorage, GitVolumeKind, PlatformRepository, VolumeStorage};
+    use crate::{PlatformRepository, StorageKind, VolumeStorage};
 
     const COMMON_KEY: [u8; 16] = [
         0xeb, 0xe4, 0x2a, 0x22, 0x5e, 0x85, 0x93, 0xe4, 0x48, 0xd9, 0xc5, 0x45, 0x73, 0x81, 0xaa,
@@ -367,9 +367,15 @@ mod tests {
         assert!(wad.validate_contents().is_empty());
 
         let incomplete_dir = tempfile::tempdir().unwrap();
-        let incomplete = DirectoryStorage::new(incomplete_dir.path()).await.unwrap();
+        let incomplete_platform = PlatformRepository::open(
+            incomplete_dir.path().join("NINTENDO_WII"),
+            WiiNand::PLATFORM,
+        )
+        .unwrap();
+        let incomplete_id = Uuid::now_v7();
+        let incomplete = incomplete_platform.volume(StorageKind::Nand, incomplete_id);
         incomplete
-            .brand(Uuid::now_v7(), WiiNand::PLATFORM, None)
+            .brand(incomplete_id, WiiNand::PLATFORM, None)
             .await
             .unwrap();
         let incomplete = WiiNand::open(incomplete).await.unwrap();
@@ -382,7 +388,7 @@ mod tests {
         )
         .unwrap();
         let id = Uuid::now_v7();
-        let storage = platform.volume(GitVolumeKind::Nand, id);
+        let storage = platform.volume(StorageKind::Nand, id);
         let nand = WiiNand::new_empty(storage, id, None).await.unwrap();
         assert!(wad.satisfies(&nand));
         let (artifact, progress) = wad.install(&nand);
@@ -448,19 +454,6 @@ mod tests {
         assert!(wad.validate_contents().is_empty());
         assert_eq!(wad.select_title_key().unwrap().index, 0);
     }
-
-
-    async fn install_depot(wad: &WiiWadDepot, nand: &WiiNand) -> Vec<String> {
-        let (artifact, progress) = wad.install(nand);
-        let mut progress = Box::into_pin(progress);
-        let mut paths = Vec::new();
-        while let Some(result) = progress.as_mut().next().await {
-            paths.push(result.unwrap());
-        }
-        Box::into_pin(artifact).await.unwrap();
-        paths
-    }
-
     fn make_wad(title_id: u64, plaintext: &[u8]) -> Vec<u8> {
         make_wad_with_kind(title_id, plaintext, 1)
     }

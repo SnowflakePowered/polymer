@@ -2,13 +2,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, Weak};
 
-use futures::future::select_all;
 use parking_lot::{Mutex, RwLock};
 use tokio::io::AsyncRead;
 
 use crate::{
-    BoxFuture, ChangeSignal, DirEntry, Error, InstallResult, Metadata, MountableStorage, ReadDir,
-    Storage, StorageFile,
+    BoxFuture, DirEntry, Error, InstallResult, Metadata, MountableStorage, ReadDir, Storage,
+    StorageFile,
 };
 
 /// A fixed-lifetime, ordered composition. The first storage that claims a path
@@ -166,30 +165,6 @@ impl Storage for ComposedStorage {
         self.owner(path)?.remove(path)
     }
 
-    fn watch(&self, paths: &[&str]) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
-        let mut grouped = HashMap::<usize, (Arc<dyn MountableStorage>, Vec<&str>)>::new();
-        for path in paths {
-            let owner = self.owner(path)?.clone();
-            grouped
-                .entry(Arc::as_ptr(&owner) as *const () as usize)
-                .or_insert_with(|| (owner, Vec::new()))
-                .1
-                .push(path);
-        }
-
-        let mut signals = Vec::new();
-        for (_, (storage, paths)) in grouped {
-            if let Some(signal) = storage.watch(&paths)? {
-                signals.push(signal);
-            }
-        }
-        match signals.len() {
-            0 => Ok(None),
-            1 => Ok(signals.pop()),
-            _ => Ok(Some(Box::new(ComposedSignal { signals }))),
-        }
-    }
-
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,
@@ -343,65 +318,50 @@ impl StorageFile for ComposedFile {
     }
 }
 
-struct ComposedSignal {
-    signals: Vec<Box<dyn ChangeSignal>>,
-}
-
-impl ChangeSignal for ComposedSignal {
-    fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async move {
-            let pending = self
-                .signals
-                .iter()
-                .map(|signal| signal.changed())
-                .collect::<Vec<_>>();
-            let _ = select_all(pending).await;
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DirectoryStorage;
     use crate::impls::wiiu::nand::WiiUNand;
     use crate::nand::VirtualNand;
     use std::io::Read;
+    use std::path::PathBuf;
 
     async fn wiiu() -> (
         tempfile::TempDir,
-        tempfile::TempDir,
+        PathBuf,
         WiiUNand,
         Arc<dyn crate::SaveRepo>,
     ) {
-        let save_root = tempfile::tempdir().unwrap();
-        let nand_root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let platform = crate::PlatformRepository::open(
+            root.path().join(WiiUNand::PLATFORM),
+            WiiUNand::PLATFORM,
+        )
+        .unwrap();
+        let nand_id = uuid::Uuid::now_v7();
         let nand = WiiUNand::new_empty(
-            DirectoryStorage::new(nand_root.path()).await.unwrap(),
-            uuid::Uuid::now_v7(),
+            platform.volume(crate::StorageKind::Nand, nand_id),
+            nand_id,
             None,
         )
         .await
         .unwrap();
         let save_id = uuid::Uuid::now_v7();
+        let save_storage = platform.volume(crate::StorageKind::SaveRepo, save_id);
+        let save_checkout = save_storage.checkout_path().to_owned();
         let saves = WiiUNand::new_save_repo(
-            crate::VersionedStorage::new(
-                DirectoryStorage::new(save_root.path()).await.unwrap(),
-                WiiUNand::PLATFORM,
-                save_id,
-            )
-            .unwrap(),
+            crate::VersionedStorage::new(save_storage).unwrap(),
             save_id,
             None,
         )
         .await
         .unwrap();
-        (save_root, nand_root, nand, saves)
+        (root, save_checkout, nand, saves)
     }
 
     #[tokio::test]
     async fn first_claimant_owns_missing_paths_and_directories_are_unioned() {
-        let (save_root, _nand_root, nand, saves) = wiiu().await;
+        let (_root, save_checkout, nand, saves) = wiiu().await;
         nand.root().create_dir_all("usr/save/game").unwrap();
         nand.root()
             .create_dir_all("usr/title/game/content")
@@ -422,7 +382,7 @@ mod tests {
         composed.create_dir_all("usr/save/game").unwrap();
         let file = composed.create("usr/save/game/new.bin").unwrap();
         assert_eq!(file.write_at(0, b"save").unwrap(), 4);
-        assert!(save_root.path().join("usr/save/game/new.bin").exists());
+        assert!(save_checkout.join("usr/save/game/new.bin").exists());
         assert!(!nand.root().exists("usr/save/game/new.bin"));
 
         let usr = composed
@@ -443,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn atomically_moves_files_across_layers() {
-        let (save_root, _nand_root, nand, saves) = wiiu().await;
+        let (_root, save_checkout, nand, saves) = wiiu().await;
         nand.root().create_dir_all("usr/title/game").unwrap();
         let composed = nand.compose(saves).unwrap();
         let temporary = composed.create("usr/title/game/temporary.bin").unwrap();
@@ -455,16 +415,16 @@ mod tests {
 
         assert!(!nand.root().exists("usr/title/game/temporary.bin"));
         assert_eq!(
-            std::fs::read(save_root.path().join("usr/save/game/data.bin")).unwrap(),
+            std::fs::read(save_checkout.join("usr/save/game/data.bin")).unwrap(),
             b"save data"
         );
         temporary.write_all_at(4, b" again").unwrap();
         assert_eq!(
-            std::fs::read(save_root.path().join("usr/save/game/data.bin")).unwrap(),
+            std::fs::read(save_checkout.join("usr/save/game/data.bin")).unwrap(),
             b"save again"
         );
         assert_eq!(
-            std::fs::read_dir(save_root.path().join("usr/save/game"))
+            std::fs::read_dir(save_checkout.join("usr/save/game"))
                 .unwrap()
                 .count(),
             1

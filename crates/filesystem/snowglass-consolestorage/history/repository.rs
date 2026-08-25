@@ -8,136 +8,38 @@ use gix::objs::Write;
 use gix::refs::Target;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use super::{
-    AttachmentTips, HistoryInner, MARKER_FILE, Marker, SCHEMA_VERSION, SaveCommitId, SaveDepotId,
-    SaveRefState, SaveRefs, SaveVersioning,
+    AttachmentTips, HistoryInner, SaveCommitId, SaveDepotId, SaveRefState, SaveRefs, SaveVersioning,
 };
 use crate::Error;
 use crate::savegame::SaveBlob;
-use crate::{GitVolumeStorage, PlatformRepository};
+use crate::{GitVolumeStorage, StorageKind};
 
 impl SaveVersioning {
-    pub(super) fn open(root: &Path, platform: &str, volume_id: Uuid) -> Result<Self, Error> {
-        let root = root.to_owned();
-        let git_dir = root.join(".git");
-        let repository = if git_dir.exists() {
-            gix::open(&root)
-                .map_err(|error| Error::git("open repository", error))?
-                .into_sync()
-        } else {
-            let options = gix::create::Options {
-                destination_must_be_empty: Some(false),
-                ..Default::default()
-            };
-            gix::ThreadSafeRepository::init(&root, gix::create::Kind::WithWorktree, options)
-                .map_err(|error| Error::git("initialize repository", error))?
-        };
-
-        let marker_path = repository.git_dir().join(MARKER_FILE);
-        Self::configure_git_repository(&repository)?;
-        let expected = Marker {
-            schema: SCHEMA_VERSION,
-            platform: platform.to_owned(),
-            volume_id,
-        };
-        if marker_path.exists() {
-            let bytes =
-                std::fs::read(&marker_path).map_err(|error| Error::io(&marker_path, error))?;
-            let marker: Marker = serde_json::from_slice(&bytes)
-                .map_err(|error| Error::git("read Snowglass repository marker", error))?;
-            if marker.schema != expected.schema
-                || marker.platform != expected.platform
-                || marker.volume_id != expected.volume_id
-            {
-                return Err(Error::HistoryConflict(format!(
-                    "{} belongs to schema {} platform {} volume {}",
-                    git_dir.display(),
-                    marker.schema,
-                    marker.platform,
-                    marker.volume_id
-                )));
-            }
-        } else {
-            let bytes = serde_json::to_vec_pretty(&expected)
-                .map_err(|error| Error::git("encode repository marker", error))?;
-            std::fs::write(&marker_path, bytes).map_err(|error| Error::io(&marker_path, error))?;
-            let exclude = repository.git_dir().join("info").join("exclude");
-            let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-            if !existing.contains("# snowglass canonical storage") {
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&exclude)
-                    .map_err(|error| Error::io(&exclude, error))?;
-                std::io::Write::write_all(&mut file, b"\n# snowglass canonical storage\n*\n")
-                    .map_err(|error| Error::io(&exclude, error))?;
-            }
-        }
-
-        Ok(Self {
-            inner: Arc::new(HistoryInner {
-                root,
-                platform: platform.to_owned(),
-                volume_id,
-                repository,
-                profile: None,
-                operation: Mutex::new(()),
-            }),
-        })
-    }
-
-    pub(crate) fn open_platform(
-        platform_repository: &PlatformRepository,
-        profile: GitVolumeStorage,
-        volume_id: Uuid,
-    ) -> Result<Self, Error> {
-        if profile.id() != volume_id {
-            return Err(Error::HistoryConflict(format!(
-                "profile {} cannot provide history for volume {volume_id}",
-                profile.id()
-            )));
+    pub(crate) fn open_platform(profile: GitVolumeStorage) -> Result<Self, Error> {
+        if profile.kind() == StorageKind::Nand {
+            return Err(Error::Unsupported(
+                "NAND volumes cannot provide per-save history".to_owned(),
+            ));
         }
         Ok(Self {
             inner: Arc::new(HistoryInner {
-                root: platform_repository.path().to_owned(),
-                platform: platform_repository.platform().to_owned(),
-                volume_id,
-                repository: platform_repository.repository().clone(),
-                profile: Some(profile),
+                profile,
                 operation: Mutex::new(()),
             }),
         })
-    }
-
-    fn configure_git_repository(repository: &gix::ThreadSafeRepository) -> Result<(), Error> {
-        let config_path = repository.git_dir().join("config");
-        let existing = std::fs::read_to_string(&config_path)
-            .map_err(|error| Error::io(&config_path, error))?;
-        if existing.contains("# snowglass history policy v1") {
-            return Ok(());
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&config_path)
-            .map_err(|error| Error::io(&config_path, error))?;
-        std::io::Write::write_all(
-            &mut file,
-            b"\n# snowglass history policy v1\n[core]\n\tlogAllRefUpdates = always\n[gc \"refs/snowglass/archive/v1/recently-deleted\"]\n\treflogExpireUnreachable = 30 days\n",
-        )
-        .map_err(|error| Error::io(&config_path, error))
     }
 
     pub(super) fn refs(&self, depot: SaveDepotId) -> SaveRefs {
         let save = format!(
             "refs/snowglass/saves/v2/{}/{:016x}",
-            self.inner.volume_id.simple(),
+            self.inner.volume_id().simple(),
             depot.0
         );
         let attachments = format!(
             "refs/notes/snowglass/v2/{}/{:016x}",
-            self.inner.volume_id.simple(),
+            self.inner.volume_id().simple(),
             depot.0
         );
         SaveRefs {
@@ -149,8 +51,11 @@ impl SaveVersioning {
     }
 
     pub(super) fn tracked_depots(&self) -> Result<Vec<SaveDepotId>, Error> {
-        let repo = self.inner.repository.to_thread_local();
-        let prefix = format!("refs/snowglass/saves/v2/{}/", self.inner.volume_id.simple());
+        let repo = self.inner.repository().to_thread_local();
+        let prefix = format!(
+            "refs/snowglass/saves/v2/{}/",
+            self.inner.volume_id().simple()
+        );
         let mut depots = Vec::new();
         let references = repo
             .references()
@@ -208,7 +113,10 @@ impl SaveVersioning {
     }
 
     pub(super) fn ref_state(&self, depot: SaveDepotId) -> Result<Option<SaveRefState>, Error> {
-        Self::ref_state_in(&self.inner.repository.to_thread_local(), &self.refs(depot))
+        Self::ref_state_in(
+            &self.inner.repository().to_thread_local(),
+            &self.refs(depot),
+        )
     }
 
     fn validate_blob_path(path: &Path) -> Result<String, Error> {

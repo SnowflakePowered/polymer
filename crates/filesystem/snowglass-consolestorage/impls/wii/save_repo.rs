@@ -235,8 +235,7 @@ impl SaveGameSink for WiiSaveRepo {
         for root in &roots {
             self.root.create_dir_all(root)?;
         }
-        let watched = roots.iter().map(String::as_str).collect::<Vec<_>>();
-        let activity = self.root.watch(&watched)?.ok_or_else(|| {
+        let activity = self.root.watch()?.ok_or_else(|| {
             Error::Unsupported(format!("{} cannot watch saves", WiiNand::PLATFORM))
         })?;
         Ok(SaveWatcher::with_settle(

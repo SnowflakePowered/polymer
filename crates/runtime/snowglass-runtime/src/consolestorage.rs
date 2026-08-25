@@ -88,8 +88,6 @@ fn describe(manager: &StorageManager, kind: StorageKind, metadata: &VolumeInfo) 
         "platform": metadata.platform,
         "label": metadata.label,
         "created": metadata.created.to_string(),
-        "path": manager
-            .path(kind, &metadata.platform, metadata.id)
-            .to_string_lossy(),
+        "path": manager.platform_path(&metadata.platform).to_string_lossy(),
     })
 }
