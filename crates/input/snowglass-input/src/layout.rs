@@ -27,6 +27,20 @@ pub const EMBEDDED_GAMECONTROLLER_DB: &str =
     include_str!("../SDL_GameControllerDB/gamecontrollerdb.txt");
 pub const EMBEDDED_DEFAULT_KEYBOARD_MAPPING: &str = include_str!("../keyboard/DEFAULT.kb.toml");
 
+/// How a normalized physical SDL gamepad is matched to a logical controller.
+/// Name and position differ only for the four labelled face buttons.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectionMode {
+    /// Prefer the physical button's printed SDL label, then use its position.
+    Name,
+    /// Match the physical SDL position to the control projected there.
+    #[default]
+    Position,
+    /// Generate no bindings; the complete profile must be supplied explicitly.
+    Custom,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputElement {
@@ -191,6 +205,27 @@ impl InputLayout {
         self.clusters
             .iter()
             .any(|cluster| cluster.kind == "analog" && cluster.class == Some(class))
+    }
+
+    /// The single SDL wire occupied by one logical control.
+    pub fn sdl_wire(&self, key: BindingKey) -> Option<Wire> {
+        match Projection::shared().target(&self.id, key)? {
+            Target::Key(target) => sdl::wire(target),
+            Target::Both(..) | Target::Transport(_) | Target::None => None,
+        }
+    }
+
+    /// Controls for which a physical button or standard gamepad axis can be
+    /// selected explicitly. Output, composite, sensor and raw-pointer controls
+    /// are carried elsewhere and are not part of a custom binding profile.
+    pub fn custom_binding_targets(&self) -> impl Iterator<Item = BindingKey> + '_ {
+        self.elements.iter().filter_map(|element| {
+            matches!(
+                self.sdl_wire(element.key),
+                Some(Wire::Button(_) | Wire::Axis(_))
+            )
+            .then_some(element.key)
+        })
     }
 
     pub fn same_topology(&self, other: &Self) -> bool {

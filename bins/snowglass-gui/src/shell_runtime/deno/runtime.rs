@@ -303,6 +303,8 @@ fn configuration_defaults(
                 slot: gamepad.slot,
                 layout: gamepad.layout.clone(),
                 force_mouse: gamepad.force_mouse,
+                projection_mode: snowglass_input::layout::ProjectionMode::Position,
+                mapping: HashMap::new(),
             })
             .collect(),
         machine: viewer.machine.clone(),

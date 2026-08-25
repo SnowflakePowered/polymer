@@ -13,7 +13,7 @@ use snowglass_input::{
         BindingOverride, InputConfiguration, InputHub, InputOperation, InputTransaction,
         PortConfiguration, SourceControl, SourceSelector, VirtualPort,
     },
-    layout::{InputBinding, SdlAxis, SdlButton},
+    layout::{InputBinding, ProjectionMode, SdlAxis, SdlButton},
 };
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_ipc::{Message, MessageSink};
@@ -677,6 +677,7 @@ impl InputRouter {
                 layout: mapping.layout.clone(),
                 slot: Some(slot),
                 source: Some(hub_source(mapping.selector())),
+                projection_mode: mapping.projection_mode,
                 overrides,
             });
         }
@@ -700,6 +701,7 @@ impl InputRouter {
                         selector: DeviceSelector::Index(usize::MAX),
                         layout_id: "XBOX_CONTROLLER".to_owned(),
                         force_mouse: false,
+                        projection_mode: ProjectionMode::Position,
                     };
                     slot + 1
                 ]
@@ -710,6 +712,7 @@ impl InputRouter {
                 selector: mapping.selector(),
                 layout_id: mapping.layout.clone(),
                 force_mouse: mapping.mouse,
+                projection_mode: mapping.projection_mode,
             };
         }
         self.transport.restart_provider(ProviderConfig {
@@ -922,6 +925,8 @@ pub struct GamepadMapping {
     pub port: Option<VirtualPort>,
     pub layout: String,
     #[serde(default)]
+    pub projection_mode: ProjectionMode,
+    #[serde(default)]
     pub mapping: HashMap<String, String>,
 }
 
@@ -966,6 +971,7 @@ impl From<&GamepadArgument> for GamepadMapping {
             slot: value.slot,
             port: None,
             layout: value.layout.clone(),
+            projection_mode: ProjectionMode::Position,
             mapping: HashMap::new(),
         }
     }
@@ -1160,6 +1166,7 @@ fn provider_config(configuration: &InputConfiguration) -> ProviderConfig {
                     selector: DeviceSelector::Index(usize::MAX),
                     layout_id: "XBOX_CONTROLLER".to_owned(),
                     force_mouse: false,
+                    projection_mode: ProjectionMode::Position,
                 };
                 slot + 1
             ]
@@ -1185,6 +1192,7 @@ fn provider_config(configuration: &InputConfiguration) -> ProviderConfig {
             },
             layout_id: port.layout.clone(),
             force_mouse: false,
+            projection_mode: port.projection_mode,
         };
     }
     ProviderConfig {
@@ -1275,6 +1283,7 @@ mod tests {
                     guid: "abc".to_owned(),
                     duplicate_ordinal: 1,
                 }),
+                projection_mode: ProjectionMode::Position,
                 overrides: HashMap::new(),
             }],
         };

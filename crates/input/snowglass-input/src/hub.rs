@@ -4,7 +4,7 @@
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::layout::{InputLayout, SdlAxis, SdlButton};
+use crate::layout::{InputLayout, ProjectionMode, SdlAxis, SdlButton};
 use consolespec::MachineSpec;
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
@@ -228,6 +228,8 @@ pub struct PortConfiguration {
     pub slot: Option<u8>,
     pub source: Option<SourceSelector>,
     #[serde(default)]
+    pub projection_mode: ProjectionMode,
+    #[serde(default)]
     pub overrides: HashMap<BindingKey, BindingOverride>,
 }
 
@@ -260,6 +262,8 @@ pub enum InputOperation {
         #[serde(default)]
         slot: Option<u8>,
         source: Option<SourceSelector>,
+        #[serde(default)]
+        projection_mode: ProjectionMode,
     },
     SetSource {
         port: VirtualPort,
@@ -480,6 +484,7 @@ fn apply_operation(
             layout,
             slot,
             source,
+            projection_mode,
         } => {
             ports.insert(
                 port.clone(),
@@ -488,6 +493,7 @@ fn apply_operation(
                     layout,
                     slot,
                     source,
+                    projection_mode,
                     overrides: HashMap::new(),
                 },
             );
@@ -618,6 +624,20 @@ fn validate_ports(
             }
             validate_binding(binding)?;
         }
+        if port.projection_mode == ProjectionMode::Custom {
+            let missing = layout
+                .custom_binding_targets()
+                .filter(|target| !port.overrides.contains_key(target))
+                .map(|target| target.to_string())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(InputConfigurationError::InvalidBinding(format!(
+                    "custom projection for {} must specify: {}",
+                    layout.id,
+                    missing.join(", ")
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -663,6 +683,7 @@ mod tests {
             layout: "XBOX_CONTROLLER".to_owned(),
             slot: Some(index),
             source: Some(SourceSelector::SdlIndex { index: 0 }),
+            projection_mode: ProjectionMode::Position,
             overrides: HashMap::new(),
         }
     }
@@ -879,6 +900,7 @@ mod tests {
             layout: layout.to_owned(),
             slot,
             source: None,
+            projection_mode: ProjectionMode::Position,
             overrides: HashMap::new(),
         }
     }

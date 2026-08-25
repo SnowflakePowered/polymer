@@ -1,4 +1,5 @@
 use crate::input::{GamepadMapping, parse_input_binding};
+use snowglass_input::layout::{InputLayout, ProjectionMode};
 pub use snowglass_pluginhost::GraphicsHook;
 pub use snowglass_runtime::GeneratedConfiguration;
 use std::{collections::HashSet, net::SocketAddr};
@@ -90,11 +91,7 @@ impl UnattachedLaunchPlan {
             bind.parse::<SocketAddr>()
                 .map_err(|error| format!("invalid WebRTC bind address '{bind}': {error}"))?;
         }
-        for mapping in &self.gamepad_mapping {
-            for source in mapping.mapping.values() {
-                parse_input_binding(source)?;
-            }
-        }
+        validate_input_mappings(&self.gamepad_mapping)?;
         Ok(())
     }
 }
@@ -175,13 +172,45 @@ impl AttachedLaunchPlan {
         {
             return Err("gamepad slots must be unique and contiguous from zero".to_owned());
         }
-        for mapping in &self.gamepad_mapping {
-            for source in mapping.mapping.values() {
-                parse_input_binding(source)?;
-            }
-        }
+        validate_input_mappings(&self.gamepad_mapping)?;
         Ok(())
     }
+}
+
+fn validate_input_mappings(mappings: &[GamepadMapping]) -> Result<(), String> {
+    for mapping in mappings {
+        let layout = InputLayout::get(&mapping.layout)
+            .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
+        let mut targets = HashSet::new();
+        for (target, source) in &mapping.mapping {
+            let target = target
+                .parse()
+                .map_err(|error| format!("invalid input target '{target}': {error}"))?;
+            if !layout.has(target) {
+                return Err(format!(
+                    "input layout {} has no element {target}",
+                    layout.id
+                ));
+            }
+            targets.insert(target);
+            parse_input_binding(source)?;
+        }
+        if mapping.projection_mode == ProjectionMode::Custom {
+            let missing = layout
+                .custom_binding_targets()
+                .filter(|target| !targets.contains(target))
+                .map(|target| target.to_string())
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "custom projection for {} must specify: {}",
+                    layout.id,
+                    missing.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -228,5 +257,27 @@ mod tests {
                 invert: true
             }
         ));
+    }
+
+    #[test]
+    fn rejects_an_incomplete_custom_projection() {
+        let launch: AttachedLaunchPlan = serde_json::from_str(
+            r#"{
+                "command": "game.exe",
+                "hook": ["d3d12"],
+                "surfaces": [{ "index": 0, "attach": 4 }],
+                "gamepadMapping": [{
+                    "gamepadId": 0,
+                    "slot": 0,
+                    "layout": "SWITCH_PRO_CONTROLLER",
+                    "projectionMode": "custom",
+                    "mapping": { "button.a": "button:east" }
+                }],
+                "machine": "NINTENDO_SWITCH"
+            }"#,
+        )
+        .unwrap();
+        let error = launch.validate().unwrap_err();
+        assert!(error.starts_with("custom projection for SWITCH_PRO_CONTROLLER must specify:"));
     }
 }

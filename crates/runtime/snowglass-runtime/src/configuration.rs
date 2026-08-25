@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use snowglass_config::ast::{
     ConfigurationInstance, OptionRange, PortAssignments, Value, ValueKind,
 };
-use snowglass_input::{hub::VirtualPort, provider::sdl3::DeviceSelector};
+use snowglass_input::{hub::VirtualPort, layout::ProjectionMode, provider::sdl3::DeviceSelector};
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -26,6 +26,8 @@ pub struct DefaultGamepad {
     pub slot: usize,
     pub layout: String,
     pub force_mouse: bool,
+    pub projection_mode: ProjectionMode,
+    pub mapping: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -38,6 +40,8 @@ pub struct GamepadMapping {
     #[serde(default)]
     pub port: Option<VirtualPort>,
     pub layout: String,
+    #[serde(default)]
+    pub projection_mode: ProjectionMode,
     #[serde(default)]
     pub mapping: HashMap<String, String>,
 }
@@ -83,7 +87,8 @@ impl From<&DefaultGamepad> for GamepadMapping {
             slot: value.slot,
             port: None,
             layout: value.layout.clone(),
-            mapping: HashMap::new(),
+            projection_mode: value.projection_mode,
+            mapping: value.mapping.clone(),
         }
     }
 }
@@ -179,6 +184,10 @@ pub struct LaunchPortRequest {
     pub index: usize,
     pub layout: String,
     pub device: String,
+    #[serde(default)]
+    pub projection_mode: ProjectionMode,
+    #[serde(default)]
+    pub mapping: HashMap<String, String>,
 }
 
 pub struct ConfiguredSelection {
@@ -607,6 +616,8 @@ fn validate_assignments(
                 selector,
                 slot: gamepads.len(),
                 layout: port.layout,
+                projection_mode: port.projection_mode,
+                mapping: port.mapping,
             });
         }
         if !layouts.is_empty() {
@@ -668,12 +679,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn launch_selection_preserves_projection_behavior() {
+        let descriptor = EmulatorDescriptor {
+            id: "test".to_owned(),
+            groups: vec![PortGroupDescriptor {
+                name: "controller".to_owned(),
+                connected: 1,
+                ports: vec![PortDescriptor {
+                    index: 0,
+                    layouts: vec!["SWITCH_PRO_CONTROLLER".to_owned()],
+                    selected_layout: "SWITCH_PRO_CONTROLLER".to_owned(),
+                    selected_device: "0".to_owned(),
+                }],
+            }],
+            options: Vec::new(),
+        };
+        let mapping = HashMap::from([("button.a".to_owned(), "button:east".to_owned())]);
+        let (_, gamepads) = validate_assignments(
+            &descriptor,
+            vec![LaunchGroupRequest {
+                name: "controller".to_owned(),
+                ports: vec![LaunchPortRequest {
+                    index: 0,
+                    layout: "SWITCH_PRO_CONTROLLER".to_owned(),
+                    device: "0".to_owned(),
+                    projection_mode: ProjectionMode::Name,
+                    mapping: mapping.clone(),
+                }],
+            }],
+        )
+        .unwrap();
+
+        let wire = serde_json::to_value(GamepadMapping::from(&gamepads[0])).unwrap();
+        assert_eq!(wire["projectionMode"], "name");
+        assert_eq!(wire["mapping"]["button.a"], "button:east");
+    }
+
+    #[test]
     fn disconnected_ports_do_not_consume_requested_input_sources() {
         let gamepads = [DefaultGamepad {
             selector: DeviceSelector::Keyboard,
             slot: 0,
             layout: "WIIU_DRC_CONTROLLER".to_owned(),
             force_mouse: true,
+            projection_mode: ProjectionMode::Position,
+            mapping: HashMap::new(),
         }];
         let mut source_slot = 0;
 
