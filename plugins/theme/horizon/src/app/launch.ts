@@ -1,0 +1,121 @@
+import { unwrap } from "solid-js/store";
+import type {
+  ConfigurationSelection,
+  ConsoleStorageKind,
+  ConsoleStorageVolume,
+  EmulatorConfiguration,
+  PackageConfiguration,
+  ScrapedPackage,
+} from "../../../../../js/snowglass";
+
+const WII = "NINTENDO_WII";
+const WII_U = "NINTENDO_WIIU";
+const GAMECUBE = "NINTENDO_GCN";
+const DREAMCAST = "SEGA_DC";
+const PSX = "SONY_PSX";
+const PS2 = "SONY_PS2";
+const WII_REMOTE = "WII_REMOTE_CONTROLLER";
+const volumeCache = new Map<string, Promise<ConsoleStorageVolume>>();
+
+export function friendly(value: string) {
+  return value
+    .replace(/^NINTENDO_/, "Nintendo ")
+    .replace(/^SONY_/, "Sony ")
+    .replace(/^MICROSOFT_/, "Microsoft ")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/Wiiu/g, "Wii U");
+}
+
+export function cloneGame(game: PackageConfiguration) {
+  return structuredClone(unwrap(game));
+}
+
+export function applyFrontendDefaults(game: PackageConfiguration) {
+  if (game.platform !== WII) return game;
+  for (const emulator of game.candidates) {
+    for (const group of emulator.groups) {
+      if (group.name === "gamecube") group.connected = 0;
+      if (group.name !== "wii") continue;
+      group.connected = Math.min(1, group.ports.length);
+      const first = group.ports[0];
+      if (first?.layouts.includes(WII_REMOTE)) first.selectedLayout = WII_REMOTE;
+    }
+  }
+  return game;
+}
+
+export function activeOptions(emulator: EmulatorConfiguration, platform: string) {
+  const activePorts = emulator.groups.flatMap((group) =>
+    group.ports.slice(0, group.connected).map((port) => `ports.${platform}.${group.name}.${port.index}.`),
+  );
+  return emulator.options.filter((option) =>
+    !option.path.startsWith("ports.") || activePorts.some((prefix) => option.path.startsWith(prefix)),
+  );
+}
+
+async function defaultVolume(kind: ConsoleStorageKind, platform: string) {
+  const key = `${kind}:${platform}`;
+  let pending = volumeCache.get(key);
+  if (!pending) {
+    pending = window.Snowglass.consolestorage.Storage.list({ kind }).then((items) =>
+      items
+        .filter((item) => item.platform === platform && item.label === "Default")
+        .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
+        ?? window.Snowglass.consolestorage.Storage.create(kind, platform, { label: "Default" }),
+    );
+    volumeCache.set(key, pending);
+    pending.catch(() => volumeCache.delete(key));
+  }
+  return pending;
+}
+
+export async function resolveGame(path: string, emulator?: string, signal?: AbortSignal) {
+  const packageValue = await window.Snowglass.scraping.Package.fromPath(path, { signal });
+  const draft = applyFrontendDefaults(await window.Snowglass.configuration.describe(packageValue, { emulator }));
+  return { packageValue, draft };
+}
+
+export async function createSelection(game: PackageConfiguration): Promise<ConfigurationSelection> {
+  const emulator = game.candidates.find((item) => item.id === game.selectedEmulator) || game.candidates[0];
+  if (!emulator) throw new Error(`No emulator is available for ${game.name}`);
+
+  const selection: ConfigurationSelection = {
+    emulator: emulator.id,
+    groups: emulator.groups.map((group) => ({
+      name: group.name,
+      ports: group.ports.slice(0, group.connected).map((port) => ({
+        index: port.index,
+        layout: port.selectedLayout,
+        device: game.platform === PS2 ? "K" : port.selectedDevice,
+      })),
+    })),
+    settings: Object.fromEntries(
+      activeOptions(emulator, game.platform)
+        .filter((option) => option.value != null)
+        .map((option) => [option.path, option.value]),
+    ),
+  };
+
+  if (game.platform === WII || game.platform === WII_U) {
+    const [save, nand] = await Promise.all([
+      defaultVolume("saveRepo", game.platform),
+      defaultVolume("nand", game.platform),
+    ]);
+    selection.storage = { [game.platform === WII_U ? "mlc" : "nand"]: [save.id, nand.id] };
+  } else {
+    const slots: Record<string, string> = {
+      [GAMECUBE]: "slotA",
+      [DREAMCAST]: "vmu",
+      [PSX]: "card1",
+      [PS2]: "mem1",
+    };
+    const slot = slots[game.platform];
+    if (slot) selection.storage = { [slot]: (await defaultVolume("memoryCard", game.platform)).id };
+  }
+  return selection;
+}
+
+export async function setupLaunch(packageValue: ScrapedPackage, game: PackageConfiguration) {
+  return window.Snowglass.configuration.setupLaunch(packageValue, await createSelection(game));
+}

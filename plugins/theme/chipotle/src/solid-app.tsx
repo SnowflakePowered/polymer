@@ -25,7 +25,7 @@ import type {
   LaunchRequest,
   PackageConfiguration,
   ScrapedPackage,
-} from "./emulator";
+} from "../../../../js/snowglass";
 import { InputRemapping } from "./input-remapping";
 
 type RecentGame = { path: string; name: string; platform: string; emulator: string; playedAt: number };

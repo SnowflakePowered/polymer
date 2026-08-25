@@ -582,6 +582,34 @@
       return this.children.at(-1) || null;
     }
 
+    insertAdjacentElement(position, element) {
+      if (!(element instanceof Element)) {
+        throw new TypeError("insertAdjacentElement expects an Element");
+      }
+      switch (String(position).toLowerCase()) {
+        case "beforebegin":
+          if (!this.parentNode) return null;
+          this.parentNode.insertBefore(element, this);
+          break;
+        case "afterbegin":
+          this.insertBefore(element, this.firstChild);
+          break;
+        case "beforeend":
+          this.appendChild(element);
+          break;
+        case "afterend":
+          if (!this.parentNode) return null;
+          this.parentNode.insertBefore(element, this.nextSibling);
+          break;
+        default:
+          throw new DOMException(
+            `Invalid position '${position}'`,
+            "SyntaxError",
+          );
+      }
+      return element;
+    }
+
     get dataset() {
       const element = this;
       return new Proxy({}, {

@@ -1,7 +1,7 @@
 import { render } from "solid-js/web";
 import { EnvironmentProvider } from "@ark-ui/solid";
 import { ShellRouter } from "./solid-app";
-import "./emulator";
+import "../../../../js/snowglass";
 import "./shell.css";
 
 const root = document.getElementById("root");

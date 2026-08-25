@@ -1,0 +1,5 @@
+.horizon-settings-section { min-width: 18rem; padding: 1.2rem; border: 1px solid #383838; border-radius: 0.4rem; background: #151515; }
+.horizon-settings-kicker { margin: 0 0 0.2rem; color: #e60012; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
+.horizon-settings-section h2 { margin: 0 0 1rem; font-size: 1.75rem; }
+.horizon-settings-trigger { display: flex; width: 100%; align-items: center; justify-content: space-between; margin-top: 1.25rem; padding: 0.8rem 0; border: 0; border-top: 1px solid #444; border-bottom: 1px solid #444; color: white; background: transparent; text-align: left; }
+.horizon-settings-list { display: flex; flex-direction: column; gap: 0.9rem; padding: 1rem 0; }

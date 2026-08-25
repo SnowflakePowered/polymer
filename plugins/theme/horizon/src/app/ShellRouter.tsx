@@ -1,0 +1,30 @@
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
+import { ShellProvider } from "./ShellProvider";
+import { LibraryPage } from "../features/library/LibraryPage";
+import { GameDetailsPage } from "../features/details/GameDetailsPage";
+import { GameLayout } from "../features/game/GameLayout";
+import { LaunchingPage } from "../features/game/LaunchingPage";
+import { PlayPage } from "../features/game/PlayPage";
+import { ControllerRemapping } from "../features/game/ControllerRemapping";
+import "./ShellRouter.css";
+
+const history = createMemoryHistory();
+history.set({ value: "/", replace: true, scroll: false });
+
+function NotFound() {
+  history.set({ value: "/", replace: true, scroll: false });
+  return null;
+}
+
+export function ShellRouter() {
+  return <MemoryRouter history={history} root={(props) => <ShellProvider>{props.children}</ShellProvider>}>
+    <Route path="/" component={LibraryPage} />
+    <Route path="/details" component={GameDetailsPage} />
+    <Route path="/game" component={GameLayout}>
+      <Route path="/launching" component={LaunchingPage} />
+      <Route path="/play" component={PlayPage} />
+      <Route path="/remap" component={ControllerRemapping} />
+    </Route>
+    <Route path="*404" component={NotFound} />
+  </MemoryRouter>;
+}
