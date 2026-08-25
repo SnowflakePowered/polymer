@@ -325,11 +325,6 @@ fn device_tracking(device: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::
     ID3D12DeviceHook::with_state(device, |state| state.tracking.clone())
 }
 
-#[cfg(test)]
-pub(crate) fn list_tracking(list: *mut c_void) -> Option<Arc<snowglass_producer_d3d12::Tracking>> {
-    ID3D12GraphicsCommandListHook::with_state(list, |state| state.tracking.clone())
-}
-
 /// Resolves the tracking context associated with a D3D12 command queue's device.
 ///
 /// # Safety

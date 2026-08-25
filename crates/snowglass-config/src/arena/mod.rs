@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 
 /// An arena holding values that can be referenced by strongly typed handles.
 #[derive(Clone)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct Arena<T> {
     data: Vec<T>,
 }

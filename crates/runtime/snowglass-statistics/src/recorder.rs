@@ -114,15 +114,6 @@ impl RecorderHandle {
             .registry
             .retain_histograms(|key, _| !matches(key));
     }
-
-    #[cfg(test)]
-    pub(crate) fn metric_count(&self) -> usize {
-        let mut count = 0;
-        self.inner.registry.visit_counters(|_, _| count += 1);
-        self.inner.registry.visit_gauges(|_, _| count += 1);
-        self.inner.registry.visit_histograms(|_, _| count += 1);
-        count
-    }
 }
 
 pub fn install() -> Result<RecorderHandle, SetRecorderError<LiveRecorder>> {

@@ -1260,29 +1260,6 @@ macro_rules! chain_hooks {
             }
         }
 
-        #[cfg(test)]
-        impl<'a> [<$name:camel Context>]<'a> {
-            #[allow(dead_code)]
-            $visibility fn from_fields($($field: &'a $field_type),*) -> Self {
-                #[allow(unused_variables)]
-                unsafe fn unavailable(
-                    $($argument: $argument_type,)*
-                    _context: [<$name:camel Context>]<'_>,
-                ) -> $result {
-                    panic!("test hook context has no continuation")
-                }
-                const EMPTY: &[[<$name:camel Hook>]] = &[];
-                let terminal: &'static [<$name:camel Hook>] = &(unavailable as [<$name:camel Hook>]);
-                Self {
-                    hooks: EMPTY,
-                    cursor: 0,
-                    reverse: false,
-                    terminal,
-                    $($field,)*
-                }
-            }
-        }
-
         unsafe fn [<__chain_dispatch_ $name>](
             $($argument: $argument_type),*
         ) -> $result {

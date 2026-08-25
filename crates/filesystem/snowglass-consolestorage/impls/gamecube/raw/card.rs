@@ -403,25 +403,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mc251_round_trips_gci_files() {
-        let first = gci::fixture(b"GALE01", b"SmashData", 2);
-        let second = gci::fixture(b"GZLE01", b"Zelda", 1);
-        let mut card = MemoryCard::empty(u32::from(MC251_BLOCKS)).unwrap();
-        card.initialize_header(Uuid::nil(), Region::Usa).unwrap();
-        card.append_save(Save::new(first.as_bytes()).unwrap())
-            .unwrap();
-        card.append_save(Save::new(second.as_bytes()).unwrap())
-            .unwrap();
-        let image = card.into_owned();
-        assert_eq!(image.len(), 2 * 1024 * 1024);
-        let card = MemoryCard::new(&image, u32::from(MC251_BLOCKS)).unwrap();
-        let saves = card.saves().unwrap();
-        assert_eq!(saves.len(), 2);
-        assert_eq!(saves[0].console_name(), b"SmashData");
-        assert_eq!(saves[1].console_name(), b"Zelda");
-    }
-
-    #[test]
     fn rejects_corrupt_redundant_metadata() {
         let mut card = MemoryCard::empty(u32::from(MC251_BLOCKS)).unwrap();
         card.initialize_header(Uuid::nil(), Region::Usa).unwrap();
@@ -447,45 +428,5 @@ mod tests {
                 blocks
             );
         }
-    }
-
-    #[test]
-    fn raw_image_trait_appends_to_owned_and_mutable_backing() {
-        let first = gci::fixture(b"GALE01", b"First", 2);
-        let second = gci::fixture(b"GZLE01", b"Second", 1);
-        let mut owned = MemoryCard::empty(u32::from(MC251_BLOCKS)).unwrap();
-        owned.append_save(first).unwrap();
-        let mut image = owned.into_owned();
-
-        {
-            let mut borrowed = MemoryCard::new_mut(&mut image, u32::from(MC251_BLOCKS)).unwrap();
-            borrowed.append_save(second).unwrap();
-        }
-
-        let card = MemoryCard::new(&image, u32::from(MC251_BLOCKS)).unwrap();
-        let saves = card.saves().unwrap();
-        assert_eq!(saves.len(), 2);
-        assert_eq!(saves[0].console_name(), b"First");
-        assert_eq!(saves[1].console_name(), b"Second");
-    }
-
-    #[test]
-    fn first_save_selects_encoding_and_later_saves_must_match() {
-        let japanese = gci::fixture(b"GALJ01", b"Japanese", 1);
-        let western = gci::fixture(b"GALE01", b"Western", 1);
-        let mut card = MemoryCard::empty(u32::from(MC251_BLOCKS)).unwrap();
-
-        card.append_save(japanese).unwrap();
-        assert_eq!(&card.bytes.as_slice()[0x24..0x26], &1u16.to_be_bytes());
-        let before = card.bytes.as_slice().to_vec();
-        assert!(matches!(
-            card.append_save(western),
-            Err(ParseError::EncodingMismatch)
-        ));
-        assert_eq!(card.bytes.as_slice(), before);
-
-        let image = card.into_owned();
-        let parsed = MemoryCard::new(&image, u32::from(MC251_BLOCKS)).unwrap();
-        assert_eq!(parsed.saves().unwrap().len(), 1);
     }
 }

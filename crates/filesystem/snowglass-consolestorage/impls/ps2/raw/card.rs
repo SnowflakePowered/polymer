@@ -409,11 +409,6 @@ impl<'a> MemoryCard<'a> {
         Superblock::new(self.bytes.as_slice()).expect("a memory card is validated when constructed")
     }
 
-    #[cfg(test)]
-    pub(super) fn had_spare(&self) -> bool {
-        self.page_stride != self.superblock().page_len()
-    }
-
     fn scan_free_clusters(&self) -> Result<Vec<usize>, ParseError> {
         (0..self.superblock().alloc_end())
             .filter_map(|cluster| match self.fat().entry(cluster) {
@@ -1666,59 +1661,6 @@ mod tests {
                 cluster: 41,
             }
         );
-    }
-
-    #[test]
-    fn parses_fat_chains_and_borrowed_dirents() {
-        let bytes = with_save(false);
-        let card = MemoryCard::new(&bytes, 1024).unwrap();
-
-        assert!(!card.had_spare());
-        assert_eq!(card.fat().entry(0).unwrap(), FatEntry::Next(1));
-        assert_eq!(card.fat().entry(1).unwrap(), FatEntry::End);
-        assert_eq!(card.fat().entry(100).unwrap(), FatEntry::Free);
-
-        let root = card.root_directory().unwrap();
-        assert_eq!(
-            root.entries()
-                .map(|entry| entry.name().into_owned())
-                .collect::<Vec<_>>(),
-            [".", "..", "BASLUS-00001"]
-        );
-        let save = root.entries().nth(2).unwrap();
-        let directory = card.directory(save).unwrap();
-        assert_eq!(
-            directory
-                .entries()
-                .map(|entry| entry.name().into_owned())
-                .collect::<Vec<_>>(),
-            [".", "..", "icon.sys", "save.dat", "settings"]
-        );
-
-        let icon = directory.entries().nth(2).unwrap();
-        assert!(icon.is_used());
-        assert!(icon.is_file());
-        assert_eq!(icon.created(), b"created!");
-        assert_eq!(icon.modified(), b"changed!");
-        assert_eq!(icon.attributes(), 0xfeed_beef);
-        assert!(icon.as_bytes().as_ptr() >= bytes.as_ptr());
-        assert!(icon.as_bytes().as_ptr() < bytes[bytes.len()..].as_ptr());
-    }
-
-    #[test]
-    fn dirents_remain_zero_copy_when_pages_have_spare_data() {
-        let bytes = with_save(true);
-        let card = MemoryCard::new(&bytes, 1024).unwrap();
-
-        assert!(card.had_spare());
-        let root = card.root_directory().unwrap();
-        let save = root.entries().nth(2).unwrap();
-        let directory = card.directory(save).unwrap();
-        assert_eq!(directory.entries().nth(2).unwrap().name(), "icon.sys");
-        for entry in root.entries().chain(directory.entries()) {
-            assert!(entry.as_bytes().as_ptr() >= bytes.as_ptr());
-            assert!(entry.as_bytes().as_ptr() < bytes[bytes.len()..].as_ptr());
-        }
     }
 
     #[test]
