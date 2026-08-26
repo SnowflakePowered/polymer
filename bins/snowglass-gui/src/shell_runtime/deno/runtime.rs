@@ -320,8 +320,9 @@ fn configuration_defaults(
             .gamepads
             .iter()
             .map(|gamepad| snowglass_runtime::DefaultGamepad {
-                selector: gamepad.selector.clone(),
+                source: gamepad.source.clone(),
                 slot: gamepad.slot,
+                port: None,
                 layout: gamepad.layout.clone(),
                 force_mouse: gamepad.force_mouse,
                 projection_mode: snowglass_input::layout::ProjectionMode::Position,

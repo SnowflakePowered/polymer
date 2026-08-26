@@ -4,6 +4,10 @@
 type Configuration = {
     options(): {
         main: {
+            analytics: {
+                enabled: boolean,
+                permission_asked: boolean,
+            },
             core: {
                 gfx_backend: string,
                 gci_folder_a_path: string,
@@ -20,6 +24,13 @@ type Configuration = {
                 skip_n_kit_warning: boolean,
             },
         },
+        ports: {
+            NINTENDO_WII: {
+                wii: Record<string, {
+                    relative_input: boolean,
+                }>,
+            },
+        },
     },
 }
 
@@ -27,6 +38,14 @@ type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
 type Package = Readonly<{
     titleId: string | null,
+}>;
+
+type ControllerMapping = Readonly<{
+    group: string | null,
+    port: number | null,
+    layout: string,
+    mouse: boolean,
+    mapping: Readonly<Record<string, string>>,
 }>;
 
 type Filesystem = {
@@ -50,6 +69,7 @@ type SetupLaunchArgs = {
     console: string,
     package: Package,
     portAssignments: { [group: string]: string[] },
+    controllerMappings: readonly ControllerMapping[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -62,9 +82,36 @@ function basename(path: string): string {
     return name;
 }
 
+const DISC_IMAGE_EXTENSIONS = [".iso", ".rvz", ".wbfs"];
+
+function isDiscImage(path: string): boolean {
+    const lowerPath = path.toLowerCase();
+    return DISC_IMAGE_EXTENSIONS.some(extension => lowerPath.endsWith(extension));
+}
+
+const WII_POINTER_AXES = [
+    ["pointer.x-", /^(?:left|right)_x$/],
+    ["pointer.x+", /^(?:left|right)_x$/],
+    ["pointer.y-", /^(?:left|right)_y$/],
+    ["pointer.y+", /^(?:left|right)_y$/],
+] as const;
+
+function hasAnalogPointer(mapping: ControllerMapping): boolean {
+    if (mapping.mouse) return false;
+    return WII_POINTER_AXES.every(([target, expectedAxis]) => {
+        const source = mapping.mapping[target]?.trim().toLowerCase();
+        if (!source?.startsWith("axis:")) return false;
+        return expectedAxis.test(source.slice("axis:".length).replace(/^[+-]/, ""));
+    });
+}
+
 export const setupLaunch = (args: SetupLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const isWii = args.console === "NINTENDO_WII";
+    // Wii WADs are installed into the selected NAND before setupLaunch and
+    // must continue to boot by title ID. Disc images instead need to remain
+    // visible as files and be passed to Dolphin with -e.
+    const launchesNandTitle = isWii && !isDiscImage(gameName);
 
     args.filesystem.mountTree("/Dolphin", args.resources.runtime, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
@@ -102,7 +149,8 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
             throw new TypeError("a Wii launch requires installed NAND storage");
         }
         args.filesystem.mountStorage("/User/Wii", args.storage.nand, { mode: "rwx" });
-    } else {
+    }
+    if (!launchesNandTitle) {
         args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
     }
     args.filesystem.setWorkingDirectory("/Dolphin");
@@ -114,6 +162,10 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     });
 
     const options = args.configuration.options().main;
+    // Resolve Dolphin's first-run telemetry choice in generated Dolphin.ini.
+    // Telemetry remains disabled and Dolphin does not open its consent dialog.
+    options.analytics.enabled = false;
+    options.analytics.permission_asked = true;
     options.core.gfx_backend = "D3D";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     options.core.slot_a = "MemoryCardFolder";
@@ -129,8 +181,16 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     // launches Dolphin unattended, so the warning must never block startup.
     options.interface.skip_n_kit_warning = true;
 
-    const argv = ["-u", args.filesystem.path("/User"), "-b"];
     if (isWii) {
+        const wiiOptions = args.configuration.options().ports.NINTENDO_WII.wii;
+        for (const mapping of args.controllerMappings) {
+            if (mapping.group !== "wii" || mapping.port === null) continue;
+            wiiOptions[mapping.port].relative_input = hasAnalogPointer(mapping);
+        }
+    }
+
+    const argv = ["-u", args.filesystem.path("/User"), "-b"];
+    if (launchesNandTitle) {
         const titleId = args.package.titleId?.replace(/^0x/i, "").toLowerCase();
         if (!titleId || !/^[0-9a-f]{16}$/.test(titleId)) {
             throw new TypeError("a Wii launch requires a 16-character installed title ID");

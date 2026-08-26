@@ -7,6 +7,7 @@ import { LaunchingPage } from "../features/game/LaunchingPage";
 import { PlayPage } from "../features/game/PlayPage";
 import { ControllerRemapping } from "../features/game/ControllerRemapping";
 import "./ShellRouter.css";
+import { InputProvider } from "./InputProvider";
 
 const history = createMemoryHistory();
 history.set({ value: "/", replace: true, scroll: false });
@@ -17,7 +18,7 @@ function NotFound() {
 }
 
 export function ShellRouter() {
-  return <MemoryRouter history={history} root={(props) => <ShellProvider>{props.children}</ShellProvider>}>
+  return <MemoryRouter history={history} root={(props) => <InputProvider><ShellProvider>{props.children}</ShellProvider></InputProvider>}>
     <Route path="/" component={LibraryPage} />
     <Route path="/details" component={GameDetailsPage} />
     <Route path="/game" component={GameLayout}>

@@ -86,15 +86,10 @@ impl LauncherState {
                 .iter()
                 .map(|pad| LauncherGamepad {
                     slot: pad.slot,
-                    selector: match &pad.selector {
-                        DeviceSelector::Keyboard => "K".to_owned(),
-                        DeviceSelector::Index(value) => value.to_string(),
-                        DeviceSelector::Name(value) | DeviceSelector::Guid(value) => value.clone(),
-                        DeviceSelector::GuidOrdinal {
-                            guid,
-                            duplicate_ordinal,
-                        } => format!("{guid}#{duplicate_ordinal}"),
-                        DeviceSelector::DeviceId(value) => value.clone(),
+                    selector: match &pad.source {
+                        Some(SourceSelector::KeyboardMouse) => "K".to_owned(),
+                        Some(SourceSelector::Device { device_id }) => device_id.clone(),
+                        None => String::new(),
                     },
                     layout: pad.layout.clone(),
                     force_mouse: pad.force_mouse,
@@ -142,7 +137,7 @@ impl LauncherState {
             return Ok((0..=last_slot)
                 .map(|slot| {
                     by_slot.remove(&slot).unwrap_or(GamepadArgument {
-                        selector: DeviceSelector::Name(format!("__snowglass_empty_slot_{slot}")),
+                        source: None,
                         slot,
                         layout: "XBOX_CONTROLLER".to_owned(),
                         force_mouse: false,
@@ -475,7 +470,7 @@ pub(crate) fn draw_launcher_window(
                         .map_or(0, |slot| slot + 1);
                     launcher.gamepads.push(LauncherGamepad {
                         slot,
-                        selector: "0".to_owned(),
+                        selector: "K".to_owned(),
                         layout: "XBOX_CONTROLLER".to_owned(),
                         force_mouse: false,
                     });
@@ -491,7 +486,7 @@ pub(crate) fn draw_launcher_window(
                 ui.horizontal(|ui| {
                     ui.label("Virtual index");
                     ui.add(egui::DragValue::new(&mut pad.slot).range(0..=u8::MAX as usize));
-                    ui.label("Real SDL index/name/GUID");
+                    ui.label("Source (K or sdl3:<id>)");
                     ui.text_edit_singleline(&mut pad.selector);
                     egui::ComboBox::from_id_salt(("launcher-layout", row))
                         .selected_text(&pad.layout)

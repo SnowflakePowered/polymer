@@ -1,6 +1,6 @@
 import type { JSX } from "solid-js";
 
-export type IconName = "user" | "friends" | "network" | "settings" | "back" | "play" | "info" | "close" | "gamepad" | "volume";
+export type IconName = "user" | "friends" | "network" | "settings" | "back" | "play" | "info" | "close" | "gamepad" | "keyboard" | "volume";
 
 const paths: Record<IconName, JSX.Element> = {
   user: <><path d="M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
@@ -12,6 +12,7 @@ const paths: Record<IconName, JSX.Element> = {
   info: <><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18Z" /><path d="M12 11v6M12 7h.01" /></>,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   gamepad: <><path d="M7 8h10a5 5 0 0 1 4.7 3.3l1 2.8a3.5 3.5 0 0 1-5.7 3.8L15 16H9l-2 1.9a3.5 3.5 0 0 1-5.7-3.8l1-2.8A5 5 0 0 1 7 8Z" /><path d="M7 11v4M5 13h4M17 12h.01M19 14h.01" /></>,
+  keyboard: <><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M6 13h.01M9 13h.01M12 13h.01M15 13h.01M18 13h.01M7 16h10" /></>,
   volume: <><path d="M4 9v6h4l5 4V5L8 9Z" /><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></>,
 };
 

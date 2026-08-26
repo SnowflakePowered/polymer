@@ -29,10 +29,10 @@ fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         options.gamepads,
         [GamepadArgument {
-            selector: DeviceSelector::Index(0),
+            source: Some(SourceSelector::KeyboardMouse),
             slot: 0,
             layout: "XBOX_CONTROLLER".to_owned(),
-            force_mouse: false,
+            force_mouse: true,
         }]
     );
     assert_eq!(options.gamecontroller_db, None);
@@ -65,7 +65,7 @@ fn cli_target_arguments_are_not_reparsed_or_requoted() -> Result<(), Box<dyn Err
         "--machine",
         "NINTENDO_WII",
         "--gamepad",
-        "0:0:WII_REMOTE_CONTROLLER",
+        "K:0:WII_REMOTE_CONTROLLER",
         "--",
         r#"..\Dolphin-ARM64\Dolphin.exe"#,
         "-v",
@@ -110,7 +110,7 @@ fn launcher_supports_sparse_virtual_slot_indices() -> Result<(), Box<dyn Error>>
     let pads = launcher.gamepad_arguments()?;
     assert_eq!(pads.len(), 4);
     assert_eq!(pads[3].slot, 3);
-    assert!(matches!(pads[0].selector, DeviceSelector::Name(_)));
+    assert_eq!(pads[0].source, None);
     Ok(())
 }
 
@@ -131,9 +131,9 @@ fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
         "--machine",
         "NINTENDO_NSW",
         "--gamepad",
-        "Nintendo Switch Controller:0:SWITCH_PRO_CONTROLLER",
+        "sdl3:switch-controller:0:SWITCH_PRO_CONTROLLER",
         "--gamepad",
-        "030000005e0400008e02000000000000:1:XBOX_CONTROLLER",
+        "sdl3:xbox-controller:1:XBOX_CONTROLLER",
         "--gamecontroller-db",
         "controllers.txt",
         "--",
@@ -142,15 +142,17 @@ fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         options.gamepads[0],
         GamepadArgument {
-            selector: DeviceSelector::Name("Nintendo Switch Controller".to_owned()),
+            source: Some(SourceSelector::Device {
+                device_id: "sdl3:switch-controller".to_owned(),
+            }),
             slot: 0,
             layout: "SWITCH_PRO_CONTROLLER".to_owned(),
             force_mouse: false,
         }
     );
     assert!(matches!(
-        options.gamepads[1].selector,
-        DeviceSelector::Guid(_)
+        options.gamepads[1].source,
+        Some(SourceSelector::Device { .. })
     ));
     assert_eq!(
         options.gamecontroller_db,
@@ -159,15 +161,20 @@ fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
     assert_eq!(options.machine, "NINTENDO_NSW");
     // A port only exists against a machine, so naming pads without one is an
     // error rather than a topology nothing could check.
-    assert!(arguments(&["--gamepad", "0:0:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--gamepad", "K:0:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
     // With no pads at all the default machine comes with the default pad.
     assert_eq!(arguments(&["--", "game.exe"])?.machine, "MICROSOFT_XBOX");
-    let forced_mouse = "0+M:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
-    assert_eq!(forced_mouse.selector, DeviceSelector::Index(0));
+    let forced_mouse = "sdl3:test+M:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
+    assert_eq!(
+        forced_mouse.source,
+        Some(SourceSelector::Device {
+            device_id: "sdl3:test".to_owned(),
+        })
+    );
     assert!(forced_mouse.force_mouse);
     assert_eq!(forced_mouse.layout, "WII_REMOTE_CONTROLLER");
     let keyboard = "K:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
-    assert_eq!(keyboard.selector, DeviceSelector::Keyboard);
+    assert_eq!(keyboard.source, Some(SourceSelector::KeyboardMouse));
     assert!(keyboard.force_mouse);
     // Slots must still be dense from zero.
     assert!(
@@ -175,7 +182,7 @@ fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
             "--machine",
             "MICROSOFT_XBOX",
             "--gamepad",
-            "0:1:XBOX_CONTROLLER",
+            "sdl3:pad0:1:XBOX_CONTROLLER",
             "--",
             "game.exe"
         ])
@@ -186,15 +193,15 @@ fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
             "--machine",
             "MICROSOFT_XBOX",
             "--gamepad",
-            "0:0:XBOX_CONTROLLER",
+            "sdl3:pad0:0:XBOX_CONTROLLER",
             "--gamepad",
-            "1:1:XBOX_CONTROLLER",
+            "sdl3:pad1:1:XBOX_CONTROLLER",
             "--gamepad",
-            "2:2:XBOX_CONTROLLER",
+            "sdl3:pad2:2:XBOX_CONTROLLER",
             "--gamepad",
-            "3:3:XBOX_CONTROLLER",
+            "sdl3:pad3:3:XBOX_CONTROLLER",
             "--gamepad",
-            "4:4:XBOX_CONTROLLER",
+            "sdl3:pad4:4:XBOX_CONTROLLER",
             "--",
             "game.exe",
         ])

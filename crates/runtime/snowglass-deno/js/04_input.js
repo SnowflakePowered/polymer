@@ -1,120 +1,192 @@
 import { op_input_configure } from "ext:core/ops";
 
-// Promise-based Snowglass input facade.
-export function createInput() {
-  const snowglassInput = new EventTarget();
-  let inputConfiguration = Object.freeze({ revision: 0, ports: Object.freeze([]) });
-  let inputLayouts = Object.freeze([]);
-  let inputControllers = Object.freeze([]);
-  let inputPriority = "ui";
-  let inputTimestamp = 0;
-  let nextInputRequest = 1;
-  const pendingInputRequests = new Map();
+const keyboardMouse = Object.freeze({
+  id: "keyboard-mouse", kind: "keyboardMouse", name: "Keyboard + mouse", connected: true,
+  assignedIndices: Object.freeze([]), buttons: Object.freeze([]), axes: Object.freeze([]),
+});
 
-  Object.defineProperties(snowglassInput, {
-    configuration: { get: () => inputConfiguration },
-    revision: { get: () => Number(inputConfiguration.revision) || 0 },
-    ports: { get: () => inputConfiguration.ports || Object.freeze([]) },
-    layouts: { get: () => inputLayouts },
-    controllers: { get: () => inputControllers },
-    priority: { get: () => inputPriority },
-    getGamepads: {
-      value: () => {
-        const devices = inputControllers.filter(
-          (device) => device && typeof device === "object",
-        );
-        const result = Array(
-          devices.reduce(
-            (length, device) => Math.max(length, Number(device.index) + 1),
-            0,
-          ),
-        ).fill(null);
-        for (const device of devices) {
-          const visible = (mapped) => inputPriority === "ui" || !mapped;
-          result[device.index] = Object.freeze({
-            index: device.index,
-            deviceId: device.deviceId,
-            id: `${device.name} (${device.guid})`,
-            connected: true,
-            mapping: "standard",
-            timestamp: inputTimestamp,
-            assignedPorts: Object.freeze([...(device.assignedPorts || [])]),
-            buttons: Object.freeze(
-              device.buttons.map((button) => {
-                const pressed = visible(button.mapped) && button.pressed;
-                return Object.freeze({
-                  pressed,
-                  touched: pressed,
-                  value: pressed ? 1 : 0,
-                });
-              }),
-            ),
-            axes: Object.freeze(
-              device.axes.map((axis) =>
-                visible(axis.mapped)
-                  ? Math.max(-1, Math.min(1, axis.value / 32767))
-                  : 0,
-              ),
-            ),
-            metadata: Object.freeze({
-              guid: device.guid,
-              vendor: device.vendor,
-              product: device.product,
-            }),
-          });
-        }
-        return Object.freeze(result);
-      },
-    },
-    getControllerLayout: {
-      value: (id) => inputLayouts.find((layout) => layout?.id === id) || null,
-    },
-    configure: {
-      value: (transaction) => {
-        if (!transaction || typeof transaction !== "object") {
-          return Promise.reject(new TypeError("input transaction must be an object"));
-        }
-        const id = nextInputRequest++;
-        const wire = {
-          ...transaction,
-          expectedRevision:
-            transaction.expectedRevision ?? inputConfiguration.revision ?? 0,
-        };
-        return new Promise((resolve, reject) => {
-          pendingInputRequests.set(id, { resolve, reject });
-          op_input_configure(id, wire);
-        });
-      },
-    },
-  });
+function sourceId(selector) {
+  if (selector?.kind === "keyboardMouse") return keyboardMouse.id;
+  if (selector?.kind === "device") return String(selector.deviceId || "");
+  return "";
+}
 
+function freezeSource(source, connected = true) {
   return Object.freeze({
-    snowglassInput,
-    setConfiguration(configuration, layouts) {
-      inputConfiguration = Object.freeze({ ...configuration });
-      inputLayouts = Object.freeze([...(layouts || [])]);
-      snowglassInput.dispatchEvent(
-        new CustomEvent("configurationchange", { detail: inputConfiguration }),
-      );
-    },
-    setState(controllers, priority) {
-      inputControllers = Object.freeze([...(controllers || [])]);
-      inputPriority = priority === "game" ? "game" : "ui";
-      inputTimestamp = performance.now();
-      snowglassInput.dispatchEvent(
-        new CustomEvent("inputstatechange", { detail: inputControllers }),
-      );
-    },
-    settleConfiguration(id, result) {
-      const pending = pendingInputRequests.get(Number(id));
-      if (!pending) return;
-      pendingInputRequests.delete(Number(id));
-      if (!result?.ok || !result.configuration) {
-        pending.reject(new Error(result?.error || "Input configuration failed"));
-        return;
+    ...source,
+    connected,
+    assignedIndices: Object.freeze([...(source.assignedIndices || [])]),
+    buttons: Object.freeze((source.buttons || []).map((button) => Object.freeze({ ...button }))),
+    axes: Object.freeze((source.axes || []).map((axis) => Object.freeze({ ...axis }))),
+    mapped: source.mapped && typeof source.mapped === "object"
+      ? Object.freeze({ ...source.mapped })
+      : undefined,
+  });
+}
+
+function freezeConfiguration(configuration) {
+  return Object.freeze({
+    ...configuration,
+    ports: Object.freeze([...(configuration?.ports || [])].map((port) => Object.freeze({ ...port }))),
+    assignments: Object.freeze([...(configuration?.assignments || [])].map((assignment) =>
+      Object.freeze({ ...assignment, source: Object.freeze({ ...assignment.source }) })
+    )),
+  });
+}
+
+class InputClient extends EventTarget {
+  #configuration = freezeConfiguration({ revision: 0, ports: [], assignments: [] });
+  #layouts = Object.freeze([]);
+  #sources = Object.freeze([keyboardMouse]);
+  #priority = "ui";
+  #nextRequest = 1;
+  #pendingRequests = new Map();
+  #knownSources = new Map([[keyboardMouse.id, keyboardMouse]]);
+
+  get configuration() { return this.#configuration; }
+  get revision() { return Number(this.#configuration.revision) || 0; }
+  get ports() { return this.#configuration.ports; }
+  get assignments() { return this.#configuration.assignments; }
+  get layouts() { return this.#layouts; }
+  get sources() { return this.#sources; }
+  get controllers() { return this.#connectedControllers(); }
+  get priority() { return this.#priority; }
+
+  getControllers() { return this.#connectedControllers(); }
+
+  getGamepads() {
+    return Object.freeze(this.#connectedControllers().map((source) => Object.freeze({
+      id: source.name,
+      sourceId: source.id,
+      connected: true,
+      mapping: "standard",
+      buttons: Object.freeze(source.buttons.map((button) => Object.freeze({
+        pressed: Boolean(button.pressed),
+        touched: Boolean(button.pressed),
+        value: button.pressed ? 1 : 0,
+      }))),
+      axes: Object.freeze(source.axes.map((axis) =>
+        Math.max(-1, Math.min(1, Number(axis.value) / 32767))
+      )),
+    })));
+  }
+
+  getControllerLayout(id) {
+    return this.#layouts.find((layout) => layout?.id === id) || null;
+  }
+
+  assign(assignments) {
+    return this.configure({
+      operations: [{
+        type: "replaceAssignments",
+        assignments: assignments.map((assignment) => ({
+          index: Number(assignment.index),
+          source: assignment.sourceId === keyboardMouse.id
+            ? { kind: "keyboardMouse" }
+            : { kind: "device", deviceId: String(assignment.sourceId) },
+        })),
+      }],
+    });
+  }
+
+  configure(transaction) {
+    if (!transaction || typeof transaction !== "object") {
+      return Promise.reject(new TypeError("input transaction must be an object"));
+    }
+    const id = this.#nextRequest++;
+    const wire = { ...transaction, expectedRevision: transaction.expectedRevision ?? this.revision };
+    return new Promise((resolve, reject) => {
+      this.#pendingRequests.set(id, { resolve, reject });
+      op_input_configure(id, wire);
+    });
+  }
+
+  publishConfiguration(configuration, layouts) {
+    const previousAssignments = JSON.stringify(this.assignments);
+    this.#configuration = freezeConfiguration(configuration);
+    this.#layouts = Object.freeze([...(layouts || [])]);
+    this.#refreshSources();
+    this.dispatchEvent(new CustomEvent("configurationchange", { detail: this.#configuration }));
+    if (previousAssignments !== JSON.stringify(this.assignments)) {
+      this.dispatchEvent(new CustomEvent("assignmentchange", { detail: this.assignments }));
+    }
+  }
+
+  publishState(sources, priority, controls) {
+    const incoming = new Map();
+    for (const value of sources || []) {
+      const source = freezeSource(value, true);
+      incoming.set(source.id, source);
+      const previous = this.#knownSources.get(source.id);
+      this.#knownSources.set(source.id, source);
+      if (!previous?.connected) {
+        this.dispatchEvent(new CustomEvent("controllerconnected", { detail: source }));
       }
-      inputConfiguration = Object.freeze({ ...result.configuration });
-      pending.resolve(inputConfiguration);
-    },
+    }
+    for (const [id, previous] of this.#knownSources) {
+      if (id === keyboardMouse.id || incoming.has(id) || !previous.connected) continue;
+      const disconnected = freezeSource({ ...previous, buttons: [], axes: [] }, false);
+      this.#knownSources.set(id, disconnected);
+      this.dispatchEvent(new CustomEvent("controllerdisconnected", { detail: disconnected }));
+    }
+    this.#refreshSources();
+    const nextPriority = priority === "game" ? "game" : "ui";
+    if (nextPriority !== this.#priority) {
+      this.#priority = nextPriority;
+      this.dispatchEvent(new CustomEvent("prioritychange", { detail: this.#priority }));
+    }
+    this.dispatchEvent(new CustomEvent("inputstatechange", { detail: this.#sources }));
+    for (const control of controls || []) {
+      this.dispatchEvent(new CustomEvent("controllerinput", {
+        detail: Object.freeze({ ...control }),
+      }));
+    }
+  }
+
+  settleConfiguration(id, result) {
+    const pending = this.#pendingRequests.get(Number(id));
+    if (!pending) return;
+    this.#pendingRequests.delete(Number(id));
+    if (!result?.ok || !result.configuration) {
+      pending.reject(new Error(result?.error || "Input configuration failed"));
+      return;
+    }
+    this.#configuration = freezeConfiguration(result.configuration);
+    pending.resolve(this.#configuration);
+  }
+
+  #connectedControllers() {
+    return this.#sources.filter((source) => source.kind === "controller" && source.connected);
+  }
+
+  #keyboardSnapshot() {
+    return freezeSource({
+      ...keyboardMouse,
+      assignedIndices: this.assignments
+        .filter((assignment) => sourceId(assignment.source) === keyboardMouse.id)
+        .map((assignment) => Number(assignment.index)),
+    });
+  }
+
+  #refreshSources() {
+    const assignedIds = new Set(this.assignments.map((assignment) => sourceId(assignment.source)));
+    const keyboard = this.#keyboardSnapshot();
+    this.#knownSources.set(keyboardMouse.id, keyboard);
+    this.#sources = Object.freeze([
+      keyboard,
+      ...[...this.#knownSources.values()].filter((source) =>
+        source.id !== keyboardMouse.id && (source.connected || assignedIds.has(source.id))
+      ),
+    ]);
+  }
+}
+
+export function createInput() {
+  const client = new InputClient();
+  return Object.freeze({
+    snowglassInput: client,
+    setConfiguration: (configuration, layouts) => client.publishConfiguration(configuration, layouts),
+    setState: (sources, priority, controls) => client.publishState(sources, priority, controls),
+    settleConfiguration: (id, result) => client.settleConfiguration(id, result),
   });
 }

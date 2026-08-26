@@ -4,7 +4,7 @@
 use crate::gamepad::LatestGamepadMailbox;
 use crate::{
     gamepad::{GamepadButton, GamepadSlot, GamepadState, GamepadUpdate, GamepadUpdateSink},
-    hub::{AxisTransform, PointerAxis, SourceControl},
+    hub::{AxisTransform, PointerAxis, SourceControl, SourceSelector},
     layout::{
         EMBEDDED_DEFAULT_KEYBOARD_MAPPING, EMBEDDED_GAMECONTROLLER_DB, InputBinding, InputLayout,
         KeyboardMapping, ProjectionMode, RemapDatabase, RemapProfile, SdlAxis, SdlButton,
@@ -15,7 +15,10 @@ use consolespec::input::{
     Alignment, AnalogClass, Axis, BindingKey, ButtonElement, Component, Sign,
 };
 use parking_lot::Mutex;
-use sdl3::event::Event;
+use sdl3::{
+    EventSubsystem,
+    event::{Event, EventType},
+};
 // SDL's own axis enum names the six gamepad axes; consolespec's `Axis` names a
 // degree of freedom of a cluster. Both appear here, so SDL's is qualified.
 use sdl3::gamepad::{Axis as SdlNativeAxis, Button, ButtonLabel, Gamepad};
@@ -24,6 +27,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -33,9 +37,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod source_registry;
+use source_registry::{DeviceFingerprint, DeviceIdentity, SourceRegistry};
+
 /// Keep keyboard, mouse, and physical-pad latency below a display frame without
 /// monopolizing a CPU core when no SDL events are waiting.
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+/// SDL can enqueue a large initial burst while a newly opened HID device
+/// publishes its first axis and sensor samples. Those values are polled from
+/// the gamepad handle below, so event delivery is redundant. Keep a defensive
+/// bound for the touchpad and topology events that remain enabled so commands
+/// and state publication cannot be starved by an event-producing device.
+const MAX_EVENTS_PER_POLL: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
@@ -47,12 +61,7 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            slots: vec![SlotConfig {
-                selector: DeviceSelector::Index(0),
-                layout_id: "XBOX_CONTROLLER".to_owned(),
-                force_mouse: false,
-                projection_mode: ProjectionMode::Position,
-            }],
+            slots: Vec::new(),
             gamecontroller_database: None,
             keyboard_mapping_directory: None,
         }
@@ -61,29 +70,12 @@ impl Default for ProviderConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotConfig {
-    pub selector: DeviceSelector,
+    /// The durable physical source assigned to this virtual controller.
+    /// `None` leaves the virtual controller disconnected.
+    pub source: Option<SourceSelector>,
     pub layout_id: String,
     pub force_mouse: bool,
     pub projection_mode: ProjectionMode,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DeviceSelector {
-    /// Keyboard input tracked by the viewer. Mouse pointing is implied.
-    Keyboard,
-    /// Index in SDL's current ordered gamepad enumeration.
-    Index(usize),
-    /// Exact SDL gamepad name.
-    Name(String),
-    /// Lowercase or uppercase SDL GUID string.
-    Guid(String),
-    /// A specific duplicate among devices with the same SDL GUID.
-    GuidOrdinal {
-        guid: String,
-        duplicate_ordinal: u16,
-    },
-    /// Connection-scoped SDL identity (`sdl:<instance id>`).
-    DeviceId(String),
 }
 
 /// Owns the SDL thread. Dropping it neutralizes connected slots and shuts SDL down.
@@ -99,8 +91,7 @@ pub struct Sdl3Provider {
 
 #[derive(Clone, Debug)]
 pub struct PhysicalGamepadState {
-    /// Connection-scoped SDL identity. Persistent selection should use the
-    /// fingerprint fields instead.
+    /// Provider-owned identity retained when this physical device reconnects.
     pub device_id: String,
     pub name: String,
     pub guid: String,
@@ -118,7 +109,6 @@ pub struct PhysicalGamepadState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhysicalDeviceState {
     pub device_id: String,
-    pub enumeration_index: usize,
     pub name: String,
     pub guid: String,
     pub vendor: Option<u16>,
@@ -173,8 +163,8 @@ impl Sdl3Provider {
 
     /// Replaces virtual-port routing without restarting SDL enumeration.
     ///
-    /// Existing virtual slots are disconnected before the replacement is
-    /// published. Physical device snapshots and SDL handles remain live.
+    /// Only slots whose routing actually changed are disconnected before their
+    /// replacement is published. Unchanged SDL handles remain live.
     pub fn reconfigure_slots(&self, slots: Vec<SlotConfig>) -> Result<(), String> {
         if slots.len() > u8::MAX as usize + 1 {
             return Err("gamepad slot count must be 0..=256".to_owned());
@@ -354,7 +344,7 @@ fn validate_config(config: &ProviderConfig) -> Result<(), String> {
 }
 
 struct Pad {
-    gamepad: Gamepad,
+    gamepad: Rc<Gamepad>,
     identity: DeviceIdentity,
     layout_id: String,
     projection_mode: ProjectionMode,
@@ -365,17 +355,9 @@ struct Pad {
 }
 
 struct ObservedPad {
-    gamepad: Gamepad,
+    gamepad: Rc<Gamepad>,
     identity: DeviceIdentity,
     name: String,
-}
-
-#[derive(Clone, Debug)]
-struct DeviceIdentity {
-    instance: String,
-    guid: String,
-    vendor: Option<u16>,
-    product: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -674,9 +656,11 @@ fn run(
         .collect::<Vec<Option<Pad>>>();
     let mut sequences = vec![0u32; config.slots.len()];
     let mut last_published = vec![None::<GamepadState>; config.slots.len()];
+    let mut last_connected = vec![false; config.slots.len()];
     let mut next_topology_refresh = Instant::now();
     let mut next_device_snapshot = Instant::now();
     let mut observed = Vec::<ObservedPad>::new();
+    let mut source_registry = SourceRegistry::default();
     let mut interactive_remappings =
         vec![HashMap::<BindingKey, InputBinding>::new(); config.slots.len()];
     let mut interactive_mouse_mappings =
@@ -700,7 +684,7 @@ fn run(
     let mut enabled = initially_enabled;
 
     while !stop.load(Ordering::Acquire) {
-        for event in event_pump.poll_iter() {
+        for event in event_pump.poll_iter().take(MAX_EVENTS_PER_POLL) {
             update_touchpad_pointer(&mut pads, event);
         }
         subsystem.update();
@@ -736,20 +720,34 @@ fn run(
                         }
                     };
 
-                    for slot in 0..pads.len() {
-                        sequences[slot] = sequences[slot].wrapping_add(1);
-                        updates.publish(GamepadUpdate {
-                            slot: GamepadSlot::new(slot as u8).unwrap(),
-                            sequence: sequences[slot],
-                            connected: false,
-                            state: GamepadState::default(),
-                        });
-                    }
                     let slot_count = slots.len();
-                    config.slots = slots;
-                    pads = (0..slot_count).map(|_| None).collect();
-                    sequences.resize(slot_count, 0);
-                    last_published = vec![None; slot_count];
+                    let old_slots = std::mem::replace(&mut config.slots, slots);
+                    let mut next_pads = (0..slot_count).map(|_| None).collect::<Vec<_>>();
+                    let mut next_sequences = vec![0; slot_count];
+                    let mut next_published = vec![None; slot_count];
+                    let mut next_connected = vec![false; slot_count];
+
+                    for slot in 0..old_slots.len() {
+                        let unchanged = config.slots.get(slot) == old_slots.get(slot);
+                        if unchanged {
+                            next_pads[slot] = pads[slot].take();
+                            next_sequences[slot] = sequences[slot];
+                            next_published[slot] = last_published[slot];
+                            next_connected[slot] = last_connected[slot];
+                        } else if last_connected[slot] {
+                            sequences[slot] = sequences[slot].wrapping_add(1);
+                            updates.publish(GamepadUpdate {
+                                slot: GamepadSlot::new(slot as u8).unwrap(),
+                                sequence: sequences[slot],
+                                connected: false,
+                                state: GamepadState::default(),
+                            });
+                        }
+                    }
+                    pads = next_pads;
+                    sequences = next_sequences;
+                    last_published = next_published;
+                    last_connected = next_connected;
                     interactive_remappings = vec![HashMap::new(); slot_count];
                     interactive_mouse_mappings = vec![HashMap::new(); slot_count];
                     keyboard_mappings = new_keyboard_mappings;
@@ -844,22 +842,18 @@ fn run(
         }
 
         if Instant::now() >= next_topology_refresh {
-            refresh_observed_devices(&subsystem, &mut observed);
+            refresh_observed_devices(&subsystem, &mut observed, &mut source_registry);
             refresh_devices(
-                &subsystem,
                 &mut pads,
                 &config.slots,
                 &remappings,
                 &interactive_remappings,
+                &observed,
             );
             next_topology_refresh = Instant::now() + Duration::from_millis(100);
         }
         if Instant::now() >= next_device_snapshot {
-            *devices.lock() = observed
-                .iter()
-                .enumerate()
-                .map(|(enumeration_index, pad)| physical_device_state(enumeration_index, pad))
-                .collect();
+            *devices.lock() = observed.iter().map(physical_device_state).collect();
             next_device_snapshot = Instant::now() + Duration::from_millis(8);
         }
 
@@ -867,6 +861,7 @@ fn run(
         let pointer = *pointer.lock();
         let now = Instant::now();
         for (slot, pad) in pads.iter_mut().enumerate() {
+            let connected = keyboard_mappings[slot].is_some() || pad.is_some();
             let mut state = if let Some(mapping) = &keyboard_mappings[slot] {
                 mapping.state(&pressed_keys)
             } else if let Some(pad) = pad {
@@ -877,8 +872,10 @@ fn run(
                 snapshots[slot] = None;
                 GamepadState::default()
             };
-            state.pointer = if matches!(config.slots[slot].selector, DeviceSelector::Keyboard)
-                || config.slots[slot].force_mouse
+            state.pointer = if matches!(
+                config.slots[slot].source,
+                Some(SourceSelector::KeyboardMouse)
+            ) || config.slots[slot].force_mouse
             {
                 pointer.position.unwrap_or_default()
             } else if let Some(pad) = pad {
@@ -908,13 +905,14 @@ fn run(
             if !enabled {
                 state = GamepadState::default();
             }
-            if last_published[slot] != Some(state) {
+            if last_connected[slot] != connected || last_published[slot] != Some(state) {
                 sequences[slot] = sequences[slot].wrapping_add(1);
                 last_published[slot] = Some(state);
+                last_connected[slot] = connected;
                 updates.publish(GamepadUpdate {
                     slot: GamepadSlot::new(slot as u8).unwrap(),
                     sequence: sequences[slot],
-                    connected: true,
+                    connected,
                     state,
                 });
             }
@@ -954,6 +952,18 @@ fn initialize(config: &ProviderConfig) -> Result<Initialized, String> {
     let subsystem = sdl
         .gamepad()
         .map_err(|error| format!("failed to initialize SDL3 gamepads: {error}"))?;
+    for event_type in [
+        EventType::JoyAxisMotion,
+        EventType::JoyHatMotion,
+        EventType::JoyButtonDown,
+        EventType::JoyButtonUp,
+        EventType::ControllerAxisMotion,
+        EventType::ControllerButtonDown,
+        EventType::ControllerButtonUp,
+        EventType::ControllerSensorUpdated,
+    ] {
+        EventSubsystem::set_event_enabled(event_type, false);
+    }
     if let Some(path) = &config.gamecontroller_database {
         subsystem
             .load_mappings(path)
@@ -969,10 +979,15 @@ fn initialize(config: &ProviderConfig) -> Result<Initialized, String> {
     Ok((sdl, subsystem, event_pump, remappings))
 }
 
-fn refresh_observed_devices(subsystem: &sdl3::GamepadSubsystem, observed: &mut Vec<ObservedPad>) {
+fn refresh_observed_devices(
+    subsystem: &sdl3::GamepadSubsystem,
+    observed: &mut Vec<ObservedPad>,
+    registry: &mut SourceRegistry,
+) {
     let Ok(ids) = subsystem.gamepads() else {
         return;
     };
+    registry.observe_connections(&ids.iter().map(|id| id.0).collect());
     let mut previous = std::mem::take(observed);
     for id in ids {
         if let Some(index) = previous
@@ -982,20 +997,31 @@ fn refresh_observed_devices(subsystem: &sdl3::GamepadSubsystem, observed: &mut V
             observed.push(previous.remove(index));
             continue;
         }
-        let identity = DeviceIdentity {
-            instance: format!("sdl:{}", id.0),
-            guid: subsystem.guid_for_id(id).to_string().to_ascii_lowercase(),
-            vendor: subsystem.vendor_for_id(id),
-            product: subsystem.product_for_id(id),
-        };
         match subsystem.open(id) {
-            Ok(gamepad) => observed.push(ObservedPad {
-                name: gamepad
+            Ok(gamepad) => {
+                let name = gamepad
                     .name()
-                    .unwrap_or_else(|| "Unknown gamepad".to_owned()),
-                gamepad,
-                identity,
-            }),
+                    .unwrap_or_else(|| "Unknown gamepad".to_owned());
+                let fingerprint = DeviceFingerprint {
+                    name: name.clone(),
+                    guid: subsystem.guid_for_id(id).to_string().to_ascii_lowercase(),
+                    vendor: subsystem.vendor_for_id(id),
+                    product: subsystem.product_for_id(id),
+                    serial: gamepad.serial_number(),
+                    path: gamepad.path(),
+                };
+                let identity = DeviceIdentity {
+                    source_id: registry.resolve(id.0, fingerprint.clone()),
+                    guid: fingerprint.guid,
+                    vendor: fingerprint.vendor,
+                    product: fingerprint.product,
+                };
+                observed.push(ObservedPad {
+                    name,
+                    gamepad: Rc::new(gamepad),
+                    identity,
+                });
+            }
             Err(error) => {
                 tracing::error!("snowglass: failed to observe SDL3 gamepad: {error}");
             }
@@ -1003,10 +1029,9 @@ fn refresh_observed_devices(subsystem: &sdl3::GamepadSubsystem, observed: &mut V
     }
 }
 
-fn physical_device_state(enumeration_index: usize, pad: &ObservedPad) -> PhysicalDeviceState {
+fn physical_device_state(pad: &ObservedPad) -> PhysicalDeviceState {
     PhysicalDeviceState {
-        device_id: pad.identity.instance.clone(),
-        enumeration_index,
+        device_id: pad.identity.source_id.clone(),
         name: pad.name.clone(),
         guid: pad.identity.guid.clone(),
         vendor: pad.identity.vendor,
@@ -1023,11 +1048,11 @@ fn physical_device_state(enumeration_index: usize, pad: &ObservedPad) -> Physica
 }
 
 fn refresh_devices(
-    subsystem: &sdl3::GamepadSubsystem,
     pads: &mut [Option<Pad>],
     slots: &[SlotConfig],
     remappings: &RemapDatabase,
     interactive_remappings: &[HashMap<BindingKey, InputBinding>],
+    observed: &[ObservedPad],
 ) {
     for entry in pads.iter_mut() {
         let disconnected = entry.as_ref().is_some_and(|pad| !pad.gamepad.connected());
@@ -1035,9 +1060,6 @@ fn refresh_devices(
             let _pad = entry.take().unwrap();
         }
     }
-    let Ok(ids) = subsystem.gamepads() else {
-        return;
-    };
     let mut used = pads
         .iter()
         .flatten()
@@ -1047,44 +1069,40 @@ fn refresh_devices(
         if pads[slot].is_some() {
             continue;
         }
-        let Some(id) = select_device(subsystem, &ids, &used, &slots[slot].selector) else {
+        let Some(id) = select_device(&used, slots[slot].source.as_ref(), observed) else {
             continue;
         };
-        let identity = DeviceIdentity {
-            instance: format!("sdl:{}", id.0),
-            guid: subsystem.guid_for_id(id).to_string().to_ascii_lowercase(),
-            vendor: subsystem.vendor_for_id(id),
-            product: subsystem.product_for_id(id),
+        let Some(observed_pad) = observed
+            .iter()
+            .find(|pad| pad.gamepad.id().is_ok_and(|current| current == id))
+        else {
+            continue;
         };
-        match subsystem.open(id) {
-            Ok(gamepad) => {
-                let has_touchpad = gamepad.touchpads_count() != 0;
-                let layout =
-                    InputLayout::get(&slots[slot].layout_id).expect("validated slot layout");
-                enable_layout_sensors(&gamepad, layout);
-                let mapping = compiled_with_overrides(
-                    &gamepad,
-                    &identity,
-                    layout,
-                    slots[slot].projection_mode,
-                    remappings,
-                    &interactive_remappings[slot],
-                );
-                let state = mapping.read(&gamepad);
-                pads[slot] = Some(Pad {
-                    gamepad,
-                    identity,
-                    layout_id: slots[slot].layout_id.clone(),
-                    projection_mode: slots[slot].projection_mode,
-                    mapping,
-                    last: state,
-                    has_touchpad,
-                    touchpad_pointer: None,
-                });
-                used.insert(id);
-            }
-            Err(error) => tracing::error!("snowglass: failed to open SDL3 gamepad: {error}"),
-        }
+        let gamepad = Rc::clone(&observed_pad.gamepad);
+        let identity = observed_pad.identity.clone();
+        let has_touchpad = gamepad.touchpads_count() != 0;
+        let layout = InputLayout::get(&slots[slot].layout_id).expect("validated slot layout");
+        enable_layout_sensors(&gamepad, layout);
+        let mapping = compiled_with_overrides(
+            &gamepad,
+            &identity,
+            layout,
+            slots[slot].projection_mode,
+            remappings,
+            &interactive_remappings[slot],
+        );
+        let state = mapping.read(&gamepad);
+        pads[slot] = Some(Pad {
+            gamepad,
+            identity,
+            layout_id: slots[slot].layout_id.clone(),
+            projection_mode: slots[slot].projection_mode,
+            mapping,
+            last: state,
+            has_touchpad,
+            touchpad_pointer: None,
+        });
+        used.insert(id);
     }
 }
 
@@ -1147,42 +1165,18 @@ fn normalized_pointer_axes(x: f64, y: f64) -> Option<[i16; 2]> {
 }
 
 fn select_device(
-    subsystem: &sdl3::GamepadSubsystem,
-    ids: &[sdl3::joystick::JoystickId],
     used: &std::collections::HashSet<sdl3::joystick::JoystickId>,
-    selector: &DeviceSelector,
+    source: Option<&SourceSelector>,
+    observed: &[ObservedPad],
 ) -> Option<sdl3::joystick::JoystickId> {
-    match selector {
-        DeviceSelector::Keyboard => None,
-        DeviceSelector::Index(index) => ids.get(*index).copied().filter(|id| !used.contains(id)),
-        DeviceSelector::Name(name) => ids.iter().copied().find(|id| {
-            !used.contains(id) && subsystem.name_for_id(*id).ok().as_deref() == Some(name)
+    match source {
+        Some(SourceSelector::Device { device_id }) => observed.iter().find_map(|pad| {
+            (pad.identity.source_id == *device_id)
+                .then(|| pad.gamepad.id().ok())
+                .flatten()
+                .filter(|id| !used.contains(id))
         }),
-        DeviceSelector::Guid(guid) => ids.iter().copied().find(|id| {
-            !used.contains(id)
-                && subsystem
-                    .guid_for_id(*id)
-                    .to_string()
-                    .eq_ignore_ascii_case(guid)
-        }),
-        DeviceSelector::GuidOrdinal {
-            guid,
-            duplicate_ordinal,
-        } => ids
-            .iter()
-            .copied()
-            .filter(|id| {
-                subsystem
-                    .guid_for_id(*id)
-                    .to_string()
-                    .eq_ignore_ascii_case(guid)
-            })
-            .nth(usize::from(*duplicate_ordinal))
-            .filter(|id| !used.contains(id)),
-        DeviceSelector::DeviceId(device_id) => ids
-            .iter()
-            .copied()
-            .find(|id| !used.contains(id) && format!("sdl:{}", id.0) == *device_id),
+        Some(SourceSelector::KeyboardMouse) | None => None,
     }
 }
 
@@ -1227,7 +1221,7 @@ fn compiled_with_overrides(
 
 fn physical_state(pad: &Pad, mapped: GamepadState) -> PhysicalGamepadState {
     PhysicalGamepadState {
-        device_id: pad.identity.instance.clone(),
+        device_id: pad.identity.source_id.clone(),
         name: pad
             .gamepad
             .name()
@@ -1737,7 +1731,7 @@ fn load_keyboard_mappings(
         .slots
         .iter()
         .map(|slot| {
-            if !matches!(slot.selector, DeviceSelector::Keyboard) {
+            if !matches!(slot.source, Some(SourceSelector::KeyboardMouse)) {
                 return Ok(None);
             }
             let layout = InputLayout::get(&slot.layout_id).expect("slot layout was validated");
@@ -1857,12 +1851,20 @@ mod tests {
         assert_eq!(element_axis_index(a5200, key!(button.0)), None);
     }
 
-    /// The pointer's raw axes are outside `SDL_GAMEPAD_AXIS_COUNT`, so they are
-    /// not one of the six a binding can drive.
+    /// The Wii pointer is projected onto the right stick, while the Nunchuk
+    /// keeps the left stick for its own analog control.
     #[test]
-    fn the_pointer_axes_are_not_gamepad_axes() {
+    fn wii_pointer_and_nunchuk_stick_use_separate_gamepad_axes() {
         let remote = InputLayout::get("WII_REMOTE_CONTROLLER").unwrap();
-        assert_eq!(element_axis_index(remote, key!(pointer.x+)), None);
+        assert_eq!(element_axis_index(remote, key!(pointer.x+)), Some(2));
+        assert_eq!(element_axis_index(remote, key!(pointer.y+)), Some(3));
+
+        let nunchuk = InputLayout::get("WII_REMOTE_NUNCHUCK_CONTROLLER").unwrap();
+        assert_eq!(
+            element_axis_index(nunchuk, key!(analog.stick.left.x+)),
+            Some(0)
+        );
+        assert_eq!(element_axis_index(nunchuk, key!(pointer.x+)), Some(2));
     }
 
     /// Physical and virtual now agree by construction: whatever the pad

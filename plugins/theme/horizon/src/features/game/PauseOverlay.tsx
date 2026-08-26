@@ -1,5 +1,5 @@
 import { Dialog, Popover } from "@ark-ui/solid";
-import { Show, createSignal } from "solid-js";
+import { Show, createEffect, createSignal } from "solid-js";
 import { useShell } from "../../app/ShellProvider";
 import { Icon } from "../../components/Icon";
 import { VolumeSlider } from "../../components/FormControls";
@@ -9,13 +9,27 @@ export function PauseOverlay() {
   const shell = useShell();
   const [confirmClose, setConfirmClose] = createSignal(false);
   const [audioOpen, setAudioOpen] = createSignal(false);
+  let panel: HTMLDivElement | undefined;
+  let audioPanel: HTMLDivElement | undefined;
   const resume = () => shell.setModel("pauseOpen", false);
   const setVolume = (value: number) => { shell.setModel("audio", "volume", value); shell.model.launch?.setVolume(value); };
+  createEffect(() => {
+    const open = shell.model.pauseOpen;
+    const confirming = confirmClose();
+    const audio = audioOpen();
+    if (!open) return;
+    requestAnimationFrame(() => {
+      const scope = audio ? audioPanel : panel;
+      const preferred = scope?.querySelector<HTMLElement>("[autofocus]")
+        || scope?.querySelector<HTMLElement>("button:not(:disabled), [tabindex]:not([tabindex='-1'])");
+      if (preferred && (confirming || audio || !scope?.contains(document.activeElement))) preferred.focus();
+    });
+  });
   return <Show when={shell.model.pauseOpen}>
     <Dialog.Root open onOpenChange={(details: any) => shell.setModel("pauseOpen", details.open)} modal={false} closeOnEscape={false} preventScroll={false}>
       <Dialog.Backdrop class="horizon-pause-backdrop" />
       <Dialog.Positioner class="horizon-pause-positioner">
-        <Dialog.Content class="horizon-pause-panel" onKeyDown={(event: KeyboardEvent) => {
+        <Dialog.Content ref={panel} class="horizon-pause-panel horizon-input-scope" onKeyDown={(event: KeyboardEvent) => {
         if (event.key !== "Escape") return;
         if (audioOpen()) { event.preventDefault(); event.stopPropagation(); setAudioOpen(false); }
         else if (confirmClose()) { event.preventDefault(); event.stopPropagation(); setConfirmClose(false); }
@@ -29,7 +43,7 @@ export function PauseOverlay() {
             <Show when={shell.model.surfaces.length > 1}><button type="button" onClick={() => shell.setModel("gamepadOpen", (open: boolean) => !open)}><Icon name="gamepad" /> {shell.model.gamepadOpen ? "Hide" : "Show"} gamepad display</button></Show>
             <Popover.Root open={audioOpen()} onOpenChange={(details: any) => setAudioOpen(details.open)} positioning={{ placement: "right" }}>
               <Popover.Trigger class="horizon-audio-trigger"><Icon name="volume" /> Audio</Popover.Trigger>
-              <Popover.Positioner class="horizon-audio-positioner"><Popover.Content class="horizon-audio-popover"><Popover.Arrow><Popover.ArrowTip /></Popover.Arrow><Popover.Title>Game audio</Popover.Title><VolumeSlider value={shell.model.audio.volume} onChange={setVolume} /><button type="button" onClick={() => { const muted = !shell.model.audio.muted; shell.setModel("audio", "muted", muted); shell.model.launch?.setMuted(muted); }}>{shell.model.audio.muted ? "Unmute" : "Mute"}</button></Popover.Content></Popover.Positioner>
+              <Popover.Positioner class="horizon-audio-positioner"><Popover.Content ref={audioPanel} class="horizon-audio-popover horizon-input-scope"><Popover.Arrow><Popover.ArrowTip /></Popover.Arrow><Popover.Title>Game audio</Popover.Title><VolumeSlider value={shell.model.audio.volume} onChange={setVolume} /><button type="button" autofocus onClick={() => { const muted = !shell.model.audio.muted; shell.setModel("audio", "muted", muted); shell.model.launch?.setMuted(muted); }}>{shell.model.audio.muted ? "Unmute" : "Mute"}</button></Popover.Content></Popover.Positioner>
             </Popover.Root>
             <button class="danger" type="button" onClick={() => setConfirmClose(true)}><Icon name="close" /> Close game</button>
           </div>

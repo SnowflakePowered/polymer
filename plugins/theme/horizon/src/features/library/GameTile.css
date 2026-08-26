@@ -2,5 +2,14 @@
 .horizon-game-tile:hover { filter: brightness(1.12); }
 .horizon-game-tile:focus { outline: none; }
 .horizon-game-tile.selected { z-index: 1; border-color: white; box-shadow: 0 0.45rem 1.15rem rgb(0 0 0 / 52%), inset 0 -5rem 5rem rgb(0 0 0 / 48%); }
+.horizon-game-tile[data-controller] { z-index: 1; border-color: var(--controller-color); box-shadow: 0 0.45rem 1.15rem rgb(0 0 0 / 52%), inset 0 -5rem 5rem rgb(0 0 0 / 48%); }
+.horizon-game-tile[data-controller="0"] { --controller-color: #37a8ff; }
+.horizon-game-tile[data-controller="1"] { --controller-color: #ef4b59; }
+.horizon-game-tile[data-controller="2"] { --controller-color: #f2c84b; }
+.horizon-game-tile[data-controller="3"] { --controller-color: #49c97b; }
+.horizon-game-tile[data-controller="4"] { --controller-color: #a873ef; }
+.horizon-game-tile[data-controller="5"] { --controller-color: #f08a4b; }
+.horizon-game-tile[data-controller="6"] { --controller-color: #55d0d0; }
+.horizon-game-tile[data-controller="7"] { --controller-color: #ef76b8; }
 .horizon-game-title { overflow: hidden; font-size: clamp(0.82rem, 1.2vw, 1.15rem); font-weight: 800; line-height: 1.05; text-overflow: ellipsis; }
 .horizon-game-tile small { overflow: hidden; color: rgb(255 255 255 / 72%); font-size: 0.65rem; text-overflow: ellipsis; white-space: nowrap; }

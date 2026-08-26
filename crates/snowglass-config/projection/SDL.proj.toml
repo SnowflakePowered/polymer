@@ -159,14 +159,24 @@
 "directional.right.w" = "analog.stick.right.x-"
 
 [WII_REMOTE_CONTROLLER]
-"button.0" = "button.x"
-"button.1" = "button.y"
+"button.0"     = "button.x"
+"button.1"     = "button.y"
+"button.guide" = "none"
+"pointer.x+"   = "analog.stick.right.x+"
+"pointer.x-"   = "analog.stick.right.x-"
+"pointer.y+"   = "analog.stick.right.y-"
+"pointer.y-"   = "analog.stick.right.y+"
 
 [WII_REMOTE_NUNCHUCK_CONTROLLER]
-"button.0" = "button.l"
-"button.1" = "button.r"
-"button.c" = "button.x"
-"button.z" = "button.y"
+"button.0"     = "button.l"
+"button.1"     = "button.r"
+"button.c"     = "button.x"
+"button.guide" = "none"
+"button.z"     = "button.y"
+"pointer.x+"   = "analog.stick.right.x+"
+"pointer.x-"   = "analog.stick.right.x-"
+"pointer.y+"   = "analog.stick.right.y-"
+"pointer.y-"   = "analog.stick.right.y+"
 
 [WS_LAYOUT]
 "button.0" = "button.x"

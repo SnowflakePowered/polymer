@@ -30,4 +30,5 @@ export type ShellModel = {
   selectedGame: string | null;
   gamepadOpen: boolean;
   pauseOpen: boolean;
+  controllerToast: { name: string; index: number } | null;
 };

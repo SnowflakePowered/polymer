@@ -38,7 +38,7 @@ function dispatch(event) {
       input.setConfiguration(event.detail.configuration, event.detail.layouts);
       break;
     case "inputStateChanged":
-      input.setState(event.detail.controllers, event.detail.priority);
+      input.setState(event.detail.sources, event.detail.priority, event.detail.controls);
       break;
     case "inputConfigurationSettled":
       input.settleConfiguration(event.detail.requestId, event.detail.result);
