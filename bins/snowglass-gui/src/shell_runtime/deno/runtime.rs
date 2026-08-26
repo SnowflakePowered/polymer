@@ -1,5 +1,4 @@
 use std::rc::Rc;
-use std::sync::OnceLock;
 use std::{collections::HashMap, sync::Arc};
 
 use blitz_dom::BaseDocument;
@@ -91,6 +90,7 @@ deno_core::extension!(
 
 pub struct Runtime {
     worker: snowglass_deno::Runtime,
+    inspector_address: std::net::SocketAddr,
     layout_cache: HashMap<usize, [f32; 4]>,
     layout_view_state: Option<(Option<usize>, u32, u32, u32)>,
 }
@@ -121,7 +121,7 @@ impl Runtime {
         // requires the embedder to choose one before fetch creates a client.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let document_url = ModuleSpecifier::parse(&source_name)?;
-        start_inspector_server()?;
+        let inspector_address = Self::start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
         let storage_dir = crate::theme::web_storage_dir();
         let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
@@ -178,6 +178,7 @@ impl Runtime {
         Ok((
             Self {
                 worker,
+                inspector_address,
                 layout_cache: HashMap::new(),
                 layout_view_state: None,
             },
@@ -289,6 +290,26 @@ impl Runtime {
                 .mutations,
         )
     }
+
+    pub(crate) const fn inspector_address(&self) -> std::net::SocketAddr {
+        self.inspector_address
+    }
+
+    fn start_inspector_server() -> Result<std::net::SocketAddr, Box<dyn std::error::Error>> {
+        let server = snowglass_deno::create_inspector_server(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            "snowglass",
+            snowglass_deno::InspectPublishUid {
+                console: false,
+                http: true,
+            },
+        )?;
+        tracing::info!(
+            "snowglass: shell DevTools targets: http://{}/json",
+            server.host
+        );
+        Ok(server.host)
+    }
 }
 
 fn configuration_defaults(
@@ -310,28 +331,5 @@ fn configuration_defaults(
         machine: viewer.machine.clone(),
         webrtc_targets: viewer.webrtc.clone(),
         webrtc_bind: viewer.bind_webrtc,
-    }
-}
-
-fn start_inspector_server() -> Result<(), Box<dyn std::error::Error>> {
-    static INSPECTOR: OnceLock<Result<std::net::SocketAddr, String>> = OnceLock::new();
-    match INSPECTOR.get_or_init(|| {
-        let server = snowglass_deno::create_inspector_server(
-            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-            "snowglass",
-            snowglass_deno::InspectPublishUid {
-                console: false,
-                http: true,
-            },
-        )
-        .map_err(|error| error.to_string())?;
-        tracing::info!(
-            "snowglass: shell DevTools targets: http://{}/json",
-            server.host
-        );
-        Ok(server.host)
-    }) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(std::io::Error::other(error.clone()).into()),
     }
 }

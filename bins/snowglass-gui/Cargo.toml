@@ -20,6 +20,7 @@ egui-winit = "0.29.1"
 kurbo = "0.13.1"
 cursor-icon = "1.2.0"
 keyboard-types = "0.7.0"
+futures-util = "0.3.32"
 parking_lot.workspace = true
 pollster = "0.4"
 peniko = "0.6.1"
@@ -83,9 +84,11 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] 
 rustls = { version = "0.23.40", default-features = false, features = ["aws_lc_rs"] }
 snowglass-deno = { path = "../../crates/runtime/snowglass-deno" }
 tokio = { version = "1.53.0", features = ["full"] }
+tokio-tungstenite = "0.29.0"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid = "1.24.1"
+webview2-com = "=0.38.2"
 
 [lints]
 workspace = true

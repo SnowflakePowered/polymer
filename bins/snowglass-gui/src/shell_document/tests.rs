@@ -530,6 +530,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                 let (_, arrivals) = channel();
                 let mut layer = ShellDocument {
                     document,
+                    dom_structure_revision: 1,
                     arrivals,
                     bands: vec![Scene::new()],
                     placements: Vec::new(),

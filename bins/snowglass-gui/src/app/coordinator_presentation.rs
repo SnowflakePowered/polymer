@@ -206,26 +206,23 @@ impl ShellCoordinator {
     }
 
     /// Re-lays out the shell document and moves the compositor to match.
-    ///
-    /// The chrome is uploaded band by band and the game views are placed
-    /// between them, so a document whose bezel sits over a fullscreen view
-    /// composites in the order the document painted it.
-    ///
-    /// Before a stream connects, chrome can be shown in temporary
-    /// DirectComposition surfaces. Once the opaque merged swapchain exists,
-    /// chrome goes inside it or it would be hidden.
     pub(super) fn refresh_shell(&mut self) {
         let entered = self.profile.enter();
-        self.refresh_shell_inner();
-        self.profile.record(TurnPhase::Shell, entered);
-    }
 
-    pub(super) fn refresh_shell_inner(&mut self) {
         self.game_host.clear_shell_refresh_request();
         let Some(frame) = self.shell_dom.produce_frame() else {
             return;
         };
+        if let Some((inspector, revision)) = self
+            .inspector
+            .as_ref()
+            .zip(self.shell_dom.inspector_structure_revision())
+        {
+            inspector.document_updated(revision);
+        }
         self.shell_compositor.submit(frame);
         self.draw_pending_chrome();
+
+        self.profile.record(TurnPhase::Shell, entered);
     }
 }

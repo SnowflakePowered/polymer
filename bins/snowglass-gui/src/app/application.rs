@@ -123,6 +123,33 @@ impl ShellApplication {
     pub(crate) fn window_manager_mut(&mut self) -> Option<&mut WindowManager> {
         self.state.as_mut().map(|state| &mut state.window)
     }
+
+    pub(crate) fn accept_inspector_window(
+        &mut self,
+        window: InspectorWindowBootstrap,
+        address: std::net::SocketAddr,
+    ) {
+        if let Some(state) = self.state.as_mut() {
+            state.accept_inspector_window(window, address);
+        }
+    }
+
+    pub(crate) fn inspector_window_id(&self) -> Option<winit::window::WindowId> {
+        self.state
+            .as_ref()
+            .and_then(|state| state.inspector.as_ref())
+            .map(InspectorWindow::id)
+    }
+
+    pub(crate) fn handle_inspector_window_event(&self, event: &winit::event::WindowEvent) {
+        if let Some(inspector) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.inspector.as_ref())
+        {
+            inspector.handle_window_event(event);
+        }
+    }
 }
 
 impl ShellApplication {
@@ -160,6 +187,10 @@ impl ShellApplication {
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
                 state.apply_webrtc_command(command)
             }
+            UserEvent::InspectorWindowRequested { .. } => {}
+            UserEvent::Inspector(command) => {
+                command.handle(&state.shell_dom);
+            }
         }
     }
 
@@ -186,6 +217,18 @@ impl ShellApplication {
         // editable keyboard controls.
         let keyboard_owned_by_game = matches!(&event, ShellWindowEvent::Keyboard { .. })
             && state.input.priority() == InputPriority::Game;
+        if let ShellWindowEvent::Keyboard {
+            physical_key: Some(code),
+            pressed: true,
+            repeat: false,
+            ..
+        } = &event
+            && code == "KeyI"
+            && state.input.dom_control_key()
+        {
+            state.open_inspector();
+            return false;
+        }
         let mut consumed = overlay_consumed && !keyboard_owned_by_game;
         let mut ui_prevented = false;
         if consumed {

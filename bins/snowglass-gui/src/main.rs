@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod game_host;
 mod input;
+mod inspector;
 mod instance_events;
 mod launch;
 mod metrics;

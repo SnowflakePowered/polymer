@@ -130,6 +130,10 @@ impl ShellRuntime {
     pub fn take_mutations(&mut self) -> Vec<Mutation> {
         self.runtime.take_mutations()
     }
+
+    pub(crate) fn inspector_address(&self) -> std::net::SocketAddr {
+        self.runtime.inspector_address()
+    }
 }
 
 pub(crate) use deno::{EmulatorCommandSink, InputCommandSink, Mutation};
