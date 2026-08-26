@@ -6,6 +6,7 @@ import "./GameTile.css";
 export function GameTile(props: {
   game: RecentGame;
   selected: boolean;
+  players: number[];
   zoom: number;
   register(id: string, element: HTMLButtonElement): void;
   onActivate(): void;
@@ -17,7 +18,8 @@ export function GameTile(props: {
     type="button"
     class="horizon-game-tile"
     classList={{ selected: props.selected }}
-    style={`--tile-basis:${shape().basis}px;--tile-grow:${shape().grow};--tile-color:${tileColor(id())};transform:scale(${props.selected ? 1.16 : 1})`}
+    data-controller={props.players.length ? props.players[0] % 8 : undefined}
+    style={`--tile-basis:${shape().basis}px;--tile-grow:${shape().grow};--tile-color:${tileColor(id())};transform:scale(${props.selected || props.players.length ? 1.16 : 1})`}
     aria-label={`${props.game.name}, ${friendly(props.game.platform)}`}
     aria-current={props.selected ? "true" : undefined}
     onClick={props.onActivate}

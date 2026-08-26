@@ -267,7 +267,7 @@ mod tests {
                 "hook": ["d3d12"],
                 "surfaces": [{ "index": 0, "attach": 4 }],
                 "gamepadMapping": [{
-                    "gamepadId": 0,
+                    "source": { "kind": "keyboardMouse" },
                     "slot": 0,
                     "layout": "SWITCH_PRO_CONTROLLER",
                     "projectionMode": "custom",

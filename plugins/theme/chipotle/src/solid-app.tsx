@@ -335,15 +335,28 @@ function ShellProvider(props: ParentProps) {
     const packageValue = model.package;
     if (!game || !packageValue) return;
     const emulator = game.candidates.find((item) => item.id === game.selectedEmulator) || game.candidates[0];
+    let virtualIndex = 0;
+    const assignments = window.Snowglass.input.assignments;
+    const selectedSource = (index: number) => {
+      const source = assignments.find((assignment) => assignment.index === index)?.source;
+      if (source) return source;
+      return index === 0 && window.Snowglass.input.controllers.length === 0
+        ? { kind: "keyboardMouse" as const }
+        : undefined;
+    };
     const selection: ConfigurationSelection = {
       emulator: emulator.id,
       groups: emulator.groups.map((group) => ({
         name: group.name,
-        ports: group.ports.slice(0, group.connected).map((port) => ({
-          index: port.index,
-          layout: port.selectedLayout,
-          device: game.platform === PS2_PLATFORM ? "K" : port.selectedDevice,
-        })),
+        ports: group.ports.slice(0, group.connected).map((port) => {
+          const index = virtualIndex++;
+          return {
+            index: port.index,
+            layout: port.selectedLayout,
+            source: selectedSource(index),
+            projectionMode: port.projectionMode,
+          };
+        }),
       })),
       settings: Object.fromEntries(activeOptions(emulator, game.platform).filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
@@ -465,7 +478,7 @@ function ConfigurePage() {
           <Show when={group.connected > 0} fallback={<p class="controller-empty">No controllers connected to this group.</p>}>
             <Tabs.Root defaultValue={`p${group.ports[0]?.index ?? 0}`}>
               <Tabs.List class="controller-tabs"><For each={group.ports.slice(0, group.connected)}>{(port) => <Tabs.Trigger value={`p${port.index}`} class="controller-tab">Port {port.index + 1}</Tabs.Trigger>}</For></Tabs.List>
-              <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`p${port.index}`} class="controller-tab-content"><article class="controller-port-card"><strong>Port {port.index + 1}</strong><div class="controller-port-fields"><Choice label="Device" value={port.selectedDevice} items={["K", "0", "1", "2", "3"].map((value) => ({ value, label: value === "K" ? "Keyboard + mouse" : `Controller ${Number(value) + 1}` }))} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].selectedDevice = value)} /><Choice label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].selectedLayout = value)} /></div></article></Tabs.Content>}</For>
+              <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`p${port.index}`} class="controller-tab-content"><article class="controller-port-card"><strong>Port {port.index + 1}</strong><div class="controller-port-fields"><Choice label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].selectedLayout = value)} /><Choice label="Input projection" value={port.projectionMode} items={[{ value: "position", label: "Position" }, { value: "name", label: "Name" }]} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].projectionMode = value as "position" | "name")} /></div></article></Tabs.Content>}</For>
             </Tabs.Root>
           </Show>
         </section>}</For>

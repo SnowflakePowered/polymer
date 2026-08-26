@@ -1242,6 +1242,16 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
         root, core / "HW/WiimoteEmu/WiimoteEmu.h", core / "HW/WiimoteEmu/WiimoteEmu.cpp",
         "Wiimote::Wiimote", group_classes, report,
     )
+    # Cursor's relative-input setting belongs to the nested IR group rather
+    # than Wiimote's constructor, so parse_controller cannot discover it.
+    # Keep it in the generated layout options because setupLaunch selects it
+    # from the already-resolved controller mapping.
+    wiimote_settings.append({
+        "key": "IR/Relative Input",
+        "title": "Relative Input",
+        "default": "false",
+        "range": [],
+    })
     # Extension controls are written under `<attachment>/`, which Dolphin builds
     # by concatenation in Attachments::SaveConfig.
     nunchuk_controls, nunchuk_settings = parse_controller(

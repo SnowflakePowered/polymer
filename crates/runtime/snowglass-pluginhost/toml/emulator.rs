@@ -292,13 +292,21 @@ mod tests {
         instances
             .set(id, "main.core.gfx_backend", serde_json::json!("D3D"))
             .unwrap();
+        instances
+            .set(
+                id,
+                "ports.NINTENDO_WII.wii.0.relative_input",
+                serde_json::json!(true),
+            )
+            .unwrap();
 
         let instance = instances.take(id).unwrap();
         let files = serialize(&instance).unwrap();
         let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
-        assert!(wiimote.contains("IR/Left=`Axis 6-`"), "{wiimote}");
-        assert!(wiimote.contains("IR/Up=`Axis 7-`"), "{wiimote}");
-        assert!(wiimote.contains("IR/Down=`Axis 7+`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Left=`Right X-`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Up=`Right Y+`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Down=`Right Y-`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Relative Input=True"), "{wiimote}");
         assert!(
             wiimote.contains("IMUAccelerometer/Left=`Accel Left`"),
             "{wiimote}"
@@ -307,5 +315,35 @@ mod tests {
             wiimote.contains("IMUGyroscope/Yaw Right=`Gyro Yaw Right`"),
             "{wiimote}"
         );
+    }
+
+    #[test]
+    fn dolphin_nunchuk_keeps_its_stick_separate_from_the_pointer() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("plugins/dolphin");
+        let plugin = EmulatorPlugin::load(&package).unwrap();
+        let assignments = plugin
+            .port_assignments("NINTENDO_WII", ["WII_REMOTE_NUNCHUCK_CONTROLLER"])
+            .unwrap();
+        let configuration = plugin.materialize("NINTENDO_WII", assignments).unwrap();
+        let mut instances = ConfigurationInstances::default();
+        let id = instances.insert(configuration);
+
+        let instance = instances.take(id).unwrap();
+        let files = serialize(&instance).unwrap();
+        let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
+        assert!(
+            wiimote.contains("Nunchuk/Stick/Left=`Left X-`"),
+            "{wiimote}"
+        );
+        assert!(
+            wiimote.contains("Nunchuk/Stick/Right=`Left X+`"),
+            "{wiimote}"
+        );
+        assert!(wiimote.contains("IR/Left=`Right X-`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Right=`Right X+`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Up=`Right Y+`"), "{wiimote}");
+        assert!(wiimote.contains("IR/Down=`Right Y-`"), "{wiimote}");
     }
 }

@@ -2009,8 +2009,8 @@ element.
   "surfaces": [{ "index": 0, "selector": "#screen" }],
 
   "ports": [
-    { "port": 0, "sdlIndex": 0, "mode": "gamecube", "layout": "GAMECUBE_CONTROLLER" },
-    { "port": 1, "sdlIndex": null, "mode": "wiimote-real",
+    { "port": 0, "source": { "kind": "device", "deviceId": "sdl3:1" }, "mode": "gamecube", "layout": "GAMECUBE_CONTROLLER" },
+    { "port": 1, "source": null, "mode": "wiimote-real",
       "transport": "bluetooth-hci", "device": "hci0:00:1f:32:…" }
   ],
 
@@ -2054,7 +2054,7 @@ Design rules:
 
 Consuming the descriptor is mechanical: write `config` under `configRoot`, `env` →
 `EmulatorConfig::env` (P3), `argv` → `EmulatorConfig::command` tail, `hooks` →
-`EmulatorConfig::hooks`, `ports[].layout` in `sdlIndex` order →
+`EmulatorConfig::hooks`, `ports[].layout` in virtual-slot order →
 `EmulatorConfig::gamepad_layouts`, `ports` → an `InputOperation::ReplacePorts`
 transaction on `InputHub`, `actions` → `send_hotkey` with a transport.
 

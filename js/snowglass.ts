@@ -5,6 +5,66 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
 export type GraphicsHook = "opengl" | "vulkan" | "d3d11" | "d3d12";
 export type ProjectionMode = "name" | "position" | "custom";
 
+export type InputSourceSelector =
+  | { kind: "keyboardMouse" }
+  | { kind: "device"; deviceId: string };
+
+export type InputSourceAssignment = {
+  readonly index: number;
+  readonly source: Readonly<InputSourceSelector>;
+};
+
+export type InputSource = {
+  readonly id: string;
+  readonly kind: "controller" | "keyboardMouse";
+  readonly name: string;
+  readonly connected: boolean;
+  readonly assignedIndices: readonly number[];
+  readonly layout?: string;
+  readonly buttons: readonly Readonly<{ button: string; pressed: boolean; mapped: boolean }>[];
+  readonly axes: readonly Readonly<{ axis: string; value: number; mapped: boolean }>[];
+  readonly mapped?: Readonly<Record<string, unknown>>;
+};
+
+export type VirtualInputPort = {
+  readonly port: string;
+  readonly layout: string;
+  readonly slot: number | null;
+  readonly forceMouse: boolean;
+  readonly projectionMode: ProjectionMode;
+  readonly overrides: Readonly<Record<string, unknown>>;
+};
+
+export type InputConfigurationSnapshot = {
+  readonly revision: number;
+  readonly machine: string | null;
+  readonly ports: readonly VirtualInputPort[];
+  readonly assignments: readonly InputSourceAssignment[];
+};
+
+export type InputControlEvent = {
+  readonly sourceId: string;
+  readonly controlType: "button" | "axis";
+  readonly control: string;
+  readonly value: number;
+};
+
+export interface InputApi extends EventTarget {
+  readonly configuration: InputConfigurationSnapshot;
+  readonly revision: number;
+  readonly ports: readonly VirtualInputPort[];
+  readonly assignments: readonly InputSourceAssignment[];
+  readonly layouts: readonly Readonly<Record<string, unknown>>[];
+  readonly sources: readonly InputSource[];
+  readonly controllers: readonly InputSource[];
+  readonly priority: "ui" | "game";
+  getControllers(): readonly InputSource[];
+  getGamepads(): readonly Readonly<Record<string, unknown>>[];
+  getControllerLayout(id: string): Readonly<Record<string, unknown>> | null;
+  assign(assignments: readonly { index: number; sourceId: string }[]): Promise<InputConfigurationSnapshot>;
+  configure(transaction: Readonly<Record<string, unknown>>): Promise<InputConfigurationSnapshot>;
+}
+
 export type TrackedSurface = {
   index: number;
   rotation: number;
@@ -14,7 +74,7 @@ export type TrackedSurface = {
 };
 
 export type GamePadMapping = {
-  gamepadId: number | "K" | string;
+  source?: InputSourceSelector;
   mouse: boolean;
   slot: number;
   port?: string;
@@ -115,7 +175,7 @@ export type ConfigurationPort = {
   index: number;
   layouts: string[];
   selectedLayout: string;
-  selectedDevice: string;
+  projectionMode: ProjectionMode;
 };
 
 export type ConfigurationPortGroup = {
@@ -145,7 +205,7 @@ export type ConfigurationSelection = {
     ports: Array<{
       index: number;
       layout: string;
-      device: string;
+      source?: InputSourceSelector;
       projectionMode?: ProjectionMode;
       mapping?: Record<string, string>;
     }>;
@@ -210,13 +270,7 @@ declare global {
       readonly emulator: EmulatorApi;
       readonly plugin: PluginApi;
       readonly webrtc: WebRtcApi;
-      readonly input: EventTarget & {
-        readonly configuration: unknown;
-        readonly layouts: unknown;
-        readonly controllers: unknown;
-        readonly priority: "ui" | "game";
-        configure(transaction: unknown): Promise<unknown>;
-      };
+      readonly input: InputApi;
     }>;
   }
 

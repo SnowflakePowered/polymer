@@ -6,12 +6,12 @@
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
 use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
-use snowglass_input::provider::sdl3::{DeviceSelector, ProviderConfig, Sdl3Provider, SlotConfig};
+use snowglass_input::provider::sdl3::{ProviderConfig, Sdl3Provider};
 use snowglass_input::{
     gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{
         BindingOverride, InputConfiguration, InputHub, InputOperation, InputTransaction,
-        PortConfiguration, SourceControl, SourceSelector, VirtualPort,
+        PortConfiguration, SourceAssignment, SourceControl, SourceSelector, VirtualPort,
     },
     layout::{InputBinding, ProjectionMode, SdlAxis, SdlButton},
 };
@@ -28,16 +28,16 @@ use std::{
 const DOM_MK_SHIFT: u32 = 0x0004;
 const DOM_MK_CONTROL: u32 = 0x0008;
 
+mod reconcile;
+use reconcile::InputReconciler;
+
 fn control_event(key: &str, value: i32) -> serde_json::Value {
-    let mut parts = key.splitn(3, ':');
-    let slot = parts
-        .next()
-        .and_then(|slot| slot.parse::<usize>().ok())
-        .unwrap_or_default();
+    let mut parts = key.splitn(3, '\0');
+    let source_id = parts.next().unwrap_or_default();
     let control_type = parts.next().unwrap_or_default();
     let control = parts.next().unwrap_or_default();
     serde_json::json!({
-        "slot": slot,
+        "sourceId": source_id,
         "controlType": control_type,
         "control": control,
         "value": value,
@@ -91,12 +91,11 @@ pub(crate) struct InputRouter {
     last_published_state: String,
     ui_controls: HashMap<String, i32>,
     next_publish: Instant,
-    guide_chord_held: bool,
 }
 
 pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
-    pub controllers: serde_json::Value,
+    pub sources: serde_json::Value,
     pub routed: Vec<serde_json::Value>,
     pub state_changed: Option<bool>,
     pub priority: &'static str,
@@ -121,7 +120,6 @@ impl InputRouter {
             last_published_state: String::new(),
             ui_controls: HashMap::new(),
             next_publish: Instant::now(),
-            guide_chord_held: false,
         }
     }
 
@@ -179,14 +177,6 @@ impl InputRouter {
 
     pub fn devices(&self) -> Vec<snowglass_input::provider::sdl3::PhysicalDeviceState> {
         self.transport.devices()
-    }
-
-    pub fn guide_button_pressed(&mut self) -> bool {
-        let pressed = self
-            .devices()
-            .iter()
-            .any(|device| device.buttons.contains(&(SdlButton::Guide, true)));
-        self.observe_guide_button(pressed)
     }
 
     pub fn build_publication(
@@ -272,9 +262,9 @@ impl InputRouter {
                         || mapped_states
                             .iter()
                             .any(|state| state.mapped_buttons.contains(&button));
-                    if (ui_priority || !consumed) && !global {
+                    if global || ui_priority || !consumed {
                         next_controls.insert(
-                            format!("{}:button:{name}", device.device_id),
+                            format!("{}\0button\0{name}", device.device_id),
                             i32::from(pressed),
                         );
                     }
@@ -295,7 +285,7 @@ impl InputRouter {
                         .any(|state| state.mapped_axes.contains(&axis));
                     if ui_priority || !consumed {
                         next_controls.insert(
-                            format!("{}:axis:{name}", device.device_id),
+                            format!("{}\0axis\0{name}", device.device_id),
                             i32::from(value),
                         );
                     }
@@ -307,14 +297,10 @@ impl InputRouter {
                 })
                 .collect::<Vec<_>>();
             devices.push(serde_json::json!({
-                "index": device.enumeration_index,
-                "slot": device.enumeration_index,
-                "deviceId": device.device_id,
+                "id": device.device_id,
+                "kind": "controller",
                 "name": device.name,
-                "guid": device.guid,
-                "vendor": device.vendor,
-                "product": device.product,
-                "assignedPorts": assigned,
+                "assignedIndices": assigned,
                 "layout": primary.map(|state| state.layout_id.as_str()),
                 "buttons": buttons,
                 "axes": axes,
@@ -337,14 +323,10 @@ impl InputRouter {
                 .map(|state| (slot, state))
         }) {
             devices.push(serde_json::json!({
-                "index": devices.len(),
-                "slot": devices.len(),
-                "deviceId": state.device_id,
+                "id": state.device_id,
+                "kind": "keyboardMouse",
                 "name": state.name,
-                "guid": state.guid,
-                "vendor": state.vendor,
-                "product": state.product,
-                "assignedPorts": [slot],
+                "assignedIndices": [slot],
                 "layout": state.layout_id,
                 "buttons": state.buttons.iter().map(|(button, pressed)| serde_json::json!({
                     "button": format!("{button:?}"),
@@ -378,7 +360,7 @@ impl InputRouter {
             .map(|json| self.observe_published_state(&json));
         InputPublication {
             diagnostics,
-            controllers: serde_json::Value::Array(devices),
+            sources: serde_json::Value::Array(devices),
             routed,
             state_changed,
             priority: if ui_priority { "ui" } else { "game" },
@@ -567,7 +549,6 @@ impl InputRouter {
             &mut self.mouse_buttons,
             &mut self.dom_mouse_keys,
             &mut self.dom_alt_key,
-            &mut self.guide_chord_held,
         );
         if let Some(provider) = self.provider() {
             provider.clear_keys();
@@ -582,12 +563,6 @@ impl InputRouter {
         }
         self.next_publish = now + std::time::Duration::from_millis(16);
         true
-    }
-
-    pub fn observe_guide_button(&mut self, pressed: bool) -> bool {
-        let newly_pressed = pressed && !self.guide_chord_held;
-        self.guide_chord_held = pressed;
-        newly_pressed
     }
 
     pub fn route_ui_controls(&mut self, next: HashMap<String, i32>) -> Vec<(String, i32)> {
@@ -643,8 +618,8 @@ impl InputRouter {
         machine: &str,
         mappings: &[GamepadMapping],
     ) -> Result<(), String> {
-        let mut bindings = Vec::new();
         let mut ports = Vec::new();
+        let mut assignments = Vec::new();
         let mut group_indices: HashMap<String, u8> = HashMap::new();
         for mapping in mappings {
             let slot = u8::try_from(mapping.slot)
@@ -656,7 +631,6 @@ impl InputRouter {
                     .map_err(|error| error.to_string())?;
                 let binding = parse_input_binding(source)?;
                 overrides.insert(target, hub_binding(&binding));
-                bindings.push((mapping.slot, target, binding));
             }
             let port = match mapping.port.clone() {
                 Some(port) => port,
@@ -676,55 +650,42 @@ impl InputRouter {
                 port,
                 layout: mapping.layout.clone(),
                 slot: Some(slot),
-                source: Some(hub_source(mapping.selector())),
+                force_mouse: mapping.mouse,
                 projection_mode: mapping.projection_mode,
                 overrides,
             });
-        }
-        let hub = self.transport.hub();
-        hub.apply(InputTransaction {
-            expected_revision: hub.snapshot().revision,
-            operations: vec![InputOperation::ReplacePorts {
-                machine: machine.to_owned(),
-                ports,
-            }],
-        })
-        .map_err(|error| error.to_string())?;
-
-        let mut slots = mappings
-            .iter()
-            .map(|mapping| mapping.slot)
-            .max()
-            .map(|slot| {
-                vec![
-                    SlotConfig {
-                        selector: DeviceSelector::Index(usize::MAX),
-                        layout_id: "XBOX_CONTROLLER".to_owned(),
-                        force_mouse: false,
-                        projection_mode: ProjectionMode::Position,
-                    };
-                    slot + 1
-                ]
-            })
-            .unwrap_or_default();
-        for mapping in mappings {
-            slots[mapping.slot] = SlotConfig {
-                selector: mapping.selector(),
-                layout_id: mapping.layout.clone(),
-                force_mouse: mapping.mouse,
-                projection_mode: mapping.projection_mode,
-            };
-        }
-        self.transport.restart_provider(ProviderConfig {
-            slots,
-            gamecontroller_database: None,
-            keyboard_mapping_directory: None,
-        })?;
-        if let Some(provider) = self.transport.provider() {
-            for (slot, target, binding) in bindings {
-                provider.set_binding(slot, target, binding);
+            if let Some(source) = &mapping.source {
+                assignments.push(SourceAssignment {
+                    index: slot,
+                    source: source.clone(),
+                });
             }
         }
+        let previous = self.transport.hub().snapshot();
+        let mut operations = vec![InputOperation::ReplacePorts {
+            machine: machine.to_owned(),
+            ports,
+        }];
+        operations.extend(assignments.into_iter().map(|assignment| {
+            InputOperation::SetAssignment {
+                index: assignment.index,
+                source: Some(assignment.source),
+            }
+        }));
+        let transaction = InputTransaction {
+            expected_revision: previous.revision,
+            operations,
+        };
+        let next = self
+            .transport
+            .hub()
+            .preview(&transaction)
+            .map_err(|error| error.to_string())?;
+        self.transport.reconcile(&previous, &next, false)?;
+        self.transport
+            .hub()
+            .apply(transaction)
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -737,67 +698,25 @@ impl InputRouter {
         transaction: InputTransaction,
         emulator_attached: bool,
     ) -> Result<InputConfiguration, String> {
-        let topology_change = transaction.operations.iter().any(|operation| {
-            matches!(
-                operation,
-                InputOperation::ReplacePorts { .. }
-                    | InputOperation::ConfigurePort { .. }
-                    | InputOperation::SetSource { .. }
-                    | InputOperation::SetLayout { .. }
-                    | InputOperation::RemovePort { .. }
-            )
-        });
-        if emulator_attached && topology_change {
-            return Err(
-                "changing controller topology while an emulator is attached is not supported by the current SDL hook"
-                    .to_owned(),
-            );
-        }
-
-        let current = self.transport.hub().snapshot();
-        if emulator_attached
-            && let Some(binding) = transaction.operations.iter().find_map(|operation| {
-                let InputOperation::SetOverride { port, binding, .. } = operation else {
-                    return None;
-                };
-                let source = current
-                    .ports
-                    .iter()
-                    .find(|configured| configured.port == *port)
-                    .and_then(|configured| configured.source.as_ref());
-                (!binding_supported_by_attached_provider(binding, source)).then_some(binding)
-            })
-        {
-            return Err(format!(
-                "binding {binding:?} cannot yet be projected by the SDL data plane"
-            ));
-        }
-
-        let configuration = self
+        let previous = self.transport.hub().snapshot();
+        let next = self
             .transport
             .hub()
-            .apply(transaction)
+            .preview(&transaction)
             .map_err(|error| error.to_string())?;
-        if topology_change {
-            self.transport.restart_from_configuration(&configuration)?;
-        }
-        if let Some(provider) = self.transport.provider() {
-            project_bindings(provider, &configuration);
-        }
-        Ok(configuration)
+        self.transport
+            .reconcile(&previous, &next, emulator_attached)?;
+        self.transport
+            .hub()
+            .apply(transaction)
+            .map_err(|error| error.to_string())
     }
 }
 
-fn reset_focus_state(
-    mouse_buttons: &mut u8,
-    dom_mouse_keys: &mut u32,
-    dom_alt_key: &mut bool,
-    guide_chord_held: &mut bool,
-) {
+fn reset_focus_state(mouse_buttons: &mut u8, dom_mouse_keys: &mut u32, dom_alt_key: &mut bool) {
     *mouse_buttons = 0;
     *dom_mouse_keys = 0;
     *dom_alt_key = false;
-    *guide_chord_held = false;
 }
 
 fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
@@ -813,62 +732,6 @@ fn pointer_axes(x: f64, y: f64) -> [i16; 2] {
         (value.clamp(0.0, 1.0) * f64::from(u16::MAX) + f64::from(i16::MIN)).round() as i16
     };
     [axis(x), axis(y)]
-}
-
-fn project_bindings(provider: &Sdl3Provider, configuration: &InputConfiguration) {
-    for port in &configuration.ports {
-        // Overrides are fanned out per virtual pad; a port that presents none
-        // has nothing to fan out to.
-        let Some(slot) = port.slot.map(usize::from) else {
-            continue;
-        };
-        provider.reset_bindings(slot);
-        for (target, binding) in &port.overrides {
-            if let BindingOverride::Axis {
-                source:
-                    source @ (SourceControl::MouseDelta { .. } | SourceControl::MousePosition { .. }),
-                transform,
-            } = binding
-            {
-                provider.set_mouse_axis_binding(slot, target.clone(), source.clone(), *transform);
-            } else if matches!(port.source, Some(SourceSelector::KeyboardMouse)) {
-                let key = match binding {
-                    BindingOverride::Button {
-                        source: SourceControl::Key { code },
-                    }
-                    | BindingOverride::Axis {
-                        source: SourceControl::Key { code },
-                        ..
-                    } => Some(code.clone()),
-                    BindingOverride::Disabled => None,
-                    _ => continue,
-                };
-                provider.set_key_binding(slot, target.clone(), key);
-            } else if let Some(binding) = binding.sdl_binding() {
-                provider.set_binding(slot, target.clone(), binding);
-            }
-        }
-    }
-}
-
-fn hub_source(selector: DeviceSelector) -> SourceSelector {
-    match selector {
-        DeviceSelector::Keyboard => SourceSelector::KeyboardMouse,
-        DeviceSelector::Index(index) => SourceSelector::SdlIndex { index },
-        DeviceSelector::Name(name) => SourceSelector::SdlName { name },
-        DeviceSelector::Guid(guid) => SourceSelector::SdlGuid {
-            guid,
-            duplicate_ordinal: 0,
-        },
-        DeviceSelector::GuidOrdinal {
-            guid,
-            duplicate_ordinal,
-        } => SourceSelector::SdlGuid {
-            guid,
-            duplicate_ordinal,
-        },
-        DeviceSelector::DeviceId(device_id) => SourceSelector::Device { device_id },
-    }
 }
 
 fn hub_binding(binding: &InputBinding) -> BindingOverride {
@@ -887,37 +750,10 @@ fn hub_binding(binding: &InputBinding) -> BindingOverride {
     }
 }
 
-pub(crate) fn binding_supported_by_attached_provider(
-    binding: &BindingOverride,
-    source: Option<&SourceSelector>,
-) -> bool {
-    if matches!(
-        binding,
-        BindingOverride::Axis {
-            source: SourceControl::MouseDelta { .. } | SourceControl::MousePosition { .. },
-            ..
-        }
-    ) {
-        return true;
-    }
-    if matches!(source, Some(SourceSelector::KeyboardMouse)) {
-        return matches!(
-            binding,
-            BindingOverride::Button {
-                source: SourceControl::Key { .. }
-            } | BindingOverride::Axis {
-                source: SourceControl::Key { .. },
-                ..
-            } | BindingOverride::Disabled
-        );
-    }
-    binding.sdl_binding().is_some()
-}
-
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GamepadMapping {
-    pub gamepad_id: GamepadId,
+    pub source: Option<SourceSelector>,
     #[serde(default)]
     pub mouse: bool,
     pub slot: usize,
@@ -930,43 +766,10 @@ pub struct GamepadMapping {
     pub mapping: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(untagged)]
-pub enum GamepadId {
-    Index(usize),
-    Name(String),
-}
-
-impl GamepadMapping {
-    pub fn selector(&self) -> DeviceSelector {
-        match &self.gamepad_id {
-            GamepadId::Index(index) => DeviceSelector::Index(*index),
-            GamepadId::Name(value) if value == "K" => DeviceSelector::Keyboard,
-            GamepadId::Name(value) => {
-                let compact = value.replace('-', "");
-                if compact.len() == 32 && compact.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                    DeviceSelector::Guid(compact.to_ascii_lowercase())
-                } else {
-                    DeviceSelector::Name(value.clone())
-                }
-            }
-        }
-    }
-}
-
 impl From<&GamepadArgument> for GamepadMapping {
     fn from(value: &GamepadArgument) -> Self {
-        let gamepad_id = match &value.selector {
-            DeviceSelector::Keyboard => GamepadId::Name("K".to_owned()),
-            DeviceSelector::Index(index) => GamepadId::Index(*index),
-            DeviceSelector::Name(name) | DeviceSelector::Guid(name) => {
-                GamepadId::Name(name.clone())
-            }
-            DeviceSelector::GuidOrdinal { guid, .. } => GamepadId::Name(guid.clone()),
-            DeviceSelector::DeviceId(device_id) => GamepadId::Name(device_id.clone()),
-        };
         Self {
-            gamepad_id,
+            source: value.source.clone(),
             mouse: value.force_mouse,
             slot: value.slot,
             port: None,
@@ -1121,15 +924,15 @@ impl InputTransport {
         self.control.detach();
     }
 
-    pub fn restart_provider(&mut self, config: ProviderConfig) -> Result<(), String> {
-        self.provider.reconfigure_slots(config.slots)
-    }
-
-    pub fn restart_from_configuration(
+    /// Reconciles one validated configuration snapshot with the live provider.
+    /// Launch setup and frontend transactions both enter through this path.
+    pub fn reconcile(
         &mut self,
-        configuration: &InputConfiguration,
+        previous: &InputConfiguration,
+        next: &InputConfiguration,
+        emulator_attached: bool,
     ) -> Result<(), String> {
-        self.restart_provider(provider_config(configuration))
+        InputReconciler::reconcile(&self.provider, previous, next, emulator_attached)
     }
 
     pub fn provider(&self) -> Option<&Sdl3Provider> {
@@ -1146,58 +949,6 @@ impl InputTransport {
 
     pub fn hub(&self) -> &InputHub {
         &self.hub
-    }
-}
-
-/// The provider is indexed by virtual pad, not by emulator port. Ports that
-/// present no pad — passthrough, or simply unconfigured — contribute nothing, so
-/// the slot run is dense even where the port run is not.
-fn provider_config(configuration: &InputConfiguration) -> ProviderConfig {
-    let highest_slot = configuration
-        .ports
-        .iter()
-        .filter_map(|port| port.slot)
-        .map(usize::from)
-        .max();
-    let mut slots = highest_slot
-        .map(|slot| {
-            vec![
-                SlotConfig {
-                    selector: DeviceSelector::Index(usize::MAX),
-                    layout_id: "XBOX_CONTROLLER".to_owned(),
-                    force_mouse: false,
-                    projection_mode: ProjectionMode::Position,
-                };
-                slot + 1
-            ]
-        })
-        .unwrap_or_default();
-    for port in &configuration.ports {
-        let (Some(slot), Some(source)) = (port.slot, &port.source) else {
-            continue;
-        };
-        slots[usize::from(slot)] = SlotConfig {
-            selector: match source {
-                SourceSelector::KeyboardMouse => DeviceSelector::Keyboard,
-                SourceSelector::SdlIndex { index } => DeviceSelector::Index(*index),
-                SourceSelector::SdlName { name } => DeviceSelector::Name(name.clone()),
-                SourceSelector::SdlGuid {
-                    guid,
-                    duplicate_ordinal,
-                } => DeviceSelector::GuidOrdinal {
-                    guid: guid.clone(),
-                    duplicate_ordinal: *duplicate_ordinal,
-                },
-                SourceSelector::Device { device_id } => DeviceSelector::DeviceId(device_id.clone()),
-            },
-            layout_id: port.layout.clone(),
-            force_mouse: false,
-            projection_mode: port.projection_mode,
-        };
-    }
-    ProviderConfig {
-        slots,
-        ..ProviderConfig::default()
     }
 }
 
@@ -1219,15 +970,17 @@ mod tests {
             },
             transform: Default::default(),
         };
-        assert!(binding_supported_by_attached_provider(
+        assert!(InputReconciler::binding_supported(
             &mouse_axis,
-            Some(&SourceSelector::SdlIndex { index: 0 })
+            Some(&SourceSelector::Device {
+                device_id: "sdl3:test".to_owned(),
+            })
         ));
 
         let mouse_button = BindingOverride::Button {
             source: SourceControl::MouseButton { button: 1 },
         };
-        assert!(!binding_supported_by_attached_provider(
+        assert!(!InputReconciler::binding_supported(
             &mouse_button,
             Some(&SourceSelector::KeyboardMouse)
         ));
@@ -1279,44 +1032,38 @@ mod tests {
                 port: VirtualPort::new("controller", 3),
                 layout: "GAMECUBE_CONTROLLER".to_owned(),
                 slot: Some(2),
-                source: Some(SourceSelector::SdlGuid {
-                    guid: "abc".to_owned(),
-                    duplicate_ordinal: 1,
-                }),
+                force_mouse: false,
                 projection_mode: ProjectionMode::Position,
                 overrides: HashMap::new(),
             }],
+            assignments: vec![snowglass_input::hub::SourceAssignment {
+                index: 2,
+                source: SourceSelector::Device {
+                    device_id: "sdl3:test".to_owned(),
+                },
+            }],
         };
 
-        let config = provider_config(&configuration);
-        assert_eq!(config.slots.len(), 3);
-        assert_eq!(config.slots[2].layout_id, "GAMECUBE_CONTROLLER");
+        let slots = InputReconciler::slots(&configuration);
+        assert_eq!(slots.len(), 3);
+        assert_eq!(slots[2].layout_id, "GAMECUBE_CONTROLLER");
         assert_eq!(
-            config.slots[2].selector,
-            DeviceSelector::GuidOrdinal {
-                guid: "abc".to_owned(),
-                duplicate_ordinal: 1,
-            }
+            slots[2].source,
+            Some(SourceSelector::Device {
+                device_id: "sdl3:test".to_owned(),
+            })
         );
     }
 
     #[test]
-    fn focus_loss_clears_buttons_modifiers_and_guide_chord() {
+    fn focus_loss_clears_buttons_and_modifiers() {
         let mut mouse_buttons = 0b1_1111;
         let mut dom_mouse_keys = DOM_MK_SHIFT | DOM_MK_CONTROL;
         let mut alt = true;
-        let mut guide_chord = true;
-
-        reset_focus_state(
-            &mut mouse_buttons,
-            &mut dom_mouse_keys,
-            &mut alt,
-            &mut guide_chord,
-        );
+        reset_focus_state(&mut mouse_buttons, &mut dom_mouse_keys, &mut alt);
 
         assert_eq!(mouse_buttons, 0);
         assert_eq!(dom_mouse_keys, 0);
         assert!(!alt);
-        assert!(!guide_chord);
     }
 }

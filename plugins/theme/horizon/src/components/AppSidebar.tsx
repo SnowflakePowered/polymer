@@ -1,5 +1,6 @@
 import { AvatarButton } from "./AvatarButton";
 import { SidebarButton } from "./SidebarButton";
+import { ControllerStatus } from "./ControllerStatus";
 import "./AppSidebar.css";
 
 export function AppSidebar() {
@@ -11,6 +12,7 @@ export function AppSidebar() {
       <SidebarButton icon="network" label="Online play" />
     </nav>
     <div class="horizon-sidebar-spacer" />
+    <ControllerStatus />
     <SidebarButton icon="settings" label="Settings" />
   </aside>;
 }

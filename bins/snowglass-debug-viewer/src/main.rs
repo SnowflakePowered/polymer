@@ -1,9 +1,8 @@
 use snowglass_input::{
+    hub::SourceSelector,
     layout::{InputBinding, InputLayout, SdlAxis, SdlButton},
     mouse::{PointerPhase, layout::Extent},
-    provider::sdl3::{
-        DeviceSelector, ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig,
-    },
+    provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
 };
 use snowglass_ipc::StreamReady;
 use snowglass_platform_windows::{
@@ -1484,7 +1483,7 @@ fn start_target_session(
             slots: gamepads
                 .iter()
                 .map(|pad| SlotConfig {
-                    selector: pad.selector.clone(),
+                    source: pad.source.clone(),
                     layout_id: pad.layout.clone(),
                     force_mouse: pad.force_mouse,
                     projection_mode: snowglass_input::layout::ProjectionMode::Position,

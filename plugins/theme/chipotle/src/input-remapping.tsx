@@ -6,7 +6,7 @@ type Binding = { kind: "button"; source: { kind: "gamepadButton"; button: string
 type Port = { port: string; layout: string; slot: number | null; source: unknown; overrides: Record<string, Binding> };
 type Configuration = { revision: number; machine: string | null; ports: Port[] };
 type Layout = { id: string; name: string; elements: Array<{ key: string; label: string; kind: string }> };
-type Controller = { assignedPorts: number[]; name: string; buttons: Array<{ button: string; pressed: boolean }>; axes: Array<{ axis: string; value: number }> };
+type Controller = { assignedIndices: number[]; name: string; buttons: Array<{ button: string; pressed: boolean }>; axes: Array<{ axis: string; value: number }> };
 type Control = { key: string; label: string; category: "button" | "axis"; targets: string[] };
 type InputApi = EventTarget & { configuration: Configuration; layouts: Layout[]; controllers: Controller[]; configure(value: unknown): Promise<Configuration> };
 
@@ -34,7 +34,7 @@ function bindingLabel(binding?: Binding) {
 }
 
 export function InputRemapping(props: { onClose(): void }) {
-  const api = window.Snowglass.input as InputApi;
+  const api = window.Snowglass.input as unknown as InputApi;
   const [configuration, setConfiguration] = createSignal<Configuration>(api.configuration || { revision: 0, machine: null, ports: [] });
   const [controllers, setControllers] = createSignal<Controller[]>(api.controllers || []);
   const [selected, setSelected] = createSignal(configuration().ports[0]?.port || "");
@@ -44,7 +44,7 @@ export function InputRemapping(props: { onClose(): void }) {
   const port = createMemo(() => configuration().ports.find((item) => item.port === selected()) || configuration().ports[0]);
   const layout = createMemo(() => api.layouts?.find((item) => item.id === port()?.layout));
   const groups = createMemo(() => controls(layout()));
-  const controller = createMemo(() => controllers().find((item) => port()?.slot != null && item.assignedPorts.includes(port()!.slot!)));
+  const controller = createMemo(() => controllers().find((item) => port()?.slot != null && item.assignedIndices.includes(port()!.slot!)));
 
   createEffect(() => {
     const configurationChanged = (event: Event) => setConfiguration((event as CustomEvent<Configuration>).detail || api.configuration);

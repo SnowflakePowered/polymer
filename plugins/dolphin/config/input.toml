@@ -179,6 +179,13 @@ type = "bool"
 default = false
 emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
 
+[[input.layouts.WII_REMOTE_CONTROLLER.options]]
+key = "relative_input"
+title = "Relative Input"
+type = "bool"
+default = false
+emit = { key = "IR/Relative Input", bool_style = "upper" }
+
 [input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER]
 "analog.stick.left.x-" = "Nunchuk/Stick/Left"
 "analog.stick.left.y-" = "Nunchuk/Stick/Down"
@@ -256,6 +263,13 @@ title = "Sideways Wii Remote"
 type = "bool"
 default = false
 emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
+
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "relative_input"
+title = "Relative Input"
+type = "bool"
+default = false
+emit = { key = "IR/Relative Input", bool_style = "upper" }
 
 [platforms.NINTENDO_GCN.ports.controller.0]
 target = "gcpad.GCPad1"

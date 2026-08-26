@@ -2,7 +2,7 @@
 
 use clap::ValueEnum;
 use clap::{ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, Parser};
-use snowglass_input::provider::sdl3::DeviceSelector;
+use snowglass_input::hub::SourceSelector;
 pub use snowglass_runtime::HookBackend;
 use std::{collections::HashSet, error::Error, net::SocketAddr, path::PathBuf};
 
@@ -104,7 +104,7 @@ pub struct ViewerOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GamepadArgument {
-    pub selector: DeviceSelector,
+    pub source: Option<SourceSelector>,
     pub slot: usize,
     pub layout: String,
     pub force_mouse: bool,
@@ -117,7 +117,7 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Map an SDL device index, exact name, GUID, or K (keyboard) to a virtual slot and input layout.
+    /// Map an opaque provider device ID, or K (keyboard), to a virtual slot and input layout.
     /// Append +M to the selector to force mouse pointer axes instead of its touchpad.
     #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
     pub(crate) gamepads: Vec<GamepadArgument>,
@@ -266,7 +266,7 @@ impl ViewerArguments {
         // one that declares it. A caller who names pads must name the machine:
         // a port only exists relative to the machine that declares its group.
         let machine = if gamepads.is_empty() {
-            gamepads.push("0:0:XBOX_CONTROLLER".parse()?);
+            gamepads.push("K:0:XBOX_CONTROLLER".parse()?);
             self.machine.unwrap_or_else(|| "MICROSOFT_XBOX".to_owned())
         } else {
             self.machine
@@ -425,8 +425,8 @@ impl std::str::FromStr for GamepadArgument {
         let mut fields = value.rsplitn(3, ':');
         let layout = fields.next().filter(|field| !field.is_empty());
         let slot = fields.next();
-        let selector = fields.next().filter(|field| !field.is_empty());
-        let (Some(layout), Some(slot), Some(selector)) = (layout, slot, selector) else {
+        let source = fields.next().filter(|field| !field.is_empty());
+        let (Some(layout), Some(slot), Some(source)) = (layout, slot, source) else {
             return Err(format!(
                 "invalid gamepad mapping '{value}'; expected SELECTOR:SLOT:LAYOUT"
             ));
@@ -437,29 +437,28 @@ impl std::str::FromStr for GamepadArgument {
         if slot > u8::MAX as usize {
             return Err(format!("virtual gamepad slot {slot} is outside 0..=255"));
         }
-        let (selector, force_mouse) = selector
+        let (source, force_mouse) = source
             .strip_suffix("+M")
-            .map_or((selector, false), |selector| (selector, true));
-        if selector.is_empty() {
+            .map_or((source, false), |source| (source, true));
+        if source.is_empty() {
             return Err(format!(
                 "missing selector before +M in gamepad mapping '{value}'"
             ));
         }
-        let compact_guid = selector.replace('-', "");
-        let selector = if selector == "K" {
-            DeviceSelector::Keyboard
-        } else if let Ok(index) = selector.parse() {
-            DeviceSelector::Index(index)
-        } else if compact_guid.len() == 32
-            && compact_guid.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            DeviceSelector::Guid(compact_guid.to_ascii_lowercase())
+        let source = if source == "K" {
+            SourceSelector::KeyboardMouse
+        } else if source.starts_with("sdl3:") {
+            SourceSelector::Device {
+                device_id: source.to_owned(),
+            }
         } else {
-            DeviceSelector::Name(selector.to_owned())
+            return Err(format!(
+                "invalid controller source '{source}'; expected K or an sdl3:<id> provider ID"
+            ));
         };
-        let force_mouse = force_mouse || matches!(selector, DeviceSelector::Keyboard);
+        let force_mouse = force_mouse || matches!(source, SourceSelector::KeyboardMouse);
         Ok(Self {
-            selector,
+            source: Some(source),
             slot,
             layout: layout.to_owned(),
             force_mouse,

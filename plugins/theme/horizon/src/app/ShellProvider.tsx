@@ -2,8 +2,12 @@ import { useNavigate } from "@solidjs/router";
 import { createContext, createEffect, onCleanup, useContext, type ParentProps } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "../../../../../js/snowglass";
+import type { InputSource } from "../../../../../js/snowglass";
+import { ControllerConnectionToast } from "../components/ControllerConnectionToast";
+import { InputNavigation } from "../components/InputNavigation";
 import { resolveGame, setupLaunch } from "./launch";
 import type { RecentGame, ShellModel } from "./models";
+import "./ShellProvider.css";
 
 const RECENT_KEY = "snowglass.recentGames.v2";
 const RECENT_LIMIT = 100;
@@ -67,9 +71,12 @@ export function ShellProvider(props: ParentProps) {
     selectedGame: null,
     gamepadOpen: false,
     pauseOpen: false,
+    controllerToast: null,
   });
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
   let detection: AbortController | null = null;
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let assignmentQueue = Promise.resolve();
 
   const go = (path: string, replace = false) => navigate(path, { replace });
   const fail = (error: unknown) => {
@@ -78,6 +85,40 @@ export function ShellProvider(props: ParentProps) {
     setModel("launcher", { kind: "error", message });
     go("/", true);
   };
+
+  const showControllerToast = (source: InputSource, index: number) => {
+    if (toastTimer) clearTimeout(toastTimer);
+    setModel("controllerToast", { name: source.name, index });
+    toastTimer = setTimeout(() => setModel("controllerToast", null), 3200);
+  };
+  const assignController = (source: InputSource) => {
+    assignmentQueue = assignmentQueue.then(async () => {
+      const existing = window.Snowglass.input.assignments.find((assignment) =>
+        assignment.source.kind === "device" && assignment.source.deviceId === source.id
+      );
+      if (existing) {
+        showControllerToast(source, existing.index);
+        return;
+      }
+      const used = new Set(window.Snowglass.input.assignments.map((assignment) => assignment.index));
+      let index = 0;
+      while (used.has(index)) index++;
+      const next = window.Snowglass.input.assignments.map((assignment) => ({
+        index: assignment.index,
+        sourceId: assignment.source.kind === "keyboardMouse"
+          ? "keyboard-mouse"
+          : assignment.source.kind === "device" ? assignment.source.deviceId : "",
+      })).filter((assignment) => assignment.sourceId);
+      next.push({ index, sourceId: source.id });
+      await window.Snowglass.input.assign(next);
+      showControllerToast(source, index);
+    }).catch((error) => {
+      setModel("error", error instanceof Error ? error.message : String(error));
+    });
+  };
+  const controllerConnected = (event: Event) => assignController((event as CustomEvent<InputSource>).detail);
+  window.Snowglass.input.addEventListener("controllerconnected", controllerConnected);
+  for (const controller of window.Snowglass.input.controllers) assignController(controller);
 
   const prepare = async (path: string, emulator: string | undefined, destination: "details" | "launch") => {
     if (window.Snowglass.emulator.activeLaunch) {
@@ -165,6 +206,8 @@ export function ShellProvider(props: ParentProps) {
   });
   onCleanup(() => {
     detection?.abort();
+    if (toastTimer) clearTimeout(toastTimer);
+    window.Snowglass.input.removeEventListener("controllerconnected", controllerConnected);
     if (startupHandler === acceptStartup) startupHandler = null;
   });
 
@@ -180,7 +223,11 @@ export function ShellProvider(props: ParentProps) {
       closeGame,
       rememberGame,
     }}>
-      {props.children}
+      <div class="horizon-shell-root">
+        <div class="horizon-shell-content">{props.children}</div>
+        <InputNavigation />
+        <ControllerConnectionToast />
+      </div>
     </ShellContext.Provider>
   );
 }

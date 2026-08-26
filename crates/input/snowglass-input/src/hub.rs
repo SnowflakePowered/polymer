@@ -10,7 +10,7 @@ use consolespec::input::BindingKey;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::Arc,
 };
@@ -84,7 +84,7 @@ impl<'de> Deserialize<'de> for VirtualPort {
 ///
 /// [`consolespec::machine::InputGroup`] borrows the compile-time table, which is exactly
 /// right in the hub and useless over a JSON boundary; this owns its strings.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputGroup {
     pub name: String,
@@ -106,25 +106,15 @@ impl From<consolespec::machine::InputGroup> for InputGroup {
 
 /// A source selector persisted independently from a particular SDL connection.
 ///
-/// An SDL enumeration index is retained only as a compatibility selector.
-/// New user configuration should prefer a GUID plus the duplicate ordinal, or
-/// an exact connection ID supplied by a device snapshot.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// Provider implementation details such as SDL enumeration indices, names,
+/// and GUIDs never enter persisted configuration. A physical device is named
+/// only by its opaque, provider-owned durable ID.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SourceSelector {
     KeyboardMouse,
-    SdlIndex {
-        index: usize,
-    },
-    SdlName {
-        name: String,
-    },
-    SdlGuid {
-        guid: String,
-        #[serde(default)]
-        duplicate_ordinal: u16,
-    },
     Device {
+        #[serde(rename = "deviceId", alias = "device_id")]
         device_id: String,
     },
 }
@@ -226,11 +216,27 @@ pub struct PortConfiguration {
     /// slot 2. Conflating them is what §6.3 of the config design calls port
     /// index skew, and it silently binds player 3's config to player 2's pad.
     pub slot: Option<u8>,
-    pub source: Option<SourceSelector>,
+    /// Prefer pointer input from the host mouse even when the physical source
+    /// is a controller with its own pointer-capable controls.
+    #[serde(default)]
+    pub force_mouse: bool,
     #[serde(default)]
     pub projection_mode: ProjectionMode,
     #[serde(default)]
     pub overrides: HashMap<BindingKey, BindingOverride>,
+}
+
+/// A durable physical-source binding for one virtual controller index.
+///
+/// This is deliberately separate from [`PortConfiguration`]. A game decides
+/// which virtual controller feeds each emulator port; the frontend decides
+/// which physical source feeds that virtual controller, and that decision
+/// survives provider disconnects.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceAssignment {
+    pub index: u8,
+    pub source: SourceSelector,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -241,6 +247,7 @@ pub struct InputConfiguration {
     /// is attached, when there are no ports at all.
     pub machine: Option<String>,
     pub ports: Vec<PortConfiguration>,
+    pub assignments: Vec<SourceAssignment>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -261,13 +268,15 @@ pub enum InputOperation {
         layout: String,
         #[serde(default)]
         slot: Option<u8>,
-        source: Option<SourceSelector>,
         #[serde(default)]
         projection_mode: ProjectionMode,
     },
-    SetSource {
-        port: VirtualPort,
+    SetAssignment {
+        index: u8,
         source: Option<SourceSelector>,
+    },
+    ReplaceAssignments {
+        assignments: Vec<SourceAssignment>,
     },
     SetLayout {
         port: VirtualPort,
@@ -311,6 +320,127 @@ struct HubState {
     revision: u64,
     machine: Option<String>,
     ports: BTreeMap<VirtualPort, PortConfiguration>,
+    assignments: BTreeMap<u8, SourceSelector>,
+}
+
+impl HubState {
+    fn configuration(&self) -> InputConfiguration {
+        InputConfiguration {
+            revision: self.revision,
+            machine: self.machine.clone(),
+            ports: self.ports.values().cloned().collect(),
+            assignments: self
+                .assignments
+                .iter()
+                .map(|(&index, source)| SourceAssignment {
+                    index,
+                    source: source.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn prepare(&self, transaction: &InputTransaction) -> Result<Self, InputConfigurationError> {
+        if transaction.expected_revision != self.revision {
+            return Err(InputConfigurationError::RevisionConflict {
+                expected: transaction.expected_revision,
+                actual: self.revision,
+            });
+        }
+        let mut next = self.clone();
+        for operation in transaction.operations.iter().cloned() {
+            next.apply_operation(operation)?;
+        }
+        validate_assignments(&next.assignments)?;
+        validate_ports(next.machine.as_deref(), &next.ports)?;
+        next.revision = next.revision.wrapping_add(1);
+        Ok(next)
+    }
+
+    fn apply_operation(
+        &mut self,
+        operation: InputOperation,
+    ) -> Result<(), InputConfigurationError> {
+        match operation {
+            InputOperation::ReplacePorts {
+                machine,
+                ports: replacement,
+            } => {
+                self.machine = Some(machine);
+                self.ports = collect_ports(replacement)?;
+            }
+            InputOperation::ConfigurePort {
+                port,
+                layout,
+                slot,
+                projection_mode,
+            } => {
+                self.ports.insert(
+                    port.clone(),
+                    PortConfiguration {
+                        port,
+                        layout,
+                        slot,
+                        force_mouse: false,
+                        projection_mode,
+                        overrides: HashMap::new(),
+                    },
+                );
+            }
+            InputOperation::SetAssignment { index, source } => {
+                if let Some(source) = source {
+                    self.assignments.insert(index, source);
+                } else {
+                    self.assignments.remove(&index);
+                }
+            }
+            InputOperation::ReplaceAssignments { assignments } => {
+                let mut replacement = BTreeMap::new();
+                for assignment in assignments {
+                    if replacement
+                        .insert(assignment.index, assignment.source)
+                        .is_some()
+                    {
+                        return Err(InputConfigurationError::InvalidBinding(format!(
+                            "duplicate physical source assignment for virtual controller {}",
+                            assignment.index
+                        )));
+                    }
+                }
+                self.assignments = replacement;
+            }
+            InputOperation::SetLayout { port, layout } => {
+                let port = port_mut(&mut self.ports, port)?;
+                port.layout = layout;
+                // Overrides name targets in the previous topology. Clearing them is
+                // deterministic and avoids accidentally applying a same-named
+                // control with different semantics in the replacement layout.
+                port.overrides.clear();
+            }
+            InputOperation::SetOverride {
+                port,
+                target,
+                binding,
+            } => {
+                validate_binding(&binding)?;
+                port_mut(&mut self.ports, port)?
+                    .overrides
+                    .insert(target, binding);
+            }
+            InputOperation::ResetTarget { port, target } => {
+                port_mut(&mut self.ports, port)?.overrides.remove(&target);
+            }
+            InputOperation::ResetPortOverrides { port } => {
+                port_mut(&mut self.ports, port)?.overrides.clear();
+            }
+            InputOperation::RemovePort { port } => {
+                if self.ports.remove(&port).is_none() {
+                    return Err(InputConfigurationError::UnknownPort(port));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -406,6 +536,7 @@ impl InputHub {
                     revision: 0,
                     machine,
                     ports,
+                    assignments: BTreeMap::new(),
                 }),
             }),
         })
@@ -413,11 +544,7 @@ impl InputHub {
 
     pub fn snapshot(&self) -> InputConfiguration {
         let state = self.inner.state.read();
-        InputConfiguration {
-            revision: state.revision,
-            machine: state.machine.clone(),
-            ports: state.ports.values().cloned().collect(),
-        }
+        state.configuration()
     }
 
     /// The attached machine's consolespec entry, for a caller that needs to ask
@@ -443,90 +570,35 @@ impl InputHub {
     }
 
     /// Applies all operations or none of them.
+    pub fn preview(
+        &self,
+        transaction: &InputTransaction,
+    ) -> Result<InputConfiguration, InputConfigurationError> {
+        let state = self.inner.state.read();
+        state.prepare(transaction).map(|next| next.configuration())
+    }
+
+    /// Applies all operations or none of them.
     pub fn apply(
         &self,
         transaction: InputTransaction,
     ) -> Result<InputConfiguration, InputConfigurationError> {
         let mut state = self.inner.state.write();
-        if transaction.expected_revision != state.revision {
-            return Err(InputConfigurationError::RevisionConflict {
-                expected: transaction.expected_revision,
-                actual: state.revision,
-            });
-        }
-        let mut next = state.clone();
-        for operation in transaction.operations {
-            apply_operation(&mut next, operation)?;
-        }
-        validate_ports(next.machine.as_deref(), &next.ports)?;
-        next.revision = next.revision.wrapping_add(1);
+        let next = state.prepare(&transaction)?;
         *state = next;
-        drop(state);
-        Ok(self.snapshot())
+        Ok(state.configuration())
     }
 }
 
-fn apply_operation(
-    state: &mut HubState,
-    operation: InputOperation,
+fn validate_assignments(
+    assignments: &BTreeMap<u8, SourceSelector>,
 ) -> Result<(), InputConfigurationError> {
-    let ports = &mut state.ports;
-    match operation {
-        InputOperation::ReplacePorts {
-            machine,
-            ports: replacement,
-        } => {
-            state.machine = Some(machine);
-            state.ports = collect_ports(replacement)?;
-        }
-        InputOperation::ConfigurePort {
-            port,
-            layout,
-            slot,
-            source,
-            projection_mode,
-        } => {
-            ports.insert(
-                port.clone(),
-                PortConfiguration {
-                    port,
-                    layout,
-                    slot,
-                    source,
-                    projection_mode,
-                    overrides: HashMap::new(),
-                },
-            );
-        }
-        InputOperation::SetSource { port, source } => {
-            port_mut(ports, port)?.source = source;
-        }
-        InputOperation::SetLayout { port, layout } => {
-            let port = port_mut(ports, port)?;
-            port.layout = layout;
-            // Overrides name targets in the previous topology. Clearing them is
-            // deterministic and avoids accidentally applying a same-named
-            // control with different semantics in the replacement layout.
-            port.overrides.clear();
-        }
-        InputOperation::SetOverride {
-            port,
-            target,
-            binding,
-        } => {
-            validate_binding(&binding)?;
-            port_mut(ports, port)?.overrides.insert(target, binding);
-        }
-        InputOperation::ResetTarget { port, target } => {
-            port_mut(ports, port)?.overrides.remove(&target);
-        }
-        InputOperation::ResetPortOverrides { port } => {
-            port_mut(ports, port)?.overrides.clear();
-        }
-        InputOperation::RemovePort { port } => {
-            if ports.remove(&port).is_none() {
-                return Err(InputConfigurationError::UnknownPort(port));
-            }
+    let mut sources = HashSet::new();
+    for (index, source) in assignments {
+        if !sources.insert(source) {
+            return Err(InputConfigurationError::InvalidBinding(format!(
+                "physical source {source:?} is assigned to more than one virtual controller (including {index})"
+            )));
         }
     }
     Ok(())
@@ -682,7 +754,7 @@ mod tests {
             port: VirtualPort::new("controller", index),
             layout: "XBOX_CONTROLLER".to_owned(),
             slot: Some(index),
-            source: Some(SourceSelector::SdlIndex { index: 0 }),
+            force_mouse: false,
             projection_mode: ProjectionMode::Position,
             overrides: HashMap::new(),
         }
@@ -722,8 +794,8 @@ mod tests {
                             },
                         },
                     },
-                    InputOperation::SetSource {
-                        port: VirtualPort::new("controller", 0),
+                    InputOperation::SetAssignment {
+                        index: 0,
                         source: Some(SourceSelector::KeyboardMouse),
                     },
                 ],
@@ -731,8 +803,8 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.revision, 1);
         assert_eq!(
-            snapshot.ports[0].source,
-            Some(SourceSelector::KeyboardMouse)
+            snapshot.assignments[0].source,
+            SourceSelector::KeyboardMouse
         );
         assert!(snapshot.ports[0].overrides.contains_key(&key!(button.a)));
     }
@@ -772,9 +844,9 @@ mod tests {
             .apply(InputTransaction {
                 expected_revision: 0,
                 operations: vec![
-                    InputOperation::SetSource {
-                        port: VirtualPort::new("controller", 0),
-                        source: None,
+                    InputOperation::SetAssignment {
+                        index: 0,
+                        source: Some(SourceSelector::KeyboardMouse),
                     },
                     InputOperation::SetOverride {
                         port: VirtualPort::new("controller", 0),
@@ -788,7 +860,7 @@ mod tests {
             error,
             InputConfigurationError::UnknownTarget { .. }
         ));
-        assert!(hub.snapshot().ports[0].source.is_some());
+        assert!(hub.snapshot().assignments.is_empty());
         assert_eq!(hub.snapshot().revision, 0);
     }
 
@@ -899,7 +971,7 @@ mod tests {
             port: VirtualPort::new(group, index),
             layout: layout.to_owned(),
             slot,
-            source: None,
+            force_mouse: false,
             projection_mode: ProjectionMode::Position,
             overrides: HashMap::new(),
         }

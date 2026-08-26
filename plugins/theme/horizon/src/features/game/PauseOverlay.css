@@ -7,14 +7,16 @@
 .horizon-pause-actions > button,
 .horizon-audio-trigger { display: flex; width: 100%; min-height: 3rem; align-items: center; gap: 0.7rem; padding: 0.65rem 0.8rem; border: 1px solid #555; border-radius: 0.25rem; color: white; background: #292929; text-align: left; }
 .horizon-pause-actions svg { width: 1.25rem; height: 1.25rem; }
-.horizon-pause-actions > button:hover, .horizon-pause-actions > button:focus-visible, .horizon-audio-trigger:hover, .horizon-audio-trigger:focus-visible { border-color: white; background: #3a3a3a; outline: none; }
+.horizon-pause-actions > button:hover, .horizon-pause-actions > button:focus, .horizon-pause-actions > button:focus-visible, .horizon-audio-trigger:hover, .horizon-audio-trigger:focus, .horizon-audio-trigger:focus-visible { border-color: white; background: #3a3a3a; outline: none; }
 .horizon-pause-actions .primary { color: #111; background: white; font-weight: 800; }
 .horizon-pause-actions .danger, .horizon-confirm-actions .danger { border-color: #e60012; background: #9c000c; }
 .horizon-pause-hint { margin: 1.1rem 0 0; color: #aaa; text-align: right; }
 .horizon-pause-hint kbd { padding: 0.25rem 0.45rem; border-radius: 999px; color: #111; background: white; }
 .horizon-confirm-actions { display: flex; justify-content: flex-end; gap: 0.55rem; }
 .horizon-confirm-actions button { min-height: 2.7rem; padding: 0.5rem 0.85rem; border: 1px solid #666; border-radius: 0.28rem; color: white; background: #292929; }
+.horizon-confirm-actions button:focus, .horizon-confirm-actions button:focus-visible { border-color: white; background: #3a3a3a; outline: none; }
 .horizon-audio-positioner { z-index: 90; }
 .horizon-audio-popover { width: 22rem; padding: 1rem; border: 1px solid #777; border-radius: 0.4rem; color: white; background: #202020; box-shadow: 0 1rem 2.5rem rgb(0 0 0 / 70%); }
 .horizon-audio-popover [data-part="title"] { margin-bottom: 1rem; font-weight: 800; }
 .horizon-audio-popover > button { margin-top: 0.8rem; padding: 0.45rem 0.8rem; border: 1px solid #666; color: white; background: #333; }
+.horizon-audio-popover > button:focus, .horizon-audio-popover > button:focus-visible { border-color: white; outline: none; }

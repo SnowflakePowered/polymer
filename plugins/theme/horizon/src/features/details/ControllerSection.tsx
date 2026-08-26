@@ -11,7 +11,7 @@ export function ControllerSection(props: {
   update(change: (emulator: EmulatorConfiguration) => void): void;
 }) {
   return <section class="horizon-controller-section">
-    <header><p>Input assignments</p><h2>Controllers</h2></header>
+    <header><p>Virtual controller topology</p><h2>Controllers</h2></header>
     <For each={props.emulator.groups}>{(group, groupIndex) => <article class="horizon-controller-group">
       <div class="horizon-controller-heading">
         <h3>{friendly(group.name)}</h3>
@@ -21,8 +21,11 @@ export function ControllerSection(props: {
         <Tabs.Root defaultValue={`port-${group.ports[0]?.index || 0}`}>
           <Tabs.List class="horizon-port-tabs"><Tabs.Indicator /><For each={group.ports.slice(0, group.connected)}>{(port) => <Tabs.Trigger value={`port-${port.index}`}>Port {port.index + 1}</Tabs.Trigger>}</For></Tabs.List>
           <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`port-${port.index}`} class="horizon-port-content">
-            <ChoiceControl label="Device" value={port.selectedDevice} items={["K", "0", "1", "2", "3"].map((value) => ({ value, label: value === "K" ? "Keyboard + mouse" : `Controller ${Number(value) + 1}` }))} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].selectedDevice = value; })} />
             <ChoiceControl label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].selectedLayout = value; })} />
+            <ChoiceControl label="Input projection" value={port.projectionMode} items={[
+              { value: "position", label: "Position" },
+              { value: "name", label: "Name" },
+            ]} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].projectionMode = value as "position" | "name"; })} />
           </Tabs.Content>}</For>
         </Tabs.Root>
       </Show>

@@ -1,0 +1,178 @@
+use consolespec::input::BindingKey;
+use snowglass_input::{
+    hub::{BindingOverride, InputConfiguration, SourceControl, SourceSelector},
+    provider::sdl3::{Sdl3Provider, SlotConfig},
+};
+
+pub(super) struct InputReconciler;
+
+impl InputReconciler {
+    pub(super) fn reconcile(
+        provider: &Sdl3Provider,
+        previous: &InputConfiguration,
+        next: &InputConfiguration,
+        emulator_attached: bool,
+    ) -> Result<(), String> {
+        if emulator_attached && Self::topology_changed(previous, next) {
+            return Err(
+                "changing controller topology while an emulator is attached is not supported by the current SDL hook"
+                    .to_owned(),
+            );
+        }
+        Self::validate_bindings(next)?;
+
+        let previous_slots = Self::slots(previous);
+        let next_slots = Self::slots(next);
+        if previous_slots != next_slots {
+            provider.reconfigure_slots(next_slots)?;
+        }
+        Self::project_bindings(provider, next);
+        Ok(())
+    }
+
+    fn topology_changed(previous: &InputConfiguration, next: &InputConfiguration) -> bool {
+        previous.machine != next.machine
+            || previous.ports.len() != next.ports.len()
+            || previous.ports.iter().zip(&next.ports).any(|(old, new)| {
+                old.port != new.port
+                    || old.layout != new.layout
+                    || old.slot != new.slot
+                    || old.projection_mode != new.projection_mode
+            })
+    }
+
+    fn validate_bindings(configuration: &InputConfiguration) -> Result<(), String> {
+        for port in &configuration.ports {
+            let source = Self::source_for_port(configuration, port.slot);
+            if let Some(binding) = port
+                .overrides
+                .values()
+                .find(|binding| !Self::binding_supported(binding, source))
+            {
+                return Err(format!(
+                    "binding {binding:?} cannot yet be projected by the SDL data plane"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn binding_supported(
+        binding: &BindingOverride,
+        source: Option<&SourceSelector>,
+    ) -> bool {
+        if matches!(
+            binding,
+            BindingOverride::Axis {
+                source: SourceControl::MouseDelta { .. } | SourceControl::MousePosition { .. },
+                ..
+            }
+        ) {
+            return true;
+        }
+        if matches!(source, Some(SourceSelector::KeyboardMouse)) {
+            return matches!(
+                binding,
+                BindingOverride::Button {
+                    source: SourceControl::Key { .. }
+                } | BindingOverride::Axis {
+                    source: SourceControl::Key { .. },
+                    ..
+                } | BindingOverride::Disabled
+            );
+        }
+        binding.sdl_binding().is_some()
+    }
+
+    pub(super) fn slots(configuration: &InputConfiguration) -> Vec<SlotConfig> {
+        let highest_slot = configuration
+            .ports
+            .iter()
+            .filter_map(|port| port.slot)
+            .map(usize::from)
+            .max();
+        let mut slots = highest_slot
+            .map(|slot| {
+                vec![
+                    SlotConfig {
+                        source: None,
+                        layout_id: "XBOX_CONTROLLER".to_owned(),
+                        force_mouse: false,
+                        projection_mode: snowglass_input::layout::ProjectionMode::Position,
+                    };
+                    slot + 1
+                ]
+            })
+            .unwrap_or_default();
+        for port in &configuration.ports {
+            let Some(slot) = port.slot else { continue };
+            let source = Self::source_for_port(configuration, Some(slot));
+            slots[usize::from(slot)] = SlotConfig {
+                source: source.cloned(),
+                layout_id: port.layout.clone(),
+                force_mouse: port.force_mouse
+                    || matches!(source, Some(SourceSelector::KeyboardMouse)),
+                projection_mode: port.projection_mode,
+            };
+        }
+        slots
+    }
+
+    fn source_for_port(
+        configuration: &InputConfiguration,
+        slot: Option<u8>,
+    ) -> Option<&SourceSelector> {
+        slot.and_then(|index| {
+            configuration
+                .assignments
+                .iter()
+                .find(|assignment| assignment.index == index)
+                .map(|assignment| &assignment.source)
+        })
+    }
+
+    fn project_bindings(provider: &Sdl3Provider, configuration: &InputConfiguration) {
+        for port in &configuration.ports {
+            let Some(slot) = port.slot.map(usize::from) else {
+                continue;
+            };
+            provider.reset_bindings(slot);
+            let source = Self::source_for_port(configuration, port.slot);
+            for (target, binding) in &port.overrides {
+                Self::project_binding(provider, slot, target, binding, source);
+            }
+        }
+    }
+
+    fn project_binding(
+        provider: &Sdl3Provider,
+        slot: usize,
+        target: &BindingKey,
+        binding: &BindingOverride,
+        source: Option<&SourceSelector>,
+    ) {
+        if let BindingOverride::Axis {
+            source:
+                pointer @ (SourceControl::MouseDelta { .. } | SourceControl::MousePosition { .. }),
+            transform,
+        } = binding
+        {
+            provider.set_mouse_axis_binding(slot, target.clone(), pointer.clone(), *transform);
+        } else if matches!(source, Some(SourceSelector::KeyboardMouse)) {
+            let key = match binding {
+                BindingOverride::Button {
+                    source: SourceControl::Key { code },
+                }
+                | BindingOverride::Axis {
+                    source: SourceControl::Key { code },
+                    ..
+                } => Some(code.clone()),
+                BindingOverride::Disabled => None,
+                _ => return,
+            };
+            provider.set_key_binding(slot, target.clone(), key);
+        } else if let Some(binding) = binding.sdl_binding() {
+            provider.set_binding(slot, target.clone(), binding);
+        }
+    }
+}

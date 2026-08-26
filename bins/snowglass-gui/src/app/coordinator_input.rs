@@ -345,26 +345,20 @@ impl ShellCoordinator {
         if !self.input.publication_due(Instant::now()) {
             return;
         }
-        if self.input.guide_button_pressed() && self.input.priority() == InputPriority::Game {
-            self.set_input_priority(InputPriority::Ui);
-        }
         let publication = self.input.build_publication(
             self.game_host.gamepad_mapping(),
             self.game_host.has_active_game(),
         );
         self.window.set_input_diagnostics(publication.diagnostics);
-        self.notify_snowglass(SnowglassNotification::InputStateChanged {
-            controllers: publication.controllers,
-            priority: publication.priority.to_owned(),
-        });
-        let Some(state_changed) = publication.state_changed else {
-            return;
-        };
-        if !state_changed && publication.routed.is_empty() {
+        if !publication.state_changed.unwrap_or(false) && publication.routed.is_empty() {
             return;
         }
+        self.notify_snowglass(SnowglassNotification::InputStateChanged {
+            sources: publication.sources,
+            priority: publication.priority.to_owned(),
+            controls: serde_json::Value::Array(publication.routed),
+        });
         self.window.request_overlay_repaint();
-        let _ = publication.routed;
     }
 
     pub(super) fn publish_targets_for(&mut self, token: InstanceToken) {

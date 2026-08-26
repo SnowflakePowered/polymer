@@ -101,8 +101,9 @@ pub enum SnowglassNotification {
         layouts: Value,
     },
     InputStateChanged {
-        controllers: Value,
+        sources: Value,
         priority: String,
+        controls: Value,
     },
     InputConfigurationSettled {
         request_id: u64,
