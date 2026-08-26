@@ -13,7 +13,7 @@ mod state;
 
 pub use dom::Mutation;
 pub use input::EventResult;
-pub use runtime::Runtime;
+pub(crate) use runtime::Runtime;
 pub use snowglass_deno::snowglass::InstanceToken;
 pub use snowglass_runtime::{
     EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, WebRtcCommand,

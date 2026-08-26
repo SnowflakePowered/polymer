@@ -20,7 +20,7 @@ use crate::shell_dom::{
     RasterChunkId, ShellCompositionGroup, ShellFrame, ShellHitSnapshot, ShellRasterChunk,
     TrackedSurfaceLayout,
 };
-use crate::shell_runtime::ShellRuntime;
+use crate::shell_runtime::{Mutation, ShellRuntime};
 use anyrender::PaintScene as _;
 use bands::BandedScene;
 pub use bands::{CompositionShadowStyle, GamePlacement, GameViewStyle};
@@ -85,6 +85,10 @@ const PAINT_TIMING: &str = "SNOWGLASS_GAME_LAYER_TIMING";
 
 pub struct ShellDocument {
     document: blitz_html::HtmlDocument,
+    /// Changes only when the connected DOM tree changes shape. Paints,
+    /// pseudo-class changes, and attribute updates must not make DevTools
+    /// discard its expanded tree and current selection.
+    dom_structure_revision: u64,
     /// Assets arrive here because a fetch is issued while the document is
     /// mid-resolve and cannot take them straight away.
     arrivals: Receiver<()>,
@@ -165,6 +169,7 @@ impl ShellDocumentFactory {
         let dom_to_script = script_to_dom.clone();
         let mut document = ShellDocument {
             document,
+            dom_structure_revision: 1,
             arrivals,
             bands: vec![anyrender::Scene::new()],
             placements: Vec::new(),
@@ -192,6 +197,10 @@ impl ShellDocument {
     pub(crate) fn runtime_context(&self) -> (&blitz_dom::BaseDocument, u32, u32, f32) {
         let (width, height) = self.logical_size();
         (self.document.as_ref(), width, height, self.scale_factor)
+    }
+
+    pub(crate) const fn dom_structure_revision(&self) -> u64 {
+        self.dom_structure_revision
     }
 
     pub(crate) fn logical_size(&self) -> (u32, u32) {
@@ -505,12 +514,23 @@ impl ShellDocument {
         if mutations.is_empty() {
             return;
         }
+        let structure_changed = mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                Mutation::AppendChild { .. }
+                    | Mutation::InsertBefore { .. }
+                    | Mutation::RemoveChild { .. }
+            )
+        });
         let effect = apply_dom_mutations(
             &mut self.document,
             &mut self.script_to_dom,
             &mut self.dom_to_script,
             mutations,
         );
+        if structure_changed {
+            self.dom_structure_revision = self.dom_structure_revision.wrapping_add(1);
+        }
         if !effect.needs_resolve {
             return;
         }

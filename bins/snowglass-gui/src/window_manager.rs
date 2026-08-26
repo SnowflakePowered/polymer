@@ -100,6 +100,7 @@ impl Drop for TimerResolution {
         }
     }
 }
+use winit::platform::windows::WindowAttributesExtWindows;
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
@@ -138,6 +139,16 @@ pub(crate) enum LoopDirective {
 /// asynchronous construction turn. No other subsystem can inspect the native
 /// window representation.
 pub(crate) struct WindowBootstrap(Window);
+
+/// Winit-owned secondary window passed into the inspector after creation from
+/// an `ActiveEventLoop` callback.
+pub(crate) struct InspectorWindowBootstrap(Window);
+
+impl InspectorWindowBootstrap {
+    pub(crate) fn into_inner(self) -> Window {
+        self.0
+    }
+}
 
 /// Raw winit integration. The coordinated application receives only neutral
 /// shell/device events and an abstract loop directive.
@@ -185,7 +196,33 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
         self.creating_window = false;
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: crate::app::UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: crate::app::UserEvent) {
+        if let crate::app::UserEvent::InspectorWindowRequested { address } = event {
+            if self.inner.inspector_window_id().is_some() {
+                return;
+            }
+            let owner = self
+                .inner
+                .window_manager_mut()
+                .and_then(|window| window.native_handle().ok())
+                .map(|hwnd| hwnd.0 as isize);
+            let mut attributes = Window::default_attributes()
+                .with_title("Snowglass Inspector")
+                .with_inner_size(LogicalSize::new(1280.0, 800.0))
+                .with_visible(false);
+            if let Some(owner) = owner {
+                attributes = attributes.with_owner_window(owner);
+            }
+            match event_loop.create_window(attributes) {
+                Ok(window) => self
+                    .inner
+                    .accept_inspector_window(InspectorWindowBootstrap(window), address),
+                Err(error) => {
+                    tracing::error!(%error, "snowglass: creating inspector window failed")
+                }
+            }
+            return;
+        }
         self.inner.handle_user_event(event);
     }
 
@@ -205,6 +242,10 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if self.inner.inspector_window_id() == Some(window_id) {
+            self.inner.handle_inspector_window_event(&event);
+            return;
+        }
         let Some(manager) = self.inner.window_manager_mut() else {
             return;
         };
@@ -735,6 +776,10 @@ impl WindowManager {
 
     pub fn id(&self) -> WindowId {
         self.window.id()
+    }
+
+    pub(crate) fn native_handle(&self) -> Result<HWND, Box<dyn Error>> {
+        Ok(WindowTarget::new(&self.window)?.0)
     }
 
     pub fn size(&self) -> WindowSize {

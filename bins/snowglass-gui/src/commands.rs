@@ -6,6 +6,8 @@ use crate::{game_host::GameHostCommand, window_manager::WindowCommand};
 pub(crate) enum UserEvent {
     Window(WindowCommand),
     GameHost(GameHostCommand),
+    InspectorWindowRequested { address: std::net::SocketAddr },
+    Inspector(crate::inspector::elements::Command),
 }
 
 #[derive(Debug)]

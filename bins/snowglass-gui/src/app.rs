@@ -3,6 +3,7 @@ use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
 use crate::input::{InputPriority, InputRouter, InputTransport, KeyboardTarget};
+use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
@@ -14,8 +15,8 @@ use crate::shell_runtime::{
     SnowglassNotification, SnowglassNotificationSender, WebRtcCommand, WebRtcCommandSink,
 };
 use crate::window_manager::{
-    EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
-    WindowBootstrap, WindowCommand, WindowManager,
+    EventLoopProxy, InspectorWindowBootstrap, LoopDirective, ShellDeviceEvent, ShellImeEvent,
+    ShellWindowEvent, WindowBootstrap, WindowCommand, WindowManager,
 };
 use snowglass_input::{hub::InputTransaction, mouse::PointerPhase};
 use snowglass_input_dinput::DirectInputForwarder;
@@ -67,6 +68,7 @@ struct ShellCoordinator {
     game_host: GameHost,
     shell_compositor: ShellCompositor,
     input: InputRouter,
+    inspector: Option<InspectorWindow>,
     notifications: Option<SnowglassNotificationSender>,
     _theme: crate::theme::SelectedTheme,
     startup_request: Option<serde_json::Value>,
@@ -130,6 +132,7 @@ impl ShellCoordinator {
             game_host,
             shell_compositor,
             input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
+            inspector: None,
             notifications: None,
             _theme: theme,
             startup_request,

@@ -118,6 +118,21 @@ impl ShellSession {
         matches!(self.slot, ShellDocumentSlot::Active(_))
     }
 
+    pub(crate) fn inspector_document(&self) -> Option<&blitz_dom::BaseDocument> {
+        self.active().map(|document| document.runtime_context().0)
+    }
+
+    pub(crate) fn inspector_address(&self) -> Option<std::net::SocketAddr> {
+        match &self.slot {
+            ShellDocumentSlot::Active(active) => Some(active.runtime.inspector_address()),
+            ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => None,
+        }
+    }
+
+    pub(crate) fn inspector_structure_revision(&self) -> Option<u64> {
+        self.active().map(ShellDocument::dom_structure_revision)
+    }
+
     pub fn needs_paint(&self) -> bool {
         self.active().is_some_and(ShellDocument::needs_paint)
     }

@@ -1,6 +1,35 @@
 use super::*;
 
 impl ShellCoordinator {
+    pub(super) fn open_inspector(&mut self) {
+        if let Some(inspector) = &self.inspector {
+            inspector.show();
+            return;
+        }
+        let Some(address) = self.shell_dom.inspector_address() else {
+            tracing::warn!("snowglass: inspector requested before the shell runtime was ready");
+            return;
+        };
+        if let Err(error) = self
+            .proxy
+            .send_event(UserEvent::InspectorWindowRequested { address })
+        {
+            tracing::error!(%error, "snowglass: requesting an inspector window failed");
+        }
+    }
+
+    pub(super) fn accept_inspector_window(
+        &mut self,
+        window: InspectorWindowBootstrap,
+        address: std::net::SocketAddr,
+    ) {
+        let result = InspectorWindow::open(window.into_inner(), address, self.proxy.clone());
+        match result {
+            Ok(inspector) => self.inspector = Some(inspector),
+            Err(error) => tracing::error!(%error, "snowglass: opening the Deno inspector failed"),
+        }
+    }
+
     /// Dispatches a regular DOM mouse event to the Deno-backed shell.
     /// Script claims the pointer from the guest by cancelling the event.
     pub(super) fn shell_mouse(
