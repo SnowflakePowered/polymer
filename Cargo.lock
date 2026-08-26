@@ -10985,6 +10985,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-watcher"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "windows 0.61.3",
+ "windows-registry",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
