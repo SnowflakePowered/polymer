@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod commands;
+mod game_bar_watcher;
 mod game_host;
 mod input;
 mod inspector;
@@ -38,6 +39,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::EnvFilter::new("info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn")
     });
     tracing_subscriber::fmt().with_env_filter(filter).init();
+    let _game_bar_watcher = match game_bar_watcher::GameBarWatcher::launch() {
+        Ok(watcher) => Some(watcher),
+        Err(error) => {
+            tracing::warn!(%error, "snowglass: could not disable the Game Bar controller shortcut");
+            None
+        }
+    };
     let statistics_recorder = snowglass_statistics::install()?;
     let options = cli::parse()?;
     // Prepare native renderers before the shell document starts.
