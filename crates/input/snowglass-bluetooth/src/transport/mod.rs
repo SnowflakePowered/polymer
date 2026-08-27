@@ -8,6 +8,7 @@ pub mod ble;
 pub mod bredr;
 
 pub type ReportReceiver = broadcast::Receiver<Bytes>;
+pub type DisconnectReceiver = broadcast::Receiver<()>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConnectionState {
@@ -23,6 +24,12 @@ pub trait Transport: Send {
     fn reports(&self) -> ReportReceiver;
     /// Optional device-command response stream, distinct from raw HID input.
     fn responses(&self) -> Option<ReportReceiver> {
+        None
+    }
+    /// Notifies the owner when the remote link disappears without a local
+    /// disconnect request. Transports which cannot observe this may return
+    /// `None`; report-stream closure remains the manager's fallback signal.
+    fn disconnections(&self) -> Option<DisconnectReceiver> {
         None
     }
     async fn send(&mut self, data: &[u8]) -> Result<()>;

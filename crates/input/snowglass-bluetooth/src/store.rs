@@ -8,7 +8,6 @@ use std::{
 };
 
 use atomic_write_file::AtomicWriteFile;
-use serde_json::Value;
 
 use crate::transport::bredr::{LinkKey, LinkKeyStore};
 use crate::{DeviceAddr, Error, Result, TransportKind, devices::ProfileId};
@@ -25,8 +24,6 @@ pub struct ControllerRecord {
     pub adapter_index: Option<usize>,
     pub auto_reconnect: bool,
     pub player_index: u8,
-    #[serde(default)]
-    pub profile_state: Value,
 }
 
 pub trait ControllerStore: Send + Sync {
@@ -116,7 +113,6 @@ impl LinkKeyStore for ControllerLinkKeyStore {
                 adapter_index: None,
                 auto_reconnect: true,
                 player_index: 0,
-                profile_state: Value::Null,
             });
         record.link_key = Some(key.value);
         record.link_key_type = Some(key.key_type);
@@ -221,7 +217,6 @@ mod tests {
                 adapter_index: None,
                 auto_reconnect: true,
                 player_index: 0,
-                profile_state: Value::Null,
             })
             .unwrap();
         assert_eq!(

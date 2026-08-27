@@ -11,6 +11,9 @@ pub mod transport;
 mod types;
 
 pub use error::{Error, Result};
-pub use manager::{BluetoothManager, ManagerConfig, ManagerEvent, ScanRequest};
-pub use transport::{ConnectionState, ReportReceiver, Transport};
+pub use manager::{
+    BluetoothManager, ConnectedController, ControllerId, ManagerConfig, ManagerEvent, ScanRequest,
+    SessionId,
+};
+pub use transport::{ConnectionState, DisconnectReceiver, ReportReceiver, Transport};
 pub use types::{AddressKind, DeviceAddr, TransportKind};

@@ -33,6 +33,7 @@ const CONNECTED: u8 = 2;
 pub struct BrEdrHid {
     host: Arc<HciHost>,
     reports: broadcast::Sender<Bytes>,
+    disconnects: broadcast::Sender<()>,
     state: Arc<AtomicU8>,
     handle: Option<u16>,
     link: Option<Link>,
@@ -46,9 +47,11 @@ pub struct BrEdrHid {
 impl BrEdrHid {
     pub fn new(host: Arc<HciHost>) -> Self {
         let (reports, _) = broadcast::channel(256);
+        let (disconnects, _) = broadcast::channel(8);
         Self {
             host,
             reports,
+            disconnects,
             state: Arc::new(AtomicU8::new(DISCONNECTED)),
             handle: None,
             link: None,
@@ -290,29 +293,42 @@ impl BrEdrHid {
         mut interrupt: Channel,
     ) -> Result<()> {
         let response_sender = self.reports.clone();
+        let disconnect_sender = self.disconnects.clone();
         let state = self.state.clone();
+        let mut hci_events = self.host.events();
         let control_sender = control.sender();
         let interrupt_sender = interrupt.sender();
         let report_task = tokio::spawn(async move {
             loop {
-                let report = match interrupt.receive().await {
-                    Ok(report) => report,
-                    Err(_) => break,
-                };
-                if report.is_empty() {
-                    continue;
-                }
-                // HIDP DATA/Input. Handshakes and control transactions are not input reports.
-                if report[0] == 0xa1 {
-                    let _ = response_sender.send(report.slice(1..));
-                } else {
-                    tracing::trace!(
-                        transaction = report[0],
-                        "ignored non-input HIDP interrupt transaction"
-                    );
+                tokio::select! {
+                    result = interrupt.receive() => {
+                        let report = match result {
+                            Ok(report) => report,
+                            Err(_) => break,
+                        };
+                        if report.is_empty() {
+                            continue;
+                        }
+                        // HIDP DATA/Input. Handshakes and control transactions are not input reports.
+                        if report[0] == 0xa1 {
+                            let _ = response_sender.send(report.slice(1..));
+                        } else {
+                            tracing::trace!(
+                                transaction = report[0],
+                                "ignored non-input HIDP interrupt transaction"
+                            );
+                        }
+                    }
+                    event = hci_events.recv() => match event {
+                        Ok(HciEvent::DisconnectionComplete { handle: event_handle, .. })
+                            if event_handle == handle => break,
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
                 }
             }
             state.store(DISCONNECTED, Ordering::Release);
+            let _ = disconnect_sender.send(());
         });
         self.handle = Some(handle);
         self.link = Some(link);
@@ -462,6 +478,10 @@ impl Transport for BrEdrHid {
 
     fn reports(&self) -> ReportReceiver {
         self.reports.subscribe()
+    }
+
+    fn disconnections(&self) -> Option<crate::DisconnectReceiver> {
+        Some(self.disconnects.subscribe())
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<()> {
