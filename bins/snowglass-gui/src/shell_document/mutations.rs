@@ -1,6 +1,6 @@
 use super::tracked_surface::TrackedSurfaceWidget;
 use crate::shell_runtime::Mutation;
-use blitz_dom::{LocalName, QualName, ns};
+use blitz_dom::{LocalName, NodeId, QualName, ns};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -11,8 +11,8 @@ pub(super) struct MutationEffect {
 
 pub(super) fn apply_dom_mutations(
     document: &mut blitz_html::HtmlDocument,
-    script_to_dom: &mut HashMap<usize, usize>,
-    dom_to_script: &mut HashMap<usize, usize>,
+    script_to_dom: &mut HashMap<usize, NodeId>,
+    dom_to_script: &mut HashMap<NodeId, usize>,
     mutations: Vec<Mutation>,
 ) -> MutationEffect {
     if mutations.is_empty() {
@@ -69,8 +69,8 @@ pub(super) fn apply_dom_mutations(
 
 fn apply_dom_mutation_batch(
     document: &mut blitz_html::HtmlDocument,
-    script_to_dom: &mut HashMap<usize, usize>,
-    dom_to_script: &mut HashMap<usize, usize>,
+    script_to_dom: &mut HashMap<usize, NodeId>,
+    dom_to_script: &mut HashMap<NodeId, usize>,
     mutations: Vec<Mutation>,
 ) -> MutationEffect {
     let mut needs_resolve = false;
@@ -112,7 +112,7 @@ fn apply_dom_mutation_batch(
             Mutation::CreateComment { node } => {
                 needs_resolve = true;
                 needs_geometry_sync = true;
-                let actual = mutator.create_comment_node();
+                let actual = mutator.create_comment_node("");
                 script_to_dom.insert(node, actual);
                 dom_to_script.insert(actual, node);
             }

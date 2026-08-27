@@ -101,8 +101,15 @@ impl Runtime {
         width: u32,
         height: u32,
         device_pixel_ratio: f32,
+        node_ids: &HashMap<blitz_dom::NodeId, usize>,
     ) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&snapshot(document, width, height, device_pixel_ratio, None))
+        serde_json::to_string(&snapshot(
+            document,
+            width,
+            height,
+            device_pixel_ratio,
+            Some(node_ids),
+        ))
     }
 
     pub(in crate::shell_runtime) async fn from_snapshot(
@@ -192,8 +199,8 @@ impl Runtime {
         width: u32,
         height: u32,
         device_pixel_ratio: f32,
-        node_ids: &HashMap<usize, usize>,
-        roots: Option<&[usize]>,
+        node_ids: &HashMap<blitz_dom::NodeId, usize>,
+        roots: Option<&[blitz_dom::NodeId]>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let layout = layout_snapshot(
             document,

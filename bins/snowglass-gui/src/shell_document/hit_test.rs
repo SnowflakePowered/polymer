@@ -1,6 +1,6 @@
 use super::tracked_surface::is_tracked_surface_element;
-use blitz_dom::local_name;
 use blitz_dom::node::Node;
+use blitz_dom::{NodeData, NodeId, local_name};
 use style::values::computed::{Overflow, PointerEvents};
 
 /// Hit-tests in the same stacking order Blitz paints while allowing a child
@@ -9,7 +9,7 @@ use style::values::computed::{Overflow, PointerEvents};
 /// Blitz 0.3 hoists non-zero z-index descendants out of `paint_children`.
 /// Those lists therefore have to be traversed explicitly around the ordinary
 /// children, just as the painter does.
-pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) -> Option<usize> {
+pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) -> Option<NodeId> {
     let painted = pointer_hit_node(document, document.root_element(), x, y).and_then(|node| {
         std::iter::successors(Some(node), |node| {
             document.get_node(*node).and_then(|node| node.parent)
@@ -31,6 +31,9 @@ pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) ->
     }
     let mut geometry_hit = None;
     for (order, (node_id, node)) in document.tree().iter().enumerate() {
+        if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+            continue;
+        }
         let accepts_pointer = node
             .primary_styles()
             .is_none_or(|styles| styles.clone_pointer_events() != PointerEvents::None);
@@ -90,7 +93,7 @@ pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) ->
 
 fn painted_pointer_target_is_valid(
     document: &blitz_dom::BaseDocument,
-    node_id: usize,
+    node_id: NodeId,
     x: f32,
     y: f32,
 ) -> bool {
@@ -110,7 +113,7 @@ fn painted_pointer_target_is_valid(
         !matches!(box_style.clone_overflow_x(), Overflow::Visible)
             || !matches!(box_style.clone_overflow_y(), Overflow::Visible)
     });
-    if !clips_overflow || node.transform.is_some() {
+    if !clips_overflow || node.transform().is_some() {
         return true;
     }
     document
@@ -125,7 +128,7 @@ fn painted_pointer_target_is_valid(
 
 pub(super) fn node_is_within_tracked_surface(
     document: &blitz_dom::BaseDocument,
-    node_id: usize,
+    node_id: NodeId,
 ) -> bool {
     std::iter::successors(Some(node_id), |node| {
         document.get_node(*node).and_then(|node| node.parent)
@@ -143,38 +146,36 @@ fn pointer_hit_node(
     node: &Node,
     x: f32,
     y: f32,
-) -> Option<usize> {
-    let mut local_x = x - node.final_layout.location.x + node.scroll_offset.x as f32;
-    let mut local_y = y - node.final_layout.location.y + node.scroll_offset.y as f32;
-    if let Some(transform) = node.transform {
+) -> Option<NodeId> {
+    if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+        return None;
+    }
+    let mut local_x = x - node.final_layout().location.x + node.scroll_offset().x as f32;
+    let mut local_y = y - node.final_layout().location.y + node.scroll_offset().y as f32;
+    if let Some(transform) = *node.transform() {
         let point = transform.inverse() * kurbo::Point::new(local_x.into(), local_y.into());
         local_x = point.x as f32;
         local_y = point.y as f32;
     }
 
-    let size = node.final_layout.size;
+    let size = node.final_layout().size;
     let matches_self = local_x >= 0.0
-        && local_x <= size.width + node.scroll_offset.x as f32
+        && local_x <= size.width + node.scroll_offset().x as f32
         && local_y >= 0.0
-        && local_y <= size.height + node.scroll_offset.y as f32;
-    let content = node.final_layout.content_size;
-    let matches_content = local_x >= 0.0
-        && local_x <= content.width + node.scroll_offset.x as f32
-        && local_y >= 0.0
-        && local_y <= content.height + node.scroll_offset.y as f32;
-    let overflow = node.scrollable_overflow;
+        && local_y <= size.height + node.scroll_offset().y as f32;
+    let overflow = node.scrollable_overflow();
     let matches_overflow = local_x >= overflow.x0 as f32
         && local_x <= overflow.x1 as f32
         && local_y >= overflow.y0 as f32
         && local_y <= overflow.y1 as f32;
     let matches_hoisted = node.stacking_context.as_ref().is_some_and(|context| {
         let area = context.content_area;
-        local_x >= area.left + node.scroll_offset.x as f32
-            && local_x <= area.right + node.scroll_offset.x as f32
-            && local_y >= area.top + node.scroll_offset.y as f32
-            && local_y <= area.bottom + node.scroll_offset.y as f32
+        local_x >= area.left + node.scroll_offset().x as f32
+            && local_x <= area.right + node.scroll_offset().x as f32
+            && local_y >= area.top + node.scroll_offset().y as f32
+            && local_y <= area.bottom + node.scroll_offset().y as f32
     });
-    if !matches_self && !matches_content && !matches_overflow && !matches_hoisted {
+    if !matches_self && !matches_overflow && !matches_hoisted {
         return None;
     }
     let clips_overflow = node.primary_styles().is_some_and(|styles| {

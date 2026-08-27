@@ -1,17 +1,18 @@
 use super::ShellDocument;
 use crate::shell_dom::ShellHitSnapshot;
 use crate::shell_runtime::ShellRuntime;
-use blitz_dom::{EventDriver, EventHandler};
+use blitz_dom::{EventDriver, EventHandler, NodeId};
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
     BlitzWheelEvent, DomEvent, DomEventData, EventState, KeyState, MouseEventButton,
     MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
 use std::{cell::Cell, collections::HashMap, rc::Rc, str::FromStr};
+use style_dom::ElementState;
 
 struct DenoEventHandler<'a> {
     runtime: &'a mut ShellRuntime,
-    dom_to_script: &'a HashMap<usize, usize>,
+    dom_to_script: &'a HashMap<NodeId, usize>,
     claimed: Rc<Cell<bool>>,
     ordinary_dom_hit: bool,
     target_override: Option<usize>,
@@ -22,7 +23,7 @@ struct DenoEventHandler<'a> {
 impl EventHandler for DenoEventHandler<'_> {
     fn handle_event(
         &mut self,
-        _chain: &[usize],
+        _chain: &[NodeId],
         event: &mut DomEvent,
         _document: &mut dyn blitz_dom::Document,
         event_state: &mut EventState,
@@ -31,7 +32,7 @@ impl EventHandler for DenoEventHandler<'_> {
             self.dom_to_script
                 .get(&event.target)
                 .copied()
-                .unwrap_or(event.target)
+                .unwrap_or(event.target.as_u64() as usize)
         });
         let result = self.runtime.dispatch_event(
             event.name(),
@@ -89,7 +90,7 @@ pub struct DomWheelEvent {
 }
 
 impl ShellDocument {
-    fn set_pointer_hover(&mut self, target: Option<usize>) {
+    fn set_pointer_hover(&mut self, target: Option<NodeId>) {
         let next_path = target
             .filter(|target| self.document.as_ref().get_node(*target).is_some())
             .map(|target| self.document.as_ref().node_chain(target))
@@ -106,7 +107,7 @@ impl ShellDocument {
             if self.document.as_ref().get_node(node).is_some() {
                 self.document
                     .as_mut()
-                    .snapshot_node_and(node, |node| node.unhover());
+                    .snapshot_node_and(node, ElementState::HOVER, |node| node.unhover());
             }
         }
         for node in next_path
@@ -116,7 +117,7 @@ impl ShellDocument {
         {
             self.document
                 .as_mut()
-                .snapshot_node_and(node, |node| node.hover());
+                .snapshot_node_and(node, ElementState::HOVER, |node| node.hover());
         }
         self.pointer_hover_path = next_path;
         self.dirty = true;
@@ -236,7 +237,7 @@ impl ShellDocument {
                 .dom_to_script
                 .get(&hit.node_id)
                 .copied()
-                .unwrap_or(hit.node_id);
+                .unwrap_or(hit.node_id.as_u64() as usize);
             let result =
                 runtime.dispatch_event("click", target, &DomEventData::Click(data), true, true);
             if result.default_prevented || result.handled {
@@ -266,10 +267,7 @@ impl ShellDocument {
             ordinary_dom_hit: !hit.over_tracked_surface,
             target_override: None,
             default_prevented: Some(default_prevented.clone()),
-            // Blitz 0.3's wheel default action ignores DomEvent::target and
-            // scrolls from its private hover cache. The shell hit is more
-            // accurate for hoisted overlays, so run the default below.
-            suppress_blitz_default: true,
+            suppress_blitz_default: false,
         };
         EventDriver::new(&mut self.document, handler).handle_dom_event(DomEvent::new(
             hit.node_id,
@@ -288,30 +286,6 @@ impl ShellDocument {
                 element: Point::default(),
             }),
         ));
-        let mut generated = Vec::new();
-        if !default_prevented.get() {
-            self.document.as_mut().scroll_by(
-                Some(hit.node_id),
-                event.horizontal,
-                event.vertical,
-                &mut |event| generated.push(event),
-            );
-        }
-        if !generated.is_empty() {
-            let handler = DenoEventHandler {
-                runtime,
-                dom_to_script: &self.dom_to_script,
-                claimed: claimed.clone(),
-                ordinary_dom_hit: !hit.over_tracked_surface,
-                target_override: None,
-                default_prevented: None,
-                suppress_blitz_default: false,
-            };
-            let mut driver = EventDriver::new(&mut self.document, handler);
-            for event in generated {
-                driver.handle_dom_event(event);
-            }
-        }
         // Native wheel default actions mutate Blitz scroll offsets without a
         // script mutation, so explicitly schedule the resulting repaint.
         self.dirty = true;

@@ -13,7 +13,7 @@ impl<'a> NodeGeometry<'a> {
     }
 
     pub(super) fn box_model(&self) -> Value {
-        let layout = &self.node.final_layout;
+        let layout = self.node.final_layout();
         let position = self.node.absolute_position(0.0, 0.0);
         let border = Self::quad(
             position.x,
@@ -62,7 +62,7 @@ impl<'a> NodeGeometry<'a> {
     }
 
     pub(super) fn content_quad(&self) -> Vec<f32> {
-        let layout = &self.node.final_layout;
+        let layout = self.node.final_layout();
         let position = self.node.absolute_position(0.0, 0.0);
         Self::inset_quad(
             position.x,

@@ -37,6 +37,7 @@ impl ShellRuntime {
         width: u32,
         height: u32,
         scale_factor: f32,
+        node_ids: &HashMap<blitz_dom::NodeId, usize>,
         options: ShellRuntimeOptions,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn Error>> {
         let ShellRuntimeOptions {
@@ -49,8 +50,13 @@ impl ShellRuntime {
             plugin_runtime,
             viewer,
         } = options;
-        let result = match deno::Runtime::serialized_snapshot(document, width, height, scale_factor)
-        {
+        let result = match deno::Runtime::serialized_snapshot(
+            document,
+            width,
+            height,
+            scale_factor,
+            node_ids,
+        ) {
             Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
                 initial_snapshot,
                 html,
@@ -116,8 +122,8 @@ impl ShellRuntime {
         width: u32,
         height: u32,
         scale_factor: f32,
-        node_ids: &HashMap<usize, usize>,
-        roots: Option<&[usize]>,
+        node_ids: &HashMap<blitz_dom::NodeId, usize>,
+        roots: Option<&[blitz_dom::NodeId]>,
     ) {
         if let Err(error) =
             self.runtime

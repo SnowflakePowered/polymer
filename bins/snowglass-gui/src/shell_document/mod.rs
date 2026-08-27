@@ -24,6 +24,7 @@ use crate::shell_runtime::{Mutation, ShellRuntime};
 use anyrender::PaintScene as _;
 use bands::BandedScene;
 pub use bands::{CompositionShadowStyle, GamePlacement, GameViewStyle};
+use blitz_dom::NodeId;
 use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
@@ -113,12 +114,12 @@ pub struct ShellDocument {
     /// Solid-created nodes use monotonically increasing JavaScript IDs while
     /// Blitz allocates its own arena IDs. Initial parsed nodes are identity
     /// mapped; these maps keep later mutations and hit testing in agreement.
-    script_to_dom: HashMap<usize, usize>,
-    dom_to_script: HashMap<usize, usize>,
+    script_to_dom: HashMap<usize, NodeId>,
+    dom_to_script: HashMap<NodeId, usize>,
     /// Authoritative paint-order hover path. Blitz's built-in hit tester does
     /// not account for every hoisted overlay that its painter supports, so
     /// shell pointer routing and CSS hover must share this path.
-    pointer_hover_path: Vec<usize>,
+    pointer_hover_path: Vec<NodeId>,
 }
 
 /// Factory for a shell document and its native network/window providers.
@@ -164,9 +165,13 @@ impl ShellDocumentFactory {
             .as_ref()
             .tree()
             .iter()
-            .map(|(id, _)| (id, id))
+            .enumerate()
+            .map(|(index, (id, _))| (index + 1, id))
             .collect::<HashMap<_, _>>();
-        let dom_to_script = script_to_dom.clone();
+        let dom_to_script = script_to_dom
+            .iter()
+            .map(|(script, dom)| (*dom, *script))
+            .collect();
         let mut document = ShellDocument {
             document,
             dom_structure_revision: 1,
@@ -197,6 +202,10 @@ impl ShellDocument {
     pub(crate) fn runtime_context(&self) -> (&blitz_dom::BaseDocument, u32, u32, f32) {
         let (width, height) = self.logical_size();
         (self.document.as_ref(), width, height, self.scale_factor)
+    }
+
+    pub(crate) fn runtime_node_ids(&self) -> &HashMap<NodeId, usize> {
+        &self.dom_to_script
     }
 
     pub(crate) const fn dom_structure_revision(&self) -> u64 {
@@ -453,6 +462,9 @@ impl ShellDocument {
                 .filter(|placement| placement.band == band)
             {
                 let Some(node_id) = placement.node_id else {
+                    continue;
+                };
+                let Some(node_id) = self.dom_to_script.get(&node_id).copied() else {
                     continue;
                 };
                 surface_layout.push(TrackedSurfaceLayout {

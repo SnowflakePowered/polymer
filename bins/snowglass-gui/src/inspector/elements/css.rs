@@ -1,13 +1,13 @@
 //! CSS stylesheet discovery, parsing, and CDP style projection.
 
 use super::protocol::DocumentProtocol;
-use blitz_dom::{BaseDocument, Node};
+use blitz_dom::{BaseDocument, Node, NodeId};
 use serde_json::{Value, json};
 
 #[derive(Clone)]
 pub(super) struct InspectorStylesheet {
     pub(super) id: String,
-    pub(super) node_id: usize,
+    pub(super) node_id: NodeId,
     pub(super) title: String,
     pub(super) source_url: String,
     pub(super) text: String,
@@ -52,7 +52,7 @@ impl<'a> Stylesheets<'a> {
 }
 
 impl InspectorStylesheet {
-    fn from_node(node_id: usize, node: &Node) -> Option<Self> {
+    fn from_node(node_id: NodeId, node: &Node) -> Option<Self> {
         let element = node.element_data()?;
         if element.name.local.as_ref() != "style" {
             return None;
@@ -498,15 +498,22 @@ impl Stylesheets<'_> {
         for (name, value) in Self::inline_declarations(node) {
             Self::set_property(&mut properties, name, value);
         }
-        let layout = &node.final_layout;
+        let layout = node.final_layout();
+        let styles = node.primary_styles();
         let layout_properties = [
             (
                 "display",
-                format!("{:?}", node.style.display).to_ascii_lowercase(),
+                styles
+                    .as_ref()
+                    .map(|styles| format!("{:?}", styles.clone_display()).to_ascii_lowercase())
+                    .unwrap_or_default(),
             ),
             (
                 "position",
-                format!("{:?}", node.style.position).to_ascii_lowercase(),
+                styles
+                    .as_ref()
+                    .map(|styles| format!("{:?}", styles.clone_position()).to_ascii_lowercase())
+                    .unwrap_or_default(),
             ),
             ("width", format!("{}px", layout.content_box_width())),
             ("height", format!("{}px", layout.content_box_height())),
