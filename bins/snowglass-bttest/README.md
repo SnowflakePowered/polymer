@@ -7,7 +7,7 @@ input or emulator integration layers.
 cargo run -p snowglass-bttest
 ```
 
-The Classic tab is pinned to the dedicated TP-Link `2357:0604` adapter. It can
+The Classic tab opens the first WinUSB Bluetooth adapter. It can
 run BR/EDR inquiry, resolve controller names, select Wii/SSP pairing policy,
 open HID control and interrupt channels, display raw reports, and send raw
 output reports. Link keys persist under `%LOCALAPPDATA%\Snowglass`.
@@ -37,8 +37,8 @@ Use **Sleep selected controller (keep wake armed)** to test that path: it sends
 Nintendo's retained-bond shutdown command, closes the local GATT session, and
 immediately waits for a fresh wake advertisement. After the LEDs turn off,
 press HOME or another normal controller button. Do not use SYNC for wake.
-Bonded controller addresses, controller kinds, adapter indices, and player
-slots persist in `%LOCALAPPDATA%\Snowglass\bluetooth-ble-controllers.txt`.
+Bond metadata, controller profile IDs, adapter indices, and player slots persist
+in `%LOCALAPPDATA%\Snowglass\bluetooth-controllers.json`.
 The viewer restores them on its next launch and immediately waits for their
 wake advertisements; discovery does not need to be enabled again.
 When upgrading from a build that did not yet create this registry, startup
@@ -67,3 +67,8 @@ and restores dormant bonded Switch 2 wake listeners.
 
 Dolphin Bluetooth Passthrough, Real Wii Remote mode, and Continuous Scanning
 must remain disabled while this application owns the dedicated adapter.
+
+Wii and Switch report decoding lives in this binary. `WiimoteInputProvider`
+owns the userspace Wii decoder, and the airmouse fusion code is nested beneath
+that provider. The Bluetooth crate supplies only connection-time setup and raw
+HID reports.

@@ -10604,15 +10604,20 @@ version = "0.1.0"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
+ "atomic-write-file",
  "btleplug",
  "bytes",
  "futures",
  "nusb",
  "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
  "windows 0.61.3",
+ "zerocopy",
 ]
 
 [[package]]
@@ -10620,6 +10625,7 @@ name = "snowglass-bttest"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "serde_json",
  "snowglass-bluetooth",
  "tokio",
  "tracing-subscriber",

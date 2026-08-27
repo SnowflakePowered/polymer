@@ -2,12 +2,15 @@
 
 #![forbid(unsafe_code)]
 
-pub mod ble;
-pub mod bredr;
+pub mod devices;
 mod error;
-mod transport;
+pub mod firmware;
+pub mod manager;
+pub mod store;
+pub mod transport;
 mod types;
 
 pub use error::{Error, Result};
+pub use manager::{BluetoothManager, ManagerConfig, ManagerEvent, ScanRequest};
 pub use transport::{ConnectionState, ReportReceiver, Transport};
-pub use types::{AddressKind, DeviceAddr};
+pub use types::{AddressKind, DeviceAddr, TransportKind};
