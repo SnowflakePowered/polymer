@@ -48,6 +48,10 @@
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-debug-viewer/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-gui/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-gui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-bttest/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-watcher/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
