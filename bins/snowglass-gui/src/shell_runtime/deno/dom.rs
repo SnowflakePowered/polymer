@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use blitz_dom::{BaseDocument, NodeData, local_name};
+use blitz_dom::{BaseDocument, NodeData, NodeId, local_name};
 use deno_core::{OpState, op2};
 use serde::{Deserialize, Serialize};
 
@@ -183,7 +183,7 @@ pub(super) struct FragmentNode {
     children: Vec<FragmentNode>,
 }
 
-fn fragment_node(document: &BaseDocument, id: usize) -> Option<FragmentNode> {
+fn fragment_node(document: &BaseDocument, id: NodeId) -> Option<FragmentNode> {
     let node = document.tree().get(id)?;
     let (kind, tag, namespace, text, attributes) = match &node.data {
         NodeData::Element(element) => (
@@ -209,7 +209,7 @@ fn fragment_node(document: &BaseDocument, id: usize) -> Option<FragmentNode> {
             Some(text.content.clone()),
             BTreeMap::new(),
         ),
-        NodeData::Comment => ("comment", None, None, None, BTreeMap::new()),
+        NodeData::Comment { .. } => ("comment", None, None, None, BTreeMap::new()),
         _ => return None,
     };
     Some(FragmentNode {
@@ -323,9 +323,9 @@ pub(super) fn layout_snapshot(
     width: u32,
     height: u32,
     device_pixel_ratio: f32,
-    node_ids: &HashMap<usize, usize>,
+    node_ids: &HashMap<NodeId, usize>,
     previous: &mut HashMap<usize, [f32; 4]>,
-    roots: Option<&[usize]>,
+    roots: Option<&[NodeId]>,
 ) -> LayoutSnapshot {
     fn same_geometry(previous: [f32; 4], current: [f32; 4]) -> bool {
         previous
@@ -337,12 +337,12 @@ pub(super) fn layout_snapshot(
     }
 
     let full_snapshot = roots.is_none();
-    let mut present = std::collections::HashSet::new();
+    let mut visited = std::collections::HashSet::new();
     let candidates = if let Some(roots) = roots {
         let mut candidates = Vec::new();
         let mut pending = roots.to_vec();
         while let Some(id) = pending.pop() {
-            if !present.insert(id) {
+            if !visited.insert(id) {
                 continue;
             }
             candidates.push(id);
@@ -354,19 +354,22 @@ pub(super) fn layout_snapshot(
     } else {
         document.tree().iter().map(|(id, _)| id).collect()
     };
-    present.clear();
+    let mut present = std::collections::HashSet::new();
     let nodes: Vec<LayoutNodeSnapshot> = candidates
         .into_iter()
         .filter_map(|tree_id| {
             let node = document.get_node(tree_id)?;
             let id = node_ids.get(&tree_id).copied()?;
             present.insert(id);
+            if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+                return None;
+            }
             let position = node.absolute_position(0.0, 0.0);
             let values = [
                 position.x,
                 position.y,
-                node.final_layout.size.width,
-                node.final_layout.size.height,
+                node.final_layout().size.width,
+                node.final_layout().size.height,
             ];
             let unchanged = previous
                 .insert(id, values)
@@ -414,19 +417,19 @@ pub(super) fn snapshot(
     width: u32,
     height: u32,
     device_pixel_ratio: f32,
-    node_ids: Option<&HashMap<usize, usize>>,
+    node_ids: Option<&HashMap<NodeId, usize>>,
 ) -> DomSnapshot {
-    let map_id = |id: usize| {
+    let map_id = |id: NodeId| {
         node_ids
             .and_then(|node_ids| node_ids.get(&id).copied())
-            .unwrap_or(id)
+            .unwrap_or(id.as_u64() as usize)
     };
     let nodes = document
         .tree()
         .iter()
         .filter_map(|(id, node)| {
             let (kind, tag, text, attributes) = match &node.data {
-                NodeData::Document => ("document", None, None, Default::default()),
+                NodeData::Document(_) => ("document", None, None, Default::default()),
                 NodeData::Element(element) => (
                     "element",
                     Some(element.name.local.to_string()),
@@ -445,10 +448,25 @@ pub(super) fn snapshot(
                 NodeData::Text(text) => {
                     ("text", None, Some(text.content.clone()), Default::default())
                 }
-                NodeData::Comment => ("comment", None, None, Default::default()),
+                NodeData::Comment { .. } => ("comment", None, None, Default::default()),
                 _ => return None,
             };
-            let position = node.absolute_position(0.0, 0.0);
+            let rect = if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+                RectSnapshot {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                }
+            } else {
+                let position = node.absolute_position(0.0, 0.0);
+                RectSnapshot {
+                    x: position.x,
+                    y: position.y,
+                    width: node.final_layout().size.width,
+                    height: node.final_layout().size.height,
+                }
+            };
             Some(NodeSnapshot {
                 id: map_id(id),
                 parent: node.parent.map(map_id),
@@ -457,12 +475,7 @@ pub(super) fn snapshot(
                 tag,
                 text,
                 attributes,
-                rect: RectSnapshot {
-                    x: position.x,
-                    y: position.y,
-                    width: node.final_layout.size.width,
-                    height: node.final_layout.size.height,
-                },
+                rect,
             })
         })
         .collect();

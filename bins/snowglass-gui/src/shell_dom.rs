@@ -74,7 +74,7 @@ pub(crate) struct TrackedSurfaceLayout {
 /// Result of querying the immutable layout used for an input-routing turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ShellHitSnapshot {
-    pub node_id: usize,
+    pub node_id: blitz_dom::NodeId,
     pub over_tracked_surface: bool,
 }
 
@@ -322,6 +322,7 @@ impl ShellSessionFactory {
             width,
             height,
             scale_factor,
+            document.runtime_node_ids(),
             ShellRuntimeOptions {
                 html: html.to_owned(),
                 source_name: base_url,

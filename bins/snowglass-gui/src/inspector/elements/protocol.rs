@@ -2,7 +2,7 @@
 
 use super::{css::Stylesheets, geometry::NodeGeometry};
 use crate::shell_dom::ShellSession;
-use blitz_dom::{BaseDocument, Node, NodeData};
+use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
@@ -274,7 +274,7 @@ impl<'a> DocumentProtocol<'a> {
 
     fn protocol_node(&self, node: &Node, deep: bool) -> Value {
         let (node_type, node_name, local_name, node_value) = match &node.data {
-            NodeData::Document => (DOCUMENT_NODE, "#document".into(), "".into(), "".into()),
+            NodeData::Document(_) => (DOCUMENT_NODE, "#document".into(), "".into(), "".into()),
             NodeData::Element(element) | NodeData::AnonymousBlock(element) => (
                 ELEMENT_NODE,
                 element.name.local.as_ref().to_ascii_uppercase(),
@@ -282,7 +282,7 @@ impl<'a> DocumentProtocol<'a> {
                 String::new(),
             ),
             NodeData::Text(text) => (TEXT_NODE, "#text".into(), "".into(), text.content.clone()),
-            NodeData::Comment => (COMMENT_NODE, "#comment".into(), "".into(), "".into()),
+            NodeData::Comment { .. } => (COMMENT_NODE, "#comment".into(), "".into(), "".into()),
         };
         let visible_children = node
             .children
@@ -310,7 +310,7 @@ impl<'a> DocumentProtocol<'a> {
             "children": children,
             "attributes": Self::attributes(node),
         });
-        if matches!(node.data, NodeData::Document) {
+        if matches!(node.data, NodeData::Document(_)) {
             value["documentURL"] = Value::String(self.target_url.to_owned());
             value["baseURL"] = Value::String(self.target_url.to_owned());
         }
@@ -321,12 +321,12 @@ impl<'a> DocumentProtocol<'a> {
         matches!(&node.data, NodeData::Text(text) if text.content.trim().is_empty())
     }
 
-    pub(super) fn protocol_id(id: usize) -> u64 {
-        id as u64 + 1
+    pub(super) fn protocol_id(id: NodeId) -> u64 {
+        id.as_u64()
     }
 
-    fn blitz_id(id: u64) -> Option<usize> {
-        id.checked_sub(1).and_then(|id| usize::try_from(id).ok())
+    fn blitz_id(id: u64) -> Option<NodeId> {
+        (id != 0).then(|| NodeId::from_u64(id))
     }
 
     fn request_node(&self, params: &Value) -> Result<&'a Node, ProtocolError> {

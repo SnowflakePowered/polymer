@@ -358,15 +358,20 @@ fn pointer_hit_accounts_for_a_transformed_hoisted_panel() {
         .as_ref()
         .tree()
         .iter()
-        .map(|(id, _)| (id, id))
+        .enumerate()
+        .map(|(index, (id, _))| (index + 1, id))
         .collect::<HashMap<_, _>>();
-    let mut dom_to_script = script_to_dom.clone();
+    let mut dom_to_script: HashMap<blitz_dom::NodeId, usize> = script_to_dom
+        .iter()
+        .map(|(script, dom)| (*dom, *script))
+        .collect();
+    let panel_script = dom_to_script[&panel];
     apply_dom_mutations(
             &mut document,
             &mut script_to_dom,
             &mut dom_to_script,
             vec![deno::Mutation::SetAttribute {
-                node: panel,
+                node: panel_script,
                 name: "style".to_owned(),
                 value: "position: fixed; top: 0; left: 0; width: 520px; height: 340px; transform: translate(112px, 383px)".to_owned(),
             }],
@@ -524,9 +529,13 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                     .as_ref()
                     .tree()
                     .iter()
-                    .map(|(id, _)| (id, id))
+                    .enumerate()
+                    .map(|(index, (id, _))| (index + 1, id))
                     .collect::<HashMap<_, _>>();
-                let dom_to_script = script_to_dom.clone();
+                let dom_to_script = script_to_dom
+                    .iter()
+                    .map(|(script, dom)| (*dom, *script))
+                    .collect();
                 let (_, arrivals) = channel();
                 let mut layer = ShellDocument {
                     document,
@@ -550,6 +559,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                     800,
                     600,
                     1.0,
+                    &layer.dom_to_script,
                     crate::shell_runtime::ShellRuntimeOptions {
                         html: html.to_owned(),
                         source_name: "snowglass:///native-click-test.html".to_owned(),
@@ -621,11 +631,16 @@ fn styles_new_solid_subtrees_before_attribute_invalidation() {
         .as_ref()
         .tree()
         .iter()
-        .map(|(id, _)| (id, id))
+        .enumerate()
+        .map(|(index, (id, _))| (index + 1, id))
         .collect::<HashMap<_, _>>();
-    let mut dom_to_script = script_to_dom.clone();
+    let mut dom_to_script: HashMap<blitz_dom::NodeId, usize> = script_to_dom
+        .iter()
+        .map(|(script, dom)| (*dom, *script))
+        .collect();
     let stage = script_to_dom.keys().copied().max().unwrap() + 1;
     let child = stage + 1;
+    let root_script = dom_to_script[&root];
 
     apply_dom_mutations(
         &mut document,
@@ -647,7 +662,7 @@ fn styles_new_solid_subtrees_before_attribute_invalidation() {
                 child,
             },
             deno::Mutation::AppendChild {
-                parent: root,
+                parent: root_script,
                 child: stage,
             },
             deno::Mutation::SetAttribute {

@@ -5,13 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-anyrender = "0.11.1"
-anyrender_vello = "0.11.0"
-blitz-dom = { version = "0.3.0-beta.1", features = ["custom-widget", "incremental"] }
-blitz-html = "0.3.0-beta.1"
-blitz-net = "0.3.0-beta.1"
-blitz-paint = { version = "0.3.0-beta.1", features = ["custom-widget"] }
-blitz-traits = "0.3.0-beta.1"
+anyrender = "0.13.0"
+anyrender_vello = "0.14.0"
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e", features = ["custom-widget"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e", features = ["custom-widget"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e" }
 arboard = "3.6.1"
 clap = "4.6.1"
 consolespec.workspace = true
@@ -29,7 +29,8 @@ regex.workspace = true
 serde.workspace = true
 serde_bytes = "0.11"
 serde_json.workspace = true
-style = { package = "stylo", version = "0.19.0" }
+style = { package = "stylo", version = "0.20.0" }
+style_dom = { package = "stylo_dom", version = "0.20.0" }
 snowglass-input.workspace = true
 snowglass-input-dinput.workspace = true
 snowglass-ipc.workspace = true
@@ -65,8 +66,8 @@ windows = { workspace = true, features = [
 windows-core.workspace = true
 windows-numerics = "0.2.0"
 winit = "0.30.13"
-vello = "0.9"
-vello_encoding = "0.9"
+vello = "0.10"
+vello_encoding = "0.10"
 # Vello rasterises through wgpu, but the compositor samples plain D3D12. The
 # HAL is how the texture Vello draws into is also a resource we can share.
 wgpu-hal = { version = "29", features = ["dx12"] }

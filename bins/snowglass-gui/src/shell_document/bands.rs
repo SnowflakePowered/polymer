@@ -56,7 +56,7 @@ pub struct CompositionShadowStyle {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GamePlacement {
     /// Blitz DOM node whose custom paint produced this placement.
-    pub node_id: Option<usize>,
+    pub node_id: Option<blitz_dom::NodeId>,
     /// The `src` of the `<tracked-surface>`, naming which tracked render target
     /// belongs in this box.
     pub source_id: u64,

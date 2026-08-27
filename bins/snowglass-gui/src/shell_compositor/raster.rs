@@ -105,11 +105,13 @@ fn same_resources(left: &vello_encoding::Resources, right: &vello_encoding::Reso
                         draw_data_offset: left_offset,
                         stops: left_stops,
                         extend: left_extend,
+                        ..
                     },
                     vello_encoding::Patch::Ramp {
                         draw_data_offset: right_offset,
                         stops: right_stops,
                         extend: right_extend,
+                        ..
                     },
                 ) => {
                     left_offset == right_offset
