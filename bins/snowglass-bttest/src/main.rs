@@ -1,3 +1,4 @@
+mod input;
 mod worker;
 
 use std::{
@@ -6,17 +7,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::input::{
+    switch::{ControllerKind as SwitchControllerKind, Telemetry as SwitchTelemetry},
+    wiimote::{
+        Accelerometer, Gyroscope, Telemetry as WiiTelemetry,
+        airmouse::{AirMouse, PointerPosition},
+    },
+};
 use eframe::egui;
 use snowglass_bluetooth::{
-    DeviceAddr,
-    ble::BleDevice,
-    bredr::{
-        switch::{ControllerKind as SwitchControllerKind, Telemetry as SwitchTelemetry},
-        wiimote::{
-            Accelerometer, Gyroscope, Telemetry as WiiTelemetry,
-            airmouse::{AirMouse, PointerPosition},
-        },
-    },
+    DeviceAddr, devices::nintendo::switch2::Switch2Device, transport::ble::BleDevice,
 };
 use worker::{Command, DeviceView, Event, PinChoice, RadioKind};
 
@@ -24,7 +24,9 @@ const DOUBLE_HOME_WINDOW: Duration = Duration::from_millis(700);
 
 fn main() -> eframe::Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("warn,snowglass_bluetooth::bredr::l2cap::link=debug")
+        tracing_subscriber::EnvFilter::new(
+            "warn,snowglass_bluetooth::transport::bredr::l2cap::link=debug",
+        )
     });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -901,7 +903,7 @@ impl BluetoothTestApp {
                         device
                             .name
                             .as_deref()
-                            .unwrap_or_else(|| device.kind.label()),
+                            .unwrap_or_else(|| Switch2Device::kind_for(device).label()),
                         device.addr,
                         device.rssi.map_or("?".into(), |v| format!("{v} dBm")),
                     );
@@ -1183,7 +1185,7 @@ fn parse_hex(value: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snowglass_bluetooth::bredr::wiimote::IrPoint;
+    use crate::input::wiimote::IrPoint;
 
     #[test]
     fn accepts_spaced_hex_reports() {

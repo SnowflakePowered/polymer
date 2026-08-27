@@ -1,4 +1,4 @@
-use snowglass_bluetooth::{
+use snowglass_bluetooth::transport::{
     ble::BleGatt,
     bredr::hci::{AdapterSelector, HciHost, UsbHci},
 };
@@ -12,7 +12,7 @@ async fn main() {
 }
 
 async fn run() -> snowglass_bluetooth::Result<()> {
-    let (vendor_id, product_id) = parse_vid_pid()?;
+    let selector = parse_selector()?;
     println!("OS-owned BLE adapters:");
     for adapter in BleGatt::adapter_names().await? {
         println!("  {adapter}");
@@ -31,8 +31,13 @@ async fn run() -> snowglass_bluetooth::Result<()> {
         println!("  (none)");
     }
 
-    println!("Opening {vendor_id:04x}:{product_id:04x} exclusively...");
-    let host = HciHost::open(&AdapterSelector::from_vid_pid(vendor_id, product_id)).await?;
+    match (selector.vendor_id, selector.product_id) {
+        (Some(vendor), Some(product)) => {
+            println!("Opening {vendor:04x}:{product:04x} exclusively...")
+        }
+        _ => println!("Opening the first WinUSB Bluetooth adapter exclusively..."),
+    }
+    let host = HciHost::open(&selector).await?;
     let info = host.info();
     println!("Adapter address: {}", info.address);
     println!(
@@ -60,14 +65,23 @@ async fn run() -> snowglass_bluetooth::Result<()> {
     Ok(())
 }
 
-fn parse_vid_pid() -> snowglass_bluetooth::Result<(u16, u16)> {
+fn parse_selector() -> snowglass_bluetooth::Result<AdapterSelector> {
     let mut args = std::env::args().skip(1);
-    let vendor = args.next().unwrap_or_else(|| "2357".into());
-    let product = args.next().unwrap_or_else(|| "0604".into());
+    let Some(vendor) = args.next() else {
+        return Ok(AdapterSelector::first_winusb());
+    };
+    let product = args
+        .next()
+        .ok_or(snowglass_bluetooth::Error::InvalidPacket(
+            "provide both VID and PID",
+        ))?;
     let parse = |value: &str| {
         u16::from_str_radix(value.trim_start_matches("0x"), 16).map_err(|_| {
             snowglass_bluetooth::Error::InvalidPacket("VID and PID must be hexadecimal u16 values")
         })
     };
-    Ok((parse(&vendor)?, parse(&product)?))
+    Ok(AdapterSelector::from_vid_pid(
+        parse(&vendor)?,
+        parse(&product)?,
+    ))
 }

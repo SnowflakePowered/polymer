@@ -2,14 +2,23 @@ use std::{fmt, str::FromStr};
 
 use crate::{Error, Result};
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransportKind {
+    Ble,
+    BrEdr,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize,
+)]
 pub enum AddressKind {
     #[default]
     Public,
     Random,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct DeviceAddr {
     bytes: [u8; 6],
     kind: AddressKind,

@@ -1,67 +1,70 @@
 # snowglass-bluetooth
 
-Userspace Bluetooth controller transports for Snowglass. This crate deliberately
-does not expose SDL devices or GUI state; those are consumers of the normalized
-report streams defined here.
+Userspace Bluetooth controller lifecycle and raw HID transport for Snowglass.
+Controller input interpretation, mapping, pointer transforms, and UI state do
+not belong in this crate.
 
 ## Radio ownership
 
-Use two radios:
+Snowglass deliberately uses two radios:
 
-- Leave the motherboard radio on the operating-system Bluetooth stack for BLE.
-- Dedicate a USB dongle to BR/EDR. On Windows it must use the **WinUSB** driver.
-  `libusbK.sys` is not compatible with the pure-Rust `nusb` Windows backend.
-  Replacing the driver removes that dongle from Windows Bluetooth, so never do
-  this to the only radio used by keyboards, mice, audio, or other peripherals.
-- On Linux the USB H2 backend is currently available; an `HCI_CHANNEL_USER`
-  backend should be preferred when added because it does not require rebinding.
+- BLE remains on an operating-system-owned adapter through btleplug/WinRT.
+- BR/EDR uses the first USB Bluetooth controller bound to WinUSB. An explicit
+  VID/PID or serial selector can be supplied when more than one is present.
 
-Dolphin Bluetooth Passthrough must be disabled: it competes for exclusive
-ownership of the dedicated USB interface. Real Wii Remote mode and Continuous
-Scanning must also be disabled when the Snowglass bridge is active.
+Changing a Windows adapter to WinUSB removes it from the Windows Bluetooth
+stack. Do not rebind the only radio used by the operating system for keyboards,
+mice, audio, or BLE.
 
-## Implemented foundation
-
-- USB H2 endpoint discovery and exclusive interface claims, including SCO alt 0
-- HCI command/event transport, initialization, inquiry, names, ACL connect/accept
-- controller-reported ACL packet sizing and completed-packet credit accounting
-- ACL fragmentation and per-handle L2CAP reassembly
-- L2CAP signaling, dynamic channel negotiation, configuration, and disconnect
-- HID control/interrupt PSM transport with a raw input/output report stream
-- SSP/PIN/link-key event handling and a persistent link-key store
-- explicit no-auth inbound ACL acceptance for DualShock 3 reconnection
-- OS-owned BLE scanning and proprietary GATT subscribe/init/write transport
-  with per-backend exponential reconnect cooldown
-- Switch 2 advertisement identification for Joy-Con 2, Pro Controller 2, and
-  NSO GameCube (`0x2073`), including model-specific notification UUIDs
-- immediate Switch 2 calibration initialization, safe feature enable sequence,
-  and a throughput-optimized OS connection-interval request
-- Nintendo pseudo-OOB Switch 2 bonding with a fresh LTK, verified AES challenge,
-  controller-side commit, retained-bond controller sleep, and normal-button
-  wake reconnection
-
-Run the hardware probe (VID/PID are hexadecimal and default to TP-Link
-`2357:0604`):
+## Architecture
 
 ```text
+src/
+├── transport/
+│   ├── ble/       OS GATT transport
+│   └── bredr/     USB HCI, ACL, L2CAP, SDP, pairing, raw HID
+├── devices/
+│   ├── catalog.rs generic built-in descriptors
+│   └── nintendo/  device facades and proprietary protocols
+├── firmware/      firmware registry and embedded Realtek loader
+├── manager.rs     discovery, bonding, lifecycle events, raw reports
+└── store.rs       versioned controller/bond registry
+```
+
+`ControllerProfile` describes matching and connection policy. Built-in profiles
+use generic `DeviceProfile` descriptors. `ControllerDevice` is the device
+facade for transport configuration, bonding, reconnect validation,
+synchronization, player LEDs, sleep, and raw HID output.
+
+`BluetoothManager` exposes async scan/connect/send/sleep/disconnect/forget
+operations and a broadcast stream of lifecycle events and unmodified HID
+reports. `FileControllerStore` persists its versioned registry atomically.
+
+Minimal SDP queries identify HID and PnP records before a caller applies
+product-specific policy. Unknown HID devices use the generic profile, while
+unattended reconnect is restricted to persisted controllers.
+
+## Realtek firmware
+
+The binary embeds the linux-firmware payloads and configuration aliases needed
+for RTL8723A/B/D, RTL8761A/BU, RTL8821A/C, RTL8822B/CU, RTL8851BU,
+RTL8852AU/BU/CU/BTU, and RTL8922AU. Both `Realtech` epatch v1 and `RTBTCore`
+epatch v2 containers are parsed. No installed chipset driver or runtime
+firmware download is required.
+
+Source revision, hashes, and the Realtek redistribution license are recorded
+under `src/firmware/assets`.
+
+## Probe
+
+With no arguments, the probe opens the first WinUSB Bluetooth adapter. Optional
+hexadecimal VID/PID arguments select a particular adapter:
+
+```text
+cargo run -p snowglass-bluetooth --example hci_probe
 cargo run -p snowglass-bluetooth --example hci_probe -- 2357 0604
 ```
 
-The probe is intentionally non-destructive. It resets the dedicated HCI
-controller, reads its features, address, and packet-buffer limits, enables page
-scan, and exits. It does not inquire, pair, or connect to a controller.
-
-## Public layers
-
-- `Transport` is the device-parser boundary. It emits controller-native HID
-  reports and carries output reports in the reverse direction.
-- `HciHost` owns one dedicated BR/EDR adapter and can be shared by multiple
-  `BrEdrHid` instances.
-- `Link` owns signaling for one ACL handle. Its actor serializes connection and
-  configuration changes while independently routing high-rate channel data.
-- `PairingAgent` responds to authentication events. Configure Wii Remote PIN
-  mode per address before inquiry/pairing.
-
-Controller report parsing, calibration, fusion, stable virtual slots, and SDL
-virtual joystick publication belong above this crate and are intentionally not
-wired here yet.
+The probe resets and initializes only the dedicated adapter, reads its limits,
+loads matching embedded firmware when needed, and exits without pairing a
+controller.
