@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant as StdInstant},
 };
 
 use async_trait::async_trait;
@@ -35,6 +35,9 @@ pub struct GattProfile {
     pub service: Uuid,
     pub input: Uuid,
     pub input_fallbacks: Vec<Uuid>,
+    /// Alternate input characteristics to discover for explicit selection.
+    /// Only the primary input is subscribed initially.
+    pub additional_inputs: Vec<Uuid>,
     pub output: Uuid,
     pub response: Option<Uuid>,
     pub output_write_type: WriteType,
@@ -42,6 +45,15 @@ pub struct GattProfile {
     /// state is not updated reliably without notification traffic.
     pub idle_disconnect_timeout: Option<Duration>,
 }
+
+#[derive(Clone, Debug)]
+pub struct GattNotification {
+    pub uuid: Uuid,
+    pub value: Bytes,
+    pub received_at: StdInstant,
+}
+
+pub type GattNotificationReceiver = broadcast::Receiver<GattNotification>;
 
 #[derive(Clone, Debug)]
 pub struct BleDevice {
@@ -137,12 +149,15 @@ pub struct BleGatt {
     adapter_index: usize,
     profile: GattProfile,
     reports: broadcast::Sender<Bytes>,
+    notifications: broadcast::Sender<GattNotification>,
     responses: broadcast::Sender<Bytes>,
     disconnects: broadcast::Sender<()>,
     state: Arc<AtomicU8>,
     scan_timeout: Duration,
     peripheral: Option<Peripheral>,
     input: Option<Characteristic>,
+    additional_inputs: Vec<Characteristic>,
+    subscribed_inputs: HashSet<Uuid>,
     output: Option<Characteristic>,
     response: Option<Characteristic>,
     notification_task: Option<JoinHandle<()>>,
@@ -171,18 +186,22 @@ async fn subscribe_with_retry(
 impl BleGatt {
     pub fn new(adapter_index: usize, profile: GattProfile) -> Self {
         let (reports, _) = broadcast::channel(256);
+        let (notifications, _) = broadcast::channel(512);
         let (responses, _) = broadcast::channel(32);
         let (disconnects, _) = broadcast::channel(8);
         Self {
             adapter_index,
             profile,
             reports,
+            notifications,
             responses,
             disconnects,
             state: Arc::new(AtomicU8::new(DISCONNECTED)),
             scan_timeout: Duration::from_secs(20),
             peripheral: None,
             input: None,
+            additional_inputs: Vec::new(),
+            subscribed_inputs: HashSet::new(),
             output: None,
             response: None,
             notification_task: None,
@@ -276,6 +295,24 @@ impl BleGatt {
                 .find(|c| c.service_uuid == self.profile.service && c.uuid == self.profile.output)
                 .cloned()
                 .ok_or(Error::Unsupported("BLE output characteristic is missing"))?;
+            let additional_inputs = self
+                .profile
+                .additional_inputs
+                .iter()
+                .filter(|uuid| **uuid != input.uuid)
+                .map(|uuid| {
+                    characteristics
+                        .iter()
+                        .find(|characteristic| {
+                            characteristic.service_uuid == self.profile.service
+                                && characteristic.uuid == *uuid
+                        })
+                        .cloned()
+                        .ok_or(Error::Unsupported(
+                            "additional BLE input notification characteristic is missing",
+                        ))
+                })
+                .collect::<Result<Vec<_>>>()?;
             let response = match self.profile.response {
                 Some(uuid) => Some(
                     characteristics
@@ -293,7 +330,6 @@ impl BleGatt {
                 subscribe_with_retry(&peripheral, response, "command response").await?;
             }
             subscribe_with_retry(&peripheral, &input, "input").await?;
-
             // WinRT otherwise commonly chooses a roughly 60 ms interval,
             // throttling these high-rate notifications. Unsupported platforms
             // simply retain their default interval.
@@ -301,22 +337,30 @@ impl BleGatt {
                 .request_connection_parameters(ConnectionParameterPreset::ThroughputOptimized)
                 .await;
 
-            Ok::<_, Error>((input, output, response, notifications))
+            Ok::<_, Error>((input, additional_inputs, output, response, notifications))
         }
         .await;
-        let (input, output, response, mut notifications) = match configured {
-            Ok(configured) => configured,
-            Err(error) => {
-                let _ = peripheral.disconnect().await;
-                return Err(error);
-            }
-        };
+        let (input, additional_inputs, output, response, mut platform_notifications) =
+            match configured {
+                Ok(configured) => configured,
+                Err(error) => {
+                    let _ = peripheral.disconnect().await;
+                    return Err(error);
+                }
+            };
 
         let reports = self.reports.clone();
+        let captured_notifications = self.notifications.clone();
         let responses = self.responses.clone();
         let disconnects = self.disconnects.clone();
         let state = self.state.clone();
-        let input_uuid = input.uuid;
+        let input_uuids = std::iter::once(input.uuid)
+            .chain(
+                additional_inputs
+                    .iter()
+                    .map(|characteristic| characteristic.uuid),
+            )
+            .collect::<Vec<_>>();
         let response_uuid = response.as_ref().map(|characteristic| characteristic.uuid);
         let idle_disconnect_timeout = self.profile.idle_disconnect_timeout;
         let monitored_peripheral = peripheral.clone();
@@ -328,11 +372,17 @@ impl BleGatt {
             );
             loop {
                 tokio::select! {
-                    notification = notifications.next() => {
+                    notification = platform_notifications.next() => {
                         let Some(notification) = notification else { break; };
-                        if notification.uuid == input_uuid {
+                        if input_uuids.contains(&notification.uuid) {
                             last_notification = Instant::now();
-                            let _ = reports.send(Bytes::from(notification.value));
+                            let notification = GattNotification {
+                                uuid: notification.uuid,
+                                value: Bytes::from(notification.value),
+                                received_at: StdInstant::now(),
+                            };
+                            let _ = reports.send(notification.value.clone());
+                            let _ = captured_notifications.send(notification);
                         } else if Some(notification.uuid) == response_uuid {
                             let _ = responses.send(Bytes::from(notification.value));
                         }
@@ -351,7 +401,9 @@ impl BleGatt {
             let _ = disconnects.send(());
         });
         self.peripheral = Some(peripheral);
+        self.subscribed_inputs = HashSet::from([input.uuid]);
         self.input = Some(input);
+        self.additional_inputs = additional_inputs;
         self.output = Some(output);
         self.response = response;
         self.notification_task = Some(notification_task);
@@ -364,6 +416,8 @@ impl BleGatt {
             task.abort();
         }
         self.input = None;
+        self.additional_inputs.clear();
+        self.subscribed_inputs.clear();
         self.output = None;
         self.response = None;
         self.peripheral = None;
@@ -375,6 +429,77 @@ impl BleGatt {
     /// fabricating an input packet.
     pub fn disconnections(&self) -> broadcast::Receiver<()> {
         self.disconnects.subscribe()
+    }
+
+    /// Receives input notifications together with the characteristic UUID and
+    /// a timestamp taken at the platform notification boundary.
+    pub fn gatt_notifications(&self) -> GattNotificationReceiver {
+        self.notifications.subscribe()
+    }
+
+    /// Subscribes every discovered input characteristic without changing the
+    /// preferred input. This is useful for protocol experiments which need to
+    /// establish whether a device can notify multiple report streams at once.
+    pub async fn subscribe_all_input_characteristics(&mut self) -> Result<Vec<Uuid>> {
+        let peripheral = self.peripheral.as_ref().ok_or(Error::ChannelClosed)?;
+        let inputs = self
+            .input
+            .iter()
+            .chain(self.additional_inputs.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        for input in &inputs {
+            if self.subscribed_inputs.contains(&input.uuid) {
+                continue;
+            }
+            subscribe_with_retry(peripheral, input, "additional input").await?;
+            self.subscribed_inputs.insert(input.uuid);
+        }
+        Ok(inputs.into_iter().map(|input| input.uuid).collect())
+    }
+
+    /// Selects exactly one input characteristic while keeping the GATT
+    /// connection and command-response channel alive.
+    pub async fn select_input_characteristic(&mut self, uuid: Uuid) -> Result<()> {
+        let Some(current) = self.input.clone() else {
+            return Err(Error::ChannelClosed);
+        };
+        let replacement = if current.uuid == uuid {
+            current.clone()
+        } else {
+            self.additional_inputs
+                .iter()
+                .find(|characteristic| characteristic.uuid == uuid)
+                .cloned()
+                .ok_or(Error::Unsupported(
+                    "requested BLE input characteristic is unavailable",
+                ))?
+        };
+        let peripheral = self.peripheral.as_ref().ok_or(Error::ChannelClosed)?;
+        if !self.subscribed_inputs.contains(&uuid) {
+            subscribe_with_retry(peripheral, &replacement, "selected input").await?;
+            self.subscribed_inputs.insert(uuid);
+        }
+        let inputs = std::iter::once(current.clone())
+            .chain(self.additional_inputs.iter().cloned())
+            .collect::<Vec<_>>();
+        for input in inputs {
+            if input.uuid != uuid && self.subscribed_inputs.contains(&input.uuid) {
+                peripheral.unsubscribe(&input).await?;
+                self.subscribed_inputs.remove(&input.uuid);
+            }
+        }
+        if current.uuid != uuid {
+            let index = self
+                .additional_inputs
+                .iter()
+                .position(|characteristic| characteristic.uuid == uuid)
+                .expect("replacement was found above");
+            self.additional_inputs.remove(index);
+            self.additional_inputs.push(current);
+            self.input = Some(replacement);
+        }
+        Ok(())
     }
 }
 
@@ -428,6 +553,10 @@ impl Transport for BleGatt {
         Some(self.responses.subscribe())
     }
 
+    fn disconnections(&self) -> Option<crate::DisconnectReceiver> {
+        Some(self.disconnects.subscribe())
+    }
+
     async fn send(&mut self, data: &[u8]) -> Result<()> {
         let peripheral = self.peripheral.as_ref().ok_or(Error::ChannelClosed)?;
         let output = self.output.as_ref().ok_or(Error::ChannelClosed)?;
@@ -440,11 +569,15 @@ impl Transport for BleGatt {
     async fn disconnect(&mut self) -> Result<()> {
         let peripheral = self.peripheral.clone();
         let input = self.input.clone();
+        let additional_inputs = self.additional_inputs.clone();
         let response = self.response.clone();
         self.clear();
         if let Some(peripheral) = peripheral {
             if let Some(input) = input {
                 let _ = peripheral.unsubscribe(&input).await;
+            }
+            for additional_input in additional_inputs {
+                let _ = peripheral.unsubscribe(&additional_input).await;
             }
             if let Some(response) = response {
                 let _ = peripheral.unsubscribe(&response).await;

@@ -2,4 +2,7 @@
 
 mod gatt;
 
-pub use gatt::{BleDevice, BleGatt, GattProfile, default_adapter_address, scan, stop_scan};
+pub use gatt::{
+    BleDevice, BleGatt, GattNotification, GattNotificationReceiver, GattProfile,
+    default_adapter_address, scan, stop_scan,
+};

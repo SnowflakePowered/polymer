@@ -1,15 +1,13 @@
 //! Data-driven controller matching, policy, and connection-time behavior.
 
 mod catalog;
+mod generic;
 pub mod nintendo;
 mod profile;
+pub mod sony;
 
 pub use profile::{
-    BondingMode, ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerProfile,
-    DeviceIdentity, DeviceProfile, HostIdentity, MatchConfidence, MatchRule, PairingPolicy,
-    PnpIdentity, ProfileId, ProfileRegistry, ReconnectPolicy,
+    BondingMode, ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerRegistry,
+    ControllerSession, DeviceIdentity, HostIdentity, MatchConfidence, PairingPolicy, PnpIdentity,
+    ProfileId, ReconnectPolicy,
 };
-
-pub(crate) const fn binary_player_leds(slot: u8) -> u8 {
-    if slot >= 0x0e { 0x0f } else { slot + 1 }
-}

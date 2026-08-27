@@ -24,17 +24,19 @@ src/
 │   ├── ble/       OS GATT transport
 │   └── bredr/     USB HCI, ACL, L2CAP, SDP, pairing, raw HID
 ├── devices/
-│   ├── catalog.rs generic built-in descriptors
-│   └── nintendo/  device facades and proprietary protocols
+│   ├── nintendo/  concrete Nintendo controllers and proprietary protocols
+│   └── sony/      concrete PlayStation controllers
 ├── firmware/      firmware registry and embedded Realtek loader
 ├── manager.rs     discovery, bonding, lifecycle events, raw reports
 └── store.rs       versioned controller/bond registry
 ```
 
-`ControllerProfile` describes matching and connection policy. Built-in profiles
-use generic `DeviceProfile` descriptors. `ControllerDevice` is the device
-facade for transport configuration, bonding, reconnect validation,
-synchronization, player LEDs, sleep, and raw HID output.
+Each concrete controller implements the object-safe `ControllerDevice` facade.
+The manager identifies one implementation through `ControllerRegistry`, then
+uses that same object for transport configuration, bonding, reconnect
+validation, synchronization, player LEDs, sleep, and raw HID output. Shared
+family protocols are private implementation details rather than runtime model
+enums.
 
 `BluetoothManager` exposes async scan/connect/send/sleep/disconnect/forget
 operations and a broadcast stream of lifecycle events and unmodified HID

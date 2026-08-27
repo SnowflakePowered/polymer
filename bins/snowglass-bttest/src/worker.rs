@@ -8,26 +8,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::input::{
-    switch::{self, ControllerKind as SwitchControllerKind},
-    wiimote,
-};
+use crate::input::{decoder, wiimote};
 use snowglass_bluetooth::{
     DeviceAddr, ReportReceiver, Transport, TransportKind,
     devices::{
-        ConnectOptions, ControllerDevice,
-        nintendo::{
-            switch::SwitchDevice,
-            switch2::{Switch2Device, Switch2Kind},
-            wiimote::WiimoteDevice,
-        },
+        ConnectOptions, ControllerDevice, ControllerRegistry, ControllerSession, DeviceIdentity,
+        ProfileId,
+        nintendo::switch2::{COMMON_INPUT_UUID, UnknownSwitch2Controller},
     },
     store::{
         ControllerLinkKeyStore, ControllerRecord, ControllerStore, FileControllerStore,
         MemoryControllerStore,
     },
     transport::{
-        ble::{BleDevice, BleGatt, default_adapter_address, stop_scan as stop_ble_adapter_scan},
+        ble::{
+            BleDevice, BleGatt, GattNotificationReceiver, default_adapter_address,
+            scan as scan_ble, stop_scan as stop_ble_adapter_scan,
+        },
         bredr::{
             BrEdrHid, PairingAgent, PinCode,
             hci::{AdapterSelector, Event as HciEvent, HciHost, InquiryResult},
@@ -44,50 +41,6 @@ fn connect_options(slot: usize) -> ConnectOptions {
         player_index: u8::try_from(slot).unwrap_or(u8::MAX),
         ..ConnectOptions::default()
     }
-}
-
-async fn sync_wiimote(
-    transport: &mut dyn Transport,
-    slot: usize,
-) -> snowglass_bluetooth::Result<()> {
-    WiimoteDevice
-        .sync(
-            transport,
-            &connect_options(slot),
-            &mut serde_json::Value::Null,
-        )
-        .await
-}
-
-async fn sync_switch(
-    transport: &mut dyn Transport,
-    kind: SwitchControllerKind,
-    slot: usize,
-) -> snowglass_bluetooth::Result<u8> {
-    let mut state = serde_json::json!({});
-    SwitchDevice::new(kind.label())
-        .sync(transport, &connect_options(slot), &mut state)
-        .await?;
-    Ok(state
-        .get("packet_counter")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u8)
-}
-
-async fn sleep_switch(
-    transport: &mut dyn Transport,
-    kind: SwitchControllerKind,
-    packet_counter: &mut u8,
-) -> snowglass_bluetooth::Result<()> {
-    let mut state = serde_json::json!({ "packet_counter": *packet_counter });
-    SwitchDevice::new(kind.label())
-        .sleep(transport, &mut state)
-        .await?;
-    *packet_counter = state
-        .get("packet_counter")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u8;
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +80,22 @@ pub struct DeviceView {
     pub name: String,
     pub rssi: Option<i8>,
     pub class: String,
+    pub profile_id: Option<ProfileId>,
+    pub profile_name: Option<&'static str>,
+}
+
+impl DeviceView {
+    pub fn is_wii_remote(&self) -> bool {
+        self.profile_id
+            .as_ref()
+            .is_some_and(|id| id.as_str().starts_with("nintendo.wiimote."))
+    }
+
+    pub fn is_switch(&self) -> bool {
+        self.profile_id
+            .as_ref()
+            .is_some_and(|id| id.as_str().starts_with("nintendo.switch."))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -143,12 +112,18 @@ pub enum Command {
     ConnectBr {
         device: InquiryResult,
         pin: PinChoice,
-        is_wii_remote: bool,
-        switch_kind: Option<SwitchControllerKind>,
+        profile_id: Option<ProfileId>,
     },
     ConnectBle {
         adapter_index: usize,
         device: BleDevice,
+    },
+    SelectSwitch2InputReport {
+        addr: DeviceAddr,
+        report_id: u8,
+    },
+    SubscribeAllSwitch2InputReports {
+        addr: DeviceAddr,
     },
     Forget(DeviceAddr),
     ListenInbound(bool),
@@ -187,14 +162,41 @@ pub enum Event {
         addr: String,
         bytes: Vec<u8>,
     },
+    BleReport {
+        addr: String,
+        characteristic: String,
+        bytes: Vec<u8>,
+        received_at: Instant,
+    },
+    BleReportsDropped {
+        addr: String,
+        count: u64,
+    },
+    Switch2InputReportSelected {
+        addr: String,
+        report_id: u8,
+    },
+    Switch2InputReportSelectionFailed {
+        addr: String,
+        report_id: u8,
+        reason: String,
+    },
+    Switch2InputReportsSubscribed {
+        addr: String,
+        report_ids: Vec<u8>,
+    },
+    Switch2InputReportsSubscriptionFailed {
+        addr: String,
+        reason: String,
+    },
     WiiTelemetry {
         addr: String,
         telemetry: wiimote::Telemetry,
         received_at: Instant,
     },
-    SwitchTelemetry {
+    DecodedInput {
         addr: String,
-        telemetry: switch::Telemetry,
+        input: decoder::DecodedInput,
     },
     Log(String),
     Error(String),
@@ -235,7 +237,19 @@ struct ActiveController {
     report_task: JoinHandle<()>,
     identity: BrIdentity,
     slot: usize,
-    switch_packet_counter: u8,
+    session: Option<Box<dyn ControllerSession>>,
+}
+
+impl ActiveController {
+    async fn sleep(&mut self) -> snowglass_bluetooth::Result<()> {
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
+        match &mut self.transport {
+            ActiveTransport::BrEdr(transport) => session.sleep(transport).await,
+            ActiveTransport::Ble(transport) => session.sleep(transport.as_mut()).await,
+        }
+    }
 }
 
 struct PendingInbound {
@@ -249,19 +263,25 @@ struct PendingOutbound {
     task: JoinHandle<()>,
 }
 
+struct BrConnection {
+    transport: BrEdrHid,
+    reports: ReportReceiver,
+    session: Option<Box<dyn ControllerSession>>,
+}
+
 struct InboundResult {
     addr: DeviceAddr,
     handle: u16,
     identity: BrIdentity,
     slot: usize,
-    result: snowglass_bluetooth::Result<(BrEdrHid, ReportReceiver, u8)>,
+    result: snowglass_bluetooth::Result<BrConnection>,
 }
 
 struct OutboundResult {
     addr: DeviceAddr,
     identity: BrIdentity,
     slot: usize,
-    result: snowglass_bluetooth::Result<(BrEdrHid, ReportReceiver, u8)>,
+    result: snowglass_bluetooth::Result<BrConnection>,
 }
 
 struct PendingBle {
@@ -269,24 +289,42 @@ struct PendingBle {
     task: JoinHandle<()>,
 }
 
+struct BleConnection {
+    transport: BleGatt,
+    notifications: GattNotificationReceiver,
+    disconnects: tokio::sync::broadcast::Receiver<()>,
+    session: Box<dyn ControllerSession>,
+}
+
 struct BleResult {
     addr: DeviceAddr,
     slot: usize,
     adapter_index: usize,
     device: BleDevice,
+    profile_id: ProfileId,
     automatic: bool,
-    result: snowglass_bluetooth::Result<(
-        BleGatt,
-        ReportReceiver,
-        tokio::sync::broadcast::Receiver<()>,
-    )>,
+    result: snowglass_bluetooth::Result<BleConnection>,
 }
 
 #[derive(Clone)]
 struct KnownBle {
     adapter_index: usize,
     device: BleDevice,
+    profile_id: ProfileId,
     slot: usize,
+}
+
+impl KnownBle {
+    fn controller(&self) -> Option<Arc<dyn ControllerDevice>> {
+        ControllerRegistry::standard().get(&self.profile_id)
+    }
+
+    fn label(&self) -> &'static str {
+        self.controller()
+            .map_or("Switch 2 controller", |controller| {
+                controller.display_name()
+            })
+    }
 }
 
 struct BleDisconnected {
@@ -299,88 +337,85 @@ struct BleRecovery {
     device: BleDevice,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct BrIdentity {
-    is_wii_remote: bool,
-    switch_kind: Option<SwitchControllerKind>,
+    profile_id: Option<ProfileId>,
 }
 
 impl BrIdentity {
-    const fn new(is_wii_remote: bool, switch_kind: Option<SwitchControllerKind>) -> Self {
-        Self {
-            is_wii_remote,
-            switch_kind,
-        }
+    fn new(profile_id: Option<ProfileId>) -> Self {
+        Self { profile_id }
     }
 
-    const fn token(self) -> Option<&'static str> {
-        if self.is_wii_remote {
-            return Some("wii");
-        }
-        match self.switch_kind {
-            Some(SwitchControllerKind::ProController) => Some("switch-pro"),
-            Some(SwitchControllerKind::JoyConLeft) => Some("joycon-left"),
-            Some(SwitchControllerKind::JoyConRight) => Some("joycon-right"),
-            Some(SwitchControllerKind::NsoNes) => Some("nso-nes"),
-            Some(SwitchControllerKind::NsoSnes) => Some("nso-snes"),
-            Some(SwitchControllerKind::NsoN64) => Some("nso-n64"),
-            Some(SwitchControllerKind::NsoGenesis) => Some("nso-genesis"),
-            None => None,
-        }
+    fn token(&self) -> Option<&str> {
+        self.profile_id.as_ref().map(ProfileId::as_str)
     }
 
-    const fn label(self) -> &'static str {
-        if self.is_wii_remote {
-            return "Wii Remote";
-        }
-        match self.switch_kind {
-            Some(kind) => kind.label(),
-            None => "BR/EDR controller",
-        }
+    fn label(&self) -> &'static str {
+        self.controller()
+            .map_or("BR/EDR controller", |controller| controller.display_name())
     }
 
     fn from_token(token: &str) -> Option<Self> {
-        let switch_kind = match token {
-            "wii" => return Some(Self::new(true, None)),
-            "switch-pro" => SwitchControllerKind::ProController,
-            "joycon-left" => SwitchControllerKind::JoyConLeft,
-            "joycon-right" => SwitchControllerKind::JoyConRight,
-            "nso-nes" => SwitchControllerKind::NsoNes,
-            "nso-snes" => SwitchControllerKind::NsoSnes,
-            "nso-n64" => SwitchControllerKind::NsoN64,
-            "nso-genesis" => SwitchControllerKind::NsoGenesis,
-            _ => return None,
-        };
-        Some(Self::new(false, Some(switch_kind)))
+        let profile_id = ProfileId::new(token);
+        ControllerRegistry::standard()
+            .get(&profile_id)
+            .map(|_| Self::new(Some(profile_id)))
     }
 
-    fn profile_id(self) -> Option<&'static str> {
-        Some(match self.token()? {
-            "wii" => "nintendo.wiimote",
-            "switch-pro" => "nintendo.switch.pro",
-            "joycon-left" => "nintendo.switch.joycon-left",
-            "joycon-right" => "nintendo.switch.joycon-right",
-            "nso-nes" => "nintendo.switch.nso-nes",
-            "nso-snes" => "nintendo.switch.nso-snes",
-            "nso-n64" => "nintendo.switch.nso-n64",
-            "nso-genesis" => "nintendo.switch.nso-genesis",
-            _ => return None,
-        })
+    fn controller(&self) -> Option<Arc<dyn ControllerDevice>> {
+        ControllerRegistry::standard().get(self.profile_id.as_ref()?)
     }
 
     fn from_profile_id(id: &str) -> Option<Self> {
-        match id {
-            "nintendo.wiimote" => Self::from_token("wii"),
-            "nintendo.switch.pro" => Self::from_token("switch-pro"),
-            "nintendo.switch.joycon-left" => Self::from_token("joycon-left"),
-            "nintendo.switch.joycon-right" => Self::from_token("joycon-right"),
-            "nintendo.switch.nso-nes" => Self::from_token("nso-nes"),
-            "nintendo.switch.nso-snes" => Self::from_token("nso-snes"),
-            "nintendo.switch.nso-n64" => Self::from_token("nso-n64"),
-            "nintendo.switch.nso-genesis" => Self::from_token("nso-genesis"),
-            _ => None,
-        }
+        Self::from_token(id)
     }
+
+    fn is_wii_remote(&self) -> bool {
+        self.token()
+            .is_some_and(|id| id.starts_with("nintendo.wiimote."))
+    }
+
+    fn is_switch(&self) -> bool {
+        self.token()
+            .is_some_and(|id| id.starts_with("nintendo.switch."))
+    }
+
+    async fn connect(
+        &self,
+        transport: &mut dyn Transport,
+        slot: usize,
+    ) -> snowglass_bluetooth::Result<Option<Box<dyn ControllerSession>>> {
+        let Some(controller) = self.controller() else {
+            return Ok(None);
+        };
+        let mut session = controller.connect(&connect_options(slot));
+        session.synchronize(transport).await?;
+        Ok(Some(session))
+    }
+}
+
+fn ble_device_identity(device: &BleDevice) -> DeviceIdentity {
+    DeviceIdentity {
+        address: device.addr,
+        transport: TransportKind::Ble,
+        name: device.name.clone(),
+        class_of_device: None,
+        service_uuids: device.services.clone(),
+        manufacturer_data: device
+            .manufacturer_data
+            .iter()
+            .map(|(id, data)| (*id, data.clone()))
+            .collect(),
+        pnp: None,
+    }
+}
+
+fn controller_for_ble(device: &BleDevice) -> Option<Arc<dyn ControllerDevice>> {
+    ControllerRegistry::standard()
+        .identify(&ble_device_identity(device))
+        .ok()
+        .flatten()
 }
 
 pub fn spawn() -> (tokio_mpsc::UnboundedSender<Command>, mpsc::Receiver<Event>) {
@@ -515,12 +550,12 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
         let addr = known.device.addr;
         diagnostic(&format!(
             "Restored bonded Switch 2 controller {addr} ({}) in player slot {}; waiting for wake advertisement",
-            Switch2Device::kind_for(&known.device).label(),
+            known.label(),
             known.slot + 1
         ));
         let _ = events.send(Event::Log(format!(
             "Bonded {} restored in player slot {}; press a controller button to reconnect",
-            Switch2Device::kind_for(&known.device).label(),
+            known.label(),
             known.slot + 1
         )));
         let pending = spawn_ble_connection(
@@ -588,17 +623,20 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                 );
                 let known = KnownBle {
                     adapter_index: recovery.adapter_index,
+                    profile_id: controller_for_ble(&recovery.device)
+                        .map(|controller| controller.id())
+                        .unwrap_or_else(|| ProfileId::new("nintendo.switch2.unknown")),
                     device: recovery.device,
                     slot,
                 };
                 diagnostic(&format!(
                     "Recovered existing Switch 2 bond for {addr} ({}) in player slot {}",
-                    Switch2Device::kind_for(&known.device).label(),
+                    known.label(),
                     slot + 1
                 ));
                 let _ = events.send(Event::Log(format!(
                     "Recovered bonded {} at {addr}; connecting…",
-                    Switch2Device::kind_for(&known.device).label()
+                    known.label()
                 )));
                 known_ble.insert(addr, known.clone());
                 if let Err(error) = save_known_ble_controllers(controller_store.as_ref(), &known_ble) {
@@ -622,19 +660,25 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                     .get(&completion.addr)
                     .is_some_and(|pending| pending.slot == completion.slot);
                 if !is_current {
-                    if let Ok((mut transport, _, _)) = completion.result {
-                        let _ = transport.disconnect().await;
+                    if let Ok(mut connection) = completion.result {
+                        let _ = connection.transport.disconnect().await;
                     }
                     continue;
                 }
                 pending_ble.remove(&completion.addr);
                 match completion.result {
-                    Ok((transport, mut reports, mut disconnects)) => {
+                    Ok(BleConnection {
+                        transport,
+                        mut notifications,
+                        mut disconnects,
+                        session,
+                    }) => {
                         known_ble.insert(
                             completion.addr,
                             KnownBle {
                                 adapter_index: completion.adapter_index,
                                 device: completion.device.clone(),
+                                profile_id: completion.profile_id.clone(),
                                 slot: completion.slot,
                             },
                         );
@@ -648,20 +692,36 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         let disconnect_tx = ble_disconnect_tx.clone();
                         let addr = completion.addr;
                         let slot = completion.slot;
+                        let mut report_decoder = decoder::for_profile(&completion.profile_id);
                         let report_task = tokio::spawn(async move {
                             loop {
                                 tokio::select! {
-                                    result = reports.recv() => match result {
-                                        Ok(report) => {
-                                            let _ = report_events.send(Event::Report {
+                                    result = notifications.recv() => match result {
+                                        Ok(notification) => {
+                                            if let Some(input) = report_decoder
+                                                .as_mut()
+                                                .and_then(|decoder| decoder.decode(
+                                                    &notification.value,
+                                                    notification.received_at,
+                                                ))
+                                            {
+                                                let _ = report_events.send(Event::DecodedInput {
+                                                    addr: addr.to_string(),
+                                                    input,
+                                                });
+                                            }
+                                            let _ = report_events.send(Event::BleReport {
                                                 addr: addr.to_string(),
-                                                bytes: report.to_vec(),
+                                                characteristic: notification.uuid.to_string(),
+                                                bytes: notification.value.to_vec(),
+                                                received_at: notification.received_at,
                                             });
                                         }
                                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                                            let _ = report_events.send(Event::Log(format!(
-                                                "Dropped {count} raw BLE reports from {addr}"
-                                            )));
+                                            let _ = report_events.send(Event::BleReportsDropped {
+                                                addr: addr.to_string(),
+                                                count,
+                                            });
                                         }
                                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                                     },
@@ -677,9 +737,9 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         active.insert(completion.addr, ActiveController {
                             transport: ActiveTransport::Ble(Box::new(transport)),
                             report_task,
-                            identity: BrIdentity::default(),
+                            identity: BrIdentity::new(Some(completion.profile_id.clone())),
                             slot: completion.slot,
-                            switch_packet_counter: 0,
+                            session: Some(session),
                         });
                         diagnostic(&format!(
                             "Switch 2 GATT notifications and wake reconnect ready for {} in player slot {}",
@@ -688,7 +748,10 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         ));
                         let _ = events.send(Event::Connected {
                             addr: completion.addr.to_string(),
-                            name: Switch2Device::kind_for(&completion.device).label().into(),
+                            name: ControllerRegistry::standard()
+                                .get(&completion.profile_id)
+                                .map_or("Switch 2 controller", |controller| controller.display_name())
+                                .into(),
                             radio: RadioKind::Ble,
                             slot: completion.slot,
                         });
@@ -766,17 +829,21 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                     .get(&completion.addr)
                     .is_some_and(|pending| pending.slot == completion.slot);
                 if !is_current {
-                    if let Ok((mut transport, _, _)) = completion.result {
-                        let _ = transport.disconnect().await;
+                    if let Ok(mut connection) = completion.result {
+                        let _ = connection.transport.disconnect().await;
                     }
                     continue;
                 }
                 pending_outbound.remove(&completion.addr);
                 match completion.result {
-                    Ok((transport, reports, switch_packet_counter)) => {
+                    Ok(BrConnection {
+                        transport,
+                        reports,
+                        session,
+                    }) => {
                         listen_inbound = true;
                         if completion.identity.token().is_some() {
-                            identities.insert(completion.addr, completion.identity);
+                            identities.insert(completion.addr, completion.identity.clone());
                             if let Err(error) = save_controller_identities(controller_store.as_ref(), &identities) {
                                 let _ = events.send(Event::Log(format!(
                                     "Could not persist controller identity: {error}"
@@ -788,16 +855,16 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             reports,
                             events.clone(),
                             completion.addr,
-                            completion.identity,
+                            completion.identity.clone(),
                         );
                         active.insert(
                             completion.addr,
                             ActiveController {
                                 transport: ActiveTransport::BrEdr(transport),
                                 report_task,
-                                identity: completion.identity,
+                                identity: completion.identity.clone(),
                                 slot: completion.slot,
-                                switch_packet_counter,
+                                session,
                             },
                         );
                         diagnostic(&format!(
@@ -843,29 +910,33 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                     .get(&completion.addr)
                     .is_some_and(|pending| pending.handle == completion.handle);
                 if !is_current {
-                    if let Ok((mut transport, _, _)) = completion.result {
-                        let _ = transport.disconnect().await;
+                    if let Ok(mut connection) = completion.result {
+                        let _ = connection.transport.disconnect().await;
                     }
                     continue;
                 }
                 pending_inbound.remove(&completion.addr);
                 match completion.result {
-                    Ok((transport, reports, switch_packet_counter)) => {
+                    Ok(BrConnection {
+                        transport,
+                        reports,
+                        session,
+                    }) => {
                         stop_active(&mut active, completion.addr).await;
                         let report_task = spawn_bredr_report_task(
                             reports,
                             events.clone(),
                             completion.addr,
-                            completion.identity,
+                            completion.identity.clone(),
                         );
                         active.insert(
                             completion.addr,
                             ActiveController {
                                 transport: ActiveTransport::BrEdr(transport),
                                 report_task,
-                                identity: completion.identity,
+                                identity: completion.identity.clone(),
                                 slot: completion.slot,
-                                switch_packet_counter,
+                                session,
                             },
                         );
                         let _ = events.send(Event::Connected {
@@ -876,7 +947,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         });
                     }
                     Err(error) => {
-                        if completion.identity.switch_kind.is_some() {
+                        if completion.identity.is_switch() {
                             let _ = events.send(Event::Log(
                                 "Nintendo reconnect failed; accepting its next automatic page retry"
                                     .into(),
@@ -974,8 +1045,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                     Command::ConnectBr {
                         device,
                         pin,
-                        mut is_wii_remote,
-                        mut switch_kind,
+                        mut profile_id,
                     } => {
                         let (Some(host), Some(pairing)) = (&host, &pairing) else {
                             let _ = events.send(Event::Error("dedicated BR/EDR adapter or pairing store is unavailable".into()));
@@ -997,11 +1067,11 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             let _ = host.disconnect(pending.handle).await;
                         }
                         stop_active(&mut active, device.addr).await;
-                        if !is_wii_remote && switch_kind.is_none() {
+                        if profile_id.is_none() {
                             match host.remote_name(&device).await {
                                 Ok(name) => {
-                                    is_wii_remote = name.starts_with("Nintendo RVL-CNT");
-                                    switch_kind = SwitchControllerKind::from_name(&name);
+                                    profile_id = controller_for_bredr(&device, &name)
+                                        .map(|controller| controller.id());
                                     diagnostic(&format!(
                                         "Resolved {} as {name} before connecting",
                                         device.addr
@@ -1027,7 +1097,8 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                 }
                             }
                         }
-                        if switch_kind.is_some() {
+                        let identity = BrIdentity::new(profile_id);
+                        if identity.is_switch() {
                             if let Err(error) = pairing.forget(device.addr) {
                                 let _ = events.send(Event::Error(format!(
                                     "could not clear the previous Nintendo bond: {error}"
@@ -1042,12 +1113,12 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                 "Cleared the previous Nintendo bond for fresh SSP pairing".into(),
                             ));
                         }
-                        if let Err(error) = configure_pin(pairing, device.addr, pin, switch_kind) {
+                        if let Err(error) = configure_pin(pairing, device.addr, pin, &identity) {
                             let _ = events.send(Event::Error(error.to_string()));
                             continue;
                         }
                         let pin_source = match pin {
-                            PinChoice::Ssp if switch_kind.is_some() => {
+                            PinChoice::Ssp if identity.is_switch() => {
                                 "SSP Just Works; legacy fallback PIN = 0000".to_owned()
                             }
                             PinChoice::Ssp => "SSP / no legacy PIN".to_owned(),
@@ -1066,7 +1137,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         diagnostic(&format!("Pairing policy for {}: {pin_source}", device.addr));
                         let _ = events.send(Event::Busy(format!("Connecting and authenticating {}…", device.addr)));
                         let mut transport = BrEdrHid::new(host.clone());
-                        if is_wii_remote {
+                        if identity.is_wii_remote() {
                             // Keep the controller's default retransmission policy until
                             // the four-controller latency value is tuned on Wii hardware.
                             transport.set_automatic_flush_slots(0);
@@ -1079,7 +1150,6 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             &pending_ble,
                         );
                         let addr = device.addr;
-                        let identity = BrIdentity::new(is_wii_remote, switch_kind);
                         let completion_tx = outbound_tx.clone();
                         let task_events = events.clone();
                         let task = tokio::spawn(async move {
@@ -1089,11 +1159,14 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                 // controller-initiated direction handled below.
                                 transport.connect_discovered(&device).await?;
 
-                                let switch_packet_counter = if is_wii_remote {
-                                    if let Err(error) = sync_wiimote(&mut transport, slot).await {
+                                let session = match identity.connect(&mut transport, slot).await {
+                                    Ok(session) => session,
+                                    Err(error) => {
                                         let _ = transport.disconnect().await;
                                         return Err(error);
                                     }
+                                };
+                                if identity.is_wii_remote() {
                                     diagnostic(&format!(
                                         "Initialized Wii Remote {addr}: player LED {}, continuous buttons+accelerometer+IR+MotionPlus reports",
                                         slot + 1
@@ -1102,30 +1175,23 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                         "Wii Remote player LED {}, IR camera, MotionPlus, and continuous input enabled",
                                         slot + 1
                                     )));
-                                    0
-                                } else if let Some(kind) = switch_kind {
-                                    let packet_counter = match sync_switch(&mut transport, kind, slot).await {
-                                        Ok(packet_counter) => packet_counter,
-                                        Err(error) => {
-                                            let _ = transport.disconnect().await;
-                                            return Err(error);
-                                        }
-                                    };
+                                } else if identity.is_switch() {
                                     diagnostic(&format!(
                                         "Initialized {} {addr}: native 0x30 reports, vibration, player LED {}",
-                                        kind.label(),
+                                        identity.label(),
                                         slot + 1
                                     ));
                                     let _ = task_events.send(Event::Log(format!(
                                         "{} native input enabled in player slot {}",
-                                        kind.label(),
+                                        identity.label(),
                                         slot + 1
                                     )));
-                                    packet_counter
-                                } else {
-                                    0
-                                };
-                                Ok((transport, reports, switch_packet_counter))
+                                }
+                                Ok(BrConnection {
+                                    transport,
+                                    reports,
+                                    session,
+                                })
                             }
                             .await;
                             let _ = completion_tx.send(OutboundResult {
@@ -1138,6 +1204,15 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         pending_outbound.insert(addr, PendingOutbound { slot, task });
                     }
                     Command::ConnectBle { adapter_index, device } => {
+                        let Some(protocol) = controller_for_ble(&device).filter(|controller| {
+                            controller.id().as_str().starts_with("nintendo.switch2.")
+                        }) else {
+                            let _ = events.send(Event::Error(format!(
+                                "{} is not a supported Switch 2 controller",
+                                device.addr
+                            )));
+                            continue;
+                        };
                         if pending_ble.contains_key(&device.addr) {
                             let _ = events.send(Event::Error(format!(
                                 "a BLE connection attempt for {} is already running",
@@ -1158,13 +1233,17 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             &pending_outbound,
                             &pending_ble,
                         );
+                        let pairing_mode = !protocol.accepts_reconnect_advertisement(
+                            &ble_device_identity(&device),
+                            None,
+                        );
                         let automatic = controller_order_adapter.is_none()
                             && known_ble.contains_key(&addr)
-                            && !Switch2Device::is_pairing_mode(&device);
-                        let _ = events.send(Event::Busy(format!("Connecting to {} over BLE…", Switch2Device::kind_for(&device).label())));
+                            && !pairing_mode;
+                        let _ = events.send(Event::Busy(format!("Connecting to {} over BLE…", protocol.display_name())));
                         diagnostic(&format!(
                             "Starting Switch 2 BLE connection to {addr} ({}) on OS adapter {adapter_index}",
-                            Switch2Device::kind_for(&device).label()
+                            protocol.display_name()
                         ));
                         let pending = spawn_ble_connection(
                             adapter_index,
@@ -1176,6 +1255,140 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             ble_scan_gate.clone(),
                         );
                         pending_ble.insert(addr, pending);
+                    }
+                    Command::SelectSwitch2InputReport { addr, report_id } => {
+                        let Some(known) = known_ble.get(&addr) else {
+                            let _ = events.send(Event::Error(format!(
+                                "no known Switch 2 controller at {addr}"
+                            )));
+                            continue;
+                        };
+                        let Some(protocol) = known.controller() else {
+                            let _ = events.send(Event::Error(format!(
+                                "controller profile {} is unavailable",
+                                known.profile_id
+                            )));
+                            continue;
+                        };
+                        let Some(controller) = active.get_mut(&addr) else {
+                            let _ = events.send(Event::Error(format!(
+                                "no connected Switch 2 controller at {addr}"
+                            )));
+                            continue;
+                        };
+                        let ActiveTransport::Ble(transport) = &mut controller.transport else {
+                            let _ = events.send(Event::Error(format!(
+                                "controller {addr} is not connected over BLE"
+                            )));
+                            continue;
+                        };
+                        let identity = ble_device_identity(&known.device);
+                        let Some(profile) = protocol.gatt_profile(&identity).ok().flatten() else {
+                            let _ = events.send(Event::Error(format!(
+                                "{} does not expose a GATT input profile",
+                                protocol.display_name()
+                            )));
+                            continue;
+                        };
+                        let input_uuid = if report_id == 0x05 {
+                            COMMON_INPUT_UUID
+                        } else if Some(report_id) == protocol.preferred_input_report_id() {
+                            profile.input
+                        } else {
+                            let _ = events.send(Event::Error(format!(
+                                "input report 0x{report_id:02X} does not belong to {}",
+                                protocol.display_name()
+                            )));
+                            continue;
+                        };
+                        match transport.select_input_characteristic(input_uuid).await {
+                            Ok(()) => {
+                                let _ = events.send(Event::Switch2InputReportSelected {
+                                    addr: addr.to_string(),
+                                    report_id,
+                                });
+                                let _ = events.send(Event::Log(format!(
+                                    "{addr}: selected Switch 2 input report 0x{report_id:02X}"
+                                )));
+                            }
+                            Err(error) => {
+                                let _ = events.send(Event::Switch2InputReportSelectionFailed {
+                                    addr: addr.to_string(),
+                                    report_id,
+                                    reason: error.to_string(),
+                                });
+                                let _ = events.send(Event::Error(format!(
+                                    "could not select input report 0x{report_id:02X} for {addr}: {error}"
+                                )));
+                            }
+                        }
+                    }
+                    Command::SubscribeAllSwitch2InputReports { addr } => {
+                        let Some(known) = known_ble.get(&addr) else {
+                            let _ = events.send(Event::Switch2InputReportsSubscriptionFailed {
+                                addr: addr.to_string(),
+                                reason: "controller is not known".into(),
+                            });
+                            continue;
+                        };
+                        let Some(protocol) = known.controller() else {
+                            let _ = events.send(Event::Switch2InputReportsSubscriptionFailed {
+                                addr: addr.to_string(),
+                                reason: format!("controller profile {} is unavailable", known.profile_id),
+                            });
+                            continue;
+                        };
+                        let Some(native_report_id) = protocol.preferred_input_report_id() else {
+                            let _ = events.send(Event::Switch2InputReportsSubscriptionFailed {
+                                addr: addr.to_string(),
+                                reason: format!("{} has no native input report", protocol.display_name()),
+                            });
+                            continue;
+                        };
+                        let Some(controller) = active.get_mut(&addr) else {
+                            let _ = events.send(Event::Switch2InputReportsSubscriptionFailed {
+                                addr: addr.to_string(),
+                                reason: "controller is not connected".into(),
+                            });
+                            continue;
+                        };
+                        let ActiveTransport::Ble(transport) = &mut controller.transport else {
+                            let _ = events.send(Event::Switch2InputReportsSubscriptionFailed {
+                                addr: addr.to_string(),
+                                reason: "controller is not connected over BLE".into(),
+                            });
+                            continue;
+                        };
+                        match transport.subscribe_all_input_characteristics().await {
+                            Ok(uuids) => {
+                                let report_ids = uuids
+                                    .into_iter()
+                                    .filter_map(|uuid| {
+                                        (uuid == COMMON_INPUT_UUID)
+                                            .then_some(0x05)
+                                            .or_else(|| (uuid != COMMON_INPUT_UUID).then_some(native_report_id))
+                                    })
+                                    .collect::<Vec<_>>();
+                                let _ = events.send(Event::Switch2InputReportsSubscribed {
+                                    addr: addr.to_string(),
+                                    report_ids: report_ids.clone(),
+                                });
+                                let reports = report_ids
+                                    .iter()
+                                    .map(|report_id| format!("0x{report_id:02X}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" and ");
+                                let _ = events.send(Event::Log(format!(
+                                    "{addr}: subscribed Switch 2 input reports {reports}"
+                                )));
+                            }
+                            Err(error) => {
+                                let _ = events.send(Event::Switch2InputReportsSubscriptionFailed {
+                                    addr: addr.to_string(),
+                                    reason: error.to_string(),
+                                });
+                            }
+                        }
                     }
                     Command::ListenInbound(enabled) => {
                         listen_inbound = enabled;
@@ -1226,13 +1439,12 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             )));
                             continue;
                         };
-                        let sleep_result = match &mut controller.transport {
-                            ActiveTransport::Ble(transport) => Switch2Device::default()
-                                .sleep(transport.as_mut(), &mut serde_json::Value::Null)
-                                .await,
-                            ActiveTransport::BrEdr(_) => Err(snowglass_bluetooth::Error::Unsupported(
+                        let sleep_result = if matches!(&controller.transport, ActiveTransport::Ble(_)) {
+                            controller.sleep().await
+                        } else {
+                            Err(snowglass_bluetooth::Error::Unsupported(
                                 "Switch 2 sleep is only available for BLE sessions",
-                            )),
+                            ))
                         };
                         if let Err(error) = sleep_result {
                             active.insert(addr, controller);
@@ -1290,7 +1502,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                 match event {
                     HciEvent::ConnectionRequest { addr, .. } if listen_inbound => {
                         let Some(host) = &host else { continue; };
-                        let Some(identity) = identities.get(&addr).copied() else {
+                        let Some(identity) = identities.get(&addr).cloned() else {
                             diagnostic(&format!("Rejecting inbound connection from unknown address {addr}"));
                             let _ = host.reject_connection(addr).await;
                             continue;
@@ -1314,11 +1526,11 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         // otherwise subscribe to the frame broadcast.
                         let early_frames = host.l2cap_frames();
                         let early_hci_events = host.events();
-                        let become_master = identity.switch_kind.is_none();
+                        let become_master = !identity.is_switch();
                         match host.accept_connection_with_role(addr, become_master).await {
                             Ok(handle) => {
                                 let mut transport = BrEdrHid::new(host.clone());
-                                if identity.is_wii_remote {
+                                if identity.is_wii_remote() {
                                     transport.set_automatic_flush_slots(0);
                                 }
                                 let reports = transport.reports();
@@ -1333,7 +1545,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                 let task_host = host.clone();
                                 let task = tokio::spawn(async move {
                                     let result = async {
-                                        if identity.switch_kind.is_some() {
+                                        if identity.is_switch() {
                                             transport
                                                 .attach_inbound_encrypted_with_frames(
                                                     handle,
@@ -1347,31 +1559,29 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                                 .await?;
                                         }
 
-                                        let switch_packet_counter = if identity.is_wii_remote {
-                                            sync_wiimote(&mut transport, slot).await?;
+                                        let session = identity.connect(&mut transport, slot).await?;
+                                        if identity.is_wii_remote() {
                                             let _ = task_events.send(Event::Log(format!(
                                                 "Reconnected Wii Remote in player slot {}",
                                                 slot + 1
                                             )));
-                                            0
-                                        } else if let Some(kind) = identity.switch_kind {
-                                            let packet_counter =
-                                            sync_switch(&mut transport, kind, slot).await?;
+                                        } else if identity.is_switch() {
                                             diagnostic(&format!(
                                                 "Reconnected {} {addr}: native 0x30 reports and player LED {}",
-                                                kind.label(),
+                                                identity.label(),
                                                 slot + 1
                                             ));
                                             let _ = task_events.send(Event::Log(format!(
                                                 "Reconnected {} in player slot {} with native input",
-                                                kind.label(),
+                                                identity.label(),
                                                 slot + 1
                                             )));
-                                            packet_counter
-                                        } else {
-                                            0
-                                        };
-                                        Ok((transport, reports, switch_packet_counter))
+                                        }
+                                        Ok(BrConnection {
+                                            transport,
+                                            reports,
+                                            session,
+                                        })
                                     }
                                     .await;
                                     if result.is_err() {
@@ -1486,24 +1696,27 @@ fn spawn_bredr_report_task(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut wiimote_provider = wiimote::WiimoteInputProvider;
+        let mut report_decoder = identity.profile_id.as_ref().and_then(decoder::for_profile);
         loop {
             match reports.recv().await {
                 Ok(report) => {
-                    if identity.is_wii_remote
+                    let received_at = Instant::now();
+                    if identity.is_wii_remote()
                         && let Some(telemetry) = wiimote_provider.process(&report)
                     {
                         let _ = events.send(Event::WiiTelemetry {
                             addr: addr.to_string(),
                             telemetry,
-                            received_at: Instant::now(),
+                            received_at,
                         });
                     }
-                    if let Some(kind) = identity.switch_kind
-                        && let Some(telemetry) = switch::parse_report(kind, &report)
+                    if let Some(input) = report_decoder
+                        .as_mut()
+                        .and_then(|decoder| decoder.decode(&report, received_at))
                     {
-                        let _ = events.send(Event::SwitchTelemetry {
+                        let _ = events.send(Event::DecodedInput {
                             addr: addr.to_string(),
-                            telemetry,
+                            input,
                         });
                     }
                     let _ = events.send(Event::Report {
@@ -1530,23 +1743,30 @@ fn spawn_ble_connection(
     scan_gate: Arc<Mutex<()>>,
 ) -> PendingBle {
     let addr = device.addr;
-    // Pair exactly once, from an explicit user-selected pairing advertisement.
-    // A wake attempt retains that original advertisement as slot metadata, so
-    // consulting it again would overwrite a valid bond on every reconnect.
-    let pairing_mode = !automatic && Switch2Device::is_pairing_mode(&device);
+    let identity = ble_device_identity(&device);
+    let protocol = controller_for_ble(&device)
+        .filter(|controller| controller.id().as_str().starts_with("nintendo.switch2."))
+        .unwrap_or_else(|| Arc::new(UnknownSwitch2Controller::default()));
+    let profile_id = protocol.id();
+    let pairing_mode = !automatic && !protocol.accepts_reconnect_advertisement(&identity, None);
     let result_device = device.clone();
     let task = tokio::spawn(async move {
-        let kind = Switch2Device::kind_for(&device);
-        let protocol = Switch2Device::new(kind);
-        let mut transport = BleGatt::new(adapter_index, Switch2Device::gatt_profile_for(kind));
+        let profile = protocol.gatt_profile(&identity).and_then(|profile| {
+            profile.ok_or(snowglass_bluetooth::Error::Unsupported(
+                "controller does not expose a GATT profile",
+            ))
+        });
+        let mut session = protocol.connect(&connect_options(slot));
+        let result = async {
+        let mut transport = BleGatt::new(adapter_index, profile?);
         if automatic {
             // Rotate the single adapter fairly between dormant controllers.
             // A Switch 2 wake advertisement persists across several windows.
             transport.set_scan_timeout(Duration::from_secs(3));
         }
-        let reports = transport.reports();
+        let notifications = transport.gatt_notifications();
         let disconnects = transport.disconnections();
-        let result = loop {
+        loop {
             let connection = {
                 let _scan_guard = scan_gate.lock().await;
                 transport.connect(addr).await
@@ -1556,7 +1776,9 @@ fn spawn_ble_connection(
                     if pairing_mode {
                         let bond_result = async {
                             let host_address = default_adapter_address().await?;
-                            protocol.bond(&mut transport, host_address).await?;
+                            protocol
+                                .bond(&mut transport, &identity, host_address)
+                                .await?;
                             Ok::<_, snowglass_bluetooth::Error>(host_address)
                         }
                         .await;
@@ -1577,33 +1799,25 @@ fn spawn_ble_connection(
                             }
                         }
                     }
-                    if let Err(error) = protocol
-                        .sync(
-                            &mut transport,
-                            &connect_options(slot),
-                            &mut serde_json::Value::Null,
-                        )
-                        .await
-                    {
+                    if let Err(error) = session.synchronize(&mut transport).await {
                         let _ = transport.disconnect().await;
                         break Err(error);
                     }
-                    if kind != Switch2Kind::NsoGameCube
-                        && let Err(error) = protocol.set_led_flashing(&mut transport, false).await
-                    {
+                    if let Err(error) = session.set_pairing_indicator(&mut transport, false).await {
                         let _ = transport.disconnect().await;
                         break Err(error);
                     }
                     diagnostic(&format!(
-                        "Switch 2 controller {addr} acknowledged player LED {}{}",
+                        "{} {addr} acknowledged player LED {} with pairing indicator disabled",
+                        protocol.display_name(),
                         slot + 1,
-                        if kind == Switch2Kind::NsoGameCube {
-                            " (GameCube flash state left untouched)"
-                        } else {
-                            " with flashing disabled"
-                        },
                     ));
-                    break Ok((transport, reports, disconnects));
+                    break Ok(BleConnection {
+                        transport,
+                        notifications,
+                        disconnects,
+                        session,
+                    });
                 }
                 Err(error) if !automatic => break Err(error),
                 Err(snowglass_bluetooth::Error::Unsupported(reason)) => {
@@ -1628,12 +1842,14 @@ fn spawn_ble_connection(
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
             }
-        };
+        }
+        }.await;
         let _ = completion_tx.send(BleResult {
             addr,
             slot,
             adapter_index,
             device: result_device,
+            profile_id,
             automatic,
             result,
         });
@@ -1652,14 +1868,19 @@ fn spawn_ble_bond_recovery(
         loop {
             let result = {
                 let _scan_guard = scan_gate.lock().await;
-                Switch2Device::scan(adapter_index, Duration::from_secs(4)).await
+                scan_ble(adapter_index, Duration::from_secs(4)).await
             };
             match result {
                 Ok(found) => {
-                    if let Some(device) = found
-                        .into_iter()
-                        .find(|device| Switch2Device::bonded_host(device) == Some(host_address))
-                    {
+                    if let Some(device) = found.into_iter().find(|device| {
+                        controller_for_ble(device).is_some_and(|controller| {
+                            controller.id().as_str().starts_with("nintendo.switch2.")
+                                && controller.accepts_reconnect_advertisement(
+                                    &ble_device_identity(device),
+                                    Some(host_address),
+                                )
+                        })
+                    }) {
                         let _ = recovery_tx.send(BleRecovery {
                             adapter_index,
                             device,
@@ -1744,6 +1965,7 @@ fn spawn_br_scan(host: Arc<HciHost>, events: mpsc::Sender<Event>) -> JoinHandle<
 }
 
 fn device_view(inquiry: InquiryResult, name: String) -> DeviceView {
+    let controller = controller_for_bredr(&inquiry, &name);
     DeviceView {
         addr: inquiry.addr.to_string(),
         name,
@@ -1752,8 +1974,28 @@ fn device_view(inquiry: InquiryResult, name: String) -> DeviceView {
             "{:02X}{:02X}{:02X}",
             inquiry.class_of_device[2], inquiry.class_of_device[1], inquiry.class_of_device[0]
         ),
+        profile_id: controller.as_ref().map(|controller| controller.id()),
+        profile_name: controller.map(|controller| controller.display_name()),
         inquiry,
     }
+}
+
+fn controller_for_bredr(inquiry: &InquiryResult, name: &str) -> Option<Arc<dyn ControllerDevice>> {
+    let class = inquiry.class_of_device;
+    ControllerRegistry::standard()
+        .identify(&DeviceIdentity {
+            address: inquiry.addr,
+            transport: TransportKind::BrEdr,
+            name: Some(name.to_owned()),
+            class_of_device: Some(
+                u32::from(class[0]) | (u32::from(class[1]) << 8) | (u32::from(class[2]) << 16),
+            ),
+            service_uuids: Vec::new(),
+            manufacturer_data: Vec::new(),
+            pnp: None,
+        })
+        .ok()
+        .flatten()
 }
 
 fn spawn_ble_scan(
@@ -1765,11 +2007,15 @@ fn spawn_ble_scan(
         loop {
             let result = {
                 let _scan_guard = scan_gate.lock().await;
-                Switch2Device::scan(adapter_index, Duration::from_secs(4)).await
+                scan_ble(adapter_index, Duration::from_secs(4)).await
             };
             match result {
                 Ok(found) => {
-                    for device in found {
+                    for device in found.into_iter().filter(|device| {
+                        controller_for_ble(device).is_some_and(|controller| {
+                            controller.id().as_str().starts_with("nintendo.switch2.")
+                        })
+                    }) {
                         let _ = events.send(Event::BleDevice(device));
                     }
                 }
@@ -1834,10 +2080,10 @@ fn configure_pin(
     pairing: &PairingAgent,
     addr: DeviceAddr,
     choice: PinChoice,
-    switch_kind: Option<SwitchControllerKind>,
+    identity: &BrIdentity,
 ) -> snowglass_bluetooth::Result<()> {
     match choice {
-        PinChoice::Ssp if switch_kind.is_some() => {
+        PinChoice::Ssp if identity.is_switch() => {
             pairing.set_pin(addr, PinCode::Fixed(b"0000".to_vec()))
         }
         PinChoice::Ssp => pairing.clear_pin(addr),
@@ -1910,11 +2156,8 @@ async fn sleep_all_for_controller_order(
             continue;
         };
         match &mut controller.transport {
-            ActiveTransport::Ble(transport) => {
-                if let Err(error) = Switch2Device::default()
-                    .sleep(transport.as_mut(), &mut serde_json::Value::Null)
-                    .await
-                {
+            ActiveTransport::Ble(_) => {
+                if let Err(error) = controller.sleep().await {
                     let _ = events.send(Event::Log(format!(
                         "Switch 2 sleep request for {addr} failed; disconnecting instead: {error}"
                     )));
@@ -1923,14 +2166,8 @@ async fn sleep_all_for_controller_order(
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }
-            ActiveTransport::BrEdr(transport) if controller.identity.switch_kind.is_some() => {
-                if let Err(error) = sleep_switch(
-                    transport,
-                    controller.identity.switch_kind.unwrap(),
-                    &mut controller.switch_packet_counter,
-                )
-                .await
-                {
+            ActiveTransport::BrEdr(_) if controller.identity.is_switch() => {
+                if let Err(error) = controller.sleep().await {
                     let _ = events.send(Event::Log(format!(
                         "Nintendo sleep request for {addr} failed; disconnecting instead: {error}"
                     )));
@@ -1962,16 +2199,9 @@ async fn disconnect_active(
     let Some(mut controller) = active.remove(&addr) else {
         return;
     };
-    if controller.identity.switch_kind.is_some()
-        && let ActiveTransport::BrEdr(transport) = &mut controller.transport
+    if controller.identity.is_switch() && matches!(&controller.transport, ActiveTransport::BrEdr(_))
     {
-        match sleep_switch(
-            transport,
-            controller.identity.switch_kind.unwrap(),
-            &mut controller.switch_packet_counter,
-        )
-        .await
-        {
+        match controller.sleep().await {
             Ok(()) => {
                 let _ = events.send(Event::Log(format!(
                     "Requested Nintendo controller {addr} sleep before disconnect"
@@ -2006,27 +2236,6 @@ fn controller_store_path() -> PathBuf {
     base.join("Snowglass").join("bluetooth-controllers.json")
 }
 
-fn switch2_kind_token(kind: Switch2Kind) -> &'static str {
-    match kind {
-        Switch2Kind::JoyConLeft => "joycon2-left",
-        Switch2Kind::JoyConRight => "joycon2-right",
-        Switch2Kind::ProController => "pro2",
-        Switch2Kind::NsoGameCube => "nso-gamecube2",
-        Switch2Kind::Unknown => "switch2-unknown",
-    }
-}
-
-fn switch2_kind_from_token(token: &str) -> Option<Switch2Kind> {
-    match token {
-        "joycon2-left" => Some(Switch2Kind::JoyConLeft),
-        "joycon2-right" => Some(Switch2Kind::JoyConRight),
-        "pro2" => Some(Switch2Kind::ProController),
-        "nso-gamecube2" => Some(Switch2Kind::NsoGameCube),
-        "switch2-unknown" => Some(Switch2Kind::Unknown),
-        _ => None,
-    }
-}
-
 fn load_known_ble_controllers(store: &dyn ControllerStore) -> HashMap<DeviceAddr, KnownBle> {
     let Ok(records) = store.records() else {
         return HashMap::new();
@@ -2035,26 +2244,23 @@ fn load_known_ble_controllers(store: &dyn ControllerStore) -> HashMap<DeviceAddr
         .into_iter()
         .filter_map(|record| {
             if record.transport != TransportKind::Ble
-                || record.profile_id.as_str() != "nintendo.switch2"
+                || !record.profile_id.as_str().starts_with("nintendo.switch2.")
             {
                 return None;
             }
-            let kind = record
-                .profile_state
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .and_then(switch2_kind_from_token)?;
+            let controller = ControllerRegistry::standard().get(&record.profile_id)?;
             Some((
                 record.address,
                 KnownBle {
                     adapter_index: record.adapter_index.unwrap_or(0),
                     device: BleDevice {
                         addr: record.address,
-                        name: Some(kind.label().into()),
+                        name: Some(controller.display_name().into()),
                         rssi: None,
                         services: Vec::new(),
                         manufacturer_data: HashMap::new(),
                     },
+                    profile_id: record.profile_id,
                     slot: usize::from(record.player_index.min(3)),
                 },
             ))
@@ -2068,7 +2274,7 @@ fn save_known_ble_controllers(
 ) -> snowglass_bluetooth::Result<()> {
     for record in store.records()? {
         if record.transport == TransportKind::Ble
-            && record.profile_id.as_str() == "nintendo.switch2"
+            && record.profile_id.as_str().starts_with("nintendo.switch2.")
             && !controllers.contains_key(&record.address)
         {
             store.remove(record.address)?;
@@ -2078,13 +2284,12 @@ fn save_known_ble_controllers(
         store.put(ControllerRecord {
             address: known.device.addr,
             transport: TransportKind::Ble,
-            profile_id: snowglass_bluetooth::devices::ProfileId::new("nintendo.switch2"),
+            profile_id: known.profile_id.clone(),
             link_key: None,
             link_key_type: None,
             adapter_index: Some(known.adapter_index),
             auto_reconnect: true,
             player_index: u8::try_from(known.slot).unwrap_or(u8::MAX),
-            profile_state: serde_json::json!({ "kind": switch2_kind_token(Switch2Device::kind_for(&known.device)) }),
         })?;
     }
     Ok(())
@@ -2111,7 +2316,7 @@ fn save_controller_identities(
     identities: &HashMap<DeviceAddr, BrIdentity>,
 ) -> snowglass_bluetooth::Result<()> {
     for (addr, identity) in identities {
-        let Some(profile_id) = identity.profile_id() else {
+        let Some(profile_id) = identity.token() else {
             continue;
         };
         let previous = store
@@ -2127,7 +2332,6 @@ fn save_controller_identities(
             adapter_index: None,
             auto_reconnect: true,
             player_index: previous.as_ref().map_or(0, |record| record.player_index),
-            profile_state: serde_json::Value::Null,
         })?;
     }
     Ok(())
@@ -2179,6 +2383,7 @@ mod worker_tests {
                     services: Vec::new(),
                     manufacturer_data: HashMap::new(),
                 },
+                profile_id: ProfileId::new("nintendo.switch2.joycon-right"),
                 slot: 1,
             },
         );
@@ -2189,10 +2394,9 @@ mod worker_tests {
         assert_eq!(restored.adapter_index, 2);
         assert_eq!(restored.slot, 1);
         assert_eq!(
-            Switch2Device::kind_for(&restored.device),
-            Switch2Kind::JoyConRight
+            restored.profile_id.as_str(),
+            "nintendo.switch2.joycon-right"
         );
-        assert!(!Switch2Device::is_pairing_mode(&restored.device));
     }
 
     #[test]
@@ -2200,14 +2404,17 @@ mod worker_tests {
         let store = MemoryControllerStore::default();
         let addr = "AA:BB:CC:DD:EE:FF".parse().unwrap();
         let mut identities = HashMap::new();
-        identities.insert(addr, BrIdentity::new(true, None));
+        identities.insert(
+            addr,
+            BrIdentity::new(Some(ProfileId::new("nintendo.wiimote.original"))),
+        );
         save_controller_identities(&store, &identities).unwrap();
         assert_eq!(
             load_controller_identities(&store)
                 .get(&addr)
                 .unwrap()
                 .token(),
-            Some("wii")
+            Some("nintendo.wiimote.original")
         );
     }
 }

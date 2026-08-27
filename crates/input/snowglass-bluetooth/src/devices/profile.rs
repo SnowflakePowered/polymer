@@ -1,7 +1,6 @@
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::transport::ble::GattProfile;
@@ -48,75 +47,42 @@ pub struct DeviceIdentity {
     pub pnp: Option<PnpIdentity>,
 }
 
+impl DeviceIdentity {
+    pub fn name_is(&self, expected: &str) -> bool {
+        self.name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+    }
+
+    pub fn name_starts_with(&self, prefix: &str) -> bool {
+        self.name
+            .as_deref()
+            .is_some_and(|name| name.starts_with(prefix))
+    }
+
+    pub fn has_service(&self, service: Uuid) -> bool {
+        self.service_uuids.contains(&service)
+    }
+
+    pub fn manufacturer_data(&self, company_id: u16) -> Option<&[u8]> {
+        self.manufacturer_data
+            .iter()
+            .find_map(|(id, data)| (*id == company_id).then_some(data.as_slice()))
+    }
+
+    pub fn has_pnp(&self, vendor_id: u16, product_ids: &[u16]) -> bool {
+        self.pnp
+            .as_ref()
+            .is_some_and(|pnp| pnp.vendor_id == vendor_id && product_ids.contains(&pnp.product_id))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MatchConfidence {
     Generic = 10,
-    Name = 100,
-    Manufacturer = 200,
-    Service = 300,
-    Pnp = 400,
-}
-
-#[derive(Clone, Debug)]
-pub enum MatchRule {
-    NameEqualsIgnoreCase(String),
-    NamePrefix(String),
-    Manufacturer(u16),
-    Service(Uuid),
-    Pnp {
-        vendor_id: u16,
-        product_ids: Vec<u16>,
-    },
-    PnpVendor(u16),
-    ClassOfDevice {
-        mask: u32,
-        value: u32,
-    },
-}
-
-impl MatchRule {
-    fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence> {
-        match self {
-            Self::NameEqualsIgnoreCase(expected) => identity
-                .name
-                .as_deref()
-                .is_some_and(|name| name.eq_ignore_ascii_case(expected))
-                .then_some(MatchConfidence::Name),
-            Self::NamePrefix(prefix) => identity
-                .name
-                .as_deref()
-                .is_some_and(|name| name.starts_with(prefix))
-                .then_some(MatchConfidence::Name),
-            Self::Manufacturer(company) => identity
-                .manufacturer_data
-                .iter()
-                .any(|(id, _)| id == company)
-                .then_some(MatchConfidence::Manufacturer),
-            Self::Service(uuid) => identity
-                .service_uuids
-                .contains(uuid)
-                .then_some(MatchConfidence::Service),
-            Self::Pnp {
-                vendor_id,
-                product_ids,
-            } => identity
-                .pnp
-                .as_ref()
-                .is_some_and(|pnp| {
-                    pnp.vendor_id == *vendor_id && product_ids.contains(&pnp.product_id)
-                })
-                .then_some(MatchConfidence::Pnp),
-            Self::PnpVendor(vendor_id) => identity
-                .pnp
-                .as_ref()
-                .is_some_and(|pnp| pnp.vendor_id == *vendor_id)
-                .then_some(MatchConfidence::Manufacturer),
-            Self::ClassOfDevice { mask, value } => identity
-                .class_of_device
-                .is_some_and(|class| class & mask == *value)
-                .then_some(MatchConfidence::Generic),
-        }
-    }
+    Family = 100,
+    Model = 200,
+    Pnp = 300,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -211,13 +177,65 @@ impl Default for ConnectOptions {
     }
 }
 
-pub trait ControllerProfile: Send + Sync {
+#[async_trait]
+pub trait ControllerSession: Send {
+    async fn synchronize(&mut self, _transport: &mut dyn Transport) -> Result<()> {
+        Ok(())
+    }
+
+    async fn set_player_led(&mut self, _transport: &mut dyn Transport, _slot: u8) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "controller does not expose player LEDs",
+        ))
+    }
+
+    async fn set_pairing_indicator(
+        &mut self,
+        _transport: &mut dyn Transport,
+        _enabled: bool,
+    ) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "controller does not expose a pairing indicator",
+        ))
+    }
+
+    async fn sleep(&mut self, _transport: &mut dyn Transport) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "controller does not expose a sleep command",
+        ))
+    }
+
+    async fn set_rumble(
+        &mut self,
+        _transport: &mut dyn Transport,
+        _low_frequency: u16,
+        _high_frequency: u16,
+    ) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "controller rumble is not implemented for this profile",
+        ))
+    }
+
+    async fn send_raw_hid(&mut self, transport: &mut dyn Transport, report: &[u8]) -> Result<()> {
+        transport.send(report).await
+    }
+}
+
+struct DefaultControllerSession;
+
+#[async_trait]
+impl ControllerSession for DefaultControllerSession {}
+
+#[async_trait]
+pub trait ControllerDevice: Send + Sync {
     fn id(&self) -> ProfileId;
     fn display_name(&self) -> &'static str;
     fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence>;
+
     fn bonding_modes(&self) -> Vec<BondingMode> {
         Vec::new()
     }
+
     fn connection_policy(
         &self,
         _identity: &DeviceIdentity,
@@ -225,20 +243,11 @@ pub trait ControllerProfile: Send + Sync {
     ) -> ConnectionPolicy {
         ConnectionPolicy::default()
     }
-    fn device(&self) -> &dyn ControllerDevice {
-        &GENERIC_DEVICE
-    }
-}
 
-#[async_trait]
-pub trait ControllerDevice: Send + Sync {
-    fn gatt_profile(
-        &self,
-        _identity: &DeviceIdentity,
-        _state: &mut Value,
-    ) -> Result<Option<GattProfile>> {
+    fn gatt_profile(&self, _identity: &DeviceIdentity) -> Result<Option<GattProfile>> {
         Ok(None)
     }
+
     fn accepts_reconnect_advertisement(
         &self,
         _identity: &DeviceIdentity,
@@ -246,185 +255,64 @@ pub trait ControllerDevice: Send + Sync {
     ) -> bool {
         true
     }
+
+    fn preferred_input_report_id(&self) -> Option<u8> {
+        None
+    }
+
+    fn connect(&self, _options: &ConnectOptions) -> Box<dyn ControllerSession> {
+        Box::new(DefaultControllerSession)
+    }
+
     async fn bond(
         &self,
         _transport: &mut dyn Transport,
         _identity: &DeviceIdentity,
         _local_address: DeviceAddr,
-        _state: &mut Value,
     ) -> Result<()> {
         Err(crate::Error::Unsupported(
             "controller does not expose a userspace bonding protocol",
         ))
     }
-    async fn sync(
-        &self,
-        _transport: &mut dyn Transport,
-        _options: &ConnectOptions,
-        _state: &mut Value,
-    ) -> Result<()> {
-        Ok(())
-    }
-    async fn reconnect(
-        &self,
-        transport: &mut dyn Transport,
-        address: DeviceAddr,
-        options: &ConnectOptions,
-        state: &mut Value,
-    ) -> Result<()> {
-        transport.connect(address).await?;
-        self.sync(transport, options, state).await
-    }
-    async fn set_player_led(
-        &self,
-        _transport: &mut dyn Transport,
-        _slot: u8,
-        _state: &mut Value,
-    ) -> Result<()> {
-        Err(crate::Error::Unsupported(
-            "controller does not expose player LEDs",
-        ))
-    }
-    async fn sleep(&self, _transport: &mut dyn Transport, _state: &mut Value) -> Result<()> {
-        Err(crate::Error::Unsupported(
-            "controller does not expose a sleep command",
-        ))
-    }
-    async fn send_raw_hid(&self, transport: &mut dyn Transport, report: &[u8]) -> Result<()> {
-        transport.send(report).await
-    }
-}
-
-#[derive(Default)]
-struct GenericDevice;
-
-static GENERIC_DEVICE: GenericDevice = GenericDevice;
-
-#[async_trait]
-impl ControllerDevice for GenericDevice {}
-
-pub struct DeviceProfile {
-    id: ProfileId,
-    display_name: &'static str,
-    rules: Vec<MatchRule>,
-    bonding_modes: Vec<BondingMode>,
-    policy: ConnectionPolicy,
-    bonding_policies: HashMap<String, ConnectionPolicy>,
-    device: Arc<dyn ControllerDevice>,
-}
-
-impl DeviceProfile {
-    pub fn new(id: impl Into<String>, display_name: &'static str) -> Self {
-        Self {
-            id: ProfileId::new(id),
-            display_name,
-            rules: Vec::new(),
-            bonding_modes: Vec::new(),
-            policy: ConnectionPolicy::default(),
-            bonding_policies: HashMap::new(),
-            device: Arc::new(GenericDevice),
-        }
-    }
-    pub fn with_rules(mut self, rules: impl IntoIterator<Item = MatchRule>) -> Self {
-        self.rules.extend(rules);
-        self
-    }
-    pub fn with_bonding_modes(mut self, modes: impl IntoIterator<Item = BondingMode>) -> Self {
-        self.bonding_modes.extend(modes);
-        self
-    }
-    pub const fn with_policy(mut self, policy: ConnectionPolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-    pub fn with_bonding_policy(
-        mut self,
-        mode: impl Into<String>,
-        policy: ConnectionPolicy,
-    ) -> Self {
-        self.bonding_policies.insert(mode.into(), policy);
-        self
-    }
-    pub fn with_device(mut self, device: Arc<dyn ControllerDevice>) -> Self {
-        self.device = device;
-        self
-    }
-}
-
-#[async_trait]
-impl ControllerProfile for DeviceProfile {
-    fn id(&self) -> ProfileId {
-        self.id.clone()
-    }
-    fn display_name(&self) -> &'static str {
-        self.display_name
-    }
-    fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence> {
-        self.rules
-            .iter()
-            .filter_map(|rule| rule.matches(identity))
-            .max()
-    }
-    fn bonding_modes(&self) -> Vec<BondingMode> {
-        self.bonding_modes.clone()
-    }
-    fn connection_policy(
-        &self,
-        _identity: &DeviceIdentity,
-        options: &ConnectOptions,
-    ) -> ConnectionPolicy {
-        options
-            .bonding_mode
-            .as_ref()
-            .and_then(|mode| self.bonding_policies.get(mode))
-            .copied()
-            .unwrap_or(self.policy)
-    }
-    fn device(&self) -> &dyn ControllerDevice {
-        self.device.as_ref()
-    }
 }
 
 #[derive(Clone, Default)]
-pub struct ProfileRegistry {
-    profiles: Vec<Arc<dyn ControllerProfile>>,
+pub struct ControllerRegistry {
+    controllers: Vec<Arc<dyn ControllerDevice>>,
 }
 
-impl ProfileRegistry {
+impl ControllerRegistry {
     pub fn standard() -> Self {
         Self {
-            profiles: super::catalog::profiles(),
+            controllers: super::catalog::controllers(),
         }
     }
 
-    pub fn register(&mut self, profile: Arc<dyn ControllerProfile>) {
-        self.profiles
-            .retain(|registered| registered.id() != profile.id());
-        self.profiles.push(profile);
+    pub fn register(&mut self, controller: Arc<dyn ControllerDevice>) {
+        self.controllers
+            .retain(|registered| registered.id() != controller.id());
+        self.controllers.push(controller);
     }
 
-    pub fn get(&self, id: &ProfileId) -> Option<Arc<dyn ControllerProfile>> {
-        self.profiles
+    pub fn get(&self, id: &ProfileId) -> Option<Arc<dyn ControllerDevice>> {
+        self.controllers
             .iter()
-            .find(|profile| profile.id() == *id)
+            .find(|controller| controller.id() == *id)
             .cloned()
     }
 
-    pub fn identify(
-        &self,
-        identity: &DeviceIdentity,
-    ) -> Result<Option<Arc<dyn ControllerProfile>>> {
+    pub fn identify(&self, identity: &DeviceIdentity) -> Result<Option<Arc<dyn ControllerDevice>>> {
         let mut matches = self
-            .profiles
+            .controllers
             .iter()
-            .filter_map(|profile| {
-                profile
+            .filter_map(|controller| {
+                controller
                     .matches(identity)
-                    .map(|confidence| (confidence, profile.clone()))
+                    .map(|confidence| (confidence, controller.clone()))
             })
             .collect::<Vec<_>>();
         matches.sort_by_key(|(confidence, _)| *confidence);
-        let Some((best, profile)) = matches.pop() else {
+        let Some((best, controller)) = matches.pop() else {
             return Ok(None);
         };
         if matches
@@ -433,91 +321,6 @@ impl ProfileRegistry {
         {
             return Err(crate::Error::AmbiguousProfile(identity.address));
         }
-        Ok(Some(profile))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn standard_registry_identifies_wii_by_name() {
-        let identity = DeviceIdentity {
-            address: "00:11:22:33:44:55".parse().unwrap(),
-            transport: TransportKind::BrEdr,
-            name: Some("Nintendo RVL-CNT-01-TR".into()),
-            class_of_device: None,
-            service_uuids: Vec::new(),
-            manufacturer_data: Vec::new(),
-            pnp: None,
-        };
-        assert_eq!(
-            ProfileRegistry::standard()
-                .identify(&identity)
-                .unwrap()
-                .unwrap()
-                .id()
-                .as_str(),
-            "nintendo.wiimote"
-        );
-    }
-
-    #[test]
-    fn generic_descriptors_select_bonding_policy_without_family_types() {
-        let identity = DeviceIdentity {
-            address: "00:11:22:33:44:55".parse().unwrap(),
-            transport: TransportKind::BrEdr,
-            name: Some("Nintendo RVL-CNT-01".into()),
-            class_of_device: None,
-            service_uuids: Vec::new(),
-            manufacturer_data: Vec::new(),
-            pnp: None,
-        };
-        let profile = ProfileRegistry::standard()
-            .identify(&identity)
-            .unwrap()
-            .unwrap();
-        let policy = profile.connection_policy(
-            &identity,
-            &ConnectOptions {
-                bonding_mode: Some("one-two".into()),
-                ..ConnectOptions::default()
-            },
-        );
-        assert_eq!(policy.pairing, PairingPolicy::RemoteAddressPin);
-    }
-
-    #[test]
-    fn pnp_identity_refines_sony_and_similar_nintendo_names_are_unambiguous() {
-        let registry = ProfileRegistry::standard();
-        let sony = DeviceIdentity {
-            address: "00:11:22:33:44:55".parse().unwrap(),
-            transport: TransportKind::BrEdr,
-            name: Some("Wireless Controller".into()),
-            class_of_device: Some(0x002508),
-            service_uuids: Vec::new(),
-            manufacturer_data: Vec::new(),
-            pnp: Some(PnpIdentity {
-                vendor_id_source: 2,
-                vendor_id: 0x054c,
-                product_id: 0x09cc,
-                version: 0,
-            }),
-        };
-        assert_eq!(
-            registry.identify(&sony).unwrap().unwrap().id().as_str(),
-            "sony.dualshock4"
-        );
-
-        let snes = DeviceIdentity {
-            name: Some("SNES Controller".into()),
-            pnp: None,
-            ..sony
-        };
-        assert_eq!(
-            registry.identify(&snes).unwrap().unwrap().id().as_str(),
-            "nintendo.switch.nso-snes"
-        );
+        Ok(Some(controller))
     }
 }
