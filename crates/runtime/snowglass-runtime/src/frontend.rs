@@ -4,11 +4,12 @@
 //! mechanics such as presentation, input routing, and window attachment.
 
 use crate::ConfigurationDefaults;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 use snowglass_deno::snowglass::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
 };
+use snowglass_input::source::InputSourceCatalog;
 use snowglass_library::StorageManager;
 use std::{
     collections::HashMap,
@@ -36,6 +37,8 @@ pub trait RuntimePlatform: Send + Sync {
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
     fn input_configure(&self, request_id: u32, transaction: Value);
+    fn input_api_snapshot(&self) -> Value;
+    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
     fn webrtc_start(
         &self,
         token: InstanceToken,
@@ -75,7 +78,68 @@ pub enum EmulatorCommand {
 
 #[derive(Debug)]
 pub enum InputCommand {
-    Configure { request_id: u32, transaction: Value },
+    Configure {
+        request_id: u32,
+        transaction: Value,
+    },
+    Api {
+        command: Value,
+        result: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+}
+
+#[derive(Clone)]
+pub struct InputApiState {
+    state: Arc<RwLock<Value>>,
+    controller_profiles: crate::ControllerProfiles,
+}
+
+impl Default for InputApiState {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(RwLock::new(serde_json::json!({
+                "revision": 0,
+                "controllers": {
+                    "availability": { "osBle": "unknown", "winUsb": "unknown" },
+                    "devices": [],
+                    "players": [
+                        { "index": 0, "controller": null },
+                        { "index": 1, "controller": null },
+                        { "index": 2, "controller": null },
+                        { "index": 3, "controller": null }
+                    ],
+                    "activeConnectionSession": null,
+                    "layouts": []
+                }
+            }))),
+            controller_profiles: crate::ControllerProfiles::default(),
+        }
+    }
+}
+
+impl InputApiState {
+    pub fn snapshot(&self) -> Value {
+        self.state.read().clone()
+    }
+
+    pub fn controller_profiles(&self) -> crate::ControllerProfiles {
+        self.controller_profiles.clone()
+    }
+
+    pub fn publish(&self, controllers: Value) {
+        let mut state = self.state.write();
+        if state["controllers"] == controllers {
+            return;
+        }
+        let revision = state["revision"]
+            .as_u64()
+            .unwrap_or_default()
+            .wrapping_add(1);
+        *state = serde_json::json!({
+            "revision": revision,
+            "controllers": controllers,
+        });
+    }
 }
 
 #[derive(Debug)]
@@ -126,6 +190,7 @@ pub type WebRtcCommandSink = CommandSink<WebRtcCommand>;
 pub struct CommandRuntimePlatform {
     emulator: EmulatorCommandSink,
     input: InputCommandSink,
+    input_api: InputApiState,
     webrtc: WebRtcCommandSink,
 }
 
@@ -133,11 +198,13 @@ impl CommandRuntimePlatform {
     pub fn new(
         emulator: EmulatorCommandSink,
         input: InputCommandSink,
+        input_api: InputApiState,
         webrtc: WebRtcCommandSink,
     ) -> Self {
         Self {
             emulator,
             input,
+            input_api,
             webrtc,
         }
     }
@@ -193,6 +260,21 @@ impl RuntimePlatform for CommandRuntimePlatform {
             request_id,
             transaction,
         });
+    }
+
+    fn input_api_snapshot(&self) -> Value {
+        self.input_api.snapshot()
+    }
+
+    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
+        let sink = self.input.clone();
+        Box::pin(async move {
+            let (result, response) = tokio::sync::oneshot::channel();
+            sink.send(InputCommand::Api { command, result });
+            response
+                .await
+                .map_err(|_| "input host is unavailable".to_owned())?
+        })
     }
 
     fn webrtc_start(
@@ -260,6 +342,8 @@ pub struct FrontendServices {
     configuration: Option<ConfigurationDefaults>,
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
+    input_sources: InputSourceCatalog,
+    controller_profiles: crate::ControllerProfiles,
     platform: Arc<dyn RuntimePlatform>,
     notifications: SnowglassNotificationSender,
 }
@@ -268,6 +352,8 @@ impl FrontendServices {
     pub fn new(
         plugins: Arc<snowglass_pluginhost::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
+        input_sources: InputSourceCatalog,
+        controller_profiles: crate::ControllerProfiles,
         platform: Arc<dyn RuntimePlatform>,
         notifications: SnowglassNotificationSender,
     ) -> Self {
@@ -276,6 +362,8 @@ impl FrontendServices {
             configuration,
             storage: crate::console_storage_manager(),
             prepared_filesystems: PreparedFilesystemStore::default(),
+            input_sources,
+            controller_profiles,
             platform,
             notifications,
         }
@@ -317,12 +405,22 @@ impl SnowglassHost for FrontendServices {
             .configuration
             .clone()
             .ok_or_else(|| "configuration service is unavailable".to_owned())?;
-        crate::prepare_configuration(
+        crate::configuration::prepare_api_with_sources(
             self.plugins.handle().registry().clone(),
             defaults,
             package,
             request,
+            &self.input_sources,
+            &self.controller_profiles,
         )
+    }
+
+    fn input_api_snapshot(&self) -> Value {
+        self.platform.input_api_snapshot()
+    }
+
+    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
+        self.platform.input_api_command(command)
     }
 
     fn list_plugins(&self) -> Value {

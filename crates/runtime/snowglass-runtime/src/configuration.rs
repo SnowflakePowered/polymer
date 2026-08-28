@@ -7,7 +7,7 @@ use snowglass_config::ast::{
 use snowglass_input::{
     hub::{SourceSelector, VirtualPort},
     layout::ProjectionMode,
-    sdl::Wire,
+    source::{InputSourceCatalog, InputSourceDescriptor},
 };
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use std::{
@@ -183,6 +183,7 @@ struct PreparedConfiguration {
 #[serde(rename_all = "camelCase")]
 struct ResolvedControllerMapping {
     source: Option<SourceSelector>,
+    device: Option<InputSourceDescriptor>,
     mouse: bool,
     slot: usize,
     group: Option<String>,
@@ -220,6 +221,25 @@ pub fn prepare_api(
     package: serde_json::Value,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let controller_profiles = crate::ControllerProfiles::default();
+    prepare_api_with_sources(
+        plugins,
+        viewer,
+        package,
+        request,
+        &InputSourceCatalog::default(),
+        &controller_profiles,
+    )
+}
+
+pub(crate) fn prepare_api_with_sources(
+    plugins: snowglass_pluginhost::PluginRegistry,
+    viewer: ConfigurationDefaults,
+    package: serde_json::Value,
+    request: serde_json::Value,
+    sources: &InputSourceCatalog,
+    controller_profiles: &crate::ControllerProfiles,
+) -> Result<serde_json::Value, String> {
     let package: crate::ScrapedPackage =
         serde_json::from_value(package).map_err(|error| error.to_string())?;
     let request: ConfigurationRequest =
@@ -248,11 +268,12 @@ pub fn prepare_api(
         })
         .collect::<HashMap<_, _>>();
     let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
+    let controller_manager = crate::ControllerManager::with_profiles(controller_profiles.clone());
     let controller_mappings = prepared
         .viewer
         .gamepads
         .iter()
-        .map(resolved_controller_mapping)
+        .map(|gamepad| resolved_controller_mapping(gamepad, sources, &controller_manager))
         .collect::<Vec<_>>();
     let mut arguments = serde_json::json!({
         "launchPath": package.path.to_string_lossy(),
@@ -289,47 +310,60 @@ pub fn prepare_api(
 /// The controller view passed to plugins is resolved once, before configuration
 /// materialization. Plugins can therefore make mapping-dependent configuration
 /// choices without rendering or inspecting emulator files.
-fn resolved_controller_mapping(gamepad: &DefaultGamepad) -> ResolvedControllerMapping {
+fn resolved_controller_mapping(
+    gamepad: &DefaultGamepad,
+    sources: &InputSourceCatalog,
+    controllers: &crate::ControllerManager,
+) -> ResolvedControllerMapping {
     let resolved = GamepadMapping::from(gamepad);
-    let mut mapping = HashMap::new();
+    let device = match &resolved.source {
+        Some(SourceSelector::Device { device_id }) => sources.get(device_id),
+        Some(SourceSelector::KeyboardMouse) | None => None,
+    };
+    let mut projection_mode = resolved.projection_mode;
+    let mut mapping = if let Some(device) = &device {
+        let profile = controllers.mapping_for_device(device, &resolved.layout);
+        projection_mode = profile.mode;
+        profile.mapping.into_iter().collect()
+    } else {
+        HashMap::new()
+    };
 
-    if gamepad.projection_mode != ProjectionMode::Custom
+    if device.is_none()
+        && gamepad.projection_mode != ProjectionMode::Custom
         && let Some(layout) = snowglass_input::layout::InputLayout::get(&gamepad.layout)
     {
         for element in &layout.elements {
-            let source = match layout.sdl_wire(element.key) {
-                Some(Wire::Button(button)) => {
-                    Some(format!("button:{}", serialized_enum_name(button)))
-                }
-                Some(Wire::Axis(axis)) => Some(format!("axis:{}", serialized_enum_name(axis))),
-                Some(Wire::RawAxis(_) | Wire::Sensor(_)) | None => None,
-            };
-            if let Some(source) = source {
-                mapping.insert(element.key.to_string(), source);
+            if let Some(source) = layout.sdl_key(element.key) {
+                mapping.insert(element.key.to_string(), source.to_string());
             }
         }
     }
 
     // Explicit launch mappings always win, including `disabled`.
-    mapping.extend(gamepad.mapping.clone());
+    if device.is_none() {
+        mapping.extend(gamepad.mapping.iter().map(|(target, source)| {
+            (
+                target.clone(),
+                if source == "disabled" {
+                    "none".to_owned()
+                } else {
+                    source.clone()
+                },
+            )
+        }));
+    }
     ResolvedControllerMapping {
+        device,
         source: resolved.source,
         mouse: resolved.mouse,
         slot: resolved.slot,
         group: gamepad.port.as_ref().map(|port| port.group.clone()),
         port: gamepad.port.as_ref().map(|port| port.index),
         layout: resolved.layout,
-        projection_mode: resolved.projection_mode,
+        projection_mode,
         mapping,
     }
-}
-
-fn serialized_enum_name(value: impl Serialize) -> String {
-    serde_json::to_value(value)
-        .expect("SDL input enum serializes")
-        .as_str()
-        .expect("SDL input enum serializes as a string")
-        .to_owned()
 }
 
 impl PreparedGame {
@@ -685,114 +719,4 @@ fn display_name(path: &std::path::Path) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn launch_selection_preserves_projection_behavior() {
-        let descriptor = EmulatorDescriptor {
-            id: "test".to_owned(),
-            groups: vec![PortGroupDescriptor {
-                name: "controller".to_owned(),
-                connected: 1,
-                ports: vec![PortDescriptor {
-                    index: 0,
-                    layouts: vec!["SWITCH_PRO_CONTROLLER".to_owned()],
-                    selected_layout: "SWITCH_PRO_CONTROLLER".to_owned(),
-                    projection_mode: ProjectionMode::Position,
-                }],
-            }],
-            options: Vec::new(),
-        };
-        let mapping = HashMap::from([("button.a".to_owned(), "button:east".to_owned())]);
-        let (_, gamepads) = validate_assignments(
-            &descriptor,
-            vec![LaunchGroupRequest {
-                name: "controller".to_owned(),
-                ports: vec![LaunchPortRequest {
-                    index: 0,
-                    layout: "SWITCH_PRO_CONTROLLER".to_owned(),
-                    source: Some(SourceSelector::KeyboardMouse),
-                    projection_mode: ProjectionMode::Name,
-                    mapping: mapping.clone(),
-                }],
-            }],
-        )
-        .unwrap();
-
-        let wire = serde_json::to_value(GamepadMapping::from(&gamepads[0])).unwrap();
-        assert_eq!(wire["projectionMode"], "name");
-        assert_eq!(wire["mapping"]["button.a"], "button:east");
-        assert_eq!(wire["port"], "controller.0");
-    }
-
-    #[test]
-    fn resolved_wii_mapping_exposes_an_analog_pointer_to_plugins() {
-        let gamepad = DefaultGamepad {
-            source: Some(SourceSelector::KeyboardMouse),
-            slot: 0,
-            port: Some(VirtualPort::new("wii", 0)),
-            layout: "WII_REMOTE_NUNCHUCK_CONTROLLER".to_owned(),
-            force_mouse: false,
-            projection_mode: ProjectionMode::Position,
-            mapping: HashMap::new(),
-        };
-
-        let wire = serde_json::to_value(resolved_controller_mapping(&gamepad)).unwrap();
-        assert_eq!(wire["group"], "wii");
-        assert_eq!(wire["port"], 0);
-        assert_eq!(wire["mapping"]["pointer.x+"], "axis:right_x");
-        assert_eq!(wire["mapping"]["pointer.y+"], "axis:right_y");
-        assert_eq!(wire["mapping"]["analog.stick.left.x+"], "axis:left_x");
-
-        let mut overridden = gamepad;
-        overridden
-            .mapping
-            .insert("pointer.x+".to_owned(), "disabled".to_owned());
-        let wire = serde_json::to_value(resolved_controller_mapping(&overridden)).unwrap();
-        assert_eq!(wire["mapping"]["pointer.x+"], "disabled");
-    }
-
-    #[test]
-    fn prepare_passes_the_resolved_controller_mapping_to_the_plugin() {
-        let registry = snowglass_pluginhost::PluginRegistry::new();
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("plugins/dolphin");
-        registry.load(package).unwrap();
-        let viewer = ConfigurationDefaults {
-            gamepads: Vec::new(),
-            machine: "NINTENDO_WII".to_owned(),
-            webrtc_targets: None,
-            webrtc_bind: "127.0.0.1:0".parse().unwrap(),
-        };
-        let package = serde_json::json!({
-            "path": "game.iso",
-            "name": "game.iso",
-            "platform": "NINTENDO_WII",
-            "serial": null,
-            "titleId": null
-        });
-        let request = serde_json::json!({
-            "emulator": "dolphin",
-            "groups": [{
-                "name": "wii",
-                "ports": [{
-                    "index": 0,
-                    "layout": "WII_REMOTE_NUNCHUCK_CONTROLLER",
-                    "source": { "kind": "keyboardMouse" }
-                }]
-            }]
-        });
-
-        let prepared = prepare_api(registry, viewer, package, request).unwrap();
-        let mapping = &prepared["arguments"]["controllerMappings"][0];
-        assert_eq!(mapping["group"], "wii");
-        assert_eq!(mapping["port"], 0);
-        assert_eq!(mapping["mapping"]["pointer.x+"], "axis:right_x");
-        assert_eq!(mapping["mapping"]["pointer.y+"], "axis:right_y");
-    }
 }

@@ -76,7 +76,7 @@ struct ShellCoordinator {
 }
 
 impl ShellCoordinator {
-    fn new(
+    async fn new(
         window: WindowBootstrap,
         proxy: EventLoopProxy<UserEvent>,
         options: ShellOptions,
@@ -118,9 +118,13 @@ impl ShellCoordinator {
         window.set_shell_root(shell_compositor.root_visual())?;
         window.commit()?;
         let session = unique_session();
+        let input_sources = shell_factory.input_sources();
+        let input_api = shell_factory.input_api();
         let shell_dom = ShellSession::new(shell_factory);
 
-        let input = InputTransport::runtime().map_err(std::io::Error::other)?;
+        let input = InputTransport::runtime(input_sources, input_api)
+            .await
+            .map_err(std::io::Error::other)?;
         let control_sender = input.control_sender();
 
         let state = Self {
