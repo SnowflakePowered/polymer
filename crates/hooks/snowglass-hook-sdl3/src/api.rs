@@ -1,12 +1,16 @@
 //! SDL3-only ABI and virtual joystick adapter.
 
-use snowglass_input::gamepad::{GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate};
+use snowglass_input::gamepad::{
+    GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadSlot, GamepadUpdate,
+};
 use snowglass_input::layout::SdlOutputLayout;
 use snowglass_input::sdl::SdlSensor;
+use snowglass_input_sdl::Runtime;
 use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
 use std::{
     ffi::{CString, c_char, c_void},
     mem,
+    sync::Arc,
 };
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
 
@@ -89,6 +93,7 @@ impl VirtualJoystickDesc {
         layout: SdlOutputLayout,
         name: *const c_char,
         sensors: &[VirtualJoystickSensorDesc],
+        userdata: *mut c_void,
     ) -> Self {
         Self {
             version: std::mem::size_of::<Self>() as u32,
@@ -108,10 +113,10 @@ impl VirtualJoystickDesc {
             name,
             touchpads: std::ptr::null(),
             sensors: sensors.as_ptr().cast(),
-            userdata: std::ptr::null_mut(),
+            userdata,
             update: None,
             set_player_index: None,
-            rumble: None,
+            rumble: Some(FeedbackContext::rumble),
             rumble_triggers: None,
             set_led: None,
             send_effect: None,
@@ -134,12 +139,33 @@ pub(crate) struct Api {
     names: Vec<CString>,
     sensors: Vec<Box<[VirtualJoystickSensorDesc]>>,
     malloc: MallocFn,
+    feedback: Vec<FeedbackContext>,
+}
+
+struct FeedbackContext {
+    runtime: Arc<Runtime>,
+    slot: GamepadSlot,
+}
+
+impl FeedbackContext {
+    unsafe extern "C" fn rumble(userdata: *mut c_void, low: u16, high: u16) -> bool {
+        let Some(context) = (unsafe { userdata.cast::<Self>().as_ref() }) else {
+            return false;
+        };
+        context.runtime.send_feedback(GamepadFeedback {
+            slot: context.slot,
+            low_frequency: low,
+            high_frequency: high,
+            duration_ms: 0,
+        })
+    }
 }
 
 impl Api {
     pub(crate) unsafe fn load(
         module: HMODULE,
         layouts: Vec<(SdlOutputLayout, String)>,
+        runtime: Arc<Runtime>,
     ) -> Option<Self> {
         let (layouts, names): (Vec<_>, Vec<_>) = layouts
             .into_iter()
@@ -160,6 +186,12 @@ impl Api {
                     .into_boxed_slice()
             })
             .collect();
+        let feedback = (0..layouts.len())
+            .map(|slot| FeedbackContext {
+                runtime: runtime.clone(),
+                slot: GamepadSlot::new(slot as u8).expect("virtual gamepad count is bounded to u8"),
+            })
+            .collect();
         Some(Self {
             attach_virtual: unsafe { symbol(module, c"SDL_AttachVirtualJoystick")? },
             open: unsafe { symbol(module, c"SDL_OpenJoystick")? },
@@ -173,6 +205,7 @@ impl Api {
             names,
             sensors,
             malloc: unsafe { symbol(module, c"SDL_malloc")? },
+            feedback,
         })
     }
 
@@ -214,6 +247,7 @@ impl SdlBackend for Api {
                 self.layouts[slot],
                 self.names[slot].as_ptr(),
                 &self.sensors[slot],
+                (&mut self.feedback[slot] as *mut FeedbackContext).cast(),
             );
             let id = unsafe { (self.attach_virtual)(&raw const description) };
             if id == 0 {

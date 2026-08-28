@@ -2,8 +2,11 @@
 
 use crossfire::{MTx, Rx, mpsc};
 use parking_lot::Mutex;
-use snowglass_input::gamepad::{GamepadUpdate, GamepadUpdateSink, LatestGamepadMailbox};
+use snowglass_input::gamepad::{
+    GamepadFeedback, GamepadUpdate, GamepadUpdateSink, LatestGamepadMailbox,
+};
 use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
+use std::sync::mpsc as std_mpsc;
 use std::{
     sync::{
         Arc,
@@ -43,6 +46,7 @@ struct InputInner {
     stopping: Arc<AtomicBool>,
     clients: Arc<Mutex<Vec<LocalSocket>>>,
     pending_socket: Arc<Mutex<Option<LocalSocket>>>,
+    feedback_subscribers: Arc<Mutex<Vec<std_mpsc::Sender<GamepadFeedback>>>>,
     workers: Mutex<Option<InputWorkers>>,
 }
 
@@ -60,6 +64,7 @@ impl InputTransport {
         let stopping = Arc::new(AtomicBool::new(false));
         let clients = Arc::new(Mutex::new(Vec::<LocalSocket>::new()));
         let pending_socket = Arc::new(Mutex::new(None));
+        let feedback_subscribers = Arc::new(Mutex::new(Vec::new()));
         let (control, receiver) = mpsc::unbounded_blocking();
 
         let acceptor = spawn_acceptor(
@@ -67,6 +72,7 @@ impl InputTransport {
             gamepads.clone(),
             clients.clone(),
             pending_socket.clone(),
+            feedback_subscribers.clone(),
             stopping.clone(),
         );
         let gamepad = spawn_gamepad_writer(mailbox.clone(), gamepads, stopping.clone());
@@ -106,6 +112,7 @@ impl InputTransport {
             stopping,
             clients,
             pending_socket,
+            feedback_subscribers,
             workers: Mutex::new(Some(workers)),
         })))
     }
@@ -116,6 +123,12 @@ impl InputTransport {
 
     pub(crate) fn sender(&self) -> ProtocolInputSender {
         ProtocolInputSender(self.0.control.clone())
+    }
+
+    pub(crate) fn subscribe_feedback(&self) -> std_mpsc::Receiver<GamepadFeedback> {
+        let (sender, receiver) = std_mpsc::channel();
+        self.0.feedback_subscribers.lock().push(sender);
+        receiver
     }
 
     pub(crate) fn publish_gamepad(&self, update: GamepadUpdate) -> std::io::Result<()> {
@@ -200,6 +213,7 @@ fn spawn_acceptor(
     gamepads: Arc<Mutex<InputPublisher>>,
     clients: Arc<Mutex<Vec<LocalSocket>>>,
     pending_socket: Arc<Mutex<Option<LocalSocket>>>,
+    feedback_subscribers: Arc<Mutex<Vec<std_mpsc::Sender<GamepadFeedback>>>>,
     stopping: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
@@ -234,12 +248,33 @@ fn spawn_acceptor(
                         let _ = socket.shutdown();
                         continue;
                     }
+                    if let Ok(feedback_socket) = socket.try_clone() {
+                        spawn_feedback_reader(feedback_socket, feedback_subscribers.clone());
+                    }
                     clients.lock().push(socket);
                 } else if stopping.load(Ordering::Acquire) {
                     return;
                 }
             }
         })
+}
+
+fn spawn_feedback_reader(
+    mut socket: LocalSocket,
+    subscribers: Arc<Mutex<Vec<std_mpsc::Sender<GamepadFeedback>>>>,
+) {
+    let _ = thread::Builder::new()
+        .name("snowglass-runtime-gamepad-feedback".to_owned())
+        .spawn(move || {
+            while let Ok(message) = socket.receive() {
+                let Message::GamepadFeedback(feedback) = message else {
+                    continue;
+                };
+                subscribers
+                    .lock()
+                    .retain(|subscriber| subscriber.send(feedback).is_ok());
+            }
+        });
 }
 
 fn spawn_control_writer(
@@ -286,6 +321,8 @@ fn spawn_control_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snowglass_input::gamepad::GamepadSlot;
+    use snowglass_ipc::input::InputSubscriber;
     use std::time::Instant;
 
     #[test]
@@ -295,6 +332,29 @@ mod tests {
         transport.shutdown();
         let replacement = LocalSocketListener::bind(&format!("{session}-input")).unwrap();
         replacement.close();
+    }
+
+    #[test]
+    fn receives_virtual_gamepad_feedback_from_a_client() {
+        let session = format!("snowglass-runtime-feedback-test-{}", std::process::id());
+        let transport = InputTransport::bind(&session).unwrap();
+        let feedback = transport.subscribe_feedback();
+        let mut client = InputSubscriber::connect(&format!("{session}-input")).unwrap();
+        let expected = GamepadFeedback {
+            slot: GamepadSlot::new(1).unwrap(),
+            low_frequency: 1_000,
+            high_frequency: 2_000,
+            duration_ms: 0,
+        };
+        client
+            .control
+            .send(Message::GamepadFeedback(expected))
+            .unwrap();
+        assert_eq!(
+            feedback.recv_timeout(Duration::from_secs(1)).unwrap(),
+            expected
+        );
+        transport.shutdown();
     }
 
     #[test]

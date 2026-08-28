@@ -2,8 +2,8 @@
 
 use parking_lot::Mutex;
 use seqlock::SeqLock;
-use snowglass_input::gamepad::{GamepadState, GamepadUpdate};
-use snowglass_ipc::input::InputSubscriber;
+use snowglass_input::gamepad::{GamepadFeedback, GamepadState, GamepadUpdate};
+use snowglass_ipc::{Message, input::InputSubscriber};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -87,6 +87,7 @@ pub struct Runtime {
     pad_count: usize,
     slots: Vec<SeqLock<SlotState>>,
     published_sequences: Mutex<Vec<Option<u32>>>,
+    feedback: Mutex<Option<snowglass_ipc::LocalSocket>>,
 }
 
 impl Runtime {
@@ -99,6 +100,7 @@ impl Runtime {
             pad_count: pad_count.clamp(1, u8::MAX as usize + 1),
             slots,
             published_sequences: Mutex::new(vec![None; pad_count.clamp(1, u8::MAX as usize + 1)]),
+            feedback: Mutex::new(None),
         }
     }
 
@@ -116,6 +118,23 @@ impl Runtime {
 
     pub fn prepare_enumeration(&self, backend: &mut impl SdlBackend) -> Result<(), BackendError> {
         backend.ensure_attached(self.pad_count)
+    }
+
+    pub const fn pad_count(&self) -> usize {
+        self.pad_count
+    }
+
+    pub fn send_feedback(&self, feedback: GamepadFeedback) -> bool {
+        let mut feedback_socket = self.feedback.lock();
+        let Some(socket) = feedback_socket.as_mut() else {
+            return false;
+        };
+        if socket.send(Message::GamepadFeedback(feedback)).is_ok() {
+            true
+        } else {
+            *feedback_socket = None;
+            false
+        }
     }
 
     /// Publishes every newly received snapshot and reports whether at least one
@@ -155,9 +174,11 @@ impl Runtime {
         let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
             return;
         };
+        *self.feedback.lock() = input.control.try_clone().ok();
         while input.drain(|update| self.apply(update)).is_ok() {
             std::thread::yield_now();
         }
+        *self.feedback.lock() = None;
     }
 }
 

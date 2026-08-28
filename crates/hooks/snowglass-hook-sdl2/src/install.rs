@@ -90,11 +90,12 @@ fn create_table_state() -> Result<Sdl2TableState, &'static str> {
     let module = Sdl2EntryInstallation::with_state(|state| state.module)
         .ok_or("SDL2 entry-hook state is not installed")?
         .as_ptr();
-    let backend =
-        unsafe { api::Api::load(module) }.ok_or("SDL2 virtual joystick exports are unavailable")?;
+    let runtime = Arc::new(Runtime::new(config::sdl_gamepad_count()));
+    let backend = unsafe { api::Api::load(module, runtime.clone()) }
+        .ok_or("SDL2 virtual joystick exports are unavailable")?;
     Ok(Sdl2TableState {
         backend: Mutex::new(backend),
-        runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+        runtime,
         logged_attachment: AtomicBool::new(false),
         logged_enumeration: AtomicBool::new(false),
         logged_gamepad_poll: AtomicBool::new(false),

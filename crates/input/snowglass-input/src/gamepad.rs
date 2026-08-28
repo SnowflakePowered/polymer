@@ -148,6 +148,16 @@ pub struct GamepadUpdate {
     pub state: GamepadState,
 }
 
+/// Force-feedback requested by an emulator for one stable virtual slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GamepadFeedback {
+    pub slot: GamepadSlot,
+    pub low_frequency: u16,
+    pub high_frequency: u16,
+    /// Zero means "until replaced", matching SDL virtual-joystick callbacks.
+    pub duration_ms: u32,
+}
+
 /// A coalescing, per-slot handoff. Publishing replaces an unread snapshot for
 /// that slot, so input consumers can never work through stale gamepad states.
 pub struct LatestGamepadMailbox {

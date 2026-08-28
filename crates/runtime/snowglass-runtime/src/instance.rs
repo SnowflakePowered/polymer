@@ -734,6 +734,12 @@ impl EmulatorInstance {
         Arc::new(self.lifecycle.input.clone())
     }
 
+    pub fn subscribe_gamepad_feedback(
+        &self,
+    ) -> std::sync::mpsc::Receiver<snowglass_input::gamepad::GamepadFeedback> {
+        self.lifecycle.input.subscribe_feedback()
+    }
+
     /// Compatibility bridge for input encoders that already produce the
     /// existing Snowglass protocol messages. The instance still owns the IPC
     /// connection and writer lifecycle.

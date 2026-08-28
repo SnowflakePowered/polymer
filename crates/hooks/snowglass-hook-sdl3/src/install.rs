@@ -107,11 +107,12 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     if layouts.len() != config::sdl_gamepad_count() {
         return Err("input layout count disagrees with virtual gamepad count");
     }
-    let backend = unsafe { api::Api::load(module, layouts) }
+    let runtime = Arc::new(Runtime::new(config::sdl_gamepad_count()));
+    let backend = unsafe { api::Api::load(module, layouts, runtime.clone()) }
         .ok_or("SDL3 virtual joystick exports are unavailable")?;
     Ok(Sdl3TableState {
         backend: Mutex::new(backend),
-        runtime: Arc::new(Runtime::new(config::sdl_gamepad_count())),
+        runtime,
         logged_enumeration: AtomicBool::new(false),
         logged_gamepad_consumer: AtomicBool::new(false),
         logged_gamepad_update: AtomicBool::new(false),
