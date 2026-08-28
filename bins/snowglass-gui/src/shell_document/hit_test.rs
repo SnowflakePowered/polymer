@@ -31,7 +31,7 @@ pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) ->
     }
     let mut geometry_hit = None;
     for (order, (node_id, node)) in document.tree().iter().enumerate() {
-        if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+        if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) || !node.has_boxes() {
             continue;
         }
         let accepts_pointer = node
@@ -100,6 +100,9 @@ fn painted_pointer_target_is_valid(
     let Some(node) = document.get_node(node_id) else {
         return false;
     };
+    if !node.has_boxes() {
+        return false;
+    }
     if node.element_data().is_some_and(|element| {
         matches!(
             element.name.local.as_ref(),
@@ -147,7 +150,7 @@ fn pointer_hit_node(
     x: f32,
     y: f32,
 ) -> Option<NodeId> {
-    if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+    if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) || !node.has_boxes() {
         return None;
     }
     let mut local_x = x - node.final_layout().location.x + node.scroll_offset().x as f32;

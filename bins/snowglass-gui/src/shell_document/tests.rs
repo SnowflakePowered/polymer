@@ -430,22 +430,6 @@ fn pointer_hit_does_not_let_scroll_overflow_steal_a_header_button() {
 }
 
 #[test]
-fn paint_only_inline_styles_do_not_require_geometry_sync() {
-    assert!(!style_change_requires_geometry(
-        Some("transform: translate(10px, 20px); opacity: 0.5"),
-        Some("transform: translate(30px, 40px); opacity: 0.8"),
-    ));
-    assert!(style_change_requires_geometry(
-        Some("width: 100px; transform: translate(10px, 20px)"),
-        Some("width: 120px; transform: translate(30px, 40px)"),
-    ));
-    assert!(style_change_requires_geometry(
-        Some("--panel-x: 10px; transform: translate(10px, 20px)"),
-        Some("--panel-x: 30px; transform: translate(30px, 40px)"),
-    ));
-}
-
-#[test]
 fn pointer_hit_finds_a_centered_dialog_action_over_a_surface() {
     let html = r#"
             <style>
@@ -503,15 +487,22 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                 let html = r#"
                     <style>
                       :root, body { width: 100%; height: 100%; margin: 0; }
+                      .panel { position: fixed; left: 0; top: 0; width: 180px; height: 90px; transform: translate(300px, 100px); z-index: 20; }
                       button { position: absolute; left: 10px; top: 10px; width: 120px; height: 50px; }
                     </style>
-                    <button id="action">Action</button>
+                    <div class="panel"><button id="action">Action</button></div>
                     <script>
-                      document.addEventListener("click", event => {
-                        let target = event.target;
-                        while (target && target.id !== "action") target = target.parentNode;
-                        target?.setAttribute("data-clicked", "true");
-                      });
+                      for (const kind of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+                        document.addEventListener(kind, event => {
+                          let target = event.target;
+                          while (target && target.id !== "action") target = target.parentNode;
+                          if (!target) return;
+                          queueMicrotask(() => {
+                            const sequence = target.getAttribute("data-event-sequence") || "";
+                            target.setAttribute("data-event-sequence", `${sequence}${sequence ? "," : ""}${kind}`);
+                          });
+                        });
+                      }
                     </script>
                 "#;
                 let mut document =
@@ -577,11 +568,22 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                 .await
                 .unwrap();
                 layer.apply_script_mutations(&mut runtime);
-                let hit = layer.hit_test(30.0, 30.0).unwrap();
+                let hit = layer.hit_test(330.0, 130.0).unwrap();
+                let native_script_target = layer.document.as_ref().hit(330.0, 130.0).and_then(|native| {
+                    std::iter::successors(Some(native.node_id), |node| {
+                        layer.document.as_ref().get_node(*node).and_then(|node| node.parent)
+                    })
+                    .find_map(|node| layer.dom_to_script.get(&node).copied())
+                });
+                assert_ne!(
+                    native_script_target,
+                    layer.dom_to_script.get(&hit.node_id).copied(),
+                    "the fixture must exercise Snowglass's paint-order retargeting path",
+                );
                 let event = |kind, buttons| DomMouseEvent {
                     kind,
-                    x: 30.0,
-                    y: 30.0,
+                    x: 330.0,
+                    y: 130.0,
                     button: 0,
                     buttons,
                     ctrl_key: false,
@@ -590,13 +592,18 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                 layer.mouse_event(&mut runtime, hit, event("mousedown", 1));
                 layer.mouse_event(&mut runtime, hit, event("mouseup", 0));
 
-                let clicked = layer.document.as_ref().tree().iter().any(|(_, node)| {
-                    node.element_data().is_some_and(|element| {
-                        element.attr(local_name!("id")) == Some("action")
-                            && element.attr(LocalName::from("data-clicked")) == Some("true")
+                let sequence = layer.document.as_ref().tree().iter().find_map(|(_, node)| {
+                    node.element_data().and_then(|element| {
+                        (element.attr(local_name!("id")) == Some("action"))
+                            .then(|| element.attr(LocalName::from("data-event-sequence")))
+                            .flatten()
                     })
                 });
-                assert!(clicked, "the generated click did not reach the delegated listener");
+                assert_eq!(
+                    sequence,
+                    Some("pointerdown,mousedown,pointerup,mouseup,click"),
+                    "Blitz must own compatibility mouse events and click synthesis",
+                );
             })
             .await;
 }

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const { ops, webEvents } = globalThis.__snowglassRuntime;
+  const { ops, runMicrotasks, webEvents } = globalThis.__snowglassRuntime;
   const registerSnowglassSurface = globalThis.__snowglassApi.registerSurface;
   const { defineEventHandler } = webEvents;
   const eventDispatch = globalThis.__snowglassCreateEventDispatch(webEvents, ops);
@@ -801,6 +801,8 @@
   }
 
   class HTMLElement extends Element {}
+  class HTMLHeadElement extends HTMLElement {}
+  class HTMLBodyElement extends HTMLElement {}
   class HTMLTemplateElement extends HTMLElement {
     constructor(snapshot) {
       super(snapshot);
@@ -1027,6 +1029,8 @@
       registerSnowglassSurface(surface, snapshot.id);
       return surface;
     }
+    if (snapshot.tag === "head") return new HTMLHeadElement(snapshot);
+    if (snapshot.tag === "body") return new HTMLBodyElement(snapshot);
     return new HTMLElement(snapshot);
   }
 
@@ -1109,6 +1113,8 @@
     Comment,
     Element,
     HTMLElement,
+    HTMLHeadElement,
+    HTMLBodyElement,
     HTMLDivElement: HTMLElement,
     HTMLIFrameElement: HTMLElement,
     HTMLInputElement: HTMLElement,
@@ -1193,6 +1199,8 @@
       const constructors = { mouse: MouseEvent, pointer: PointerEvent, wheel: WheelEvent, keyboard: KeyboardEvent, focus: FocusEvent, input: InputEvent, composition: CompositionEvent };
       const Constructor = constructors[eventClass] || Event;
       dispatch(target, new Constructor(type, { bubbles, cancelable, ...init }));
+      // Proc the microtask queue before propagating DOM effects.
+      runMicrotasks();
       if (eventClass === "pointer" && (type === "pointerup" || type === "pointercancel")) {
         const pointerId = Number(init.pointerId) || 1;
         target.__capturedPointers?.delete(pointerId);

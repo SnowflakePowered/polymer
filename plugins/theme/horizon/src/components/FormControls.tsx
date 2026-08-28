@@ -1,6 +1,7 @@
 import { Field, NumberInput, Select, Slider, Switch, createListCollection } from "@ark-ui/solid";
 import { For, Show, createMemo } from "solid-js";
 import type { ConfigurationOption } from "../../../../../js/snowglass";
+import { OverlayPortal } from "./OverlayPortal";
 import "./FormControls.css";
 
 export type ChoiceItem = { value: string; label: string };
@@ -17,11 +18,11 @@ export function ChoiceControl(props: {
     <Select.Control>
       <Select.Trigger class="horizon-select-trigger"><Select.ValueText /><Select.Indicator>⌄</Select.Indicator></Select.Trigger>
     </Select.Control>
-    <Select.Positioner class="horizon-select-positioner">
-      <Select.Content class="horizon-select-content">
-        <For each={props.items}>{(item) => <Select.Item item={item} class="horizon-select-item"><Select.ItemText>{item.label}</Select.ItemText><Select.ItemIndicator>✓</Select.ItemIndicator></Select.Item>}</For>
-      </Select.Content>
-    </Select.Positioner>
+    <OverlayPortal><Select.Positioner class="horizon-select-positioner">
+        <Select.Content class="horizon-select-content">
+          <For each={props.items}>{(item) => <Select.Item item={item} class="horizon-select-item"><Select.ItemText>{item.label}</Select.ItemText><Select.ItemIndicator>✓</Select.ItemIndicator></Select.Item>}</For>
+        </Select.Content>
+      </Select.Positioner></OverlayPortal>
   </Select.Root>;
 }
 

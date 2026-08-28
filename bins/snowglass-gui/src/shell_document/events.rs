@@ -17,21 +17,20 @@ struct DenoEventHandler<'a> {
     ordinary_dom_hit: bool,
     target_override: Option<usize>,
     default_prevented: Option<Rc<Cell<bool>>>,
-    suppress_blitz_default: bool,
 }
 
 impl EventHandler for DenoEventHandler<'_> {
     fn handle_event(
         &mut self,
-        _chain: &[NodeId],
+        chain: &[NodeId],
         event: &mut DomEvent,
         _document: &mut dyn blitz_dom::Document,
         event_state: &mut EventState,
     ) {
         let target = self.target_override.unwrap_or_else(|| {
-            self.dom_to_script
-                .get(&event.target)
-                .copied()
+            chain
+                .iter()
+                .find_map(|node| self.dom_to_script.get(node).copied())
                 .unwrap_or(event.target.as_u64() as usize)
         });
         let result = self.runtime.dispatch_event(
@@ -47,7 +46,12 @@ impl EventHandler for DenoEventHandler<'_> {
             }
             event_state.prevent_default();
         }
-        if self.suppress_blitz_default {
+        // Blitz's painter supports hoisted transformed descendants that its
+        // hit tester does not yet resolve. If Snowglass retargeted this event
+        // to the paint-order hit, a native click default against Blitz's
+        // different target would be incorrect. Compatibility events and click
+        // synthesis still remain owned by EventDriver.
+        if self.target_override.is_some() && matches!(event.data, DomEventData::Click(_)) {
             event_state.prevent_default();
         }
         if result.propagation_stopped {
@@ -122,12 +126,17 @@ impl ShellDocument {
         self.pointer_hover_path = next_path;
         self.dirty = true;
         self.needs_resolve = true;
-        // Hover selectors may legally change layout, so keep this conservative.
         self.needs_geometry_sync = true;
     }
 
     pub fn clear_pointer_hover(&mut self) {
+        let native_changed = self.document.as_mut().clear_hover();
         self.set_pointer_hover(None);
+        if native_changed {
+            self.dirty = true;
+            self.needs_resolve = true;
+            self.needs_geometry_sync = true;
+        }
     }
 
     /// Dispatches a mouse event to a target selected from a shell hit
@@ -183,65 +192,41 @@ impl ShellDocument {
             "mousemove" => Some(UiEvent::PointerMove(data)),
             _ => None,
         };
-        let click_data = (kind == "mouseup").then(|| match &event {
-            Some(UiEvent::PointerUp(data)) => data.clone(),
-            _ => unreachable!(),
-        });
         let claimed = Rc::new(Cell::new(false));
         if let Some(event) = event {
-            // A captured drag keeps delivering pointer events to its original
-            // target. Recomputing :hover against the lagging painted position
-            // during that sequence both disagrees with capture retargeting and
-            // forces a full Stylo/Taffy resolve on otherwise paint-only moves.
-            if kind != "mousemove" || buttons == 0 {
-                self.set_pointer_hover(Some(hit.node_id));
-            }
+            let native_script_target = self.document.as_ref().hit(x, y).and_then(|native| {
+                std::iter::successors(Some(native.node_id), |node| {
+                    self.document
+                        .as_ref()
+                        .get_node(*node)
+                        .and_then(|node| node.parent)
+                })
+                .find_map(|node| self.dom_to_script.get(&node).copied())
+            });
+            let target_override = self
+                .dom_to_script
+                .get(&hit.node_id)
+                .copied()
+                .filter(|target| Some(*target) != native_script_target);
             let handler = DenoEventHandler {
                 runtime,
                 dom_to_script: &self.dom_to_script,
                 claimed: claimed.clone(),
                 ordinary_dom_hit: !hit.over_tracked_surface,
-                target_override: None,
+                target_override,
                 default_prevented: None,
-                suppress_blitz_default: false,
             };
-            let (pointer, mouse) = match event {
-                UiEvent::PointerDown(data) => (
-                    DomEventData::PointerDown(data.clone()),
-                    DomEventData::MouseDown(data),
-                ),
-                UiEvent::PointerUp(data) => (
-                    DomEventData::PointerUp(data.clone()),
-                    DomEventData::MouseUp(data),
-                ),
-                UiEvent::PointerMove(data) => (
-                    DomEventData::PointerMove(data.clone()),
-                    DomEventData::MouseMove(data),
-                ),
-                _ => unreachable!(),
-            };
-            let mut driver = EventDriver::new(&mut self.document, handler);
-            driver.handle_dom_event(DomEvent::new(hit.node_id, pointer));
-            driver.handle_dom_event(DomEvent::new(hit.node_id, mouse));
-        }
-        // Blitz 0.3 can paint a dynamically inserted overlay while its own
-        // hit tester still resolves the pointer to the document root. Use the
-        // paint-order hit computed above only when Blitz/Deno did not handle
-        // the mouse-up, so ordinary controls are never invoked twice and a
-        // tracked surface never gains a synthetic UI click.
-        if let Some(data) = click_data
-            && !hit.over_tracked_surface
-            && !claimed.get()
-        {
-            let target = self
-                .dom_to_script
-                .get(&hit.node_id)
-                .copied()
-                .unwrap_or(hit.node_id.as_u64() as usize);
-            let result =
-                runtime.dispatch_event("click", target, &DomEventData::Click(data), true, true);
-            if result.default_prevented || result.handled {
-                claimed.set(true);
+            EventDriver::new(&mut self.document, handler).handle_ui_event(event);
+            if target_override.is_some() {
+                let native_changed = self.document.as_mut().clear_hover();
+                self.set_pointer_hover(Some(hit.node_id));
+                if native_changed {
+                    self.dirty = true;
+                    self.needs_resolve = true;
+                    self.needs_geometry_sync = true;
+                }
+            } else {
+                self.set_pointer_hover(None);
             }
         }
         self.apply_script_mutations(runtime);
@@ -267,7 +252,6 @@ impl ShellDocument {
             ordinary_dom_hit: !hit.over_tracked_surface,
             target_override: None,
             default_prevented: Some(default_prevented.clone()),
-            suppress_blitz_default: false,
         };
         EventDriver::new(&mut self.document, handler).handle_dom_event(DomEvent::new(
             hit.node_id,
@@ -301,7 +285,6 @@ impl ShellDocument {
             ordinary_dom_hit: false,
             target_override: None,
             default_prevented: None,
-            suppress_blitz_default: false,
         };
         EventDriver::new(&mut self.document, handler).handle_ui_event(UiEvent::Ime(event));
         self.apply_script_mutations(runtime);
@@ -344,7 +327,6 @@ impl ShellDocument {
             ordinary_dom_hit: false,
             target_override: None,
             default_prevented: None,
-            suppress_blitz_default: false,
         };
         EventDriver::new(&mut self.document, handler).handle_ui_event(if event.kind == "keydown" {
             UiEvent::KeyDown(data)
