@@ -61,6 +61,7 @@ deno_core::extension!(
                 const webEvents = core.loadExtScript("ext:deno_web/02_event.js");
                 Object.defineProperty(globalThis, "__snowglassRuntime", {
                   value: Object.freeze({
+                    runMicrotasks: core.runMicrotasks,
                     ops: Object.freeze({
                       op_dom_append_child,
                       op_dom_create_comment,

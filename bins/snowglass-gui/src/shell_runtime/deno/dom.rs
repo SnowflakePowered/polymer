@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use blitz_dom::{BaseDocument, NodeData, NodeId, local_name};
+use blitz_dom::{BaseDocument, Node, NodeData, NodeId, local_name};
 use deno_core::{OpState, op2};
 use serde::{Deserialize, Serialize};
 
@@ -284,6 +284,39 @@ struct RectSnapshot {
     height: f32,
 }
 
+impl RectSnapshot {
+    const ZERO: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    };
+
+    fn from_layout(document: &BaseDocument, node: &Node) -> Option<Self> {
+        if !node.has_boxes() {
+            return Some(Self::ZERO);
+        }
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut current = node;
+        loop {
+            let layout = current.final_layout();
+            x += layout.location.x - current.scroll_offset().x as f32;
+            y += layout.location.y - current.scroll_offset().y as f32;
+            let Some(parent) = current.layout_parent.get() else {
+                break;
+            };
+            current = document.get_node(parent)?;
+        }
+        Some(Self {
+            x,
+            y,
+            width: node.final_layout().size.width,
+            height: node.final_layout().size.height,
+        })
+    }
+}
+
 /// The JavaScript mirror already applies script-originated topology,
 /// attributes, and text synchronously. After Blitz resolves layout, only
 /// authoritative geometry and focus need to travel back across the bridge.
@@ -364,13 +397,8 @@ pub(super) fn layout_snapshot(
             if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
                 return None;
             }
-            let position = node.absolute_position(0.0, 0.0);
-            let values = [
-                position.x,
-                position.y,
-                node.final_layout().size.width,
-                node.final_layout().size.height,
-            ];
+            let rect = RectSnapshot::from_layout(document, node)?;
+            let values = [rect.x, rect.y, rect.width, rect.height];
             let unchanged = previous
                 .insert(id, values)
                 .is_some_and(|old| same_geometry(old, values));
@@ -452,20 +480,9 @@ pub(super) fn snapshot(
                 _ => return None,
             };
             let rect = if matches!(node.data, NodeData::Text(_) | NodeData::Comment { .. }) {
-                RectSnapshot {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                }
+                RectSnapshot::ZERO
             } else {
-                let position = node.absolute_position(0.0, 0.0);
-                RectSnapshot {
-                    x: position.x,
-                    y: position.y,
-                    width: node.final_layout().size.width,
-                    height: node.final_layout().size.height,
-                }
+                RectSnapshot::from_layout(document, node).unwrap_or(RectSnapshot::ZERO)
             };
             Some(NodeSnapshot {
                 id: map_id(id),

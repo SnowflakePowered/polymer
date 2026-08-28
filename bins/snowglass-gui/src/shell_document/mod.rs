@@ -116,9 +116,8 @@ pub struct ShellDocument {
     /// mapped; these maps keep later mutations and hit testing in agreement.
     script_to_dom: HashMap<usize, NodeId>,
     dom_to_script: HashMap<NodeId, usize>,
-    /// Authoritative paint-order hover path. Blitz's built-in hit tester does
-    /// not account for every hoisted overlay that its painter supports, so
-    /// shell pointer routing and CSS hover must share this path.
+    /// Paint-order hover path used only while Blitz's native hit target
+    /// differs from the compositor-visible target.
     pointer_hover_path: Vec<NodeId>,
 }
 

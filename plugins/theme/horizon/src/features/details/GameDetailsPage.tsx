@@ -1,9 +1,10 @@
 import { Show, onCleanup, onMount } from "solid-js";
+import { produce } from "solid-js/store";
 import { AppSidebar } from "../../components/AppSidebar";
 import { ControlHintBar } from "../../components/ControlHintBar";
 import { Icon } from "../../components/Icon";
 import { useShell } from "../../app/ShellProvider";
-import { cloneGame, friendly } from "../../app/launch";
+import { friendly } from "../../app/launch";
 import type { EmulatorConfiguration } from "../../../../../../js/snowglass";
 import { ControllerSection } from "./ControllerSection";
 import { SettingsSection } from "./SettingsSection";
@@ -16,10 +17,10 @@ export function GameDetailsPage() {
   const updateEmulator = (change: (emulator: EmulatorConfiguration) => void) => {
     const current = game();
     if (!current) return;
-    const next = cloneGame(current);
-    const target = next.candidates.find((item) => item.id === next.selectedEmulator) || next.candidates[0];
-    change(target);
-    shell.setModel("draft", next);
+    const index = current.candidates.findIndex((item) => item.id === current.selectedEmulator);
+    const target = index < 0 ? 0 : index;
+    if (!current.candidates[target]) return;
+    shell.setModel("draft", "candidates", target, produce(change));
   };
   onMount(() => {
     const keydown = (event: KeyboardEvent) => {
