@@ -1,10 +1,13 @@
 //! SDL2-only ABI and virtual joystick adapter.
 
-use snowglass_input::gamepad::{GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadUpdate};
-use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
+use snowglass_input::gamepad::{
+    GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadSlot, GamepadUpdate,
+};
+use snowglass_input_sdl::{BackendError, Runtime, SdlBackend, effective_state};
 use std::{
     ffi::{c_char, c_void},
     mem,
+    sync::Arc,
 };
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
 
@@ -40,7 +43,7 @@ struct VirtualJoystickDesc {
 }
 
 impl VirtualJoystickDesc {
-    const fn snowglass() -> Self {
+    fn snowglass(userdata: *mut c_void) -> Self {
         Self {
             version: SDL_VIRTUAL_JOYSTICK_DESC_VERSION,
             joystick_type: SDL_JOYSTICK_TYPE_GAMECONTROLLER as u16,
@@ -53,10 +56,10 @@ impl VirtualJoystickDesc {
             button_mask: (1 << GAMEPAD_BUTTON_COUNT) - 1,
             axis_mask: (1 << GAMEPAD_AXIS_COUNT) - 1,
             name: c"Snowglass Virtual Gamepad".as_ptr(),
-            userdata: std::ptr::null_mut(),
+            userdata,
             update: None,
             set_player_index: None,
-            rumble: None,
+            rumble: Some(FeedbackContext::rumble),
             rumble_triggers: None,
             set_led: None,
             send_effect: None,
@@ -70,16 +73,47 @@ pub(crate) struct Api {
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
     handles: Vec<usize>,
+    feedback: Vec<FeedbackContext>,
+}
+
+struct FeedbackContext {
+    runtime: Arc<Runtime>,
+    slot: GamepadSlot,
+}
+
+impl FeedbackContext {
+    unsafe extern "C" fn rumble(userdata: *mut c_void, low: u16, high: u16) -> i32 {
+        let Some(context) = (unsafe { userdata.cast::<Self>().as_ref() }) else {
+            return -1;
+        };
+        if context.runtime.send_feedback(GamepadFeedback {
+            slot: context.slot,
+            low_frequency: low,
+            high_frequency: high,
+            duration_ms: 0,
+        }) {
+            0
+        } else {
+            -1
+        }
+    }
 }
 
 impl Api {
-    pub(crate) unsafe fn load(module: HMODULE) -> Option<Self> {
+    pub(crate) unsafe fn load(module: HMODULE, runtime: Arc<Runtime>) -> Option<Self> {
+        let feedback = (0..runtime.pad_count())
+            .map(|slot| FeedbackContext {
+                runtime: runtime.clone(),
+                slot: GamepadSlot::new(slot as u8).expect("virtual gamepad count is bounded to u8"),
+            })
+            .collect();
         Some(Self {
             attach_virtual: unsafe { symbol(module, c"SDL_JoystickAttachVirtualEx")? },
             open: unsafe { symbol(module, c"SDL_JoystickOpen")? },
             set_axis: unsafe { symbol(module, c"SDL_JoystickSetVirtualAxis")? },
             set_button: unsafe { symbol(module, c"SDL_JoystickSetVirtualButton")? },
             handles: Vec::new(),
+            feedback,
         })
     }
 }
@@ -91,7 +125,9 @@ impl SdlBackend for Api {
             if self.handles[slot] != 0 {
                 continue;
             }
-            let description = VirtualJoystickDesc::snowglass();
+            let description = VirtualJoystickDesc::snowglass(
+                (&mut self.feedback[slot] as *mut FeedbackContext).cast(),
+            );
             let index = unsafe { (self.attach_virtual)(&raw const description) };
             if index < 0 {
                 return Err(BackendError("SDL2 failed to attach a virtual joystick"));

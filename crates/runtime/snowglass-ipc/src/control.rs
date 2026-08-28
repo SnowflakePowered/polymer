@@ -2,7 +2,7 @@
 
 use snowglass_input::{
     DirectInputData, DirectInputDevice, RawKeyInput,
-    gamepad::{GamepadSlot, GamepadState, GamepadUpdate},
+    gamepad::{GamepadFeedback, GamepadSlot, GamepadState, GamepadUpdate},
     mouse::{PointerInput, PointerPhase, PointerSource},
 };
 use snowglass_protocol::{
@@ -49,6 +49,7 @@ const MESSAGE_FRAME_AVAILABLE: u32 = 10;
 const MESSAGE_MAP_ACCEPTED: u32 = 11;
 const MESSAGE_RAW_KEY_INPUT: u32 = 12;
 const MESSAGE_RESIZE_WINDOW: u32 = 13;
+const MESSAGE_GAMEPAD_FEEDBACK: u32 = 14;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
@@ -118,6 +119,7 @@ pub enum Message {
     ResizeWindow(ResizeWindow),
     PointerInput(PointerInput),
     GamepadUpdate(GamepadUpdate),
+    GamepadFeedback(GamepadFeedback),
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
     /// A file handle already duplicated into the receiving process.
@@ -255,6 +257,15 @@ struct WireGamepadUpdate {
     pointer_y: I16,
     accelerometer: [F32; 3],
     gyroscope: [F32; 3],
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireGamepadFeedback {
+    slot: U32,
+    low_frequency: U16,
+    high_frequency: U16,
+    duration_ms: U32,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -690,6 +701,18 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
+        Message::GamepadFeedback(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_GAMEPAD_FEEDBACK,
+                &WireGamepadFeedback {
+                    slot: U32::new(u32::from(value.slot.get())),
+                    low_frequency: U16::new(value.low_frequency),
+                    high_frequency: U16::new(value.high_frequency),
+                    duration_ms: U32::new(value.duration_ms),
+                },
+            );
+        }
         Message::StreamAccepted => {
             wire.kind = U32::new(MESSAGE_STREAM_ACCEPTED);
         }
@@ -886,6 +909,19 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 },
             }))
         }
+        MESSAGE_GAMEPAD_FEEDBACK => {
+            let value = payload::<WireGamepadFeedback>(wire)?;
+            let slot = u8::try_from(value.slot.get())
+                .ok()
+                .and_then(GamepadSlot::new)
+                .ok_or_else(|| invalid_data("invalid feedback gamepad slot"))?;
+            Ok(Message::GamepadFeedback(GamepadFeedback {
+                slot,
+                low_frequency: value.low_frequency.get(),
+                high_frequency: value.high_frequency.get(),
+                duration_ms: value.duration_ms.get(),
+            }))
+        }
         MESSAGE_MAP_OFFER => {
             let value = payload::<WireMapOffer>(wire)?;
             let channel = match value.channel.get() {
@@ -1065,6 +1101,12 @@ mod tests {
                     accelerometer: [1.25, -2.5, 9.81],
                     gyroscope: [0.1, -0.2, 0.3],
                 },
+            }),
+            Message::GamepadFeedback(GamepadFeedback {
+                slot: GamepadSlot::new(2).unwrap(),
+                low_frequency: 12_345,
+                high_frequency: 54_321,
+                duration_ms: 250,
             }),
             Message::StreamAccepted,
         ];
