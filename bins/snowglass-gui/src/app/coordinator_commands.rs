@@ -43,7 +43,7 @@ impl ShellCoordinator {
         }
     }
 
-    pub(super) fn apply_input_command(&mut self, command: InputCommand) {
+    pub(super) async fn apply_input_command(&mut self, command: InputCommand) {
         match command {
             InputCommand::Configure {
                 request_id,
@@ -55,6 +55,19 @@ impl ShellCoordinator {
                     Err(format!("invalid input transaction: {error}")),
                 ),
             },
+            InputCommand::Api { command, result } => {
+                let response = self
+                    .input
+                    .controller_command(command, self.game_host.has_active_game())
+                    .await;
+                let response = response.map(|(value, configuration_changed)| {
+                    if configuration_changed {
+                        self.publish_input_configuration();
+                    }
+                    value
+                });
+                let _ = result.send(response);
+            }
         }
     }
 

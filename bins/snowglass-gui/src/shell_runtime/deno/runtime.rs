@@ -122,6 +122,8 @@ impl Runtime {
         webrtc_commands: WebRtcCommandSink,
         startup_request: Option<Value>,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+        input_sources: snowglass_input::source::InputSourceCatalog,
+        input_api: snowglass_runtime::InputApiState,
         viewer: Option<snowglass_renderer::cli::ViewerOptions>,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
@@ -132,9 +134,11 @@ impl Runtime {
         let inspector_address = Self::start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
         let storage_dir = crate::theme::web_storage_dir();
+        let controller_profiles = input_api.controller_profiles();
         let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
             emulator_commands,
             input_commands,
+            input_api,
             webrtc_commands,
         ));
         let (snowglass_extension, notifications) =
@@ -142,6 +146,8 @@ impl Runtime {
                 snowglass_runtime::FrontendServices::new(
                     plugin_runtime.clone(),
                     viewer.as_ref().map(configuration_defaults),
+                    input_sources.clone(),
+                    controller_profiles.clone(),
                     platform,
                     notifications,
                 )

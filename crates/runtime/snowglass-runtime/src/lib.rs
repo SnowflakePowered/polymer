@@ -5,6 +5,7 @@
 mod capture;
 mod configuration;
 mod consolestorage;
+mod controllers;
 mod frontend;
 mod input;
 mod instance;
@@ -22,9 +23,14 @@ pub use configuration::{
     describe_api as describe_configuration, prepare_api as prepare_configuration,
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
+pub use controllers::{
+    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerProfiles,
+    DeviceMapping,
+};
 pub use frontend::{
     CommandRuntimePlatform, CommandSink, EmulatorCommand, EmulatorCommandSink, FrontendServices,
-    InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand, WebRtcCommandSink,
+    InputApiState, InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand,
+    WebRtcCommandSink,
 };
 #[doc(hidden)]
 pub use input::ProtocolInputSender;

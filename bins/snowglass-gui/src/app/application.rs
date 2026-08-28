@@ -8,6 +8,7 @@ pub(crate) struct ShellApplication {
     shell_rasterizer: Option<ShellRasterizer>,
     pending_window: Option<WindowBootstrap>,
     state: Option<ShellCoordinator>,
+    pending_input_commands: std::collections::VecDeque<InputCommand>,
     error: Option<Box<dyn Error>>,
     next_runtime_poll: Instant,
 }
@@ -28,6 +29,7 @@ impl ShellApplication {
             shell_rasterizer: Some(shell_rasterizer),
             pending_window: None,
             state: None,
+            pending_input_commands: std::collections::VecDeque::new(),
             error: None,
             next_runtime_poll: Instant::now(),
         }
@@ -65,7 +67,9 @@ impl ShellApplication {
                 statistics_recorder,
                 shell_factory,
                 shell_rasterizer,
-            ) {
+            )
+            .await
+            {
                 Ok(mut state) => match shell_document {
                     Ok(document) => match state.activate_shell(Some(document), None).await {
                         Ok(()) => self.state = Some(state),
@@ -75,6 +79,12 @@ impl ShellApplication {
                 },
                 Err(error) => self.error = Some(error),
             }
+        }
+        while let Some(command) = self.pending_input_commands.pop_front() {
+            let Some(state) = self.state.as_mut() else {
+                break;
+            };
+            state.apply_input_command(command).await;
         }
         let now = Instant::now();
         let poll_runtime = now >= self.next_runtime_poll;
@@ -154,6 +164,15 @@ impl ShellApplication {
 
 impl ShellApplication {
     pub(crate) fn handle_user_event(&mut self, event: UserEvent) {
+        let event = match event {
+            UserEvent::GameHost(GameHostCommand::Input(command)) => {
+                if self.state.is_some() {
+                    self.pending_input_commands.push_back(command);
+                }
+                return;
+            }
+            event => event,
+        };
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -181,12 +200,10 @@ impl ShellApplication {
             UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
                 state.apply_emulator_command(command)
             }
-            UserEvent::GameHost(GameHostCommand::Input(command)) => {
-                state.apply_input_command(command)
-            }
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
                 state.apply_webrtc_command(command)
             }
+            UserEvent::GameHost(GameHostCommand::Input(_)) => unreachable!(),
             UserEvent::InspectorWindowRequested { .. } => {}
             UserEvent::Inspector(command) => {
                 command.handle(&state.shell_dom);
