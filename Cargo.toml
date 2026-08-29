@@ -102,6 +102,7 @@ snowglass-egui = { path = "crates/consumer/snowglass-egui" }
 snowglass-statistics = { path = "crates/runtime/snowglass-statistics" }
 snowglass-ui = { path = "crates/runtime/snowglass-ui" }
 snowglass-platform-windows = { path = "crates/runtime/snowglass-platform-windows" }
+snowglass-automation = { path = "crates/runtime/snowglass-automation" }
 snowglass-input = { path = "crates/input/snowglass-input" }
 snowglass-config = { path = "crates/snowglass-config" }
 snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
@@ -121,6 +122,8 @@ snowglass-hook = { path = "crates/hooks/snowglass-hook" }
 
 thiserror = "2"
 arrayref = "=0.3.4"
+xa11y-core = { path = "../xa11y/xa11y-core" }
+xa11y-windows = { path = "../xa11y/xa11y-windows" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

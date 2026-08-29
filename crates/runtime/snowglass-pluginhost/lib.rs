@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod automation;
 mod configuration;
 mod controller;
 mod deno;

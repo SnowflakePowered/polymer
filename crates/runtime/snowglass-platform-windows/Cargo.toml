@@ -9,13 +9,19 @@ exe.workspace = true
 ib-hook.workspace = true
 parking_lot.workspace = true
 snowglass-hook.workspace = true
+snowglass-automation.workspace = true
 snowglass-protocol.workspace = true
+serde_json.workspace = true
+xa11y-core.workspace = true
+xa11y-windows.workspace = true
 windows = { workspace = true, features = [
+    "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Performance",
     "Win32_System_StationsAndDesktops",
     "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

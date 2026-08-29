@@ -110,6 +110,18 @@ pub(crate) struct InputConfigurationPublication {
     pub layouts: serde_json::Value,
 }
 
+pub(crate) struct PreparedInputTransaction {
+    transaction: InputTransaction,
+    previous: InputConfiguration,
+    next: InputConfiguration,
+}
+
+impl PreparedInputTransaction {
+    pub(crate) fn candidate(&self) -> &InputConfiguration {
+        &self.next
+    }
+}
+
 impl InputRouter {
     pub fn new(transport: InputTransport, direct_input: DirectInputForwarder) -> Self {
         Self {
@@ -804,15 +816,11 @@ impl InputRouter {
         Ok(())
     }
 
-    /// Applies one DOM-requested configuration transaction and projects the
-    /// resulting bindings into the live SDL provider. The coordinator only
-    /// publishes the returned immutable snapshot; hub mutation and provider
-    /// compatibility remain input-subsystem concerns.
-    pub fn apply_configuration_transaction(
+    pub fn prepare_configuration_transaction(
         &mut self,
         transaction: InputTransaction,
         topology_locked: bool,
-    ) -> Result<InputConfiguration, String> {
+    ) -> Result<PreparedInputTransaction, String> {
         let previous = self.transport.hub().snapshot();
         let next = self
             .transport
@@ -820,10 +828,23 @@ impl InputRouter {
             .preview(&transaction)
             .map_err(|error| error.to_string())?;
         self.transport
-            .reconcile(&previous, &next, topology_locked)?;
+            .validate_reconciliation(&previous, &next, topology_locked)?;
+        Ok(PreparedInputTransaction {
+            transaction,
+            previous,
+            next,
+        })
+    }
+
+    pub fn commit_configuration_transaction(
+        &mut self,
+        prepared: PreparedInputTransaction,
+    ) -> Result<InputConfiguration, String> {
+        self.transport
+            .commit_reconciliation(&prepared.previous, &prepared.next)?;
         self.transport
             .hub()
-            .apply(transaction)
+            .apply(prepared.transaction)
             .map_err(|error| error.to_string())
     }
 
@@ -1044,6 +1065,29 @@ impl InputTransport {
         let previous = self.controller_manager.resolve_configuration(previous);
         let next = self.controller_manager.resolve_configuration(next);
         InputReconciler::reconcile(&self.provider, &previous, &next, topology_locked)?;
+        self.sync_physical_routes(&next.configuration);
+        Ok(())
+    }
+
+    pub fn validate_reconciliation(
+        &self,
+        previous: &InputConfiguration,
+        next: &InputConfiguration,
+        topology_locked: bool,
+    ) -> Result<(), String> {
+        let previous = self.controller_manager.resolve_configuration(previous);
+        let next = self.controller_manager.resolve_configuration(next);
+        InputReconciler::validate(&previous, &next, topology_locked)
+    }
+
+    pub fn commit_reconciliation(
+        &mut self,
+        previous: &InputConfiguration,
+        next: &InputConfiguration,
+    ) -> Result<(), String> {
+        let previous = self.controller_manager.resolve_configuration(previous);
+        let next = self.controller_manager.resolve_configuration(next);
+        InputReconciler::apply_reconciliation(&self.provider, &previous, &next)?;
         self.sync_physical_routes(&next.configuration);
         Ok(())
     }

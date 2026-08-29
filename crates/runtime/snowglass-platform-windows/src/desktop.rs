@@ -4,7 +4,8 @@ use windows::{
         Security::SECURITY_ATTRIBUTES,
         System::{
             StationsAndDesktops::{
-                CloseDesktop, CreateDesktopW, GetThreadDesktop, HDESK, SetThreadDesktop,
+                CloseDesktop, CreateDesktopW, GetThreadDesktop, HDESK, OpenDesktopW,
+                SetThreadDesktop,
             },
             Threading::GetCurrentThreadId,
         },
@@ -23,6 +24,10 @@ pub struct DesktopThreadAttachment {
 
 // SAFETY: A desktop handle is not thread-affine once no thread is attached to it.
 unsafe impl Send for PrivateDesktop {}
+
+// SAFETY: HDESK is a stable kernel handle, and restoring a desktop only operates on the thread
+// that drops this value. Snowglass creates and drops each attachment on its automation worker.
+unsafe impl Send for DesktopThreadAttachment {}
 
 impl PrivateDesktop {
     pub fn create(name: &str) -> std::io::Result<Self> {
@@ -52,24 +57,42 @@ impl PrivateDesktop {
         Ok(Self { handle })
     }
 
+    pub fn open(name: &str) -> std::io::Result<Self> {
+        if name.encode_utf16().any(|unit| unit == 0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "desktop name contains a null character",
+            ));
+        }
+        let name = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let handle = unsafe {
+            OpenDesktopW(
+                PCWSTR(name.as_ptr()),
+                Default::default(),
+                false,
+                GENERIC_ALL.0,
+            )
+        }
+        .map_err(|_| std::io::Error::last_os_error())?;
+        Ok(Self { handle })
+    }
+
+    pub fn attach_current_thread(&self) -> std::io::Result<DesktopThreadAttachment> {
+        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) }
+            .map_err(|_| std::io::Error::last_os_error())?;
+        unsafe { SetThreadDesktop(self.handle) }.map_err(|_| std::io::Error::last_os_error())?;
+        Ok(DesktopThreadAttachment {
+            original,
+            restored: false,
+        })
+    }
+
     pub fn create_and_attach_current_thread(
         name: &str,
     ) -> std::io::Result<(Self, DesktopThreadAttachment)> {
-        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) }
-            .map_err(|_| std::io::Error::last_os_error())?;
         let desktop = Self::create(name)?;
-        if unsafe { SetThreadDesktop(desktop.handle) }.is_err() {
-            let error = std::io::Error::last_os_error();
-            let _ = unsafe { SetThreadDesktop(original) };
-            return Err(error);
-        }
-        Ok((
-            desktop,
-            DesktopThreadAttachment {
-                original,
-                restored: false,
-            },
-        ))
+        let attachment = desktop.attach_current_thread()?;
+        Ok((desktop, attachment))
     }
 }
 

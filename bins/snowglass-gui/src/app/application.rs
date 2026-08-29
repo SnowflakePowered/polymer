@@ -9,6 +9,7 @@ pub(crate) struct ShellApplication {
     pending_window: Option<WindowBootstrap>,
     state: Option<ShellCoordinator>,
     pending_input_commands: std::collections::VecDeque<InputCommand>,
+    pending_input_change: Option<PendingInputChange>,
     error: Option<Box<dyn Error>>,
     next_runtime_poll: Instant,
 }
@@ -30,6 +31,7 @@ impl ShellApplication {
             pending_window: None,
             state: None,
             pending_input_commands: std::collections::VecDeque::new(),
+            pending_input_change: None,
             error: None,
             next_runtime_poll: Instant::now(),
         }
@@ -80,11 +82,29 @@ impl ShellApplication {
                 Err(error) => self.error = Some(error),
             }
         }
-        while let Some(command) = self.pending_input_commands.pop_front() {
+        let completed_change = self
+            .pending_input_change
+            .as_mut()
+            .and_then(|pending| match pending.response.try_recv() {
+                Ok(result) => Some(result),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+                    "controller plugin session closed during topology change".to_owned(),
+                )),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            });
+        if let Some(result) = completed_change
+            && let Some(pending) = self.pending_input_change.take()
+            && let Some(state) = self.state.as_mut()
+        {
+            state.finish_input_configuration(pending, result);
+        }
+        while self.pending_input_change.is_none()
+            && let Some(command) = self.pending_input_commands.pop_front()
+        {
             let Some(state) = self.state.as_mut() else {
                 break;
             };
-            state.apply_input_command(command).await;
+            self.pending_input_change = state.apply_input_command(command).await;
         }
         let now = Instant::now();
         let poll_runtime = now >= self.next_runtime_poll;

@@ -2,6 +2,7 @@ import {
   op_controller_change_flush,
   op_virtual_gamepad_set_connected,
 } from "ext:core/ops";
+import { uiAutomation } from "./automation.js";
 
 function gamepad(index, initiallyConnected) {
   let connected = Boolean(initiallyConnected);
@@ -21,15 +22,17 @@ function gamepad(index, initiallyConnected) {
   });
 }
 
-function context(controllerMappings, gamepadStates, configuration, filesystem) {
+function context(controllerMappings, previousControllerMappings, gamepadStates, configuration, filesystem) {
   const gamepads = Object.freeze(
     gamepadStates.map((connected, index) => gamepad(index, connected)),
   );
   return Object.freeze({
     controllerMappings: Object.freeze(controllerMappings),
+    previousControllerMappings: Object.freeze(previousControllerMappings),
     gamepads,
     configuration,
     filesystem,
+    ui: uiAutomation,
     flush() {
       __snowglassFilesystem.flush();
       op_controller_change_flush();
