@@ -315,8 +315,6 @@ impl ShellSessionFactory {
         emulator_commands: crate::shell_runtime::EmulatorCommandSink,
         input_commands: crate::shell_runtime::InputCommandSink,
         webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
-        startup_request: Option<serde_json::Value>,
-        viewer: snowglass_renderer::cli::ViewerOptions,
     ) -> Result<
         (
             ShellDocument,
@@ -341,11 +339,9 @@ impl ShellSessionFactory {
                 emulator_commands,
                 input_commands,
                 webrtc_commands,
-                startup_request,
                 plugin_runtime: self.plugin_runtime,
                 input_sources: self.input_sources,
                 input_api: self.input_api,
-                viewer: Some(viewer),
             },
         )
         .await?;

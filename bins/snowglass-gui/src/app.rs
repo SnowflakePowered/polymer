@@ -1,4 +1,3 @@
-use crate::cli;
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
@@ -22,7 +21,7 @@ use crate::window_manager::{
 };
 use snowglass_input::{hub::InputTransaction, mouse::PointerPhase};
 use snowglass_input_dinput::DirectInputForwarder;
-use snowglass_renderer::{CompositingPlan, Extent, cli::ViewerApi};
+use snowglass_renderer::{CompositingPlan, Extent};
 use snowglass_statistics::RecorderHandle;
 use std::{
     error::Error,
@@ -73,8 +72,6 @@ struct ShellCoordinator {
     inspector: Option<InspectorWindow>,
     notifications: Option<SnowglassNotificationSender>,
     _theme: crate::theme::SelectedTheme,
-    startup_request: Option<serde_json::Value>,
-    viewer: snowglass_renderer::cli::ViewerOptions,
 }
 
 struct PendingInputChange {
@@ -92,27 +89,7 @@ impl ShellCoordinator {
         shell_factory: ShellSessionFactory,
         shell_rasterizer: ShellRasterizer,
     ) -> Result<Self, Box<dyn Error>> {
-        let ShellOptions {
-            viewer: options,
-            theme,
-            plugins: _,
-            game_launch,
-        } = options;
-        if options.api != ViewerApi::D3d12 {
-            return Err(
-                "snowglass-shell-webview2 requires `--api d3d12` for DirectComposition".into(),
-            );
-        }
-        let startup_request = match game_launch {
-            Some(request) => Some(serde_json::json!({
-                "kind": "package",
-                "path": request.game.to_string_lossy(),
-                "emulator": request.emulator,
-            })),
-            None => cli::launch_from_viewer(&options)
-                .map_err(std::io::Error::other)?
-                .map(|options| serde_json::json!({ "kind": "launch", "options": options })),
-        };
+        let ShellOptions { theme, plugins: _ } = options;
 
         let window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
         let compositor = window.compositor();
@@ -147,8 +124,6 @@ impl ShellCoordinator {
             inspector: None,
             notifications: None,
             _theme: theme,
-            startup_request,
-            viewer: options,
         };
         Ok(state)
     }
@@ -175,8 +150,6 @@ impl ShellCoordinator {
             let webrtc_proxy = self.proxy.clone();
             let html = shell_source.html.clone();
             let base_url = shell_source.base_url.clone();
-            let viewer = self.viewer.clone();
-            let startup_request = self.startup_request.take();
             let notifications = match self
                 .shell_dom
                 .activate(|factory| async move {
@@ -216,8 +189,6 @@ impl ShellCoordinator {
                             emulator_commands,
                             input_commands,
                             webrtc_commands,
-                            startup_request,
-                            viewer,
                         )
                         .await
                 })
