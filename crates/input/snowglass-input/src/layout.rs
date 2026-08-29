@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use consolespec::input::{Alignment, AnalogClass, BindingKey};
+use consolespec::input::{Alignment, AnalogClass, BindingKey, Sign};
 
 use crate::projection::{Projection, Target};
 use crate::sdl::{self, SdlSensor, Wire};
@@ -209,10 +209,40 @@ impl InputLayout {
 
     /// The single SDL wire occupied by one logical control.
     pub fn sdl_wire(&self, key: BindingKey) -> Option<Wire> {
+        self.sdl_key(key).and_then(sdl::wire)
+    }
+
+    /// Canonical SDL-pad expression receiving one device expression.
+    pub fn sdl_key(&self, key: BindingKey) -> Option<BindingKey> {
         match Projection::shared().target(&self.id, key)? {
-            Target::Key(target) => sdl::wire(target),
+            Target::Key(target) => Some(target),
             Target::Both(..) | Target::Transport(_) | Target::None => None,
         }
+    }
+
+    /// Resolves a canonical physical expression into this layout's target.
+    pub fn custom_binding(&self, target: BindingKey, source: BindingKey) -> Option<InputBinding> {
+        match sdl::wire(source)? {
+            Wire::Button(button) => Some(InputBinding::Button { button }),
+            Wire::Axis(axis) => Some(InputBinding::Axis {
+                axis,
+                invert: self.sdl_key(target).is_some_and(Self::negative) != Self::negative(source),
+            }),
+            Wire::RawAxis(_) | Wire::Sensor(_) => None,
+        }
+    }
+
+    fn negative(key: BindingKey) -> bool {
+        matches!(
+            key,
+            BindingKey::Analog {
+                component: consolespec::input::Component {
+                    sign: Sign::Negative,
+                    ..
+                },
+                ..
+            }
+        )
     }
 
     /// Controls for which a physical button or standard gamepad axis can be

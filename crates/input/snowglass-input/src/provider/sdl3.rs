@@ -113,6 +113,7 @@ pub struct PhysicalDeviceState {
     pub guid: String,
     pub vendor: Option<u16>,
     pub product: Option<u16>,
+    pub serial: Option<String>,
     pub buttons: Vec<(SdlButton, bool)>,
     pub axes: Vec<(SdlAxis, i16)>,
 }
@@ -1015,6 +1016,7 @@ fn refresh_observed_devices(
                     guid: fingerprint.guid,
                     vendor: fingerprint.vendor,
                     product: fingerprint.product,
+                    serial: fingerprint.serial,
                 };
                 observed.push(ObservedPad {
                     name,
@@ -1036,6 +1038,7 @@ fn physical_device_state(pad: &ObservedPad) -> PhysicalDeviceState {
         guid: pad.identity.guid.clone(),
         vendor: pad.identity.vendor,
         product: pad.identity.product,
+        serial: pad.identity.serial.clone(),
         buttons: ALL_BUTTONS
             .into_iter()
             .map(|button| (button, pad.gamepad.button(to_sdl_button(button))))

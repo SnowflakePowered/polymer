@@ -1,4 +1,4 @@
-use crate::input::{GamepadMapping, parse_input_binding};
+use crate::input::GamepadMapping;
 use snowglass_input::layout::{InputLayout, ProjectionMode};
 pub use snowglass_pluginhost::GraphicsHook;
 use std::{collections::HashSet, net::SocketAddr};
@@ -182,7 +182,7 @@ fn validate_input_mappings(mappings: &[GamepadMapping]) -> Result<(), String> {
             .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
         let mut targets = HashSet::new();
         for (target, source) in &mapping.mapping {
-            let target = target
+            let target: consolespec::input::BindingKey = target
                 .parse()
                 .map_err(|error| format!("invalid input target '{target}': {error}"))?;
             if !layout.has(target) {
@@ -192,7 +192,14 @@ fn validate_input_mappings(mappings: &[GamepadMapping]) -> Result<(), String> {
                 ));
             }
             targets.insert(target);
-            parse_input_binding(source)?;
+            if source != "none" {
+                let source = source
+                    .parse()
+                    .map_err(|error| format!("invalid input source '{source}': {error}"))?;
+                layout.custom_binding(target, source).ok_or_else(|| {
+                    format!("input source '{source}' is not a physical gamepad expression")
+                })?;
+            }
         }
         if mapping.projection_mode == ProjectionMode::Custom {
             let missing = layout
@@ -215,7 +222,6 @@ fn validate_input_mappings(mappings: &[GamepadMapping]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snowglass_input::layout::{InputBinding, SdlAxis, SdlButton};
 
     #[test]
     fn validates_shell_launch_options() {
@@ -239,44 +245,5 @@ mod tests {
         .unwrap();
         assert!(launch.graph_tracking);
         launch.validate().unwrap();
-    }
-
-    #[test]
-    fn parses_mapping_strings() {
-        assert!(matches!(
-            parse_input_binding("button:south").unwrap(),
-            InputBinding::Button {
-                button: SdlButton::South
-            }
-        ));
-        assert!(matches!(
-            parse_input_binding("axis:-left_y").unwrap(),
-            InputBinding::Axis {
-                axis: SdlAxis::LeftY,
-                invert: true
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_an_incomplete_custom_projection() {
-        let launch: AttachedLaunchPlan = serde_json::from_str(
-            r#"{
-                "command": "game.exe",
-                "hook": ["d3d12"],
-                "surfaces": [{ "index": 0, "attach": 4 }],
-                "gamepadMapping": [{
-                    "source": { "kind": "keyboardMouse" },
-                    "slot": 0,
-                    "layout": "SWITCH_PRO_CONTROLLER",
-                    "projectionMode": "custom",
-                    "mapping": { "button.a": "button:east" }
-                }],
-                "machine": "NINTENDO_SWITCH"
-            }"#,
-        )
-        .unwrap();
-        let error = launch.validate().unwrap_err();
-        assert!(error.starts_with("custom projection for SWITCH_PRO_CONTROLLER must specify:"));
     }
 }

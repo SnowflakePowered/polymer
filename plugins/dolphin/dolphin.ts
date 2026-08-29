@@ -52,6 +52,13 @@ type ControllerMapping = Readonly<{
     layout: string,
     mouse: boolean,
     mapping: Readonly<Record<string, string>>,
+    device: Readonly<{
+        id: string,
+        source: "sdl" | "bt",
+        name: string,
+        connected: boolean,
+        metadata: Readonly<Record<string, unknown>>,
+    }> | null,
 }>;
 
 type Filesystem = {
@@ -97,18 +104,17 @@ function isDiscImage(path: string): boolean {
 }
 
 const WII_POINTER_AXES = [
-    ["pointer.x-", /^(?:left|right)_x$/],
-    ["pointer.x+", /^(?:left|right)_x$/],
-    ["pointer.y-", /^(?:left|right)_y$/],
-    ["pointer.y+", /^(?:left|right)_y$/],
+    ["pointer.x-", /^analog\.stick\.(?:left|right)\.x[+-]$/],
+    ["pointer.x+", /^analog\.stick\.(?:left|right)\.x[+-]$/],
+    ["pointer.y-", /^analog\.stick\.(?:left|right)\.y[+-]$/],
+    ["pointer.y+", /^analog\.stick\.(?:left|right)\.y[+-]$/],
 ] as const;
 
-function hasAnalogPointer(mapping: ControllerMapping): boolean {
+function hasAnalogPointer(mapping: Pick<ControllerMapping, "mouse" | "mapping">): boolean {
     if (mapping.mouse) return false;
     return WII_POINTER_AXES.every(([target, expectedAxis]) => {
         const source = mapping.mapping[target]?.trim().toLowerCase();
-        if (!source?.startsWith("axis:")) return false;
-        return expectedAxis.test(source.slice("axis:".length).replace(/^[+-]/, ""));
+        return source !== undefined && expectedAxis.test(source);
     });
 }
 

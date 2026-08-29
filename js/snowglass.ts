@@ -9,60 +9,68 @@ export type InputSourceSelector =
   | { kind: "keyboardMouse" }
   | { kind: "device"; deviceId: string };
 
-export type InputSourceAssignment = {
-  readonly index: number;
-  readonly source: Readonly<InputSourceSelector>;
-};
-
-export type InputSource = {
-  readonly id: string;
-  readonly kind: "controller" | "keyboardMouse";
-  readonly name: string;
-  readonly connected: boolean;
-  readonly assignedIndices: readonly number[];
-  readonly layout?: string;
-  readonly buttons: readonly Readonly<{ button: string; pressed: boolean; mapped: boolean }>[];
-  readonly axes: readonly Readonly<{ axis: string; value: number; mapped: boolean }>[];
-  readonly mapped?: Readonly<Record<string, unknown>>;
-};
-
-export type VirtualInputPort = {
-  readonly port: string;
-  readonly layout: string;
-  readonly slot: number | null;
-  readonly forceMouse: boolean;
-  readonly projectionMode: ProjectionMode;
-  readonly overrides: Readonly<Record<string, unknown>>;
-};
-
-export type InputConfigurationSnapshot = {
-  readonly revision: number;
-  readonly machine: string | null;
-  readonly ports: readonly VirtualInputPort[];
-  readonly assignments: readonly InputSourceAssignment[];
-};
-
 export type InputControlEvent = {
   readonly sourceId: string;
-  readonly controlType: "button" | "axis";
-  readonly control: string;
+  readonly expression: string;
   readonly value: number;
 };
 
 export interface InputApi extends EventTarget {
-  readonly configuration: InputConfigurationSnapshot;
-  readonly revision: number;
-  readonly ports: readonly VirtualInputPort[];
-  readonly assignments: readonly InputSourceAssignment[];
+}
+
+export type ControllerDevice = {
+  readonly id: string;
+  readonly source: "sdl" | "bt";
+  readonly name: string;
+  readonly connected: boolean;
+  readonly playerIndex: number | null;
+  readonly metadata: Readonly<Record<string, unknown>>;
+};
+
+export type ControllerPlayer = {
+  readonly index: number;
+  readonly controller: ControllerDevice | null;
+};
+
+export type ControllerMapping = {
+  readonly mode: ProjectionMode;
+  /** Logical input expression to physical input expression, or `none`. */
+  readonly mapping: Readonly<Record<string, string>>;
+  readonly scope: "device" | "type";
+};
+
+export type BluetoothAvailability = "unknown" | "available" | "unavailable";
+
+export interface ConnectionSession extends EventTarget {
+  readonly id: string;
+  readonly active: boolean;
+  readonly discovery: Readonly<{ active: boolean }>;
+  readonly candidates: readonly ControllerDevice[];
+  readonly players: readonly ControllerPlayer[];
+  connect(id: string): Promise<void>;
+  finish(): Promise<void>;
+}
+
+export interface ControllersApi extends EventTarget {
+  readonly availability: Readonly<{
+    osBle: BluetoothAvailability;
+    winUsb: BluetoothAvailability;
+  }>;
+  readonly devices: readonly ControllerDevice[];
+  readonly connected: readonly ControllerDevice[];
+  readonly players: readonly ControllerPlayer[];
   readonly layouts: readonly Readonly<Record<string, unknown>>[];
-  readonly sources: readonly InputSource[];
-  readonly controllers: readonly InputSource[];
-  readonly priority: "ui" | "game";
-  getControllers(): readonly InputSource[];
-  getGamepads(): readonly Readonly<Record<string, unknown>>[];
-  getControllerLayout(id: string): Readonly<Record<string, unknown>> | null;
-  assign(assignments: readonly { index: number; sourceId: string }[]): Promise<InputConfigurationSnapshot>;
-  configure(transaction: Readonly<Record<string, unknown>>): Promise<InputConfigurationSnapshot>;
+  readonly activeConnectionSession: ConnectionSession | null;
+  startConnectionSession(): Promise<ConnectionSession>;
+  disconnect(id: string): Promise<void>;
+  forget(id: string): Promise<void>;
+  getMapping(id: string, layoutId: string): Promise<ControllerMapping>;
+  setMapping(
+    id: string,
+    layoutId: string,
+    mapping: Readonly<{ mode: ProjectionMode; mapping?: Readonly<Record<string, string>> }>,
+  ): Promise<ControllerMapping>;
+  resetMapping(id: string, layoutId: string): Promise<ControllerMapping>;
 }
 
 export type TrackedSurface = {
@@ -80,6 +88,7 @@ export type GamePadMapping = {
   port?: string;
   layout: string;
   projectionMode?: ProjectionMode;
+  /** Logical input expression to physical input expression, or `none`. */
   mapping: Record<string, string>;
 };
 
@@ -265,6 +274,7 @@ declare global {
       readonly plugin: PluginApi;
       readonly webrtc: WebRtcApi;
       readonly input: InputApi;
+      readonly controllers: ControllersApi;
     }>;
   }
 

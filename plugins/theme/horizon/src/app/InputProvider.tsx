@@ -14,20 +14,20 @@ type ControllerAction =
 
 const InputContext = createContext<InputContextValue>();
 const buttonActions: Partial<Record<string, ControllerAction>> = {
-  DpadLeft: { type: "move", direction: "left" },
-  DpadRight: { type: "move", direction: "right" },
-  DpadUp: { type: "move", direction: "up" },
-  DpadDown: { type: "move", direction: "down" },
-  South: { type: "activate" },
-  East: { type: "back" },
-  West: { type: "details" },
-  Guide: { type: "pause" },
+  "directional.w": { type: "move", direction: "left" },
+  "directional.e": { type: "move", direction: "right" },
+  "directional.n": { type: "move", direction: "up" },
+  "directional.s": { type: "move", direction: "down" },
+  "button.a": { type: "activate" },
+  "button.b": { type: "back" },
+  "button.x": { type: "details" },
+  "button.guide": { type: "pause" },
 };
 const axisDirections: Partial<Record<string, readonly [InputDirection, InputDirection]>> = {
-  LeftX: ["left", "right"],
-  LeftY: ["up", "down"],
-  RightX: ["left", "right"],
-  RightY: ["up", "down"],
+  "analog.stick.left.x+": ["left", "right"],
+  "analog.stick.left.y+": ["up", "down"],
+  "analog.stick.right.x+": ["left", "right"],
+  "analog.stick.right.y+": ["up", "down"],
 };
 
 export function useInputActions() {
@@ -48,10 +48,9 @@ export function InputProvider(props: ParentProps) {
     const axisLatch = new Map<string, -1 | 1>();
     const controllerInput = (event: Event) => {
       const input = (event as CustomEvent<InputControlEvent>).detail;
-      if (input.controlType === "axis") {
-        const directions = axisDirections[input.control];
-        if (!directions) return;
-        const key = `${input.sourceId}\0${input.control}`;
+      const directions = axisDirections[input.expression];
+      if (directions) {
+        const key = `${input.sourceId}\0${input.expression}`;
         if (Math.abs(input.value) < 12000) {
           axisLatch.delete(key);
           return;
@@ -62,8 +61,8 @@ export function InputProvider(props: ParentProps) {
         emit({ type: "move", direction: directions[direction < 0 ? 0 : 1], sourceId: input.sourceId, event });
         return;
       }
-      if (input.controlType !== "button" || input.value !== 1) return;
-      const action = buttonActions[input.control];
+      if (input.value !== 1) return;
+      const action = buttonActions[input.expression];
       if (action) emit({ ...action, sourceId: input.sourceId, event } as InputAction);
     };
     const keyboardInput = (event: KeyboardEvent) => {

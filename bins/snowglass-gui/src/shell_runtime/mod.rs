@@ -28,6 +28,8 @@ pub(crate) struct ShellRuntimeOptions {
     pub webrtc_commands: WebRtcCommandSink,
     pub startup_request: Option<Value>,
     pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    pub input_sources: snowglass_input::source::InputSourceCatalog,
+    pub input_api: snowglass_runtime::InputApiState,
     pub viewer: Option<snowglass_renderer::cli::ViewerOptions>,
 }
 
@@ -48,6 +50,8 @@ impl ShellRuntime {
             webrtc_commands,
             startup_request,
             plugin_runtime,
+            input_sources,
+            input_api,
             viewer,
         } = options;
         let result = match deno::Runtime::serialized_snapshot(
@@ -66,6 +70,8 @@ impl ShellRuntime {
                 webrtc_commands,
                 startup_request,
                 plugin_runtime,
+                input_sources,
+                input_api,
                 viewer,
             ))
             .await

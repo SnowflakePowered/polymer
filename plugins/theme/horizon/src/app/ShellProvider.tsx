@@ -2,7 +2,7 @@ import { useNavigate } from "@solidjs/router";
 import { createContext, createEffect, onCleanup, useContext, type ParentProps } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "../../../../../js/snowglass";
-import type { InputSource } from "../../../../../js/snowglass";
+import type { ControllerDevice } from "../../../../../js/snowglass";
 import { ControllerConnectionToast } from "../components/ControllerConnectionToast";
 import { InputNavigation } from "../components/InputNavigation";
 import { resolveGame, setupLaunch } from "./launch";
@@ -76,7 +76,6 @@ export function ShellProvider(props: ParentProps) {
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
   let detection: AbortController | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  let assignmentQueue = Promise.resolve();
 
   const go = (path: string, replace = false) => navigate(path, { replace });
   const fail = (error: unknown) => {
@@ -86,39 +85,26 @@ export function ShellProvider(props: ParentProps) {
     go("/", true);
   };
 
-  const showControllerToast = (source: InputSource, index: number) => {
+  const showControllerToast = (source: ControllerDevice, index: number) => {
     if (toastTimer) clearTimeout(toastTimer);
     setModel("controllerToast", { name: source.name, index });
     toastTimer = setTimeout(() => setModel("controllerToast", null), 3200);
   };
-  const assignController = (source: InputSource) => {
-    assignmentQueue = assignmentQueue.then(async () => {
-      const existing = window.Snowglass.input.assignments.find((assignment) =>
-        assignment.source.kind === "device" && assignment.source.deviceId === source.id
-      );
-      if (existing) {
-        showControllerToast(source, existing.index);
-        return;
+  let knownPlayers = new Map(window.Snowglass.controllers.players.flatMap((player) =>
+    player.controller ? [[player.controller.id, player.index] as const] : []
+  ));
+  const playersChanged = () => {
+    const next = new Map<string, number>();
+    for (const player of window.Snowglass.controllers.players) {
+      if (!player.controller) continue;
+      next.set(player.controller.id, player.index);
+      if (knownPlayers.get(player.controller.id) !== player.index) {
+        showControllerToast(player.controller, player.index);
       }
-      const used = new Set(window.Snowglass.input.assignments.map((assignment) => assignment.index));
-      let index = 0;
-      while (used.has(index)) index++;
-      const next = window.Snowglass.input.assignments.map((assignment) => ({
-        index: assignment.index,
-        sourceId: assignment.source.kind === "keyboardMouse"
-          ? "keyboard-mouse"
-          : assignment.source.kind === "device" ? assignment.source.deviceId : "",
-      })).filter((assignment) => assignment.sourceId);
-      next.push({ index, sourceId: source.id });
-      await window.Snowglass.input.assign(next);
-      showControllerToast(source, index);
-    }).catch((error) => {
-      setModel("error", error instanceof Error ? error.message : String(error));
-    });
+    }
+    knownPlayers = next;
   };
-  const controllerConnected = (event: Event) => assignController((event as CustomEvent<InputSource>).detail);
-  window.Snowglass.input.addEventListener("controllerconnected", controllerConnected);
-  for (const controller of window.Snowglass.input.controllers) assignController(controller);
+  window.Snowglass.controllers.addEventListener("playerchange", playersChanged);
 
   const prepare = async (path: string, emulator: string | undefined, destination: "details" | "launch") => {
     if (window.Snowglass.emulator.activeLaunch) {
@@ -207,7 +193,7 @@ export function ShellProvider(props: ParentProps) {
   onCleanup(() => {
     detection?.abort();
     if (toastTimer) clearTimeout(toastTimer);
-    window.Snowglass.input.removeEventListener("controllerconnected", controllerConnected);
+    window.Snowglass.controllers.removeEventListener("playerchange", playersChanged);
     if (startupHandler === acceptStartup) startupHandler = null;
   });
 

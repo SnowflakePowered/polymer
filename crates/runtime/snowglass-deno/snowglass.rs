@@ -52,6 +52,8 @@ pub trait SnowglassHost: Send + Sync {
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
     fn input_configure(&self, request_id: u32, transaction: Value);
+    fn input_api_snapshot(&self) -> Value;
+    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
     fn webrtc_start(
         &self,
         token: InstanceToken,
@@ -109,6 +111,7 @@ pub enum SnowglassNotification {
         request_id: u64,
         result: Value,
     },
+    InputApiStateChanged(Value),
     EmulatorInstance(Value),
     GameSaved {
         kind: String,
@@ -344,6 +347,26 @@ fn op_input_configure(
 }
 
 #[op2]
+#[serde]
+fn op_input_api_snapshot(state: &mut OpState) -> Result<serde_json::Value, JsErrorBox> {
+    Ok(state
+        .borrow::<Arc<dyn SnowglassHost>>()
+        .input_api_snapshot())
+}
+
+#[op2]
+#[serde]
+async fn op_input_api_command(
+    state: Rc<RefCell<OpState>>,
+    #[serde] command: serde_json::Value,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.input_api_command(command)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
 async fn op_webrtc_start(
     state: Rc<RefCell<OpState>>,
     token: u32,
@@ -397,6 +420,8 @@ deno_core::extension!(
         op_emulator_message,
         op_emulator_input,
         op_input_configure,
+        op_input_api_snapshot,
+        op_input_api_command,
         op_webrtc_start,
         op_webrtc_stop,
         op_snowglass_next_notification,
@@ -410,6 +435,7 @@ deno_core::extension!(
         "04_input.js",
         "05_webrtc.js",
         "06_emulator.js",
+        "07_controllers.js",
         "08_consolestorage.js",
         "99_main.js",
     ],
