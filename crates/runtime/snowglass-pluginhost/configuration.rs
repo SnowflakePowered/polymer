@@ -1,6 +1,6 @@
 use snowglass_config::{
     ast::{ConfigurationInstance, OptionRange, Value, ValueKind},
-    ser::{BmlEmitter, Emitter, IniEmitter, Serializer, XmlEmitter},
+    ser::{BmlEmitter, Emitter, GamepadBinding, IniEmitter, Serializer, XmlEmitter},
 };
 use std::{collections::BTreeMap, path::PathBuf};
 use thiserror::Error;
@@ -15,8 +15,6 @@ pub(crate) type ConfigurationId = u32;
 pub(crate) struct ConfigurationInstances {
     next_id: ConfigurationId,
     instances: BTreeMap<ConfigurationId, ConfigurationInstance>,
-    versions: BTreeMap<ConfigurationId, u64>,
-    rendered: BTreeMap<ConfigurationId, (u64, SerializedConfiguration)>,
 }
 
 impl ConfigurationInstances {
@@ -31,7 +29,6 @@ impl ConfigurationInstances {
             }
         };
         self.instances.insert(id, instance);
-        self.versions.insert(id, 0);
         id
     }
 
@@ -58,9 +55,6 @@ impl ConfigurationInstances {
             .get_mut(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
         set_value(instance, path, value)?;
-        let version = self.versions.entry(id).or_default();
-        *version = version.wrapping_add(1);
-        self.rendered.remove(&id);
         Ok(())
     }
 
@@ -83,12 +77,11 @@ impl ConfigurationInstances {
             .collect())
     }
 
+    #[cfg(test)]
     pub(crate) fn take(
         &mut self,
         id: ConfigurationId,
     ) -> Result<ConfigurationInstance, ConfigurationAccessError> {
-        self.versions.remove(&id);
-        self.rendered.remove(&id);
         self.instances
             .remove(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))
@@ -96,37 +89,53 @@ impl ConfigurationInstances {
 
     pub(crate) fn discard(&mut self, id: ConfigurationId) {
         self.instances.remove(&id);
-        self.versions.remove(&id);
-        self.rendered.remove(&id);
+    }
+
+    pub(crate) fn rematerialize(
+        &mut self,
+        id: ConfigurationId,
+        mut replacement: ConfigurationInstance,
+    ) -> Result<(), ConfigurationAccessError> {
+        let current = self
+            .instances
+            .get(&id)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
+        let values = current
+            .iter()
+            .map(|(_, setting)| {
+                (
+                    setting.path.as_str().to_owned(),
+                    value_to_json(&setting.value),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (path, value) in values {
+            if replacement.setting(&path).is_some() {
+                set_value(&mut replacement, &path, value)?;
+            }
+        }
+        self.instances.insert(id, replacement);
+        Ok(())
     }
 
     pub(crate) fn render(
         &mut self,
         id: ConfigurationId,
+        bindings: Vec<GamepadBinding>,
     ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
-        let version = *self
-            .versions
-            .get(&id)
-            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        if let Some((cached_version, files)) = self.rendered.get(&id)
-            && *cached_version == version
-        {
-            return Ok(files.clone());
-        }
         let instance = self
             .instances
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        let files = serialize(instance)?;
-        self.rendered.insert(id, (version, files.clone()));
-        Ok(files)
+        serialize(instance, bindings)
     }
 }
 
 pub(crate) fn serialize(
     instance: &ConfigurationInstance,
+    bindings: Vec<GamepadBinding>,
 ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
-    let serializer = Serializer::new(instance)?;
+    let serializer = Serializer::new(instance, bindings)?;
     let files = serializer.serialize(emitter_for)?;
     Ok(files
         .into_iter()

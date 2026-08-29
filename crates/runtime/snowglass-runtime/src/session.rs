@@ -57,13 +57,24 @@ impl SessionController {
         &mut self,
         token: u32,
         config: EmulatorLaunchConfig,
+        filesystem: Option<snowglass_vfs::MountedFilesystem>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        self.launch_with_input(token, config, filesystem, wake, |_| Ok(()))
+    }
+
+    pub fn launch_with_input(
+        &mut self,
+        token: u32,
+        config: EmulatorLaunchConfig,
         mut filesystem: Option<snowglass_vfs::MountedFilesystem>,
         wake: impl Fn() + Send + Sync + 'static,
+        configure_input: impl FnOnce(crate::VirtualGamepadConnectionSender) -> Result<(), String>,
     ) -> Result<(), String> {
         if self.active.is_some() {
             return Err("another emulator instance is active".to_owned());
         }
-        let instance = match EmulatorInstance::launch_with_waker(config, wake) {
+        let instance = match EmulatorInstance::launch_with_input(config, wake, configure_input) {
             Ok(instance) => instance,
             Err(error) => {
                 let mut message = error.to_string();

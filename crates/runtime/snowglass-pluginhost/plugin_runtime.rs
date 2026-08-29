@@ -13,6 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    thread,
 };
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -51,6 +52,7 @@ pub struct PluginInvocationError {
 pub struct PluginInvocationResult {
     pub value: Value,
     pub prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+    pub controller_session: Option<crate::ControllerSession>,
 }
 
 impl PluginInvocationError {
@@ -71,7 +73,7 @@ impl PluginInvocationError {
         )
     }
 
-    fn worker(error: impl std::fmt::Display) -> Self {
+    pub(crate) fn worker(error: impl std::fmt::Display) -> Self {
         let message = error.to_string();
         Self {
             name: if message.contains("TypeError") {
@@ -296,22 +298,37 @@ impl PluginRuntimeHandle {
                         "setupLaunch arguments require a string console",
                     )
                 })?;
-            let assignments = serde_json::from_value(
-                arguments.get("portAssignments").cloned().ok_or_else(|| {
+            let controller_changes = self
+                .has_controller_changes(plugin.clone(), cancellation.control.clone())
+                .await?;
+            let expanded = controller_changes
+                .then(|| {
+                    crate::controller::ControllerSetup::expand(plugin.as_ref(), console, arguments)
+                })
+                .transpose()?;
+            let plugin_arguments = expanded
+                .as_ref()
+                .map_or_else(|| arguments.clone(), |expanded| expanded.arguments.clone());
+            let assignments = if let Some(expanded) = &expanded {
+                expanded.assignments.clone()
+            } else {
+                serde_json::from_value(arguments.get("portAssignments").cloned().ok_or_else(
+                    || {
+                        PluginInvocationError::new(
+                            "TypeError",
+                            "INVALID_ARGUMENTS",
+                            "setupLaunch arguments require portAssignments",
+                        )
+                    },
+                )?)
+                .map_err(|error| {
                     PluginInvocationError::new(
                         "TypeError",
                         "INVALID_ARGUMENTS",
-                        "setupLaunch arguments require portAssignments",
+                        format!("invalid setupLaunch portAssignments: {error}"),
                     )
-                })?,
-            )
-            .map_err(|error| {
-                PluginInvocationError::new(
-                    "TypeError",
-                    "INVALID_ARGUMENTS",
-                    format!("invalid setupLaunch portAssignments: {error}"),
-                )
-            })?;
+                })?
+            };
             let mut configuration = plugin
                 .materialize(console, assignments)
                 .map_err(PluginInvocationError::worker)?;
@@ -332,7 +349,7 @@ impl PluginRuntimeHandle {
                 crate::configuration::set_value(&mut configuration, &path, value)
                     .map_err(PluginInvocationError::worker)?;
             }
-            let mut plugin_arguments = arguments.clone();
+            let mut plugin_arguments = plugin_arguments;
             {
                 let object = plugin_arguments
                     .as_object_mut()
@@ -340,24 +357,42 @@ impl PluginRuntimeHandle {
                 object.remove("settings");
                 object.remove("storage");
             }
-            let mut result = self
-                .setup_emulator_export_with_cancellation(
-                    EmulatorSetupInvocation {
-                        plugin,
-                        arguments: plugin_arguments,
-                        configuration,
-                        storage,
-                    },
-                    cancellation,
-                    matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
+            let invocation = EmulatorSetupInvocation {
+                plugin,
+                arguments: plugin_arguments,
+                configuration,
+                storage,
+            };
+            let (mut result, session) = if let Some(expanded) = expanded {
+                let (launch, session) = self
+                    .setup_controller_session_with_cancellation(
+                        invocation,
+                        cancellation,
+                        matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
+                        expanded.connected,
+                        expanded.gamepad_mapping,
+                    )
+                    .await?;
+                (launch, Some(session))
+            } else {
+                (
+                    self.setup_emulator_export_with_cancellation(
+                        invocation,
+                        cancellation,
+                        matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
+                    )
+                    .await?,
+                    None,
                 )
-                .await?;
+            };
             let filesystem = result.filesystem.take();
+            let retained_session = result.session.take().or(session);
             result.prepared_filesystem = None;
             let value = serde_json::to_value(result).map_err(PluginInvocationError::worker)?;
             return Ok(PluginInvocationResult {
                 value,
                 prepared_filesystem: filesystem,
+                controller_session: retained_session,
             });
         }
         let entrypoint = plugin.entrypoint().to_string();
@@ -389,6 +424,7 @@ impl PluginRuntimeHandle {
         Ok(PluginInvocationResult {
             value,
             prepared_filesystem: None,
+            controller_session: None,
         })
     }
 
@@ -437,6 +473,54 @@ impl PluginRuntimeHandle {
                     .await
                     .map_err(PluginInvocationError::worker)
                 },
+            )
+        })
+        .await
+    }
+
+    async fn has_controller_changes(
+        &self,
+        plugin: Arc<dyn EmulatorPluginInstance>,
+        control: Arc<InvocationControl>,
+    ) -> Result<bool, PluginInvocationError> {
+        let entrypoint = plugin.entrypoint().to_string();
+        let invocation_entrypoint = entrypoint.clone();
+        let loader = plugin.module_loader().clone();
+        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
+            .map_err(PluginInvocationError::worker)?;
+        self.run_with_control(control, move |control| {
+            run_worker(
+                entrypoint,
+                loader,
+                filesystem,
+                control,
+                move |mut runtime| async move {
+                    has_callable_controller_export(runtime.js_runtime_mut(), &invocation_entrypoint)
+                        .await
+                },
+            )
+        })
+        .await
+    }
+
+    async fn setup_controller_session_with_cancellation(
+        &self,
+        invocation: EmulatorSetupInvocation,
+        cancellation: PluginCancellationToken,
+        explicit_default: bool,
+        connected: Vec<bool>,
+        gamepad_mapping: Value,
+    ) -> Result<(EmulatorLaunchArguments, crate::ControllerSession), PluginInvocationError> {
+        let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
+            .map_err(PluginInvocationError::worker)?;
+        self.run_with_control(cancellation.control, move |control| {
+            start_controller_session_worker(
+                invocation,
+                explicit_default,
+                filesystem,
+                control,
+                connected,
+                gamepad_mapping,
             )
         })
         .await
@@ -532,9 +616,24 @@ where
         .build()
         .map_err(PluginInvocationError::worker)?;
     tokio.block_on(async move {
-        let main_module = deno_core::ModuleSpecifier::parse(&entrypoint)
-            .map_err(PluginInvocationError::worker)?;
-        let mut runtime = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
+        let mut runtime = create_worker_runtime(&entrypoint, loader, filesystem)?;
+        let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
+        if control.install_isolate(isolate) {
+            return Err(PluginInvocationError::cancelled());
+        }
+        operation(runtime).await
+    })
+}
+
+fn create_worker_runtime(
+    entrypoint: &str,
+    loader: crate::PluginModuleLoader,
+    filesystem: crate::filesystem::FilesystemOptions,
+) -> Result<snowglass_deno::Runtime, PluginInvocationError> {
+    let main_module =
+        deno_core::ModuleSpecifier::parse(entrypoint).map_err(PluginInvocationError::worker)?;
+    Ok(snowglass_deno::Runtime::new(
+        snowglass_deno::RuntimeOptions {
             main_module,
             module_loader: Rc::new(loader),
             extensions: vec![
@@ -544,13 +643,161 @@ where
             user_agent: format!("SnowglassPluginHost/{}", env!("CARGO_PKG_VERSION")),
             storage_dir: None,
             inspect: false,
-        });
-        let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
-        if control.install_isolate(isolate) {
-            return Err(PluginInvocationError::cancelled());
+        },
+    ))
+}
+
+fn start_controller_session_worker(
+    invocation: EmulatorSetupInvocation,
+    explicit_default: bool,
+    filesystem: crate::filesystem::FilesystemOptions,
+    control: Arc<InvocationControl>,
+    connected: Vec<bool>,
+    gamepad_mapping: Value,
+) -> Result<(EmulatorLaunchArguments, crate::ControllerSession), PluginInvocationError> {
+    let entrypoint = invocation.plugin.entrypoint().to_string();
+    let loader = invocation.plugin.module_loader().clone();
+    let (commands, command_receiver) = std::sync::mpsc::channel();
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let worker_errors = errors.clone();
+    let (started, startup) = std::sync::mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name(format!(
+            "snowglass-plugin-session-{}",
+            invocation.plugin.id()
+        ))
+        .spawn(move || {
+            let result = controller_session_worker(
+                entrypoint,
+                loader,
+                filesystem,
+                control,
+                invocation,
+                explicit_default,
+                connected,
+                gamepad_mapping,
+                command_receiver,
+                worker_errors,
+                started,
+            );
+            if let Err(error) = result {
+                tracing::error!("snowglass: controller plugin session failed: {error}");
+            }
+        })
+        .map_err(PluginInvocationError::worker)?;
+    let launch = startup.recv().map_err(|_| {
+        PluginInvocationError::worker("controller plugin session failed to start")
+    })??;
+    Ok((launch, crate::ControllerSession::new(commands, errors)))
+}
+
+#[expect(clippy::too_many_arguments)]
+fn controller_session_worker(
+    entrypoint: String,
+    loader: crate::PluginModuleLoader,
+    filesystem: crate::filesystem::FilesystemOptions,
+    control: Arc<InvocationControl>,
+    invocation: EmulatorSetupInvocation,
+    explicit_default: bool,
+    connected: Vec<bool>,
+    gamepad_mapping: Value,
+    commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
+    errors: Arc<Mutex<Vec<String>>>,
+    started: std::sync::mpsc::SyncSender<Result<EmulatorLaunchArguments, PluginInvocationError>>,
+) -> Result<(), PluginInvocationError> {
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PluginInvocationError::worker)?;
+    let _runtime_guard = tokio.enter();
+    let mut runtime = create_worker_runtime(&entrypoint, loader, filesystem)?;
+    let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
+    if control.install_isolate(isolate) {
+        let _ = started.send(Err(PluginInvocationError::cancelled()));
+        return Ok(());
+    }
+    let plugin = invocation.plugin.clone();
+    let console = invocation
+        .arguments
+        .get("console")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let retained = match tokio.block_on(crate::deno::execute_retained_emulator(
+        runtime.js_runtime_mut(),
+        invocation,
+        explicit_default,
+    )) {
+        Ok(retained) if retained.controller_changes => retained,
+        Ok(retained) => {
+            crate::deno::discard_configuration(runtime.js_runtime_mut(), retained.configuration_id);
+            let _ = started.send(Err(PluginInvocationError::worker(
+                "onControllerChanged disappeared after capability discovery",
+            )));
+            return Ok(());
         }
-        operation(runtime).await
-    })
+        Err(error) => {
+            let _ = started.send(Err(PluginInvocationError::worker(error)));
+            return Ok(());
+        }
+    };
+    crate::controller::configure(runtime.js_runtime_mut(), connected);
+    let configuration_id = retained.configuration_id;
+    let mut launch = retained.launch;
+    launch.gamepad_mapping = Some(gamepad_mapping);
+    if started.send(Ok(launch)).is_err() {
+        crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
+        return Ok(());
+    }
+
+    while let Ok(command) = commands.recv() {
+        match command {
+            crate::controller::ControllerSessionCommand::Attach(sink, response) => {
+                let result = crate::controller::attach(runtime.js_runtime_mut(), sink);
+                if let Err(error) = &result {
+                    errors.lock().push(error.clone());
+                }
+                let _ = response.send(result);
+            }
+            crate::controller::ControllerSessionCommand::Changed(topology) => {
+                let result = (|| {
+                    let assignments = crate::controller::port_assignments(&topology)
+                        .map_err(PluginInvocationError::worker)?;
+                    let configuration = plugin
+                        .materialize(&console, assignments)
+                        .map_err(PluginInvocationError::worker)?;
+                    crate::deno::rematerialize_configuration(
+                        runtime.js_runtime_mut(),
+                        configuration_id,
+                        configuration,
+                    )
+                    .map_err(PluginInvocationError::worker)?;
+                    let mappings = topology
+                        .get("controllerMappings")
+                        .cloned()
+                        .unwrap_or(topology);
+                    let states = crate::controller::states(runtime.js_runtime_mut());
+                    tokio
+                        .block_on(crate::deno::execute_controller_change(
+                            runtime.js_runtime_mut(),
+                            &mappings,
+                            &states,
+                        ))
+                        .map_err(PluginInvocationError::worker)?;
+                    crate::controller::flush(runtime.js_runtime_mut())
+                        .map_err(PluginInvocationError::worker)
+                })();
+                if let Err(error) = result {
+                    crate::controller::discard(runtime.js_runtime_mut());
+                    tracing::error!("snowglass: onControllerChanged failed: {error}");
+                    errors.lock().push(error.to_string());
+                }
+            }
+            crate::controller::ControllerSessionCommand::Stop => break,
+        }
+    }
+    crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
+    Ok(())
 }
 
 fn filesystem_options(
@@ -656,6 +903,30 @@ async fn invoke_export(
     serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)
 }
 
+async fn has_callable_controller_export(
+    runtime: &mut deno_core::JsRuntime,
+    entrypoint: &str,
+) -> Result<bool, PluginInvocationError> {
+    let entrypoint = serde_json::to_string(entrypoint).map_err(PluginInvocationError::worker)?;
+    let script = format!(
+        r#"(async () => {{
+          const module = await import({entrypoint});
+          return typeof module.onControllerChanged === "function"
+            || typeof module.default?.onControllerChanged === "function";
+        }})()"#
+    );
+    let promise = runtime
+        .execute_script("snowglass:pluginhost/controller-capability.js", script)
+        .map_err(PluginInvocationError::worker)?;
+    #[allow(deprecated)]
+    let resolved = runtime
+        .resolve_value(promise)
+        .await
+        .map_err(PluginInvocationError::worker)?;
+    deno_core::scope!(scope, runtime);
+    Ok(v8::Local::new(scope, resolved).boolean_value(scope))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,6 +985,14 @@ mod tests {
                 type = "bool"
                 default = false
                 emit = { key = "Enabled" }
+
+                [input]
+                driver = "sdl3"
+                device = "SDL-{index}"
+
+                [input.mapping]
+                [input.layouts]
+                [platforms.TEST.ports]
             "#,
         )
         .unwrap();
@@ -749,13 +1028,12 @@ mod tests {
                   let command = "emulator.exe";
                   let argv = [];
                   if (args.virtualize) {
-                    const firstRender = args.configuration.render();
-                    const secondRender = args.configuration.render();
+                    const firstRender = args.configuration.render(args.gamepadBindings);
+                    const secondRender = args.configuration.render(args.gamepadBindings);
                     if (firstRender === secondRender || firstRender["settings.ini"] === secondRender["settings.ini"]) {
                       throw new Error("configuration.render() did not return fresh values");
                     }
                     args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
-                    args.filesystem.mountFile("/Emulator/runtime-copy.exe", new URL("pkg:runtime/emulator.exe"), { mode: "r" });
                     for (const [name, bytes] of Object.entries(firstRender)) {
                       args.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
                     }
@@ -769,17 +1047,22 @@ mod tests {
                   return {
                     command,
                     argv,
-                    configRoot: ".",
-                    config: args.configuration,
                     hooks: ["vulkan"],
                     graphTracking: true,
                     surfaces: [{ index: 0 }],
                   };
                 }
+                export function onControllerChanged(context) {
+                  context.configuration.options().general.enabled = false;
+                  for (const [name, bytes] of Object.entries(context.configuration.render([]))) {
+                    context.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
+                  }
+                }
                 export default {
                   fallback(value) { return `fallback:${value}`; },
                   nonFunction: 23,
                   setupLaunch,
+                  onControllerChanged,
                 };
             "#,
         )
@@ -813,7 +1096,7 @@ mod tests {
                 })
             })
             .unwrap();
-        realized.instantiate("test", BTreeMap::new()).unwrap()
+        realized.instantiate("TEST", BTreeMap::new()).unwrap()
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -829,23 +1112,19 @@ mod tests {
                 plugin,
                 arguments: serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
-                    "virtualize": true
+                    "virtualize": true,
+                    "gamepadBindings": []
                 }),
                 configuration: configuration(),
                 storage: BTreeMap::new(),
             })
             .await
             .unwrap();
-        assert!(
-            std::str::from_utf8(&result.config["settings.ini"])
-                .unwrap()
-                .contains("Enabled=true")
-        );
         let filesystem = result
             .filesystem
             .as_ref()
             .expect("plugin populated a VFS plan");
-        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 5);
+        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 4);
         assert!(result.command.starts_with(r"\\Snowglass\"));
         assert!(result.argv[0].ends_with(r"\Game\game.iso"));
     }
@@ -863,13 +1142,13 @@ mod tests {
                     "launchPath": "game",
                     "console": "TEST",
                     "portAssignments": {},
+                    "gamepadBindings": [],
                 })],
             )
             .await
             .unwrap();
         assert_eq!(result["command"], "emulator.exe");
         assert_eq!(result["graphTracking"], true);
-        assert!(result["config"]["settings.ini"].is_array());
 
         let explicit_default = runtime
             .handle()
@@ -880,6 +1159,7 @@ mod tests {
                     "launchPath": "game",
                     "console": "TEST",
                     "portAssignments": {},
+                    "gamepadBindings": [],
                 })],
             )
             .await
@@ -900,6 +1180,7 @@ mod tests {
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
                     "portAssignments": {},
+                    "gamepadBindings": [],
                     "virtualize": true,
                 })],
                 BTreeMap::new(),
@@ -908,7 +1189,61 @@ mod tests {
             .unwrap();
         assert!(result.value["preparedFilesystem"].is_null());
         let filesystem = result.prepared_filesystem.unwrap();
-        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 5);
+        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 4);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn controller_callback_regenerates_a_live_mounted_configuration() {
+        let (root, registry) = package();
+        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+        let result = runtime
+            .handle()
+            .invoke_with_storage_owned(
+                "worker-test",
+                &["setupLaunch".to_owned()],
+                vec![serde_json::json!({
+                    "launchPath": root.path().join("game.iso"),
+                    "console": "TEST",
+                    "portAssignments": {},
+                    "gamepadBindings": [],
+                    "virtualize": true,
+                })],
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let filesystem = result.prepared_filesystem.unwrap();
+        let session = result.controller_session.unwrap();
+        filesystem.filesystem().materialize().unwrap();
+        session.attach(|_| Ok(())).unwrap();
+        session
+            .changed(serde_json::json!({ "controllerMappings": [] }))
+            .unwrap();
+
+        let path = "/Emulator/Config/settings.ini".parse().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let rendered = loop {
+            let file = filesystem
+                .filesystem()
+                .open(
+                    &path,
+                    snowglass_vfs::OpenOptions {
+                        read: true,
+                        write: false,
+                        truncate: false,
+                    },
+                )
+                .unwrap();
+            let mut bytes = [0; 128];
+            let length = file.read(0, &mut bytes).unwrap();
+            let rendered = String::from_utf8_lossy(&bytes[..length]).into_owned();
+            if rendered.contains("Enabled=false") || std::time::Instant::now() >= deadline {
+                break rendered;
+            }
+            std::thread::yield_now();
+        };
+        assert!(rendered.contains("Enabled=false"), "{rendered}");
+        assert!(session.take_errors().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

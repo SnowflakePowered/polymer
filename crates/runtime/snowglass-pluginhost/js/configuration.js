@@ -4,6 +4,7 @@ import {
   op_configuration_render,
   op_configuration_set,
 } from "ext:core/ops";
+import "./controller.js";
 
 function configuration(id) {
   const proxies = new Map();
@@ -41,8 +42,18 @@ function configuration(id) {
     entries() {
       return op_configuration_entries(id);
     },
-    render() {
-      const rendered = op_configuration_render(id);
+    render(bindings) {
+      if (bindings == null) {
+        throw new TypeError("configuration.render requires the complete gamepad bindings");
+      }
+      const normalized = [...bindings].map((binding) => ({
+        target: {
+          group: String(binding.target.group),
+          port: Number(binding.target.port),
+        },
+        gamepad: Number(binding.gamepad?.index ?? binding.gamepad),
+      }));
+      const rendered = op_configuration_render(id, normalized);
       return Object.freeze(rendered);
     },
   });

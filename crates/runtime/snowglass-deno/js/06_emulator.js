@@ -62,8 +62,8 @@ export function createEmulator(webrtc) {
         mapping: { ...(mapping.mapping || {}) },
       })),
       machine: options.machine,
-      generatedConfiguration: options.generatedConfiguration,
       preparedFilesystem: options.preparedFilesystem,
+      controllerSession: options.controllerSession,
     };
   }
 

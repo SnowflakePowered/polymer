@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use crate::{
     Handle,
@@ -24,6 +27,14 @@ pub struct Serializer<'a> {
     writes: Vec<Vec<WritePlan<'a>>>,
     bindings: Vec<Vec<BindingPlan>>,
     active: Vec<bool>,
+    gamepad_bindings: BTreeMap<(Box<str>, usize), usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GamepadBinding {
+    pub group: Box<str>,
+    pub port: usize,
+    pub gamepad: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -70,7 +81,29 @@ struct BindingPlan {
 }
 
 impl<'a> Serializer<'a> {
-    pub fn new(instance: &'a ConfigurationInstance) -> Result<Self> {
+    pub fn new(
+        instance: &'a ConfigurationInstance,
+        bindings: impl IntoIterator<Item = GamepadBinding>,
+    ) -> Result<Self> {
+        let mut assigned = HashSet::new();
+        let mut gamepad_bindings = BTreeMap::new();
+        for binding in bindings {
+            if !assigned.insert(binding.gamepad) {
+                return Err(Error::DuplicateGamepadBinding {
+                    index: binding.gamepad,
+                });
+            }
+            let target = (binding.group, binding.port);
+            if gamepad_bindings
+                .insert(target.clone(), binding.gamepad)
+                .is_some()
+            {
+                return Err(Error::DuplicatePortGamepadBinding {
+                    group: target.0,
+                    index: target.1,
+                });
+            }
+        }
         let definition = instance.definition().definition();
         let target_graph = definition.target_graph()?;
 
@@ -81,10 +114,17 @@ impl<'a> Serializer<'a> {
             writes: (0..definition.targets.len()).map(|_| Vec::new()).collect(),
             bindings: (0..definition.targets.len()).map(|_| Vec::new()).collect(),
             active: vec![false; definition.targets.len()],
+            gamepad_bindings,
         };
         serializer.plan_section_writes()?;
         serializer.plan_input_writes()?;
         serializer.plan_port_writes()?;
+        if let Some(((group, index), _)) = serializer.gamepad_bindings.first_key_value() {
+            return Err(Error::UnexpectedGamepadBinding {
+                group: group.clone(),
+                index: *index,
+            });
+        }
         serializer.compute_active_targets(target_graph.topological_order());
         Ok(serializer)
     }
@@ -211,7 +251,6 @@ impl<'a> Serializer<'a> {
             return Ok(());
         };
 
-        let mut virtual_index = 0usize;
         for (group_name, group) in platform {
             let assignments = self.instance.port_assignments().get(group_name.as_ref());
             for port in group {
@@ -222,8 +261,13 @@ impl<'a> Serializer<'a> {
                 let layout = input.layouts.get(layout_name);
                 let device = layout
                     .map(|_| {
-                        let index = virtual_index;
-                        virtual_index += 1;
+                        let index = self
+                            .gamepad_bindings
+                            .remove(&(group_name.clone(), port.index))
+                            .ok_or_else(|| Error::MissingGamepadBinding {
+                                group: group_name.clone(),
+                                index: port.index,
+                            })?;
                         expand_device(&input.device, index)
                     })
                     .transpose()?;
@@ -663,7 +707,7 @@ mod tests {
         assert_eq!(instance["input.gain"], Value::Integer(3));
         instance["input.gain"] = Value::Integer(4);
 
-        let serializer = Serializer::new(&instance).unwrap();
+        let serializer = Serializer::new(&instance, []).unwrap();
         assert_eq!(serializer.documents().count(), 1);
         let outputs = serializer
             .serialize(|format| {
@@ -778,15 +822,22 @@ mod tests {
             .unwrap();
         let assignments = BTreeMap::from([(group.into(), vec![layout.into()].into_boxed_slice())]);
         let instance = realized.instantiate(console, assignments).unwrap();
-        Serializer::new(&instance)
-            .unwrap()
-            .serialize(|format| match format {
-                "ini" => Some(Box::new(IniEmitter::new())),
-                "xml" => Some(Box::new(XmlEmitter::new())),
-                "bml" => Some(Box::new(BmlEmitter::new())),
-                _ => None,
-            })
-            .unwrap()
+        Serializer::new(
+            &instance,
+            [GamepadBinding {
+                group: group.into(),
+                port: 0,
+                gamepad: 0,
+            }],
+        )
+        .unwrap()
+        .serialize(|format| match format {
+            "ini" => Some(Box::new(IniEmitter::new())),
+            "xml" => Some(Box::new(XmlEmitter::new())),
+            "bml" => Some(Box::new(BmlEmitter::new())),
+            _ => None,
+        })
+        .unwrap()
     }
 
     fn text(bytes: &[u8]) -> &str {

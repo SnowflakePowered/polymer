@@ -79,6 +79,8 @@ const DYNAPI_NUM_JOYSTICKS: usize = 158;
 const DYNAPI_POLL_EVENT: usize = 85;
 const DYNAPI_GAME_CONTROLLER_GET_AXIS: usize = 112;
 const DYNAPI_GAME_CONTROLLER_GET_BUTTON: usize = 116;
+const DYNAPI_GAME_CONTROLLER_GET_ATTACHED: usize = 105;
+const DYNAPI_JOYSTICK_GET_ATTACHED: usize = 166;
 const DYNAPI_JOYSTICK_UPDATE: usize = 172;
 
 fn dynapi_entry_target() -> api::DynapiEntryFn {
@@ -142,6 +144,18 @@ snowglass_hook::function_table_hook! {
             controller: *mut c_void,
             axis: i32,
         ) -> i16;
+
+        #[slot = DYNAPI_GAME_CONTROLLER_GET_ATTACHED]
+        #[infix(game_controller_attached)]
+        unsafe extern "C" fn game_controller_get_attached_dispatch(
+            controller: *mut c_void,
+        ) -> i32;
+
+        #[slot = DYNAPI_JOYSTICK_GET_ATTACHED]
+        #[infix(joystick_attached)]
+        unsafe extern "C" fn joystick_get_attached_dispatch(
+            joystick: *mut c_void,
+        ) -> i32;
 
         #[slot = DYNAPI_GAME_CONTROLLER_GET_BUTTON]
         #[prefix(|next| flush_gamepads(
@@ -243,6 +257,33 @@ unsafe fn enumerate_joysticks(mut next: NumJoysticksDispatchContext<'_>) -> i32 
         tracing::debug!("enumerated {count} SDL2 joystick(s)");
     }
     count
+}
+
+unsafe fn game_controller_attached(
+    controller: *mut c_void,
+    mut next: GameControllerGetAttachedDispatchContext<'_>,
+) -> i32 {
+    flush_gamepads(next.state);
+    if let Some(connected) = next
+        .state
+        .backend
+        .lock()
+        .game_controller_connected(controller)
+    {
+        return i32::from(connected);
+    }
+    snowglass_hook::next!(next, controller)
+}
+
+unsafe fn joystick_attached(
+    joystick: *mut c_void,
+    mut next: JoystickGetAttachedDispatchContext<'_>,
+) -> i32 {
+    flush_gamepads(next.state);
+    if let Some(connected) = next.state.backend.lock().joystick_connected(joystick) {
+        return i32::from(connected);
+    }
+    snowglass_hook::next!(next, joystick)
 }
 
 fn announce_joysticks(state: &Sdl2TableState) {

@@ -16,6 +16,7 @@ import {
   op_vfs_storage,
   op_vfs_set_profile,
   op_vfs_set_working_directory,
+  op_vfs_flush,
 } from "ext:core/ops";
 
 const handles = new WeakMap();
@@ -136,7 +137,12 @@ const filesystem = Object.freeze({
 });
 
 Object.defineProperty(globalThis, "__snowglassFilesystem", {
-  value: Object.freeze({ filesystem, resources: namedResources, storage: storageResources }),
+  value: Object.freeze({
+    filesystem,
+    resources: namedResources,
+    storage: storageResources,
+    flush: op_vfs_flush,
+  }),
   configurable: false,
   enumerable: false,
   writable: false,

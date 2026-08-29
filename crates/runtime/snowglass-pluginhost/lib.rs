@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod configuration;
+mod controller;
 mod deno;
 pub mod descriptor;
 mod emulator;
@@ -18,6 +19,7 @@ mod runtime;
 pub mod toml;
 
 pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
+pub use controller::ControllerSession;
 pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort,
     EmulatorSetupInvocation, GraphicsHook, TrackedSurface,

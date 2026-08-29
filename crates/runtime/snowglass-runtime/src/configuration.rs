@@ -258,6 +258,22 @@ pub(crate) fn prepare_api_with_sources(
         .collect::<HashMap<_, _>>();
     let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
     let controller_manager = crate::ControllerManager::with_profiles(controller_profiles.clone());
+    let gamepad_bindings = prepared
+        .viewer
+        .gamepads
+        .iter()
+        .filter_map(|gamepad| {
+            gamepad.port.as_ref().map(|port| {
+                serde_json::json!({
+                    "target": {
+                        "group": port.group,
+                        "port": port.index,
+                    },
+                    "gamepad": gamepad.slot,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
     let (controller_mappings, gamepad_mapping): (Vec<_>, Vec<_>) = prepared
         .viewer
         .gamepads
@@ -270,6 +286,7 @@ pub(crate) fn prepare_api_with_sources(
         "console": prepared.viewer.machine,
         "portAssignments": port_assignments,
         "controllerMappings": controller_mappings,
+        "gamepadBindings": gamepad_bindings,
         "settings": settings,
     });
     if !storage.is_empty() {

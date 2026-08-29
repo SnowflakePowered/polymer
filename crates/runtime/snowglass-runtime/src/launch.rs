@@ -1,4 +1,4 @@
-use crate::{EmulatorLaunchConfig, GeneratedConfiguration, HookBackend, LaunchError};
+use crate::{EmulatorLaunchConfig, HookBackend, LaunchError};
 use snowglass_hook::config;
 use snowglass_platform_windows::{
     InjectionLibrary, TargetProcess, architecture_artifact_dir, executable_architecture,
@@ -60,54 +60,6 @@ pub(crate) fn launch(config: &EmulatorLaunchConfig) -> Result<TargetProcess, Lau
         process.retain(manifest);
     }
     Ok(process)
-}
-
-pub(crate) fn install_generated_configuration(
-    configuration: Option<&GeneratedConfiguration>,
-) -> Result<(), LaunchError> {
-    let Some(configuration) = configuration else {
-        return Ok(());
-    };
-    let root = std::path::PathBuf::from(file_url_or_path(&configuration.root)?);
-    if !root.is_dir() {
-        return Err(LaunchError::InvalidConfig(format!(
-            "generated configuration root does not exist: {}",
-            root.display()
-        )));
-    }
-    let root = root.canonicalize()?;
-    let mut written = 0usize;
-    for (relative, bytes) in &configuration.files {
-        let target = root.join(relative);
-        if target.exists() {
-            let resolved = target.canonicalize()?;
-            if !resolved.starts_with(&root) {
-                return Err(LaunchError::InvalidConfig(format!(
-                    "generated configuration path escapes its root through a link: {}",
-                    target.display()
-                )));
-            }
-        }
-        if let Some(parent) = target.parent() {
-            if !parent.is_dir() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let resolved = parent.canonicalize()?;
-            if !resolved.starts_with(&root) {
-                return Err(LaunchError::InvalidConfig(format!(
-                    "generated configuration path escapes its root through a link: {}",
-                    target.display()
-                )));
-            }
-        }
-        std::fs::write(&target, bytes)?;
-        written += 1;
-    }
-    tracing::info!(
-        "snowglass: generated configuration realized: {written} file(s) written under {}",
-        root.display()
-    );
-    Ok(())
 }
 
 fn file_url_or_path(value: &str) -> Result<String, LaunchError> {
@@ -362,28 +314,4 @@ fn hook_libraries(hooks: &[HookBackend], isolate: bool) -> Vec<InjectionLibrary>
         c"SnowglassInstallSdl3Hook",
     ));
     libraries
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn installs_generated_configuration_at_the_runtime_launch_boundary() {
-        let root = tempfile::tempdir().unwrap();
-        let nested = root.path().join("nested");
-        std::fs::create_dir(&nested).unwrap();
-        let configuration = GeneratedConfiguration {
-            root: url::Url::from_directory_path(root.path())
-                .unwrap()
-                .to_string(),
-            files: BTreeMap::from([("nested/settings.ini".to_owned(), b"Generated=true".to_vec())]),
-        };
-        install_generated_configuration(Some(&configuration)).unwrap();
-        assert_eq!(
-            std::fs::read(nested.join("settings.ini")).unwrap(),
-            b"Generated=true"
-        );
-    }
 }

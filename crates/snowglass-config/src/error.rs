@@ -48,6 +48,14 @@ pub enum Error {
     },
     #[error("port {index} is not declared in group `{group}`")]
     UnknownPort { group: Box<str>, index: usize },
+    #[error("active port {index} in group `{group}` has no virtual gamepad binding")]
+    MissingGamepadBinding { group: Box<str>, index: usize },
+    #[error("port {index} in group `{group}` is bound more than once")]
+    DuplicatePortGamepadBinding { group: Box<str>, index: usize },
+    #[error("port {index} in group `{group}` is not active in this configuration")]
+    UnexpectedGamepadBinding { group: Box<str>, index: usize },
+    #[error("virtual gamepad {index} is bound to more than one emulator port")]
+    DuplicateGamepadBinding { index: usize },
     #[error("unknown input layout `{0}`")]
     UnknownLayout(Box<str>),
     #[error("port {index} in group `{group}` does not accept layout `{layout}`")]

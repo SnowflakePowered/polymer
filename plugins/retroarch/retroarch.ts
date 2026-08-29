@@ -2,7 +2,13 @@ import config from "pkg:plugin.toml";
 
 type Configuration = {
     options(): { core: { placeholder: boolean } },
+    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
 };
+
+type GamepadBinding = Readonly<{
+    target: Readonly<{ group: string, port: number }>,
+    gamepad: number,
+}>;
 
 type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
@@ -26,6 +32,7 @@ type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     portAssignments: { [group: string]: string[] },
+    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -106,6 +113,9 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
 
     const options = args.configuration.options();
     options.core.placeholder = false;
+    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
+        args.filesystem.mountFile(`/Generated/${name}`, bytes, { mode: "rw" });
+    }
 
     return {
         command: args.filesystem.path("/RetroArch/retroarch.exe"),
@@ -117,10 +127,8 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
             "-f",
             args.filesystem.path(`/Game/${gameName}`),
         ],
-        configRoot: args.filesystem.path("/Generated"),
         isolate: true,
         hooks: ["d3d11"],
-        config: args.configuration,
         surfaces: [
             { index: 0, pattern: "RetroArch" },
         ],

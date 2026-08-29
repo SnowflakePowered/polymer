@@ -35,11 +35,11 @@ pub use frontend::{
 #[doc(hidden)]
 pub use input::ProtocolInputSender;
 pub use instance::{
-    AudioState, EmulatorInstance, EmulatorLaunchConfig, GeneratedConfiguration, HotkeyChord,
-    HotkeyKey, InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,
-    ResizeDimensions, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
-    SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
-    TrackedSurfaceHandle, TrackedSurfaceId,
+    AudioState, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord, HotkeyKey, InstanceExit,
+    InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken, ResizeDimensions,
+    SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver, SurfaceFrameUpdate,
+    SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig, TrackedSurfaceHandle,
+    TrackedSurfaceId, VirtualGamepadConnectionSender,
 };
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};

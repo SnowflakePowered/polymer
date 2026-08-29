@@ -7,8 +7,13 @@ type Configuration = {
             open_pad: boolean,
         },
     },
-    render(): Record<string, Uint8Array>,
+    render(bindings: readonly GamepadBinding[]): Record<string, Uint8Array>,
 }
+
+type GamepadBinding = Readonly<{
+    target: Readonly<{ group: string, port: number }>,
+    gamepad: number,
+}>;
 
 type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
@@ -34,6 +39,7 @@ type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     portAssignments: { [group: string]: string[] },
+    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -56,7 +62,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     args.filesystem.mountTree("/Cemu/resources", new URL("pkg:bin/win-x64/resources"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/gameProfiles", new URL("pkg:bin/win-x64/gameProfiles"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/shaderCache", args.filesystem.mountCache("shaderCache"), { mode: "rwx" });
-    for (const [name, bytes] of Object.entries(args.configuration.render())) {
+    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
         args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
     }
     if (args.storage.mlc) {
@@ -79,11 +85,8 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     return {
         command: executable,
         argv: ["-g", game, "--mlc", mlc],
-        configRoot: args.filesystem.path("/Cemu"),
         isolate: true,
         hooks: ["vulkan", "opengl"],
-        // pluginhost unwraps and serializes this after setupLaunch returns.
-        config: args.configuration,
         surfaces: [
             { index: 0, pattern: "Cemu+" },
             { index: 1, pattern: "GamePad+" }

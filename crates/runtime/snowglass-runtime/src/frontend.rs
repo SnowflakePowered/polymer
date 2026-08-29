@@ -30,6 +30,7 @@ pub trait RuntimePlatform: Send + Sync {
         token: InstanceToken,
         options: Value,
         prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+        controller_session: Option<snowglass_pluginhost::ControllerSession>,
     ) -> ApiFuture<Result<(), String>>;
     fn emulator_close(&self, token: InstanceToken);
     fn emulator_set_volume(&self, token: InstanceToken, volume: f64);
@@ -54,6 +55,7 @@ pub enum EmulatorCommand {
         token: InstanceToken,
         options: Value,
         prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+        controller_session: Option<snowglass_pluginhost::ControllerSession>,
         result: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     Close(InstanceToken),
@@ -226,6 +228,7 @@ impl RuntimePlatform for CommandRuntimePlatform {
         token: InstanceToken,
         options: Value,
         prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+        controller_session: Option<snowglass_pluginhost::ControllerSession>,
     ) -> ApiFuture<Result<(), String>> {
         let sink = self.emulator.clone();
         Box::pin(async move {
@@ -234,6 +237,7 @@ impl RuntimePlatform for CommandRuntimePlatform {
                 token,
                 options,
                 prepared_filesystem,
+                controller_session,
                 result,
             });
             response
@@ -329,6 +333,28 @@ struct PreparedFilesystemStoreInner {
     filesystems: Mutex<HashMap<u64, snowglass_vfs::PreparedFilesystemLaunch>>,
 }
 
+#[derive(Clone, Default)]
+struct ControllerSessionStore(Arc<ControllerSessionStoreInner>);
+
+#[derive(Default)]
+struct ControllerSessionStoreInner {
+    next: AtomicU64,
+    sessions: Mutex<HashMap<u64, snowglass_pluginhost::ControllerSession>>,
+}
+
+impl ControllerSessionStore {
+    fn insert(&self, session: snowglass_pluginhost::ControllerSession) -> String {
+        let token = self.0.next.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        self.0.sessions.lock().insert(token, session);
+        format!("{token:016x}")
+    }
+
+    fn take(&self, token: &str) -> Option<snowglass_pluginhost::ControllerSession> {
+        let token = u64::from_str_radix(token, 16).ok()?;
+        self.0.sessions.lock().remove(&token)
+    }
+}
+
 impl PreparedFilesystemStore {
     fn insert(&self, filesystem: snowglass_vfs::PreparedFilesystemLaunch) -> String {
         let token = self.0.next.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
@@ -352,6 +378,7 @@ pub struct FrontendServices {
     configuration: Option<ConfigurationDefaults>,
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
+    controller_sessions: ControllerSessionStore,
     input_sources: InputSourceCatalog,
     input_api: InputApiState,
     platform: Arc<dyn RuntimePlatform>,
@@ -372,6 +399,7 @@ impl FrontendServices {
             configuration,
             storage: crate::console_storage_manager(),
             prepared_filesystems: PreparedFilesystemStore::default(),
+            controller_sessions: ControllerSessionStore::default(),
             input_sources,
             input_api,
             platform,
@@ -450,6 +478,7 @@ impl SnowglassHost for FrontendServices {
         let handle = self.plugins.handle();
         let storage = self.storage.clone();
         let prepared_filesystems = self.prepared_filesystems.clone();
+        let controller_sessions = self.controller_sessions.clone();
         let notifications = self.notifications.clone();
         Box::pin(async move {
             let storage =
@@ -473,6 +502,12 @@ impl SnowglassHost for FrontendServices {
                         let token = prepared_filesystems.insert(filesystem);
                         if let Some(object) = result.value.as_object_mut() {
                             object.insert("preparedFilesystem".to_owned(), Value::String(token));
+                        }
+                    }
+                    if let Some(session) = result.controller_session.take() {
+                        let token = controller_sessions.insert(session);
+                        if let Some(object) = result.value.as_object_mut() {
+                            object.insert("controllerSession".to_owned(), Value::String(token));
                         }
                     }
                     serde_json::json!({ "ok": true, "value": result.value })
@@ -510,7 +545,22 @@ impl SnowglassHost for FrontendServices {
             },
             None => None,
         };
-        self.platform.emulator_launch(token, options, prepared)
+        let controller_session = match options.get("controllerSession").and_then(Value::as_str) {
+            Some(handle) => match self.controller_sessions.take(handle) {
+                Some(session) => Some(session),
+                None => {
+                    return Box::pin(async {
+                        Err(
+                            "controller session handle is unknown or was already consumed"
+                                .to_owned(),
+                        )
+                    });
+                }
+            },
+            None => None,
+        };
+        self.platform
+            .emulator_launch(token, options, prepared, controller_session)
     }
 
     fn emulator_close(&self, token: InstanceToken) {

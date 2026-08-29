@@ -2,7 +2,9 @@
 
 use snowglass_input::{
     DirectInputData, DirectInputDevice, RawKeyInput,
-    gamepad::{GamepadFeedback, GamepadSlot, GamepadState, GamepadUpdate},
+    gamepad::{
+        GamepadFeedback, GamepadSlot, GamepadState, GamepadUpdate, VirtualGamepadConnection,
+    },
     mouse::{PointerInput, PointerPhase, PointerSource},
 };
 use snowglass_protocol::{
@@ -50,6 +52,7 @@ const MESSAGE_MAP_ACCEPTED: u32 = 11;
 const MESSAGE_RAW_KEY_INPUT: u32 = 12;
 const MESSAGE_RESIZE_WINDOW: u32 = 13;
 const MESSAGE_GAMEPAD_FEEDBACK: u32 = 14;
+const MESSAGE_VIRTUAL_GAMEPAD_CONNECTION: u32 = 15;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
@@ -120,6 +123,7 @@ pub enum Message {
     PointerInput(PointerInput),
     GamepadUpdate(GamepadUpdate),
     GamepadFeedback(GamepadFeedback),
+    VirtualGamepadConnection(VirtualGamepadConnection),
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
     /// A file handle already duplicated into the receiving process.
@@ -266,6 +270,13 @@ struct WireGamepadFeedback {
     low_frequency: U16,
     high_frequency: U16,
     duration_ms: U32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireVirtualGamepadConnection {
+    slot: U32,
+    connected: U32,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -713,6 +724,16 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
+        Message::VirtualGamepadConnection(value) => {
+            set_payload(
+                &mut wire,
+                MESSAGE_VIRTUAL_GAMEPAD_CONNECTION,
+                &WireVirtualGamepadConnection {
+                    slot: U32::new(u32::from(value.slot.get())),
+                    connected: U32::new(value.connected as u32),
+                },
+            );
+        }
         Message::StreamAccepted => {
             wire.kind = U32::new(MESSAGE_STREAM_ACCEPTED);
         }
@@ -922,6 +943,21 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
                 duration_ms: value.duration_ms.get(),
             }))
         }
+        MESSAGE_VIRTUAL_GAMEPAD_CONNECTION => {
+            let value = payload::<WireVirtualGamepadConnection>(wire)?;
+            let slot = u8::try_from(value.slot.get())
+                .ok()
+                .and_then(GamepadSlot::new)
+                .ok_or_else(|| invalid_data("invalid virtual gamepad slot"))?;
+            let connected = match value.connected.get() {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid_data("invalid virtual gamepad connection state")),
+            };
+            Ok(Message::VirtualGamepadConnection(
+                VirtualGamepadConnection { slot, connected },
+            ))
+        }
         MESSAGE_MAP_OFFER => {
             let value = payload::<WireMapOffer>(wire)?;
             let channel = match value.channel.get() {
@@ -975,23 +1011,20 @@ pub(crate) fn decode_frame(bytes: &[u8]) -> io::Result<FrameReady> {
     }
 }
 
-pub(crate) fn encode_gamepad(value: GamepadUpdate) -> Vec<u8> {
-    let wire = encode(Message::GamepadUpdate(value));
-    wire.payload[..mem::size_of::<WireGamepadUpdate>()].to_vec()
+pub(crate) fn encode_input(value: Message) -> Vec<u8> {
+    debug_assert!(matches!(
+        value,
+        Message::GamepadUpdate(_) | Message::VirtualGamepadConnection(_)
+    ));
+    encode(value).as_bytes().to_vec()
 }
 
-pub(crate) fn decode_gamepad(bytes: &[u8]) -> io::Result<GamepadUpdate> {
-    let mut wire = WireMessage {
-        kind: U32::new(MESSAGE_GAMEPAD_UPDATE),
-        payload: [0; PAYLOAD_SIZE],
-    };
-    if bytes.len() != mem::size_of::<WireGamepadUpdate>() {
-        return Err(invalid_data("invalid shared gamepad size"));
-    }
-    wire.payload[..bytes.len()].copy_from_slice(bytes);
+pub(crate) fn decode_input(bytes: &[u8]) -> io::Result<Message> {
+    let wire = WireMessage::read_from_bytes(bytes)
+        .map_err(|_| invalid_data("invalid shared input event size"))?;
     match decode(&wire)? {
-        Message::GamepadUpdate(value) => Ok(value),
-        _ => unreachable!(),
+        event @ (Message::GamepadUpdate(_) | Message::VirtualGamepadConnection(_)) => Ok(event),
+        _ => Err(invalid_data("invalid shared input event kind")),
     }
 }
 

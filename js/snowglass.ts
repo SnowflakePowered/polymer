@@ -93,11 +93,8 @@ export type LaunchOptions = {
   gamepadMapping: GamePadMapping[];
   machine: string;
   webrtcBind?: string;
-  generatedConfiguration?: {
-    root: string;
-    files: Record<string, number[]>;
-  };
   preparedFilesystem?: string;
+  controllerSession?: string;
 };
 
 export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {

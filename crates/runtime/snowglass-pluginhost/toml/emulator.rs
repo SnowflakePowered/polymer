@@ -301,7 +301,15 @@ mod tests {
             .unwrap();
 
         let instance = instances.take(id).unwrap();
-        let files = serialize(&instance).unwrap();
+        let files = serialize(
+            &instance,
+            vec![snowglass_config::ser::GamepadBinding {
+                group: "wii".into(),
+                port: 0,
+                gamepad: 0,
+            }],
+        )
+        .unwrap();
         let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
         assert!(wiimote.contains("IR/Left=`Right X-`"), "{wiimote}");
         assert!(wiimote.contains("IR/Up=`Right Y+`"), "{wiimote}");
@@ -331,7 +339,15 @@ mod tests {
         let id = instances.insert(configuration);
 
         let instance = instances.take(id).unwrap();
-        let files = serialize(&instance).unwrap();
+        let files = serialize(
+            &instance,
+            vec![snowglass_config::ser::GamepadBinding {
+                group: "wii".into(),
+                port: 0,
+                gamepad: 0,
+            }],
+        )
+        .unwrap();
         let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
         assert!(
             wiimote.contains("Nunchuk/Stick/Left=`Left X-`"),

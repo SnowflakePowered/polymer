@@ -4,7 +4,7 @@ use crate::{
     control::{ChannelKind, LocalSocket, MapOffer, Message},
     shared,
 };
-use snowglass_input::gamepad::GamepadUpdate;
+use snowglass_input::gamepad::{GamepadUpdate, VirtualGamepadConnection};
 use snowglass_protocol::{ConsumerApi, Handshake, PROTOCOL_VERSION};
 use std::io;
 
@@ -12,6 +12,7 @@ pub struct InputPublisher {
     shared: shared::Publisher,
     generation: u64,
     latest: Vec<Option<GamepadUpdate>>,
+    connections: Vec<Option<VirtualGamepadConnection>>,
 }
 
 impl InputPublisher {
@@ -20,6 +21,7 @@ impl InputPublisher {
             shared: shared::Publisher::create("input")?,
             generation: 1,
             latest: vec![None; u8::MAX as usize + 1],
+            connections: vec![None; u8::MAX as usize + 1],
         })
     }
 
@@ -45,14 +47,31 @@ impl InputPublisher {
         }
         for update in self.latest.iter().flatten() {
             self.shared
-                .publish(&crate::control::encode_gamepad(*update))?;
+                .publish(&crate::control::encode_input(Message::GamepadUpdate(
+                    *update,
+                )))?;
+        }
+        for connection in self.connections.iter().flatten() {
+            self.shared.publish(&crate::control::encode_input(
+                Message::VirtualGamepadConnection(*connection),
+            ))?;
         }
         Ok(hello.process_id)
     }
 
     pub fn publish(&mut self, update: GamepadUpdate) -> io::Result<()> {
         self.latest[update.slot.index()] = Some(update);
-        self.shared.publish(&crate::control::encode_gamepad(update))
+        self.shared
+            .publish(&crate::control::encode_input(Message::GamepadUpdate(
+                update,
+            )))
+    }
+
+    pub fn set_connected(&mut self, connection: VirtualGamepadConnection) -> io::Result<()> {
+        self.connections[connection.slot.index()] = Some(connection);
+        self.shared.publish(&crate::control::encode_input(
+            Message::VirtualGamepadConnection(connection),
+        ))
     }
 }
 
@@ -94,8 +113,16 @@ impl InputSubscriber {
     }
 
     pub fn drain(&mut self, mut receive: impl FnMut(GamepadUpdate)) -> io::Result<usize> {
+        self.drain_events(|event| {
+            if let Message::GamepadUpdate(update) = event {
+                receive(update);
+            }
+        })
+    }
+
+    pub fn drain_events(&mut self, mut receive: impl FnMut(Message)) -> io::Result<usize> {
         self.shared.drain(&mut self.scratch, |bytes| {
-            receive(crate::control::decode_gamepad(bytes)?);
+            receive(crate::control::decode_input(bytes)?);
             Ok(())
         })
     }
@@ -184,5 +211,36 @@ mod tests {
         for subscriber in subscribers {
             assert_eq!(subscriber.join().unwrap(), Some(active));
         }
+    }
+
+    #[test]
+    fn replays_virtual_connection_state_to_late_subscribers() {
+        let name = format!("snowglass-input-connection-test-{}", std::process::id());
+        let listener = LocalSocketListener::bind(&name).unwrap();
+        let expected = VirtualGamepadConnection {
+            slot: GamepadSlot::new(5).unwrap(),
+            connected: false,
+        };
+        let server = std::thread::spawn(move || {
+            let mut publisher = InputPublisher::new().unwrap();
+            publisher.set_connected(expected).unwrap();
+            let mut control = listener.accept().unwrap();
+            publisher.accept(&mut control).unwrap();
+        });
+        let mut subscriber = InputSubscriber::connect(&name).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut received = None;
+        while received.is_none() && std::time::Instant::now() < deadline {
+            subscriber
+                .drain_events(|event| {
+                    if let Message::VirtualGamepadConnection(connection) = event {
+                        received = Some(connection);
+                    }
+                })
+                .unwrap();
+            std::thread::yield_now();
+        }
+        server.join().unwrap();
+        assert_eq!(received, Some(expected));
     }
 }

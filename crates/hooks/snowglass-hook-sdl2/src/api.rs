@@ -2,6 +2,7 @@
 
 use snowglass_input::gamepad::{
     GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadSlot, GamepadUpdate,
+    VirtualGamepadConnection,
 };
 use snowglass_input_sdl::{BackendError, Runtime, SdlBackend, effective_state};
 use std::{
@@ -16,6 +17,7 @@ type AttachVirtualExFn = unsafe extern "C" fn(*const VirtualJoystickDesc) -> i32
 type OpenFn = unsafe extern "C" fn(i32) -> *mut c_void;
 type SetAxisFn = unsafe extern "C" fn(*mut c_void, i32, i16) -> i32;
 type SetButtonFn = unsafe extern "C" fn(*mut c_void, i32, u8) -> i32;
+type GameControllerGetJoystickFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
 
 const SDL_JOYSTICK_TYPE_GAMECONTROLLER: i32 = 1;
 const SDL_VIRTUAL_JOYSTICK_DESC_VERSION: u16 = 1;
@@ -72,8 +74,10 @@ pub(crate) struct Api {
     open: OpenFn,
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
+    game_controller_get_joystick: GameControllerGetJoystickFn,
     handles: Vec<usize>,
     feedback: Vec<FeedbackContext>,
+    connected: Vec<bool>,
 }
 
 struct FeedbackContext {
@@ -107,14 +111,31 @@ impl Api {
                 slot: GamepadSlot::new(slot as u8).expect("virtual gamepad count is bounded to u8"),
             })
             .collect();
+        let connected = vec![true; runtime.pad_count()];
         Some(Self {
             attach_virtual: unsafe { symbol(module, c"SDL_JoystickAttachVirtualEx")? },
             open: unsafe { symbol(module, c"SDL_JoystickOpen")? },
             set_axis: unsafe { symbol(module, c"SDL_JoystickSetVirtualAxis")? },
             set_button: unsafe { symbol(module, c"SDL_JoystickSetVirtualButton")? },
+            game_controller_get_joystick: unsafe {
+                symbol(module, c"SDL_GameControllerGetJoystick")?
+            },
             handles: Vec::new(),
             feedback,
+            connected,
         })
+    }
+
+    pub(crate) fn joystick_connected(&self, joystick: *mut c_void) -> Option<bool> {
+        self.handles
+            .iter()
+            .position(|handle| *handle == joystick as usize)
+            .map(|slot| self.connected[slot])
+    }
+
+    pub(crate) fn game_controller_connected(&self, controller: *mut c_void) -> Option<bool> {
+        let joystick = unsafe { (self.game_controller_get_joystick)(controller) };
+        self.joystick_connected(joystick)
     }
 }
 
@@ -138,6 +159,14 @@ impl SdlBackend for Api {
             }
             self.handles[slot] = handle as usize;
         }
+        Ok(())
+    }
+
+    fn set_connected(&mut self, connection: VirtualGamepadConnection) -> Result<(), BackendError> {
+        let Some(connected) = self.connected.get_mut(connection.slot.index()) else {
+            return Err(BackendError("SDL2 virtual gamepad slot is out of range"));
+        };
+        *connected = connection.connected;
         Ok(())
     }
 

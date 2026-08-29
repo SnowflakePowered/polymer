@@ -136,6 +136,10 @@ impl InputRouter {
         self.transport.hub().snapshot()
     }
 
+    pub fn controller_api_snapshot(&self) -> serde_json::Value {
+        self.transport.input_api.snapshot()
+    }
+
     pub fn layouts(&self) -> &'static [snowglass_input::layout::InputLayout] {
         self.transport.hub().layouts()
     }
@@ -188,8 +192,9 @@ impl InputRouter {
         &mut self,
         mappings: &[GamepadMapping],
         game_active: bool,
+        topology_locked: bool,
     ) -> InputPublication {
-        let _ = self.transport.observe_controllers(game_active);
+        let _ = self.transport.observe_controllers(topology_locked);
         let states = self
             .provider()
             .map(Sdl3Provider::states)
@@ -806,7 +811,7 @@ impl InputRouter {
     pub fn apply_configuration_transaction(
         &mut self,
         transaction: InputTransaction,
-        emulator_attached: bool,
+        topology_locked: bool,
     ) -> Result<InputConfiguration, String> {
         let previous = self.transport.hub().snapshot();
         let next = self
@@ -815,7 +820,7 @@ impl InputRouter {
             .preview(&transaction)
             .map_err(|error| error.to_string())?;
         self.transport
-            .reconcile(&previous, &next, emulator_attached)?;
+            .reconcile(&previous, &next, topology_locked)?;
         self.transport
             .hub()
             .apply(transaction)
@@ -825,10 +830,10 @@ impl InputRouter {
     pub async fn controller_command(
         &mut self,
         command: serde_json::Value,
-        emulator_attached: bool,
+        topology_locked: bool,
     ) -> Result<(serde_json::Value, bool), String> {
         self.transport
-            .apply_controller_command(command, emulator_attached)
+            .apply_controller_command(command, topology_locked)
             .await
     }
 }
@@ -1034,11 +1039,11 @@ impl InputTransport {
         &mut self,
         previous: &InputConfiguration,
         next: &InputConfiguration,
-        emulator_attached: bool,
+        topology_locked: bool,
     ) -> Result<(), String> {
         let previous = self.controller_manager.resolve_configuration(previous);
         let next = self.controller_manager.resolve_configuration(next);
-        InputReconciler::reconcile(&self.provider, &previous, &next, emulator_attached)?;
+        InputReconciler::reconcile(&self.provider, &previous, &next, topology_locked)?;
         self.sync_physical_routes(&next.configuration);
         Ok(())
     }
@@ -1078,26 +1083,26 @@ impl InputTransport {
     pub async fn apply_controller_command(
         &mut self,
         command: serde_json::Value,
-        emulator_attached: bool,
+        topology_locked: bool,
     ) -> Result<(serde_json::Value, bool), String> {
         let outcome = self
             .controller_manager
             .command(command, &self.bluetooth.snapshot())
             .await?;
         let response = outcome.response.clone();
-        let changed = self.apply_controller_outcome(outcome, emulator_attached)?;
+        let changed = self.apply_controller_outcome(outcome, topology_locked)?;
         self.publish_input_api();
         Ok((response, changed))
     }
 
-    pub fn observe_controllers(&mut self, emulator_attached: bool) -> Result<bool, String> {
+    pub fn observe_controllers(&mut self, topology_locked: bool) -> Result<bool, String> {
         let controllers = self.bluetooth.controllers();
         self.controller_manager
             .sync_configuration(&self.hub.snapshot(), &self.sources);
         let outcome =
             self.controller_manager
                 .observe(&self.provider.devices(), &controllers, &self.sources);
-        let changed = self.apply_controller_outcome(outcome, emulator_attached)?;
+        let changed = self.apply_controller_outcome(outcome, topology_locked)?;
         self.publish_input_api();
         Ok(changed)
     }
@@ -1127,7 +1132,7 @@ impl InputTransport {
     fn apply_controller_outcome(
         &mut self,
         outcome: ControllerCommandOutcome,
-        emulator_attached: bool,
+        topology_locked: bool,
     ) -> Result<bool, String> {
         for effect in outcome.effects {
             match effect {
@@ -1163,7 +1168,7 @@ impl InputTransport {
             .hub
             .preview(&transaction)
             .map_err(|error| error.to_string())?;
-        self.reconcile(&previous, &next, emulator_attached)?;
+        self.reconcile(&previous, &next, topology_locked)?;
         self.hub
             .apply(transaction)
             .map_err(|error| error.to_string())?;

@@ -4,6 +4,7 @@ use crossfire::{MTx, Rx, mpsc};
 use parking_lot::Mutex;
 use snowglass_input::gamepad::{
     GamepadFeedback, GamepadUpdate, GamepadUpdateSink, LatestGamepadMailbox,
+    VirtualGamepadConnection,
 };
 use snowglass_ipc::{LocalSocket, LocalSocketListener, Message, input::InputPublisher};
 use std::sync::mpsc as std_mpsc;
@@ -42,6 +43,7 @@ pub(crate) struct InputTransport(Arc<InputInner>);
 struct InputInner {
     control: ControlTx,
     mailbox: Arc<LatestGamepadMailbox>,
+    gamepads: Arc<Mutex<InputPublisher>>,
     listener: LocalSocketListener,
     stopping: Arc<AtomicBool>,
     clients: Arc<Mutex<Vec<LocalSocket>>>,
@@ -75,7 +77,7 @@ impl InputTransport {
             feedback_subscribers.clone(),
             stopping.clone(),
         );
-        let gamepad = spawn_gamepad_writer(mailbox.clone(), gamepads, stopping.clone());
+        let gamepad = spawn_gamepad_writer(mailbox.clone(), gamepads.clone(), stopping.clone());
         let control_worker = spawn_control_writer(receiver, clients.clone(), stopping.clone());
         let workers = match (acceptor, gamepad, control_worker) {
             (Ok(acceptor), Ok(gamepad), Ok(control)) => InputWorkers {
@@ -108,6 +110,7 @@ impl InputTransport {
         Ok(Self(Arc::new(InputInner {
             control,
             mailbox,
+            gamepads,
             listener,
             stopping,
             clients,
@@ -134,6 +137,13 @@ impl InputTransport {
     pub(crate) fn publish_gamepad(&self, update: GamepadUpdate) -> std::io::Result<()> {
         self.0.mailbox.publish(update);
         Ok(())
+    }
+
+    pub(crate) fn set_gamepad_connected(
+        &self,
+        connection: VirtualGamepadConnection,
+    ) -> std::io::Result<()> {
+        self.0.gamepads.lock().set_connected(connection)
     }
 
     pub(crate) fn shutdown(&self) {

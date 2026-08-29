@@ -2,7 +2,9 @@
 
 use parking_lot::Mutex;
 use seqlock::SeqLock;
-use snowglass_input::gamepad::{GamepadFeedback, GamepadState, GamepadUpdate};
+use snowglass_input::gamepad::{
+    GamepadFeedback, GamepadState, GamepadUpdate, VirtualGamepadConnection,
+};
 use snowglass_ipc::{Message, input::InputSubscriber};
 use std::sync::{
     Arc,
@@ -15,6 +17,7 @@ pub struct BackendError(pub &'static str);
 /// The common surface implemented by each SDL major-version hook.
 pub trait SdlBackend {
     fn ensure_attached(&mut self, count: usize) -> Result<(), BackendError>;
+    fn set_connected(&mut self, connection: VirtualGamepadConnection) -> Result<(), BackendError>;
     fn publish(&mut self, update: GamepadUpdate) -> Result<(), BackendError>;
 }
 
@@ -87,6 +90,8 @@ pub struct Runtime {
     pad_count: usize,
     slots: Vec<SeqLock<SlotState>>,
     published_sequences: Mutex<Vec<Option<u32>>>,
+    connections: Vec<AtomicBool>,
+    published_connections: Mutex<Vec<Option<bool>>>,
     feedback: Mutex<Option<snowglass_ipc::LocalSocket>>,
 }
 
@@ -100,6 +105,10 @@ impl Runtime {
             pad_count: pad_count.clamp(1, u8::MAX as usize + 1),
             slots,
             published_sequences: Mutex::new(vec![None; pad_count.clamp(1, u8::MAX as usize + 1)]),
+            connections: (0..pad_count.clamp(1, u8::MAX as usize + 1))
+                .map(|_| AtomicBool::new(true))
+                .collect(),
+            published_connections: Mutex::new(vec![None; pad_count.clamp(1, u8::MAX as usize + 1)]),
             feedback: Mutex::new(None),
         }
     }
@@ -117,7 +126,15 @@ impl Runtime {
     }
 
     pub fn prepare_enumeration(&self, backend: &mut impl SdlBackend) -> Result<(), BackendError> {
-        backend.ensure_attached(self.pad_count)
+        backend.ensure_attached(self.pad_count)?;
+        for (index, connected) in self.connections.iter().enumerate() {
+            backend.set_connected(VirtualGamepadConnection {
+                slot: snowglass_input::gamepad::GamepadSlot::new(index as u8)
+                    .expect("slot index is representable on the wire"),
+                connected: connected.load(Ordering::Acquire),
+            })?;
+        }
+        Ok(())
     }
 
     pub const fn pad_count(&self) -> usize {
@@ -144,6 +161,23 @@ impl Runtime {
             return false;
         }
         let mut forwarded = false;
+        let mut published_connections = self.published_connections.lock();
+        for (index, connected) in self.connections.iter().enumerate() {
+            let connected = connected.load(Ordering::Acquire);
+            if published_connections[index] == Some(connected) {
+                continue;
+            }
+            let connection = VirtualGamepadConnection {
+                slot: snowglass_input::gamepad::GamepadSlot::new(index as u8)
+                    .expect("slot index is representable on the wire"),
+                connected,
+            };
+            if backend.set_connected(connection).is_ok() {
+                published_connections[index] = Some(connected);
+                forwarded = true;
+            }
+        }
+        drop(published_connections);
         let mut published = self.published_sequences.lock();
         for (index, slot) in self.slots.iter().enumerate() {
             let slot = slot.read();
@@ -170,12 +204,26 @@ impl Runtime {
         *self.slots[update.slot.index()].lock_write() = SlotState::from(update);
     }
 
+    fn apply_connection(&self, connection: VirtualGamepadConnection) {
+        if connection.slot.index() < self.pad_count {
+            self.connections[connection.slot.index()]
+                .store(connection.connected, Ordering::Release);
+        }
+    }
+
     fn receive(self: Arc<Self>, socket_name: String) {
         let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
             return;
         };
         *self.feedback.lock() = input.control.try_clone().ok();
-        while input.drain(|update| self.apply(update)).is_ok() {
+        while input
+            .drain_events(|event| match event {
+                Message::GamepadUpdate(update) => self.apply(update),
+                Message::VirtualGamepadConnection(connection) => self.apply_connection(connection),
+                _ => unreachable!("input shared memory admits only input events"),
+            })
+            .is_ok()
+        {
             std::thread::yield_now();
         }
         *self.feedback.lock() = None;
@@ -206,6 +254,13 @@ mod tests {
 
         fn publish(&mut self, update: GamepadUpdate) -> Result<(), BackendError> {
             self.published.push(update);
+            Ok(())
+        }
+
+        fn set_connected(
+            &mut self,
+            _connection: VirtualGamepadConnection,
+        ) -> Result<(), BackendError> {
             Ok(())
         }
     }

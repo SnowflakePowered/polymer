@@ -19,9 +19,9 @@ use snowglass_platform_windows::{
 };
 use snowglass_protocol::{ExternalImageKind, FrameReady};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     fmt,
-    path::{Component, Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -59,38 +59,6 @@ pub struct EmulatorLaunchConfig {
     pub graph_tracking: bool,
     pub force_keyed_mutex: bool,
     pub gamepad_layouts: Vec<String>,
-    pub generated_configuration: Option<GeneratedConfiguration>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeneratedConfiguration {
-    pub root: String,
-    pub files: BTreeMap<String, Vec<u8>>,
-}
-
-impl GeneratedConfiguration {
-    fn validate(&self) -> Result<(), LaunchError> {
-        if self.root.trim().is_empty() {
-            return Err(LaunchError::InvalidConfig(
-                "generated configuration root must not be empty".to_owned(),
-            ));
-        }
-        for relative in self.files.keys() {
-            let relative = Path::new(relative);
-            if relative.is_absolute()
-                || relative
-                    .components()
-                    .any(|component| !matches!(component, Component::Normal(_)))
-            {
-                return Err(LaunchError::InvalidConfig(format!(
-                    "generated configuration path must stay beneath its root: {}",
-                    relative.display()
-                )));
-            }
-        }
-        Ok(())
-    }
 }
 
 impl EmulatorLaunchConfig {
@@ -119,9 +87,6 @@ impl EmulatorLaunchConfig {
             return Err(LaunchError::InvalidConfig(
                 "tracked surface ids must be unique".to_owned(),
             ));
-        }
-        if let Some(configuration) = &self.generated_configuration {
-            configuration.validate()?;
         }
         Ok(())
     }
@@ -586,6 +551,20 @@ pub struct EmulatorInstance {
     ui_requests: UiRequestReceiver,
 }
 
+#[derive(Clone)]
+pub struct VirtualGamepadConnectionSender(InputTransport);
+
+impl VirtualGamepadConnectionSender {
+    pub fn set_connected(
+        &self,
+        connection: snowglass_input::gamepad::VirtualGamepadConnection,
+    ) -> Result<(), String> {
+        self.0
+            .set_gamepad_connected(connection)
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl EmulatorInstance {
     pub fn launch(config: EmulatorLaunchConfig) -> Result<Self, LaunchError> {
         Self::launch_with_waker(config, || {})
@@ -595,10 +574,21 @@ impl EmulatorInstance {
         config: EmulatorLaunchConfig,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, LaunchError> {
+        Self::launch_with_input(config, wake, |_| Ok(()))
+    }
+
+    pub fn launch_with_input(
+        config: EmulatorLaunchConfig,
+        wake: impl Fn() + Send + Sync + 'static,
+        configure_input: impl FnOnce(VirtualGamepadConnectionSender) -> Result<(), String>,
+    ) -> Result<Self, LaunchError> {
         config.validate()?;
-        crate::launch::install_generated_configuration(config.generated_configuration.as_ref())?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
         let input = InputTransport::bind(&config.session)?;
+        if let Err(error) = configure_input(VirtualGamepadConnectionSender(input.clone())) {
+            input.shutdown();
+            return Err(LaunchError::InvalidConfig(error));
+        }
         let (ui, ui_requests) = match UiTransport::bind(&config.session, wake.clone()) {
             Ok(ui) => ui,
             Err(error) => {
@@ -639,7 +629,7 @@ impl EmulatorInstance {
                 surfaces.shutdown();
                 input.shutdown();
                 ui.shutdown();
-                return Err(error.into());
+                return Err(error);
             }
         };
         let process_id = process.id();
@@ -693,6 +683,10 @@ impl EmulatorInstance {
 
     pub fn state(&self) -> InstanceState {
         self.lifecycle.state.get()
+    }
+
+    pub fn virtual_gamepad_connections(&self) -> VirtualGamepadConnectionSender {
+        VirtualGamepadConnectionSender(self.lifecycle.input.clone())
     }
 
     pub fn tracked_surface(&self, id: TrackedSurfaceId) -> Option<TrackedSurfaceHandle> {
@@ -1422,7 +1416,6 @@ mod tests {
             graph_tracking: false,
             force_keyed_mutex: false,
             gamepad_layouts: Vec::new(),
-            generated_configuration: None,
         }
     }
 
@@ -1432,16 +1425,6 @@ mod tests {
 
         let mut invalid = config();
         invalid.command.clear();
-        assert!(matches!(
-            invalid.validate(),
-            Err(LaunchError::InvalidConfig(_))
-        ));
-
-        let mut invalid = config();
-        invalid.generated_configuration = Some(GeneratedConfiguration {
-            root: ".".to_owned(),
-            files: BTreeMap::from([("../settings.ini".to_owned(), Vec::new())]),
-        });
         assert!(matches!(
             invalid.validate(),
             Err(LaunchError::InvalidConfig(_))
