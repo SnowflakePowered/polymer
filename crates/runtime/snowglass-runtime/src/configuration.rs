@@ -24,6 +24,16 @@ pub struct ConfigurationDefaults {
     pub webrtc_bind: std::net::SocketAddr,
 }
 
+impl Default for ConfigurationDefaults {
+    fn default() -> Self {
+        Self {
+            gamepads: Vec::new(),
+            webrtc_targets: None,
+            webrtc_bind: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DefaultGamepad {
     pub source: Option<SourceSelector>,

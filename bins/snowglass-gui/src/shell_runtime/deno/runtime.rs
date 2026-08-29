@@ -14,7 +14,7 @@ use super::dom::{
 use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::state::{BridgeState, op_post_message};
-use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
+use snowglass_deno::snowglass::SnowglassNotificationSender;
 use snowglass_runtime::{EmulatorCommandSink, InputCommandSink, WebRtcCommandSink};
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
@@ -120,11 +120,9 @@ impl Runtime {
         emulator_commands: EmulatorCommandSink,
         input_commands: InputCommandSink,
         webrtc_commands: WebRtcCommandSink,
-        startup_request: Option<Value>,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
         input_sources: snowglass_input::source::InputSourceCatalog,
         input_api: snowglass_runtime::InputApiState,
-        viewer: Option<snowglass_renderer::cli::ViewerOptions>,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
@@ -144,7 +142,7 @@ impl Runtime {
             snowglass_deno::snowglass::init_with_notifications(|notifications| {
                 snowglass_runtime::FrontendServices::new(
                     plugin_runtime.clone(),
-                    viewer.as_ref().map(configuration_defaults),
+                    Some(snowglass_runtime::ConfigurationDefaults::default()),
                     input_sources.clone(),
                     input_api.clone(),
                     platform,
@@ -183,9 +181,6 @@ impl Runtime {
                 // discarding the document's realm or preventing later scripts.
                 tracing::error!("snowglass: shell script {index} failed: {error}");
             }
-        }
-        if let Some(request) = startup_request {
-            notifications.send(SnowglassNotification::OpenRequested(request))?;
         }
         worker.run_up_to_duration(std::time::Duration::ZERO).await?;
         Ok((
@@ -322,15 +317,5 @@ impl Runtime {
             server.host
         );
         Ok(server.host)
-    }
-}
-
-fn configuration_defaults(
-    viewer: &snowglass_renderer::cli::ViewerOptions,
-) -> snowglass_runtime::ConfigurationDefaults {
-    snowglass_runtime::ConfigurationDefaults {
-        gamepads: Vec::new(),
-        webrtc_targets: viewer.webrtc.clone(),
-        webrtc_bind: viewer.bind_webrtc,
     }
 }

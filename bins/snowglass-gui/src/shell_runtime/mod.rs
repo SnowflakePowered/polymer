@@ -26,11 +26,9 @@ pub(crate) struct ShellRuntimeOptions {
     pub emulator_commands: EmulatorCommandSink,
     pub input_commands: InputCommandSink,
     pub webrtc_commands: WebRtcCommandSink,
-    pub startup_request: Option<Value>,
     pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     pub input_sources: snowglass_input::source::InputSourceCatalog,
     pub input_api: snowglass_runtime::InputApiState,
-    pub viewer: Option<snowglass_renderer::cli::ViewerOptions>,
 }
 
 impl ShellRuntime {
@@ -48,11 +46,9 @@ impl ShellRuntime {
             emulator_commands,
             input_commands,
             webrtc_commands,
-            startup_request,
             plugin_runtime,
             input_sources,
             input_api,
-            viewer,
         } = options;
         let result = match deno::Runtime::serialized_snapshot(
             document,
@@ -68,11 +64,9 @@ impl ShellRuntime {
                 emulator_commands,
                 input_commands,
                 webrtc_commands,
-                startup_request,
                 plugin_runtime,
                 input_sources,
                 input_api,
-                viewer,
             ))
             .await
             .unwrap_or_else(|error| Err(Box::new(error))),
