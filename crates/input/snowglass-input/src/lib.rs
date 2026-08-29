@@ -8,7 +8,9 @@ pub mod layout;
 pub mod mouse;
 pub use snowglass_config::input::projection;
 pub mod provider;
+pub mod router;
 pub mod sdl;
+pub mod source;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {

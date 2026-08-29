@@ -1,4 +1,0 @@
-.horizon-remap-positioner { grid-area: 1 / 1; z-index: 70; display: grid; width: 100%; height: 100%; justify-items: end; padding: 1.25rem; background: rgb(0 0 0 / 55%); }
-.horizon-remap-panel { display: flex; width: min(58rem, 94%); height: 100%; flex-direction: column; overflow: hidden; padding: 1.25rem; border: 1px solid #777; border-radius: 0.45rem; color: white; background: #171717; box-shadow: -1rem 0 3rem rgb(0 0 0 / 60%); }
-.horizon-remap-panel > .horizon-assignment-panel { flex: 1; }
-.horizon-visually-hidden { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

@@ -22,10 +22,6 @@ export function ControllerSection(props: {
           <Tabs.List class="horizon-port-tabs"><Tabs.Indicator /><For each={group.ports.slice(0, group.connected)}>{(port) => <Tabs.Trigger value={`port-${port.index}`}>Port {port.index + 1}</Tabs.Trigger>}</For></Tabs.List>
           <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`port-${port.index}`} class="horizon-port-content">
             <ChoiceControl label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].selectedLayout = value; })} />
-            <ChoiceControl label="Input projection" value={port.projectionMode} items={[
-              { value: "position", label: "Position" },
-              { value: "name", label: "Name" },
-            ]} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].projectionMode = value as "position" | "name"; })} />
           </Tabs.Content>}</For>
         </Tabs.Root>
       </Show>

@@ -5,7 +5,7 @@ import { GameDetailsPage } from "../features/details/GameDetailsPage";
 import { GameLayout } from "../features/game/GameLayout";
 import { LaunchingPage } from "../features/game/LaunchingPage";
 import { PlayPage } from "../features/game/PlayPage";
-import { ControllerRemapping } from "../features/game/ControllerRemapping";
+import { ControllerReorder } from "../features/game/ControllerReorder";
 import "./ShellRouter.css";
 import { InputProvider } from "./InputProvider";
 
@@ -24,7 +24,7 @@ export function ShellRouter() {
     <Route path="/game" component={GameLayout}>
       <Route path="/launching" component={LaunchingPage} />
       <Route path="/play" component={PlayPage} />
-      <Route path="/remap" component={ControllerRemapping} />
+      <Route path="/reorder" component={() => <ControllerReorder />} />
     </Route>
     <Route path="*404" component={NotFound} />
   </MemoryRouter>;

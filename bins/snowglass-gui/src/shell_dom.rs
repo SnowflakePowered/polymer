@@ -276,6 +276,8 @@ impl ShellSession {
 pub(crate) struct ShellSessionFactory {
     document: ShellDocumentFactory,
     plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    input_sources: snowglass_input::source::InputSourceCatalog,
+    input_api: snowglass_runtime::InputApiState,
 }
 
 impl ShellSessionFactory {
@@ -289,7 +291,17 @@ impl ShellSessionFactory {
                 plugin_registry,
                 snowglass_pluginhost::PluginRuntimeOptions::default(),
             )),
+            input_sources: snowglass_input::source::InputSourceCatalog::default(),
+            input_api: snowglass_runtime::InputApiState::default(),
         }
+    }
+
+    pub(crate) fn input_sources(&self) -> snowglass_input::source::InputSourceCatalog {
+        self.input_sources.clone()
+    }
+
+    pub(crate) fn input_api(&self) -> snowglass_runtime::InputApiState {
+        self.input_api.clone()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -331,6 +343,8 @@ impl ShellSessionFactory {
                 webrtc_commands,
                 startup_request,
                 plugin_runtime: self.plugin_runtime,
+                input_sources: self.input_sources,
+                input_api: self.input_api,
                 viewer: Some(viewer),
             },
         )

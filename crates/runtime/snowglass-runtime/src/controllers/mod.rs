@@ -792,6 +792,8 @@ impl ControllerManager {
             "connected": controller.connected,
             "playerIndex": self.player_for(&controller.id),
             "metadata": controller.metadata,
+            "members": controller.route.sources,
+            "composition": controller.route.composition,
         })
     }
 

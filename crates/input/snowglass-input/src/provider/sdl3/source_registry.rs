@@ -6,6 +6,7 @@ pub(super) struct DeviceIdentity {
     pub(super) guid: String,
     pub(super) vendor: Option<u16>,
     pub(super) product: Option<u16>,
+    pub(super) serial: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,7 +62,7 @@ impl SourceRegistry {
             return source.source_id.clone();
         }
         self.next_id = self.next_id.wrapping_add(1);
-        let source_id = format!("sdl3:{}", self.next_id);
+        let source_id = format!("sdl://device/{}", self.next_id);
         self.known.push(KnownSource {
             source_id: source_id.clone(),
             fingerprint,

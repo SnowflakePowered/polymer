@@ -6,18 +6,22 @@ import { createInput } from "./04_input.js";
 import { createWebRtc } from "./05_webrtc.js";
 import { createEmulator } from "./06_emulator.js";
 import { createConsoleStorage } from "./08_consolestorage.js";
-import { op_snowglass_next_notification } from "ext:core/ops";
+import { createControllers } from "./07_controllers.js";
+import { op_input_api_snapshot, op_snowglass_next_notification } from "ext:core/ops";
 
 const scraping = createScraping();
 const plugin = createPlugin();
 const configuration = createConfiguration(scraping, plugin);
+const initialInputApi = op_input_api_snapshot();
 const input = createInput();
+const controllers = createControllers(initialInputApi.controllers);
 const webrtc = createWebRtc();
 const emulator = createEmulator(webrtc);
 const consolestorage = createConsoleStorage();
 
 const Snowglass = Object.freeze({
   input: input.snowglassInput,
+  controllers: controllers.controllers,
   plugin,
   scraping: scraping.Scraping,
   configuration,
@@ -35,16 +39,17 @@ function dispatch(event) {
       scraping.setDropActive(event.detail);
       break;
     case "inputConfigurationChanged":
-      input.setConfiguration(event.detail.configuration, event.detail.layouts);
       break;
     case "inputStateChanged":
       input.setState(event.detail.sources, event.detail.priority, event.detail.controls);
       break;
     case "inputConfigurationSettled":
-      input.settleConfiguration(event.detail.requestId, event.detail.result);
       break;
     case "emulatorInstance":
       emulator.dispatch(event.detail);
+      break;
+    case "inputApiStateChanged":
+      controllers.setState(event.detail);
       break;
     case "gameSaved":
       consolestorage.gameSaved(event.detail);

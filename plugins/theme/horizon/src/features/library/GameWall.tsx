@@ -27,10 +27,8 @@ export function GameWall(props: { games: RecentGame[] }) {
   };
   const launch = () => { const game = gameFor(selected()); if (game) shell.launchRecent(game); };
   const playerIndex = (sourceId: string) => {
-    const assigned = window.Snowglass.input.assignments.find((assignment) =>
-      assignment.source.kind === "device" && assignment.source.deviceId === sourceId
-    );
-    return assigned?.index ?? Math.max(0, window.Snowglass.input.controllers.findIndex((source) => source.id === sourceId));
+    const assigned = window.Snowglass.controllers.players.find((player) => player.controller?.id === sourceId);
+    return assigned?.index ?? Math.max(0, window.Snowglass.controllers.connected.findIndex((source) => source.id === sourceId));
   };
   const playersFor = (id: string) => Object.entries(controllerSelections())
     .filter(([, game]) => game === id)
