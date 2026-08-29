@@ -2,7 +2,7 @@
 
 use parking_lot::RwLock;
 use snowglass_input::{
-    hub::{InputConfiguration, SourceAssignment, SourceSelector},
+    hub::{BindingOverride, InputConfiguration, SourceAssignment, SourceSelector},
     layout::{InputLayout, ProjectionMode},
     provider::sdl3::PhysicalDeviceState,
     router::{CompositionMode, PhysicalControllerRole, PhysicalSourceId, SlotRoute},
@@ -40,8 +40,60 @@ pub struct ControllerCommandOutcome {
 
 #[derive(Clone, Debug)]
 pub struct DeviceMapping {
+    /// Projection policy selected for this physical device and emulated layout.
     pub mode: ProjectionMode,
     pub mapping: BTreeMap<String, String>,
+}
+
+/// Device-specific mapping materialized for a configured virtual slot.
+#[derive(Clone, Debug)]
+pub struct ResolvedSlotMapping {
+    pub projection_mode: ProjectionMode,
+    pub overrides: HashMap<consolespec::input::BindingKey, BindingOverride>,
+}
+
+/// Canonical emulator topology paired with transient, device-owned mappings.
+#[derive(Clone, Debug)]
+pub struct ResolvedInputConfiguration {
+    pub configuration: InputConfiguration,
+    pub slots: HashMap<u8, ResolvedSlotMapping>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ControllerAssignmentSnapshot {
+    assignments: BTreeMap<usize, SourceSelector>,
+    has_connected_controllers: bool,
+}
+
+impl ControllerAssignmentSnapshot {
+    pub(crate) fn from_manager(manager: &ControllerManager) -> Self {
+        let assignments = manager
+            .players
+            .iter()
+            .filter_map(|(index, device_id)| {
+                Some((
+                    usize::from(*index),
+                    SourceSelector::Device {
+                        device_id: device_id.clone()?,
+                    },
+                ))
+            })
+            .collect();
+        let has_connected_controllers = manager
+            .controllers
+            .values()
+            .any(|controller| controller.connected);
+        Self {
+            assignments,
+            has_connected_controllers,
+        }
+    }
+
+    pub(crate) fn source_for(&self, slot: usize) -> Option<SourceSelector> {
+        self.assignments.get(&slot).cloned().or_else(|| {
+            (slot == 0 && !self.has_connected_controllers).then_some(SourceSelector::KeyboardMouse)
+        })
+    }
 }
 
 #[derive(Clone, Default)]

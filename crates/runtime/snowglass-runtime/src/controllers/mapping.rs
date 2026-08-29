@@ -1,4 +1,4 @@
-use super::{ControllerManager, DeviceMapping};
+use super::{ControllerManager, DeviceMapping, ResolvedInputConfiguration, ResolvedSlotMapping};
 use consolespec::input::BindingKey;
 use snowglass_input::{
     hub::{BindingOverride, InputConfiguration, SourceControl, SourceSelector},
@@ -9,7 +9,10 @@ use snowglass_input::{
 use snowglass_library::{
     InputIdentityScope, InputMappingMode, InputMappingProfile as StoredMappingProfile,
 };
-use std::{collections::BTreeMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
 
 #[derive(Clone, Debug)]
 pub(super) struct MappingProfile {
@@ -118,12 +121,17 @@ impl ControllerManager {
         })
     }
 
-    pub fn effective_configuration(
+    pub fn resolve_configuration(
         &self,
         configuration: &InputConfiguration,
-    ) -> InputConfiguration {
-        let mut effective = configuration.clone();
-        for port in &mut effective.ports {
+    ) -> ResolvedInputConfiguration {
+        let mut slots = HashMap::new();
+        for port in &configuration.ports {
+            let Some(slot) = port.slot else { continue };
+            let mut resolved = ResolvedSlotMapping {
+                projection_mode: ProjectionMode::Position,
+                overrides: port.overrides.clone(),
+            };
             let Some(device_id) = port
                 .slot
                 .and_then(|slot| {
@@ -136,21 +144,28 @@ impl ControllerManager {
                     SourceSelector::KeyboardMouse => None,
                 })
             else {
+                slots.insert(slot, resolved);
                 continue;
             };
             let Some(layout) = InputLayout::get(&port.layout) else {
+                slots.insert(slot, resolved);
                 continue;
             };
-            port.overrides.clear();
-            let Some(profile) = self
+            resolved.overrides.clear();
+            let identity = self.mapping_identity(device_id);
+            let profile = self
                 .mappings
-                .get(&self.mapping_identity(device_id), &port.layout)
-            else {
-                port.projection_mode = ProjectionMode::Name;
-                continue;
-            };
-            port.projection_mode = profile.mode;
+                .get(&identity, &port.layout)
+                .unwrap_or_else(|| {
+                    MappingProfile::generated(
+                        ProjectionMode::Name,
+                        &port.layout,
+                        Self::identity_scope(&identity),
+                    )
+                });
+            resolved.projection_mode = profile.mode;
             if profile.mode != ProjectionMode::Custom {
+                slots.insert(slot, resolved);
                 continue;
             }
             for (target, source) in &profile.mapping {
@@ -165,7 +180,7 @@ impl ControllerManager {
                         .and_then(|source| layout.custom_binding(target, source))
                 };
                 if let Some(binding) = binding {
-                    port.overrides.insert(
+                    resolved.overrides.insert(
                         target,
                         match binding {
                             InputBinding::Button { button } => BindingOverride::Button {
@@ -183,8 +198,12 @@ impl ControllerManager {
                     );
                 }
             }
+            slots.insert(slot, resolved);
         }
-        effective
+        ResolvedInputConfiguration {
+            configuration: configuration.clone(),
+            slots,
+        }
     }
 
     pub(super) fn mapping_key(

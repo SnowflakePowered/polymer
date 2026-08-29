@@ -92,6 +92,7 @@ pub enum InputCommand {
 pub struct InputApiState {
     state: Arc<RwLock<Value>>,
     controller_profiles: crate::ControllerProfiles,
+    controller_assignments: Arc<RwLock<crate::controllers::ControllerAssignmentSnapshot>>,
 }
 
 impl Default for InputApiState {
@@ -113,6 +114,7 @@ impl Default for InputApiState {
                 }
             }))),
             controller_profiles: crate::ControllerProfiles::default(),
+            controller_assignments: Arc::new(RwLock::new(Default::default())),
         }
     }
 }
@@ -126,11 +128,19 @@ impl InputApiState {
         self.controller_profiles.clone()
     }
 
-    pub fn publish(&self, controllers: Value) {
+    pub(crate) fn controller_assignments(
+        &self,
+    ) -> crate::controllers::ControllerAssignmentSnapshot {
+        self.controller_assignments.read().clone()
+    }
+
+    pub fn publish(&self, controllers: Value, manager: &crate::ControllerManager) {
         let mut state = self.state.write();
         if state["controllers"] == controllers {
             return;
         }
+        *self.controller_assignments.write() =
+            crate::controllers::ControllerAssignmentSnapshot::from_manager(manager);
         let revision = state["revision"]
             .as_u64()
             .unwrap_or_default()
@@ -343,7 +353,7 @@ pub struct FrontendServices {
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
     input_sources: InputSourceCatalog,
-    controller_profiles: crate::ControllerProfiles,
+    input_api: InputApiState,
     platform: Arc<dyn RuntimePlatform>,
     notifications: SnowglassNotificationSender,
 }
@@ -353,7 +363,7 @@ impl FrontendServices {
         plugins: Arc<snowglass_pluginhost::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
         input_sources: InputSourceCatalog,
-        controller_profiles: crate::ControllerProfiles,
+        input_api: InputApiState,
         platform: Arc<dyn RuntimePlatform>,
         notifications: SnowglassNotificationSender,
     ) -> Self {
@@ -363,7 +373,7 @@ impl FrontendServices {
             storage: crate::console_storage_manager(),
             prepared_filesystems: PreparedFilesystemStore::default(),
             input_sources,
-            controller_profiles,
+            input_api,
             platform,
             notifications,
         }
@@ -405,13 +415,16 @@ impl SnowglassHost for FrontendServices {
             .configuration
             .clone()
             .ok_or_else(|| "configuration service is unavailable".to_owned())?;
+        let controller_profiles = self.input_api.controller_profiles();
+        let controller_assignments = self.input_api.controller_assignments();
         crate::configuration::prepare_api_with_sources(
             self.plugins.handle().registry().clone(),
             defaults,
             package,
             request,
             &self.input_sources,
-            &self.controller_profiles,
+            &controller_profiles,
+            &controller_assignments,
         )
     }
 

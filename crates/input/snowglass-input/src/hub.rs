@@ -4,7 +4,7 @@
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::layout::{InputLayout, ProjectionMode, SdlAxis, SdlButton};
+use crate::layout::{InputLayout, SdlAxis, SdlButton};
 use consolespec::MachineSpec;
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
@@ -221,17 +221,15 @@ pub struct PortConfiguration {
     #[serde(default)]
     pub force_mouse: bool,
     #[serde(default)]
-    pub projection_mode: ProjectionMode,
-    #[serde(default)]
     pub overrides: HashMap<BindingKey, BindingOverride>,
 }
 
 /// A durable physical-source binding for one virtual controller index.
 ///
 /// This is deliberately separate from [`PortConfiguration`]. A game decides
-/// which virtual controller feeds each emulator port; the frontend decides
-/// which physical source feeds that virtual controller, and that decision
-/// survives provider disconnects.
+/// which virtual controller feeds each emulator port; the native controller
+/// manager decides which physical source feeds that virtual controller, and
+/// that decision survives provider disconnects.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceAssignment {
@@ -268,8 +266,6 @@ pub enum InputOperation {
         layout: String,
         #[serde(default)]
         slot: Option<u8>,
-        #[serde(default)]
-        projection_mode: ProjectionMode,
     },
     SetAssignment {
         index: u8,
@@ -369,12 +365,7 @@ impl HubState {
                 self.machine = Some(machine);
                 self.ports = collect_ports(replacement)?;
             }
-            InputOperation::ConfigurePort {
-                port,
-                layout,
-                slot,
-                projection_mode,
-            } => {
+            InputOperation::ConfigurePort { port, layout, slot } => {
                 self.ports.insert(
                     port.clone(),
                     PortConfiguration {
@@ -382,7 +373,6 @@ impl HubState {
                         layout,
                         slot,
                         force_mouse: false,
-                        projection_mode,
                         overrides: HashMap::new(),
                     },
                 );
@@ -696,20 +686,6 @@ fn validate_ports(
             }
             validate_binding(binding)?;
         }
-        if port.projection_mode == ProjectionMode::Custom {
-            let missing = layout
-                .custom_binding_targets()
-                .filter(|target| !port.overrides.contains_key(target))
-                .map(|target| target.to_string())
-                .collect::<Vec<_>>();
-            if !missing.is_empty() {
-                return Err(InputConfigurationError::InvalidBinding(format!(
-                    "custom projection for {} must specify: {}",
-                    layout.id,
-                    missing.join(", ")
-                )));
-            }
-        }
     }
     Ok(())
 }
@@ -755,7 +731,6 @@ mod tests {
             layout: "XBOX_CONTROLLER".to_owned(),
             slot: Some(index),
             force_mouse: false,
-            projection_mode: ProjectionMode::Position,
             overrides: HashMap::new(),
         }
     }
@@ -972,7 +947,6 @@ mod tests {
             layout: layout.to_owned(),
             slot,
             force_mouse: false,
-            projection_mode: ProjectionMode::Position,
             overrides: HashMap::new(),
         }
     }

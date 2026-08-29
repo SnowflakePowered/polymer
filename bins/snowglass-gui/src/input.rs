@@ -762,7 +762,6 @@ impl InputRouter {
                 layout: mapping.layout.clone(),
                 slot: Some(slot),
                 force_mouse: mapping.mouse,
-                projection_mode: mapping.projection_mode,
                 overrides,
             });
             if let Some(source) = &mapping.source {
@@ -1037,10 +1036,10 @@ impl InputTransport {
         next: &InputConfiguration,
         emulator_attached: bool,
     ) -> Result<(), String> {
-        let previous = self.controller_manager.effective_configuration(previous);
-        let next = self.controller_manager.effective_configuration(next);
+        let previous = self.controller_manager.resolve_configuration(previous);
+        let next = self.controller_manager.resolve_configuration(next);
         InputReconciler::reconcile(&self.provider, &previous, &next, emulator_attached)?;
-        self.sync_physical_routes(&next);
+        self.sync_physical_routes(&next.configuration);
         Ok(())
     }
 
@@ -1104,8 +1103,10 @@ impl InputTransport {
     }
 
     fn publish_input_api(&self) {
-        self.input_api
-            .publish(self.controller_manager.snapshot(&self.bluetooth.snapshot()));
+        self.input_api.publish(
+            self.controller_manager.snapshot(&self.bluetooth.snapshot()),
+            &self.controller_manager,
+        );
     }
 
     fn sync_physical_routes(&self, configuration: &InputConfiguration) {
@@ -1144,9 +1145,9 @@ impl InputTransport {
                 ControllerManagerEffect::ReapplyMappings => {
                     let configuration = self
                         .controller_manager
-                        .effective_configuration(&self.hub.snapshot());
+                        .resolve_configuration(&self.hub.snapshot());
                     InputReconciler::apply(&self.provider, &configuration)?;
-                    self.sync_physical_routes(&configuration);
+                    self.sync_physical_routes(&configuration.configuration);
                 }
             }
         }

@@ -31,7 +31,6 @@ pub struct DefaultGamepad {
     pub port: Option<VirtualPort>,
     pub layout: String,
     pub force_mouse: bool,
-    pub projection_mode: ProjectionMode,
     pub mapping: HashMap<String, String>,
 }
 
@@ -45,24 +44,11 @@ pub struct GamepadMapping {
     #[serde(default)]
     pub port: Option<VirtualPort>,
     pub layout: String,
+    /// Resolved from the assigned physical device; never selected per port.
     #[serde(default)]
     pub projection_mode: ProjectionMode,
     #[serde(default)]
     pub mapping: HashMap<String, String>,
-}
-
-impl From<&DefaultGamepad> for GamepadMapping {
-    fn from(value: &DefaultGamepad) -> Self {
-        Self {
-            source: value.source.clone(),
-            mouse: value.force_mouse,
-            slot: value.slot,
-            port: value.port.clone(),
-            layout: value.layout.clone(),
-            projection_mode: value.projection_mode,
-            mapping: value.mapping.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -105,7 +91,6 @@ pub struct PortDescriptor {
     pub index: usize,
     pub layouts: Vec<String>,
     pub selected_layout: String,
-    pub projection_mode: ProjectionMode,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -156,10 +141,6 @@ pub struct LaunchPortRequest {
     pub index: usize,
     pub layout: String,
     #[serde(default)]
-    pub source: Option<SourceSelector>,
-    #[serde(default)]
-    pub projection_mode: ProjectionMode,
-    #[serde(default)]
     pub mapping: HashMap<String, String>,
 }
 
@@ -189,6 +170,7 @@ struct ResolvedControllerMapping {
     group: Option<String>,
     port: Option<u8>,
     layout: String,
+    /// Resolved from the assigned physical device and layout for the plugin.
     projection_mode: ProjectionMode,
     mapping: HashMap<String, String>,
 }
@@ -222,6 +204,7 @@ pub fn prepare_api(
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let controller_profiles = crate::ControllerProfiles::default();
+    let controller_assignments = crate::controllers::ControllerAssignmentSnapshot::default();
     prepare_api_with_sources(
         plugins,
         viewer,
@@ -229,6 +212,7 @@ pub fn prepare_api(
         request,
         &InputSourceCatalog::default(),
         &controller_profiles,
+        &controller_assignments,
     )
 }
 
@@ -239,6 +223,7 @@ pub(crate) fn prepare_api_with_sources(
     request: serde_json::Value,
     sources: &InputSourceCatalog,
     controller_profiles: &crate::ControllerProfiles,
+    controller_assignments: &crate::controllers::ControllerAssignmentSnapshot,
 ) -> Result<serde_json::Value, String> {
     let package: crate::ScrapedPackage =
         serde_json::from_value(package).map_err(|error| error.to_string())?;
@@ -247,7 +232,7 @@ pub(crate) fn prepare_api_with_sources(
     let settings = request.settings.clone();
     let emulator = request.emulator.clone();
     let storage = request.storage.clone();
-    let prepared = PreparedGame::new(
+    let mut prepared = PreparedGame::new(
         DetectedGame {
             path: package.path.clone(),
             platform: package.platform.clone(),
@@ -257,6 +242,10 @@ pub(crate) fn prepare_api_with_sources(
         viewer,
     )?
     .prepare(request)?;
+    for gamepad in &mut prepared.viewer.gamepads {
+        gamepad.source = controller_assignments.source_for(gamepad.slot);
+        gamepad.force_mouse = matches!(gamepad.source, Some(SourceSelector::KeyboardMouse));
+    }
     let port_assignments = prepared
         .port_assignments
         .iter()
@@ -269,12 +258,12 @@ pub(crate) fn prepare_api_with_sources(
         .collect::<HashMap<_, _>>();
     let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
     let controller_manager = crate::ControllerManager::with_profiles(controller_profiles.clone());
-    let controller_mappings = prepared
+    let (controller_mappings, gamepad_mapping): (Vec<_>, Vec<_>) = prepared
         .viewer
         .gamepads
         .iter()
-        .map(|gamepad| resolved_controller_mapping(gamepad, sources, &controller_manager))
-        .collect::<Vec<_>>();
+        .map(|gamepad| resolved_gamepad(gamepad, sources, &controller_manager))
+        .unzip();
     let mut arguments = serde_json::json!({
         "launchPath": package.path.to_string_lossy(),
         "package": package,
@@ -290,12 +279,7 @@ pub(crate) fn prepare_api_with_sources(
     serde_json::to_value(PreparedConfiguration {
         plugin: emulator,
         arguments,
-        gamepad_mapping: prepared
-            .viewer
-            .gamepads
-            .iter()
-            .map(GamepadMapping::from)
-            .collect(),
+        gamepad_mapping,
         machine: prepared.viewer.machine,
         webrtc_bind: prepared
             .viewer
@@ -310,27 +294,23 @@ pub(crate) fn prepare_api_with_sources(
 /// The controller view passed to plugins is resolved once, before configuration
 /// materialization. Plugins can therefore make mapping-dependent configuration
 /// choices without rendering or inspecting emulator files.
-fn resolved_controller_mapping(
+fn resolved_gamepad(
     gamepad: &DefaultGamepad,
     sources: &InputSourceCatalog,
     controllers: &crate::ControllerManager,
-) -> ResolvedControllerMapping {
-    let resolved = GamepadMapping::from(gamepad);
-    let device = match &resolved.source {
+) -> (ResolvedControllerMapping, GamepadMapping) {
+    let device = match &gamepad.source {
         Some(SourceSelector::Device { device_id }) => sources.get(device_id),
         Some(SourceSelector::KeyboardMouse) | None => None,
     };
-    let mut projection_mode = resolved.projection_mode;
-    let mut mapping = if let Some(device) = &device {
-        let profile = controllers.mapping_for_device(device, &resolved.layout);
-        projection_mode = profile.mode;
-        profile.mapping.into_iter().collect()
+    let (projection_mode, mut mapping) = if let Some(device) = &device {
+        let profile = controllers.mapping_for_device(device, &gamepad.layout);
+        (profile.mode, profile.mapping.into_iter().collect())
     } else {
-        HashMap::new()
+        (ProjectionMode::Position, HashMap::new())
     };
 
     if device.is_none()
-        && gamepad.projection_mode != ProjectionMode::Custom
         && let Some(layout) = snowglass_input::layout::InputLayout::get(&gamepad.layout)
     {
         for element in &layout.elements {
@@ -353,17 +333,27 @@ fn resolved_controller_mapping(
             )
         }));
     }
-    ResolvedControllerMapping {
+    let launch = GamepadMapping {
+        source: gamepad.source.clone(),
+        mouse: gamepad.force_mouse,
+        slot: gamepad.slot,
+        port: gamepad.port.clone(),
+        layout: gamepad.layout.clone(),
+        projection_mode,
+        mapping: mapping.clone(),
+    };
+    let plugin = ResolvedControllerMapping {
         device,
-        source: resolved.source,
-        mouse: resolved.mouse,
-        slot: resolved.slot,
+        source: gamepad.source.clone(),
+        mouse: gamepad.force_mouse,
+        slot: gamepad.slot,
         group: gamepad.port.as_ref().map(|port| port.group.clone()),
         port: gamepad.port.as_ref().map(|port| port.index),
-        layout: resolved.layout,
+        layout: gamepad.layout.clone(),
         projection_mode,
         mapping,
-    }
+    };
+    (plugin, launch)
 }
 
 impl PreparedGame {
@@ -501,7 +491,6 @@ fn default_groups(
         }
     }
     ordered.extend(grouped);
-    let mut projection_slot = 0usize;
     let mut groups = ordered
         .into_iter()
         .map(|(name, mut ports)| {
@@ -510,8 +499,7 @@ fn default_groups(
             let connected = assigned.map_or(0, |layouts| layouts.len()).min(ports.len());
             let ports = ports
                 .into_iter()
-                .enumerate()
-                .map(|(group_slot, port)| {
+                .map(|port| {
                     let selected_layout = assigned
                         .and_then(|layouts| layouts.get(port.index))
                         .and_then(|layout| {
@@ -521,21 +509,10 @@ fn default_groups(
                         })
                         .cloned()
                         .unwrap_or_else(|| port.layouts[0].clone());
-                    let projection_mode = if group_slot < connected {
-                        let mode = viewer
-                            .gamepads
-                            .get(projection_slot)
-                            .map_or(ProjectionMode::Position, |gamepad| gamepad.projection_mode);
-                        projection_slot += 1;
-                        mode
-                    } else {
-                        ProjectionMode::Position
-                    };
                     PortDescriptor {
                         index: port.index,
                         layouts: port.layouts,
                         selected_layout,
-                        projection_mode,
                     }
                 })
                 .collect();
@@ -677,11 +654,10 @@ fn validate_assignments(
                     port.layout
                 ));
             }
-            let source = port.source;
             layouts.push(port.layout.clone().into_boxed_str());
             gamepads.push(DefaultGamepad {
-                force_mouse: matches!(&source, Some(SourceSelector::KeyboardMouse)),
-                source,
+                force_mouse: false,
+                source: None,
                 slot: gamepads.len(),
                 port: Some(VirtualPort::new(
                     group.name.clone(),
@@ -689,7 +665,6 @@ fn validate_assignments(
                         .map_err(|_| format!("{} controller index is too large.", group.name))?,
                 )),
                 layout: port.layout,
-                projection_mode: port.projection_mode,
                 mapping: port.mapping,
             });
         }

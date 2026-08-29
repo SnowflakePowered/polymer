@@ -134,11 +134,10 @@ impl Runtime {
         let inspector_address = Self::start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
         let storage_dir = crate::theme::web_storage_dir();
-        let controller_profiles = input_api.controller_profiles();
         let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
             emulator_commands,
             input_commands,
-            input_api,
+            input_api.clone(),
             webrtc_commands,
         ));
         let (snowglass_extension, notifications) =
@@ -147,7 +146,7 @@ impl Runtime {
                     plugin_runtime.clone(),
                     viewer.as_ref().map(configuration_defaults),
                     input_sources.clone(),
-                    controller_profiles.clone(),
+                    input_api.clone(),
                     platform,
                     notifications,
                 )
@@ -339,7 +338,6 @@ fn configuration_defaults(
                 port: None,
                 layout: gamepad.layout.clone(),
                 force_mouse: gamepad.force_mouse,
-                projection_mode: snowglass_input::layout::ProjectionMode::Position,
                 mapping: HashMap::new(),
             })
             .collect(),
