@@ -12,12 +12,11 @@ impl InputReconciler {
         provider: &Sdl3Provider,
         previous: &ResolvedInputConfiguration,
         next: &ResolvedInputConfiguration,
-        emulator_attached: bool,
+        topology_locked: bool,
     ) -> Result<(), String> {
-        if emulator_attached && Self::topology_changed(&previous.configuration, &next.configuration)
-        {
+        if topology_locked && Self::topology_changed(&previous.configuration, &next.configuration) {
             return Err(
-                "changing controller topology while an emulator is attached is not supported by the current SDL hook"
+                "the active emulator plugin does not support runtime controller topology changes"
                     .to_owned(),
             );
         }

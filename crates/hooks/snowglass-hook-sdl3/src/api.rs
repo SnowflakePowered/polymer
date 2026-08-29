@@ -2,6 +2,7 @@
 
 use snowglass_input::gamepad::{
     GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadSlot, GamepadUpdate,
+    VirtualGamepadConnection,
 };
 use snowglass_input::layout::SdlOutputLayout;
 use snowglass_input::sdl::SdlSensor;
@@ -140,6 +141,7 @@ pub(crate) struct Api {
     sensors: Vec<Box<[VirtualJoystickSensorDesc]>>,
     malloc: MallocFn,
     feedback: Vec<FeedbackContext>,
+    connected: Vec<bool>,
 }
 
 struct FeedbackContext {
@@ -192,6 +194,7 @@ impl Api {
                 slot: GamepadSlot::new(slot as u8).expect("virtual gamepad count is bounded to u8"),
             })
             .collect();
+        let connected = vec![true; layouts.len()];
         Some(Self {
             attach_virtual: unsafe { symbol(module, c"SDL_AttachVirtualJoystick")? },
             open: unsafe { symbol(module, c"SDL_OpenJoystick")? },
@@ -206,6 +209,7 @@ impl Api {
             sensors,
             malloc: unsafe { symbol(module, c"SDL_malloc")? },
             feedback,
+            connected,
         })
     }
 
@@ -216,7 +220,8 @@ impl Api {
             .ids
             .iter()
             .copied()
-            .filter(|id| *id != 0)
+            .zip(&self.connected)
+            .filter_map(|(id, connected)| (*connected && id != 0).then_some(id))
             .collect::<Vec<_>>();
         if !count.is_null() {
             unsafe { *count = ids.len() as i32 };
@@ -259,6 +264,17 @@ impl SdlBackend for Api {
             }
             self.ids[slot] = id;
             self.handles[slot] = handle as usize;
+        }
+        Ok(())
+    }
+
+    fn set_connected(&mut self, connection: VirtualGamepadConnection) -> Result<(), BackendError> {
+        let Some(connected) = self.connected.get_mut(connection.slot.index()) else {
+            return Err(BackendError("SDL3 virtual gamepad slot is out of range"));
+        };
+        if *connected != connection.connected {
+            *connected = connection.connected;
+            unsafe { (self.update_joysticks)() };
         }
         Ok(())
     }

@@ -348,8 +348,31 @@ impl ShellCoordinator {
         let publication = self.input.build_publication(
             self.game_host.gamepad_mapping(),
             self.game_host.has_active_game(),
+            self.game_host.controller_topology_locked(),
         );
         self.window.set_input_diagnostics(publication.diagnostics);
+        if let Some(state) = publication.api_state {
+            let configuration = self.input.configuration_snapshot();
+            if let Err(error) = self.game_host.controller_changed(&configuration, &state) {
+                if let Some(token) = self.game_host.active_token() {
+                    self.emit_instance_event(
+                        token,
+                        "controllerchangeerror",
+                        &instance_events::error(error),
+                    );
+                }
+            }
+            self.notify_snowglass(SnowglassNotification::InputApiStateChanged(state));
+        }
+        if let Some((token, errors)) = self.game_host.take_controller_errors() {
+            for error in errors {
+                self.emit_instance_event(
+                    token,
+                    "controllerchangeerror",
+                    &instance_events::error(error),
+                );
+            }
+        }
         if !publication.state_changed.unwrap_or(false) && publication.routed.is_empty() {
             return;
         }

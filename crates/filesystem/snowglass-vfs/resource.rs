@@ -1,7 +1,7 @@
 use crate::{
     AdoptHandle, CompiledFilesystem, CreateOptions, DirectoryEntry, DirectoryNode, FileNode,
-    Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind, VfsComponent,
-    VfsError, VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
+    MemoryFileFactory, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions,
+    RemoveKind, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
 use parking_lot::{Mutex, RwLock};
 use std::{
@@ -305,6 +305,38 @@ impl PreparedFilesystem {
         } else {
             Ok(())
         }
+    }
+
+    /// Atomically changes the file backing an existing direct file mount.
+    /// Namespace lookups after this call see the replacement, while handles
+    /// opened before it retain their original file object.
+    pub fn replace_mounted_file(&self, path: &VfsPathBuf, contents: Vec<u8>) -> VfsResult<()> {
+        self.materialize()?;
+        let binding = self
+            .compiled
+            .resolve(path)?
+            .filter(|binding| binding.at() == path)
+            .ok_or_else(|| VfsError::NotFound(path.clone()))?;
+        let crate::BindingKind::File(resource) = binding.kind() else {
+            return Err(VfsError::Unsupported(format!(
+                "{} is not a direct file mount",
+                path.to_string_lossy()
+            )));
+        };
+        let factory = if binding.permissions().can_write() {
+            MemoryFileFactory::writable(contents)
+        } else {
+            MemoryFileFactory::immutable(contents)
+        };
+        let replacement = factory.materialize()?;
+        let mut state = self.materialized.lock();
+        let resources = state.as_mut().ok_or_else(not_materialized)?;
+        resources.leases.push(replacement.lease);
+        resources.files.insert(
+            resource_key(resource),
+            Arc::new(NamespaceFile::new(replacement.backend)),
+        );
+        Ok(())
     }
 
     pub fn metadata(&self, path: &VfsPathBuf) -> VfsResult<Metadata> {
@@ -1291,5 +1323,45 @@ mod tests {
         let mut bytes = [0; 6];
         file.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes, b"memory");
+    }
+
+    #[test]
+    fn replacing_a_direct_mount_preserves_already_open_handles() {
+        let path: VfsPathBuf = "/Config/settings.ini".parse().unwrap();
+        let mut plan = FilesystemPlan::default();
+        plan.mount_file(path.clone(), file(b"old"), Permissions::READ);
+        let prepared = Arc::new(plan.seal().unwrap());
+        prepared.materialize().unwrap();
+        let old_handle = prepared
+            .open(
+                &path,
+                OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap();
+
+        prepared
+            .replace_mounted_file(&path, b"new".to_vec())
+            .unwrap();
+
+        let new_handle = prepared
+            .open(
+                &path,
+                OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap();
+        let mut old_bytes = [0; 3];
+        let mut new_bytes = [0; 3];
+        old_handle.read(0, &mut old_bytes).unwrap();
+        new_handle.read(0, &mut new_bytes).unwrap();
+        assert_eq!(&old_bytes, b"old");
+        assert_eq!(&new_bytes, b"new");
     }
 }

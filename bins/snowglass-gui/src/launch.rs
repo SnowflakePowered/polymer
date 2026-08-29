@@ -1,7 +1,6 @@
 use crate::input::{GamepadMapping, parse_input_binding};
 use snowglass_input::layout::{InputLayout, ProjectionMode};
 pub use snowglass_pluginhost::GraphicsHook;
-pub use snowglass_runtime::GeneratedConfiguration;
 use std::{collections::HashSet, net::SocketAddr};
 
 // Native game-host launch contracts and their shell adapters.
@@ -28,9 +27,9 @@ pub struct UnattachedLaunchPlan {
     pub machine: String,
     pub webrtc_bind: Option<String>,
     #[serde(default)]
-    pub generated_configuration: Option<GeneratedConfiguration>,
-    #[serde(default)]
     pub prepared_filesystem: Option<String>,
+    #[serde(default)]
+    pub controller_session: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -116,9 +115,9 @@ pub struct AttachedLaunchPlan {
     pub gamepad_mapping: Vec<GamepadMapping>,
     pub machine: String,
     #[serde(default)]
-    pub generated_configuration: Option<GeneratedConfiguration>,
-    #[serde(default)]
     pub prepared_filesystem: Option<String>,
+    #[serde(default)]
+    pub controller_session: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

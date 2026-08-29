@@ -1,6 +1,6 @@
 // Host-backed view of snowglass-config's ConfigurationInstance. This object is
 // deliberately opaque: the plugin may inspect and adjust option values, but it
-// returns the same object to pluginhost, which alone drives serialization.
+// installs the rendered files explicitly into the launch filesystem.
 type Configuration = {
     options(): {
         main: {
@@ -32,7 +32,13 @@ type Configuration = {
             },
         },
     },
+    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
 }
+
+type GamepadBinding = Readonly<{
+    target: Readonly<{ group: string, port: number }>,
+    gamepad: number,
+}>;
 
 type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
@@ -70,6 +76,7 @@ type SetupLaunchArgs = {
     package: Package,
     portAssignments: { [group: string]: string[] },
     controllerMappings: readonly ControllerMapping[],
+    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -199,21 +206,64 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     } else {
         argv.push("-e", args.filesystem.path(`/Game/${gameName}`));
     }
+    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
+        args.filesystem.mountFile(`/User/${name}`, bytes, { mode: "rw" });
+    }
 
     return {
         command: args.filesystem.path("/Dolphin/Dolphin.exe"),
         argv,
-        configRoot: args.filesystem.path("/User"),
         isolate: false,
         hooks: ["d3d11"],
         graphTracking: true,
-        config: args.configuration,
         surfaces: [
             { index: 0, pattern: "Dolphin" },
         ]
     }
 }
 
+type ControllerChangeContext = Readonly<{
+    controllerMappings: readonly Readonly<{
+        target: Readonly<{ group: string, port: number }>,
+        gamepad: number,
+        layout: string,
+        connected: boolean,
+    }>[],
+    gamepads: readonly Readonly<{
+        index: number,
+        connected: boolean,
+        connect(): void,
+        disconnect(): void,
+    }>[],
+    configuration: Configuration,
+    filesystem: Filesystem,
+    flush(): void,
+}>;
+
+export const onControllerChanged = (context: ControllerChangeContext) => {
+    const bindings = context.controllerMappings.map(mapping => ({
+        target: mapping.target,
+        gamepad: context.gamepads[mapping.gamepad],
+    }));
+    for (const mapping of context.controllerMappings) {
+        const gamepad = context.gamepads[mapping.gamepad];
+        if (!gamepad) throw new TypeError(`virtual gamepad ${mapping.gamepad} is unavailable`);
+        if (mapping.connected) gamepad.connect();
+        else gamepad.disconnect();
+    }
+    const wiiMappings = context.controllerMappings.filter(mapping => mapping.target.group === "wii");
+    if (wiiMappings.length > 0) {
+        const wiiOptions = context.configuration.options().ports.NINTENDO_WII.wii;
+        for (const mapping of wiiMappings) {
+            wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
+        }
+    }
+    for (const [name, bytes] of Object.entries(context.configuration.render(bindings))) {
+        context.filesystem.mountFile(`/User/${name}`, bytes, { mode: "rw" });
+    }
+};
+
 export default {
-    setupLaunch
+    setupLaunch,
+    onControllerChanged,
 }

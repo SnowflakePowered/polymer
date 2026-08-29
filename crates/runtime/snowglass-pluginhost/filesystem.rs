@@ -103,6 +103,8 @@ struct FilesystemState {
     used: bool,
     working_directory_set: bool,
     profile_set: bool,
+    prepared: Option<Arc<snowglass_vfs::PreparedFilesystem>>,
+    staged_files: Vec<(VfsPathBuf, Vec<u8>)>,
 }
 
 impl FilesystemState {
@@ -121,6 +123,8 @@ impl FilesystemState {
             used: false,
             working_directory_set: false,
             profile_set: false,
+            prepared: None,
+            staged_files: Vec::new(),
         };
         for resource in options.resources {
             if state.named.contains_key(&resource.name) {
@@ -333,15 +337,33 @@ impl FilesystemState {
         }
     }
 
-    fn seal(self) -> Result<Option<PreparedFilesystemLaunch>, VfsError> {
+    fn seal(&mut self) -> Result<Option<PreparedFilesystemLaunch>, VfsError> {
         if !self.used {
             return Ok(None);
         }
-        let filesystem = Arc::new(self.plan.seal()?);
+        if let Some(filesystem) = &self.prepared {
+            return Ok(Some(PreparedFilesystemLaunch::new(
+                self.endpoint.clone(),
+                filesystem.clone(),
+            )));
+        }
+        let filesystem = Arc::new(std::mem::take(&mut self.plan).seal()?);
+        self.prepared = Some(filesystem.clone());
         Ok(Some(PreparedFilesystemLaunch::new(
-            self.endpoint,
+            self.endpoint.clone(),
             filesystem,
         )))
+    }
+
+    fn flush_staged(&mut self) -> Result<(), VfsError> {
+        let filesystem = self
+            .prepared
+            .as_ref()
+            .ok_or_else(|| VfsError::Unsupported("launch filesystem is not prepared".into()))?;
+        for (path, contents) in self.staged_files.drain(..) {
+            filesystem.replace_mounted_file(&path, contents)?;
+        }
+        Ok(())
     }
 }
 
@@ -667,6 +689,12 @@ fn mount_memory_file(
     mode: String,
 ) -> Result<(), JsErrorBox> {
     let permissions = Permissions::from_str(&mode).map_err(js_error)?;
+    let target = VfsPathBuf::new(target).map_err(js_error)?;
+    if state.borrow::<FilesystemState>().prepared.is_some() {
+        let vfs = state.borrow_mut::<FilesystemState>();
+        vfs.staged_files.push((target, contents));
+        return Ok(());
+    }
     let factory = if permissions.can_write() {
         MemoryFileFactory::writable(contents)
     } else {
@@ -679,11 +707,7 @@ fn mount_memory_file(
         ResourceOrigin::Memory,
     ));
     let resource = vfs.file(handle).map_err(js_error)?;
-    vfs.plan.mount_file(
-        VfsPathBuf::new(target).map_err(js_error)?,
-        resource,
-        permissions,
-    );
+    vfs.plan.mount_file(target, resource, permissions);
     vfs.used = true;
     Ok(())
 }
@@ -793,13 +817,21 @@ fn op_vfs_set_profile(state: &mut OpState, #[serde] profile: JsProfile) -> Resul
     Ok(())
 }
 
+#[op2(fast)]
+fn op_vfs_flush(state: &mut OpState) -> Result<(), JsErrorBox> {
+    state
+        .borrow_mut::<FilesystemState>()
+        .flush_staged()
+        .map_err(js_error)
+}
+
 deno_core::extension!(snowglass_filesystem,
     ops = [
         op_vfs_resources, op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
         op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_storage, op_vfs_path,
-        op_vfs_set_working_directory, op_vfs_set_profile,
+        op_vfs_set_working_directory, op_vfs_set_profile, op_vfs_flush,
     ],
     esm_entry_point = "ext:snowglass_filesystem/filesystem.js",
     esm = [dir "js", "filesystem.js"],
@@ -817,8 +849,25 @@ pub fn take_prepared(
     runtime
         .op_state()
         .borrow_mut()
-        .take::<FilesystemState>()
+        .borrow_mut::<FilesystemState>()
         .seal()
+}
+
+pub(crate) fn flush_staged(runtime: &mut JsRuntime) -> Result<(), VfsError> {
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<FilesystemState>()
+        .flush_staged()
+}
+
+pub(crate) fn discard_staged(runtime: &mut JsRuntime) {
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<FilesystemState>()
+        .staged_files
+        .clear();
 }
 
 fn reject_links(root: &Path, relative: &Path) -> Result<(), VfsError> {

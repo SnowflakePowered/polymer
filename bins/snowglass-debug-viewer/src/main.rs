@@ -1476,7 +1476,6 @@ fn start_target_session(
             graph_tracking,
             force_keyed_mutex,
             gamepad_layouts: layouts.iter().map(|layout| layout.id.clone()).collect(),
-            generated_configuration: None,
         })?;
     let provider = Sdl3Provider::start(
         Sdl3ProviderConfig {

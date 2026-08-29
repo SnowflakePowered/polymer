@@ -1,8 +1,13 @@
 import config from "pkg:plugin.toml";
 
 type Configuration = {
-    render(): Readonly<Record<string, Uint8Array>>,
+    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
 };
+
+type GamepadBinding = Readonly<{
+    target: Readonly<{ group: string, port: number }>,
+    gamepad: number,
+}>;
 
 type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
@@ -27,6 +32,7 @@ type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     portAssignments: { [group: string]: string[] },
+    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -85,6 +91,9 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
         localAppData: "/User/AppData/Local",
         temp: "/User/Temp",
     });
+    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
+        args.filesystem.mountFile(`/User/generated/${name}`, bytes, { mode: "rw" });
+    }
 
     return {
         command: path("/Flycast/flycast.exe"),
@@ -97,10 +106,8 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
             "-config", "window:fullscreen=no",
             path(`/Game/${discName}`),
         ],
-        configRoot: path("/User/generated"),
         isolate: true,
         hooks: ["d3d11"],
-        config: args.configuration,
         surfaces: [{ index: 0, pattern: "Flycast|Sonic Adventure" }],
     };
 };

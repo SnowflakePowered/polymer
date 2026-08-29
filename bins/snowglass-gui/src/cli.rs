@@ -68,8 +68,8 @@ pub fn launch_from_viewer(options: &ViewerOptions) -> Result<Option<UnattachedLa
             .webrtc
             .as_ref()
             .map(|_| options.bind_webrtc.to_string()),
-        generated_configuration: None,
         prepared_filesystem: None,
+        controller_session: None,
     };
     launch.validate()?;
     Ok(Some(launch))

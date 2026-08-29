@@ -244,6 +244,7 @@ struct ActivePresentation {
     token: crate::shell_runtime::InstanceToken,
     options: AttachedLaunchPlan,
     webrtc: Option<snowglass_renderer::webrtc::Publication>,
+    controller_session: Option<snowglass_pluginhost::ControllerSession>,
 }
 
 pub(crate) struct ConnectedSurface {
@@ -396,11 +397,98 @@ impl GameHost {
         self.session.has_active_session()
     }
 
+    pub fn controller_topology_locked(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.controller_session.is_none())
+    }
+
     pub fn gamepad_mapping(&self) -> &[crate::input::GamepadMapping] {
         self.active
             .as_ref()
             .map(|active| active.options.gamepad_mapping.as_slice())
             .unwrap_or_default()
+    }
+
+    pub fn controller_changed(
+        &self,
+        configuration: &snowglass_input::hub::InputConfiguration,
+        state: &serde_json::Value,
+    ) -> Result<(), String> {
+        let Some(active) = &self.active else {
+            return Ok(());
+        };
+        let Some(session) = &active.controller_session else {
+            return Ok(());
+        };
+        let players = state["controllers"]["players"]
+            .as_array()
+            .or_else(|| state["players"].as_array());
+        let mappings = configuration
+            .ports
+            .iter()
+            .map(|port| {
+                let slot = port.slot.ok_or_else(|| {
+                    format!(
+                        "runtime controller topology requires a virtual gamepad for {}",
+                        port.port
+                    )
+                })?;
+                let baseline = active
+                    .options
+                    .gamepad_mapping
+                    .iter()
+                    .find(|mapping| mapping.slot == usize::from(slot));
+                let source = configuration
+                    .assignments
+                    .iter()
+                    .find(|assignment| assignment.index == slot)
+                    .map(|assignment| &assignment.source);
+                let controller = players
+                    .into_iter()
+                    .flatten()
+                    .find(|player| player["index"].as_u64() == Some(u64::from(slot)))
+                    .and_then(|player| {
+                        (!player["controller"].is_null()).then(|| player["controller"].clone())
+                    });
+                let connected = controller
+                    .as_ref()
+                    .and_then(|controller| controller["connected"].as_bool())
+                    .unwrap_or_else(|| {
+                        matches!(
+                            source,
+                            Some(snowglass_input::hub::SourceSelector::KeyboardMouse)
+                        )
+                    });
+                Ok(serde_json::json!({
+                    "target": { "group": port.port.group, "port": port.port.index },
+                    "gamepad": slot,
+                    "layout": port.layout,
+                    "assignment": source.map(|source| serde_json::json!({
+                        "playerIndex": slot,
+                        "source": source,
+                        "logicalDevice": controller,
+                    })),
+                    "connected": connected,
+                    "mouse": port.force_mouse || baseline.is_some_and(|mapping| mapping.mouse),
+                    "projectionMode": baseline.map(|mapping| mapping.projection_mode).unwrap_or_default(),
+                    "mapping": baseline.map(|mapping| &mapping.mapping).cloned().unwrap_or_default(),
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        session.changed(serde_json::json!({
+            "controllerMappings": mappings,
+            "controllers": state["controllers"].clone(),
+        }))
+    }
+
+    pub fn take_controller_errors(
+        &self,
+    ) -> Option<(crate::shell_runtime::InstanceToken, Vec<String>)> {
+        let active = self.active.as_ref()?;
+        let session = active.controller_session.as_ref()?;
+        let errors = session.take_errors();
+        (!errors.is_empty()).then_some((active.token, errors))
     }
 
     pub fn surface_targets(&self) -> Vec<GameSurfaceTarget> {
@@ -517,6 +605,7 @@ impl GameHost {
         token: crate::shell_runtime::InstanceToken,
         options: AttachedLaunchPlan,
         mut filesystem: Option<snowglass_vfs::MountedFilesystem>,
+        controller_session: Option<snowglass_pluginhost::ControllerSession>,
         session: String,
         wake_window: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Result<(), String> {
@@ -554,17 +643,28 @@ impl GameHost {
                 .into_iter()
                 .map(|mapping| mapping.layout.clone())
                 .collect(),
-            generated_configuration: options.generated_configuration.clone(),
         };
         let dirty = self.dirty.clone();
         let wake_pending = self.wake_pending.clone();
-        self.session
-            .launch(token.0, config, filesystem.take(), move || {
+        let input_controller_session = controller_session.clone();
+        self.session.launch_with_input(
+            token.0,
+            config,
+            filesystem.take(),
+            move || {
                 dirty.store(true, std::sync::atomic::Ordering::Release);
                 if !wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) && !wake_window() {
                     wake_pending.store(false, std::sync::atomic::Ordering::Release);
                 }
-            })?;
+            },
+            move |connections| {
+                if let Some(controller_session) = input_controller_session {
+                    controller_session
+                        .attach(move |connection| connections.set_connected(connection))?;
+                }
+                Ok(())
+            },
+        )?;
         self.capture.attach(
             self.session
                 .instance()
@@ -574,6 +674,7 @@ impl GameHost {
             token,
             options,
             webrtc: None,
+            controller_session,
         });
         Ok(())
     }

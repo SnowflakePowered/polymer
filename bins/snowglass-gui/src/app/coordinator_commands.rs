@@ -16,6 +16,7 @@ impl ShellCoordinator {
                 token,
                 options,
                 prepared_filesystem,
+                controller_session,
                 result,
             } => {
                 let options = serde_json::from_value::<AttachedLaunchPlan>(options)
@@ -24,8 +25,9 @@ impl ShellCoordinator {
                         options.validate()?;
                         Ok(options)
                     });
-                let launched = options
-                    .and_then(|options| self.launch_game(token, options, prepared_filesystem));
+                let launched = options.and_then(|options| {
+                    self.launch_game(token, options, prepared_filesystem, controller_session)
+                });
                 let _ = result.send(launched);
             }
             EmulatorCommand::Close(token) => self.close_game(token),
@@ -58,7 +60,7 @@ impl ShellCoordinator {
             InputCommand::Api { command, result } => {
                 let response = self
                     .input
-                    .controller_command(command, self.game_host.has_active_game())
+                    .controller_command(command, self.game_host.controller_topology_locked())
                     .await;
                 let response = response.map(|(value, configuration_changed)| {
                     if configuration_changed {
@@ -93,11 +95,21 @@ impl ShellCoordinator {
     }
 
     pub(super) fn configure_input(&mut self, request_id: u64, transaction: InputTransaction) {
-        match self
-            .input
-            .apply_configuration_transaction(transaction, self.game_host.has_active_game())
-        {
+        match self.input.apply_configuration_transaction(
+            transaction,
+            self.game_host.controller_topology_locked(),
+        ) {
             Ok(configuration) => {
+                let state = self.input.controller_api_snapshot();
+                if let Err(error) = self.game_host.controller_changed(&configuration, &state)
+                    && let Some(token) = self.game_host.active_token()
+                {
+                    self.emit_instance_event(
+                        token,
+                        "controllerchangeerror",
+                        &instance_events::error(error),
+                    );
+                }
                 self.publish_input_configuration();
                 self.send_input_configuration_result(request_id, Ok(configuration));
             }

@@ -1,8 +1,11 @@
 //! Invocation-scoped Deno adapter used only by pluginhost-owned workers.
 
+use crate::controller::{
+    ControllerEffects, op_controller_change_flush, op_virtual_gamepad_set_connected,
+};
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorSetupInvocation,
-    GraphicsHook, SerializedConfiguration, TrackedSurface, configuration,
+    GraphicsHook, TrackedSurface,
     configuration::{ConfigurationId, ConfigurationInstances},
 };
 use deno_core::{JsRuntime, OpState, op2, serde_v8, v8};
@@ -62,14 +65,38 @@ fn op_configuration_entries(
 fn op_configuration_render(
     state: &mut OpState,
     id: ConfigurationId,
+    #[serde] bindings: Vec<ConfigurationGamepadBinding>,
 ) -> Result<std::collections::BTreeMap<String, ByteBuf>, JsErrorBox> {
     Ok(state
         .borrow_mut::<ConfigurationInstances>()
-        .render(id)
+        .render(
+            id,
+            bindings
+                .into_iter()
+                .map(|binding| snowglass_config::ser::GamepadBinding {
+                    group: binding.target.group.into_boxed_str(),
+                    port: binding.target.port,
+                    gamepad: binding.gamepad,
+                })
+                .collect(),
+        )
         .map_err(|error| JsErrorBox::generic(error.to_string()))?
         .into_iter()
         .map(|(path, bytes)| (path, ByteBuf::from(bytes)))
         .collect())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigurationGamepadBinding {
+    target: ConfigurationPortTarget,
+    gamepad: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct ConfigurationPortTarget {
+    group: String,
+    port: usize,
 }
 
 #[derive(Serialize)]
@@ -86,11 +113,14 @@ deno_core::extension!(
         op_configuration_set,
         op_configuration_entries,
         op_configuration_render,
+        op_virtual_gamepad_set_connected,
+        op_controller_change_flush,
     ],
     esm_entry_point = "ext:snowglass_pluginhost_deno/configuration.js",
-    esm = [dir "js", "configuration.js"],
+    esm = [dir "js", "configuration.js", "controller.js"],
     state = |state| {
         state.put(ConfigurationInstances::default());
+        state.put(ControllerEffects::default());
     },
 );
 
@@ -112,16 +142,34 @@ impl<'runtime> EmulatorWorker<'runtime> {
         invocation: EmulatorSetupInvocation,
         explicit_default: bool,
     ) -> Result<EmulatorLaunchArguments, EmulatorHostError> {
+        let retained = self.execute_retained(invocation, explicit_default).await?;
+        self.discard_configuration(retained.configuration_id);
+        Ok(retained.launch)
+    }
+
+    pub async fn execute_retained(
+        &mut self,
+        invocation: EmulatorSetupInvocation,
+        explicit_default: bool,
+    ) -> Result<RetainedEmulator, EmulatorHostError> {
         let pending = self
             .setup(invocation, explicit_default)
             .await
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-        let configuration = self
-            .take_pending_configuration(&pending)
+        self.validate_pending_configuration(&pending)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-        let serialized = configuration::serialize(&configuration)?;
-        self.finish(pending, serialized)
-            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))
+        let controller_changes = self
+            .supports_controller_changes(&pending)
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        let configuration_id = pending.configuration_id;
+        let launch = self
+            .finish(pending)
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        Ok(RetainedEmulator {
+            launch,
+            configuration_id,
+            controller_changes,
+        })
     }
 
     fn insert_configuration(&mut self, configuration: ConfigurationInstance) -> ConfigurationId {
@@ -130,17 +178,6 @@ impl<'runtime> EmulatorWorker<'runtime> {
             .borrow_mut()
             .borrow_mut::<ConfigurationInstances>()
             .insert(configuration)
-    }
-
-    fn take_configuration(
-        &mut self,
-        id: ConfigurationId,
-    ) -> Result<ConfigurationInstance, ConfigurationAccessError> {
-        self.runtime
-            .op_state()
-            .borrow_mut()
-            .borrow_mut::<ConfigurationInstances>()
-            .take(id)
     }
 
     fn discard_configuration(&mut self, id: ConfigurationId) {
@@ -186,9 +223,22 @@ impl<'runtime> EmulatorWorker<'runtime> {
                     args.filesystem = __snowglassFilesystem.filesystem;
                     args.resources = __snowglassFilesystem.resources;
                     args.storage = __snowglassFilesystem.storage;
+                    const controllerReceiver = typeof module.onControllerChanged === "function"
+                      ? module
+                      : receiver;
+                    const onControllerChanged = controllerReceiver?.onControllerChanged;
+                    if (typeof onControllerChanged === "function") {{
+                      Object.defineProperty(globalThis, "__snowglassActiveControllerChange", {{
+                        value: Object.freeze({{ receiver: controllerReceiver, callback: onControllerChanged, configuration }}),
+                        configurable: false,
+                        enumerable: false,
+                        writable: false,
+                      }});
+                    }}
                     return {{
                       result: await Reflect.apply(setupLaunch, receiver, [args]),
                       configuration,
+                      controllerChanges: typeof onControllerChanged === "function",
                     }};
                 }})()"#,
             entrypoint = entrypoint,
@@ -214,28 +264,34 @@ impl<'runtime> EmulatorWorker<'runtime> {
         result
     }
 
-    fn take_pending_configuration(
+    fn validate_pending_configuration(
         &mut self,
         launch: &PendingDenoLaunch,
-    ) -> Result<ConfigurationInstance, DenoPluginError> {
-        // Take first so every inspection failure also clears the active slot.
-        let active = self.take_configuration(launch.configuration_id)?;
+    ) -> Result<(), DenoPluginError> {
+        self.runtime
+            .op_state()
+            .borrow_mut()
+            .borrow::<ConfigurationInstances>()
+            .get(launch.configuration_id, "")?;
         deno_core::scope!(scope, self.runtime);
         let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
         let result_value = property(scope, wrapper, "result")?;
-        let result = local_object_value(result_value, "plugin setupLaunch result")?;
-        let returned = property(scope, result, "config")?;
-        let configuration = property(scope, wrapper, "configuration")?;
-        if !returned.strict_equals(configuration) {
-            return Err(DenoPluginError::ForeignConfiguration);
-        }
-        Ok(active)
+        let _ = local_object_value(result_value, "plugin setupLaunch result")?;
+        Ok(())
+    }
+
+    fn supports_controller_changes(
+        &mut self,
+        launch: &PendingDenoLaunch,
+    ) -> Result<bool, DenoPluginError> {
+        deno_core::scope!(scope, self.runtime);
+        let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+        Ok(property(scope, wrapper, "controllerChanges")?.boolean_value(scope))
     }
 
     fn finish(
         &mut self,
         launch: PendingDenoLaunch,
-        configuration: SerializedConfiguration,
     ) -> Result<EmulatorLaunchArguments, DenoPluginError> {
         let plan: EmulatorLaunchPlan = {
             deno_core::scope!(scope, self.runtime);
@@ -253,17 +309,15 @@ impl<'runtime> EmulatorWorker<'runtime> {
         Ok(EmulatorLaunchArguments {
             command: plan.command,
             argv: plan.argv,
-            config_root: plan.config_root,
-            config: configuration
-                .into_iter()
-                .map(|(path, bytes)| (path, ByteBuf::from(bytes)))
-                .collect(),
             isolate: plan.isolate,
             hooks: plan.hooks,
             graph_tracking: plan.graph_tracking,
             surfaces: plan.surfaces,
             prepared_filesystem: None,
             filesystem,
+            controller_session: None,
+            session: None,
+            gamepad_mapping: None,
         })
     }
 }
@@ -278,13 +332,82 @@ pub(crate) async fn execute_emulator(
         .await
 }
 
+pub(crate) async fn execute_retained_emulator(
+    runtime: &mut JsRuntime,
+    invocation: EmulatorSetupInvocation,
+    explicit_default: bool,
+) -> Result<RetainedEmulator, EmulatorHostError> {
+    EmulatorWorker::new(runtime)
+        .execute_retained(invocation, explicit_default)
+        .await
+}
+
+pub(crate) async fn execute_controller_change(
+    runtime: &mut JsRuntime,
+    controller_mappings: &serde_json::Value,
+    gamepad_states: &[bool],
+) -> Result<(), EmulatorHostError> {
+    let mappings = serde_json::to_string(controller_mappings)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    let states = serde_json::to_string(gamepad_states)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    let script = format!(
+        r#"(async () => {{
+          const active = globalThis.__snowglassActiveControllerChange;
+          if (active == null) throw new TypeError("plugin does not export onControllerChanged");
+          const context = __snowglassControllerChange.context(
+            {mappings},
+            {states},
+            active.configuration,
+            __snowglassFilesystem.filesystem,
+          );
+          await Reflect.apply(active.callback, active.receiver, [context]);
+        }})()"#
+    );
+    let promise = runtime
+        .execute_script("snowglass:pluginhost/controller-changed.js", script)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    #[allow(deprecated)]
+    runtime
+        .resolve_value(promise)
+        .await
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    Ok(())
+}
+
+pub(crate) struct RetainedEmulator {
+    pub launch: EmulatorLaunchArguments,
+    pub configuration_id: ConfigurationId,
+    pub controller_changes: bool,
+}
+
+pub(crate) fn rematerialize_configuration(
+    runtime: &mut JsRuntime,
+    id: ConfigurationId,
+    replacement: ConfigurationInstance,
+) -> Result<(), EmulatorHostError> {
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<ConfigurationInstances>()
+        .rematerialize(id, replacement)?;
+    Ok(())
+}
+
+pub(crate) fn discard_configuration(runtime: &mut JsRuntime, id: ConfigurationId) {
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<ConfigurationInstances>()
+        .discard(id);
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EmulatorLaunchPlan {
     command: String,
     #[serde(default)]
     argv: Vec<String>,
-    config_root: String,
     #[serde(default)]
     isolate: bool,
     hooks: Vec<GraphicsHook>,
@@ -338,8 +461,6 @@ pub enum DenoPluginError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     SerdeV8(#[from] serde_v8::Error),
-    #[error("plugin returned a foreign configuration object")]
-    ForeignConfiguration,
     #[error("Deno plugin adapter: {0}")]
     Adapter(String),
     #[error(transparent)]

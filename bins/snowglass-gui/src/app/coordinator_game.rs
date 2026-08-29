@@ -6,6 +6,7 @@ impl ShellCoordinator {
         token: InstanceToken,
         options: AttachedLaunchPlan,
         prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+        controller_session: Option<snowglass_pluginhost::ControllerSession>,
     ) -> Result<(), String> {
         let mounted_filesystem = if let Some(prepared) = prepared_filesystem {
             let host = snowglass_vfs_winfsp::WinFspFilesystemHost::default();
@@ -49,6 +50,7 @@ impl ShellCoordinator {
             token,
             options,
             mounted_filesystem,
+            controller_session,
             self.session.clone(),
             move || {
                 wake_proxy

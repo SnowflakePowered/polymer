@@ -2,7 +2,7 @@ use crate::{PackageError, PluginInstance};
 use deno_core::ModuleSpecifier;
 use serde_json::Value;
 use snowglass_config::ast::{ConfigurationInstance, PortAssignments};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Fully realized arguments returned by an emulator plugin. Pluginhost owns
@@ -13,8 +13,6 @@ pub struct EmulatorLaunchArguments {
     pub command: String,
     #[serde(default)]
     pub argv: Vec<String>,
-    pub config_root: String,
-    pub config: BTreeMap<String, serde_bytes::ByteBuf>,
     #[serde(default)]
     pub isolate: bool,
     pub hooks: Vec<GraphicsHook>,
@@ -27,6 +25,12 @@ pub struct EmulatorLaunchArguments {
     pub prepared_filesystem: Option<String>,
     #[serde(skip)]
     pub filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_session: Option<String>,
+    #[serde(skip)]
+    pub session: Option<crate::ControllerSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamepad_mapping: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
