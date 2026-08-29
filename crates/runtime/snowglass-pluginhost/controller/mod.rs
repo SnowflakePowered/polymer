@@ -374,7 +374,14 @@ pub(crate) enum ControllerSessionCommand {
         ConnectionSink,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
-    Changed(serde_json::Value),
+    AttachAutomation(
+        snowglass_automation::AutomationSession,
+        std::sync::mpsc::SyncSender<Result<(), String>>,
+    ),
+    Changed(
+        serde_json::Value,
+        Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    ),
     Stop,
 }
 
@@ -401,8 +408,32 @@ impl ControllerSession {
 
     pub fn changed(&self, topology: serde_json::Value) -> Result<(), String> {
         self.commands
-            .send(ControllerSessionCommand::Changed(topology))
+            .send(ControllerSessionCommand::Changed(topology, None))
             .map_err(|_| "controller plugin session is closed".to_owned())
+    }
+
+    pub fn begin_changed(
+        &self,
+        topology: serde_json::Value,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(ControllerSessionCommand::Changed(topology, Some(response)))
+            .map_err(|_| "controller plugin session is closed".to_owned())?;
+        Ok(receiver)
+    }
+
+    pub fn attach_automation(
+        &self,
+        session: snowglass_automation::AutomationSession,
+    ) -> Result<(), String> {
+        let (result, response) = std::sync::mpsc::sync_channel(1);
+        self.commands
+            .send(ControllerSessionCommand::AttachAutomation(session, result))
+            .map_err(|_| "controller plugin session is closed".to_owned())?;
+        response
+            .recv()
+            .map_err(|_| "controller plugin session closed while attaching automation".to_owned())?
     }
 
     pub fn take_errors(&self) -> Vec<String> {

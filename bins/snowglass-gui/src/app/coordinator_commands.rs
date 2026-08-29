@@ -45,13 +45,18 @@ impl ShellCoordinator {
         }
     }
 
-    pub(super) async fn apply_input_command(&mut self, command: InputCommand) {
+    pub(super) async fn apply_input_command(
+        &mut self,
+        command: InputCommand,
+    ) -> Option<PendingInputChange> {
         match command {
             InputCommand::Configure {
                 request_id,
                 transaction,
             } => match serde_json::from_value::<InputTransaction>(transaction) {
-                Ok(transaction) => self.configure_input(u64::from(request_id), transaction),
+                Ok(transaction) => {
+                    return self.configure_input(u64::from(request_id), transaction);
+                }
                 Err(error) => self.send_input_configuration_result(
                     u64::from(request_id),
                     Err(format!("invalid input transaction: {error}")),
@@ -71,6 +76,7 @@ impl ShellCoordinator {
                 let _ = result.send(response);
             }
         }
+        None
     }
 
     pub(super) fn apply_webrtc_command(&mut self, command: WebRtcCommand) {
@@ -94,28 +100,69 @@ impl ShellCoordinator {
         }
     }
 
-    pub(super) fn configure_input(&mut self, request_id: u64, transaction: InputTransaction) {
-        match self.input.apply_configuration_transaction(
+    pub(super) fn configure_input(
+        &mut self,
+        request_id: u64,
+        transaction: InputTransaction,
+    ) -> Option<PendingInputChange> {
+        let prepared = match self.input.prepare_configuration_transaction(
             transaction,
             self.game_host.controller_topology_locked(),
         ) {
-            Ok(configuration) => {
-                let state = self.input.controller_api_snapshot();
-                if let Err(error) = self.game_host.controller_changed(&configuration, &state)
-                    && let Some(token) = self.game_host.active_token()
-                {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.send_input_configuration_result(request_id, Err(error));
+                return None;
+            }
+        };
+        let state = self.input.controller_api_snapshot();
+        match self
+            .game_host
+            .begin_controller_changed(prepared.candidate(), &state)
+        {
+            Ok(Some(response)) => Some(PendingInputChange {
+                request_id,
+                prepared,
+                response,
+            }),
+            Ok(None) => {
+                self.commit_input_configuration(request_id, prepared);
+                None
+            }
+            Err(error) => {
+                self.send_input_configuration_result(request_id, Err(error));
+                None
+            }
+        }
+    }
+
+    pub(super) fn finish_input_configuration(
+        &mut self,
+        pending: PendingInputChange,
+        callback: Result<(), String>,
+    ) {
+        match callback {
+            Ok(()) => self.commit_input_configuration(pending.request_id, pending.prepared),
+            Err(error) => {
+                if let Some(token) = self.game_host.active_token() {
                     self.emit_instance_event(
                         token,
                         "controllerchangeerror",
-                        &instance_events::error(error),
+                        &instance_events::error(&error),
                     );
                 }
+                self.send_input_configuration_result(pending.request_id, Err(error));
+            }
+        }
+    }
+
+    fn commit_input_configuration(&mut self, request_id: u64, prepared: PreparedInputTransaction) {
+        match self.input.commit_configuration_transaction(prepared) {
+            Ok(configuration) => {
                 self.publish_input_configuration();
                 self.send_input_configuration_result(request_id, Ok(configuration));
             }
-            Err(error) => {
-                self.send_input_configuration_result(request_id, Err(error.to_string()));
-            }
+            Err(error) => self.send_input_configuration_result(request_id, Err(error)),
         }
     }
 

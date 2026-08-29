@@ -245,6 +245,7 @@ struct ActivePresentation {
     options: AttachedLaunchPlan,
     webrtc: Option<snowglass_renderer::webrtc::Publication>,
     controller_session: Option<snowglass_pluginhost::ControllerSession>,
+    automation: Option<snowglass_automation::AutomationSession>,
 }
 
 pub(crate) struct ConnectedSurface {
@@ -421,6 +422,33 @@ impl GameHost {
         let Some(session) = &active.controller_session else {
             return Ok(());
         };
+        session.changed(Self::controller_change_payload(
+            active,
+            configuration,
+            state,
+        )?)
+    }
+
+    pub fn begin_controller_changed(
+        &self,
+        configuration: &snowglass_input::hub::InputConfiguration,
+        state: &serde_json::Value,
+    ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
+        let Some(active) = &self.active else {
+            return Ok(None);
+        };
+        let Some(session) = &active.controller_session else {
+            return Ok(None);
+        };
+        let payload = Self::controller_change_payload(active, configuration, state)?;
+        session.begin_changed(payload).map(Some)
+    }
+
+    fn controller_change_payload(
+        active: &ActivePresentation,
+        configuration: &snowglass_input::hub::InputConfiguration,
+        state: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let players = state["controllers"]["players"]
             .as_array()
             .or_else(|| state["players"].as_array());
@@ -476,7 +504,7 @@ impl GameHost {
                 }))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        session.changed(serde_json::json!({
+        Ok(serde_json::json!({
             "controllerMappings": mappings,
             "controllers": state["controllers"].clone(),
         }))
@@ -618,6 +646,7 @@ impl GameHost {
             .ok_or_else(|| "shell executable has no parent directory".to_owned())?;
         let mut gamepad_layouts = options.gamepad_mapping.iter().collect::<Vec<_>>();
         gamepad_layouts.sort_by_key(|mapping| mapping.slot);
+        let automation_desktop = options.isolated.then(|| session.clone());
         let config = snowglass_runtime::EmulatorLaunchConfig {
             session,
             command: options.command.clone(),
@@ -665,6 +694,34 @@ impl GameHost {
                 Ok(())
             },
         )?;
+        let automation = if let Some(controller_session) = &controller_session {
+            let process_id = self
+                .session
+                .instance()
+                .expect("a successful session launch owns an emulator instance")
+                .process_id();
+            let attached = snowglass_platform_windows::WindowsAutomationDriver::new(
+                process_id,
+                automation_desktop,
+            )
+            .and_then(snowglass_automation::AutomationSession::spawn)
+            .map_err(|error| format!("could not start emulator UI automation: {error}"))
+            .and_then(|automation| {
+                controller_session.attach_automation(automation.clone())?;
+                Ok(automation)
+            });
+            match attached {
+                Ok(automation) => Some(automation),
+                Err(error) => {
+                    let _ = self
+                        .session
+                        .finish(snowglass_vfs::FinalizationReason::LaunchFailed);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         self.capture.attach(
             self.session
                 .instance()
@@ -675,6 +732,7 @@ impl GameHost {
             options,
             webrtc: None,
             controller_session,
+            automation,
         });
         Ok(())
     }
@@ -1104,6 +1162,10 @@ impl GameHost {
         self.pending_offer = None;
         self.mark_composition_dirty();
         let token = active.token;
+        if let Some(automation) = active.automation.take() {
+            automation.close();
+        }
+        drop(active.controller_session.take());
         let finalization_error = self
             .session
             .finish(snowglass_vfs::FinalizationReason::ProcessExited)

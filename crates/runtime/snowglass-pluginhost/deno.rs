@@ -1,5 +1,6 @@
 //! Invocation-scoped Deno adapter used only by pluginhost-owned workers.
 
+use crate::automation::{AutomationState, op_ui_automation_request};
 use crate::controller::{
     ControllerEffects, op_controller_change_flush, op_virtual_gamepad_set_connected,
 };
@@ -115,12 +116,14 @@ deno_core::extension!(
         op_configuration_render,
         op_virtual_gamepad_set_connected,
         op_controller_change_flush,
+        op_ui_automation_request,
     ],
     esm_entry_point = "ext:snowglass_pluginhost_deno/configuration.js",
-    esm = [dir "js", "configuration.js", "controller.js"],
+    esm = [dir "js", "configuration.js", "controller.js", "automation.js"],
     state = |state| {
         state.put(ConfigurationInstances::default());
         state.put(ControllerEffects::default());
+        state.put(AutomationState::default());
     },
 );
 
@@ -345,11 +348,14 @@ pub(crate) async fn execute_retained_emulator(
 pub(crate) async fn execute_controller_change(
     runtime: &mut JsRuntime,
     controller_mappings: &serde_json::Value,
+    previous_controller_mappings: &serde_json::Value,
     gamepad_states: &[bool],
 ) -> Result<(), EmulatorHostError> {
     let mappings = serde_json::to_string(controller_mappings)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let states = serde_json::to_string(gamepad_states)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    let previous = serde_json::to_string(previous_controller_mappings)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let script = format!(
         r#"(async () => {{
@@ -357,6 +363,7 @@ pub(crate) async fn execute_controller_change(
           if (active == null) throw new TypeError("plugin does not export onControllerChanged");
           const context = __snowglassControllerChange.context(
             {mappings},
+            {previous},
             {states},
             active.configuration,
             __snowglassFilesystem.filesystem,

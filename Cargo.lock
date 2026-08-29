@@ -10978,6 +10978,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-automation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "snowglass-bluetooth"
 version = "0.1.0"
 dependencies = [
@@ -11193,6 +11203,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "snowglass-automation",
  "snowglass-bluetooth",
  "snowglass-deno",
  "snowglass-egui",
@@ -11499,10 +11510,14 @@ dependencies = [
  "exe",
  "ib-hook",
  "parking_lot",
+ "serde_json",
+ "snowglass-automation",
  "snowglass-hook",
  "snowglass-protocol",
  "windows 0.61.3",
  "windows-sys 0.61.2",
+ "xa11y-core",
+ "xa11y-windows",
 ]
 
 [[package]]
@@ -11518,6 +11533,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "snowglass-automation",
  "snowglass-config",
  "snowglass-deno",
  "snowglass-input",
@@ -11971,6 +11987,9 @@ name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros 0.28.0",
+]
 
 [[package]]
 name = "strum_macros"
@@ -15465,6 +15484,27 @@ dependencies = [
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",
+]
+
+[[package]]
+name = "xa11y-core"
+version = "0.13.0"
+dependencies = [
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "xa11y-windows"
+version = "0.13.0"
+dependencies = [
+ "serde_json",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "xa11y-core",
 ]
 
 [[package]]

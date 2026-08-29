@@ -94,6 +94,47 @@ struct InvocationControl {
     cancelled_signal: Notify,
 }
 
+struct IsolateDeadline {
+    completed: std::sync::mpsc::SyncSender<()>,
+    expired: Arc<AtomicBool>,
+    watchdog: thread::JoinHandle<()>,
+}
+
+impl IsolateDeadline {
+    fn start(
+        isolate: v8::IsolateHandle,
+        timeout: std::time::Duration,
+    ) -> Result<Self, PluginInvocationError> {
+        let (completed, receiver) = std::sync::mpsc::sync_channel(1);
+        let expired = Arc::new(AtomicBool::new(false));
+        let watchdog_expired = expired.clone();
+        let watchdog = thread::Builder::new()
+            .name("snowglass-plugin-deadline".to_owned())
+            .spawn(move || {
+                if receiver.recv_timeout(timeout).is_err() {
+                    watchdog_expired.store(true, Ordering::Release);
+                    isolate.terminate_execution();
+                }
+            })
+            .map_err(PluginInvocationError::worker)?;
+        Ok(Self {
+            completed,
+            expired,
+            watchdog,
+        })
+    }
+
+    fn finish(self, runtime: &mut deno_core::JsRuntime) -> bool {
+        let _ = self.completed.send(());
+        let _ = self.watchdog.join();
+        let expired = self.expired.load(Ordering::Acquire);
+        if expired {
+            runtime.v8_isolate().cancel_terminate_execution();
+        }
+        expired
+    }
+}
+
 /// Single-use cancellation capability for one queued or executing invocation.
 ///
 /// Adapters create this before scheduling work so a protocol cancellation can
@@ -723,6 +764,11 @@ fn controller_session_worker(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    let mut previous_mappings = invocation
+        .arguments
+        .get("controllerMappings")
+        .cloned()
+        .unwrap_or_else(|| gamepad_mapping.clone());
     let retained = match tokio.block_on(crate::deno::execute_retained_emulator(
         runtime.js_runtime_mut(),
         invocation,
@@ -759,7 +805,15 @@ fn controller_session_worker(
                 }
                 let _ = response.send(result);
             }
-            crate::controller::ControllerSessionCommand::Changed(topology) => {
+            crate::controller::ControllerSessionCommand::AttachAutomation(session, response) => {
+                crate::automation::attach(runtime.js_runtime_mut(), session);
+                let _ = response.send(Ok(()));
+            }
+            crate::controller::ControllerSessionCommand::Changed(topology, response) => {
+                let mappings = topology
+                    .get("controllerMappings")
+                    .cloned()
+                    .unwrap_or_else(|| topology.clone());
                 let result = (|| {
                     let assignments = crate::controller::port_assignments(&topology)
                         .map_err(PluginInvocationError::worker)?;
@@ -772,18 +826,36 @@ fn controller_session_worker(
                         configuration,
                     )
                     .map_err(PluginInvocationError::worker)?;
-                    let mappings = topology
-                        .get("controllerMappings")
-                        .cloned()
-                        .unwrap_or(topology);
                     let states = crate::controller::states(runtime.js_runtime_mut());
-                    tokio
-                        .block_on(crate::deno::execute_controller_change(
-                            runtime.js_runtime_mut(),
-                            &mappings,
-                            &states,
-                        ))
-                        .map_err(PluginInvocationError::worker)?;
+                    let deadline = IsolateDeadline::start(
+                        runtime.js_runtime_mut().v8_isolate().thread_safe_handle(),
+                        std::time::Duration::from_secs(30),
+                    )?;
+                    let callback = tokio.block_on(async {
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            crate::deno::execute_controller_change(
+                                runtime.js_runtime_mut(),
+                                &mappings,
+                                &previous_mappings,
+                                &states,
+                            ),
+                        )
+                        .await
+                        .map_err(|_| {
+                            PluginInvocationError::worker(
+                                "onControllerChanged exceeded its 30 second deadline",
+                            )
+                        })?
+                        .map_err(PluginInvocationError::worker)
+                    });
+                    let isolate_expired = deadline.finish(runtime.js_runtime_mut());
+                    if isolate_expired {
+                        return Err(PluginInvocationError::worker(
+                            "onControllerChanged exceeded its 30 second deadline",
+                        ));
+                    }
+                    callback?;
                     crate::controller::flush(runtime.js_runtime_mut())
                         .map_err(PluginInvocationError::worker)
                 })();
@@ -791,11 +863,20 @@ fn controller_session_worker(
                     crate::controller::discard(runtime.js_runtime_mut());
                     tracing::error!("snowglass: onControllerChanged failed: {error}");
                     errors.lock().push(error.to_string());
+                    if let Some(response) = response {
+                        let _ = response.send(Err(error.to_string()));
+                    }
+                } else if let Some(response) = response {
+                    previous_mappings = mappings;
+                    let _ = response.send(Ok(()));
+                } else {
+                    previous_mappings = mappings;
                 }
             }
             crate::controller::ControllerSessionCommand::Stop => break,
         }
     }
+    crate::automation::close(runtime.js_runtime_mut());
     crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
     Ok(())
 }
@@ -937,7 +1018,12 @@ mod tests {
             RealizedOption, Value as ConfigValue, ValueKind,
         },
     };
-    use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        convert::Infallible,
+        sync::{Arc, Mutex as StdMutex},
+        time::Duration,
+    };
     use tempfile::TempDir;
     use toml_spanner::Arena;
 
@@ -1052,7 +1138,9 @@ mod tests {
                     surfaces: [{ index: 0 }],
                   };
                 }
-                export function onControllerChanged(context) {
+                export async function onControllerChanged(context) {
+                  const window = await context.ui.waitForWindow({ title: { contains: "Emulator" } });
+                  await window.locator('button[name="Controllers"]').press();
                   context.configuration.options().general.enabled = false;
                   for (const [name, bytes] of Object.entries(context.configuration.render([]))) {
                     context.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
@@ -1097,6 +1185,40 @@ mod tests {
             })
             .unwrap();
         realized.instantiate("TEST", BTreeMap::new()).unwrap()
+    }
+
+    struct RecordingAutomation(Arc<StdMutex<Vec<&'static str>>>);
+
+    impl snowglass_automation::AutomationDriver for RecordingAutomation {
+        fn execute(
+            &mut self,
+            request: snowglass_automation::AutomationRequest,
+        ) -> Result<snowglass_automation::AutomationResponse, snowglass_automation::AutomationError>
+        {
+            use snowglass_automation::{AutomationRequest, AutomationResponse};
+            match request {
+                AutomationRequest::WaitForWindow { .. } => {
+                    self.0.lock().unwrap().push("window");
+                    Ok(AutomationResponse::Window(
+                        snowglass_automation::WindowSnapshot {
+                            id: snowglass_automation::WindowId("test-window".to_owned()),
+                            process_id: 7,
+                            title: "Emulator".to_owned(),
+                            class_name: "TestWindow".to_owned(),
+                            visible: true,
+                        },
+                    ))
+                }
+                AutomationRequest::LocatorAction { .. } => {
+                    self.0.lock().unwrap().push("action");
+                    Ok(AutomationResponse::Unit)
+                }
+                _ => Err(snowglass_automation::AutomationError::new(
+                    "unexpectedRequest",
+                    "test received an unexpected automation request",
+                )),
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1216,8 +1338,17 @@ mod tests {
         let session = result.controller_session.unwrap();
         filesystem.filesystem().materialize().unwrap();
         session.attach(|_| Ok(())).unwrap();
+        let automation_calls = Arc::new(StdMutex::new(Vec::new()));
+        let automation = snowglass_automation::AutomationSession::spawn(RecordingAutomation(
+            automation_calls.clone(),
+        ))
+        .unwrap();
+        session.attach_automation(automation).unwrap();
         session
-            .changed(serde_json::json!({ "controllerMappings": [] }))
+            .begin_changed(serde_json::json!({ "controllerMappings": [] }))
+            .unwrap()
+            .await
+            .unwrap()
             .unwrap();
 
         let path = "/Emulator/Config/settings.ini".parse().unwrap();
@@ -1243,6 +1374,7 @@ mod tests {
             std::thread::yield_now();
         };
         assert!(rendered.contains("Enabled=false"), "{rendered}");
+        assert_eq!(*automation_calls.lock().unwrap(), ["window", "action"]);
         assert!(session.take_errors().is_empty());
     }
 

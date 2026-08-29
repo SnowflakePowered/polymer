@@ -1,6 +1,7 @@
 //! Windows-specific handle, process, desktop, timing, and window utilities.
 
 mod audio;
+mod automation;
 mod desktop;
 mod detour;
 mod handles;
@@ -12,6 +13,7 @@ mod types;
 mod window;
 
 pub use audio::{ProcessAudioState, process_audio_state, set_process_audio};
+pub use automation::WindowsAutomationDriver;
 pub use desktop::{DesktopThreadAttachment, PrivateDesktop};
 pub use detour::{InlineDetour, call_original};
 pub use handles::duplicate_handle_into_process;

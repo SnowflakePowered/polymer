@@ -32,6 +32,7 @@ serde_json.workspace = true
 style = { package = "stylo", version = "0.20.0" }
 style_dom = { package = "stylo_dom", version = "0.20.0" }
 snowglass-input.workspace = true
+snowglass-automation.workspace = true
 snowglass-bluetooth = { path = "../../crates/input/snowglass-bluetooth" }
 snowglass-input-bluetooth = { path = "../../crates/input/snowglass-input-bluetooth" }
 snowglass-input-dinput.workspace = true

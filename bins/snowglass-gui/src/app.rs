@@ -2,7 +2,9 @@ use crate::cli;
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
-use crate::input::{InputPriority, InputRouter, InputTransport, KeyboardTarget};
+use crate::input::{
+    InputPriority, InputRouter, InputTransport, KeyboardTarget, PreparedInputTransaction,
+};
 use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
@@ -73,6 +75,12 @@ struct ShellCoordinator {
     _theme: crate::theme::SelectedTheme,
     startup_request: Option<serde_json::Value>,
     viewer: snowglass_renderer::cli::ViewerOptions,
+}
+
+struct PendingInputChange {
+    request_id: u64,
+    prepared: PreparedInputTransaction,
+    response: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
 
 impl ShellCoordinator {

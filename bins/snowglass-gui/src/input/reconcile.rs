@@ -14,6 +14,15 @@ impl InputReconciler {
         next: &ResolvedInputConfiguration,
         topology_locked: bool,
     ) -> Result<(), String> {
+        Self::validate(previous, next, topology_locked)?;
+        Self::apply_reconciliation(provider, previous, next)
+    }
+
+    pub(super) fn validate(
+        previous: &ResolvedInputConfiguration,
+        next: &ResolvedInputConfiguration,
+        topology_locked: bool,
+    ) -> Result<(), String> {
         if topology_locked && Self::topology_changed(&previous.configuration, &next.configuration) {
             return Err(
                 "the active emulator plugin does not support runtime controller topology changes"
@@ -22,6 +31,14 @@ impl InputReconciler {
         }
         Self::validate_bindings(next)?;
 
+        Ok(())
+    }
+
+    pub(super) fn apply_reconciliation(
+        provider: &Sdl3Provider,
+        previous: &ResolvedInputConfiguration,
+        next: &ResolvedInputConfiguration,
+    ) -> Result<(), String> {
         let previous_slots = Self::slots(previous);
         let next_slots = Self::slots(next);
         if previous_slots != next_slots {
