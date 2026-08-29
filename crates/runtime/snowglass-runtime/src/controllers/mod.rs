@@ -16,6 +16,7 @@ use std::{
     sync::Arc,
 };
 
+mod command;
 mod mapping;
 use mapping::MappingProfile;
 
@@ -38,10 +39,12 @@ pub struct ControllerCommandOutcome {
     pub effects: Vec<ControllerManagerEffect>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceMapping {
     /// Projection policy selected for this physical device and emulated layout.
     pub mode: ProjectionMode,
+    #[serde(default)]
     pub mapping: BTreeMap<String, String>,
 }
 
@@ -356,129 +359,6 @@ impl ControllerManager {
             assignments,
             effects,
         }
-    }
-
-    pub async fn command(
-        &mut self,
-        command: serde_json::Value,
-        bluetooth: &serde_json::Value,
-    ) -> Result<ControllerCommandOutcome, String> {
-        let kind = command
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "controller command requires a type".to_owned())?;
-        let mut effects = Vec::new();
-        let mut assignments = None;
-        match kind {
-            "controllers.session.start" => {
-                if self.session.is_some() {
-                    return Err("a controller connection session is already active".to_owned());
-                }
-                let bluetooth_sources = self
-                    .controllers
-                    .values()
-                    .filter(|controller| controller.source == InputSourceKind::Bt)
-                    .flat_map(|controller| controller.route.sources.clone())
-                    .collect();
-                self.players.clear();
-                self.controllers.clear();
-                self.source_controllers.clear();
-                self.routes.clear();
-                self.neutral.clear();
-                self.session = Some(ConnectionSession {
-                    id: uuid::Uuid::new_v4().to_string(),
-                });
-                assignments = Some(self.source_assignments());
-                effects.push(ControllerManagerEffect::SessionDiscovery(true));
-                effects.push(ControllerManagerEffect::DisconnectSources(
-                    bluetooth_sources,
-                ));
-            }
-            "controllers.session.finish" => {
-                self.require_session(&command)?;
-                self.session = None;
-                effects.push(ControllerManagerEffect::SessionDiscovery(false));
-            }
-            "controllers.session.connect" => {
-                self.require_session(&command)?;
-                effects.push(ControllerManagerEffect::Connect(Self::id_field(&command)?));
-            }
-            "controllers.disconnect" => {
-                let id = Self::id_field(&command)?;
-                let controller = self
-                    .controllers
-                    .get(&id)
-                    .ok_or_else(|| format!("unknown controller '{id}'"))?;
-                effects.push(ControllerManagerEffect::DisconnectSources(
-                    controller.route.sources.clone(),
-                ));
-                for assigned in self.players.values_mut() {
-                    if assigned.as_deref() == Some(id.as_str()) {
-                        *assigned = None;
-                    }
-                }
-                assignments = Some(self.source_assignments());
-            }
-            "controllers.forget" => {
-                let id = Self::id_field(&command)?;
-                if let Some(controller) = self.controllers.remove(&id) {
-                    self.players.values_mut().for_each(|assigned| {
-                        if assigned.as_deref() == Some(id.as_str()) {
-                            *assigned = None;
-                        }
-                    });
-                    for source in controller.route.sources {
-                        self.source_controllers.remove(&source);
-                    }
-                    assignments = Some(self.source_assignments());
-                }
-                effects.push(ControllerManagerEffect::Forget(id));
-            }
-            "controllers.mapping.get" => {
-                return Ok(ControllerCommandOutcome {
-                    response: self.mapping_response(&command)?,
-                    assignments: None,
-                    effects,
-                });
-            }
-            "controllers.mapping.set" => {
-                self.set_mapping(&command).await?;
-                return Ok(ControllerCommandOutcome {
-                    response: self.mapping_response(&command)?,
-                    assignments: None,
-                    effects: vec![ControllerManagerEffect::ReapplyMappings],
-                });
-            }
-            "controllers.mapping.reset" => {
-                let (identity, layout) = self.mapping_key(&command)?;
-                let store = self
-                    .mapping_store
-                    .as_mut()
-                    .ok_or_else(|| "the input mapping store is unavailable".to_owned())?;
-                store
-                    .remove_mapping(&identity, &layout)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                self.mappings.remove(&identity, &layout);
-                return Ok(ControllerCommandOutcome {
-                    response: self.mapping_response(&command)?,
-                    assignments: None,
-                    effects: vec![ControllerManagerEffect::ReapplyMappings],
-                });
-            }
-            _ => return Err(format!("unknown controller command '{kind}'")),
-        }
-        let response = self.snapshot(bluetooth);
-        if assignments.is_some() {
-            effects.push(ControllerManagerEffect::AssignPlayers(
-                self.player_sources(),
-            ));
-        }
-        Ok(ControllerCommandOutcome {
-            response,
-            assignments,
-            effects,
-        })
     }
 
     fn observe_system(&mut self, system: &[PhysicalDeviceState]) {
@@ -806,11 +686,7 @@ impl ControllerManager {
         format!("bt://composite/{}+{}", parts[0], parts[1])
     }
 
-    fn require_session(&self, command: &serde_json::Value) -> Result<(), String> {
-        let requested = command
-            .get("sessionId")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "controller session command requires sessionId".to_owned())?;
+    fn require_session(&self, requested: &str) -> Result<(), String> {
         let active = self
             .session
             .as_ref()
@@ -820,13 +696,5 @@ impl ControllerManager {
         } else {
             Err("controller connection session is no longer active".to_owned())
         }
-    }
-
-    fn id_field(command: &serde_json::Value) -> Result<String, String> {
-        command
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| "controller command requires id".to_owned())
     }
 }

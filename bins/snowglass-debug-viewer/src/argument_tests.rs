@@ -26,16 +26,6 @@ fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
     assert_eq!(options.target, ["game.exe"]);
     assert_eq!(options.webrtc, None);
     assert_eq!(options.bind_webrtc, "127.0.0.1:8080".parse()?);
-    assert_eq!(
-        options.gamepads,
-        [GamepadArgument {
-            source: Some(SourceSelector::KeyboardMouse),
-            slot: 0,
-            layout: "XBOX_CONTROLLER".to_owned(),
-            force_mouse: true,
-        }]
-    );
-    assert_eq!(options.gamecontroller_db, None);
     Ok(())
 }
 
@@ -62,10 +52,6 @@ fn cli_target_arguments_are_not_reparsed_or_requoted() -> Result<(), Box<dyn Err
         "--hook",
         "d3d11",
         "--no-isolate",
-        "--machine",
-        "NINTENDO_WII",
-        "--gamepad",
-        "K:0:WII_REMOTE_CONTROLLER",
         "--",
         r#"..\Dolphin-ARM64\Dolphin.exe"#,
         "-v",
@@ -84,7 +70,6 @@ fn accepts_no_target_for_interactive_launcher() -> Result<(), Box<dyn Error>> {
     assert!(options.target.is_empty());
     assert_eq!(options.api, ViewerApi::D3d12);
     assert_eq!(options.hooks, AUTO_HOOKS);
-    assert_eq!(options.gamepads.len(), 1);
     Ok(())
 }
 
@@ -107,7 +92,7 @@ fn launcher_supports_sparse_virtual_slot_indices() -> Result<(), Box<dyn Error>>
     let options = arguments(&[])?;
     let mut launcher = LauncherState::from_options(&options);
     launcher.gamepads[0].slot = 3;
-    let pads = launcher.gamepad_arguments()?;
+    let pads = launcher.configured_gamepads()?;
     assert_eq!(pads.len(), 4);
     assert_eq!(pads[3].slot, 3);
     assert_eq!(pads[0].source, None);
@@ -122,91 +107,6 @@ fn launcher_preserves_render_target_order_and_rotation() -> Result<(), Box<dyn E
     assert_eq!(launcher.render_target_rotations(), [1, 3]);
     assert!(launcher.graph_tracking);
     assert!(launcher.validate_render_targets().is_ok());
-    Ok(())
-}
-
-#[test]
-fn accepts_gamepad_configuration() -> Result<(), Box<dyn Error>> {
-    let options = arguments(&[
-        "--machine",
-        "NINTENDO_NSW",
-        "--gamepad",
-        "sdl3:switch-controller:0:SWITCH_PRO_CONTROLLER",
-        "--gamepad",
-        "sdl3:xbox-controller:1:XBOX_CONTROLLER",
-        "--gamecontroller-db",
-        "controllers.txt",
-        "--",
-        "game.exe",
-    ])?;
-    assert_eq!(
-        options.gamepads[0],
-        GamepadArgument {
-            source: Some(SourceSelector::Device {
-                device_id: "sdl3:switch-controller".to_owned(),
-            }),
-            slot: 0,
-            layout: "SWITCH_PRO_CONTROLLER".to_owned(),
-            force_mouse: false,
-        }
-    );
-    assert!(matches!(
-        options.gamepads[1].source,
-        Some(SourceSelector::Device { .. })
-    ));
-    assert_eq!(
-        options.gamecontroller_db,
-        Some(PathBuf::from("controllers.txt"))
-    );
-    assert_eq!(options.machine, "NINTENDO_NSW");
-    // A port only exists against a machine, so naming pads without one is an
-    // error rather than a topology nothing could check.
-    assert!(arguments(&["--gamepad", "K:0:XBOX_CONTROLLER", "--", "game.exe"]).is_err());
-    // With no pads at all the default machine comes with the default pad.
-    assert_eq!(arguments(&["--", "game.exe"])?.machine, "MICROSOFT_XBOX");
-    let forced_mouse = "sdl3:test+M:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
-    assert_eq!(
-        forced_mouse.source,
-        Some(SourceSelector::Device {
-            device_id: "sdl3:test".to_owned(),
-        })
-    );
-    assert!(forced_mouse.force_mouse);
-    assert_eq!(forced_mouse.layout, "WII_REMOTE_CONTROLLER");
-    let keyboard = "K:0:WII_REMOTE_CONTROLLER".parse::<GamepadArgument>()?;
-    assert_eq!(keyboard.source, Some(SourceSelector::KeyboardMouse));
-    assert!(keyboard.force_mouse);
-    // Slots must still be dense from zero.
-    assert!(
-        arguments(&[
-            "--machine",
-            "MICROSOFT_XBOX",
-            "--gamepad",
-            "sdl3:pad0:1:XBOX_CONTROLLER",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--machine",
-            "MICROSOFT_XBOX",
-            "--gamepad",
-            "sdl3:pad0:0:XBOX_CONTROLLER",
-            "--gamepad",
-            "sdl3:pad1:1:XBOX_CONTROLLER",
-            "--gamepad",
-            "sdl3:pad2:2:XBOX_CONTROLLER",
-            "--gamepad",
-            "sdl3:pad3:3:XBOX_CONTROLLER",
-            "--gamepad",
-            "sdl3:pad4:4:XBOX_CONTROLLER",
-            "--",
-            "game.exe",
-        ])
-        .is_ok()
-    );
     Ok(())
 }
 

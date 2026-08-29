@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
     error::Error,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicIsize, Ordering},
@@ -43,7 +43,7 @@ use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, SurfaceCapture,
     SurfaceCaptureEvent, VulkanCompositor, WebRtcCompositor,
     cli::{
-        GamepadArgument, HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
+        HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
     input::PointerRoutingState,
@@ -540,7 +540,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             launcher.render_target_surface_patterns(),
             launcher.graph_tracking,
             options.force_keyed_mutex,
-            options.gamecontroller_db.clone(),
         ) {
             Ok(started) => {
                 gamepad_layouts = started.layouts;
@@ -1326,7 +1325,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             launcher.render_target_surface_patterns(),
                             launcher.graph_tracking,
                             options.force_keyed_mutex,
-                            options.gamecontroller_db.clone(),
                         ) {
                             Ok(started) => {
                                 render_target_rotations = launcher.render_target_rotations();
@@ -1416,7 +1414,6 @@ fn start_target_session(
     tracked_surface_patterns: Vec<Option<String>>,
     graph_tracking: bool,
     force_keyed_mutex: bool,
-    gamecontroller_database: Option<PathBuf>,
 ) -> Result<StartedTarget, Box<dyn Error>> {
     let target = launcher.target().map_err(std::io::Error::other)?;
     if launcher.hooks.is_empty() {
@@ -1426,7 +1423,7 @@ fn start_target_session(
         .validate_render_targets()
         .map_err(std::io::Error::other)?;
     let gamepads = launcher
-        .gamepad_arguments()
+        .configured_gamepads()
         .map_err(std::io::Error::other)?;
     let layouts = gamepads
         .iter()
@@ -1488,7 +1485,7 @@ fn start_target_session(
                     projection_mode: snowglass_input::layout::ProjectionMode::Position,
                 })
                 .collect(),
-            gamecontroller_database,
+            gamecontroller_database: None,
             keyboard_mapping_directory: None,
         },
         instance.gamepad_input(),

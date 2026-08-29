@@ -1,7 +1,12 @@
 import config from "pkg:plugin.toml";
+import type {
+    Configuration as HostConfiguration,
+    ControllerChangeContext as HostControllerChangeContext,
+    Filesystem,
+    Resource,
+} from "../plugin-api.ts";
 
-type Configuration = {
-    options(): {
+type Configuration = HostConfiguration<{
         ui: {
             settings_version: number,
             setup_wizard_incomplete: boolean,
@@ -31,38 +36,11 @@ type Configuration = {
         },
         input_sources: { sdl: boolean },
         "emucore-gs": { renderer: number },
-    },
-    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
-};
-
-type GamepadBinding = Readonly<{
-    target: Readonly<{ group: string, port: number }>,
-    gamepad: number,
 }>;
-
-type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
-
-type Filesystem = {
-    mountHostFile(target: string, source: string, options: { mode: string }): void,
-    mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
-    mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
-    mountStorage(target: string, source: Resource, options: { mode: string, format: string }): void,
-    mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
-    path(path: string): string,
-    setWorkingDirectory(path: string): void,
-    setProfile(profile: {
-        home?: string,
-        roamingAppData?: string,
-        localAppData?: string,
-        temp?: string,
-    }): void,
-};
 
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
-    portAssignments: { [group: string]: string[] },
-    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -125,7 +103,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     options.memory_cards.slot2_filename = "Mcd002.ps2";
     options.input_sources.sdl = true;
     options["emucore-gs"].renderer = 3;
-    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
+    for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/PCSX2/${name}`, bytes, { mode: "rw" });
     }
 
@@ -140,36 +118,10 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     };
 };
 
-type ControllerChangeContext = Readonly<{
-    controllerMappings: readonly Readonly<{
-        target: Readonly<{ group: string, port: number }>,
-        gamepad: number,
-        layout: string,
-        connected: boolean,
-    }>[],
-    gamepads: readonly Readonly<{
-        index: number,
-        connected: boolean,
-        connect(): void,
-        disconnect(): void,
-    }>[],
-    configuration: Configuration,
-    filesystem: Filesystem,
-    flush(): void,
-}>;
+type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configuration["options"]>>;
 
 export const onControllerChanged = (context: ControllerChangeContext) => {
-    const bindings = context.controllerMappings.map(mapping => ({
-        target: mapping.target,
-        gamepad: context.gamepads[mapping.gamepad],
-    }));
-    for (const mapping of context.controllerMappings) {
-        const gamepad = context.gamepads[mapping.gamepad];
-        if (!gamepad) throw new TypeError(`virtual gamepad ${mapping.gamepad} is unavailable`);
-        if (mapping.connected) gamepad.connect();
-        else gamepad.disconnect();
-    }
-    for (const [name, bytes] of Object.entries(context.configuration.render(bindings))) {
+    for (const [name, bytes] of Object.entries(context.configuration.render())) {
         context.filesystem.mountFile(`/PCSX2/${name}`, bytes, { mode: "rw" });
     }
 };

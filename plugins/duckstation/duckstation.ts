@@ -1,7 +1,7 @@
 import config from "pkg:plugin.toml";
+import type { Configuration as HostConfiguration, Filesystem, Resource } from "../plugin-api.ts";
 
-type Configuration = {
-    options(): {
+type Configuration = HostConfiguration<{
         main: {
             settings_version: number,
             setup_wizard_incomplete: boolean,
@@ -40,30 +40,10 @@ type Configuration = {
             system: boolean,
         },
         input_sources: { sdl: boolean },
-    },
-    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
-};
-type GamepadBinding = Readonly<{
-    target: Readonly<{ group: string, port: number }>,
-    gamepad: number,
 }>;
-type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
-type Filesystem = {
-    mountHostFile(target: string, source: string, options: { mode: string }): void,
-    mountHostTree(target: string, source: string, options: { mode: string }): void,
-    mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
-    mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
-    mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
-    mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
-    path(path: string): string,
-    setWorkingDirectory(path: string): void,
-    setProfile(profile: { home?: string, roamingAppData?: string, localAppData?: string, temp?: string }): void,
-};
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
-    portAssignments: { [group: string]: string[] },
-    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -140,7 +120,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     options.logging.memory_card = true;
     options.logging.system = true;
     options.input_sources.sdl = true;
-    const settings = args.configuration.render(args.gamepadBindings)["settings.ini"];
+    const settings = args.configuration.render()["settings.ini"];
     if (!settings) throw new TypeError("DuckStation configuration did not render settings.ini");
     args.filesystem.mountFile("/DuckStation/settings.ini", settings, { mode: "rw" });
     return {

@@ -1,8 +1,16 @@
+import type {
+    Configuration as HostConfiguration,
+    ControllerChangeContext as HostControllerChangeContext,
+    ControllerMapping,
+    ControllerTopology,
+    Filesystem,
+    Resource,
+} from "../plugin-api.ts";
+
 // Host-backed view of snowglass-config's ConfigurationInstance. This object is
 // deliberately opaque: the plugin may inspect and adjust option values, but it
 // installs the rendered files explicitly into the launch filesystem.
-type Configuration = {
-    options(): {
+type Configuration = HostConfiguration<{
         main: {
             analytics: {
                 enabled: boolean,
@@ -31,59 +39,17 @@ type Configuration = {
                 }>,
             },
         },
-    },
-    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
-}
-
-type GamepadBinding = Readonly<{
-    target: Readonly<{ group: string, port: number }>,
-    gamepad: number,
 }>;
-
-type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
 
 type Package = Readonly<{
     titleId: string | null,
 }>;
 
-type ControllerMapping = Readonly<{
-    group: string | null,
-    port: number | null,
-    layout: string,
-    mouse: boolean,
-    mapping: Readonly<Record<string, string>>,
-    device: Readonly<{
-        id: string,
-        source: "sdl" | "bt",
-        name: string,
-        connected: boolean,
-        metadata: Readonly<Record<string, unknown>>,
-    }> | null,
-}>;
-
-type Filesystem = {
-    mountHostFile(target: string, source: string, options: { mode: string }): void,
-    mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
-    mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
-    mountStorage(target: string, source: Resource, options: { mode: string, format: string }): void,
-    mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
-    path(path: string): string,
-    setWorkingDirectory(path: string): void,
-    setProfile(profile: {
-        home?: string,
-        roamingAppData?: string,
-        localAppData?: string,
-        temp?: string,
-    }): void,
-};
-
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
     package: Package,
-    portAssignments: { [group: string]: string[] },
-    controllerMappings: readonly ControllerMapping[],
-    gamepadBindings: readonly GamepadBinding[],
+    controllerTopology: ControllerTopology,
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -196,9 +162,9 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
 
     if (isWii) {
         const wiiOptions = args.configuration.options().ports.NINTENDO_WII.wii;
-        for (const mapping of args.controllerMappings) {
-            if (mapping.group !== "wii" || mapping.port === null) continue;
-            wiiOptions[mapping.port].relative_input = hasAnalogPointer(mapping);
+        for (const mapping of args.controllerTopology.mappings) {
+            if (mapping.target.group !== "wii") continue;
+            wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
         }
     }
 
@@ -212,7 +178,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     } else {
         argv.push("-e", args.filesystem.path(`/Game/${gameName}`));
     }
-    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
+    for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/User/${name}`, bytes, { mode: "rw" });
     }
 
@@ -228,43 +194,17 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     }
 }
 
-type ControllerChangeContext = Readonly<{
-    controllerMappings: readonly Readonly<{
-        target: Readonly<{ group: string, port: number }>,
-        gamepad: number,
-        layout: string,
-        connected: boolean,
-    }>[],
-    gamepads: readonly Readonly<{
-        index: number,
-        connected: boolean,
-        connect(): void,
-        disconnect(): void,
-    }>[],
-    configuration: Configuration,
-    filesystem: Filesystem,
-    flush(): void,
-}>;
+type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configuration["options"]>>;
 
 export const onControllerChanged = (context: ControllerChangeContext) => {
-    const bindings = context.controllerMappings.map(mapping => ({
-        target: mapping.target,
-        gamepad: context.gamepads[mapping.gamepad],
-    }));
-    for (const mapping of context.controllerMappings) {
-        const gamepad = context.gamepads[mapping.gamepad];
-        if (!gamepad) throw new TypeError(`virtual gamepad ${mapping.gamepad} is unavailable`);
-        if (mapping.connected) gamepad.connect();
-        else gamepad.disconnect();
-    }
-    const wiiMappings = context.controllerMappings.filter(mapping => mapping.target.group === "wii");
+    const wiiMappings = context.topology.mappings.filter(mapping => mapping.target.group === "wii");
     if (wiiMappings.length > 0) {
         const wiiOptions = context.configuration.options().ports.NINTENDO_WII.wii;
         for (const mapping of wiiMappings) {
             wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
         }
     }
-    for (const [name, bytes] of Object.entries(context.configuration.render(bindings))) {
+    for (const [name, bytes] of Object.entries(context.configuration.render())) {
         context.filesystem.mountFile(`/User/${name}`, bytes, { mode: "rw" });
     }
 };

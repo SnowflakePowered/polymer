@@ -346,21 +346,21 @@ impl ShellCoordinator {
             return;
         }
         let publication = self.input.build_publication(
-            self.game_host.gamepad_mapping(),
+            self.game_host.controller_mappings(),
             self.game_host.has_active_game(),
             self.game_host.controller_topology_locked(),
         );
         self.window.set_input_diagnostics(publication.diagnostics);
         if let Some(state) = publication.api_state {
             let configuration = self.input.configuration_snapshot();
-            if let Err(error) = self.game_host.controller_changed(&configuration, &state) {
-                if let Some(token) = self.game_host.active_token() {
-                    self.emit_instance_event(
-                        token,
-                        "controllerchangeerror",
-                        &instance_events::error(error),
-                    );
-                }
+            if let Err(error) = self.game_host.controller_change(&configuration, &state)
+                && let Some(token) = self.game_host.active_token()
+            {
+                self.emit_instance_event(
+                    token,
+                    "controllerchangeerror",
+                    &instance_events::error(error),
+                );
             }
             self.notify_snowglass(SnowglassNotification::InputApiStateChanged(state));
         }

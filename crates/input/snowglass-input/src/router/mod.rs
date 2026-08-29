@@ -155,6 +155,71 @@ struct SourceState {
     state: GamepadState,
 }
 
+impl RouterState {
+    fn route_update(&mut self, route: &SlotRoute) -> GamepadUpdate {
+        let selected = route
+            .sources
+            .iter()
+            .filter_map(|source| self.sources.get(source).copied())
+            .collect::<Vec<_>>();
+        let connected = match route.composition {
+            CompositionMode::Single => selected.first().is_some_and(|source| source.connected),
+            CompositionMode::JoyConPair => {
+                selected.iter().any(|source| {
+                    source.connected && source.role == PhysicalControllerRole::LeftHalf
+                }) && selected.iter().any(|source| {
+                    source.connected && source.role == PhysicalControllerRole::RightHalf
+                })
+            }
+        };
+        let mut gamepad = if connected {
+            Self::compose(route.composition, &selected)
+        } else {
+            GamepadState::default()
+        };
+        if let Some(remap) = &route.remap {
+            gamepad = remap.apply(gamepad);
+        }
+        self.sequenced(route.slot, connected, gamepad)
+    }
+
+    fn compose(mode: CompositionMode, selected: &[SourceState]) -> GamepadState {
+        if mode == CompositionMode::Single {
+            return selected
+                .first()
+                .map_or(GamepadState::default(), |source| source.state);
+        }
+        let mut output = GamepadState::default();
+        for source in selected.iter().filter(|source| source.connected) {
+            output.buttons |= source.state.buttons;
+            output.left_trigger = output.left_trigger.max(source.state.left_trigger);
+            output.right_trigger = output.right_trigger.max(source.state.right_trigger);
+            match source.role {
+                PhysicalControllerRole::LeftHalf => output.left_stick = source.state.left_stick,
+                PhysicalControllerRole::RightHalf => {
+                    output.right_stick = source.state.right_stick;
+                    output.pointer = source.state.pointer;
+                    output.accelerometer = source.state.accelerometer;
+                    output.gyroscope = source.state.gyroscope;
+                }
+                PhysicalControllerRole::Whole => {}
+            }
+        }
+        output
+    }
+
+    fn sequenced(&mut self, slot: u8, connected: bool, state: GamepadState) -> GamepadUpdate {
+        let sequence = self.sequences.entry(slot).or_default();
+        *sequence = sequence.wrapping_add(1);
+        GamepadUpdate {
+            slot: GamepadSlot::new(slot).expect("all u8 slot numbers are valid"),
+            sequence: *sequence,
+            connected,
+            state,
+        }
+    }
+}
+
 impl PhysicalInputRouter {
     pub fn new(output: Arc<dyn GamepadUpdateSink>) -> Self {
         Self {
@@ -180,12 +245,12 @@ impl PhysicalInputRouter {
                 .collect::<Vec<_>>();
             let removed = removed_slots
                 .into_iter()
-                .map(|slot| sequenced(&mut state, slot, false, GamepadState::default()))
+                .map(|slot| state.sequenced(slot, false, GamepadState::default()))
                 .collect::<Vec<_>>();
             let routes = state.routes.clone();
             let updates = routes
                 .iter()
-                .map(|route| route_update(&mut state, route))
+                .map(|route| state.route_update(route))
                 .collect::<Vec<_>>();
             (removed, updates)
         };
@@ -226,7 +291,7 @@ impl PhysicalInputRouter {
                 .collect::<Vec<_>>();
             routes
                 .iter()
-                .map(|route| route_update(&mut state, route))
+                .map(|route| state.route_update(route))
                 .collect::<Vec<_>>()
         };
         for update in updates {
@@ -235,73 +300,121 @@ impl PhysicalInputRouter {
     }
 }
 
-fn route_update(state: &mut RouterState, route: &SlotRoute) -> GamepadUpdate {
-    let selected = route
-        .sources
-        .iter()
-        .filter_map(|source| state.sources.get(source).copied())
-        .collect::<Vec<_>>();
-    let connected = match route.composition {
-        CompositionMode::Single => selected.first().is_some_and(|source| source.connected),
-        CompositionMode::JoyConPair => {
-            selected
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<GamepadUpdate>>);
+
+    impl GamepadUpdateSink for RecordingSink {
+        fn publish(&self, update: GamepadUpdate) {
+            self.0.lock().push(update);
+        }
+    }
+
+    fn route(slot: u8, sources: &[&str], composition: CompositionMode) -> SlotRoute {
+        SlotRoute {
+            slot,
+            sources: sources
                 .iter()
-                .any(|source| source.connected && source.role == PhysicalControllerRole::LeftHalf)
-                && selected.iter().any(|source| {
-                    source.connected && source.role == PhysicalControllerRole::RightHalf
-                })
-        }
-    };
-    let mut gamepad = if connected {
-        compose(route.composition, &selected)
-    } else {
-        GamepadState::default()
-    };
-    if let Some(remap) = &route.remap {
-        gamepad = remap.apply(gamepad);
-    }
-    sequenced(state, route.slot, connected, gamepad)
-}
-
-fn compose(mode: CompositionMode, selected: &[SourceState]) -> GamepadState {
-    if mode == CompositionMode::Single {
-        return selected
-            .first()
-            .map_or(GamepadState::default(), |source| source.state);
-    }
-    let mut output = GamepadState::default();
-    for source in selected.iter().filter(|source| source.connected) {
-        output.buttons |= source.state.buttons;
-        output.left_trigger = output.left_trigger.max(source.state.left_trigger);
-        output.right_trigger = output.right_trigger.max(source.state.right_trigger);
-        match source.role {
-            PhysicalControllerRole::LeftHalf => {
-                output.left_stick = source.state.left_stick;
-            }
-            PhysicalControllerRole::RightHalf => {
-                output.right_stick = source.state.right_stick;
-                output.pointer = source.state.pointer;
-                output.accelerometer = source.state.accelerometer;
-                output.gyroscope = source.state.gyroscope;
-            }
-            PhysicalControllerRole::Whole => {}
+                .map(|source| PhysicalSourceId::new(*source))
+                .collect(),
+            composition,
+            remap: None,
         }
     }
-    output
-}
 
-fn sequenced(
-    state: &mut RouterState,
-    slot: u8,
-    connected: bool,
-    gamepad: GamepadState,
-) -> GamepadUpdate {
-    let sequence = state.sequences.entry(slot).or_default();
-    *sequence = sequence.wrapping_add(1);
-    GamepadUpdate {
-        slot: GamepadSlot::new(slot).expect("all u8 slot numbers are valid"),
-        sequence: *sequence,
-        connected,
-        state: gamepad,
+    fn physical(
+        source: &str,
+        role: PhysicalControllerRole,
+        state: GamepadState,
+    ) -> PhysicalGamepadUpdate {
+        PhysicalGamepadUpdate {
+            source: PhysicalSourceId::new(source),
+            role,
+            connected: true,
+            state,
+        }
+    }
+
+    #[test]
+    fn route_replacement_neutralizes_removed_slots_and_replays_retained_state() {
+        let sink = Arc::new(RecordingSink::default());
+        let router = PhysicalInputRouter::new(sink.clone());
+        let state = GamepadState {
+            buttons: GamepadButton::A.mask(),
+            ..Default::default()
+        };
+        router.publish(physical("pad", PhysicalControllerRole::Whole, state));
+        router.set_routes(vec![route(2, &["pad"], CompositionMode::Single)]);
+        router.set_routes(vec![route(3, &["pad"], CompositionMode::Single)]);
+
+        let updates = sink.0.lock();
+        assert_eq!(updates.len(), 3);
+        assert_eq!(
+            (
+                updates[0].slot.get(),
+                updates[0].connected,
+                updates[0].state
+            ),
+            (2, true, state)
+        );
+        assert_eq!((updates[1].slot.get(), updates[1].connected), (2, false));
+        assert_eq!(
+            (
+                updates[2].slot.get(),
+                updates[2].connected,
+                updates[2].state
+            ),
+            (3, true, state)
+        );
+    }
+
+    #[test]
+    fn joycon_pair_connects_only_after_both_halves_are_present() {
+        let sink = Arc::new(RecordingSink::default());
+        let router = PhysicalInputRouter::new(sink.clone());
+        router.set_routes(vec![route(
+            0,
+            &["left", "right"],
+            CompositionMode::JoyConPair,
+        )]);
+        router.publish(physical(
+            "left",
+            PhysicalControllerRole::LeftHalf,
+            GamepadState {
+                left_stick: [1, 2],
+                ..Default::default()
+            },
+        ));
+        router.publish(physical(
+            "right",
+            PhysicalControllerRole::RightHalf,
+            GamepadState {
+                right_stick: [3, 4],
+                ..Default::default()
+            },
+        ));
+
+        let updates = sink.0.lock();
+        assert!(!updates[1].connected);
+        assert!(updates[2].connected);
+        assert_eq!(updates[2].state.left_stick, [1, 2]);
+        assert_eq!(updates[2].state.right_stick, [3, 4]);
+    }
+
+    #[test]
+    fn inverted_axis_saturates_at_the_positive_limit() {
+        let remap = GamepadRemap {
+            buttons: Vec::new(),
+            axes: vec![(0, 0, true)],
+        };
+        let output = remap.apply(GamepadState {
+            left_stick: [i16::MIN, 0],
+            ..Default::default()
+        });
+        assert_eq!(output.left_stick[0], i16::MAX);
     }
 }

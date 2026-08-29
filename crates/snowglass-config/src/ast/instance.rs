@@ -10,6 +10,7 @@ use super::{OptionDefinition, RealizedDefinition, SettingPath, Value, family};
 pub type PortAssignments = BTreeMap<Box<str>, Box<[Box<str>]>>;
 
 /// A launch-specific, flat collection of configuration values.
+#[derive(Clone)]
 pub struct ConfigurationInstance {
     definition: Arc<RealizedDefinition>,
     console: Box<str>,

@@ -1,12 +1,8 @@
-use crate::{
-    input::GamepadMapping,
-    launch::{GraphicsHook, UnattachedLaunchPlan, UnattachedTrackedSurface},
-};
+use crate::launch::{GraphicsHook, UnattachedLaunchPlan, UnattachedTrackedSurface};
 use clap::{Arg, ArgAction};
 use snowglass_pluginhost::{EmulatorPluginInstance, PluginRegistry, ThemePluginInstance};
 use snowglass_renderer::cli::{
-    HookBackend, ViewerOptions, viewer_command_named,
-    viewer_options_from_matches_with_default_machine,
+    HookBackend, ViewerOptions, viewer_command_named, viewer_options_from_matches,
 };
 use std::{error::Error, fs, path::PathBuf};
 
@@ -62,8 +58,8 @@ pub fn launch_from_viewer(options: &ViewerOptions) -> Result<Option<UnattachedLa
         hook,
         graph_tracking: options.graph_tracking,
         surfaces,
-        gamepad_mapping: options.gamepads.iter().map(GamepadMapping::from).collect(),
-        machine: options.machine.clone(),
+        controller_topology: snowglass_input::topology::ControllerTopology::default(),
+        machine: String::new(),
         webrtc_bind: options
             .webrtc
             .as_ref()
@@ -137,18 +133,8 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             game: PathBuf::from(game),
             emulator: emulator.clone(),
         });
-    let default_machine = emulator
-        .as_ref()
-        .and_then(|emulator| {
-            let plugin = plugins.plugin::<dyn EmulatorPluginInstance>(emulator)?;
-            let [platform] = plugin.platforms() else {
-                return None;
-            };
-            Some(platform.clone())
-        })
-        .or_else(|| game_launch.as_ref().map(|_| String::new()));
     Ok(ShellOptions {
-        viewer: viewer_options_from_matches_with_default_machine(&matches, default_machine)?,
+        viewer: viewer_options_from_matches(&matches)?,
         theme,
         plugins,
         game_launch,

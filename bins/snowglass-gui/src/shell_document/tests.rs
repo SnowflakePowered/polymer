@@ -351,7 +351,6 @@ fn pointer_hit_accounts_for_a_transformed_hoisted_panel() {
             (current.attr(local_name!("id")) == Some("panel")).then_some(node)
         })
         .unwrap();
-
     assert_eq!(pointer_hit(document.as_ref(), 804.0, 116.0), Some(button));
 
     let mut script_to_dom = document

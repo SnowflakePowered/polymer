@@ -30,7 +30,7 @@ export function createConfiguration(scraping, pluginApi) {
           selector: surface.pattern,
           webrtc: targets.has(surface.index),
         })),
-        gamepadMapping: plugin.gamepadMapping ?? prepared.gamepadMapping,
+        controllerTopology: plugin.controllerTopology ?? prepared.controllerTopology,
         machine: prepared.machine,
         webrtcBind: prepared.webrtcBind,
         preparedFilesystem: plugin.preparedFilesystem,

@@ -1,5 +1,5 @@
-use crate::input::GamepadMapping;
 use snowglass_input::layout::{InputLayout, ProjectionMode};
+use snowglass_input::topology::ControllerTopology;
 pub use snowglass_pluginhost::GraphicsHook;
 use std::{collections::HashSet, net::SocketAddr};
 
@@ -20,7 +20,7 @@ pub struct UnattachedLaunchPlan {
     pub graph_tracking: bool,
     pub surfaces: Vec<UnattachedTrackedSurface>,
     #[serde(default)]
-    pub gamepad_mapping: Vec<GamepadMapping>,
+    pub controller_topology: ControllerTopology,
     /// The machinespec whose ports the mappings below name. A port only exists
     /// relative to the machine that declares its group, so this is not optional:
     /// without it nothing could validate the topology the launch installs.
@@ -71,15 +71,16 @@ impl UnattachedLaunchPlan {
             }
         }
         let mut slots = self
-            .gamepad_mapping
+            .controller_topology
+            .mappings
             .iter()
-            .map(|mapping| mapping.slot)
+            .map(|mapping| mapping.gamepad)
             .collect::<Vec<_>>();
         slots.sort_unstable();
         if slots
             .iter()
             .enumerate()
-            .any(|(expected, slot)| *slot != expected)
+            .any(|(expected, slot)| usize::from(*slot) != expected)
         {
             return Err("gamepad slots must be unique and contiguous from zero".to_owned());
         }
@@ -90,7 +91,7 @@ impl UnattachedLaunchPlan {
             bind.parse::<SocketAddr>()
                 .map_err(|error| format!("invalid WebRTC bind address '{bind}': {error}"))?;
         }
-        validate_input_mappings(&self.gamepad_mapping)?;
+        validate_input_mappings(&self.controller_topology)?;
         Ok(())
     }
 }
@@ -112,7 +113,7 @@ pub struct AttachedLaunchPlan {
     pub graph_tracking: bool,
     pub surfaces: Vec<AttachedTrackedSurface>,
     #[serde(default)]
-    pub gamepad_mapping: Vec<GamepadMapping>,
+    pub controller_topology: ControllerTopology,
     pub machine: String,
     #[serde(default)]
     pub prepared_filesystem: Option<String>,
@@ -159,44 +160,46 @@ impl AttachedLaunchPlan {
             }
         }
         let mut slots = self
-            .gamepad_mapping
+            .controller_topology
+            .mappings
             .iter()
-            .map(|mapping| mapping.slot)
+            .map(|mapping| mapping.gamepad)
             .collect::<Vec<_>>();
         slots.sort_unstable();
         if slots
             .iter()
             .enumerate()
-            .any(|(expected, slot)| *slot != expected)
+            .any(|(expected, slot)| usize::from(*slot) != expected)
         {
             return Err("gamepad slots must be unique and contiguous from zero".to_owned());
         }
-        validate_input_mappings(&self.gamepad_mapping)?;
+        validate_input_mappings(&self.controller_topology)?;
         Ok(())
     }
 }
 
-fn validate_input_mappings(mappings: &[GamepadMapping]) -> Result<(), String> {
-    for mapping in mappings {
+fn validate_input_mappings(topology: &ControllerTopology) -> Result<(), String> {
+    let mut targets = HashSet::new();
+    for mapping in &topology.mappings {
+        if !targets.insert((&mapping.target.group, mapping.target.port)) {
+            return Err(format!(
+                "controller target {}:{} is duplicated",
+                mapping.target.group, mapping.target.port
+            ));
+        }
         let layout = InputLayout::get(&mapping.layout)
             .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
-        let mut targets = HashSet::new();
-        for (target, source) in &mapping.mapping {
-            let target: consolespec::input::BindingKey = target
-                .parse()
-                .map_err(|error| format!("invalid input target '{target}': {error}"))?;
-            if !layout.has(target) {
+        let mut binding_targets = HashSet::new();
+        for (target, source) in mapping.mapping.iter() {
+            if !layout.has(*target) {
                 return Err(format!(
                     "input layout {} has no element {target}",
                     layout.id
                 ));
             }
-            targets.insert(target);
-            if source != "none" {
-                let source = source
-                    .parse()
-                    .map_err(|error| format!("invalid input source '{source}': {error}"))?;
-                layout.custom_binding(target, source).ok_or_else(|| {
+            binding_targets.insert(*target);
+            if let Some(source) = source {
+                layout.custom_binding(*target, *source).ok_or_else(|| {
                     format!("input source '{source}' is not a physical gamepad expression")
                 })?;
             }
@@ -204,7 +207,7 @@ fn validate_input_mappings(mappings: &[GamepadMapping]) -> Result<(), String> {
         if mapping.projection_mode == ProjectionMode::Custom {
             let missing = layout
                 .custom_binding_targets()
-                .filter(|target| !targets.contains(target))
+                .filter(|target| !binding_targets.contains(target))
                 .map(|target| target.to_string())
                 .collect::<Vec<_>>();
             if !missing.is_empty() {
@@ -238,7 +241,7 @@ mod tests {
                     "selector": "Game",
                     "attach": 4
                 }],
-                "gamepadMapping": [],
+                "controllerTopology": { "mappings": [] },
                 "machine": "MICROSOFT_XBOX"
             }"#,
         )

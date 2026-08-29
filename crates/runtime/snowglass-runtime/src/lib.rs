@@ -18,9 +18,9 @@ mod ui;
 pub use capture::ConsumerPreference;
 pub use configuration::{
     ChoiceDescriptor, ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame,
-    EmulatorDescriptor, GameDescriptor, GamepadMapping, LaunchGroupRequest, LaunchPortRequest,
-    OptionDescriptor, PortDescriptor, PortGroupDescriptor, PreparedGame,
-    describe_api as describe_configuration, prepare_api as prepare_configuration,
+    EmulatorDescriptor, GameDescriptor, LaunchGroupRequest, LaunchPortRequest, OptionDescriptor,
+    PortDescriptor, PortGroupDescriptor, PreparedGame, describe_api as describe_configuration,
+    prepare_api as prepare_configuration,
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
 pub use controllers::{
@@ -43,6 +43,7 @@ pub use instance::{
 };
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};
+pub use snowglass_input::topology::{ControllerMapping, ControllerTopology};
 pub use storage::launch_storage;
 pub use ui::{UiRequest, UiRequestReceiver};
 

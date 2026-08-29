@@ -51,21 +51,11 @@ const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 /// and state publication cannot be starved by an event-producing device.
 const MAX_EVENTS_PER_POLL: usize = 128;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ProviderConfig {
     pub slots: Vec<SlotConfig>,
     pub gamecontroller_database: Option<PathBuf>,
     pub keyboard_mapping_directory: Option<PathBuf>,
-}
-
-impl Default for ProviderConfig {
-    fn default() -> Self {
-        Self {
-            slots: Vec::new(),
-            gamecontroller_database: None,
-            keyboard_mapping_directory: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,18 +206,18 @@ impl Sdl3Provider {
         let thread = thread::Builder::new()
             .name("snowglass-sdl3-input".to_owned())
             .spawn(move || {
-                run(
+                run(SdlWorkerArguments {
                     config,
                     updates,
-                    thread_stop,
+                    stop: thread_stop,
                     started_tx,
-                    thread_states,
-                    thread_devices,
-                    command_rx,
-                    thread_pointer,
-                    thread_mapped_keys,
+                    states: thread_states,
+                    devices: thread_devices,
+                    commands: command_rx,
+                    pointer: thread_pointer,
+                    mapped_keys: thread_mapped_keys,
                     initially_enabled,
-                )
+                })
             })
             .map_err(|error| format!("failed to start SDL3 input thread: {error}"))?;
         match started_rx.recv() {
@@ -631,241 +621,322 @@ fn normalized_axis(value: f32) -> i16 {
     }
 }
 
-fn run(
+struct SdlWorkerArguments {
     config: ProviderConfig,
     updates: Arc<dyn GamepadUpdateSink>,
     stop: Arc<AtomicBool>,
-    started: mpsc::SyncSender<Result<(), String>>,
+    started_tx: mpsc::SyncSender<Result<(), String>>,
     states: Arc<Mutex<Vec<Option<PhysicalGamepadState>>>>,
     devices: Arc<Mutex<Vec<PhysicalDeviceState>>>,
     commands: mpsc::Receiver<ProviderCommand>,
     pointer: Arc<Mutex<PointerSample>>,
     mapped_keys: Arc<Mutex<HashSet<String>>>,
     initially_enabled: bool,
-) {
-    let result = initialize(&config);
-    let (sdl, subsystem, mut event_pump, remappings) = match result {
-        Ok(value) => value,
+}
+
+struct SdlProviderWorker {
+    _sdl: sdl3::Sdl,
+    subsystem: sdl3::GamepadSubsystem,
+    event_pump: sdl3::EventPump,
+    remappings: RemapDatabase,
+    config: ProviderConfig,
+    updates: Arc<dyn GamepadUpdateSink>,
+    stop: Arc<AtomicBool>,
+    states: Arc<Mutex<Vec<Option<PhysicalGamepadState>>>>,
+    devices: Arc<Mutex<Vec<PhysicalDeviceState>>>,
+    commands: mpsc::Receiver<ProviderCommand>,
+    pointer: Arc<Mutex<PointerSample>>,
+    mapped_keys: Arc<Mutex<HashSet<String>>>,
+    pads: Vec<Option<Pad>>,
+    sequences: Vec<u32>,
+    last_published: Vec<Option<GamepadState>>,
+    last_connected: Vec<bool>,
+    next_topology_refresh: Instant,
+    next_device_snapshot: Instant,
+    observed: Vec<ObservedPad>,
+    source_registry: SourceRegistry,
+    interactive_remappings: Vec<HashMap<BindingKey, InputBinding>>,
+    interactive_mouse_mappings: Vec<HashMap<BindingKey, MouseAxisMap>>,
+    keyboard_mappings: Vec<Option<CompiledKeyboardMapping>>,
+    default_keyboard_mappings: Vec<Option<CompiledKeyboardMapping>>,
+    pressed_keys: HashSet<String>,
+    enabled: bool,
+}
+
+fn run(args: SdlWorkerArguments) {
+    let started = args.started_tx.clone();
+    let mut worker = match SdlProviderWorker::new(args) {
+        Ok(worker) => worker,
         Err(error) => {
             let _ = started.send(Err(error));
             return;
         }
     };
-    let _sdl = sdl;
-    let mut pads = (0..config.slots.len())
-        .map(|_| None)
-        .collect::<Vec<Option<Pad>>>();
-    let mut sequences = vec![0u32; config.slots.len()];
-    let mut last_published = vec![None::<GamepadState>; config.slots.len()];
-    let mut last_connected = vec![false; config.slots.len()];
-    let mut next_topology_refresh = Instant::now();
-    let mut next_device_snapshot = Instant::now();
-    let mut observed = Vec::<ObservedPad>::new();
-    let mut source_registry = SourceRegistry::default();
-    let mut interactive_remappings =
-        vec![HashMap::<BindingKey, InputBinding>::new(); config.slots.len()];
-    let mut interactive_mouse_mappings =
-        vec![HashMap::<BindingKey, MouseAxisMap>::new(); config.slots.len()];
-    let mut config = config;
-    let mut keyboard_mappings = match load_keyboard_mappings(&config) {
-        Ok(mappings) => mappings,
-        Err(error) => {
-            let _ = started.send(Err(error));
-            return;
-        }
-    };
-    let mut default_keyboard_mappings = keyboard_mappings.clone();
-    *mapped_keys.lock() = keyboard_mappings
-        .iter()
-        .flatten()
-        .flat_map(|mapping| mapping.bindings.iter().map(|(_, key, _)| key.clone()))
-        .collect();
+    worker.update_mapped_keys();
     let _ = started.send(Ok(()));
-    let mut pressed_keys = HashSet::<String>::new();
-    let mut enabled = initially_enabled;
+    worker.run();
+}
 
-    while !stop.load(Ordering::Acquire) {
-        for event in event_pump.poll_iter().take(MAX_EVENTS_PER_POLL) {
-            update_touchpad_pointer(&mut pads, event);
+impl SdlProviderWorker {
+    fn new(args: SdlWorkerArguments) -> Result<Self, String> {
+        let (sdl, subsystem, event_pump, remappings) = initialize(&args.config)?;
+        let keyboard_mappings = load_keyboard_mappings(&args.config)?;
+        let slot_count = args.config.slots.len();
+        Ok(Self {
+            _sdl: sdl,
+            subsystem,
+            event_pump,
+            remappings,
+            config: args.config,
+            updates: args.updates,
+            stop: args.stop,
+            states: args.states,
+            devices: args.devices,
+            commands: args.commands,
+            pointer: args.pointer,
+            mapped_keys: args.mapped_keys,
+            pads: (0..slot_count).map(|_| None).collect(),
+            sequences: vec![0; slot_count],
+            last_published: vec![None; slot_count],
+            last_connected: vec![false; slot_count],
+            next_topology_refresh: Instant::now(),
+            next_device_snapshot: Instant::now(),
+            observed: Vec::new(),
+            source_registry: SourceRegistry::default(),
+            interactive_remappings: vec![HashMap::new(); slot_count],
+            interactive_mouse_mappings: vec![HashMap::new(); slot_count],
+            default_keyboard_mappings: keyboard_mappings.clone(),
+            keyboard_mappings,
+            pressed_keys: HashSet::new(),
+            enabled: args.initially_enabled,
+        })
+    }
+
+    fn run(&mut self) {
+        while !self.stop.load(Ordering::Acquire) {
+            self.poll_events();
+            self.subsystem.update();
+            self.drain_commands();
+            self.refresh_topology();
+            self.publish_samples();
+            // `yield_now` immediately resumes when no equal-priority thread is
+            // runnable and therefore busy-spins on Windows.
+            thread::sleep(INPUT_POLL_INTERVAL);
         }
-        subsystem.update();
+        self.shutdown();
+    }
 
+    fn poll_events(&mut self) {
+        for event in self.event_pump.poll_iter().take(MAX_EVENTS_PER_POLL) {
+            update_touchpad_pointer(&mut self.pads, event);
+        }
+    }
+
+    fn drain_commands(&mut self) {
         let mut keyboard_bindings_changed = false;
-        while let Ok(command) = commands.try_recv() {
-            match command {
-                ProviderCommand::SetEnabled(value) => {
-                    enabled = value;
-                    if !enabled {
-                        pressed_keys.clear();
-                    }
-                }
-                ProviderCommand::ReconfigureSlots { slots, response } => {
-                    let invalid_layout = slots
-                        .iter()
-                        .find(|slot| InputLayout::get(&slot.layout_id).is_none());
-                    if let Some(slot) = invalid_layout {
-                        let _ =
-                            response.send(Err(format!("unknown input layout {}", slot.layout_id)));
-                        continue;
-                    }
-                    let candidate = ProviderConfig {
-                        slots: slots.clone(),
-                        gamecontroller_database: config.gamecontroller_database.clone(),
-                        keyboard_mapping_directory: config.keyboard_mapping_directory.clone(),
-                    };
-                    let new_keyboard_mappings = match load_keyboard_mappings(&candidate) {
-                        Ok(mappings) => mappings,
-                        Err(error) => {
-                            let _ = response.send(Err(error));
-                            continue;
-                        }
-                    };
-
-                    let slot_count = slots.len();
-                    let old_slots = std::mem::replace(&mut config.slots, slots);
-                    let mut next_pads = (0..slot_count).map(|_| None).collect::<Vec<_>>();
-                    let mut next_sequences = vec![0; slot_count];
-                    let mut next_published = vec![None; slot_count];
-                    let mut next_connected = vec![false; slot_count];
-
-                    for slot in 0..old_slots.len() {
-                        let unchanged = config.slots.get(slot) == old_slots.get(slot);
-                        if unchanged {
-                            next_pads[slot] = pads[slot].take();
-                            next_sequences[slot] = sequences[slot];
-                            next_published[slot] = last_published[slot];
-                            next_connected[slot] = last_connected[slot];
-                        } else if last_connected[slot] {
-                            sequences[slot] = sequences[slot].wrapping_add(1);
-                            updates.publish(GamepadUpdate {
-                                slot: GamepadSlot::new(slot as u8).unwrap(),
-                                sequence: sequences[slot],
-                                connected: false,
-                                state: GamepadState::default(),
-                            });
-                        }
-                    }
-                    pads = next_pads;
-                    sequences = next_sequences;
-                    last_published = next_published;
-                    last_connected = next_connected;
-                    interactive_remappings = vec![HashMap::new(); slot_count];
-                    interactive_mouse_mappings = vec![HashMap::new(); slot_count];
-                    keyboard_mappings = new_keyboard_mappings;
-                    default_keyboard_mappings = keyboard_mappings.clone();
-                    pressed_keys.clear();
-                    *states.lock() = vec![None; slot_count];
-                    *mapped_keys.lock() = keyboard_mappings
-                        .iter()
-                        .flatten()
-                        .flat_map(|mapping| mapping.bindings.iter().map(|(_, key, _)| key.clone()))
-                        .collect();
-                    next_topology_refresh = Instant::now();
-                    let _ = response.send(Ok(()));
-                }
-                ProviderCommand::SetBinding {
-                    slot,
-                    target,
-                    binding,
-                } => {
-                    if let Some(bindings) = interactive_remappings.get_mut(slot) {
-                        bindings.insert(target, binding);
-                        recompile_pad(slot, &mut pads, &remappings, bindings);
-                    }
-                }
-                ProviderCommand::SetKeyBinding { slot, target, key } => {
-                    if let Some(Some(mapping)) = keyboard_mappings.get_mut(slot) {
-                        mapping.set(target, key);
-                        keyboard_bindings_changed = true;
-                    }
-                }
-                ProviderCommand::SetMouseAxisBinding {
-                    slot,
-                    target,
-                    source,
-                    transform,
-                } => {
-                    if let Some(bindings) = interactive_mouse_mappings.get_mut(slot) {
-                        bindings.insert(target, MouseAxisMap { source, transform });
-                    }
-                    if let Some(bindings) = interactive_remappings.get_mut(slot) {
-                        bindings.insert(target, InputBinding::Disabled { disabled: true });
-                        recompile_pad(slot, &mut pads, &remappings, bindings);
-                    }
-                }
-                ProviderCommand::ResetBindings { slot } => {
-                    if let Some(bindings) = interactive_remappings.get_mut(slot) {
-                        bindings.clear();
-                        recompile_pad(slot, &mut pads, &remappings, bindings);
-                    }
-                    if let Some(mapping) = keyboard_mappings.get_mut(slot) {
-                        mapping.clone_from(
-                            default_keyboard_mappings
-                                .get(slot)
-                                .expect("keyboard mapping vectors have equal lengths"),
-                        );
-                        keyboard_bindings_changed = true;
-                    }
-                    if let Some(bindings) = interactive_mouse_mappings.get_mut(slot) {
-                        bindings.clear();
-                    }
-                }
-                ProviderCommand::ClearBinding { slot, target } => {
-                    if let Some(bindings) = interactive_remappings.get_mut(slot) {
-                        bindings.remove(&target);
-                        recompile_pad(slot, &mut pads, &remappings, bindings);
-                    }
-                    let defaults = default_keyboard_mappings.get(slot).and_then(Option::as_ref);
-                    if let Some(Some(mapping)) = keyboard_mappings.get_mut(slot) {
-                        mapping.restore(target, defaults);
-                        keyboard_bindings_changed = true;
-                    }
-                    if let Some(bindings) = interactive_mouse_mappings.get_mut(slot) {
-                        bindings.remove(&target);
-                    }
-                }
-                ProviderCommand::SetKey { key, pressed } => {
-                    if pressed {
-                        pressed_keys.insert(key);
-                    } else {
-                        pressed_keys.remove(&key);
-                    }
-                }
-                ProviderCommand::ClearKeys => pressed_keys.clear(),
-            }
+        while let Ok(command) = self.commands.try_recv() {
+            keyboard_bindings_changed |= self.handle_command(command);
         }
         if keyboard_bindings_changed {
-            *mapped_keys.lock() = keyboard_mappings
-                .iter()
-                .flatten()
-                .flat_map(|mapping| mapping.bindings.iter().map(|(_, key, _)| key.clone()))
-                .collect();
+            self.update_mapped_keys();
         }
+    }
 
-        if Instant::now() >= next_topology_refresh {
-            refresh_observed_devices(&subsystem, &mut observed, &mut source_registry);
-            refresh_devices(
-                &mut pads,
-                &config.slots,
-                &remappings,
-                &interactive_remappings,
-                &observed,
+    fn handle_command(&mut self, command: ProviderCommand) -> bool {
+        match command {
+            ProviderCommand::SetEnabled(enabled) => {
+                self.enabled = enabled;
+                if !enabled {
+                    self.pressed_keys.clear();
+                }
+                false
+            }
+            ProviderCommand::ReconfigureSlots { slots, response } => {
+                let result = self.reconfigure(slots);
+                let _ = response.send(result);
+                false
+            }
+            ProviderCommand::SetBinding {
+                slot,
+                target,
+                binding,
+            } => {
+                if let Some(bindings) = self.interactive_remappings.get_mut(slot) {
+                    bindings.insert(target, binding);
+                    recompile_pad(slot, &mut self.pads, &self.remappings, bindings);
+                }
+                false
+            }
+            ProviderCommand::SetKeyBinding { slot, target, key } => {
+                if let Some(Some(mapping)) = self.keyboard_mappings.get_mut(slot) {
+                    mapping.set(target, key);
+                    return true;
+                }
+                false
+            }
+            ProviderCommand::SetMouseAxisBinding {
+                slot,
+                target,
+                source,
+                transform,
+            } => {
+                self.set_mouse_binding(slot, target, source, transform);
+                false
+            }
+            ProviderCommand::ResetBindings { slot } => self.reset_bindings(slot),
+            ProviderCommand::ClearBinding { slot, target } => self.clear_binding(slot, target),
+            ProviderCommand::SetKey { key, pressed } => {
+                if pressed {
+                    self.pressed_keys.insert(key);
+                } else {
+                    self.pressed_keys.remove(&key);
+                }
+                false
+            }
+            ProviderCommand::ClearKeys => {
+                self.pressed_keys.clear();
+                false
+            }
+        }
+    }
+
+    fn reconfigure(&mut self, slots: Vec<SlotConfig>) -> Result<(), String> {
+        if let Some(slot) = slots
+            .iter()
+            .find(|slot| InputLayout::get(&slot.layout_id).is_none())
+        {
+            return Err(format!("unknown input layout {}", slot.layout_id));
+        }
+        let candidate = ProviderConfig {
+            slots: slots.clone(),
+            gamecontroller_database: self.config.gamecontroller_database.clone(),
+            keyboard_mapping_directory: self.config.keyboard_mapping_directory.clone(),
+        };
+        let keyboard_mappings = load_keyboard_mappings(&candidate)?;
+        let old_slots = std::mem::replace(&mut self.config.slots, slots);
+        let slot_count = self.config.slots.len();
+        let mut pads = (0..slot_count).map(|_| None).collect::<Vec<_>>();
+        let mut sequences = vec![0; slot_count];
+        let mut published = vec![None; slot_count];
+        let mut connected = vec![false; slot_count];
+        for slot in 0..old_slots.len() {
+            if self.config.slots.get(slot) == old_slots.get(slot) {
+                pads[slot] = self.pads[slot].take();
+                sequences[slot] = self.sequences[slot];
+                published[slot] = self.last_published[slot];
+                connected[slot] = self.last_connected[slot];
+            } else if self.last_connected[slot] {
+                self.publish_disconnected(slot);
+            }
+        }
+        self.pads = pads;
+        self.sequences = sequences;
+        self.last_published = published;
+        self.last_connected = connected;
+        self.interactive_remappings = vec![HashMap::new(); slot_count];
+        self.interactive_mouse_mappings = vec![HashMap::new(); slot_count];
+        self.keyboard_mappings = keyboard_mappings;
+        self.default_keyboard_mappings = self.keyboard_mappings.clone();
+        self.pressed_keys.clear();
+        *self.states.lock() = vec![None; slot_count];
+        self.update_mapped_keys();
+        self.next_topology_refresh = Instant::now();
+        Ok(())
+    }
+
+    fn set_mouse_binding(
+        &mut self,
+        slot: usize,
+        target: BindingKey,
+        source: SourceControl,
+        transform: AxisTransform,
+    ) {
+        if let Some(bindings) = self.interactive_mouse_mappings.get_mut(slot) {
+            bindings.insert(target, MouseAxisMap { source, transform });
+        }
+        if let Some(bindings) = self.interactive_remappings.get_mut(slot) {
+            bindings.insert(target, InputBinding::Disabled { disabled: true });
+            recompile_pad(slot, &mut self.pads, &self.remappings, bindings);
+        }
+    }
+
+    fn reset_bindings(&mut self, slot: usize) -> bool {
+        if let Some(bindings) = self.interactive_remappings.get_mut(slot) {
+            bindings.clear();
+            recompile_pad(slot, &mut self.pads, &self.remappings, bindings);
+        }
+        if let Some(mapping) = self.keyboard_mappings.get_mut(slot) {
+            mapping.clone_from(
+                self.default_keyboard_mappings
+                    .get(slot)
+                    .expect("keyboard mapping vectors have equal lengths"),
             );
-            next_topology_refresh = Instant::now() + Duration::from_millis(100);
         }
-        if Instant::now() >= next_device_snapshot {
-            *devices.lock() = observed.iter().map(physical_device_state).collect();
-            next_device_snapshot = Instant::now() + Duration::from_millis(8);
+        if let Some(bindings) = self.interactive_mouse_mappings.get_mut(slot) {
+            bindings.clear();
         }
+        true
+    }
 
-        let mut snapshots = states.lock();
-        let pointer = *pointer.lock();
+    fn clear_binding(&mut self, slot: usize, target: BindingKey) -> bool {
+        if let Some(bindings) = self.interactive_remappings.get_mut(slot) {
+            bindings.remove(&target);
+            recompile_pad(slot, &mut self.pads, &self.remappings, bindings);
+        }
+        let defaults = self
+            .default_keyboard_mappings
+            .get(slot)
+            .and_then(Option::as_ref);
+        if let Some(Some(mapping)) = self.keyboard_mappings.get_mut(slot) {
+            mapping.restore(target, defaults);
+        }
+        if let Some(bindings) = self.interactive_mouse_mappings.get_mut(slot) {
+            bindings.remove(&target);
+        }
+        true
+    }
+
+    fn update_mapped_keys(&self) {
+        *self.mapped_keys.lock() = self
+            .keyboard_mappings
+            .iter()
+            .flatten()
+            .flat_map(|mapping| mapping.bindings.iter().map(|(_, key, _)| key.clone()))
+            .collect();
+    }
+
+    fn refresh_topology(&mut self) {
         let now = Instant::now();
-        for (slot, pad) in pads.iter_mut().enumerate() {
-            let connected = keyboard_mappings[slot].is_some() || pad.is_some();
-            let mut state = if let Some(mapping) = &keyboard_mappings[slot] {
-                mapping.state(&pressed_keys)
-            } else if let Some(pad) = pad {
+        if now >= self.next_topology_refresh {
+            refresh_observed_devices(
+                &self.subsystem,
+                &mut self.observed,
+                &mut self.source_registry,
+            );
+            refresh_devices(
+                &mut self.pads,
+                &self.config.slots,
+                &self.remappings,
+                &self.interactive_remappings,
+                &self.observed,
+            );
+            self.next_topology_refresh = now + Duration::from_millis(100);
+        }
+        if now >= self.next_device_snapshot {
+            *self.devices.lock() = self.observed.iter().map(physical_device_state).collect();
+            self.next_device_snapshot = now + Duration::from_millis(8);
+        }
+    }
+
+    fn publish_samples(&mut self) {
+        let pointer = *self.pointer.lock();
+        let now = Instant::now();
+        let mut snapshots = self.states.lock();
+        for slot in 0..self.pads.len() {
+            let connected = self.keyboard_mappings[slot].is_some() || self.pads[slot].is_some();
+            let mut state = if let Some(mapping) = &self.keyboard_mappings[slot] {
+                mapping.state(&self.pressed_keys)
+            } else if let Some(pad) = &self.pads[slot] {
                 let state = pad.mapping.read(&pad.gamepad);
                 snapshots[slot] = Some(physical_state(pad, state));
                 state
@@ -873,71 +944,72 @@ fn run(
                 snapshots[slot] = None;
                 GamepadState::default()
             };
-            state.pointer = if matches!(
-                config.slots[slot].source,
-                Some(SourceSelector::KeyboardMouse)
-            ) || config.slots[slot].force_mouse
-            {
-                pointer.position.unwrap_or_default()
-            } else if let Some(pad) = pad {
-                if pad.has_touchpad {
-                    pad.touchpad_pointer.unwrap_or_default()
-                } else {
-                    pointer.position.unwrap_or_default()
-                }
-            } else {
-                pointer.position.unwrap_or_default()
-            };
-            if let Some(layout) = InputLayout::get(&config.slots[slot].layout_id) {
+            state.pointer = self.pointer_for(slot, pointer);
+            if let Some(layout) = InputLayout::get(&self.config.slots[slot].layout_id) {
                 apply_mouse_axes(
                     &mut state,
                     layout,
-                    &interactive_mouse_mappings[slot],
+                    &self.interactive_mouse_mappings[slot],
                     pointer,
                     now,
                 );
             }
-            if keyboard_mappings[slot].is_some() {
+            if self.keyboard_mappings[slot].is_some() {
                 snapshots[slot] = Some(keyboard_diagnostic_state(
-                    &config.slots[slot].layout_id,
+                    &self.config.slots[slot].layout_id,
                     state,
                 ));
             }
-            if !enabled {
+            if !self.enabled {
                 state = GamepadState::default();
             }
-            if last_connected[slot] != connected || last_published[slot] != Some(state) {
-                sequences[slot] = sequences[slot].wrapping_add(1);
-                last_published[slot] = Some(state);
-                last_connected[slot] = connected;
-                updates.publish(GamepadUpdate {
+            if self.last_connected[slot] != connected || self.last_published[slot] != Some(state) {
+                self.sequences[slot] = self.sequences[slot].wrapping_add(1);
+                self.last_published[slot] = Some(state);
+                self.last_connected[slot] = connected;
+                self.updates.publish(GamepadUpdate {
                     slot: GamepadSlot::new(slot as u8).unwrap(),
-                    sequence: sequences[slot],
+                    sequence: self.sequences[slot],
                     connected,
                     state,
                 });
             }
         }
-        drop(snapshots);
-        // `yield_now` immediately resumes when no equal-priority thread is
-        // runnable and therefore busy-spins on Windows. A one-millisecond wait
-        // is still comfortably below a display interval while letting an idle
-        // provider consume negligible CPU.
-        thread::sleep(INPUT_POLL_INTERVAL);
     }
 
-    for (slot, pad) in pads.iter_mut().enumerate() {
-        let _ = pad.take();
-        sequences[slot] = sequences[slot].wrapping_add(1);
-        updates.publish(GamepadUpdate {
+    fn pointer_for(&self, slot: usize, pointer: PointerSample) -> [i16; 2] {
+        let configured = &self.config.slots[slot];
+        if matches!(configured.source, Some(SourceSelector::KeyboardMouse))
+            || configured.force_mouse
+        {
+            return pointer.position.unwrap_or_default();
+        }
+        self.pads[slot]
+            .as_ref()
+            .filter(|pad| pad.has_touchpad)
+            .and_then(|pad| pad.touchpad_pointer)
+            .or(pointer.position)
+            .unwrap_or_default()
+    }
+
+    fn publish_disconnected(&mut self, slot: usize) {
+        self.sequences[slot] = self.sequences[slot].wrapping_add(1);
+        self.updates.publish(GamepadUpdate {
             slot: GamepadSlot::new(slot as u8).unwrap(),
-            sequence: sequences[slot],
+            sequence: self.sequences[slot],
             connected: false,
             state: GamepadState::default(),
         });
-        states.lock()[slot] = None;
     }
-    devices.lock().clear();
+
+    fn shutdown(&mut self) {
+        for slot in 0..self.pads.len() {
+            let _ = self.pads[slot].take();
+            self.publish_disconnected(slot);
+            self.states.lock()[slot] = None;
+        }
+        self.devices.lock().clear();
+    }
 }
 
 type Initialized = (
