@@ -175,7 +175,6 @@ export type ConfigurationPort = {
   index: number;
   layouts: string[];
   selectedLayout: string;
-  projectionMode: ProjectionMode;
 };
 
 export type ConfigurationPortGroup = {
@@ -205,8 +204,6 @@ export type ConfigurationSelection = {
     ports: Array<{
       index: number;
       layout: string;
-      source?: InputSourceSelector;
-      projectionMode?: ProjectionMode;
       mapping?: Record<string, string>;
     }>;
   }>;

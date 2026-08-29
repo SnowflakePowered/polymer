@@ -3,17 +3,19 @@ use snowglass_input::{
     hub::{BindingOverride, InputConfiguration, SourceControl, SourceSelector},
     provider::sdl3::{Sdl3Provider, SlotConfig},
 };
+use snowglass_runtime::ResolvedInputConfiguration;
 
 pub(super) struct InputReconciler;
 
 impl InputReconciler {
     pub(super) fn reconcile(
         provider: &Sdl3Provider,
-        previous: &InputConfiguration,
-        next: &InputConfiguration,
+        previous: &ResolvedInputConfiguration,
+        next: &ResolvedInputConfiguration,
         emulator_attached: bool,
     ) -> Result<(), String> {
-        if emulator_attached && Self::topology_changed(previous, next) {
+        if emulator_attached && Self::topology_changed(&previous.configuration, &next.configuration)
+        {
             return Err(
                 "changing controller topology while an emulator is attached is not supported by the current SDL hook"
                     .to_owned(),
@@ -30,21 +32,31 @@ impl InputReconciler {
         Ok(())
     }
 
+    pub(super) fn apply(
+        provider: &Sdl3Provider,
+        configuration: &ResolvedInputConfiguration,
+    ) -> Result<(), String> {
+        Self::validate_bindings(configuration)?;
+        provider.reconfigure_slots(Self::slots(configuration))?;
+        Self::project_bindings(provider, configuration);
+        Ok(())
+    }
+
     fn topology_changed(previous: &InputConfiguration, next: &InputConfiguration) -> bool {
         previous.machine != next.machine
             || previous.ports.len() != next.ports.len()
             || previous.ports.iter().zip(&next.ports).any(|(old, new)| {
-                old.port != new.port
-                    || old.layout != new.layout
-                    || old.slot != new.slot
-                    || old.projection_mode != new.projection_mode
+                old.port != new.port || old.layout != new.layout || old.slot != new.slot
             })
     }
 
-    fn validate_bindings(configuration: &InputConfiguration) -> Result<(), String> {
-        for port in &configuration.ports {
-            let source = Self::source_for_port(configuration, port.slot);
-            if let Some(binding) = port
+    fn validate_bindings(configuration: &ResolvedInputConfiguration) -> Result<(), String> {
+        for port in &configuration.configuration.ports {
+            let source = Self::source_for_port(&configuration.configuration, port.slot);
+            let Some(slot) = port.slot.and_then(|slot| configuration.slots.get(&slot)) else {
+                continue;
+            };
+            if let Some(binding) = slot
                 .overrides
                 .values()
                 .find(|binding| !Self::binding_supported(binding, source))
@@ -84,8 +96,9 @@ impl InputReconciler {
         binding.sdl_binding().is_some()
     }
 
-    pub(super) fn slots(configuration: &InputConfiguration) -> Vec<SlotConfig> {
+    pub(super) fn slots(configuration: &ResolvedInputConfiguration) -> Vec<SlotConfig> {
         let highest_slot = configuration
+            .configuration
             .ports
             .iter()
             .filter_map(|port| port.slot)
@@ -104,15 +117,19 @@ impl InputReconciler {
                 ]
             })
             .unwrap_or_default();
-        for port in &configuration.ports {
+        for port in &configuration.configuration.ports {
             let Some(slot) = port.slot else { continue };
-            let source = Self::source_for_port(configuration, Some(slot));
+            let source = Self::source_for_port(&configuration.configuration, Some(slot));
+            let mapping = configuration
+                .slots
+                .get(&slot)
+                .expect("every configured virtual slot has a resolved device mapping");
             slots[usize::from(slot)] = SlotConfig {
                 source: source.cloned(),
                 layout_id: port.layout.clone(),
                 force_mouse: port.force_mouse
                     || matches!(source, Some(SourceSelector::KeyboardMouse)),
-                projection_mode: port.projection_mode,
+                projection_mode: mapping.projection_mode,
             };
         }
         slots
@@ -131,14 +148,17 @@ impl InputReconciler {
         })
     }
 
-    fn project_bindings(provider: &Sdl3Provider, configuration: &InputConfiguration) {
-        for port in &configuration.ports {
+    fn project_bindings(provider: &Sdl3Provider, configuration: &ResolvedInputConfiguration) {
+        for port in &configuration.configuration.ports {
             let Some(slot) = port.slot.map(usize::from) else {
                 continue;
             };
             provider.reset_bindings(slot);
-            let source = Self::source_for_port(configuration, port.slot);
-            for (target, binding) in &port.overrides {
+            let source = Self::source_for_port(&configuration.configuration, port.slot);
+            let Some(mapping) = port.slot.and_then(|slot| configuration.slots.get(&slot)) else {
+                continue;
+            };
+            for (target, binding) in &mapping.overrides {
                 Self::project_binding(provider, slot, target, binding, source);
             }
         }

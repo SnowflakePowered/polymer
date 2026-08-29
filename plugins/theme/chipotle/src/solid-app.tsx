@@ -335,28 +335,14 @@ function ShellProvider(props: ParentProps) {
     const packageValue = model.package;
     if (!game || !packageValue) return;
     const emulator = game.candidates.find((item) => item.id === game.selectedEmulator) || game.candidates[0];
-    let virtualIndex = 0;
-    const assignments = window.Snowglass.input.assignments;
-    const selectedSource = (index: number) => {
-      const source = assignments.find((assignment) => assignment.index === index)?.source;
-      if (source) return source;
-      return index === 0 && window.Snowglass.input.controllers.length === 0
-        ? { kind: "keyboardMouse" as const }
-        : undefined;
-    };
     const selection: ConfigurationSelection = {
       emulator: emulator.id,
       groups: emulator.groups.map((group) => ({
         name: group.name,
-        ports: group.ports.slice(0, group.connected).map((port) => {
-          const index = virtualIndex++;
-          return {
-            index: port.index,
-            layout: port.selectedLayout,
-            source: selectedSource(index),
-            projectionMode: port.projectionMode,
-          };
-        }),
+        ports: group.ports.slice(0, group.connected).map((port) => ({
+          index: port.index,
+          layout: port.selectedLayout,
+        })),
       })),
       settings: Object.fromEntries(activeOptions(emulator, game.platform).filter((option) => option.value != null).map((option) => [option.path, option.value])),
     };
@@ -472,13 +458,13 @@ function ConfigurePage() {
     </header>
     <div class="configuration-layout">
       <section class="controller-pane">
-        <div class="configuration-section-heading"><div><p>Input assignments</p><h2>Controllers</h2></div><span>Choose what sits in each virtual port</span></div>
+        <div class="configuration-section-heading"><div><p>Emulator input</p><h2>Controller ports</h2></div><span>Choose the emulated layout for each port</span></div>
         <For each={emulator()?.groups}>{(group, groupIndex) => <section class="controller-group-card">
           <div class="controller-group-heading"><h3>{friendly(group.name)}</h3><div class="connected-choice"><Choice label="Connected" value={String(group.connected)} items={Array.from({ length: group.ports.length + 1 }, (_, value) => ({ value: String(value), label: String(value) }))} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].connected = Number(value))} /></div></div>
           <Show when={group.connected > 0} fallback={<p class="controller-empty">No controllers connected to this group.</p>}>
             <Tabs.Root defaultValue={`p${group.ports[0]?.index ?? 0}`}>
               <Tabs.List class="controller-tabs"><For each={group.ports.slice(0, group.connected)}>{(port) => <Tabs.Trigger value={`p${port.index}`} class="controller-tab">Port {port.index + 1}</Tabs.Trigger>}</For></Tabs.List>
-              <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`p${port.index}`} class="controller-tab-content"><article class="controller-port-card"><strong>Port {port.index + 1}</strong><div class="controller-port-fields"><Choice label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].selectedLayout = value)} /><Choice label="Input projection" value={port.projectionMode} items={[{ value: "position", label: "Position" }, { value: "name", label: "Name" }]} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].projectionMode = value as "position" | "name")} /></div></article></Tabs.Content>}</For>
+              <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`p${port.index}`} class="controller-tab-content"><article class="controller-port-card"><strong>Port {port.index + 1}</strong><div class="controller-port-fields"><Choice label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => updateEmulator((target) => target.groups[groupIndex()].ports[portIndex()].selectedLayout = value)} /></div></article></Tabs.Content>}</For>
             </Tabs.Root>
           </Show>
         </section>}</For>

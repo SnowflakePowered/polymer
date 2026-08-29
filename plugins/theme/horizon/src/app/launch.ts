@@ -80,29 +80,14 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
   const emulator = game.candidates.find((item) => item.id === game.selectedEmulator) || game.candidates[0];
   if (!emulator) throw new Error(`No emulator is available for ${game.name}`);
 
-  let virtualIndex = 0;
-  const assignments = window.Snowglass.input.assignments;
-  const connectedControllers = window.Snowglass.input.controllers;
-  const selectedSource = (index: number) => {
-    const source = assignments.find((assignment) => assignment.index === index)?.source;
-    if (source) return source;
-    return index === 0 && connectedControllers.length === 0
-      ? { kind: "keyboardMouse" as const }
-      : undefined;
-  };
   const selection: ConfigurationSelection = {
     emulator: emulator.id,
     groups: emulator.groups.map((group) => ({
       name: group.name,
-      ports: group.ports.slice(0, group.connected).map((port) => {
-        const index = virtualIndex++;
-        return {
-          index: port.index,
-          layout: port.selectedLayout,
-          source: selectedSource(index),
-          projectionMode: port.projectionMode,
-        };
-      }),
+      ports: group.ports.slice(0, group.connected).map((port) => ({
+        index: port.index,
+        layout: port.selectedLayout,
+      })),
     })),
     settings: Object.fromEntries(
       activeOptions(emulator, game.platform)
