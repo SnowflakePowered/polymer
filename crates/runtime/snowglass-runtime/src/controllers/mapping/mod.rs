@@ -5,6 +5,7 @@ use snowglass_input::{
     layout::{InputBinding, InputLayout, ProjectionMode},
     router::GamepadRemap,
     source::{InputSourceDescriptor, InputSourceKind},
+    topology::ControllerBindings,
 };
 use snowglass_library::{
     InputIdentityScope, InputMappingMode, InputMappingProfile as StoredMappingProfile,
@@ -62,6 +63,15 @@ impl MappingProfile {
             Self::generated(mode, &profile.layout_id, profile.identity_scope)
         }
     }
+
+    fn bindings(&self) -> ControllerBindings {
+        ControllerBindings::try_from_strings(
+            self.mapping
+                .iter()
+                .map(|(target, source)| (target.clone(), source.clone())),
+        )
+        .expect("stored controller mappings were validated before persistence")
+    }
 }
 
 impl ControllerManager {
@@ -107,16 +117,10 @@ impl ControllerManager {
         (profile.mode == ProjectionMode::Custom).then(|| {
             GamepadRemap::custom(
                 layout,
-                profile.mapping.iter().filter_map(|(target, source)| {
-                    (source != "none")
-                        .then(|| {
-                            Some((
-                                BindingKey::from_str(target).ok()?,
-                                BindingKey::from_str(source).ok()?,
-                            ))
-                        })
-                        .flatten()
-                }),
+                profile
+                    .bindings()
+                    .iter()
+                    .filter_map(|(target, source)| source.map(|source| (*target, *source))),
             )
         })
     }
@@ -168,20 +172,15 @@ impl ControllerManager {
                 slots.insert(slot, resolved);
                 continue;
             }
-            for (target, source) in &profile.mapping {
-                let Ok(target) = BindingKey::from_str(target) else {
-                    continue;
-                };
-                let binding = if source == "none" {
-                    Some(InputBinding::Disabled { disabled: true })
+            for (target, source) in profile.bindings().iter() {
+                let binding = if let Some(source) = source {
+                    layout.custom_binding(*target, *source)
                 } else {
-                    BindingKey::from_str(source)
-                        .ok()
-                        .and_then(|source| layout.custom_binding(target, source))
+                    Some(InputBinding::Disabled { disabled: true })
                 };
                 if let Some(binding) = binding {
                     resolved.overrides.insert(
-                        target,
+                        *target,
                         match binding {
                             InputBinding::Button { button } => BindingOverride::Button {
                                 source: SourceControl::GamepadButton { button },
@@ -208,22 +207,19 @@ impl ControllerManager {
 
     pub(super) fn mapping_key(
         &self,
-        command: &serde_json::Value,
+        id: &str,
+        layout_id: &str,
     ) -> Result<(String, String), String> {
-        let id = Self::id_field(command)?;
-        let layout = command
-            .get("layoutId")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "controller mapping command requires layoutId".to_owned())?;
-        InputLayout::get(layout).ok_or_else(|| format!("unknown input layout '{layout}'"))?;
-        Ok((self.mapping_identity(&id), layout.to_owned()))
+        InputLayout::get(layout_id).ok_or_else(|| format!("unknown input layout '{layout_id}'"))?;
+        Ok((self.mapping_identity(id), layout_id.to_owned()))
     }
 
     pub(super) fn mapping_response(
         &self,
-        command: &serde_json::Value,
+        id: &str,
+        layout_id: &str,
     ) -> Result<serde_json::Value, String> {
-        let (identity, layout_id) = self.mapping_key(command)?;
+        let (identity, layout_id) = self.mapping_key(id, layout_id)?;
         let profile = self.mappings.get(&identity, &layout_id).unwrap_or_else(|| {
             MappingProfile::generated(
                 ProjectionMode::Name,
@@ -238,57 +234,40 @@ impl ControllerManager {
         }))
     }
 
-    pub(super) async fn set_mapping(&mut self, command: &serde_json::Value) -> Result<(), String> {
-        let (identity, layout_id) = self.mapping_key(command)?;
-        let value = command
-            .get("mapping")
-            .ok_or_else(|| "controller mapping command requires mapping".to_owned())?;
-        let mode = match value
-            .get("mode")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "controller mapping requires mode".to_owned())?
-        {
-            "name" => ProjectionMode::Name,
-            "position" => ProjectionMode::Position,
-            "custom" => ProjectionMode::Custom,
-            mode => return Err(format!("unknown controller mapping mode '{mode}'")),
-        };
+    pub(super) async fn set_mapping(
+        &mut self,
+        id: &str,
+        layout_id: &str,
+        update: DeviceMapping,
+    ) -> Result<(), String> {
+        let (identity, layout_id) = self.mapping_key(id, layout_id)?;
+        let DeviceMapping { mode, mapping } = update;
         let layout = InputLayout::get(&layout_id).expect("layout was validated");
         let mapping = if mode == ProjectionMode::Custom {
-            value
-                .get("mapping")
-                .and_then(serde_json::Value::as_object)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .map(|(target, source)| {
-                            let target_key = BindingKey::from_str(target).map_err(|error| {
-                                format!("invalid input target '{target}': {error}")
+            mapping
+                .into_iter()
+                .map(|(target, source)| {
+                    let target_key = BindingKey::from_str(&target)
+                        .map_err(|error| format!("invalid input target '{target}': {error}"))?;
+                    if !layout.custom_binding_targets().any(|key| key == target_key) {
+                        return Err(format!(
+                            "input layout {layout_id} has no customizable target '{target}'"
+                        ));
+                    }
+                    if source != "none" {
+                        let source_key = BindingKey::from_str(&source)
+                            .map_err(|error| format!("invalid input source '{source}': {error}"))?;
+                        layout
+                            .custom_binding(target_key, source_key)
+                            .ok_or_else(|| {
+                                format!(
+                                    "input source '{source}' is not a physical gamepad expression"
+                                )
                             })?;
-                            if !layout.custom_binding_targets().any(|key| key == target_key) {
-                                return Err(format!(
-                                    "input layout {layout_id} has no customizable target '{target}'"
-                                ));
-                            }
-                            let source = source.as_str().ok_or_else(|| {
-                                format!("input source for '{target}' must be a string")
-                            })?;
-                            if source != "none" {
-                                let source_key = BindingKey::from_str(source).map_err(|error| {
-                                    format!("invalid input source '{source}': {error}")
-                                })?;
-                                layout.custom_binding(target_key, source_key).ok_or_else(|| {
-                                    format!(
-                                        "input source '{source}' is not a physical gamepad expression"
-                                    )
-                                })?;
-                            }
-                            Ok((target.clone(), source.to_owned()))
-                        })
-                        .collect::<Result<BTreeMap<_, _>, String>>()
+                    }
+                    Ok((target, source))
                 })
-                .transpose()?
-                .unwrap_or_default()
+                .collect::<Result<BTreeMap<_, _>, String>>()?
         } else {
             BTreeMap::new()
         };

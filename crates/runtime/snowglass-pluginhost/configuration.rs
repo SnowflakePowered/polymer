@@ -14,11 +14,23 @@ pub(crate) type ConfigurationId = u32;
 #[derive(Default)]
 pub(crate) struct ConfigurationInstances {
     next_id: ConfigurationId,
-    instances: BTreeMap<ConfigurationId, ConfigurationInstance>,
+    instances: BTreeMap<ConfigurationId, ConfigurationEntry>,
 }
 
+#[derive(Clone)]
+struct ConfigurationEntry {
+    instance: ConfigurationInstance,
+    bindings: Vec<GamepadBinding>,
+}
+
+pub(crate) struct ConfigurationCheckpoint(ConfigurationEntry);
+
 impl ConfigurationInstances {
-    pub(crate) fn insert(&mut self, instance: ConfigurationInstance) -> ConfigurationId {
+    pub(crate) fn insert(
+        &mut self,
+        instance: ConfigurationInstance,
+        topology: &snowglass_input::topology::ControllerTopology,
+    ) -> ConfigurationId {
         let id = loop {
             self.next_id = self.next_id.wrapping_add(1);
             if self.next_id == 0 {
@@ -28,7 +40,13 @@ impl ConfigurationInstances {
                 break self.next_id;
             }
         };
-        self.instances.insert(id, instance);
+        self.instances.insert(
+            id,
+            ConfigurationEntry {
+                instance,
+                bindings: Self::bindings(topology),
+            },
+        );
         id
     }
 
@@ -41,7 +59,7 @@ impl ConfigurationInstances {
             .instances
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        Ok(instance.get(path).map(value_to_json))
+        Ok(instance.instance.get(path).map(value_to_json))
     }
 
     pub(crate) fn set(
@@ -54,7 +72,7 @@ impl ConfigurationInstances {
             .instances
             .get_mut(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        set_value(instance, path, value)?;
+        set_value(&mut instance.instance, path, value)?;
         Ok(())
     }
 
@@ -67,6 +85,7 @@ impl ConfigurationInstances {
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
         Ok(instance
+            .instance
             .iter()
             .map(|(_, setting)| {
                 (
@@ -84,6 +103,7 @@ impl ConfigurationInstances {
     ) -> Result<ConfigurationInstance, ConfigurationAccessError> {
         self.instances
             .remove(&id)
+            .map(|entry| entry.instance)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))
     }
 
@@ -91,16 +111,33 @@ impl ConfigurationInstances {
         self.instances.remove(&id);
     }
 
+    pub(crate) fn checkpoint(
+        &self,
+        id: ConfigurationId,
+    ) -> Result<ConfigurationCheckpoint, ConfigurationAccessError> {
+        self.instances
+            .get(&id)
+            .cloned()
+            .map(ConfigurationCheckpoint)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))
+    }
+
+    pub(crate) fn restore(&mut self, id: ConfigurationId, checkpoint: ConfigurationCheckpoint) {
+        self.instances.insert(id, checkpoint.0);
+    }
+
     pub(crate) fn rematerialize(
         &mut self,
         id: ConfigurationId,
         mut replacement: ConfigurationInstance,
+        topology: &snowglass_input::topology::ControllerTopology,
     ) -> Result<(), ConfigurationAccessError> {
         let current = self
             .instances
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
         let values = current
+            .instance
             .iter()
             .map(|(_, setting)| {
                 (
@@ -114,20 +151,37 @@ impl ConfigurationInstances {
                 set_value(&mut replacement, &path, value)?;
             }
         }
-        self.instances.insert(id, replacement);
+        self.instances.insert(
+            id,
+            ConfigurationEntry {
+                instance: replacement,
+                bindings: Self::bindings(topology),
+            },
+        );
         Ok(())
     }
 
     pub(crate) fn render(
         &mut self,
         id: ConfigurationId,
-        bindings: Vec<GamepadBinding>,
     ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
-        let instance = self
+        let entry = self
             .instances
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        serialize(instance, bindings)
+        serialize(&entry.instance, entry.bindings.clone())
+    }
+
+    fn bindings(topology: &snowglass_input::topology::ControllerTopology) -> Vec<GamepadBinding> {
+        topology
+            .mappings
+            .iter()
+            .map(|mapping| GamepadBinding {
+                group: mapping.target.group.clone().into_boxed_str(),
+                port: mapping.target.port,
+                gamepad: usize::from(mapping.gamepad),
+            })
+            .collect()
     }
 }
 

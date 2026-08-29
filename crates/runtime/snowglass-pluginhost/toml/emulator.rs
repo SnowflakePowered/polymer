@@ -288,7 +288,7 @@ mod tests {
             .unwrap();
         let configuration = plugin.materialize("NINTENDO_WII", assignments).unwrap();
         let mut instances = ConfigurationInstances::default();
-        let id = instances.insert(configuration);
+        let id = instances.insert(configuration, &Default::default());
         instances
             .set(id, "main.core.gfx_backend", serde_json::json!("D3D"))
             .unwrap();
@@ -336,7 +336,7 @@ mod tests {
             .unwrap();
         let configuration = plugin.materialize("NINTENDO_WII", assignments).unwrap();
         let mut instances = ConfigurationInstances::default();
-        let id = instances.insert(configuration);
+        let id = instances.insert(configuration, &Default::default());
 
         let instance = instances.take(id).unwrap();
         let files = serialize(

@@ -30,8 +30,6 @@ use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
 use mutations::apply_dom_mutations;
-#[cfg(test)]
-use mutations::style_change_requires_geometry;
 use providers::NativeShellProvider;
 use std::{
     collections::HashMap,

@@ -321,9 +321,7 @@ pub unsafe extern "system" fn SnowglassInstallSdl3Hook() -> i32 {
 }
 
 fn dynamic_api_module() -> Option<HMODULE> {
-    let Some(path) = std::env::var_os("SDL3_DYNAMIC_API") else {
-        return None;
-    };
+    let path = std::env::var_os("SDL3_DYNAMIC_API")?;
     let mut wide = path.encode_wide().collect::<Vec<_>>();
     wide.push(0);
     let module = unsafe { LoadLibraryW(wide.as_ptr()) };

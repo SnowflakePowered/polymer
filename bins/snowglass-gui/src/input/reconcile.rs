@@ -193,7 +193,7 @@ impl InputReconciler {
             transform,
         } = binding
         {
-            provider.set_mouse_axis_binding(slot, target.clone(), pointer.clone(), *transform);
+            provider.set_mouse_axis_binding(slot, *target, pointer.clone(), *transform);
         } else if matches!(source, Some(SourceSelector::KeyboardMouse)) {
             let key = match binding {
                 BindingOverride::Button {
@@ -206,9 +206,9 @@ impl InputReconciler {
                 BindingOverride::Disabled => None,
                 _ => return,
             };
-            provider.set_key_binding(slot, target.clone(), key);
+            provider.set_key_binding(slot, *target, key);
         } else if let Some(binding) = binding.sdl_binding() {
-            provider.set_binding(slot, target.clone(), binding);
+            provider.set_binding(slot, *target, binding);
         }
     }
 }

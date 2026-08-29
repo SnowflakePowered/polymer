@@ -42,18 +42,8 @@ function configuration(id) {
     entries() {
       return op_configuration_entries(id);
     },
-    render(bindings) {
-      if (bindings == null) {
-        throw new TypeError("configuration.render requires the complete gamepad bindings");
-      }
-      const normalized = [...bindings].map((binding) => ({
-        target: {
-          group: String(binding.target.group),
-          port: Number(binding.target.port),
-        },
-        gamepad: Number(binding.gamepad?.index ?? binding.gamepad),
-      }));
-      const rendered = op_configuration_render(id, normalized);
+    render() {
+      const rendered = op_configuration_render(id);
       return Object.freeze(rendered);
     },
   });

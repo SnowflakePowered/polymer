@@ -2,9 +2,8 @@
 
 use clap::ValueEnum;
 use clap::{ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, Parser};
-use snowglass_input::hub::SourceSelector;
 pub use snowglass_runtime::HookBackend;
-use std::{collections::HashSet, error::Error, net::SocketAddr, path::PathBuf};
+use std::{collections::HashSet, error::Error, net::SocketAddr};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ViewerApi {
@@ -94,20 +93,6 @@ pub struct ViewerOptions {
     pub hooks: Vec<HookBackend>,
     pub webrtc: Option<Vec<u32>>,
     pub bind_webrtc: SocketAddr,
-    pub gamepads: Vec<GamepadArgument>,
-    /// The consolespec machinespec whose ports the gamepads occupy. A port is
-    /// only meaningful against the machine that declares its group, so this is
-    /// required with `--gamepad` and defaulted alongside the default pad.
-    pub machine: String,
-    pub gamecontroller_db: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GamepadArgument {
-    pub source: Option<SourceSelector>,
-    pub slot: usize,
-    pub layout: String,
-    pub force_mouse: bool,
 }
 
 #[derive(Parser)]
@@ -116,21 +101,6 @@ struct ViewerArguments {
     /// Graphics API used to render the viewer window.
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
-
-    /// Map an opaque provider device ID, or K (keyboard), to a virtual slot and input layout.
-    /// Append +M to the selector to force mouse pointer axes instead of its touchpad.
-    #[arg(long = "gamepad", action = ArgAction::Append, value_name = "SELECTOR:SLOT:LAYOUT")]
-    pub(crate) gamepads: Vec<GamepadArgument>,
-
-    /// The consolespec machine being emulated, e.g. NINTENDO_WIIU. Required
-    /// with --gamepad: it is what decides which ports exist and what may be
-    /// plugged into them.
-    #[arg(long, value_name = "ID")]
-    pub(crate) machine: Option<String>,
-
-    /// Updated SDL gamecontrollerdb.txt. The embedded database is used by default.
-    #[arg(long, value_name = "FILE")]
-    pub(crate) gamecontroller_db: Option<PathBuf>,
 
     /// Track render targets by index into the detected selection, as a
     /// comma-separated list. An entry may append `:TURNS` to rotate that
@@ -233,10 +203,7 @@ struct ViewerArguments {
 }
 
 impl ViewerArguments {
-    fn into_options(
-        self,
-        default_machine: Option<String>,
-    ) -> Result<ViewerOptions, Box<dyn Error>> {
+    fn into_options(self) -> Result<ViewerOptions, Box<dyn Error>> {
         let mut hooks = Vec::new();
         expand_hook_choices(&mut hooks, self.hook_choices)?;
         if hooks.is_empty() {
@@ -261,24 +228,6 @@ impl ViewerArguments {
                 }
             }
         }
-        let mut gamepads = self.gamepads;
-        // The default pad is an Xbox controller, so the default machine is the
-        // one that declares it. A caller who names pads must name the machine:
-        // a port only exists relative to the machine that declares its group.
-        let machine = if gamepads.is_empty() {
-            gamepads.push("K:0:XBOX_CONTROLLER".parse()?);
-            self.machine.unwrap_or_else(|| "MICROSOFT_XBOX".to_owned())
-        } else {
-            self.machine
-                .or(default_machine)
-                .ok_or("--gamepad requires --machine, e.g. --machine NINTENDO_WIIU")?
-        };
-        gamepads.sort_by_key(|gamepad| gamepad.slot);
-        for (expected, gamepad) in gamepads.iter().enumerate() {
-            if gamepad.slot != expected || expected > u8::MAX as usize {
-                return Err("gamepad slots must be unique and contiguous from zero".into());
-            }
-        }
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
@@ -293,9 +242,6 @@ impl ViewerArguments {
             hooks,
             webrtc: self.webrtc,
             bind_webrtc: self.bind_webrtc,
-            gamepads,
-            machine,
-            gamecontroller_db: self.gamecontroller_db,
         })
     }
 }
@@ -320,16 +266,7 @@ pub fn viewer_command_named(name: &'static str) -> Command {
 /// Decodes shared viewer options from matches produced by
 /// [`viewer_command_named`], ignoring arguments added by a renderer host.
 pub fn viewer_options_from_matches(matches: &ArgMatches) -> Result<ViewerOptions, Box<dyn Error>> {
-    viewer_options_from_matches_with_default_machine(matches, None)
-}
-
-/// Decodes shared viewer options while allowing a host-selected emulator
-/// package to supply its only supported machine when `--machine` is omitted.
-pub fn viewer_options_from_matches_with_default_machine(
-    matches: &ArgMatches,
-    default_machine: Option<String>,
-) -> Result<ViewerOptions, Box<dyn Error>> {
-    ViewerArguments::from_arg_matches(matches)?.into_options(default_machine)
+    ViewerArguments::from_arg_matches(matches)?.into_options()
 }
 
 pub fn split_command_arguments(value: &str) -> Result<Vec<String>, String> {
@@ -364,7 +301,7 @@ pub fn parse_arguments(
     ViewerArguments::try_parse_from(
         std::iter::once("snowglass-viewer".to_owned()).chain(arguments),
     )?
-    .into_options(None)
+    .into_options()
 }
 
 fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String> {
@@ -416,54 +353,6 @@ fn parse_webrtc_target(value: &str) -> Result<u32, String> {
 
 fn parse_surface_count(value: &str) -> Result<u32, String> {
     parse_bounded_count(value, "surface")
-}
-
-impl std::str::FromStr for GamepadArgument {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut fields = value.rsplitn(3, ':');
-        let layout = fields.next().filter(|field| !field.is_empty());
-        let slot = fields.next();
-        let source = fields.next().filter(|field| !field.is_empty());
-        let (Some(layout), Some(slot), Some(source)) = (layout, slot, source) else {
-            return Err(format!(
-                "invalid gamepad mapping '{value}'; expected SELECTOR:SLOT:LAYOUT"
-            ));
-        };
-        let slot = slot
-            .parse::<usize>()
-            .map_err(|_| format!("invalid virtual slot '{slot}' in gamepad mapping '{value}'"))?;
-        if slot > u8::MAX as usize {
-            return Err(format!("virtual gamepad slot {slot} is outside 0..=255"));
-        }
-        let (source, force_mouse) = source
-            .strip_suffix("+M")
-            .map_or((source, false), |source| (source, true));
-        if source.is_empty() {
-            return Err(format!(
-                "missing selector before +M in gamepad mapping '{value}'"
-            ));
-        }
-        let source = if source == "K" {
-            SourceSelector::KeyboardMouse
-        } else if source.starts_with("sdl3:") {
-            SourceSelector::Device {
-                device_id: source.to_owned(),
-            }
-        } else {
-            return Err(format!(
-                "invalid controller source '{source}'; expected K or an sdl3:<id> provider ID"
-            ));
-        };
-        let force_mouse = force_mouse || matches!(source, SourceSelector::KeyboardMouse);
-        Ok(Self {
-            source: Some(source),
-            slot,
-            layout: layout.to_owned(),
-            force_mouse,
-        })
-    }
 }
 
 fn parse_bounded_count(value: &str, name: &str) -> Result<u32, String> {

@@ -11,6 +11,7 @@ pub mod provider;
 pub mod router;
 pub mod sdl;
 pub mod source;
+pub mod topology;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InputEvent {

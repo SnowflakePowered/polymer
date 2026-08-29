@@ -118,7 +118,7 @@ impl ShellCoordinator {
         let state = self.input.controller_api_snapshot();
         match self
             .game_host
-            .begin_controller_changed(prepared.candidate(), &state)
+            .controller_change(prepared.candidate(), &state)
         {
             Ok(Some(response)) => Some(PendingInputChange {
                 request_id,

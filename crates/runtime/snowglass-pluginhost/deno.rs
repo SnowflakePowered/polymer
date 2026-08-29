@@ -1,13 +1,11 @@
 //! Invocation-scoped Deno adapter used only by pluginhost-owned workers.
 
 use crate::automation::{AutomationState, op_ui_automation_request};
-use crate::controller::{
-    ControllerEffects, op_controller_change_flush, op_virtual_gamepad_set_connected,
-};
+use crate::controller::ControllerEffects;
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorSetupInvocation,
     GraphicsHook, TrackedSurface,
-    configuration::{ConfigurationId, ConfigurationInstances},
+    configuration::{ConfigurationCheckpoint, ConfigurationId, ConfigurationInstances},
 };
 use deno_core::{JsRuntime, OpState, op2, serde_v8, v8};
 use deno_error::JsErrorBox;
@@ -66,38 +64,14 @@ fn op_configuration_entries(
 fn op_configuration_render(
     state: &mut OpState,
     id: ConfigurationId,
-    #[serde] bindings: Vec<ConfigurationGamepadBinding>,
 ) -> Result<std::collections::BTreeMap<String, ByteBuf>, JsErrorBox> {
     Ok(state
         .borrow_mut::<ConfigurationInstances>()
-        .render(
-            id,
-            bindings
-                .into_iter()
-                .map(|binding| snowglass_config::ser::GamepadBinding {
-                    group: binding.target.group.into_boxed_str(),
-                    port: binding.target.port,
-                    gamepad: binding.gamepad,
-                })
-                .collect(),
-        )
+        .render(id)
         .map_err(|error| JsErrorBox::generic(error.to_string()))?
         .into_iter()
         .map(|(path, bytes)| (path, ByteBuf::from(bytes)))
         .collect())
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ConfigurationGamepadBinding {
-    target: ConfigurationPortTarget,
-    gamepad: usize,
-}
-
-#[derive(serde::Deserialize)]
-struct ConfigurationPortTarget {
-    group: String,
-    port: usize,
 }
 
 #[derive(Serialize)]
@@ -114,8 +88,6 @@ deno_core::extension!(
         op_configuration_set,
         op_configuration_entries,
         op_configuration_render,
-        op_virtual_gamepad_set_connected,
-        op_controller_change_flush,
         op_ui_automation_request,
     ],
     esm_entry_point = "ext:snowglass_pluginhost_deno/configuration.js",
@@ -175,12 +147,16 @@ impl<'runtime> EmulatorWorker<'runtime> {
         })
     }
 
-    fn insert_configuration(&mut self, configuration: ConfigurationInstance) -> ConfigurationId {
+    fn insert_configuration(
+        &mut self,
+        configuration: ConfigurationInstance,
+        topology: &snowglass_input::topology::ControllerTopology,
+    ) -> ConfigurationId {
         self.runtime
             .op_state()
             .borrow_mut()
             .borrow_mut::<ConfigurationInstances>()
-            .insert(configuration)
+            .insert(configuration, topology)
     }
 
     fn discard_configuration(&mut self, id: ConfigurationId) {
@@ -206,9 +182,19 @@ impl<'runtime> EmulatorWorker<'runtime> {
                 "setupLaunch arguments must be an object".to_owned(),
             ));
         }
+        let topology = serde_json::from_value::<snowglass_input::topology::ControllerTopology>(
+            arguments
+                .get("controllerTopology")
+                .cloned()
+                .ok_or_else(|| {
+                    DenoPluginError::Adapter(
+                        "setupLaunch arguments require controllerTopology".to_owned(),
+                    )
+                })?,
+        )?;
         let entrypoint = serde_json::to_string(plugin.entrypoint().as_str())?;
         let arguments = serde_json::to_string(&arguments)?;
-        let configuration_id = self.insert_configuration(configuration);
+        let configuration_id = self.insert_configuration(configuration, &topology);
         let script = format!(
             r#"(async () => {{
                     const module = await import({entrypoint});
@@ -320,7 +306,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             filesystem,
             controller_session: None,
             session: None,
-            gamepad_mapping: None,
+            controller_topology: None,
         })
     }
 }
@@ -347,24 +333,20 @@ pub(crate) async fn execute_retained_emulator(
 
 pub(crate) async fn execute_controller_change(
     runtime: &mut JsRuntime,
-    controller_mappings: &serde_json::Value,
-    previous_controller_mappings: &serde_json::Value,
-    gamepad_states: &[bool],
+    topology: &snowglass_input::topology::ControllerTopology,
+    previous_topology: &snowglass_input::topology::ControllerTopology,
 ) -> Result<(), EmulatorHostError> {
-    let mappings = serde_json::to_string(controller_mappings)
+    let topology = serde_json::to_string(topology)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    let states = serde_json::to_string(gamepad_states)
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    let previous = serde_json::to_string(previous_controller_mappings)
+    let previous = serde_json::to_string(previous_topology)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let script = format!(
         r#"(async () => {{
           const active = globalThis.__snowglassActiveControllerChange;
           if (active == null) throw new TypeError("plugin does not export onControllerChanged");
           const context = __snowglassControllerChange.context(
-            {mappings},
+            {topology},
             {previous},
-            {states},
             active.configuration,
             __snowglassFilesystem.filesystem,
           );
@@ -392,13 +374,37 @@ pub(crate) fn rematerialize_configuration(
     runtime: &mut JsRuntime,
     id: ConfigurationId,
     replacement: ConfigurationInstance,
+    topology: &snowglass_input::topology::ControllerTopology,
 ) -> Result<(), EmulatorHostError> {
     runtime
         .op_state()
         .borrow_mut()
         .borrow_mut::<ConfigurationInstances>()
-        .rematerialize(id, replacement)?;
+        .rematerialize(id, replacement, topology)?;
     Ok(())
+}
+
+pub(crate) fn checkpoint_configuration(
+    runtime: &mut JsRuntime,
+    id: ConfigurationId,
+) -> Result<ConfigurationCheckpoint, EmulatorHostError> {
+    Ok(runtime
+        .op_state()
+        .borrow()
+        .borrow::<ConfigurationInstances>()
+        .checkpoint(id)?)
+}
+
+pub(crate) fn restore_configuration(
+    runtime: &mut JsRuntime,
+    id: ConfigurationId,
+    checkpoint: ConfigurationCheckpoint,
+) {
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<ConfigurationInstances>()
+        .restore(id, checkpoint);
 }
 
 pub(crate) fn discard_configuration(runtime: &mut JsRuntime, id: ConfigurationId) {

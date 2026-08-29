@@ -9,6 +9,13 @@ pub(crate) struct LauncherGamepad {
     pub(crate) force_mouse: bool,
 }
 
+pub(crate) struct ConfiguredGamepad {
+    pub(crate) source: Option<SourceSelector>,
+    pub(crate) slot: usize,
+    pub(crate) layout: String,
+    pub(crate) force_mouse: bool,
+}
+
 pub(crate) struct LauncherState {
     cli_target: Option<Vec<String>>,
     pub(crate) executable: String,
@@ -81,20 +88,12 @@ impl LauncherState {
             hooks: options.hooks.clone(),
             render_targets: options.track_render_targets.clone().unwrap_or_default(),
             graph_tracking: options.graph_tracking,
-            gamepads: options
-                .gamepads
-                .iter()
-                .map(|pad| LauncherGamepad {
-                    slot: pad.slot,
-                    selector: match &pad.source {
-                        Some(SourceSelector::KeyboardMouse) => "K".to_owned(),
-                        Some(SourceSelector::Device { device_id }) => device_id.clone(),
-                        None => String::new(),
-                    },
-                    layout: pad.layout.clone(),
-                    force_mouse: pad.force_mouse,
-                })
-                .collect(),
+            gamepads: vec![LauncherGamepad {
+                slot: 0,
+                selector: "K".to_owned(),
+                layout: "XBOX_CONTROLLER".to_owned(),
+                force_mouse: true,
+            }],
         }
     }
 
@@ -110,19 +109,37 @@ impl LauncherState {
         Ok(target)
     }
 
-    pub(crate) fn gamepad_arguments(&self) -> Result<Vec<GamepadArgument>, String> {
+    pub(crate) fn configured_gamepads(&self) -> Result<Vec<ConfiguredGamepad>, String> {
         let mut pads = self
             .gamepads
             .iter()
             .map(|pad| {
-                format!(
-                    "{}{}:{}:{}",
-                    pad.selector.trim(),
-                    if pad.force_mouse { "+M" } else { "" },
-                    pad.slot,
-                    pad.layout
-                )
-                .parse::<GamepadArgument>()
+                if pad.slot > u8::MAX as usize {
+                    return Err(format!(
+                        "Virtual controller slot {} is outside 0..=255",
+                        pad.slot
+                    ));
+                }
+                let selector = pad.selector.trim();
+                let source = if selector == "K" {
+                    SourceSelector::KeyboardMouse
+                } else if selector.starts_with("sdl://") || selector.starts_with("bt://") {
+                    SourceSelector::Device {
+                        device_id: selector.to_owned(),
+                    }
+                } else {
+                    return Err(format!(
+                        "Invalid controller source '{selector}'; expected K, sdl://..., or bt://..."
+                    ));
+                };
+                let force_mouse =
+                    pad.force_mouse || matches!(source, SourceSelector::KeyboardMouse);
+                Ok(ConfiguredGamepad {
+                    source: Some(source),
+                    slot: pad.slot,
+                    layout: pad.layout.clone(),
+                    force_mouse,
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         pads.sort_by_key(|pad| pad.slot);
@@ -136,7 +153,7 @@ impl LauncherState {
                 .collect::<HashMap<_, _>>();
             return Ok((0..=last_slot)
                 .map(|slot| {
-                    by_slot.remove(&slot).unwrap_or(GamepadArgument {
+                    by_slot.remove(&slot).unwrap_or(ConfiguredGamepad {
                         source: None,
                         slot,
                         layout: "XBOX_CONTROLLER".to_owned(),
@@ -486,7 +503,7 @@ pub(crate) fn draw_launcher_window(
                 ui.horizontal(|ui| {
                     ui.label("Virtual index");
                     ui.add(egui::DragValue::new(&mut pad.slot).range(0..=u8::MAX as usize));
-                    ui.label("Source (K or sdl3:<id>)");
+                    ui.label("Source (K, sdl://..., or bt://...)");
                     ui.text_edit_singleline(&mut pad.selector);
                     egui::ComboBox::from_id_salt(("launcher-layout", row))
                         .selected_text(&pad.layout)

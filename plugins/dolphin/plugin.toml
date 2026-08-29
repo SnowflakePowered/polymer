@@ -14,7 +14,6 @@ mode = "rx"
 platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
 main = "dolphin.ts"
 
-
 [emulator.configuration]
 definitions = [
     "config/dolphin.toml",

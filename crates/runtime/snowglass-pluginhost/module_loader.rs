@@ -220,3 +220,52 @@ fn requested_module_type(options: &ModuleLoadOptions) -> ModuleType {
         deno_core::RequestedModuleType::None => ModuleType::JavaScript,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_only_shared_api_imports_are_erased_before_module_resolution() {
+        let root = tempfile::tempdir().unwrap();
+        let loader = PluginModuleLoader::new("test", root.path().to_owned());
+        let specifier = loader.base.join("plugin.ts").unwrap();
+        let output = loader
+            .transform_source(
+                &specifier,
+                br#"import type { Filesystem } from "../plugin-api.ts";
+                    export function setup(filesystem: Filesystem) { return Boolean(filesystem); }"#
+                    .to_vec(),
+            )
+            .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.contains("plugin-api"));
+        assert!(output.contains("export function setup"));
+    }
+
+    #[test]
+    fn bundled_emulator_plugins_transpile_against_the_shared_api() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        for name in [
+            "cemu",
+            "dolphin",
+            "duckstation",
+            "flycast",
+            "pcsx2",
+            "retroarch",
+        ] {
+            let root = workspace.join("plugins").join(name).canonicalize().unwrap();
+            let source = root.join(format!("{name}.ts"));
+            let loader = PluginModuleLoader::new(name, root);
+            let specifier = loader.specifier(&source).unwrap();
+            let output = loader
+                .transform_source(&specifier, std::fs::read(source).unwrap())
+                .unwrap();
+            assert!(
+                !String::from_utf8(output)
+                    .unwrap()
+                    .contains("../plugin-api.ts")
+            );
+        }
+    }
+}

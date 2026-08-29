@@ -32,7 +32,7 @@ export type ControllerPlayer = {
   readonly controller: ControllerDevice | null;
 };
 
-export type ControllerMapping = {
+export type ControllerMappingProfile = {
   readonly mode: ProjectionMode;
   /** Logical input expression to physical input expression, or `none`. */
   readonly mapping: Readonly<Record<string, string>>;
@@ -64,13 +64,13 @@ export interface ControllersApi extends EventTarget {
   startConnectionSession(): Promise<ConnectionSession>;
   disconnect(id: string): Promise<void>;
   forget(id: string): Promise<void>;
-  getMapping(id: string, layoutId: string): Promise<ControllerMapping>;
+  getMapping(id: string, layoutId: string): Promise<ControllerMappingProfile>;
   setMapping(
     id: string,
     layoutId: string,
     mapping: Readonly<{ mode: ProjectionMode; mapping?: Readonly<Record<string, string>> }>,
-  ): Promise<ControllerMapping>;
-  resetMapping(id: string, layoutId: string): Promise<ControllerMapping>;
+  ): Promise<ControllerMappingProfile>;
+  resetMapping(id: string, layoutId: string): Promise<ControllerMappingProfile>;
 }
 
 export type TrackedSurface = {
@@ -81,16 +81,21 @@ export type TrackedSurface = {
   webrtc: boolean;
 };
 
-export type GamePadMapping = {
+export type ControllerMapping = {
+  target: Readonly<{ group: string; port: number }>;
+  gamepad: number;
   source?: InputSourceSelector;
+  connected: boolean;
   mouse: boolean;
-  slot: number;
-  port?: string;
   layout: string;
   projectionMode?: ProjectionMode;
   /** Logical input expression to physical input expression, or `none`. */
   mapping: Record<string, string>;
 };
+
+export type ControllerTopology = Readonly<{
+  mappings: readonly ControllerMapping[];
+}>;
 
 export type LaunchOptions = {
   command: string;
@@ -99,7 +104,7 @@ export type LaunchOptions = {
   hook: GraphicsHook[];
   graphTracking: boolean;
   surfaces: TrackedSurface[];
-  gamepadMapping: GamePadMapping[];
+  controllerTopology: ControllerTopology;
   machine: string;
   webrtcBind?: string;
   preparedFilesystem?: string;

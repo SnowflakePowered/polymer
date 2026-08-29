@@ -38,7 +38,7 @@ impl ShellCoordinator {
         self.emit_instance_event(token, "start", &serde_json::Value::Null);
         if let Err(error) = self
             .input
-            .configure_launch(&options.machine, &options.gamepad_mapping)
+            .configure_launch(&options.machine, &options.controller_topology)
         {
             self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);

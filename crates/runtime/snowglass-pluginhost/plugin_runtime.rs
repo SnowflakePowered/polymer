@@ -181,6 +181,117 @@ struct RuntimeState {
     shutdown: AtomicBool,
 }
 
+enum ExportInvocation {
+    SetupLaunch { explicit_default: bool },
+    Generic,
+}
+
+impl ExportInvocation {
+    fn parse(path: &[String]) -> Result<Self, PluginInvocationError> {
+        if path.is_empty() || path.iter().any(String::is_empty) {
+            return Err(PluginInvocationError::new(
+                "TypeError",
+                "INVALID_EXPORT_PATH",
+                "plugin export path must contain non-empty property names",
+            ));
+        }
+        Ok(match path {
+            [name] if name == "setupLaunch" => Self::SetupLaunch {
+                explicit_default: false,
+            },
+            [root, name] if root == "default" && name == "setupLaunch" => Self::SetupLaunch {
+                explicit_default: true,
+            },
+            _ => Self::Generic,
+        })
+    }
+}
+
+struct PreparedSetupLaunch {
+    invocation: EmulatorSetupInvocation,
+    topology: snowglass_input::topology::ControllerTopology,
+}
+
+impl PreparedSetupLaunch {
+    fn new(
+        plugin: Arc<dyn EmulatorPluginInstance>,
+        arguments: Vec<Value>,
+        storage: StorageFactories,
+    ) -> Result<Self, PluginInvocationError> {
+        let [mut arguments]: [Value; 1] = arguments.try_into().map_err(|_| {
+            PluginInvocationError::new(
+                "TypeError",
+                "INVALID_ARGUMENTS",
+                "setupLaunch expects exactly one argument object",
+            )
+        })?;
+        let object = arguments.as_object_mut().ok_or_else(|| {
+            PluginInvocationError::new(
+                "TypeError",
+                "INVALID_ARGUMENTS",
+                "setupLaunch expects exactly one argument object",
+            )
+        })?;
+        let console = object
+            .get("console")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "TypeError",
+                    "INVALID_ARGUMENTS",
+                    "setupLaunch arguments require a string console",
+                )
+            })?
+            .to_owned();
+        let topology = serde_json::from_value::<snowglass_input::topology::ControllerTopology>(
+            object.get("controllerTopology").cloned().ok_or_else(|| {
+                PluginInvocationError::new(
+                    "TypeError",
+                    "INVALID_ARGUMENTS",
+                    "setupLaunch arguments require controllerTopology",
+                )
+            })?,
+        )
+        .map_err(|error| {
+            PluginInvocationError::new(
+                "TypeError",
+                "INVALID_ARGUMENTS",
+                format!("invalid setupLaunch controllerTopology: {error}"),
+            )
+        })?;
+        let assignments = topology
+            .port_assignments()
+            .map_err(PluginInvocationError::worker)?;
+        let mut configuration = plugin
+            .materialize(&console, assignments)
+            .map_err(PluginInvocationError::worker)?;
+        let settings = object
+            .remove("settings")
+            .unwrap_or_else(|| serde_json::json!({}));
+        object.remove("storage");
+        let settings = settings.as_object().ok_or_else(|| {
+            PluginInvocationError::new(
+                "TypeError",
+                "INVALID_ARGUMENTS",
+                "setupLaunch settings must be an object",
+            )
+        })?;
+        for (path, value) in settings {
+            crate::configuration::set_value(&mut configuration, path, value.clone())
+                .map_err(PluginInvocationError::worker)?;
+        }
+        Ok(Self {
+            invocation: EmulatorSetupInvocation {
+                plugin,
+                arguments,
+                configuration,
+                storage,
+            },
+            topology,
+        })
+    }
+}
+
 /// Owns plugin scheduling and application-shutdown cancellation.
 pub struct PluginRuntime {
     handle: PluginRuntimeHandle,
@@ -312,130 +423,52 @@ impl PluginRuntimeHandle {
                     format!("unknown plugin '{plugin_id}'"),
                 )
             })?;
-        if export_path.is_empty() || export_path.iter().any(|segment| segment.is_empty()) {
-            return Err(PluginInvocationError::new(
-                "TypeError",
-                "INVALID_EXPORT_PATH",
-                "plugin export path must contain non-empty property names",
-            ));
-        }
-        if matches!(export_path, [name] if name == "setupLaunch")
-            || matches!(export_path, [default, name] if default == "default" && name == "setupLaunch")
-        {
-            let [arguments] = arguments.as_slice() else {
-                return Err(PluginInvocationError::new(
-                    "TypeError",
-                    "INVALID_ARGUMENTS",
-                    "setupLaunch expects exactly one argument object",
-                ));
-            };
-            let console = arguments
-                .get("console")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    PluginInvocationError::new(
-                        "TypeError",
-                        "INVALID_ARGUMENTS",
-                        "setupLaunch arguments require a string console",
-                    )
-                })?;
-            let controller_changes = self
-                .has_controller_changes(plugin.clone(), cancellation.control.clone())
-                .await?;
-            let expanded = controller_changes
-                .then(|| {
-                    crate::controller::ControllerSetup::expand(plugin.as_ref(), console, arguments)
-                })
-                .transpose()?;
-            let plugin_arguments = expanded
-                .as_ref()
-                .map_or_else(|| arguments.clone(), |expanded| expanded.arguments.clone());
-            let assignments = if let Some(expanded) = &expanded {
-                expanded.assignments.clone()
-            } else {
-                serde_json::from_value(arguments.get("portAssignments").cloned().ok_or_else(
-                    || {
-                        PluginInvocationError::new(
-                            "TypeError",
-                            "INVALID_ARGUMENTS",
-                            "setupLaunch arguments require portAssignments",
-                        )
-                    },
-                )?)
-                .map_err(|error| {
-                    PluginInvocationError::new(
-                        "TypeError",
-                        "INVALID_ARGUMENTS",
-                        format!("invalid setupLaunch portAssignments: {error}"),
-                    )
-                })?
-            };
-            let mut configuration = plugin
-                .materialize(console, assignments)
-                .map_err(PluginInvocationError::worker)?;
-            let settings = arguments
-                .get("settings")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}))
-                .as_object()
-                .cloned()
-                .ok_or_else(|| {
-                    PluginInvocationError::new(
-                        "TypeError",
-                        "INVALID_ARGUMENTS",
-                        "setupLaunch settings must be an object",
-                    )
-                })?;
-            for (path, value) in settings {
-                crate::configuration::set_value(&mut configuration, &path, value)
-                    .map_err(PluginInvocationError::worker)?;
+        match ExportInvocation::parse(export_path)? {
+            ExportInvocation::SetupLaunch { explicit_default } => {
+                let setup = PreparedSetupLaunch::new(plugin, arguments, storage)?;
+                return self
+                    .invoke_setup_launch(setup, cancellation, explicit_default)
+                    .await;
             }
-            let mut plugin_arguments = plugin_arguments;
-            {
-                let object = plugin_arguments
-                    .as_object_mut()
-                    .expect("validated setupLaunch arguments remain an object");
-                object.remove("settings");
-                object.remove("storage");
-            }
-            let invocation = EmulatorSetupInvocation {
-                plugin,
-                arguments: plugin_arguments,
-                configuration,
-                storage,
-            };
-            let (mut result, session) = if let Some(expanded) = expanded {
-                let (launch, session) = self
-                    .setup_controller_session_with_cancellation(
-                        invocation,
-                        cancellation,
-                        matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
-                        expanded.connected,
-                        expanded.gamepad_mapping,
-                    )
-                    .await?;
-                (launch, Some(session))
-            } else {
-                (
-                    self.setup_emulator_export_with_cancellation(
-                        invocation,
-                        cancellation,
-                        matches!(export_path, [default, name] if default == "default" && name == "setupLaunch"),
-                    )
-                    .await?,
-                    None,
-                )
-            };
-            let filesystem = result.filesystem.take();
-            let retained_session = result.session.take().or(session);
-            result.prepared_filesystem = None;
-            let value = serde_json::to_value(result).map_err(PluginInvocationError::worker)?;
-            return Ok(PluginInvocationResult {
-                value,
-                prepared_filesystem: filesystem,
-                controller_session: retained_session,
-            });
+            ExportInvocation::Generic => {}
         }
+        self.invoke_generic(plugin, export_path, arguments, cancellation)
+            .await
+    }
+
+    async fn invoke_setup_launch(
+        &self,
+        setup: PreparedSetupLaunch,
+        cancellation: PluginCancellationToken,
+        explicit_default: bool,
+    ) -> Result<PluginInvocationResult, PluginInvocationError> {
+        let (mut result, session) = self
+            .setup_launch_with_cancellation(
+                setup.invocation,
+                cancellation,
+                explicit_default,
+                setup.topology.clone(),
+            )
+            .await?;
+        let filesystem = result.filesystem.take();
+        let retained_session = result.session.take().or(session);
+        result.controller_topology = Some(setup.topology);
+        result.prepared_filesystem = None;
+        let value = serde_json::to_value(result).map_err(PluginInvocationError::worker)?;
+        Ok(PluginInvocationResult {
+            value,
+            prepared_filesystem: filesystem,
+            controller_session: retained_session,
+        })
+    }
+
+    async fn invoke_generic(
+        &self,
+        plugin: Arc<dyn EmulatorPluginInstance>,
+        export_path: &[String],
+        arguments: Vec<Value>,
+        cancellation: PluginCancellationToken,
+    ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
@@ -519,39 +552,14 @@ impl PluginRuntimeHandle {
         .await
     }
 
-    async fn has_controller_changes(
-        &self,
-        plugin: Arc<dyn EmulatorPluginInstance>,
-        control: Arc<InvocationControl>,
-    ) -> Result<bool, PluginInvocationError> {
-        let entrypoint = plugin.entrypoint().to_string();
-        let invocation_entrypoint = entrypoint.clone();
-        let loader = plugin.module_loader().clone();
-        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
-            .map_err(PluginInvocationError::worker)?;
-        self.run_with_control(control, move |control| {
-            run_worker(
-                entrypoint,
-                loader,
-                filesystem,
-                control,
-                move |mut runtime| async move {
-                    has_callable_controller_export(runtime.js_runtime_mut(), &invocation_entrypoint)
-                        .await
-                },
-            )
-        })
-        .await
-    }
-
-    async fn setup_controller_session_with_cancellation(
+    async fn setup_launch_with_cancellation(
         &self,
         invocation: EmulatorSetupInvocation,
         cancellation: PluginCancellationToken,
         explicit_default: bool,
-        connected: Vec<bool>,
-        gamepad_mapping: Value,
-    ) -> Result<(EmulatorLaunchArguments, crate::ControllerSession), PluginInvocationError> {
+        topology: snowglass_input::topology::ControllerTopology,
+    ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError>
+    {
         let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
             .map_err(PluginInvocationError::worker)?;
         self.run_with_control(cancellation.control, move |control| {
@@ -560,8 +568,7 @@ impl PluginRuntimeHandle {
                 explicit_default,
                 filesystem,
                 control,
-                connected,
-                gamepad_mapping,
+                topology,
             )
         })
         .await
@@ -693,9 +700,8 @@ fn start_controller_session_worker(
     explicit_default: bool,
     filesystem: crate::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
-    connected: Vec<bool>,
-    gamepad_mapping: Value,
-) -> Result<(EmulatorLaunchArguments, crate::ControllerSession), PluginInvocationError> {
+    topology: snowglass_input::topology::ControllerTopology,
+) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError> {
     let entrypoint = invocation.plugin.entrypoint().to_string();
     let loader = invocation.plugin.module_loader().clone();
     let (commands, command_receiver) = std::sync::mpsc::channel();
@@ -708,177 +714,281 @@ fn start_controller_session_worker(
             invocation.plugin.id()
         ))
         .spawn(move || {
-            let result = controller_session_worker(
+            let result = controller_session_worker(ControllerSessionWorkerArgs {
                 entrypoint,
                 loader,
                 filesystem,
                 control,
                 invocation,
                 explicit_default,
-                connected,
-                gamepad_mapping,
-                command_receiver,
-                worker_errors,
+                topology,
+                commands: command_receiver,
+                errors: worker_errors,
                 started,
-            );
+            });
             if let Err(error) = result {
                 tracing::error!("snowglass: controller plugin session failed: {error}");
             }
         })
         .map_err(PluginInvocationError::worker)?;
-    let launch = startup.recv().map_err(|_| {
+    let startup = startup.recv().map_err(|_| {
         PluginInvocationError::worker("controller plugin session failed to start")
     })??;
-    Ok((launch, crate::ControllerSession::new(commands, errors)))
+    let session = startup
+        .controller_changes
+        .then(|| crate::ControllerSession::new(commands, errors));
+    Ok((startup.launch, session))
 }
 
-#[expect(clippy::too_many_arguments)]
-fn controller_session_worker(
+struct ControllerWorkerStartup {
+    launch: EmulatorLaunchArguments,
+    controller_changes: bool,
+}
+
+struct ControllerSessionWorkerArgs {
     entrypoint: String,
     loader: crate::PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
     invocation: EmulatorSetupInvocation,
     explicit_default: bool,
-    connected: Vec<bool>,
-    gamepad_mapping: Value,
+    topology: snowglass_input::topology::ControllerTopology,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
     errors: Arc<Mutex<Vec<String>>>,
-    started: std::sync::mpsc::SyncSender<Result<EmulatorLaunchArguments, PluginInvocationError>>,
+    started: std::sync::mpsc::SyncSender<Result<ControllerWorkerStartup, PluginInvocationError>>,
+}
+
+struct ControllerSessionWorker {
+    tokio: tokio::runtime::Runtime,
+    runtime: snowglass_deno::Runtime,
+    plugin: Arc<dyn EmulatorPluginInstance>,
+    console: String,
+    configuration_id: crate::configuration::ConfigurationId,
+    previous_topology: snowglass_input::topology::ControllerTopology,
+    commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
+    errors: Arc<Mutex<Vec<String>>>,
+}
+
+fn controller_session_worker(
+    args: ControllerSessionWorkerArgs,
 ) -> Result<(), PluginInvocationError> {
-    let tokio = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(PluginInvocationError::worker)?;
-    let _runtime_guard = tokio.enter();
-    let mut runtime = create_worker_runtime(&entrypoint, loader, filesystem)?;
-    let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
-    if control.install_isolate(isolate) {
-        let _ = started.send(Err(PluginInvocationError::cancelled()));
-        return Ok(());
+    if let Some(worker) = ControllerSessionWorker::start(args)? {
+        worker.run();
     }
-    let plugin = invocation.plugin.clone();
-    let console = invocation
-        .arguments
-        .get("console")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let mut previous_mappings = invocation
-        .arguments
-        .get("controllerMappings")
-        .cloned()
-        .unwrap_or_else(|| gamepad_mapping.clone());
-    let retained = match tokio.block_on(crate::deno::execute_retained_emulator(
-        runtime.js_runtime_mut(),
-        invocation,
-        explicit_default,
-    )) {
-        Ok(retained) if retained.controller_changes => retained,
-        Ok(retained) => {
-            crate::deno::discard_configuration(runtime.js_runtime_mut(), retained.configuration_id);
-            let _ = started.send(Err(PluginInvocationError::worker(
-                "onControllerChanged disappeared after capability discovery",
-            )));
-            return Ok(());
+    Ok(())
+}
+
+impl ControllerSessionWorker {
+    fn start(args: ControllerSessionWorkerArgs) -> Result<Option<Self>, PluginInvocationError> {
+        let tokio = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(PluginInvocationError::worker)?;
+        let mut runtime = {
+            let _runtime_context = tokio.enter();
+            create_worker_runtime(&args.entrypoint, args.loader, args.filesystem)?
+        };
+        let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
+        if args.control.install_isolate(isolate) {
+            let _ = args.started.send(Err(PluginInvocationError::cancelled()));
+            return Ok(None);
         }
-        Err(error) => {
-            let _ = started.send(Err(PluginInvocationError::worker(error)));
-            return Ok(());
+        let plugin = args.invocation.plugin.clone();
+        let console = args.invocation.arguments["console"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let retained = match tokio.block_on(crate::deno::execute_retained_emulator(
+            runtime.js_runtime_mut(),
+            args.invocation,
+            args.explicit_default,
+        )) {
+            Ok(retained) => retained,
+            Err(error) => {
+                let _ = args.started.send(Err(PluginInvocationError::worker(error)));
+                return Ok(None);
+            }
+        };
+        crate::controller::configure(runtime.js_runtime_mut(), Self::connections(&args.topology));
+        let controller_changes = retained.controller_changes;
+        let configuration_id = retained.configuration_id;
+        let mut launch = retained.launch;
+        launch.controller_topology = Some(args.topology.clone());
+        if args
+            .started
+            .send(Ok(ControllerWorkerStartup {
+                launch,
+                controller_changes,
+            }))
+            .is_err()
+            || !controller_changes
+        {
+            crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
+            return Ok(None);
         }
-    };
-    crate::controller::configure(runtime.js_runtime_mut(), connected);
-    let configuration_id = retained.configuration_id;
-    let mut launch = retained.launch;
-    launch.gamepad_mapping = Some(gamepad_mapping);
-    if started.send(Ok(launch)).is_err() {
-        crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
-        return Ok(());
+        Ok(Some(Self {
+            tokio,
+            runtime,
+            plugin,
+            console,
+            configuration_id,
+            previous_topology: args.topology,
+            commands: args.commands,
+            errors: args.errors,
+        }))
     }
 
-    while let Ok(command) = commands.recv() {
-        match command {
-            crate::controller::ControllerSessionCommand::Attach(sink, response) => {
-                let result = crate::controller::attach(runtime.js_runtime_mut(), sink);
-                if let Err(error) = &result {
-                    errors.lock().push(error.clone());
+    fn run(mut self) {
+        while let Ok(command) = self.commands.recv() {
+            match command {
+                crate::controller::ControllerSessionCommand::Attach(sink, response) => {
+                    let result = crate::controller::attach(self.runtime.js_runtime_mut(), sink);
+                    self.record_attachment(result, response);
                 }
-                let _ = response.send(result);
-            }
-            crate::controller::ControllerSessionCommand::AttachAutomation(session, response) => {
-                crate::automation::attach(runtime.js_runtime_mut(), session);
-                let _ = response.send(Ok(()));
-            }
-            crate::controller::ControllerSessionCommand::Changed(topology, response) => {
-                let mappings = topology
-                    .get("controllerMappings")
-                    .cloned()
-                    .unwrap_or_else(|| topology.clone());
-                let result = (|| {
-                    let assignments = crate::controller::port_assignments(&topology)
-                        .map_err(PluginInvocationError::worker)?;
-                    let configuration = plugin
-                        .materialize(&console, assignments)
-                        .map_err(PluginInvocationError::worker)?;
-                    crate::deno::rematerialize_configuration(
-                        runtime.js_runtime_mut(),
-                        configuration_id,
-                        configuration,
-                    )
-                    .map_err(PluginInvocationError::worker)?;
-                    let states = crate::controller::states(runtime.js_runtime_mut());
-                    let deadline = IsolateDeadline::start(
-                        runtime.js_runtime_mut().v8_isolate().thread_safe_handle(),
-                        std::time::Duration::from_secs(30),
-                    )?;
-                    let callback = tokio.block_on(async {
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            crate::deno::execute_controller_change(
-                                runtime.js_runtime_mut(),
-                                &mappings,
-                                &previous_mappings,
-                                &states,
-                            ),
-                        )
-                        .await
-                        .map_err(|_| {
-                            PluginInvocationError::worker(
-                                "onControllerChanged exceeded its 30 second deadline",
-                            )
-                        })?
-                        .map_err(PluginInvocationError::worker)
-                    });
-                    let isolate_expired = deadline.finish(runtime.js_runtime_mut());
-                    if isolate_expired {
-                        return Err(PluginInvocationError::worker(
-                            "onControllerChanged exceeded its 30 second deadline",
-                        ));
-                    }
-                    callback?;
-                    crate::controller::flush(runtime.js_runtime_mut())
-                        .map_err(PluginInvocationError::worker)
-                })();
-                if let Err(error) = result {
-                    crate::controller::discard(runtime.js_runtime_mut());
-                    tracing::error!("snowglass: onControllerChanged failed: {error}");
-                    errors.lock().push(error.to_string());
-                    if let Some(response) = response {
-                        let _ = response.send(Err(error.to_string()));
-                    }
-                } else if let Some(response) = response {
-                    previous_mappings = mappings;
+                crate::controller::ControllerSessionCommand::AttachAutomation(
+                    session,
+                    response,
+                ) => {
+                    crate::automation::attach(self.runtime.js_runtime_mut(), session);
                     let _ = response.send(Ok(()));
-                } else {
-                    previous_mappings = mappings;
+                }
+                crate::controller::ControllerSessionCommand::Changed(topology, response) => {
+                    self.change(topology, response);
+                }
+                crate::controller::ControllerSessionCommand::Stop => break,
+            }
+        }
+        crate::automation::close(self.runtime.js_runtime_mut());
+        crate::deno::discard_configuration(self.runtime.js_runtime_mut(), self.configuration_id);
+    }
+
+    fn change(
+        &mut self,
+        topology: snowglass_input::topology::ControllerTopology,
+        response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    ) {
+        let result = self.apply_change(&topology);
+        match result {
+            Ok(()) => {
+                self.previous_topology = topology;
+                if let Some(response) = response {
+                    let _ = response.send(Ok(()));
                 }
             }
-            crate::controller::ControllerSessionCommand::Stop => break,
+            Err(error) => {
+                crate::controller::discard(self.runtime.js_runtime_mut());
+                tracing::error!("snowglass: onControllerChanged failed: {error}");
+                self.errors.lock().push(error.to_string());
+                if let Some(response) = response {
+                    let _ = response.send(Err(error.to_string()));
+                }
+            }
         }
     }
-    crate::automation::close(runtime.js_runtime_mut());
-    crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
-    Ok(())
+
+    fn apply_change(
+        &mut self,
+        topology: &snowglass_input::topology::ControllerTopology,
+    ) -> Result<(), PluginInvocationError> {
+        let checkpoint = crate::deno::checkpoint_configuration(
+            self.runtime.js_runtime_mut(),
+            self.configuration_id,
+        )
+        .map_err(PluginInvocationError::worker)?;
+        let result = self.apply_change_inner(topology);
+        if result.is_err() {
+            crate::deno::restore_configuration(
+                self.runtime.js_runtime_mut(),
+                self.configuration_id,
+                checkpoint,
+            );
+        }
+        result
+    }
+
+    fn apply_change_inner(
+        &mut self,
+        topology: &snowglass_input::topology::ControllerTopology,
+    ) -> Result<(), PluginInvocationError> {
+        let assignments = topology
+            .port_assignments()
+            .map_err(PluginInvocationError::worker)?;
+        let configuration = self
+            .plugin
+            .materialize(&self.console, assignments)
+            .map_err(PluginInvocationError::worker)?;
+        crate::deno::rematerialize_configuration(
+            self.runtime.js_runtime_mut(),
+            self.configuration_id,
+            configuration,
+            topology,
+        )
+        .map_err(PluginInvocationError::worker)?;
+        self.execute_callback(topology)?;
+        crate::controller::stage(self.runtime.js_runtime_mut(), Self::connections(topology))
+            .map_err(PluginInvocationError::worker)?;
+        crate::controller::flush(self.runtime.js_runtime_mut())
+            .map_err(PluginInvocationError::worker)
+    }
+
+    fn execute_callback(
+        &mut self,
+        topology: &snowglass_input::topology::ControllerTopology,
+    ) -> Result<(), PluginInvocationError> {
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const TIMEOUT_ERROR: &str = "onControllerChanged exceeded its 30 second deadline";
+        let deadline = IsolateDeadline::start(
+            self.runtime
+                .js_runtime_mut()
+                .v8_isolate()
+                .thread_safe_handle(),
+            TIMEOUT,
+        )?;
+        let callback = self.tokio.block_on(async {
+            tokio::time::timeout(
+                TIMEOUT,
+                crate::deno::execute_controller_change(
+                    self.runtime.js_runtime_mut(),
+                    topology,
+                    &self.previous_topology,
+                ),
+            )
+            .await
+            .map_err(|_| PluginInvocationError::worker(TIMEOUT_ERROR))?
+            .map_err(PluginInvocationError::worker)
+        });
+        if deadline.finish(self.runtime.js_runtime_mut()) {
+            return Err(PluginInvocationError::worker(TIMEOUT_ERROR));
+        }
+        callback
+    }
+
+    fn record_attachment(
+        &self,
+        result: Result<(), String>,
+        response: std::sync::mpsc::SyncSender<Result<(), String>>,
+    ) {
+        if let Err(error) = &result {
+            self.errors.lock().push(error.clone());
+        }
+        let _ = response.send(result);
+    }
+
+    fn connections(topology: &snowglass_input::topology::ControllerTopology) -> Vec<bool> {
+        let Some(last_gamepad) = topology
+            .mappings
+            .iter()
+            .map(|mapping| mapping.gamepad)
+            .max()
+        else {
+            return Vec::new();
+        };
+        let mut connections = vec![false; usize::from(last_gamepad) + 1];
+        for mapping in &topology.mappings {
+            connections[usize::from(mapping.gamepad)] = mapping.connected;
+        }
+        connections
+    }
 }
 
 fn filesystem_options(
@@ -982,30 +1092,6 @@ async fn invoke_export(
     deno_core::scope!(scope, runtime);
     let value = v8::Local::new(scope, resolved);
     serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)
-}
-
-async fn has_callable_controller_export(
-    runtime: &mut deno_core::JsRuntime,
-    entrypoint: &str,
-) -> Result<bool, PluginInvocationError> {
-    let entrypoint = serde_json::to_string(entrypoint).map_err(PluginInvocationError::worker)?;
-    let script = format!(
-        r#"(async () => {{
-          const module = await import({entrypoint});
-          return typeof module.onControllerChanged === "function"
-            || typeof module.default?.onControllerChanged === "function";
-        }})()"#
-    );
-    let promise = runtime
-        .execute_script("snowglass:pluginhost/controller-capability.js", script)
-        .map_err(PluginInvocationError::worker)?;
-    #[allow(deprecated)]
-    let resolved = runtime
-        .resolve_value(promise)
-        .await
-        .map_err(PluginInvocationError::worker)?;
-    deno_core::scope!(scope, runtime);
-    Ok(v8::Local::new(scope, resolved).boolean_value(scope))
 }
 
 #[cfg(test)]
@@ -1114,8 +1200,8 @@ mod tests {
                   let command = "emulator.exe";
                   let argv = [];
                   if (args.virtualize) {
-                    const firstRender = args.configuration.render(args.gamepadBindings);
-                    const secondRender = args.configuration.render(args.gamepadBindings);
+                    const firstRender = args.configuration.render();
+                    const secondRender = args.configuration.render();
                     if (firstRender === secondRender || firstRender["settings.ini"] === secondRender["settings.ini"]) {
                       throw new Error("configuration.render() did not return fresh values");
                     }
@@ -1142,7 +1228,7 @@ mod tests {
                   const window = await context.ui.waitForWindow({ title: { contains: "Emulator" } });
                   await window.locator('button[name="Controllers"]').press();
                   context.configuration.options().general.enabled = false;
-                  for (const [name, bytes] of Object.entries(context.configuration.render([]))) {
+                  for (const [name, bytes] of Object.entries(context.configuration.render())) {
                     context.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
                   }
                 }
@@ -1235,7 +1321,7 @@ mod tests {
                 arguments: serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "virtualize": true,
-                    "gamepadBindings": []
+                    "controllerTopology": { "mappings": [] }
                 }),
                 configuration: configuration(),
                 storage: BTreeMap::new(),
@@ -1263,8 +1349,7 @@ mod tests {
                 vec![serde_json::json!({
                     "launchPath": "game",
                     "console": "TEST",
-                    "portAssignments": {},
-                    "gamepadBindings": [],
+                    "controllerTopology": { "mappings": [] },
                 })],
             )
             .await
@@ -1280,8 +1365,7 @@ mod tests {
                 vec![serde_json::json!({
                     "launchPath": "game",
                     "console": "TEST",
-                    "portAssignments": {},
-                    "gamepadBindings": [],
+                    "controllerTopology": { "mappings": [] },
                 })],
             )
             .await
@@ -1301,8 +1385,7 @@ mod tests {
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
-                    "portAssignments": {},
-                    "gamepadBindings": [],
+                    "controllerTopology": { "mappings": [] },
                     "virtualize": true,
                 })],
                 BTreeMap::new(),
@@ -1326,8 +1409,7 @@ mod tests {
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
-                    "portAssignments": {},
-                    "gamepadBindings": [],
+                    "controllerTopology": { "mappings": [] },
                     "virtualize": true,
                 })],
                 BTreeMap::new(),
@@ -1345,7 +1427,7 @@ mod tests {
         .unwrap();
         session.attach_automation(automation).unwrap();
         session
-            .begin_changed(serde_json::json!({ "controllerMappings": [] }))
+            .change(snowglass_input::topology::ControllerTopology::default())
             .unwrap()
             .await
             .unwrap()

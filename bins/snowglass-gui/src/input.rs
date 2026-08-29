@@ -3,7 +3,6 @@
 //! The emulator instance owns IPC. This adapter only gives long-lived shell
 //! input objects a stable endpoint while game instances are replaced.
 
-use consolespec::input::BindingKey;
 use parking_lot::RwLock;
 use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use snowglass_input::provider::sdl3::{ProviderConfig, Sdl3Provider};
@@ -11,14 +10,14 @@ use snowglass_input::{
     gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
     hub::{
         BindingOverride, InputConfiguration, InputHub, InputOperation, InputTransaction,
-        PortConfiguration, SourceAssignment, SourceControl, SourceSelector, VirtualPort,
+        PortConfiguration, SourceAssignment, SourceControl, VirtualPort,
     },
-    layout::{InputBinding, ProjectionMode, SdlButton},
+    layout::{InputBinding, SdlButton},
     source::{InputSourceCatalog, InputSourceDescriptor, InputSourceKind},
+    topology::ControllerTopology,
 };
 use snowglass_input_dinput::DirectInputForwarder;
 use snowglass_ipc::{Message, MessageSink};
-use snowglass_renderer::cli::GamepadArgument;
 use snowglass_renderer::input::PointerRoutingState;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -112,13 +111,13 @@ pub(crate) struct InputConfigurationPublication {
 
 pub(crate) struct PreparedInputTransaction {
     transaction: InputTransaction,
-    previous: InputConfiguration,
-    next: InputConfiguration,
+    previous: snowglass_runtime::ResolvedInputConfiguration,
+    next: snowglass_runtime::ResolvedInputConfiguration,
 }
 
 impl PreparedInputTransaction {
     pub(crate) fn candidate(&self) -> &InputConfiguration {
-        &self.next
+        &self.next.configuration
     }
 }
 
@@ -202,7 +201,7 @@ impl InputRouter {
 
     pub fn build_publication(
         &mut self,
-        mappings: &[GamepadMapping],
+        mappings: &[snowglass_input::topology::ControllerMapping],
         game_active: bool,
         topology_locked: bool,
     ) -> InputPublication {
@@ -218,15 +217,16 @@ impl InputRouter {
             slots: mappings
                 .iter()
                 .map(|config| {
-                    let Some(state) = states.get(config.slot).and_then(Option::as_ref) else {
+                    let slot = usize::from(config.gamepad);
+                    let Some(state) = states.get(slot).and_then(Option::as_ref) else {
                         return InputSlotDiagnostics {
-                            slot: config.slot,
+                            slot,
                             layout: config.layout.clone(),
                             ..InputSlotDiagnostics::default()
                         };
                     };
                     InputSlotDiagnostics {
-                        slot: config.slot,
+                        slot,
                         layout: state.layout_id.clone(),
                         connected: true,
                         name: state.name.clone(),
@@ -718,33 +718,25 @@ impl InputRouter {
     pub fn configure_launch(
         &mut self,
         machine: &str,
-        mappings: &[GamepadMapping],
+        topology: &ControllerTopology,
     ) -> Result<(), String> {
         let mut ports = Vec::new();
         let mut assignments = Vec::new();
-        let mut group_indices: HashMap<String, u8> = HashMap::new();
-        for mapping in mappings {
-            let slot = u8::try_from(mapping.slot)
-                .map_err(|_| "virtual pad slot exceeds 255".to_owned())?;
+        for mapping in &topology.mappings {
+            let slot = mapping.gamepad;
             let mut overrides = HashMap::new();
             let layout = snowglass_input::layout::InputLayout::get(&mapping.layout)
                 .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
-            for (target, source) in &mapping.mapping {
-                let target = target
-                    .parse::<BindingKey>()
-                    .map_err(|error| error.to_string())?;
-                let binding = if source == "none" {
-                    InputBinding::Disabled { disabled: true }
-                } else {
-                    let source = source
-                        .parse::<BindingKey>()
-                        .map_err(|error| error.to_string())?;
-                    layout.custom_binding(target, source).ok_or_else(|| {
+            for (target, source) in mapping.mapping.iter() {
+                let binding = if let Some(source) = source {
+                    layout.custom_binding(*target, *source).ok_or_else(|| {
                         format!("input source '{source}' is not a physical gamepad expression")
                     })?
+                } else {
+                    InputBinding::Disabled { disabled: true }
                 };
                 overrides.insert(
-                    target,
+                    *target,
                     match binding {
                         InputBinding::Button { button } => BindingOverride::Button {
                             source: SourceControl::GamepadButton { button },
@@ -760,22 +752,14 @@ impl InputRouter {
                     },
                 );
             }
-            let port = match mapping.port.clone() {
-                Some(port) => port,
-                None => {
-                    let specification = consolespec::MachineSpec::try_from(machine)
-                        .map_err(|error| error.to_string())?;
-                    let group = specification.group_for(&mapping.layout)?;
-                    let index = group_indices.entry(group.name().to_owned()).or_insert(0);
-                    let port = VirtualPort::new(group.name(), *index);
-                    *index = index.checked_add(1).ok_or_else(|| {
-                        format!("input group '{}' exceeds 255 ports", group.name())
-                    })?;
-                    port
-                }
-            };
+            let port_index = u8::try_from(mapping.target.port).map_err(|_| {
+                format!(
+                    "controller target {}:{} exceeds 255 ports",
+                    mapping.target.group, mapping.target.port
+                )
+            })?;
             ports.push(PortConfiguration {
-                port,
+                port: VirtualPort::new(&mapping.target.group, port_index),
                 layout: mapping.layout.clone(),
                 slot: Some(slot),
                 force_mouse: mapping.mouse,
@@ -827,8 +811,15 @@ impl InputRouter {
             .hub()
             .preview(&transaction)
             .map_err(|error| error.to_string())?;
-        self.transport
-            .validate_reconciliation(&previous, &next, topology_locked)?;
+        let previous = self
+            .transport
+            .controller_manager
+            .resolve_configuration(&previous);
+        let next = self
+            .transport
+            .controller_manager
+            .resolve_configuration(&next);
+        InputReconciler::validate(&previous, &next, topology_locked)?;
         Ok(PreparedInputTransaction {
             transaction,
             previous,
@@ -840,8 +831,13 @@ impl InputRouter {
         &mut self,
         prepared: PreparedInputTransaction,
     ) -> Result<InputConfiguration, String> {
+        InputReconciler::apply_reconciliation(
+            &self.transport.provider,
+            &prepared.previous,
+            &prepared.next,
+        )?;
         self.transport
-            .commit_reconciliation(&prepared.previous, &prepared.next)?;
+            .sync_physical_routes(&prepared.next.configuration);
         self.transport
             .hub()
             .apply(prepared.transaction)
@@ -878,36 +874,6 @@ fn pointer_axes(x: f64, y: f64) -> [i16; 2] {
         (value.clamp(0.0, 1.0) * f64::from(u16::MAX) + f64::from(i16::MIN)).round() as i16
     };
     [axis(x), axis(y)]
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GamepadMapping {
-    pub source: Option<SourceSelector>,
-    #[serde(default)]
-    pub mouse: bool,
-    pub slot: usize,
-    #[serde(default)]
-    pub port: Option<VirtualPort>,
-    pub layout: String,
-    #[serde(default)]
-    pub projection_mode: ProjectionMode,
-    #[serde(default)]
-    pub mapping: HashMap<String, String>,
-}
-
-impl From<&GamepadArgument> for GamepadMapping {
-    fn from(value: &GamepadArgument) -> Self {
-        Self {
-            source: value.source.clone(),
-            mouse: value.force_mouse,
-            slot: value.slot,
-            port: None,
-            layout: value.layout.clone(),
-            projection_mode: ProjectionMode::Position,
-            mapping: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Default)]
@@ -1065,29 +1031,6 @@ impl InputTransport {
         let previous = self.controller_manager.resolve_configuration(previous);
         let next = self.controller_manager.resolve_configuration(next);
         InputReconciler::reconcile(&self.provider, &previous, &next, topology_locked)?;
-        self.sync_physical_routes(&next.configuration);
-        Ok(())
-    }
-
-    pub fn validate_reconciliation(
-        &self,
-        previous: &InputConfiguration,
-        next: &InputConfiguration,
-        topology_locked: bool,
-    ) -> Result<(), String> {
-        let previous = self.controller_manager.resolve_configuration(previous);
-        let next = self.controller_manager.resolve_configuration(next);
-        InputReconciler::validate(&previous, &next, topology_locked)
-    }
-
-    pub fn commit_reconciliation(
-        &mut self,
-        previous: &InputConfiguration,
-        next: &InputConfiguration,
-    ) -> Result<(), String> {
-        let previous = self.controller_manager.resolve_configuration(previous);
-        let next = self.controller_manager.resolve_configuration(next);
-        InputReconciler::apply_reconciliation(&self.provider, &previous, &next)?;
         self.sync_physical_routes(&next.configuration);
         Ok(())
     }

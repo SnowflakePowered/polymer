@@ -56,11 +56,13 @@ export function createEmulator(webrtc) {
         selector: surface.selector,
         attach: attachmentFor(surface.attach),
       })),
-      gamepadMapping: (options.gamepadMapping || []).map((mapping) => ({
-        ...mapping,
-        projectionMode: mapping.projectionMode ?? "position",
-        mapping: { ...(mapping.mapping || {}) },
-      })),
+      controllerTopology: {
+        mappings: (options.controllerTopology?.mappings || []).map((mapping) => ({
+          ...mapping,
+          projectionMode: mapping.projectionMode ?? "position",
+          mapping: { ...(mapping.mapping || {}) },
+        })),
+      },
       machine: options.machine,
       preparedFilesystem: options.preparedFilesystem,
       controllerSession: options.controllerSession,

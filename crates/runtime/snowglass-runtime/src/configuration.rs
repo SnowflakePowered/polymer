@@ -7,7 +7,8 @@ use snowglass_config::ast::{
 use snowglass_input::{
     hub::{SourceSelector, VirtualPort},
     layout::ProjectionMode,
-    source::{InputSourceCatalog, InputSourceDescriptor},
+    source::InputSourceCatalog,
+    topology::{ControllerBindings, ControllerMapping, ControllerTarget, ControllerTopology},
 };
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use std::{
@@ -19,7 +20,6 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct ConfigurationDefaults {
     pub gamepads: Vec<DefaultGamepad>,
-    pub machine: String,
     pub webrtc_targets: Option<Vec<u32>>,
     pub webrtc_bind: std::net::SocketAddr,
 }
@@ -31,23 +31,6 @@ pub struct DefaultGamepad {
     pub port: Option<VirtualPort>,
     pub layout: String,
     pub force_mouse: bool,
-    pub mapping: HashMap<String, String>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GamepadMapping {
-    pub source: Option<SourceSelector>,
-    #[serde(default)]
-    pub mouse: bool,
-    pub slot: usize,
-    #[serde(default)]
-    pub port: Option<VirtualPort>,
-    pub layout: String,
-    /// Resolved from the assigned physical device; never selected per port.
-    #[serde(default)]
-    pub projection_mode: ProjectionMode,
-    #[serde(default)]
     pub mapping: HashMap<String, String>,
 }
 
@@ -146,6 +129,7 @@ pub struct LaunchPortRequest {
 
 pub struct ConfiguredSelection {
     pub viewer: ConfigurationDefaults,
+    pub machine: String,
     pub port_assignments: PortAssignments,
 }
 
@@ -154,25 +138,10 @@ pub struct ConfiguredSelection {
 struct PreparedConfiguration {
     plugin: String,
     arguments: serde_json::Value,
-    gamepad_mapping: Vec<GamepadMapping>,
+    controller_topology: ControllerTopology,
     machine: String,
     webrtc_bind: Option<String>,
     webrtc_targets: Vec<u32>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ResolvedControllerMapping {
-    source: Option<SourceSelector>,
-    device: Option<InputSourceDescriptor>,
-    mouse: bool,
-    slot: usize,
-    group: Option<String>,
-    port: Option<u8>,
-    layout: String,
-    /// Resolved from the assigned physical device and layout for the plugin.
-    projection_mode: ProjectionMode,
-    mapping: HashMap<String, String>,
 }
 
 pub fn describe_api(
@@ -246,47 +215,26 @@ pub(crate) fn prepare_api_with_sources(
         gamepad.source = controller_assignments.source_for(gamepad.slot);
         gamepad.force_mouse = matches!(gamepad.source, Some(SourceSelector::KeyboardMouse));
     }
-    let port_assignments = prepared
-        .port_assignments
-        .iter()
-        .map(|(group, layouts)| {
-            (
-                group.to_string(),
-                layouts.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
     let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
     let controller_manager = crate::ControllerManager::with_profiles(controller_profiles.clone());
-    let gamepad_bindings = prepared
+    let selected = prepared
         .viewer
         .gamepads
         .iter()
-        .filter_map(|gamepad| {
-            gamepad.port.as_ref().map(|port| {
-                serde_json::json!({
-                    "target": {
-                        "group": port.group,
-                        "port": port.index,
-                    },
-                    "gamepad": gamepad.slot,
-                })
-            })
-        })
-        .collect::<Vec<_>>();
-    let (controller_mappings, gamepad_mapping): (Vec<_>, Vec<_>) = prepared
-        .viewer
-        .gamepads
-        .iter()
-        .map(|gamepad| resolved_gamepad(gamepad, sources, &controller_manager))
-        .unzip();
+        .map(|gamepad| resolved_controller(gamepad, sources, &controller_manager))
+        .collect::<Result<Vec<_>, _>>()?;
+    let plugin = plugins
+        .plugin::<dyn EmulatorPluginInstance>(&emulator)
+        .ok_or_else(|| format!("unknown emulator plugin '{emulator}'"))?;
+    let ports = plugin
+        .ports(&prepared.machine)
+        .map_err(|error| error.to_string())?;
+    let topology = ControllerTopologyBuilder::new(ports, selected).build()?;
     let mut arguments = serde_json::json!({
         "launchPath": package.path.to_string_lossy(),
         "package": package,
-        "console": prepared.viewer.machine,
-        "portAssignments": port_assignments,
-        "controllerMappings": controller_mappings,
-        "gamepadBindings": gamepad_bindings,
+        "console": prepared.machine,
+        "controllerTopology": &topology,
         "settings": settings,
     });
     if !storage.is_empty() {
@@ -296,8 +244,8 @@ pub(crate) fn prepare_api_with_sources(
     serde_json::to_value(PreparedConfiguration {
         plugin: emulator,
         arguments,
-        gamepad_mapping,
-        machine: prepared.viewer.machine,
+        controller_topology: topology,
+        machine: prepared.machine,
         webrtc_bind: prepared
             .viewer
             .webrtc_targets
@@ -311,11 +259,17 @@ pub(crate) fn prepare_api_with_sources(
 /// The controller view passed to plugins is resolved once, before configuration
 /// materialization. Plugins can therefore make mapping-dependent configuration
 /// choices without rendering or inspecting emulator files.
-fn resolved_gamepad(
+fn resolved_controller(
     gamepad: &DefaultGamepad,
     sources: &InputSourceCatalog,
     controllers: &crate::ControllerManager,
-) -> (ResolvedControllerMapping, GamepadMapping) {
+) -> Result<ControllerMapping, String> {
+    let port = gamepad
+        .port
+        .as_ref()
+        .ok_or_else(|| format!("configured gamepad {} has no emulator port", gamepad.slot))?;
+    let gamepad_index = u8::try_from(gamepad.slot)
+        .map_err(|_| format!("virtual gamepad {} is outside the wire range", gamepad.slot))?;
     let device = match &gamepad.source {
         Some(SourceSelector::Device { device_id }) => sources.get(device_id),
         Some(SourceSelector::KeyboardMouse) | None => None,
@@ -350,27 +304,100 @@ fn resolved_gamepad(
             )
         }));
     }
-    let launch = GamepadMapping {
+    Ok(ControllerMapping {
+        target: ControllerTarget {
+            group: port.group.clone(),
+            port: usize::from(port.index),
+        },
+        gamepad: gamepad_index,
         source: gamepad.source.clone(),
+        connected: device.as_ref().is_some_and(|device| device.connected)
+            || matches!(gamepad.source, Some(SourceSelector::KeyboardMouse)),
         mouse: gamepad.force_mouse,
-        slot: gamepad.slot,
-        port: gamepad.port.clone(),
         layout: gamepad.layout.clone(),
         projection_mode,
-        mapping: mapping.clone(),
-    };
-    let plugin = ResolvedControllerMapping {
-        device,
-        source: gamepad.source.clone(),
-        mouse: gamepad.force_mouse,
-        slot: gamepad.slot,
-        group: gamepad.port.as_ref().map(|port| port.group.clone()),
-        port: gamepad.port.as_ref().map(|port| port.index),
-        layout: gamepad.layout.clone(),
-        projection_mode,
-        mapping,
-    };
-    (plugin, launch)
+        mapping: ControllerBindings::try_from_strings(mapping)?,
+    })
+}
+
+struct ControllerTopologyBuilder {
+    ports: Vec<EmulatorPort>,
+    selected: Vec<ControllerMapping>,
+}
+
+impl ControllerTopologyBuilder {
+    fn new(ports: Vec<EmulatorPort>, selected: Vec<ControllerMapping>) -> Self {
+        Self { ports, selected }
+    }
+
+    fn build(self) -> Result<ControllerTopology, String> {
+        if self.ports.len() > u8::MAX as usize + 1 {
+            return Err("an emulator cannot expose more than 256 virtual gamepads".to_owned());
+        }
+        let mut used = vec![false; self.ports.len()];
+        for mapping in &self.selected {
+            let port = self.port_for(&mapping.target)?;
+            if !port.layouts.contains(&mapping.layout) {
+                return Err(format!(
+                    "layout '{}' is not supported by {}:{}",
+                    mapping.layout, mapping.target.group, mapping.target.port
+                ));
+            }
+            let slot = usize::from(mapping.gamepad);
+            if slot >= used.len() || std::mem::replace(&mut used[slot], true) {
+                return Err(format!(
+                    "virtual gamepad {} is invalid or duplicated",
+                    mapping.gamepad
+                ));
+            }
+        }
+        let mut available = used
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, used)| (!used).then_some(slot));
+        let mappings = self
+            .ports
+            .iter()
+            .map(|port| {
+                self.selected
+                    .iter()
+                    .find(|mapping| {
+                        mapping.target.group == port.group && mapping.target.port == port.index
+                    })
+                    .cloned()
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        let slot = available.next().expect("unused ports have unused gamepads");
+                        Ok(ControllerMapping {
+                            target: ControllerTarget {
+                                group: port.group.clone(),
+                                port: port.index,
+                            },
+                            gamepad: slot as u8,
+                            source: None,
+                            layout: port.layouts.first().cloned().ok_or_else(|| {
+                                format!(
+                                    "emulator port {}:{} declares no layouts",
+                                    port.group, port.index
+                                )
+                            })?,
+                            connected: false,
+                            mouse: false,
+                            projection_mode: ProjectionMode::Position,
+                            mapping: ControllerBindings::default(),
+                        })
+                    })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(ControllerTopology { mappings })
+    }
+
+    fn port_for(&self, target: &ControllerTarget) -> Result<&EmulatorPort, String> {
+        self.ports
+            .iter()
+            .find(|port| port.group == target.group && port.index == target.port)
+            .ok_or_else(|| format!("unknown emulator port {}:{}", target.group, target.port))
+    }
 }
 
 impl PreparedGame {
@@ -450,10 +477,10 @@ impl PreparedGame {
         let descriptor = &self.descriptor.candidates[candidate_index];
         let (assignments, gamepads) = validate_assignments(descriptor, request.groups)?;
         let mut viewer = self.viewer.clone();
-        viewer.machine.clone_from(&self.descriptor.platform);
         viewer.gamepads = gamepads;
         Ok(ConfiguredSelection {
             viewer,
+            machine: self.descriptor.platform.clone(),
             port_assignments: assignments,
         })
     }

@@ -329,19 +329,7 @@ fn configuration_defaults(
     viewer: &snowglass_renderer::cli::ViewerOptions,
 ) -> snowglass_runtime::ConfigurationDefaults {
     snowglass_runtime::ConfigurationDefaults {
-        gamepads: viewer
-            .gamepads
-            .iter()
-            .map(|gamepad| snowglass_runtime::DefaultGamepad {
-                source: gamepad.source.clone(),
-                slot: gamepad.slot,
-                port: None,
-                layout: gamepad.layout.clone(),
-                force_mouse: gamepad.force_mouse,
-                mapping: HashMap::new(),
-            })
-            .collect(),
-        machine: viewer.machine.clone(),
+        gamepads: Vec::new(),
         webrtc_targets: viewer.webrtc.clone(),
         webrtc_bind: viewer.bind_webrtc,
     }

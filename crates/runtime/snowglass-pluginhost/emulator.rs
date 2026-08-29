@@ -30,7 +30,7 @@ pub struct EmulatorLaunchArguments {
     #[serde(skip)]
     pub session: Option<crate::ControllerSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gamepad_mapping: Option<serde_json::Value>,
+    pub controller_topology: Option<snowglass_input::topology::ControllerTopology>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]

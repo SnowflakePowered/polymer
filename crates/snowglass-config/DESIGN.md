@@ -877,7 +877,7 @@ Emulator.setupLaunch({
   emulator: string,                      // selects the launch script
   configOverrides: { [path: string]: Value },   // flat option path → value
   console: string,                       // consolespec machine id
-  portAssignments: { [group: string]: string[] },  // inputspec layout id per port index
+  controllerTopology: ControllerTopology, // complete ports, layouts, and virtual pads
 }) -> PluginLaunchPlan
 ```
 
@@ -939,11 +939,11 @@ declares, while an `Instance` is per machine. Ports belonging to other machines
 never materialize. That is what keeps `Definition::hash` stable — it is a pure
 function of the documents (§3.2.1) and of nothing about this launch.
 
-**Port assignment arrives from the caller.** `portAssignments` gives a layout id
-per port index within each group, which is exactly the domain of the implicit
-`layout` option (§6.5.2). So that option stays, and `setupLaunch` *seeds* it
-rather than replacing it: `emit.<choice>` selection, layout-option enablement,
-and persistence all keep working through one mechanism instead of two.
+**Controller topology arrives from the caller.** `controllerTopology` is the
+canonical launch-to-plugin contract. Each entry identifies an emulator group
+and port, its inputspec layout, and its stable virtual gamepad. Configuration
+materialization derives port assignments from that topology, so there is no
+parallel port-assignment or gamepad-binding API to reconcile.
 
 **The launch script never serializes configuration.** It receives a host-backed
 `Configuration`, may observe and mutate any materialized option, and must return
@@ -2009,7 +2009,7 @@ element.
   "surfaces": [{ "index": 0, "selector": "#screen" }],
 
   "ports": [
-    { "port": 0, "source": { "kind": "device", "deviceId": "sdl3:1" }, "mode": "gamecube", "layout": "GAMECUBE_CONTROLLER" },
+    { "port": 0, "source": { "kind": "device", "deviceId": "sdl://device/1" }, "mode": "gamecube", "layout": "GAMECUBE_CONTROLLER" },
     { "port": 1, "source": null, "mode": "wiimote-real",
       "transport": "bluetooth-hci", "device": "hci0:00:1f:32:…" }
   ],

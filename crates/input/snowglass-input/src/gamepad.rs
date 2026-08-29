@@ -148,10 +148,6 @@ pub struct GamepadUpdate {
     pub state: GamepadState,
 }
 
-/// Emulator-visible connection state for one permanently allocated virtual
-/// slot. This is intentionally separate from [`GamepadUpdate::connected`],
-/// which describes whether the physical input source contributed a live
-/// sample without changing the emulator's device topology.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VirtualGamepadConnection {
     pub slot: GamepadSlot,

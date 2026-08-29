@@ -404,32 +404,14 @@ impl GameHost {
             .is_some_and(|active| active.controller_session.is_none())
     }
 
-    pub fn gamepad_mapping(&self) -> &[crate::input::GamepadMapping] {
+    pub fn controller_mappings(&self) -> &[snowglass_input::topology::ControllerMapping] {
         self.active
             .as_ref()
-            .map(|active| active.options.gamepad_mapping.as_slice())
+            .map(|active| active.options.controller_topology.mappings.as_slice())
             .unwrap_or_default()
     }
 
-    pub fn controller_changed(
-        &self,
-        configuration: &snowglass_input::hub::InputConfiguration,
-        state: &serde_json::Value,
-    ) -> Result<(), String> {
-        let Some(active) = &self.active else {
-            return Ok(());
-        };
-        let Some(session) = &active.controller_session else {
-            return Ok(());
-        };
-        session.changed(Self::controller_change_payload(
-            active,
-            configuration,
-            state,
-        )?)
-    }
-
-    pub fn begin_controller_changed(
+    pub fn controller_change(
         &self,
         configuration: &snowglass_input::hub::InputConfiguration,
         state: &serde_json::Value,
@@ -441,14 +423,14 @@ impl GameHost {
             return Ok(None);
         };
         let payload = Self::controller_change_payload(active, configuration, state)?;
-        session.begin_changed(payload).map(Some)
+        session.change(payload).map(Some)
     }
 
     fn controller_change_payload(
         active: &ActivePresentation,
         configuration: &snowglass_input::hub::InputConfiguration,
         state: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<snowglass_input::topology::ControllerTopology, String> {
         let players = state["controllers"]["players"]
             .as_array()
             .or_else(|| state["players"].as_array());
@@ -464,9 +446,10 @@ impl GameHost {
                 })?;
                 let baseline = active
                     .options
-                    .gamepad_mapping
+                    .controller_topology
+                    .mappings
                     .iter()
-                    .find(|mapping| mapping.slot == usize::from(slot));
+                    .find(|mapping| mapping.gamepad == slot);
                 let source = configuration
                     .assignments
                     .iter()
@@ -482,32 +465,32 @@ impl GameHost {
                 let connected = controller
                     .as_ref()
                     .and_then(|controller| controller["connected"].as_bool())
-                    .unwrap_or_else(|| {
+                    .unwrap_or({
                         matches!(
                             source,
                             Some(snowglass_input::hub::SourceSelector::KeyboardMouse)
                         )
                     });
-                Ok(serde_json::json!({
-                    "target": { "group": port.port.group, "port": port.port.index },
-                    "gamepad": slot,
-                    "layout": port.layout,
-                    "assignment": source.map(|source| serde_json::json!({
-                        "playerIndex": slot,
-                        "source": source,
-                        "logicalDevice": controller,
-                    })),
-                    "connected": connected,
-                    "mouse": port.force_mouse || baseline.is_some_and(|mapping| mapping.mouse),
-                    "projectionMode": baseline.map(|mapping| mapping.projection_mode).unwrap_or_default(),
-                    "mapping": baseline.map(|mapping| &mapping.mapping).cloned().unwrap_or_default(),
-                }))
+                Ok(snowglass_input::topology::ControllerMapping {
+                    target: snowglass_input::topology::ControllerTarget {
+                        group: port.port.group.clone(),
+                        port: usize::from(port.port.index),
+                    },
+                    gamepad: slot,
+                    source: source.cloned(),
+                    layout: port.layout.clone(),
+                    connected,
+                    mouse: port.force_mouse || baseline.is_some_and(|mapping| mapping.mouse),
+                    projection_mode: baseline
+                        .map(|mapping| mapping.projection_mode)
+                        .unwrap_or_default(),
+                    mapping: baseline
+                        .map(|mapping| mapping.mapping.clone())
+                        .unwrap_or_default(),
+                })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(serde_json::json!({
-            "controllerMappings": mappings,
-            "controllers": state["controllers"].clone(),
-        }))
+        Ok(snowglass_input::topology::ControllerTopology { mappings })
     }
 
     pub fn take_controller_errors(
@@ -644,8 +627,12 @@ impl GameHost {
             .ok()
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
             .ok_or_else(|| "shell executable has no parent directory".to_owned())?;
-        let mut gamepad_layouts = options.gamepad_mapping.iter().collect::<Vec<_>>();
-        gamepad_layouts.sort_by_key(|mapping| mapping.slot);
+        let mut gamepad_layouts = options
+            .controller_topology
+            .mappings
+            .iter()
+            .collect::<Vec<_>>();
+        gamepad_layouts.sort_by_key(|mapping| mapping.gamepad);
         let automation_desktop = options.isolated.then(|| session.clone());
         let config = snowglass_runtime::EmulatorLaunchConfig {
             session,

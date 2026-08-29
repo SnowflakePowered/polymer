@@ -1,38 +1,11 @@
 import config from "pkg:plugin.toml";
+import type { Configuration as HostConfiguration, Filesystem, Resource } from "../plugin-api.ts";
 
-type Configuration = {
-    options(): { core: { placeholder: boolean } },
-    render(bindings: readonly GamepadBinding[]): Readonly<Record<string, Uint8Array>>,
-};
-
-type GamepadBinding = Readonly<{
-    target: Readonly<{ group: string, port: number }>,
-    gamepad: number,
-}>;
-
-type Resource = Readonly<{ kind: "tree" | "file", path?: string }>;
-
-type Filesystem = {
-    mountHostFile(target: string, source: string, options: { mode: string }): void,
-    mountHostTree(target: string, source: string, options: { mode: string }): void,
-    mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
-    mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
-    mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
-    path(path: string): string,
-    setWorkingDirectory(path: string): void,
-    setProfile(profile: {
-        home?: string,
-        roamingAppData?: string,
-        localAppData?: string,
-        temp?: string,
-    }): void,
-};
+type Configuration = HostConfiguration<{ core: { placeholder: boolean } }>;
 
 type SetupLaunchArgs = {
     launchPath: string,
     console: string,
-    portAssignments: { [group: string]: string[] },
-    gamepadBindings: readonly GamepadBinding[],
     configuration: Configuration,
     filesystem: Filesystem,
     resources: { runtime: Resource },
@@ -113,7 +86,7 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
 
     const options = args.configuration.options();
     options.core.placeholder = false;
-    for (const [name, bytes] of Object.entries(args.configuration.render(args.gamepadBindings))) {
+    for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/Generated/${name}`, bytes, { mode: "rw" });
     }
 
