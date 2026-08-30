@@ -50,9 +50,20 @@
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-gui/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-bttest/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-watcher/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-bluetoothapi-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input-dinput/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input-sdl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-input-bluetooth/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-input-ipc/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-input-layout/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-input-sdl3/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-automation/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-controllers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/snowglass-platform-windows/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

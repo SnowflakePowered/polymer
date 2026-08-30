@@ -1,14 +1,5 @@
-use serde::Deserialize;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PipeEnvironment {
-    port: u8,
-    product_id: u16,
-    pipe: String,
-}
+use snowglass_input_layout::topology::RawHidBinding;
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct SyntheticWiimote {
@@ -18,28 +9,19 @@ pub(crate) struct SyntheticWiimote {
 }
 
 impl SyntheticWiimote {
-    pub(crate) fn load() -> Vec<Self> {
-        let Some(json) = snowglass_hook::config::bluetooth_hid_pipes() else {
-            return Vec::new();
-        };
-        serde_json::from_str::<Vec<PipeEnvironment>>(&json)
-            .unwrap_or_else(|error| {
-                tracing::error!(%error, "invalid Bluetooth HID pipe configuration");
-                Vec::new()
-            })
-            .into_iter()
-            .map(|pipe| {
-                let path = format!(
-                    r"\\?\hid#vid_057e&pid_{:04x}#snowglass-{}#{{4d1e55b2-f16f-11cf-88cb-001111000030}}",
-                    pipe.product_id, pipe.port,
-                );
-                Self {
-                    path: OsStr::new(&path).encode_wide().chain(Some(0)).collect(),
-                    pipe: OsStr::new(&pipe.pipe).encode_wide().chain(Some(0)).collect(),
-                    product_id: pipe.product_id,
-                }
-            })
-            .collect()
+    pub(crate) fn from_binding(binding: &RawHidBinding) -> Self {
+        let path = format!(
+            r"\\?\hid#vid_{:04x}&pid_{:04x}#snowglass-{}#{{4d1e55b2-f16f-11cf-88cb-001111000030}}",
+            binding.vendor_id, binding.product_id, binding.port,
+        );
+        Self {
+            path: OsStr::new(&path).encode_wide().chain(Some(0)).collect(),
+            pipe: OsStr::new(&binding.pipe)
+                .encode_wide()
+                .chain(Some(0))
+                .collect(),
+            product_id: binding.product_id,
+        }
     }
 
     pub(crate) fn path_matches(&self, path: &[u16]) -> bool {

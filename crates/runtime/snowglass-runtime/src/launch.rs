@@ -81,14 +81,6 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
             OsString::from(&runtime.session),
         ),
         (
-            OsString::from(config::LAYOUTS),
-            OsString::from(runtime.gamepad_layouts.join(",")),
-        ),
-        (
-            OsString::from(config::SDL_GAMEPADS),
-            OsString::from(runtime.gamepad_layouts.len().to_string()),
-        ),
-        (
             OsString::from(config::LAYER_LOG_FILE),
             runtime
                 .artifact_root
@@ -164,29 +156,6 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if runtime
-        .input_hooks
-        .contains(&crate::InputHookBackend::BluetoothApiWin32)
-    {
-        let pipes = (0..4u8)
-            .map(|port| {
-                let active = runtime
-                    .bluetooth_hid_pipes
-                    .iter()
-                    .find(|pipe| pipe.port == port);
-                serde_json::json!({
-                    "sourceId": active.map_or("", |pipe| pipe.source_id.as_str()),
-                    "port": port,
-                    "productId": active.map_or(0x0306, |pipe| pipe.product_id),
-                    "pipe": format!(r"\\.\pipe\{}-wiimote-{}", runtime.session, port),
-                })
-            })
-            .collect::<Vec<_>>();
-        environment.push((
-            OsString::from(config::BLUETOOTH_HID_PIPES),
-            OsString::from(serde_json::to_string(&pipes).expect("pipe configuration serializes")),
-        ));
-    }
     if runtime.tracking_enabled {
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGET),

@@ -1,6 +1,6 @@
-use super::{DecodedInput, FullReport, ReportDecoder, Switch2ReportModel};
+use super::{DecodedInput, FullReport, GamepadState, ReportDecoder, Switch2ReportModel};
 use crate::decoder::switch2::motion::{NativeMotionDecoder, NativeMotionLayout};
-use snowglass_input::{gamepad::GamepadState, router::PhysicalControllerRole};
+use snowglass_input::DeviceRole;
 use std::time::Instant;
 use zerocopy::FromBytes;
 
@@ -10,7 +10,7 @@ pub struct NsoGameCubeDecoder {
 }
 
 impl Switch2ReportModel for NsoGameCubeDecoder {
-    const ROLE: PhysicalControllerRole = PhysicalControllerRole::Whole;
+    const ROLE: DeviceRole = DeviceRole::Whole;
 
     fn decode_controls(&mut self, report: &[u8], state: &mut GamepadState) -> Option<()> {
         let (report, _) = FullReport::ref_from_prefix(report).ok()?;

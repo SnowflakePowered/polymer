@@ -4,7 +4,7 @@
 
 use std::{error::Error, ffi::c_void, mem::ManuallyDrop, time::Duration};
 
-use snowglass_input::mouse::layout::Extent;
+use crate::layout::Extent;
 use snowglass_protocol::AdapterLuid;
 use windows::{
     UI::Composition::{Compositor, ICompositionSurface},

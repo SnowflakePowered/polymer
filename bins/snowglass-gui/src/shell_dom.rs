@@ -277,7 +277,7 @@ pub(crate) struct ShellSessionFactory {
     document: ShellDocumentFactory,
     plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
-    input_sources: snowglass_input::source::InputSourceCatalog,
+    input_sources: snowglass_input::InputHub,
     input_api: snowglass_runtime::InputApiState,
 }
 
@@ -294,12 +294,12 @@ impl ShellSessionFactory {
                 snowglass_pluginhost::PluginRuntimeOptions::default(),
             )),
             local_storage,
-            input_sources: snowglass_input::source::InputSourceCatalog::default(),
+            input_sources: snowglass_input::InputHub::default(),
             input_api: snowglass_runtime::InputApiState::default(),
         }
     }
 
-    pub(crate) fn input_sources(&self) -> snowglass_input::source::InputSourceCatalog {
+    pub(crate) fn input_sources(&self) -> snowglass_input::InputHub {
         self.input_sources.clone()
     }
 

@@ -3,7 +3,7 @@
 use crate::api;
 use parking_lot::Mutex;
 use snowglass_hook::config;
-use snowglass_input_sdl::Runtime;
+use snowglass_hook_input_sdl::Runtime;
 use std::{
     ffi::c_void,
     os::windows::ffi::OsStrExt,
@@ -92,7 +92,7 @@ fn create_table_state() -> Result<Sdl2TableState, &'static str> {
     let module = Sdl2EntryInstallation::with_state(|state| state.module)
         .ok_or("SDL2 entry-hook state is not installed")?
         .as_ptr();
-    let runtime = Arc::new(Runtime::new(config::sdl_gamepad_count()));
+    let runtime = Arc::new(Runtime::new());
     let backend = unsafe { api::Api::load(module, runtime.clone()) }
         .ok_or("SDL2 virtual joystick exports are unavailable")?;
     Ok(Sdl2TableState {

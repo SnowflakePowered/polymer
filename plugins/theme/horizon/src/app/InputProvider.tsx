@@ -1,5 +1,4 @@
 import { createContext, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
-import type { InputControlEvent } from "../../../../../js/snowglass";
 
 export type InputDirection = "left" | "right" | "up" | "down";
 export type InputAction =
@@ -58,24 +57,40 @@ export function InputProvider(props: ParentProps) {
 
   onMount(() => {
     const axisLatch = new Map<string, -1 | 1>();
+    const previousButtons = new Map<number, number>();
     const controllerInput = (event: Event) => {
-      const input = (event as CustomEvent<InputControlEvent>).detail;
-      const directions = axisDirections[input.expression];
-      if (directions) {
-        const key = `${input.sourceId}\0${input.expression}`;
-        if (Math.abs(input.value) < 12000) {
-          axisLatch.delete(key);
-          return;
-        }
-        const direction = input.value < 0 ? -1 : 1;
-        if (axisLatch.get(key) === direction) return;
-        axisLatch.set(key, direction);
-        emit({ type: "move", direction: directions[direction < 0 ? 0 : 1], sourceId: input.sourceId, event });
-        return;
+      const { index } = (event as CustomEvent<{ index: number }>).detail;
+      const state = window.Snowglass.input.get(index);
+      if (!state) return;
+      const sourceId = window.Snowglass.input.devices.find((device) => device.index === index)?.id || null;
+      const prior = previousButtons.get(index) || 0;
+      previousButtons.set(index, state.buttons);
+      const buttons = [
+        [0, "button.a"], [1, "button.b"], [2, "button.x"], [5, "button.guide"],
+        [11, "directional.n"], [12, "directional.s"], [13, "directional.w"], [14, "directional.e"],
+      ] as const;
+      for (const [bit, expression] of buttons) {
+        if ((state.buttons & (1 << bit)) === 0 || (prior & (1 << bit)) !== 0) continue;
+        const action = buttonActions[expression];
+        if (action) emit({ ...action, sourceId, event } as InputAction);
       }
-      if (input.value !== 1) return;
-      const action = buttonActions[input.expression];
-      if (action) emit({ ...action, sourceId: input.sourceId, event } as InputAction);
+      const axes = [
+        ["analog.stick.left.x+", state.leftStick[0]], ["analog.stick.left.y+", state.leftStick[1]],
+        ["analog.stick.right.x+", state.rightStick[0]], ["analog.stick.right.y+", state.rightStick[1]],
+      ] as const;
+      for (const [expression, value] of axes) {
+        const directions = axisDirections[expression];
+        if (!directions) continue;
+        const key = `${index}\0${expression}`;
+        if (Math.abs(value) < 12000) {
+          axisLatch.delete(key);
+          continue;
+        }
+        const direction = value < 0 ? -1 : 1;
+        if (axisLatch.get(key) === direction) continue;
+        axisLatch.set(key, direction);
+        emit({ type: "move", direction: directions[direction < 0 ? 0 : 1], sourceId, event });
+      }
     };
     const keyboardInput = (event: KeyboardEvent) => {
       if (controllerNavigationEvents.has(event)
@@ -89,10 +104,10 @@ export function InputProvider(props: ParentProps) {
       else if (event.key === "Escape") emit({ type: "back", sourceId: null, event });
       else if (event.key === "Shift") emit({ type: "details", sourceId: null, event });
     };
-    window.Snowglass.input.addEventListener("controllerinput", controllerInput);
+    window.Snowglass.input.addEventListener("input", controllerInput);
     window.addEventListener("keydown", keyboardInput);
     onCleanup(() => {
-      window.Snowglass.input.removeEventListener("controllerinput", controllerInput);
+      window.Snowglass.input.removeEventListener("input", controllerInput);
       window.removeEventListener("keydown", keyboardInput);
     });
   });

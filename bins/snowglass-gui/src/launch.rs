@@ -1,4 +1,4 @@
-use snowglass_input::topology::ControllerTopology;
+use snowglass_controllers::ControllerTopology;
 pub use snowglass_pluginhost::GraphicsHook;
 pub use snowglass_pluginhost::{InputHook, InputProvider};
 use std::collections::HashSet;
@@ -62,7 +62,7 @@ impl AttachedLaunchPlan {
         let mut native_ports = HashSet::new();
         for provider in &self.input_providers {
             match provider {
-                InputProvider::BluetoothHidPipe {
+                InputProvider::RawHid {
                     source_id,
                     port,
                     product_id,

@@ -138,7 +138,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
     fn insert_configuration(
         &mut self,
         configuration: ConfigurationInstance,
-        topology: &snowglass_input::topology::ControllerTopology,
+        topology: &snowglass_controllers::ControllerTopology,
     ) -> ConfigurationId {
         self.runtime
             .op_state()
@@ -170,7 +170,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                 "onEmulatorLaunch arguments must be an object".to_owned(),
             ));
         }
-        let topology = serde_json::from_value::<snowglass_input::topology::ControllerTopology>(
+        let topology = serde_json::from_value::<snowglass_controllers::ControllerTopology>(
             arguments
                 .get("controllerTopology")
                 .cloned()
@@ -314,11 +314,19 @@ pub(crate) async fn execute_retained_emulator(
         .await
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct ControllerChangeOutput {
+    #[serde(rename = "inputProviders")]
+    pub input_providers: Vec<InputProvider>,
+    #[serde(rename = "controllerTopology")]
+    pub controller_topology: snowglass_controllers::ControllerTopology,
+}
+
 pub(crate) async fn execute_controller_change(
     runtime: &mut JsRuntime,
-    topology: &snowglass_input::topology::ControllerTopology,
-    previous_topology: &snowglass_input::topology::ControllerTopology,
-) -> Result<Vec<InputProvider>, EmulatorHostError> {
+    topology: &snowglass_controllers::ControllerTopology,
+    previous_topology: &snowglass_controllers::ControllerTopology,
+) -> Result<ControllerChangeOutput, EmulatorHostError> {
     let topology = serde_json::to_string(topology)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let previous = serde_json::to_string(previous_topology)
@@ -327,8 +335,9 @@ pub(crate) async fn execute_controller_change(
         r#"(async () => {{
           const active = globalThis.__snowglassActiveControllerChange;
           if (active == null) throw new TypeError("plugin does not export onControllerChanged");
+          const inputTopology = {topology};
           const context = __snowglassControllerChange.context(
-            {topology},
+            inputTopology,
             {previous},
             active.configuration,
             __snowglassFilesystem.filesystem,
@@ -337,7 +346,10 @@ pub(crate) async fn execute_controller_change(
             ? await Reflect.apply(active.callback, active.receiver, [context])
             : undefined;
           __snowglassFilesystem.refreshConfigurations();
-          return result?.inputProviders ?? [];
+          return {{
+            inputProviders: result?.inputProviders ?? [],
+            controllerTopology: result?.controllerTopology ?? inputTopology,
+          }};
         }})()"#
     );
     let promise = runtime
@@ -363,7 +375,7 @@ pub(crate) fn rematerialize_configuration(
     runtime: &mut JsRuntime,
     id: ConfigurationId,
     replacement: ConfigurationInstance,
-    topology: &snowglass_input::topology::ControllerTopology,
+    topology: &snowglass_controllers::ControllerTopology,
 ) -> Result<(), EmulatorHostError> {
     runtime
         .op_state()

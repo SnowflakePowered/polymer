@@ -5,38 +5,92 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
 export type GraphicsHook = "opengl" | "vulkan" | "d3d11" | "d3d12";
 export type InputHook = "bluetooth-api-win32";
 export type NativeInputProvider = Readonly<{
-  type: "bluetoothHidPipe";
+  type: "rawHid";
   sourceId: string;
   port: number;
   productId: number;
 }>;
 export type ProjectionMode = "name" | "position" | "custom";
+export type PointerMode = "none" | "relative" | "absoluteDevice" | "absoluteScreen";
 
 export type InputSourceSelector =
   | { kind: "keyboardMouse" }
   | { kind: "device"; deviceId: string };
 
-export type InputControlEvent = {
-  readonly sourceId: string;
-  readonly expression: string;
-  readonly value: number;
-};
+export type InputCalibration = Readonly<{
+  sticks?: readonly (Readonly<{
+    center: readonly [number, number];
+    min: readonly [number, number];
+    max: readonly [number, number];
+    deadZone: number;
+    outerDeadZone: number;
+  }> | null)[];
+  triggers?: readonly (Readonly<{ min: number; max: number; deadZone: number }> | null)[];
+  motion?: Readonly<{
+    accelerometerBias: readonly [number, number, number];
+    accelerometerScale: readonly [number, number, number];
+    gyroscopeBias: readonly [number, number, number];
+    gyroscopeScale: readonly [number, number, number];
+  }>;
+  pointer?: Readonly<{
+    sensorBar: "above" | "below";
+    sensitivity: 1 | 2 | 3 | 4 | 5;
+    mode: "basic" | "extended" | "full";
+  }>;
+}>;
+
+export type InputState = Readonly<{
+  buttons: number;
+  leftStick: readonly [number, number];
+  rightStick: readonly [number, number];
+  leftTrigger: number;
+  rightTrigger: number;
+  accelerometer: readonly [number, number, number];
+  gyroscope: readonly [number, number, number];
+  orientation: readonly [number, number, number, number] | null;
+  pointer: Readonly<{ position: readonly [number, number]; delta: readonly [number, number]; flags: number; kind: string }>;
+  battery: Readonly<{ level: number; charging: boolean }>;
+}>;
+
+export interface InputCalibrationCapture {
+  readonly progress: number;
+  finish(): InputCalibration;
+  cancel(): void;
+}
 
 export interface InputApi extends EventTarget {
+  readonly devices: readonly ManagedControllerDevice[];
+  get(index: number): InputState | null;
+  rumble(index: number, options: Readonly<{ lowFrequency: number; highFrequency: number; durationMs: number }>): void;
+  recenter(index: number): void;
+  calibrate(deviceId: string, calibration: InputCalibration): InputCalibration;
+  getCalibration(deviceId: string): InputCalibration;
+  resetCalibration(deviceId: string): InputCalibration;
+  beginCalibration(deviceId: string, kind: "stickCenter" | "stickRange" | "triggerRange" | "motionBias"): InputCalibrationCapture;
+  configurePointer(deviceId: string, pointer: NonNullable<InputCalibration["pointer"]>): InputCalibration;
 }
 
 export type ControllerDevice = {
   readonly id: string;
-  readonly source: "sdl" | "bt";
   readonly name: string;
-  readonly connected: boolean;
-  readonly playerIndex: number | null;
-  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly profile: string | null;
+  readonly vendorId: number | null;
+  readonly productId: number | null;
+  readonly serial: string | null;
+  readonly role: "Whole" | "LeftHalf" | "RightHalf";
+  readonly capabilities: readonly string[];
 };
+
+export type ManagedControllerDevice = ControllerDevice & Readonly<{
+  index: number | null;
+  connected: boolean;
+  battery: Readonly<{ level: number | null; charging: boolean }> | null;
+  pairing?: boolean;
+}>;
 
 export type ControllerPlayer = {
   readonly index: number;
-  readonly controller: ControllerDevice | null;
+  readonly controller: ManagedControllerDevice | null;
 };
 
 export type ControllerMappingProfile = {
@@ -52,7 +106,7 @@ export interface ConnectionSession extends EventTarget {
   readonly id: string;
   readonly active: boolean;
   readonly discovery: Readonly<{ active: boolean }>;
-  readonly candidates: readonly ControllerDevice[];
+  readonly candidates: readonly ManagedControllerDevice[];
   readonly players: readonly ControllerPlayer[];
   connect(id: string): Promise<void>;
   finish(): Promise<void>;
@@ -63,8 +117,8 @@ export interface ControllersApi extends EventTarget {
     osBle: BluetoothAvailability;
     winUsb: BluetoothAvailability;
   }>;
-  readonly devices: readonly ControllerDevice[];
-  readonly connected: readonly ControllerDevice[];
+  readonly devices: readonly ManagedControllerDevice[];
+  readonly connected: readonly ManagedControllerDevice[];
   readonly players: readonly ControllerPlayer[];
   readonly layouts: readonly Readonly<Record<string, unknown>>[];
   readonly activeConnectionSession: ConnectionSession | null;
@@ -93,18 +147,16 @@ export type ControllerMapping = {
   gamepad: number;
   source?: InputSourceSelector;
   connected: boolean;
-  device?: Readonly<{
-    id: string;
-    source: "sdl" | "bt";
-    name: string;
-    connected: boolean;
-    metadata: Readonly<Record<string, unknown>>;
-  }>;
+  device?: ControllerDevice;
   mouse: boolean;
   layout: string;
   projectionMode?: ProjectionMode;
   /** Logical input expression to physical input expression, or `none`. */
   mapping: Record<string, string>;
+  pointer: Readonly<{
+    source: "none" | "deviceNative" | "hostMouse" | "deviceThenHostMouse";
+    mode: PointerMode;
+  }>;
 };
 
 export type ControllerTopology = Readonly<{

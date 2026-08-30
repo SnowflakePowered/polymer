@@ -1,10 +1,8 @@
 use super::{
-    DecodedInput, PointerSource, ReportDecoder, normalize_stick, pointer_axis, set_button,
+    DecodedInput, GamepadState, PointerSource, ReportDecoder, normalize_stick, pointer_axis,
+    set_button,
 };
-use snowglass_input::{
-    gamepad::{GamepadButton, GamepadState},
-    router::PhysicalControllerRole,
-};
+use snowglass_input::{DeviceRole, GamepadButton};
 use std::time::Instant;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -49,7 +47,7 @@ struct FullReport {
 }
 
 trait Switch2ReportModel {
-    const ROLE: PhysicalControllerRole;
+    const ROLE: DeviceRole;
 
     fn decode_controls(&mut self, report: &[u8], state: &mut GamepadState) -> Option<()>;
 
@@ -123,7 +121,7 @@ impl Default for JoyCon2LeftDecoder {
 }
 
 impl Switch2ReportModel for JoyCon2LeftDecoder {
-    const ROLE: PhysicalControllerRole = PhysicalControllerRole::LeftHalf;
+    const ROLE: DeviceRole = DeviceRole::LeftHalf;
 
     fn decode_controls(&mut self, report: &[u8], state: &mut GamepadState) -> Option<()> {
         let (report, _) = HalfReport::ref_from_prefix(report).ok()?;
@@ -203,7 +201,7 @@ impl Default for JoyCon2RightDecoder {
 }
 
 impl Switch2ReportModel for JoyCon2RightDecoder {
-    const ROLE: PhysicalControllerRole = PhysicalControllerRole::RightHalf;
+    const ROLE: DeviceRole = DeviceRole::RightHalf;
 
     fn decode_controls(&mut self, report: &[u8], state: &mut GamepadState) -> Option<()> {
         let (report, _) = HalfReport::ref_from_prefix(report).ok()?;
@@ -265,7 +263,7 @@ pub struct Switch2ProDecoder {
 }
 
 impl Switch2ReportModel for Switch2ProDecoder {
-    const ROLE: PhysicalControllerRole = PhysicalControllerRole::Whole;
+    const ROLE: DeviceRole = DeviceRole::Whole;
 
     fn decode_controls(&mut self, report: &[u8], state: &mut GamepadState) -> Option<()> {
         let (report, _) = FullReport::ref_from_prefix(report).ok()?;

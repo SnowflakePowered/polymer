@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn configurations_are_scoped_by_invocation_id() {
         let mut configurations = configuration::ConfigurationInstances::default();
-        let topology = snowglass_input::topology::ControllerTopology::default();
+        let topology = snowglass_controllers::ControllerTopology::default();
         let first = configurations.insert(configuration(), &topology);
         let second = configurations.insert(configuration(), &topology);
         assert_ne!(first, second);

@@ -19,6 +19,9 @@ snowglass-consolestorage = { path = "../../filesystem/snowglass-consolestorage" 
 snowglass-deno = { path = "../snowglass-deno" }
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
+snowglass-input-layout.workspace = true
+snowglass-input-ipc.workspace = true
+snowglass-controllers.workspace = true
 snowglass-input-bluetooth = { path = "../../input/snowglass-input-bluetooth" }
 snowglass-library.workspace = true
 snowglass-ipc.workspace = true

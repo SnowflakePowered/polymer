@@ -8,7 +8,7 @@ use cssparser::{
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser,
 };
 use cssparser_color::Color;
-use snowglass_input::mouse::layout::{Extent, Rect, aspect_fit};
+use snowglass_renderer::layout::{Extent, Rect, aspect_fit};
 use snowglass_renderer::{CompositingPlan, Presentation, SurfacePlacement};
 use taffy::prelude::*;
 

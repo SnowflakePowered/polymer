@@ -6,14 +6,12 @@ use snowglass_renderer::{
 };
 use std::sync::Arc;
 
-pub(crate) use snowglass_input_dinput::{DirectInputForwarder, RawKeyboardForwarder};
-
 #[derive(Clone, Default)]
-pub(crate) struct RoutedInputSender(Arc<RwLock<Option<snowglass_runtime::ProtocolInputSender>>>);
+pub(crate) struct InputEndpoint(Arc<RwLock<Option<snowglass_input_ipc::InputIpcListener>>>);
 
-impl RoutedInputSender {
+impl InputEndpoint {
     pub fn attach(&self, instance: &snowglass_runtime::EmulatorInstance) {
-        *self.0.write() = Some(instance.protocol_input_sender());
+        *self.0.write() = Some(instance.input());
     }
 
     pub fn detach(&self) {
@@ -25,12 +23,12 @@ impl RoutedInputSender {
     }
 }
 
-impl MessageSink for RoutedInputSender {
+impl MessageSink for InputEndpoint {
     fn send_message(&self, message: Message) -> bool {
         self.0
             .read()
             .as_ref()
-            .is_some_and(|sender| sender.send(message))
+            .is_some_and(|sender| sender.send_control(message))
     }
 }
 
@@ -41,10 +39,6 @@ pub(crate) fn cancel_pointer_connection(
     presentation: &Presentation,
     plan: &CompositingPlan,
     sender: &impl PointerEventSink,
-    direct_input: &mut DirectInputForwarder,
 ) {
-    let Some(buttons) = routing.cancel(connection, presentation, plan, sender) else {
-        return;
-    };
-    direct_input.release_mouse_buttons(buttons);
+    routing.cancel(connection, presentation, plan, sender);
 }

@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 use snowglass_config::ast::{
     ConfigurationInstance, OptionRange, PortAssignments, Value, ValueKind,
 };
-use snowglass_input::{
-    hub::{SourceSelector, VirtualPort},
-    layout::ProjectionMode,
-    source::InputSourceCatalog,
-    topology::{ControllerBindings, ControllerMapping, ControllerTarget, ControllerTopology},
+use snowglass_controllers::{
+    ControllerAssignmentSnapshot, ControllerBindings, ControllerMapping, ControllerTarget,
+    ControllerTopology, SourceSelector, VirtualPort,
 };
+use snowglass_input::InputHub;
+use snowglass_input_layout::layout::ProjectionMode;
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -84,6 +84,7 @@ pub struct PortDescriptor {
     pub index: usize,
     pub layouts: Vec<String>,
     pub selected_layout: String,
+    pub pointer: snowglass_input_layout::topology::PointerMode,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -183,13 +184,13 @@ pub fn prepare_api(
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let controller_profiles = crate::ControllerProfiles::default();
-    let controller_assignments = crate::controllers::ControllerAssignmentSnapshot::default();
+    let controller_assignments = ControllerAssignmentSnapshot::default();
     prepare_api_with_sources(
         plugins,
         viewer,
         package,
         request,
-        &InputSourceCatalog::default(),
+        &InputHub::default(),
         &controller_profiles,
         &controller_assignments,
     )
@@ -200,9 +201,9 @@ pub(crate) fn prepare_api_with_sources(
     viewer: ConfigurationDefaults,
     package: serde_json::Value,
     request: serde_json::Value,
-    sources: &InputSourceCatalog,
+    sources: &InputHub,
     controller_profiles: &crate::ControllerProfiles,
-    controller_assignments: &crate::controllers::ControllerAssignmentSnapshot,
+    controller_assignments: &ControllerAssignmentSnapshot,
 ) -> Result<serde_json::Value, String> {
     let package: crate::ScrapedPackage =
         serde_json::from_value(package).map_err(|error| error.to_string())?;
@@ -271,7 +272,7 @@ pub(crate) fn prepare_api_with_sources(
 /// choices without rendering or inspecting emulator files.
 fn resolved_controller(
     gamepad: &DefaultGamepad,
-    sources: &InputSourceCatalog,
+    sources: &InputHub,
     controllers: &crate::ControllerManager,
 ) -> Result<ControllerMapping, String> {
     let port = gamepad
@@ -281,7 +282,11 @@ fn resolved_controller(
     let gamepad_index = u8::try_from(gamepad.slot)
         .map_err(|_| format!("virtual gamepad {} is outside the wire range", gamepad.slot))?;
     let device = match &gamepad.source {
-        Some(SourceSelector::Device { device_id }) => sources.get(device_id),
+        Some(SourceSelector::Device { device_id }) => sources
+            .devices()
+            .into_iter()
+            .find(|(_, device)| device.id.as_str() == device_id)
+            .map(|(_, device)| device),
         Some(SourceSelector::KeyboardMouse) | None => None,
     };
     let (projection_mode, mut mapping) = if let Some(device) = &device {
@@ -292,7 +297,7 @@ fn resolved_controller(
     };
 
     if device.is_none()
-        && let Some(layout) = snowglass_input::layout::InputLayout::get(&gamepad.layout)
+        && let Some(layout) = snowglass_input_layout::layout::InputLayout::get(&gamepad.layout)
     {
         for element in &layout.elements {
             if let Some(source) = layout.sdl_key(element.key) {
@@ -321,13 +326,16 @@ fn resolved_controller(
         },
         gamepad: gamepad_index,
         source: gamepad.source.clone(),
-        connected: device.as_ref().is_some_and(|device| device.connected)
+        connected: device.is_some()
             || matches!(gamepad.source, Some(SourceSelector::KeyboardMouse)),
-        device,
+        device: device
+            .as_ref()
+            .map(snowglass_controllers::ControllerDevice::from_descriptor),
         mouse: gamepad.force_mouse,
         layout: gamepad.layout.clone(),
         projection_mode,
         mapping: ControllerBindings::try_from_strings(mapping)?,
+        pointer: snowglass_input_layout::topology::PointerBinding::default(),
     })
 }
 
@@ -488,6 +496,7 @@ fn default_groups(
                         index: port.index,
                         layouts: port.layouts,
                         selected_layout,
+                        pointer: port.pointer,
                     }
                 })
                 .collect();

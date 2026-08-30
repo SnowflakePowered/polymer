@@ -25,6 +25,7 @@ asar = { version = "0.3.0", default-features = false }
 ash = { version = "0.38.0", default-features = false, features = ["loaded", "std"] }
 ash-window = "0.13.0"
 bcast = "0.0.29"
+bincode = { version = "2", features = ["serde"] }
 crossfire = "3.1.19"
 dashmap = "6.1.0"
 exe = "0.5.7"
@@ -104,16 +105,20 @@ snowglass-ui = { path = "crates/runtime/snowglass-ui" }
 snowglass-platform-windows = { path = "crates/runtime/snowglass-platform-windows" }
 snowglass-automation = { path = "crates/runtime/snowglass-automation" }
 snowglass-input = { path = "crates/input/snowglass-input" }
+snowglass-input-layout = { path = "crates/input/snowglass-input-layout" }
+snowglass-input-ipc = { path = "crates/input/snowglass-input-ipc" }
 snowglass-config = { path = "crates/snowglass-config" }
-snowglass-input-dinput = { path = "crates/input/snowglass-input-dinput" }
-snowglass-input-sdl = { path = "crates/input/snowglass-input-sdl" }
-snowglass-input-win32 = { path = "crates/input/snowglass-input-win32" }
+snowglass-hook-input-dinput = { path = "crates/hooks/snowglass-hook-input-dinput" }
+snowglass-hook-input-sdl = { path = "crates/hooks/snowglass-hook-input-sdl" }
+snowglass-hook-input-win32 = { path = "crates/hooks/snowglass-hook-input-win32" }
+snowglass-hook-input = { path = "crates/hooks/snowglass-hook-input" }
 consolespec = { version = "0.0.1" }
 gumshoe = { version = "0.0.4-beta" }
 gix = { version = "0.86", features = ["tree-editor"] }
 phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
+snowglass-controllers = { path = "crates/runtime/snowglass-controllers" }
 snowglass-library = { path = "crates/runtime/snowglass-library" }
 snowglass-vfs = { path = "crates/filesystem/snowglass-vfs" }
 snowglass-vfs-winfsp = { path = "crates/filesystem/snowglass-vfs-winfsp" }

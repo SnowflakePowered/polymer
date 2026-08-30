@@ -5,9 +5,9 @@ pub mod frame;
 pub mod input;
 pub mod ui;
 
-mod shared;
+pub mod shared;
 
-pub use control::{LocalSocket, LocalSocketListener, Message, StreamReady};
+pub use control::{BlobKind, LocalSocket, LocalSocketListener, Message, StreamReady, WireFeedback};
 
 /// A synchronous producer for messages carried by the existing input IPC
 /// connection. Implementations should enqueue directly and must not add a

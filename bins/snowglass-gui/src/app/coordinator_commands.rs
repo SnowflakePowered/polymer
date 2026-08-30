@@ -180,7 +180,7 @@ impl ShellCoordinator {
     pub(super) fn send_input_configuration_result(
         &mut self,
         request_id: u64,
-        result: Result<snowglass_input::hub::InputConfiguration, String>,
+        result: Result<snowglass_controllers::InputConfiguration, String>,
     ) {
         let (result, _) = InputRouter::configuration_result(request_id, result);
         self.notify_snowglass(SnowglassNotification::InputConfigurationSettled {

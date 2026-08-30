@@ -1,7 +1,7 @@
 //! Win32 pointer delivery and virtual cursor state.
 
 use snowglass_hook::config;
-use snowglass_input_win32::Runtime as InputRuntime;
+use snowglass_hook_input_win32::Runtime as InputRuntime;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},

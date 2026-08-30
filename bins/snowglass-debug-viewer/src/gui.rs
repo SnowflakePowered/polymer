@@ -210,44 +210,12 @@ impl LauncherState {
 }
 pub(crate) fn draw_gamepad_window(
     context: &egui::Context,
-    provider: &Sdl3Provider,
+    provider: &InputHub,
     layouts: &[InputLayout],
-    drafts: &mut [HashMap<BindingKey, String>],
+    _drafts: &mut [HashMap<BindingKey, String>],
     latency: &snowglass_statistics::DistributionStatistics,
 ) {
-    const BUTTONS: [SdlButton; 21] = [
-        SdlButton::South,
-        SdlButton::East,
-        SdlButton::West,
-        SdlButton::North,
-        SdlButton::Back,
-        SdlButton::Guide,
-        SdlButton::Start,
-        SdlButton::LeftStick,
-        SdlButton::RightStick,
-        SdlButton::LeftShoulder,
-        SdlButton::RightShoulder,
-        SdlButton::DpadUp,
-        SdlButton::DpadDown,
-        SdlButton::DpadLeft,
-        SdlButton::DpadRight,
-        SdlButton::Misc1,
-        SdlButton::RightPaddle1,
-        SdlButton::LeftPaddle1,
-        SdlButton::RightPaddle2,
-        SdlButton::LeftPaddle2,
-        SdlButton::Touchpad,
-    ];
-    const AXES: [SdlAxis; 6] = [
-        SdlAxis::LeftX,
-        SdlAxis::LeftY,
-        SdlAxis::RightX,
-        SdlAxis::RightY,
-        SdlAxis::LeftTrigger,
-        SdlAxis::RightTrigger,
-    ];
-
-    let states = provider.states();
+    let states = provider.snapshot();
     egui::Window::new("Gamepads")
         .default_pos(egui::pos2(880.0, 48.0))
         .default_width(380.0)
@@ -258,33 +226,31 @@ pub(crate) fn draw_gamepad_window(
                 ui.label(format!(
                     "Input dispatch latency  p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  (n={})",
                     latency.p50, latency.p95, latency.p99, latency.samples
-                ))
-                .on_hover_text(
-                    "Physical SDL sample to completion of the AF_UNIX send; excludes Dolphin's subsequent SDL update.",
-                );
+                ));
             }
-            ui.separator();
             for (slot, layout) in layouts.iter().enumerate() {
                 egui::CollapsingHeader::new(format!("Slot {slot}: {}", layout.name))
                     .default_open(slot == 0)
                     .show(ui, |ui| {
-                        let Some(state) = states.get(slot).and_then(Option::as_ref) else {
+                        let Some((_, device, state)) = states.iter().find(|(index, _, _)| {
+                            index.is_some_and(|index| usize::from(index.get()) == slot)
+                        }) else {
                             ui.colored_label(egui::Color32::GRAY, "Controller disconnected");
                             return;
                         };
-                        ui.strong(&state.name);
-                        ui.monospace(&state.guid);
+                        ui.strong(device.name.as_ref());
+                        ui.monospace(device.id.to_string());
                         ui.label(format!(
                             "Sticks L {:?}  R {:?}   Triggers {} / {}",
-                            state.mapped.left_stick,
-                            state.mapped.right_stick,
-                            state.mapped.left_trigger,
-                            state.mapped.right_trigger
+                            state.gamepad.left_stick,
+                            state.gamepad.right_stick,
+                            state.gamepad.left_trigger,
+                            state.gamepad.right_trigger
                         ));
-                        let pressed = state
-                            .buttons
-                            .iter()
-                            .filter_map(|(button, pressed)| pressed.then(|| format!("{button:?}")))
+                        let pressed = snowglass_input::GamepadButton::ALL
+                            .into_iter()
+                            .filter(|button| state.gamepad.buttons & button.mask() != 0)
+                            .map(|button| format!("{button:?}"))
                             .collect::<Vec<_>>();
                         ui.label(if pressed.is_empty() {
                             "Pressed: none".to_owned()
@@ -292,98 +258,13 @@ pub(crate) fn draw_gamepad_window(
                             format!("Pressed: {}", pressed.join(", "))
                         });
                         ui.label(format!(
-                            "Axes: {}",
-                            state
-                                .axes
-                                .iter()
-                                .map(|(axis, value)| format!("{axis:?}={value}"))
-                                .collect::<Vec<_>>()
-                                .join("  ")
+                            "Sensors: accel {:?} m/s²   gyro {:?} rad/s",
+                            state.sensor.accelerometer, state.sensor.gyroscope
                         ));
-                        if state.mapped.accelerometer != [0.0; 3]
-                            || state.mapped.gyroscope != [0.0; 3]
-                        {
-                            ui.label(format!(
-                                "Sensors: accel {:?} m/s²   gyro {:?} rad/s",
-                                state.mapped.accelerometer, state.mapped.gyroscope
-                            ));
-                        }
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.strong("Real SDL input → element");
-                            if ui.small_button("Reset").clicked() {
-                                drafts[slot].clear();
-                                provider.reset_bindings(slot);
-                            }
-                        });
-                        egui::ScrollArea::vertical()
-                            .max_height(300.0)
-                            .show(ui, |ui| {
-                                for element in &layout.elements {
-                                    if !is_remappable_element(element.key) {
-                                        continue;
-                                    }
-                                    let selected = drafts[slot]
-                                        .entry(element.key)
-                                        .or_insert_with(|| "Default".to_owned());
-                                    let previous = selected.clone();
-                                    ui.horizontal(|ui| {
-                                        ui.label(&element.label).on_hover_text(element.key.to_string());
-                                        egui::ComboBox::from_id_salt((
-                                            "gamepad-remap",
-                                            slot,
-                                            &element.id,
-                                        ))
-                                        .selected_text(selected.as_str())
-                                        .width(145.0)
-                                        .show_ui(
-                                            ui,
-                                            |ui| {
-                                                ui.selectable_value(
-                                                    selected,
-                                                    "Default".to_owned(),
-                                                    "Default",
-                                                );
-                                                ui.selectable_value(
-                                                    selected,
-                                                    "Disabled".to_owned(),
-                                                    "Disabled",
-                                                );
-                                                for button in BUTTONS {
-                                                    let value = format!("Button:{button:?}");
-                                                    ui.selectable_value(
-                                                        selected,
-                                                        value.clone(),
-                                                        value,
-                                                    );
-                                                }
-                                                if element_accepts_axis(element.key) {
-                                                    for axis in AXES {
-                                                        let value = format!("Axis:{axis:?}");
-                                                        ui.selectable_value(
-                                                            selected,
-                                                            value.clone(),
-                                                            value,
-                                                        );
-                                                    }
-                                                }
-                                            },
-                                        );
-                                    });
-                                    if *selected != previous {
-                                        if let Some(binding) = ui_binding(selected) {
-                                            provider.set_binding(slot, element.key, binding);
-                                        } else {
-                                            provider.clear_binding(slot, element.key);
-                                        }
-                                    }
-                                }
-                            });
                     });
             }
         });
 }
-
 pub(crate) fn draw_launcher_window(
     context: &egui::Context,
     launcher: &mut LauncherState,

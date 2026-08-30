@@ -1,15 +1,12 @@
-use snowglass_input::{
-    gamepad::GamepadState,
-    hub::SourceSelector,
-    layout::{InputBinding, InputLayout, SdlAxis, SdlButton},
-    mouse::{PointerPhase, layout::Extent},
-    provider::sdl3::{ProviderConfig as Sdl3ProviderConfig, Sdl3Provider, SlotConfig},
-};
+use snowglass_controllers::SourceSelector;
+use snowglass_input::InputHub;
+use snowglass_input_layout::layout::{InputBinding, InputLayout, SdlAxis, SdlButton};
 use snowglass_ipc::StreamReady;
 use snowglass_platform_windows::{
     NativeWindow, forward_character, performance_counter, performance_frequency,
 };
-use snowglass_protocol::{ExternalImageKind, ExternalSyncKind, FrameReady};
+use snowglass_protocol::{ExternalImageKind, ExternalSyncKind, FrameReady, input::PointerPhase};
+use snowglass_renderer::Extent;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
@@ -56,9 +53,7 @@ use snowglass_statistics::{
 };
 
 use input::{
-    dinput::{
-        DirectInputForwarder, RawKeyboardForwarder, RoutedInputSender, cancel_pointer_connection,
-    },
+    dinput::{InputEndpoint, cancel_pointer_connection},
     load_window, native_window,
     pointer::mouse_button,
 };
@@ -522,7 +517,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let mut capture = SurfaceCapture::default();
     let pointer_tx = capture.pointer_sender();
-    let input_tx = RoutedInputSender::default();
+    let input_tx = InputEndpoint::default();
     let mut gamepad_provider = None;
     let mut gamepad_layouts = Vec::new();
     let mut gamepad_remap_drafts = Vec::new();
@@ -564,8 +559,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .with_resizable(true),
         )?;
         let viewer_window = native_window(&window)?;
-        let _raw_keyboard =
-            RawKeyboardForwarder::install(viewer_window, input_tx.clone(), backing_window.clone())?;
         let mut egui_context = egui::Context::default();
         let mut egui_state = egui_winit::State::new(
             egui_context.clone(),
@@ -584,7 +577,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut stream_indices = HashMap::<u64, u32>::new();
         let mut active_backend = "Waiting";
         let mut active_consumer = "Waiting";
-        let mut direct_input = DirectInputForwarder::new(input_tx.clone());
         let mut pressed_keys = HashSet::<KeyCode>::new();
         let mut pending_ui = VecDeque::<UiRequest>::new();
         let mut last_resize_windows = Vec::new();
@@ -643,9 +635,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 WindowEvent::Focused(focused) => {
                     if !focused {
                         pressed_keys.clear();
-                        if let Some(provider) = &gamepad_provider {
-                            provider.clear_keys();
-                        }
                         if let Some(connection) = pointer_routing.captured_connection() {
                             let size = window.inner_size();
                             let presentation =
@@ -657,7 +646,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 &presentation,
                                 &plan,
                                 &pointer_tx,
-                                &mut direct_input,
                             );
                         }
                     }
@@ -675,9 +663,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             ElementState::Released => {
                                 pressed_keys.remove(&code);
                             }
-                        }
-                        if let Some(provider) = &gamepad_provider {
-                            provider.set_key(format!("{code:?}"), pressed);
                         }
                     }
                     if let Some(backing) = load_window(&backing_window) {
@@ -701,7 +686,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let presentation =
                         compositor.presentation(Extent::new(size.width, size.height));
                     let plan = layout::composition_plan(&presentation);
-                    if pointer_routing.send(
+                    pointer_routing.send(
                         PointerPhase::Move,
                         0,
                         0,
@@ -709,28 +694,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &presentation,
                         &plan,
                         &pointer_tx,
-                    ) {
-                        if let Some(mapped) = pointer_routing.last_sent() {
-                            if let Some(provider) = &gamepad_provider {
-                                provider.set_pointer(GamepadState::normalized_pointer_axes(
-                                    mapped.normalized_x,
-                                    mapped.normalized_y,
-                                ));
-                            }
-                            direct_input.mouse_position(
-                                mapped.surface_id,
-                                mapped.x,
-                                mapped.y,
-                                mapped.coordinate_width,
-                                mapped.coordinate_height,
-                            );
-                        }
-                    } else {
-                        if let Some(provider) = &gamepad_provider {
-                            provider.set_pointer(None);
-                        }
-                        direct_input.reset_mouse_position();
-                    }
+                    );
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     if !pending_ui.is_empty() {
@@ -746,7 +710,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let presentation =
                             compositor.presentation(Extent::new(size.width, size.height));
                         let plan = layout::composition_plan(&presentation);
-                        if pointer_routing.send(
+                        pointer_routing.send(
                             phase,
                             u32::from(button),
                             0,
@@ -754,9 +718,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &presentation,
                             &plan,
                             &pointer_tx,
-                        ) {
-                            direct_input.mouse_button(button, state == ElementState::Pressed);
-                        }
+                        );
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
@@ -773,7 +735,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let presentation =
                         compositor.presentation(Extent::new(size.width, size.height));
                     let plan = layout::composition_plan(&presentation);
-                    if pointer_routing.send(
+                    pointer_routing.send(
                         PointerPhase::Wheel,
                         0,
                         horizontal,
@@ -781,9 +743,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &presentation,
                         &plan,
                         &pointer_tx,
-                    ) {
-                        direct_input.mouse_wheel(vertical);
-                    }
+                    );
                 }
                 WindowEvent::RedrawRequested => {
                     if let Some(active) = &active_target {
@@ -899,7 +859,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                 &presentation,
                                                 &plan,
                                                 &pointer_tx,
-                                                &mut direct_input,
                                             );
                                             stream_indices.remove(&existing);
                                             stats.remove_surface(existing);
@@ -1000,7 +959,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &presentation,
                                     &plan,
                                     &pointer_tx,
-                                    &mut direct_input,
                                 );
                                 if stream_indices.remove(&connection).is_none() {
                                     continue;
@@ -1398,7 +1356,7 @@ struct ActiveTarget {
 
 struct StartedTarget {
     target: ActiveTarget,
-    provider: Sdl3Provider,
+    provider: InputHub,
     layouts: Vec<InputLayout>,
 }
 
@@ -1463,7 +1421,6 @@ fn start_target_session(
             artifact_root: executable_dir.to_path_buf(),
             hooks: launcher.hooks.clone(),
             input_hooks: Vec::new(),
-            bluetooth_hid_pipes: Vec::new(),
             consumer: match viewer_api {
                 ViewerApi::D3d12 => snowglass_runtime::ConsumerPreference::D3d12,
                 ViewerApi::Vulkan => snowglass_runtime::ConsumerPreference::Vulkan,
@@ -1474,33 +1431,37 @@ fn start_target_session(
             skip_surfaces,
             graph_tracking,
             force_keyed_mutex,
-            gamepad_layouts: layouts.iter().map(|layout| layout.id.clone()).collect(),
         })?;
-    let provider = Sdl3Provider::start(
-        Sdl3ProviderConfig {
-            slots: gamepads
-                .iter()
-                .map(|pad| SlotConfig {
-                    source: pad.source.clone(),
-                    layout_id: pad.layout.clone(),
-                    force_mouse: pad.force_mouse,
-                    projection_mode: snowglass_input::layout::ProjectionMode::Position,
-                })
-                .collect(),
-            gamecontroller_database: None,
-            keyboard_mapping_directory: None,
-        },
-        instance.gamepad_input(),
+    let provider = InputHub::default();
+    let backend = Arc::new(
+        snowglass_input_sdl3::Sdl3Backend::new(Default::default())
+            .map_err(|error| std::io::Error::other(error.to_string()))?,
     );
-    let provider = match provider {
-        Ok(provider) => provider,
-        Err(error) => {
-            let _ = instance.close();
-            return Err(
-                std::io::Error::other(format!("SDL3 gamepad input failed: {error}")).into(),
-            );
-        }
+    provider
+        .register_backend(backend)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    instance.input().attach(&provider);
+    let topology = snowglass_input_layout::topology::InputTopology {
+        revision: 1,
+        machine: None,
+        ports: gamepads
+            .iter()
+            .enumerate()
+            .map(
+                |(player, pad)| snowglass_input_layout::topology::PortBinding {
+                    player: player as u8,
+                    group: "controller".to_owned(),
+                    port: player as u8,
+                    layout: pad.layout.clone(),
+                    mode: snowglass_input_layout::topology::RemapMode::Position,
+                    bindings: Vec::new(),
+                    pointer: snowglass_input_layout::topology::PointerBinding::default(),
+                },
+            )
+            .collect(),
+        raw_hid: Vec::new(),
     };
+    let _ = instance.input().publish_topology(&topology);
     let ui = instance.subscribe_ui_requests();
     Ok(StartedTarget {
         target: ActiveTarget { instance, ui },

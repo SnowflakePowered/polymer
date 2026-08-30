@@ -89,17 +89,15 @@ const WIIMOTE_CONFIGURATION = "Config/WiimoteNew.ini";
 
 function rawWiimote(mapping: ControllerMapping): InputProvider | null {
     const device = mapping.device;
-    if (!mapping.connected || device?.source !== "bt" || mapping.target.group !== "wii") {
+    if (!mapping.connected || !device?.id.startsWith("bt:") || mapping.target.group !== "wii") {
         return null;
     }
-    const profile = typeof device.metadata.profileId === "string"
-        ? device.metadata.profileId
-        : "";
+    const profile = device.profile ?? "";
     const recognized = profile.startsWith("nintendo.wiimote.")
         || device.name.startsWith("Nintendo RVL-CNT");
-    if (!recognized || device.metadata.rawHidAvailable === false) return null;
+    if (!recognized || !device.capabilities.includes("rawHid")) return null;
 
-    const reportedProduct = device.metadata.productId;
+    const reportedProduct = device.productId;
     const productId = typeof reportedProduct === "number"
         && (reportedProduct === 0x0306 || reportedProduct === 0x0330)
         ? reportedProduct
@@ -107,7 +105,7 @@ function rawWiimote(mapping: ControllerMapping): InputProvider | null {
             ? 0x0330
             : 0x0306;
     return {
-        type: "bluetoothHidPipe",
+        type: "rawHid",
         sourceId: device.id,
         port: mapping.target.port,
         productId,
@@ -119,6 +117,22 @@ function rawWiimoteProviders(topology: ControllerTopology): InputProvider[] {
         const provider = rawWiimote(mapping);
         return provider ? [provider] : [];
     });
+}
+
+function pointerTopology(topology: ControllerTopology): ControllerTopology {
+    return {
+        mappings: topology.mappings.map(mapping => ({
+            ...mapping,
+            pointer: {
+                ...mapping.pointer,
+                mode: mapping.target.group !== "wii"
+                    ? "none"
+                    : mapping.device?.capabilities.includes("pointerAngular")
+                        ? "absoluteDevice"
+                        : "relative",
+            },
+        })),
+    };
 }
 
 function renderedConfiguration(
@@ -313,7 +327,8 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     }
     mountConfiguration(args.filesystem, args.configuration, args.controllerTopology);
 
-    const inputProviders = rawWiimoteProviders(args.controllerTopology);
+    const controllerTopology = pointerTopology(args.controllerTopology);
+    const inputProviders = rawWiimoteProviders(controllerTopology);
     return {
         command: args.filesystem.path("/Dolphin/Dolphin.exe"),
         argv,
@@ -321,6 +336,7 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
         hooks: ["d3d11"],
         inputHooks: isWii ? ["bluetooth-api-win32"] : [],
         inputProviders,
+        controllerTopology,
         graphTracking: true,
         surfaces: [
             { index: 0, pattern: "Dolphin" },
@@ -331,16 +347,17 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
 type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configuration["options"]>>;
 
 export const onControllerChanged = async (context: ControllerChangeContext) => {
-    const wiiMappings = context.topology.mappings.filter(mapping => mapping.target.group === "wii");
+    const topology = pointerTopology(context.topology);
+    const wiiMappings = topology.mappings.filter(mapping => mapping.target.group === "wii");
     if (wiiMappings.length > 0) {
         const wiiOptions = context.configuration.options().ports.NINTENDO_WII.wii;
         for (const mapping of wiiMappings) {
             wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
         }
     }
-    mountConfiguration(context.filesystem, context.configuration, context.topology);
+    mountConfiguration(context.filesystem, context.configuration, topology);
     await applyWiiConnectionChanges(context);
-    return { inputProviders: rawWiimoteProviders(context.topology) };
+    return { inputProviders: rawWiimoteProviders(topology), controllerTopology: topology };
 };
 
 export default {

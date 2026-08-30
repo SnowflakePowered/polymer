@@ -29,7 +29,7 @@ impl ConfigurationInstances {
     pub(crate) fn insert(
         &mut self,
         instance: ConfigurationInstance,
-        topology: &snowglass_input::topology::ControllerTopology,
+        topology: &snowglass_controllers::ControllerTopology,
     ) -> ConfigurationId {
         let id = loop {
             self.next_id = self.next_id.wrapping_add(1);
@@ -130,7 +130,7 @@ impl ConfigurationInstances {
         &mut self,
         id: ConfigurationId,
         mut replacement: ConfigurationInstance,
-        topology: &snowglass_input::topology::ControllerTopology,
+        topology: &snowglass_controllers::ControllerTopology,
     ) -> Result<(), ConfigurationAccessError> {
         let current = self
             .instances
@@ -172,7 +172,7 @@ impl ConfigurationInstances {
         serialize(&entry.instance, entry.bindings.clone())
     }
 
-    fn bindings(topology: &snowglass_input::topology::ControllerTopology) -> Vec<GamepadBinding> {
+    fn bindings(topology: &snowglass_controllers::ControllerTopology) -> Vec<GamepadBinding> {
         topology
             .mappings
             .iter()

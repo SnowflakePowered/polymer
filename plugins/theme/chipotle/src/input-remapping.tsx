@@ -1,9 +1,27 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import type { ControllerMapping, InputControlEvent, ProjectionMode } from "../../../../js/snowglass";
+import type { ControllerMappingProfile, InputState, ProjectionMode } from "../../../../js/snowglass";
 
 type Layout = { id: string; name: string; elements: Array<{ key: string; label: string; kind: string }> };
 
 const friendly = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const buttonExpressions = [
+  "button.a", "button.b", "button.x", "button.y", "button.select", "button.guide", "button.start",
+  "button.stick.left", "button.stick.right", "button.l", "button.r", "directional.n", "directional.s",
+  "directional.w", "directional.e", "button.misc1", "button.paddle.right.1", "button.paddle.left.1",
+  "button.paddle.right.2", "button.paddle.left.2", "touchpad",
+];
+
+const activeControl = (state: InputState) => {
+  const button = buttonExpressions.findIndex((_, index) => (state.buttons & (1 << index)) !== 0);
+  if (button >= 0) return { expression: buttonExpressions[button], value: 1 };
+  const axes = [
+    ["analog.stick.left.x+", state.leftStick[0]], ["analog.stick.left.y+", state.leftStick[1]],
+    ["analog.stick.right.x+", state.rightStick[0]], ["analog.stick.right.y+", state.rightStick[1]],
+    ["trigger.left", state.leftTrigger], ["trigger.right", state.rightTrigger],
+  ] as const;
+  const axis = axes.find(([, value]) => Math.abs(value) >= 12000);
+  return axis && { expression: axis[0], value: axis[1] };
+};
 
 export function InputRemapping(props: { onClose(): void }) {
   const api = window.Snowglass.controllers;
@@ -11,7 +29,7 @@ export function InputRemapping(props: { onClose(): void }) {
   const [revision, setRevision] = createSignal(0);
   const [deviceId, setDeviceId] = createSignal(api.connected[0]?.id || "");
   const [layoutId, setLayoutId] = createSignal(layouts.find((layout) => layout.id === "XBOX_CONTROLLER")?.id || layouts[0]?.id || "");
-  const [profile, setProfile] = createSignal<ControllerMapping | null>(null);
+  const [profile, setProfile] = createSignal<ControllerMappingProfile | null>(null);
   const [capture, setCapture] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
   const [message, setMessage] = createSignal("");
@@ -47,10 +65,11 @@ export function InputRemapping(props: { onClose(): void }) {
     };
     const input = (event: Event) => {
       const target = capture();
-      const detail = (event as CustomEvent<InputControlEvent>).detail;
-      if (!target || detail.sourceId !== deviceId()) return;
-      const axis = detail.expression.startsWith("analog.") || detail.expression.startsWith("trigger.");
-      if ((!axis && detail.value !== 1) || (axis && Math.abs(detail.value) < 12000)) return;
+      const { index } = (event as CustomEvent<{ index: number }>).detail;
+      const device = window.Snowglass.input.devices.find((candidate) => candidate.index === index);
+      const state = window.Snowglass.input.get(index);
+      const detail = state && activeControl(state);
+      if (!target || device?.id !== deviceId() || !detail) return;
       let source = detail.expression;
       if (source.endsWith("+")) {
         const positive = source.includes(".y+") ? detail.value < 0 : detail.value > 0;
@@ -60,10 +79,10 @@ export function InputRemapping(props: { onClose(): void }) {
       void applyMapping(target, source);
     };
     api.addEventListener("statechange", stateChanged);
-    window.Snowglass.input.addEventListener("controllerinput", input);
+    window.Snowglass.input.addEventListener("input", input);
     onCleanup(() => {
       api.removeEventListener("statechange", stateChanged);
-      window.Snowglass.input.removeEventListener("controllerinput", input);
+      window.Snowglass.input.removeEventListener("input", input);
     });
   });
 
@@ -100,7 +119,7 @@ export function InputRemapping(props: { onClose(): void }) {
     <div class="remap-editor-scroll">
       <Show when={devices().length} fallback={<p class="rounded-lg bg-snow-800 p-4">Connect a controller to edit its mapping.</p>}>
         <label class="block mt-4">Controller<select value={deviceId()} onChange={(event) => setDeviceId(event.currentTarget.value)}>
-          <For each={devices()}>{(device) => <option value={device.id}>{device.name} · {device.source}</option>}</For>
+          <For each={devices()}>{(device) => <option value={device.id}>{device.name}</option>}</For>
         </select></label>
         <label class="block mt-4">Logical layout<select value={layoutId()} onChange={(event) => setLayoutId(event.currentTarget.value)}>
           <For each={layouts}>{(item) => <option value={item.id}>{item.name || friendly(item.id)}</option>}</For>

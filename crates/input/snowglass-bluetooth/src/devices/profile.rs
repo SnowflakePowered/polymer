@@ -230,9 +230,43 @@ pub trait ControllerSession: Send {
         ))
     }
 
+    async fn set_ir_camera(
+        &mut self,
+        _transport: &mut dyn Transport,
+        _setup: IrCameraSetup,
+    ) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "controller does not expose an IR camera",
+        ))
+    }
+
     async fn send_raw_hid(&mut self, transport: &mut dyn Transport, report: &[u8]) -> Result<()> {
         transport.send(report).await
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IrSensitivity {
+    Level1,
+    Level2,
+    #[default]
+    Level3,
+    Level4,
+    Level5,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IrMode {
+    #[default]
+    Basic,
+    Extended,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IrCameraSetup {
+    pub sensitivity: IrSensitivity,
+    pub mode: IrMode,
 }
 
 struct DefaultControllerSession;

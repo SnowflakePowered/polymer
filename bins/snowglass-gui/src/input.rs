@@ -1,35 +1,27 @@
-//! Shell policy for physical input capture.
-//!
-//! The emulator instance owns IPC. This adapter only gives long-lived shell
-//! input objects a stable endpoint while game instances are replaced.
-
-use parking_lot::RwLock;
-use snowglass_egui::InputDiagnostics;
-use snowglass_input::provider::sdl3::{ProviderConfig, Sdl3Provider};
-use snowglass_input::{
-    gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
-    hub::{InputConfiguration, InputHub, InputOperation, InputTransaction},
-    source::{InputSourceCatalog, InputSourceDescriptor, InputSourceKind},
-    topology::ControllerTopology,
+use parking_lot::Mutex;
+use snowglass_controllers::{
+    ControllerConfiguration, ControllerManager, ControllerTopology, InputConfiguration,
+    InputTransaction,
 };
-use snowglass_input_dinput::DirectInputForwarder;
-use snowglass_ipc::{Message, MessageSink};
-use snowglass_renderer::input::PointerRoutingState;
+use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
+use snowglass_input::{
+    HostInputEvent, InputHub, KeyCode, PlayerIndex, PointerFlags, PointerReport,
+};
+use snowglass_input_ipc::InputIpcListener;
+use snowglass_input_ipc::{RawHidChannel, RawHidSpec};
+use snowglass_protocol::input::PointerPhase;
+use snowglass_renderer::{
+    input::{PointerEventSink, PointerRoutingState},
+    layout::Rect,
+    pointer::PointerProjector,
+};
 use std::{
-    collections::{BTreeMap, HashMap},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 const DOM_MK_SHIFT: u32 = 0x0004;
 const DOM_MK_CONTROL: u32 = 0x0008;
-
-mod bluetooth;
-mod publication;
-mod reconcile;
-use bluetooth::BluetoothHandle;
-use reconcile::InputReconciler;
-use snowglass_runtime::{ControllerCommandOutcome, ControllerManager, ControllerManagerEffect};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InputPriority {
@@ -50,43 +42,18 @@ pub(crate) struct PointerPosition {
     pub y: i32,
 }
 
-/// Opaque input capabilities exported by an active game host. The input
-/// subsystem can attach without borrowing the host's emulator runtime.
 pub(crate) struct GameInputEndpoint {
-    control: snowglass_runtime::ProtocolInputSender,
-    gamepad: Arc<dyn GamepadUpdateSink>,
+    listener: InputIpcListener,
 }
 
 impl GameInputEndpoint {
-    pub fn new(
-        control: snowglass_runtime::ProtocolInputSender,
-        gamepad: Arc<dyn GamepadUpdateSink>,
-    ) -> Self {
-        Self { control, gamepad }
+    pub fn new(listener: InputIpcListener) -> Self {
+        Self { listener }
     }
-}
-
-pub(crate) struct InputRouter {
-    transport: InputTransport,
-    mouse_buttons: u8,
-    pointer_routing: PointerRoutingState,
-    direct_input: DirectInputForwarder,
-    priority: InputPriority,
-    cursor: PointerPosition,
-    dom_mouse_keys: u32,
-    dom_alt_key: bool,
-    last_published_state: String,
-    ui_controls: HashMap<String, i32>,
-    next_publish: Instant,
-    last_input_api_revision: u64,
 }
 
 pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
-    pub sources: serde_json::Value,
-    pub routed: Vec<serde_json::Value>,
-    pub state_changed: Option<bool>,
-    pub priority: &'static str,
     pub api_state: Option<serde_json::Value>,
 }
 
@@ -97,60 +64,120 @@ pub(crate) struct InputConfigurationPublication {
 
 pub(crate) struct PreparedInputTransaction {
     transaction: InputTransaction,
-    previous: snowglass_runtime::ResolvedInputConfiguration,
-    next: snowglass_runtime::ResolvedInputConfiguration,
+    next: InputConfiguration,
 }
 
 impl PreparedInputTransaction {
     pub(crate) fn candidate(&self) -> &InputConfiguration {
-        &self.next.configuration
+        &self.next
     }
 }
 
+pub(crate) struct InputRouter {
+    hub: InputHub,
+    configuration: ControllerConfiguration,
+    manager: ControllerManager,
+    input_api: snowglass_runtime::InputApiState,
+    listener: Option<InputIpcListener>,
+    sdl: Arc<snowglass_input_sdl3::Sdl3Backend>,
+    bluetooth: Arc<snowglass_input_bluetooth::BluetoothBackend>,
+    topology: Option<snowglass_input_layout::topology::InputTopology>,
+    mouse_buttons: u8,
+    pointer_routing: PointerRoutingState,
+    pointer_projectors: Vec<PointerProjector>,
+    priority: InputPriority,
+    cursor: PointerPosition,
+    dom_mouse_keys: u32,
+    dom_alt_key: bool,
+    next_publish: Instant,
+    last_input_api_revision: u64,
+    native_providers: Arc<Mutex<Vec<snowglass_pluginhost::InputProvider>>>,
+    native_topology: Arc<Mutex<Option<ControllerTopology>>>,
+    applied_native_providers: Vec<snowglass_pluginhost::InputProvider>,
+    native_namespace: String,
+    raw_hid: Vec<RawHidChannel>,
+}
+
 impl InputRouter {
-    pub fn new(transport: InputTransport, direct_input: DirectInputForwarder) -> Self {
-        Self {
-            transport,
+    pub async fn runtime(
+        hub: InputHub,
+        input_api: snowglass_runtime::InputApiState,
+    ) -> Result<Self, String> {
+        let sdl = Arc::new(
+            snowglass_input_sdl3::Sdl3Backend::new(Default::default())
+                .map_err(|error| error.to_string())?,
+        );
+        hub.register_backend(sdl.clone())
+            .map_err(|error| error.to_string())?;
+        let bluetooth = Arc::new(
+            snowglass_input_bluetooth::BluetoothBackend::start(Default::default())
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+        hub.register_backend(bluetooth.clone())
+            .map_err(|error| error.to_string())?;
+        let directories =
+            snowglass_library::Directories::discover().map_err(|error| error.to_string())?;
+        let manager = ControllerManager::open(
+            directories.storage().join("input.db"),
+            input_api.controller_profiles(),
+            hub.clone(),
+        )
+        .await?;
+        let configuration =
+            ControllerConfiguration::new(None, []).map_err(|error| error.to_string())?;
+        input_api.publish(manager.snapshot(), &manager);
+        Ok(Self {
+            hub,
+            configuration,
+            manager,
+            input_api,
+            listener: None,
+            sdl,
+            bluetooth,
+            topology: None,
             mouse_buttons: 0,
             pointer_routing: PointerRoutingState::new(Instant::now()),
-            direct_input,
+            pointer_projectors: (0..8)
+                .map(|_| PointerProjector::new(Instant::now()))
+                .collect(),
             priority: InputPriority::Ui,
             cursor: PointerPosition::default(),
             dom_mouse_keys: 0,
             dom_alt_key: false,
-            last_published_state: String::new(),
-            ui_controls: HashMap::new(),
             next_publish: Instant::now(),
             last_input_api_revision: 0,
-        }
+            native_providers: Arc::new(Mutex::new(Vec::new())),
+            native_topology: Arc::new(Mutex::new(None)),
+            applied_native_providers: Vec::new(),
+            native_namespace: String::new(),
+            raw_hid: Vec::new(),
+        })
     }
 
     pub fn configuration_snapshot(&self) -> InputConfiguration {
-        self.transport.hub().snapshot()
+        self.configuration.snapshot()
     }
 
     pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
-        self.transport.controller_topology()
+        self.manager.topology_for(&self.configuration.snapshot())
     }
 
     pub fn controller_topology_for(
         &self,
         configuration: &InputConfiguration,
     ) -> Result<ControllerTopology, String> {
-        self.transport.controller_topology_for(configuration)
+        self.manager.topology_for(configuration)
     }
 
-    pub fn layouts(&self) -> &'static [snowglass_input::layout::InputLayout] {
-        self.transport.hub().layouts()
+    pub fn layouts(&self) -> &'static [snowglass_input_layout::layout::InputLayout] {
+        self.configuration.layouts()
     }
 
     pub fn configuration_publication(&self) -> InputConfigurationPublication {
-        let configuration =
-            serde_json::to_value(self.configuration_snapshot()).unwrap_or(serde_json::Value::Null);
-        let layouts = serde_json::to_value(self.layouts()).unwrap_or(serde_json::Value::Null);
         InputConfigurationPublication {
-            configuration,
-            layouts,
+            configuration: serde_json::to_value(self.configuration_snapshot()).unwrap_or_default(),
+            layouts: serde_json::to_value(self.layouts()).unwrap_or_default(),
         }
     }
 
@@ -159,46 +186,49 @@ impl InputRouter {
         result: Result<InputConfiguration, String>,
     ) -> (serde_json::Value, serde_json::Value) {
         let result = match result {
-            Ok(configuration) => serde_json::json!({
-                "ok": true,
-                "configuration": configuration,
-            }),
-            Err(error) => serde_json::json!({
-                "ok": false,
-                "error": error,
-            }),
+            Ok(configuration) => serde_json::json!({"ok": true, "configuration": configuration}),
+            Err(error) => serde_json::json!({"ok": false, "error": error}),
         };
-        let command = serde_json::json!({
-            "type": "inputConfigurationResult",
-            "id": request_id,
-            "result": result,
-        });
+        let command = serde_json::json!({"type": "inputConfigurationResult", "id": request_id, "result": result});
         (result, command)
     }
 
-    pub fn attach(&self, endpoint: GameInputEndpoint) {
-        self.transport.attach(endpoint);
+    pub fn attach(&mut self, endpoint: GameInputEndpoint) {
+        endpoint.listener.attach(&self.hub);
+        if let Some(topology) = &self.topology {
+            let _ = endpoint.listener.publish_topology(topology);
+        }
+        self.listener = Some(endpoint.listener);
+        let _ = self.rebuild_native_input();
     }
 
-    pub fn detach(&self) {
-        self.transport.detach();
+    pub fn detach(&mut self) {
+        self.listener.take();
     }
 
     pub fn add_mouse_delta(&self, delta_x: f64, delta_y: f64) {
         if self.priority == InputPriority::Game {
-            self.transport.provider.add_mouse_delta([delta_x, delta_y]);
+            self.hub.publish_host(HostInputEvent::MouseMotion {
+                dx: delta_x,
+                dy: delta_y,
+            });
         }
     }
 
-    /// Returns true when the key was projected into the active gamepad data
-    /// plane. Unmapped keys remain available for the coordinator to publish as
-    /// neutral game input events.
     pub fn route_game_key(&self, key: &str, pressed: bool) -> bool {
-        if !self.transport.provider.is_key_mapped(key) {
-            return false;
-        }
-        self.transport.provider.set_key(key.to_owned(), pressed);
-        true
+        let code = KeyCode::new(key);
+        self.hub.publish_host(HostInputEvent::Key {
+            code,
+            scan_code: 0,
+            virtual_key: 0,
+            pressed,
+            repeat: false,
+            extended: false,
+            target_window: 0,
+            timestamp_ms: 0,
+            sequence: 0,
+        });
+        code.as_str() != "Unidentified"
     }
 
     pub const fn priority(&self) -> InputPriority {
@@ -206,9 +236,6 @@ impl InputRouter {
     }
 
     pub fn replace_priority(&mut self, priority: InputPriority) -> InputPriority {
-        self.transport
-            .bluetooth
-            .set_raw_capture(priority == InputPriority::Ui);
         std::mem::replace(&mut self.priority, priority)
     }
 
@@ -227,44 +254,38 @@ impl InputRouter {
     pub const fn mouse_buttons(&self) -> u8 {
         self.mouse_buttons
     }
-
     pub fn restore_mouse_buttons(&mut self, buttons: u8) {
         self.mouse_buttons = buttons;
     }
-
     pub const fn dom_shift_key(&self) -> bool {
         self.dom_mouse_keys & DOM_MK_SHIFT != 0
     }
-
     pub const fn dom_control_key(&self) -> bool {
         self.dom_mouse_keys & DOM_MK_CONTROL != 0
     }
-
     pub const fn dom_alt_key(&self) -> bool {
         self.dom_alt_key
     }
 
     pub fn set_modifiers(&mut self, alt: bool, shift: bool, control: bool) {
         self.dom_alt_key = alt;
-        set_flag(&mut self.dom_mouse_keys, DOM_MK_SHIFT, shift);
-        set_flag(&mut self.dom_mouse_keys, DOM_MK_CONTROL, control);
+        Self::set_flag(&mut self.dom_mouse_keys, DOM_MK_SHIFT, shift);
+        Self::set_flag(&mut self.dom_mouse_keys, DOM_MK_CONTROL, control);
     }
 
     pub fn ui_buttons_active(&self) -> bool {
         self.mouse_buttons != 0
     }
-
     pub fn captured_connection(&self) -> Option<u64> {
         self.pointer_routing.captured_connection()
     }
-
     pub fn has_active_pointer_sequence(&self) -> bool {
         self.captured_connection().is_some() || self.ui_buttons_active()
     }
 
     pub fn route_game_pointer(
         &mut self,
-        phase: snowglass_input::mouse::PointerPhase,
+        phase: PointerPhase,
         button: u32,
         horizontal: i32,
         vertical: i32,
@@ -272,7 +293,7 @@ impl InputRouter {
         plan: &snowglass_renderer::CompositingPlan,
         pointer: &snowglass_renderer::SurfacePointerSender,
     ) {
-        if !self.pointer_routing.send(
+        let _ = self.pointer_routing.send(
             phase,
             button,
             horizontal,
@@ -280,39 +301,72 @@ impl InputRouter {
             presentation,
             plan,
             pointer,
-        ) {
-            if phase == snowglass_input::mouse::PointerPhase::Move {
-                self.direct_input.reset_mouse_position();
-                self.transport.provider.set_pointer(None);
+        );
+    }
+
+    pub fn route_device_pointers(
+        &mut self,
+        presentation: &snowglass_renderer::Presentation,
+        plan: &snowglass_renderer::CompositingPlan,
+        pointer: &snowglass_renderer::SurfacePointerSender,
+    ) {
+        use snowglass_input_layout::topology::{PointerMode, PointerSource};
+
+        let routes = self.topology.as_ref().map_or_else(Vec::new, |topology| {
+            topology
+                .ports
+                .iter()
+                .map(|port| (port.player, port.pointer))
+                .collect()
+        });
+        let extent = presentation.viewer_extent();
+        let bounds = Rect::new(0, 0, extent.width, extent.height);
+        for (player, binding) in routes {
+            let index = PlayerIndex::new(player);
+            if self.priority != InputPriority::Game
+                || binding.mode != PointerMode::AbsoluteScreen
+                || matches!(
+                    binding.source,
+                    PointerSource::None | PointerSource::HostMouse
+                )
+            {
+                self.hub.set_pointer_override(index, None);
+                continue;
             }
-            return;
-        }
-        let Some(sent) = self.pointer_routing.last_sent() else {
-            return;
-        };
-        match phase {
-            snowglass_input::mouse::PointerPhase::Move => {
-                self.direct_input.mouse_position(
-                    sent.surface_id,
-                    sent.x,
-                    sent.y,
-                    sent.coordinate_width,
-                    sent.coordinate_height,
-                );
-                self.transport
-                    .provider
-                    .set_pointer(GamepadState::normalized_pointer_axes(
-                        sent.normalized_x,
-                        sent.normalized_y,
-                    ));
-            }
-            snowglass_input::mouse::PointerPhase::ButtonDown
-            | snowglass_input::mouse::PointerPhase::ButtonUp => self.direct_input.mouse_button(
-                button as u16,
-                phase == snowglass_input::mouse::PointerPhase::ButtonDown,
-            ),
-            snowglass_input::mouse::PointerPhase::Wheel => self.direct_input.mouse_wheel(vertical),
-            snowglass_input::mouse::PointerPhase::Cancel => {}
+            let Some(sample) = self.hub.pointer_sample(index) else {
+                self.hub.set_pointer_override(index, None);
+                continue;
+            };
+            let Some(projector) = self.pointer_projectors.get_mut(usize::from(player)) else {
+                continue;
+            };
+            projector.accept(&sample, bounds, Instant::now());
+            let Some(projected) = projector.project(presentation, plan) else {
+                self.hub.set_pointer_override(index, None);
+                continue;
+            };
+            let _ = pointer.send_pointer(projected.connection, projected.pointer);
+            let current = self
+                .hub
+                .state(index)
+                .map(|state| state.pointer)
+                .unwrap_or_default();
+            let flags = PointerFlags::PROJECTED
+                | PointerFlags::DEVICE
+                | if current.flags.contains(PointerFlags::CONTACT) {
+                    PointerFlags::CONTACT
+                } else {
+                    PointerFlags::default()
+                };
+            self.hub.set_pointer_override(
+                index,
+                Some(PointerReport {
+                    position: projected.normalized,
+                    delta: [0; 2],
+                    flags,
+                    kind: current.kind,
+                }),
+            );
         }
     }
 
@@ -323,88 +377,45 @@ impl InputRouter {
         plan: &snowglass_renderer::CompositingPlan,
         pointer: &snowglass_renderer::SurfacePointerSender,
     ) {
-        if let Some(buttons) = self
-            .pointer_routing
-            .cancel(connection, presentation, plan, pointer)
-        {
-            self.direct_input.release_mouse_buttons(buttons);
-        }
+        self.pointer_routing
+            .cancel(connection, presentation, plan, pointer);
     }
 
     pub fn prepare_priority_change(&mut self) {
-        self.direct_input.reset_mouse_position();
-        self.transport.provider.clear_keys();
-        self.transport.provider.set_pointer(None);
+        self.hub.publish_host(HostInputEvent::FocusLost);
     }
-
     pub fn set_provider_enabled(&self, enabled: bool) {
-        self.transport.provider.set_enabled(enabled);
+        for channel in &self.raw_hid {
+            channel.set_capture(!enabled);
+        }
     }
-
     pub fn clear_provider_state(&self) {
-        self.transport.provider.clear_keys();
-        self.transport.provider.set_pointer(None);
-        self.transport.provider.set_enabled(false);
+        self.hub.publish_host(HostInputEvent::FocusLost);
     }
 
     pub fn focus_lost_buttons(&self) -> Vec<(u16, u8)> {
-        [(0, 1), (1, 4), (2, 2), (3, 8), (4, 16)]
-            .into_iter()
-            .filter(|(_, flag)| self.mouse_buttons & flag != 0)
+        (0..5)
+            .filter_map(|button| {
+                let flag = 1 << button;
+                (self.mouse_buttons & flag != 0).then_some((button, flag))
+            })
             .collect()
     }
 
     pub fn finish_focus_lost(&mut self) {
-        reset_focus_state(
-            &mut self.mouse_buttons,
-            &mut self.dom_mouse_keys,
-            &mut self.dom_alt_key,
-        );
-        self.transport.provider.clear_keys();
-        self.transport.provider.set_pointer(None);
-        self.direct_input.reset_mouse_position();
+        self.mouse_buttons = 0;
+        self.dom_mouse_keys = 0;
+        self.dom_alt_key = false;
+        self.hub.publish_host(HostInputEvent::FocusLost);
     }
 
     pub fn publication_due(&mut self, now: Instant) -> bool {
         if now < self.next_publish {
-            return false;
+            false
+        } else {
+            self.next_publish = now + Duration::from_millis(16);
+            true
         }
-        self.next_publish = now + std::time::Duration::from_millis(16);
-        true
-    }
-
-    pub fn route_ui_controls(&mut self, next: HashMap<String, i32>) -> Vec<(String, i32)> {
-        let mut changed = next
-            .iter()
-            .filter_map(|(key, &value)| {
-                (self.ui_controls.get(key).copied().unwrap_or_default() != value)
-                    .then(|| (key.clone(), value))
-            })
-            .collect::<Vec<_>>();
-        changed.extend(self.ui_controls.iter().filter_map(|(key, &value)| {
-            (value != 0 && !next.contains_key(key)).then(|| (key.clone(), 0))
-        }));
-        self.ui_controls = next;
-        changed
-    }
-
-    pub fn observe_published_state(&mut self, json: &str) -> bool {
-        if self.last_published_state == json {
-            return false;
-        }
-        self.last_published_state.clear();
-        self.last_published_state.push_str(json);
-        true
-    }
-
-    fn observe_input_api_state(&mut self) -> Option<serde_json::Value> {
-        let snapshot = self.transport.input_api.snapshot();
-        let revision = snapshot["revision"].as_u64().unwrap_or_default();
-        if revision == self.last_input_api_revision {
-            return None;
-        }
-        self.last_input_api_revision = revision;
-        Some(snapshot)
     }
 
     pub fn set_mouse_button(&mut self, flag: u8, pressed: bool) -> u8 {
@@ -417,8 +428,6 @@ impl InputRouter {
         previous
     }
 
-    /// Keyboard events are offered to the shell document for shortcuts
-    /// before falling through to the priority owner.
     pub fn keyboard_target(&self, overlay_consumed: bool, ui_prevented: bool) -> KeyboardTarget {
         if ui_prevented {
             KeyboardTarget::Ui
@@ -436,512 +445,258 @@ impl InputRouter {
         machine: &str,
         topology: &ControllerTopology,
     ) -> Result<(), String> {
-        let previous = self.transport.hub().snapshot();
-        let transaction = topology.input_transaction(machine, previous.revision)?;
-        let next = self
-            .transport
-            .hub()
-            .preview(&transaction)
-            .map_err(|error| error.to_string())?;
-        self.transport.reconcile(&previous, &next, false)?;
-        self.transport
-            .hub()
+        let transaction =
+            topology.input_transaction(machine, self.configuration.snapshot().revision)?;
+        self.configuration
             .apply(transaction)
             .map_err(|error| error.to_string())?;
+        self.manager
+            .sync_configuration(&self.configuration.snapshot())?;
+        let wire = topology.input_topology(
+            self.configuration.snapshot().revision as u32,
+            Some(machine.to_owned()),
+        )?;
+        if let Some(listener) = &self.listener {
+            listener
+                .publish_topology(&wire)
+                .map_err(|error| error.to_string())?;
+        }
+        self.topology = Some(wire);
         Ok(())
     }
 
     pub fn configure_native_input(
-        &self,
+        &mut self,
         providers: &[snowglass_pluginhost::InputProvider],
         namespace: &str,
     ) -> Result<(), String> {
-        self.transport
-            .bluetooth
-            .configure_raw(providers, namespace)?;
-        self.transport
-            .bluetooth
-            .set_raw_capture(self.priority == InputPriority::Ui);
-        Ok(())
+        *self.native_providers.lock() = providers.to_vec();
+        self.native_namespace = namespace.to_owned();
+        self.rebuild_native_input()
     }
 
-    pub fn clear_native_input(&self) {
-        let _ = self.transport.bluetooth.configure_raw(&[], "unused");
-        self.transport.bluetooth.reset_raw_failures();
+    pub fn clear_native_input(&mut self) {
+        self.raw_hid.clear();
+        self.applied_native_providers.clear();
+        self.native_providers.lock().clear();
+        if let Some(topology) = &mut self.topology {
+            topology.raw_hid.clear();
+        }
     }
 
     pub fn attach_native_input_session(
-        &self,
+        &mut self,
         session: &snowglass_pluginhost::ControllerSession,
         namespace: &str,
     ) -> Result<(), String> {
-        let bluetooth = self.transport.bluetooth.clone();
-        let namespace = namespace.to_owned();
-        session.attach_input_providers(move |providers| {
-            bluetooth.configure_raw(&providers, &namespace)
+        self.native_namespace = namespace.to_owned();
+        let providers = self.native_providers.clone();
+        let topology = self.native_topology.clone();
+        session.attach_input_providers(move |next, next_topology| {
+            *providers.lock() = next;
+            *topology.lock() = Some(next_topology);
+            Ok(())
         })
     }
 
     pub fn prepare_configuration_transaction(
         &mut self,
         transaction: InputTransaction,
-        topology_locked: bool,
+        _topology_locked: bool,
     ) -> Result<PreparedInputTransaction, String> {
-        let previous = self.transport.hub().snapshot();
         let next = self
-            .transport
-            .hub()
+            .configuration
             .preview(&transaction)
             .map_err(|error| error.to_string())?;
-        let previous = self
-            .transport
-            .controller_manager
-            .resolve_configuration(&previous);
-        let next = self
-            .transport
-            .controller_manager
-            .resolve_configuration(&next);
-        InputReconciler::validate(&previous, &next, topology_locked)?;
-        Ok(PreparedInputTransaction {
-            transaction,
-            previous,
-            next,
-        })
+        self.manager.topology_for(&next)?;
+        Ok(PreparedInputTransaction { transaction, next })
     }
 
     pub fn commit_configuration_transaction(
         &mut self,
         prepared: PreparedInputTransaction,
     ) -> Result<InputConfiguration, String> {
-        InputReconciler::apply_reconciliation(
-            &self.transport.provider,
-            &prepared.previous,
-            &prepared.next,
-        )?;
-        self.transport
-            .sync_physical_routes(&prepared.next.configuration);
-        self.transport
-            .hub()
+        let configuration = self
+            .configuration
             .apply(prepared.transaction)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.manager.sync_configuration(&configuration)?;
+        Ok(configuration)
     }
 
     pub async fn controller_command(
         &mut self,
         command: serde_json::Value,
-        topology_locked: bool,
+        _topology_locked: bool,
     ) -> Result<(serde_json::Value, bool), String> {
-        self.transport
-            .apply_controller_command(command, topology_locked)
-            .await
-    }
-}
-
-fn reset_focus_state(mouse_buttons: &mut u8, dom_mouse_keys: &mut u32, dom_alt_key: &mut bool) {
-    *mouse_buttons = 0;
-    *dom_mouse_keys = 0;
-    *dom_alt_key = false;
-}
-
-fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
-    if enabled {
-        *flags |= flag;
-    } else {
-        *flags &= !flag;
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct RoutedInputSender(Arc<RwLock<Option<snowglass_runtime::ProtocolInputSender>>>);
-
-impl RoutedInputSender {
-    fn attach(&self, sender: snowglass_runtime::ProtocolInputSender) {
-        *self.0.write() = Some(sender);
+        let outcome = self.manager.command(command).await?;
+        let changed = !outcome.effects.is_empty();
+        self.input_api
+            .publish(self.manager.snapshot(), &self.manager);
+        Ok((outcome.response, changed))
     }
 
-    fn detach(&self) {
-        *self.0.write() = None;
-    }
-}
-
-impl MessageSink for RoutedInputSender {
-    fn send_message(&self, message: Message) -> bool {
-        self.0
-            .read()
-            .as_ref()
-            .is_some_and(|sender| sender.send(message))
-    }
-}
-
-#[derive(Clone, Default)]
-struct RoutedGamepadSink(Arc<RwLock<RoutedGamepadState>>);
-
-#[derive(Default)]
-struct RoutedGamepadState {
-    target: Option<Arc<dyn GamepadUpdateSink>>,
-    latest: BTreeMap<u8, GamepadUpdate>,
-    sequences: BTreeMap<u8, u32>,
-}
-
-impl RoutedGamepadSink {
-    fn attach(&self, target: Arc<dyn GamepadUpdateSink>) {
-        let updates = {
-            let mut state = self.0.write();
-            state.target = Some(target.clone());
-            state.latest.values().copied().collect::<Vec<_>>()
-        };
-        for update in updates {
-            target.publish(update);
-        }
-    }
-
-    fn detach(&self) {
-        let detached = {
-            let mut state = self.0.write();
-            let target = state.target.take();
-            target.map(|target| {
-                let latest = state.latest.values().copied().collect::<Vec<_>>();
-                let updates = latest
-                    .into_iter()
-                    .map(|update| state.sequenced(update, false, GamepadState::default()))
-                    .collect::<Vec<_>>();
-                (target, updates)
-            })
-        };
-        if let Some((target, updates)) = detached {
-            for update in updates {
-                target.publish(update);
-            }
-        }
-    }
-}
-
-impl RoutedGamepadState {
-    fn sequenced(
+    pub fn build_publication(
         &mut self,
-        update: GamepadUpdate,
-        connected: bool,
-        state: GamepadState,
-    ) -> GamepadUpdate {
-        let sequence = self.sequences.entry(update.slot.get()).or_default();
-        *sequence = sequence.wrapping_add(1);
-        GamepadUpdate {
-            sequence: *sequence,
-            connected,
-            state,
-            ..update
-        }
-    }
-}
-
-impl GamepadUpdateSink for RoutedGamepadSink {
-    fn publish(&self, update: GamepadUpdate) {
-        let (target, update) = {
-            let mut state = self.0.write();
-            let update = state.sequenced(update, update.connected, update.state);
-            if update.connected {
-                state.latest.insert(update.slot.get(), update);
-            } else {
-                state.latest.remove(&update.slot.get());
-            }
-            (state.target.clone(), update)
-        };
-        if let Some(target) = target {
-            target.publish(update);
-        }
-    }
-}
-
-pub struct InputTransport {
-    control: RoutedInputSender,
-    gamepad: RoutedGamepadSink,
-    provider: Sdl3Provider,
-    hub: InputHub,
-    sources: InputSourceCatalog,
-    input_api: snowglass_runtime::InputApiState,
-    bluetooth: BluetoothHandle,
-    physical_router: snowglass_input::router::PhysicalInputRouter,
-    controller_manager: ControllerManager,
-}
-
-impl InputTransport {
-    pub async fn runtime(
-        sources: InputSourceCatalog,
-        input_api: snowglass_runtime::InputApiState,
-    ) -> Result<Self, String> {
-        let control = RoutedInputSender::default();
-        let gamepad = RoutedGamepadSink::default();
-        let hub = InputHub::new(None, []).expect("an empty topology is valid");
-        let provider = Sdl3Provider::start_disabled(
-            ProviderConfig {
-                slots: Vec::new(),
-                ..ProviderConfig::default()
-            },
-            Arc::new(gamepad.clone()),
-        )?;
-        let physical_router =
-            snowglass_input::router::PhysicalInputRouter::new(Arc::new(gamepad.clone()));
-        let bluetooth = BluetoothHandle::start(physical_router.clone(), sources.clone());
-        let directories =
-            snowglass_library::Directories::discover().map_err(|error| error.to_string())?;
-        let controller_manager = ControllerManager::open(
-            directories.storage().join("input.db"),
-            input_api.controller_profiles(),
-        )
-        .await?;
-
-        let transport = Self {
-            control,
-            gamepad,
-            provider,
-            hub,
-            sources,
-            input_api,
-            bluetooth,
-            physical_router,
-            controller_manager,
-        };
-        transport.publish_input_api();
-        Ok(transport)
-    }
-
-    pub fn attach(&self, endpoint: GameInputEndpoint) {
-        self.control.attach(endpoint.control);
-        self.gamepad.attach(endpoint.gamepad);
-    }
-
-    pub fn detach(&self) {
-        self.gamepad.detach();
-        self.control.detach();
-    }
-
-    /// Reconciles one validated configuration snapshot with the live provider.
-    /// Launch setup and frontend transactions both enter through this path.
-    pub fn reconcile(
-        &mut self,
-        previous: &InputConfiguration,
-        next: &InputConfiguration,
-        topology_locked: bool,
-    ) -> Result<(), String> {
-        let previous = self.controller_manager.resolve_configuration(previous);
-        let next = self.controller_manager.resolve_configuration(next);
-        InputReconciler::reconcile(&self.provider, &previous, &next, topology_locked)?;
-        self.sync_physical_routes(&next.configuration);
-        Ok(())
-    }
-
-    pub fn devices(&self) -> Vec<snowglass_input::provider::sdl3::PhysicalDeviceState> {
-        let devices = self.provider.devices();
-        self.sources.replace_connected(
-            InputSourceKind::Sdl,
-            devices.iter().map(|device| InputSourceDescriptor {
-                id: device.device_id.clone(),
-                source: InputSourceKind::Sdl,
-                name: device.name.clone(),
-                connected: true,
-                metadata: serde_json::json!({
-                    "vendorId": device.vendor,
-                    "productId": device.product,
-                    "guid": device.guid,
-                    "serial": device.serial,
-                }),
-            }),
-        );
-        devices
-    }
-
-    pub fn control_sender(&self) -> RoutedInputSender {
-        self.control.clone()
-    }
-
-    pub fn hub(&self) -> &InputHub {
-        &self.hub
-    }
-
-    pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
-        self.controller_topology_for(&self.hub.snapshot())
-    }
-
-    pub fn controller_topology_for(
-        &self,
-        configuration: &InputConfiguration,
-    ) -> Result<ControllerTopology, String> {
-        self.controller_manager
-            .topology_for(configuration, &self.sources)
-    }
-
-    pub async fn apply_controller_command(
-        &mut self,
-        command: serde_json::Value,
-        topology_locked: bool,
-    ) -> Result<(serde_json::Value, bool), String> {
-        let outcome = self
-            .controller_manager
-            .command(command, &self.bluetooth.snapshot())
-            .await?;
-        let response = outcome.response.clone();
-        let changed = self.apply_controller_outcome(outcome, topology_locked)?;
-        self.publish_input_api();
-        Ok((response, changed))
-    }
-
-    pub fn observe_controllers(&mut self, topology_locked: bool) -> Result<bool, String> {
-        let controllers = self.bluetooth.controllers();
-        self.controller_manager
-            .sync_configuration(&self.hub.snapshot(), &self.sources);
-        let outcome =
-            self.controller_manager
-                .observe(&self.provider.devices(), &controllers, &self.sources);
-        let changed = self.apply_controller_outcome(outcome, topology_locked)?;
-        self.publish_input_api();
-        Ok(changed)
-    }
-
-    fn publish_input_api(&self) {
-        self.input_api.publish(
-            self.controller_manager.snapshot(&self.bluetooth.snapshot()),
-            &self.controller_manager,
-        );
-    }
-
-    fn sync_physical_routes(&self, configuration: &InputConfiguration) {
-        let routes = self.controller_manager.routes_for(configuration);
-        let players = routes
+        mappings: &[snowglass_controllers::ControllerMapping],
+        game_active: bool,
+        _topology_locked: bool,
+    ) -> InputPublication {
+        let _ = self.rebuild_native_input();
+        let snapshots = self.hub.snapshot();
+        let slots = mappings
             .iter()
-            .flat_map(|route| {
-                route
-                    .sources
-                    .iter()
-                    .map(move |source| (source.as_str().to_owned(), route.slot))
+            .map(|mapping| {
+                let state = snapshots.iter().find(|(index, _, _)| {
+                    index.is_some_and(|index| index.get() == mapping.gamepad)
+                });
+                state.map_or_else(
+                    || InputSlotDiagnostics {
+                        slot: usize::from(mapping.gamepad),
+                        layout: mapping.layout.clone(),
+                        ..Default::default()
+                    },
+                    |(_, device, state)| InputSlotDiagnostics {
+                        slot: usize::from(mapping.gamepad),
+                        layout: mapping.layout.clone(),
+                        connected: true,
+                        name: device.name.to_string(),
+                        pressed: snowglass_input::GamepadButton::ALL
+                            .into_iter()
+                            .filter(|button| state.gamepad.buttons & button.mask() != 0)
+                            .map(|button| format!("{button:?}"))
+                            .collect(),
+                        axes: state
+                            .gamepad
+                            .left_stick
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, value)| InputAxisDiagnostics {
+                                name: format!("axis{index}"),
+                                value,
+                            })
+                            .collect(),
+                        mapped_buttons: state.gamepad.buttons,
+                        left_stick: state.gamepad.left_stick,
+                        right_stick: state.gamepad.right_stick,
+                        left_trigger: state.gamepad.left_trigger,
+                        right_trigger: state.gamepad.right_trigger,
+                        pointer: state.pointer.position,
+                        accelerometer: state.sensor.accelerometer,
+                        gyroscope: state.sensor.gyroscope,
+                        ..Default::default()
+                    },
+                )
             })
             .collect();
-        self.physical_router.set_routes(routes);
-        self.bluetooth.assign_players(players);
+        let api = self.input_api.snapshot();
+        let revision = api["revision"].as_u64().unwrap_or_default();
+        let api_state = (revision != self.last_input_api_revision).then(|| {
+            self.last_input_api_revision = revision;
+            api
+        });
+        InputPublication {
+            diagnostics: InputDiagnostics {
+                active: self.priority == InputPriority::Game && game_active,
+                slots,
+            },
+            api_state,
+        }
     }
 
-    fn apply_controller_outcome(
-        &mut self,
-        outcome: ControllerCommandOutcome,
-        topology_locked: bool,
-    ) -> Result<bool, String> {
-        for effect in outcome.effects {
-            match effect {
-                ControllerManagerEffect::SessionDiscovery(active) => {
-                    self.bluetooth.set_session_active(active);
-                }
-                ControllerManagerEffect::DisconnectSources(sources) => {
-                    self.bluetooth.disconnect_sources(sources);
-                }
-                ControllerManagerEffect::Connect(id) => self.bluetooth.connect(id),
-                ControllerManagerEffect::Forget(id) => self.bluetooth.forget(id),
-                ControllerManagerEffect::ReapplyMappings => {
-                    let configuration = self
-                        .controller_manager
-                        .resolve_configuration(&self.hub.snapshot());
-                    InputReconciler::apply(&self.provider, &configuration)?;
-                    self.sync_physical_routes(&configuration.configuration);
-                }
-            }
+    fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
+        if enabled {
+            *flags |= flag;
+        } else {
+            *flags &= !flag;
         }
-        let Some(assignments) = outcome.assignments else {
-            return Ok(false);
+    }
+
+    fn rebuild_native_input(&mut self) -> Result<(), String> {
+        let topology_changed = if let Some(topology) = self.native_topology.lock().take() {
+            let configuration = self.configuration.snapshot();
+            let mut wire =
+                topology.input_topology(configuration.revision as u32, configuration.machine)?;
+            if let Some(current) = &self.topology {
+                wire.raw_hid.clone_from(&current.raw_hid);
+            }
+            self.topology = Some(wire);
+            true
+        } else {
+            false
         };
-        let previous = self.hub.snapshot();
-        let transaction = InputTransaction {
-            expected_revision: previous.revision,
-            operations: vec![InputOperation::ReplaceAssignments { assignments }],
+        let providers = self.native_providers.lock().clone();
+        if providers == self.applied_native_providers
+            && (!self.raw_hid.is_empty() || providers.is_empty())
+        {
+            if topology_changed
+                && let (Some(listener), Some(topology)) = (&self.listener, &self.topology)
+            {
+                listener
+                    .publish_topology(topology)
+                    .map_err(|error| error.to_string())?;
+            }
+            return Ok(());
+        }
+        let Some(topology) = &mut self.topology else {
+            self.applied_native_providers = providers;
+            return Ok(());
         };
-        let next = self
-            .hub
-            .preview(&transaction)
-            .map_err(|error| error.to_string())?;
-        self.reconcile(&previous, &next, topology_locked)?;
-        self.hub
-            .apply(transaction)
-            .map_err(|error| error.to_string())?;
-        Ok(true)
+        let devices = self.hub.devices();
+        topology.raw_hid = providers
+            .iter()
+            .map(|provider| {
+                let snowglass_pluginhost::InputProvider::RawHid {
+                    source_id,
+                    port,
+                    product_id,
+                } = provider;
+                let binding = topology
+                    .ports
+                    .iter()
+                    .find(|binding| binding.port == *port)
+                    .ok_or_else(|| format!("raw HID port {port} is not in the input topology"))?;
+                let vendor_id = devices
+                    .iter()
+                    .find(|(_, device)| device.id.as_str() == source_id)
+                    .and_then(|(_, device)| device.vendor_id)
+                    .unwrap_or(0x057e);
+                Ok(snowglass_input_layout::topology::RawHidBinding {
+                    player: binding.player,
+                    port: *port,
+                    vendor_id,
+                    product_id: *product_id,
+                    pipe: format!(r"\\.\pipe\snowglass-{}-hid-{}", self.native_namespace, port),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.raw_hid.clear();
+        if let Some(listener) = &self.listener {
+            for binding in &topology.raw_hid {
+                let spec = RawHidSpec {
+                    pipe_name: binding.pipe.clone(),
+                    vendor_id: binding.vendor_id,
+                    product_id: binding.product_id,
+                    report_size: 22,
+                };
+                self.raw_hid.push(
+                    listener
+                        .open_raw_hid(snowglass_input::PlayerIndex::new(binding.player), spec)
+                        .map_err(|error| error.to_string())?,
+                );
+            }
+            listener
+                .publish_topology(topology)
+                .map_err(|error| error.to_string())?;
+        }
+        self.applied_native_providers = providers;
+        Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use parking_lot::Mutex;
-    use snowglass_input::gamepad::{GamepadButton, GamepadSlot};
-
-    #[derive(Default)]
-    struct RecordingSink(Mutex<Vec<GamepadUpdate>>);
-
-    impl GamepadUpdateSink for RecordingSink {
-        fn publish(&self, update: GamepadUpdate) {
-            self.0.lock().push(update);
-        }
-    }
-
-    #[test]
-    fn routed_sink_replays_latest_and_neutralizes_on_detach() {
-        let routed = RoutedGamepadSink::default();
-        routed.publish(GamepadUpdate {
-            slot: GamepadSlot::new(2).unwrap(),
-            sequence: 7,
-            connected: true,
-            state: GamepadState {
-                buttons: GamepadButton::A.mask(),
-                ..GamepadState::default()
-            },
-        });
-
-        let target = Arc::new(RecordingSink::default());
-        routed.attach(target.clone());
-        routed.detach();
-
-        let updates = target.0.lock();
-        assert_eq!(updates.len(), 2);
-        assert!(updates[0].connected);
-        assert_eq!(updates[0].sequence, 1);
-        assert!(!updates[1].connected);
-        assert_eq!(updates[1].sequence, 2);
-        assert_eq!(updates[1].state, GamepadState::default());
-    }
-
-    #[test]
-    fn routed_sink_orders_updates_from_independent_producers() {
-        let routed = RoutedGamepadSink::default();
-        let target = Arc::new(RecordingSink::default());
-        routed.attach(target.clone());
-
-        for sequence in [90, 1, 2] {
-            routed.publish(GamepadUpdate {
-                slot: GamepadSlot::new(0).unwrap(),
-                sequence,
-                connected: true,
-                state: GamepadState {
-                    buttons: sequence,
-                    ..GamepadState::default()
-                },
-            });
-        }
-
-        let updates = target.0.lock();
-        assert_eq!(
-            updates
-                .iter()
-                .map(|update| update.sequence)
-                .collect::<Vec<_>>(),
-            [1, 2, 3]
-        );
-        assert_eq!(updates[2].state.buttons, 2);
-    }
-
-    #[test]
-    fn focus_loss_clears_buttons_and_modifiers() {
-        let mut mouse_buttons = 0b1_1111;
-        let mut dom_mouse_keys = DOM_MK_SHIFT | DOM_MK_CONTROL;
-        let mut alt = true;
-        reset_focus_state(&mut mouse_buttons, &mut dom_mouse_keys, &mut alt);
-
-        assert_eq!(mouse_buttons, 0);
-        assert_eq!(dom_mouse_keys, 0);
-        assert!(!alt);
+impl Drop for InputRouter {
+    fn drop(&mut self) {
+        let _ = Arc::strong_count(&self.sdl);
+        let _ = Arc::strong_count(&self.bluetooth);
     }
 }

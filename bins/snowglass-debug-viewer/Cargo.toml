@@ -20,7 +20,11 @@ snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
 snowglass-egui.workspace = true
 snowglass-statistics.workspace = true
 snowglass-input.workspace = true
-snowglass-input-dinput.workspace = true
+snowglass-input-sdl3 = { path = "../../crates/input/snowglass-input-sdl3" }
+snowglass-input-ipc.workspace = true
+snowglass-controllers.workspace = true
+snowglass-input-layout.workspace = true
+snowglass-hook-input-dinput.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-protocol.workspace = true
@@ -32,3 +36,4 @@ tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 webrtc = "0.14.0"
+

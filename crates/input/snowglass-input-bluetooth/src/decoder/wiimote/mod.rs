@@ -1,9 +1,6 @@
-use super::{DecodedInput, PointerSource, ReportDecoder, pointer_axis, set_button};
+use super::{DecodedInput, GamepadState, PointerSource, ReportDecoder, pointer_axis, set_button};
 use crate::airmouse::{AirMouse, PointerPosition};
-use snowglass_input::{
-    gamepad::{GamepadButton, GamepadState},
-    router::PhysicalControllerRole,
-};
+use snowglass_input::{DeviceRole, GamepadButton};
 use std::time::{Duration, Instant};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -284,7 +281,7 @@ impl WiimoteDecoder {
         }
         Some(DecodedInput {
             state,
-            role: PhysicalControllerRole::Whole,
+            role: DeviceRole::Whole,
             battery_level: None,
             charging: false,
             pointer_source,
@@ -411,15 +408,15 @@ mod tests {
             .decode(&[0x30, 0x00, 0x08], Instant::now())
             .unwrap()
             .state;
-        assert!(a.button(GamepadButton::A));
-        assert!(!a.button(GamepadButton::Guide));
+        assert_ne!(a.buttons & GamepadButton::A.mask(), 0);
+        assert_eq!(a.buttons & GamepadButton::Guide.mask(), 0);
 
         let home = decoder
             .decode(&[0x30, 0x00, 0x80], Instant::now())
             .unwrap()
             .state;
-        assert!(home.button(GamepadButton::Guide));
-        assert!(!home.button(GamepadButton::A));
+        assert_ne!(home.buttons & GamepadButton::Guide.mask(), 0);
+        assert_eq!(home.buttons & GamepadButton::A.mask(), 0);
     }
 
     #[test]

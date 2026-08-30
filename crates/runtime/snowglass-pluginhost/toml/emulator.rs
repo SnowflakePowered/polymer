@@ -137,6 +137,7 @@ impl EmulatorPlugin {
                     group: group.to_string(),
                     index: port.index,
                     layouts: port.layouts.iter().map(ToString::to_string).collect(),
+                    pointer: snowglass_input_layout::topology::PointerMode::Relative,
                 })
             })
             .collect())

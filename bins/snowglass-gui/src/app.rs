@@ -1,9 +1,7 @@
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
-use crate::input::{
-    InputPriority, InputRouter, InputTransport, KeyboardTarget, PreparedInputTransaction,
-};
+use crate::input::{InputPriority, InputRouter, KeyboardTarget, PreparedInputTransaction};
 use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
@@ -19,8 +17,8 @@ use crate::window_manager::{
     EventLoopProxy, InspectorWindowBootstrap, LoopDirective, ShellDeviceEvent, ShellImeEvent,
     ShellWindowEvent, WindowBootstrap, WindowCommand, WindowManager,
 };
-use snowglass_input::{hub::InputTransaction, mouse::PointerPhase};
-use snowglass_input_dinput::DirectInputForwarder;
+use snowglass_controllers::InputTransaction;
+use snowglass_protocol::input::PointerPhase;
 use snowglass_renderer::{CompositingPlan, Extent};
 use snowglass_statistics::RecorderHandle;
 use std::{
@@ -116,10 +114,9 @@ impl ShellCoordinator {
         let input_api = shell_factory.input_api();
         let shell_dom = ShellSession::new(shell_factory);
 
-        let input = InputTransport::runtime(input_sources, input_api)
+        let input = InputRouter::runtime(input_sources, input_api)
             .await
             .map_err(std::io::Error::other)?;
-        let control_sender = input.control_sender();
 
         let state = Self {
             shell_dom,
@@ -129,7 +126,7 @@ impl ShellCoordinator {
             proxy,
             game_host,
             shell_compositor,
-            input: InputRouter::new(input, DirectInputForwarder::new(control_sender)),
+            input,
             inspector: None,
             notifications: None,
             _theme: theme,

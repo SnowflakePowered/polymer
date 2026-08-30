@@ -34,7 +34,7 @@ pub struct EmulatorLaunchArguments {
     #[serde(skip)]
     pub session: Option<crate::ControllerSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub controller_topology: Option<snowglass_input::topology::ControllerTopology>,
+    pub controller_topology: Option<snowglass_controllers::ControllerTopology>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -61,7 +61,7 @@ pub enum InputHook {
     rename_all_fields = "camelCase"
 )]
 pub enum InputProvider {
-    BluetoothHidPipe {
+    RawHid {
         source_id: String,
         port: u8,
         product_id: u16,
@@ -87,7 +87,7 @@ pub struct EmulatorLaunchInvocation {
     pub storage: crate::filesystem::StorageFactories,
 }
 
-pub type EmulatorPort = snowglass_input::topology::ControllerPort;
+pub type EmulatorPort = snowglass_controllers::ControllerPort;
 
 /// Emulator capability projected from a registered [`PluginInstance`].
 pub trait EmulatorPluginInstance: PluginInstance {
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn native_input_provider_uses_the_plugin_camel_case_contract() {
         let provider: InputProvider = serde_json::from_value(serde_json::json!({
-            "type": "bluetoothHidPipe",
+            "type": "rawHid",
             "sourceId": "bt://br-edr/00:11:22:33:44:55",
             "port": 2,
             "productId": 0x0330,
@@ -129,7 +129,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             provider,
-            InputProvider::BluetoothHidPipe {
+            InputProvider::RawHid {
                 port: 2,
                 product_id: 0x0330,
                 ..

@@ -4,8 +4,8 @@
 
 use crate::vtable::{DeviceHookState, IDirectInputDeviceHook, IDirectInputHook};
 use snowglass_hook::config;
-use snowglass_input::DirectInputDevice;
-use snowglass_input_dinput::Runtime as InputRuntime;
+use snowglass_hook_input_dinput::Runtime as InputRuntime;
+use snowglass_protocol::input::DirectInputDevice;
 use std::{
     ffi::c_void,
     sync::{

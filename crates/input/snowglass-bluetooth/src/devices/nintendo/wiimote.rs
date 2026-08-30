@@ -7,7 +7,8 @@ use tokio::sync::broadcast;
 
 use crate::devices::{
     BondingMode, ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession,
-    DeviceIdentity, HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy,
+    DeviceIdentity, HostIdentity, IrCameraSetup, IrMode, IrSensitivity, MatchConfidence,
+    PairingPolicy, ProfileId, ReconnectPolicy,
 };
 use crate::{Error, ReportReceiver, Result, Transport};
 
@@ -30,7 +31,30 @@ const CAMERA_ENABLE_ADDRESS: u16 = 0x0030;
 const CAMERA_SENSITIVITY_BLOCK_1_ADDRESS: u16 = 0x0000;
 const CAMERA_SENSITIVITY_BLOCK_2_ADDRESS: u16 = 0x001a;
 const CAMERA_MODE_ADDRESS: u16 = 0x0033;
-const CAMERA_BASIC_MODE: u8 = 0x01;
+
+impl IrCameraSetup {
+    fn sensitivity_blocks(self) -> (&'static [u8; 9], &'static [u8; 2]) {
+        const LOW: [u8; 9] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00, 0x41];
+        const LOW_2: [u8; 2] = [0x40, 0x00];
+        const MEDIUM: [u8; 9] = [0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0xaa, 0x00, 0x64];
+        const MEDIUM_2: [u8; 2] = [0x63, 0x03];
+        const HIGH: [u8; 9] = [0x07, 0x00, 0x00, 0x71, 0x01, 0x00, 0x72, 0x00, 0x20];
+        const HIGH_2: [u8; 2] = [0xb3, 0x04];
+        match self.sensitivity {
+            IrSensitivity::Level1 | IrSensitivity::Level2 => (&LOW, &LOW_2),
+            IrSensitivity::Level3 | IrSensitivity::Level4 => (&MEDIUM, &MEDIUM_2),
+            IrSensitivity::Level5 => (&HIGH, &HIGH_2),
+        }
+    }
+
+    fn mode_byte(self) -> u8 {
+        match self.mode {
+            IrMode::Basic => 0x01,
+            IrMode::Extended => 0x03,
+            IrMode::Full => 0x05,
+        }
+    }
+}
 
 #[async_trait]
 trait WiimoteModel: Send + Sync + 'static {
@@ -58,7 +82,11 @@ trait WiimoteModel: Send + Sync + 'static {
         }
     }
 
-    async fn synchronize(transport: &mut dyn Transport, player_index: u8) -> Result<()> {
+    async fn synchronize(
+        transport: &mut dyn Transport,
+        player_index: u8,
+        setup: IrCameraSetup,
+    ) -> Result<()> {
         let mut reports = transport.reports();
         Self::set_led(transport, player_index, false).await?;
         Self::write_i2c(
@@ -79,7 +107,7 @@ trait WiimoteModel: Send + Sync + 'static {
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
-        Self::initialize_ir_camera(transport, &mut reports).await?;
+        Self::initialize_ir_camera(transport, &mut reports, setup).await?;
         transport
             .send(&[REPORT_MODE_ID, CONTINUOUS, REPORT_CORE_ACCEL_IR10_EXT6])
             .await
@@ -88,7 +116,9 @@ trait WiimoteModel: Send + Sync + 'static {
     async fn initialize_ir_camera(
         transport: &mut dyn Transport,
         reports: &mut ReportReceiver,
+        setup: IrCameraSetup,
     ) -> Result<()> {
+        let (block_1, block_2) = setup.sensitivity_blocks();
         Self::send_acknowledged(
             transport,
             reports,
@@ -114,7 +144,7 @@ trait WiimoteModel: Send + Sync + 'static {
             reports,
             I2C_CAMERA,
             CAMERA_SENSITIVITY_BLOCK_1_ADDRESS,
-            &[0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0xaa, 0x00, 0x64],
+            block_1,
         )
         .await?;
         Self::write_i2c(
@@ -122,7 +152,7 @@ trait WiimoteModel: Send + Sync + 'static {
             reports,
             I2C_CAMERA,
             CAMERA_SENSITIVITY_BLOCK_2_ADDRESS,
-            &[0x63, 0x03],
+            block_2,
         )
         .await?;
         Self::write_i2c(
@@ -130,7 +160,7 @@ trait WiimoteModel: Send + Sync + 'static {
             reports,
             I2C_CAMERA,
             CAMERA_MODE_ADDRESS,
-            &[CAMERA_BASIC_MODE],
+            &[setup.mode_byte()],
         )
         .await?;
         Self::write_i2c(
@@ -205,6 +235,7 @@ trait WiimoteModel: Send + Sync + 'static {
 struct WiimoteSession<M> {
     player_index: u8,
     rumble: bool,
+    ir_camera: IrCameraSetup,
     model: PhantomData<M>,
 }
 
@@ -212,7 +243,7 @@ struct WiimoteSession<M> {
 impl<M: WiimoteModel> ControllerSession for WiimoteSession<M> {
     async fn synchronize(&mut self, transport: &mut dyn Transport) -> Result<()> {
         self.rumble = false;
-        M::synchronize(transport, self.player_index).await
+        M::synchronize(transport, self.player_index, self.ir_camera).await
     }
 
     async fn set_external_ownership(
@@ -245,6 +276,20 @@ impl<M: WiimoteModel> ControllerSession for WiimoteSession<M> {
         let enabled = low_frequency != 0 || high_frequency != 0;
         M::set_led(transport, self.player_index, enabled).await?;
         self.rumble = enabled;
+        Ok(())
+    }
+
+    async fn set_ir_camera(
+        &mut self,
+        transport: &mut dyn Transport,
+        setup: IrCameraSetup,
+    ) -> Result<()> {
+        let mut reports = transport.reports();
+        M::initialize_ir_camera(transport, &mut reports, setup).await?;
+        transport
+            .send(&[REPORT_MODE_ID, CONTINUOUS, REPORT_CORE_ACCEL_IR10_EXT6])
+            .await?;
+        self.ir_camera = setup;
         Ok(())
     }
 }
@@ -294,6 +339,7 @@ where
         Box::new(WiimoteSession::<M> {
             player_index: options.player_index,
             rumble: false,
+            ir_camera: IrCameraSetup::default(),
             model: PhantomData,
         })
     }

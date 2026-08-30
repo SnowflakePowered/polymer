@@ -14,7 +14,7 @@ use windows_sys::Win32::{
 const CAPACITY: usize = 1 << 20;
 static NEXT_MAP: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) struct Publisher {
+pub struct Publisher {
     writer: Writer,
     _mapping: MmapMut,
     file: tempfile::NamedTempFile,
@@ -29,7 +29,7 @@ unsafe impl Send for Publisher {}
 unsafe impl Sync for Publisher {}
 
 impl Publisher {
-    pub(crate) fn create(label: &str) -> io::Result<Self> {
+    pub fn create(label: &str) -> io::Result<Self> {
         let file = tempfile::Builder::new()
             .prefix(&format!(
                 "snowglass-{label}-{}-{}-",
@@ -49,7 +49,7 @@ impl Publisher {
         })
     }
 
-    pub(crate) fn duplicate_for(&self, process_id: u32) -> io::Result<i64> {
+    pub fn duplicate_for(&self, process_id: u32) -> io::Result<i64> {
         // SAFETY: OpenProcess is called with a concrete peer PID obtained from
         // the control handshake.
         let process = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, process_id) };
@@ -79,7 +79,7 @@ impl Publisher {
         }
     }
 
-    pub(crate) fn publish(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub fn publish(&mut self, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() > self.writer.mtu() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -92,12 +92,12 @@ impl Publisher {
         Ok(())
     }
 
-    pub(crate) const fn mapping_len(&self) -> u64 {
+    pub const fn mapping_len(&self) -> u64 {
         (HEADER_SIZE + CAPACITY) as u64
     }
 }
 
-pub(crate) struct Subscriber {
+pub struct Subscriber {
     reader: Reader,
     _mapping: Mmap,
     _file: File,
@@ -106,7 +106,7 @@ pub(crate) struct Subscriber {
 unsafe impl Send for Subscriber {}
 
 impl Subscriber {
-    pub(crate) unsafe fn from_handle(handle: i64, len: u64) -> io::Result<Self> {
+    pub unsafe fn from_handle(handle: i64, len: u64) -> io::Result<Self> {
         if len != (HEADER_SIZE + CAPACITY) as u64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -127,7 +127,7 @@ impl Subscriber {
         })
     }
 
-    pub(crate) fn latest(&mut self, destination: &mut Vec<u8>) -> io::Result<bool> {
+    pub fn latest(&mut self, destination: &mut Vec<u8>) -> io::Result<bool> {
         let Some(batch) = self.reader.read_batch() else {
             return Ok(false);
         };
@@ -150,7 +150,7 @@ impl Subscriber {
         Ok(found)
     }
 
-    pub(crate) fn drain(
+    pub fn drain(
         &mut self,
         destination: &mut Vec<u8>,
         mut receive: impl FnMut(&[u8]) -> io::Result<()>,

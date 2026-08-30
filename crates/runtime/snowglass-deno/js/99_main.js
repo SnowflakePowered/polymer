@@ -40,9 +40,6 @@ function dispatch(event) {
       break;
     case "inputConfigurationChanged":
       break;
-    case "inputStateChanged":
-      input.setState(event.detail.sources, event.detail.priority, event.detail.controls);
-      break;
     case "inputConfigurationSettled":
       break;
     case "emulatorInstance":
@@ -50,6 +47,18 @@ function dispatch(event) {
       break;
     case "inputApiStateChanged":
       controllers.setState(event.detail);
+      break;
+    case "inputDeviceConnected":
+      input.snowglassInput.deviceConnected(event.detail);
+      break;
+    case "inputDeviceDisconnected":
+      input.snowglassInput.deviceDisconnected(event.detail);
+      break;
+    case "inputDeviceAssigned":
+      input.snowglassInput.deviceAssigned(event.detail);
+      break;
+    case "inputChanged":
+      input.snowglassInput.inputChanged(event.detail);
       break;
     case "gameSaved":
       consolestorage.gameSaved(event.detail);

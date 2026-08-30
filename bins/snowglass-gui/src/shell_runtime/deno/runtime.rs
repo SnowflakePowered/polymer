@@ -166,7 +166,7 @@ impl Runtime {
         webrtc_commands: WebRtcCommandSink,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
         local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
-        input_sources: snowglass_input::source::InputSourceCatalog,
+        input_sources: snowglass_input::InputHub,
         input_api: snowglass_runtime::InputApiState,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
