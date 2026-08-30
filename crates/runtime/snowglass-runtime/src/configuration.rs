@@ -239,7 +239,7 @@ pub(crate) fn prepare_api_with_sources(
     let ports = plugin
         .ports(&prepared.machine)
         .map_err(|error| error.to_string())?;
-    let topology = ControllerTopologyBuilder::new(ports, selected).build()?;
+    let topology = ControllerTopology::complete(ports, selected)?;
     let mut arguments = serde_json::json!({
         "launchPath": package.path.to_string_lossy(),
         "package": package,
@@ -328,86 +328,6 @@ fn resolved_controller(
         projection_mode,
         mapping: ControllerBindings::try_from_strings(mapping)?,
     })
-}
-
-struct ControllerTopologyBuilder {
-    ports: Vec<EmulatorPort>,
-    selected: Vec<ControllerMapping>,
-}
-
-impl ControllerTopologyBuilder {
-    fn new(ports: Vec<EmulatorPort>, selected: Vec<ControllerMapping>) -> Self {
-        Self { ports, selected }
-    }
-
-    fn build(self) -> Result<ControllerTopology, String> {
-        if self.ports.len() > u8::MAX as usize + 1 {
-            return Err("an emulator cannot expose more than 256 virtual gamepads".to_owned());
-        }
-        let mut used = vec![false; self.ports.len()];
-        for mapping in &self.selected {
-            let port = self.port_for(&mapping.target)?;
-            if !port.layouts.contains(&mapping.layout) {
-                return Err(format!(
-                    "layout '{}' is not supported by {}:{}",
-                    mapping.layout, mapping.target.group, mapping.target.port
-                ));
-            }
-            let slot = usize::from(mapping.gamepad);
-            if slot >= used.len() || std::mem::replace(&mut used[slot], true) {
-                return Err(format!(
-                    "virtual gamepad {} is invalid or duplicated",
-                    mapping.gamepad
-                ));
-            }
-        }
-        let mut available = used
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, used)| (!used).then_some(slot));
-        let mappings = self
-            .ports
-            .iter()
-            .map(|port| {
-                self.selected
-                    .iter()
-                    .find(|mapping| {
-                        mapping.target.group == port.group && mapping.target.port == port.index
-                    })
-                    .cloned()
-                    .map(Ok)
-                    .unwrap_or_else(|| {
-                        let slot = available.next().expect("unused ports have unused gamepads");
-                        Ok(ControllerMapping {
-                            target: ControllerTarget {
-                                group: port.group.clone(),
-                                port: port.index,
-                            },
-                            gamepad: slot as u8,
-                            source: None,
-                            layout: port.layouts.first().cloned().ok_or_else(|| {
-                                format!(
-                                    "emulator port {}:{} declares no layouts",
-                                    port.group, port.index
-                                )
-                            })?,
-                            connected: false,
-                            mouse: false,
-                            projection_mode: ProjectionMode::Position,
-                            mapping: ControllerBindings::default(),
-                        })
-                    })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(ControllerTopology { mappings })
-    }
-
-    fn port_for(&self, target: &ControllerTarget) -> Result<&EmulatorPort, String> {
-        self.ports
-            .iter()
-            .find(|port| port.group == target.group && port.index == target.port)
-            .ok_or_else(|| format!("unknown emulator port {}:{}", target.group, target.port))
-    }
 }
 
 impl PreparedGame {

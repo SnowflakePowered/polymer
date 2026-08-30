@@ -413,8 +413,7 @@ impl GameHost {
 
     pub fn controller_change(
         &self,
-        configuration: &snowglass_input::hub::InputConfiguration,
-        state: &serde_json::Value,
+        topology: snowglass_input::topology::ControllerTopology,
     ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
         let Some(active) = &self.active else {
             return Ok(None);
@@ -422,75 +421,7 @@ impl GameHost {
         let Some(session) = &active.controller_session else {
             return Ok(None);
         };
-        let payload = Self::controller_change_payload(active, configuration, state)?;
-        session.change(payload).map(Some)
-    }
-
-    fn controller_change_payload(
-        active: &ActivePresentation,
-        configuration: &snowglass_input::hub::InputConfiguration,
-        state: &serde_json::Value,
-    ) -> Result<snowglass_input::topology::ControllerTopology, String> {
-        let players = state["controllers"]["players"]
-            .as_array()
-            .or_else(|| state["players"].as_array());
-        let mappings = configuration
-            .ports
-            .iter()
-            .map(|port| {
-                let slot = port.slot.ok_or_else(|| {
-                    format!(
-                        "runtime controller topology requires a virtual gamepad for {}",
-                        port.port
-                    )
-                })?;
-                let baseline = active
-                    .options
-                    .controller_topology
-                    .mappings
-                    .iter()
-                    .find(|mapping| mapping.gamepad == slot);
-                let source = configuration
-                    .assignments
-                    .iter()
-                    .find(|assignment| assignment.index == slot)
-                    .map(|assignment| &assignment.source);
-                let controller = players
-                    .into_iter()
-                    .flatten()
-                    .find(|player| player["index"].as_u64() == Some(u64::from(slot)))
-                    .and_then(|player| {
-                        (!player["controller"].is_null()).then(|| player["controller"].clone())
-                    });
-                let connected = controller
-                    .as_ref()
-                    .and_then(|controller| controller["connected"].as_bool())
-                    .unwrap_or({
-                        matches!(
-                            source,
-                            Some(snowglass_input::hub::SourceSelector::KeyboardMouse)
-                        )
-                    });
-                Ok(snowglass_input::topology::ControllerMapping {
-                    target: snowglass_input::topology::ControllerTarget {
-                        group: port.port.group.clone(),
-                        port: usize::from(port.port.index),
-                    },
-                    gamepad: slot,
-                    source: source.cloned(),
-                    layout: port.layout.clone(),
-                    connected,
-                    mouse: port.force_mouse || baseline.is_some_and(|mapping| mapping.mouse),
-                    projection_mode: baseline
-                        .map(|mapping| mapping.projection_mode)
-                        .unwrap_or_default(),
-                    mapping: baseline
-                        .map(|mapping| mapping.mapping.clone())
-                        .unwrap_or_default(),
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(snowglass_input::topology::ControllerTopology { mappings })
+        session.change(topology).map(Some)
     }
 
     pub fn take_controller_errors(

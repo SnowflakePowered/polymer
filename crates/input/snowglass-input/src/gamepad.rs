@@ -1,6 +1,7 @@
 //! API-neutral virtual gamepad topology and forwarded state.
 
 use parking_lot::Mutex;
+use serde::Serialize;
 use std::{sync::mpsc, time::Instant};
 
 /// SDL's standard gamepad layout has six axes. Snowglass appends two raw
@@ -102,7 +103,8 @@ impl GamepadButton {
 /// Sticks use SDL's signed 16-bit range. Triggers use an unsigned range so
 /// zero has an unambiguous meaning on the wire; SDL providers translate it to
 /// SDL's signed trigger axis (`-32768..=32767`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GamepadState {
     pub buttons: u32,
     pub left_stick: [i16; 2],
@@ -136,6 +138,23 @@ impl GamepadState {
             self.pointer[0],
             self.pointer[1],
         ]
+    }
+
+    pub fn normalized_pointer_axes(x: f64, y: f64) -> Option<[i16; 2]> {
+        let axis = |value: f64| {
+            if !value.is_finite() {
+                return None;
+            }
+            let value = value.clamp(0.0, 1.0);
+            let scaled = if value <= 0.5 {
+                value * 65_536.0 - 32_768.0
+            } else {
+                (value - 0.5) * 65_534.0
+            }
+            .round();
+            Some(scaled.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16)
+        };
+        Some([axis(x)?, axis(y)?])
     }
 }
 
@@ -251,6 +270,23 @@ mod tests {
             ..GamepadState::default()
         };
         assert_eq!(&state.sdl_axes()[6..], &[i16::MIN, i16::MAX]);
+    }
+
+    #[test]
+    fn normalized_pointer_fills_the_signed_axis_range() {
+        assert_eq!(
+            GamepadState::normalized_pointer_axes(0.0, 0.0),
+            Some([i16::MIN, i16::MIN])
+        );
+        assert_eq!(
+            GamepadState::normalized_pointer_axes(0.5, 0.5),
+            Some([0, 0])
+        );
+        assert_eq!(
+            GamepadState::normalized_pointer_axes(1.0, 1.0),
+            Some([i16::MAX, i16::MAX])
+        );
+        assert_eq!(GamepadState::normalized_pointer_axes(f64::NAN, 0.0), None);
     }
 
     #[test]

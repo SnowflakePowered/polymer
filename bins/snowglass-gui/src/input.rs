@@ -4,15 +4,11 @@
 //! input objects a stable endpoint while game instances are replaced.
 
 use parking_lot::RwLock;
-use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
+use snowglass_egui::InputDiagnostics;
 use snowglass_input::provider::sdl3::{ProviderConfig, Sdl3Provider};
 use snowglass_input::{
     gamepad::{GamepadState, GamepadUpdate, GamepadUpdateSink},
-    hub::{
-        BindingOverride, InputConfiguration, InputHub, InputOperation, InputTransaction,
-        PortConfiguration, SourceAssignment, SourceControl, VirtualPort,
-    },
-    layout::{InputBinding, SdlButton},
+    hub::{InputConfiguration, InputHub, InputOperation, InputTransaction},
     source::{InputSourceCatalog, InputSourceDescriptor, InputSourceKind},
     topology::ControllerTopology,
 };
@@ -29,21 +25,11 @@ const DOM_MK_SHIFT: u32 = 0x0004;
 const DOM_MK_CONTROL: u32 = 0x0008;
 
 mod bluetooth;
+mod publication;
 mod reconcile;
 use bluetooth::BluetoothHandle;
 use reconcile::InputReconciler;
 use snowglass_runtime::{ControllerCommandOutcome, ControllerManager, ControllerManagerEffect};
-
-fn control_event(key: &str, value: i32) -> Option<serde_json::Value> {
-    let mut parts = key.splitn(2, '\0');
-    let source_id = parts.next().unwrap_or_default();
-    let expression = parts.next()?;
-    Some(serde_json::json!({
-        "sourceId": source_id,
-        "expression": expression,
-        "value": value,
-    }))
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InputPriority {
@@ -139,16 +125,19 @@ impl InputRouter {
         }
     }
 
-    pub fn provider(&self) -> Option<&Sdl3Provider> {
-        self.transport.provider()
-    }
-
     pub fn configuration_snapshot(&self) -> InputConfiguration {
         self.transport.hub().snapshot()
     }
 
-    pub fn controller_api_snapshot(&self) -> serde_json::Value {
-        self.transport.input_api.snapshot()
+    pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
+        self.transport.controller_topology()
+    }
+
+    pub fn controller_topology_for(
+        &self,
+        configuration: &InputConfiguration,
+    ) -> Result<ControllerTopology, String> {
+        self.transport.controller_topology_for(configuration)
     }
 
     pub fn layouts(&self) -> &'static [snowglass_input::layout::InputLayout] {
@@ -195,275 +184,9 @@ impl InputRouter {
         self.transport.detach();
     }
 
-    pub fn devices(&self) -> Vec<snowglass_input::provider::sdl3::PhysicalDeviceState> {
-        self.transport.devices()
-    }
-
-    pub fn build_publication(
-        &mut self,
-        mappings: &[snowglass_input::topology::ControllerMapping],
-        game_active: bool,
-        topology_locked: bool,
-    ) -> InputPublication {
-        let _ = self.transport.observe_controllers(topology_locked);
-        let states = self
-            .provider()
-            .map(Sdl3Provider::states)
-            .unwrap_or_default();
-        let physical_devices = self.devices();
-        let ui_priority = self.priority == InputPriority::Ui;
-        let diagnostics = InputDiagnostics {
-            active: self.priority == InputPriority::Game && game_active,
-            slots: mappings
-                .iter()
-                .map(|config| {
-                    let slot = usize::from(config.gamepad);
-                    let Some(state) = states.get(slot).and_then(Option::as_ref) else {
-                        return InputSlotDiagnostics {
-                            slot,
-                            layout: config.layout.clone(),
-                            ..InputSlotDiagnostics::default()
-                        };
-                    };
-                    InputSlotDiagnostics {
-                        slot,
-                        layout: state.layout_id.clone(),
-                        connected: true,
-                        name: state.name.clone(),
-                        guid: state.guid.clone(),
-                        pressed: state
-                            .buttons
-                            .iter()
-                            .filter(|(_, pressed)| *pressed)
-                            .map(|(button, _)| format!("{button:?}"))
-                            .collect(),
-                        axes: state
-                            .axes
-                            .iter()
-                            .map(|(axis, value)| InputAxisDiagnostics {
-                                name: format!("{axis:?}"),
-                                value: *value,
-                            })
-                            .collect(),
-                        mapped_buttons: state.mapped.buttons,
-                        left_stick: state.mapped.left_stick,
-                        right_stick: state.mapped.right_stick,
-                        left_trigger: state.mapped.left_trigger,
-                        right_trigger: state.mapped.right_trigger,
-                        pointer: state.mapped.pointer,
-                        accelerometer: state.mapped.accelerometer,
-                        gyroscope: state.mapped.gyroscope,
-                    }
-                })
-                .collect(),
-        };
-        let mut devices = Vec::new();
-        let mut next_controls = HashMap::new();
-        for device in physical_devices {
-            let assigned = states
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, state)| {
-                    state
-                        .as_ref()
-                        .is_some_and(|state| state.device_id == device.device_id)
-                        .then_some(slot)
-                })
-                .collect::<Vec<_>>();
-            let mapped_states = assigned
-                .iter()
-                .filter_map(|&slot| states.get(slot).and_then(Option::as_ref))
-                .collect::<Vec<_>>();
-            let primary = mapped_states.first().copied();
-            let buttons = device
-                .buttons
-                .iter()
-                .map(|&(button, pressed)| {
-                    let name = format!("{button:?}");
-                    let global = button == SdlButton::Guide;
-                    let consumed = global
-                        || mapped_states
-                            .iter()
-                            .any(|state| state.mapped_buttons.contains(&button));
-                    if global || ui_priority || !consumed {
-                        if let Some((_, expression)) = snowglass_input::sdl::BUTTONS
-                            .iter()
-                            .find(|(source, _)| source == &button)
-                        {
-                            next_controls.insert(
-                                format!("{}\0{expression}", device.device_id),
-                                i32::from(pressed),
-                            );
-                        }
-                    }
-                    serde_json::json!({
-                        "button": name,
-                        "pressed": pressed,
-                        "mapped": consumed,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let axes = device
-                .axes
-                .iter()
-                .map(|&(axis, value)| {
-                    let name = format!("{axis:?}");
-                    let consumed = mapped_states
-                        .iter()
-                        .any(|state| state.mapped_axes.contains(&axis));
-                    if ui_priority || !consumed {
-                        if let Some((_, expression)) = snowglass_input::sdl::AXES
-                            .iter()
-                            .find(|(source, _)| source == &axis)
-                        {
-                            next_controls.insert(
-                                format!("{}\0{expression}", device.device_id),
-                                i32::from(value),
-                            );
-                        }
-                    }
-                    serde_json::json!({
-                        "axis": name,
-                        "value": value,
-                        "mapped": consumed,
-                    })
-                })
-                .collect::<Vec<_>>();
-            devices.push(serde_json::json!({
-                "id": device.device_id,
-                "kind": "controller",
-                "name": device.name,
-                "assignedIndices": assigned,
-                "layout": primary.map(|state| state.layout_id.as_str()),
-                "buttons": buttons,
-                "axes": axes,
-                "mapped": {
-                    "buttons": primary.map_or(0, |state| state.mapped.buttons),
-                    "leftStick": primary.map_or([0; 2], |state| state.mapped.left_stick),
-                    "rightStick": primary.map_or([0; 2], |state| state.mapped.right_stick),
-                    "leftTrigger": primary.map_or(0, |state| state.mapped.left_trigger),
-                    "rightTrigger": primary.map_or(0, |state| state.mapped.right_trigger),
-                    "pointer": primary.map_or([0; 2], |state| state.mapped.pointer),
-                    "accelerometer": primary.map_or([0.0; 3], |state| state.mapped.accelerometer),
-                    "gyroscope": primary.map_or([0.0; 3], |state| state.mapped.gyroscope),
-                }
-            }));
-        }
-        for controller in self
-            .transport
-            .bluetooth
-            .controllers()
-            .into_iter()
-            .filter(|controller| controller.connected)
-        {
-            let id = controller.source_id.as_str().to_owned();
-            let assigned = self
-                .transport
-                .physical_router
-                .routes()
-                .into_iter()
-                .filter(|route| route.sources.contains(&controller.source_id))
-                .map(|route| usize::from(route.slot))
-                .collect::<Vec<_>>();
-            let buttons = snowglass_input::gamepad::GamepadButton::ALL
-                .into_iter()
-                .map(|button| {
-                    let name = format!("{button:?}");
-                    let pressed = controller.state.button(button);
-                    if let Some((_, expression)) =
-                        snowglass_input::sdl::BUTTONS.get(button as usize)
-                    {
-                        next_controls.insert(format!("{id}\0{expression}"), i32::from(pressed));
-                    }
-                    serde_json::json!({
-                        "button": name,
-                        "pressed": pressed,
-                        "mapped": !assigned.is_empty(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            let axes = controller
-                .state
-                .sdl_axes()
-                .into_iter()
-                .enumerate()
-                .map(|(axis, value)| {
-                    if let Some((_, expression)) = snowglass_input::sdl::AXES.get(axis) {
-                        next_controls.insert(format!("{id}\0{expression}"), i32::from(value));
-                    }
-                    serde_json::json!({
-                        "axis": axis,
-                        "value": value,
-                        "mapped": !assigned.is_empty(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            devices.push(serde_json::json!({
-                "id": id,
-                "kind": "controller",
-                "name": controller.name,
-                "assignedIndices": assigned,
-                "buttons": buttons,
-                "axes": axes,
-            }));
-        }
-        for (slot, state) in states.iter().enumerate().filter_map(|(slot, state)| {
-            state
-                .as_ref()
-                .filter(|state| state.device_id == "keyboard-mouse")
-                .map(|state| (slot, state))
-        }) {
-            devices.push(serde_json::json!({
-                "id": state.device_id,
-                "kind": "keyboardMouse",
-                "name": state.name,
-                "assignedIndices": [slot],
-                "layout": state.layout_id,
-                "buttons": state.buttons.iter().map(|(button, pressed)| serde_json::json!({
-                    "button": format!("{button:?}"),
-                    "pressed": pressed,
-                    "mapped": true,
-                })).collect::<Vec<_>>(),
-                "axes": state.axes.iter().map(|(axis, value)| serde_json::json!({
-                    "axis": format!("{axis:?}"),
-                    "value": value,
-                    "mapped": true,
-                })).collect::<Vec<_>>(),
-                "mapped": {
-                    "buttons": state.mapped.buttons,
-                    "leftStick": state.mapped.left_stick,
-                    "rightStick": state.mapped.right_stick,
-                    "leftTrigger": state.mapped.left_trigger,
-                    "rightTrigger": state.mapped.right_trigger,
-                    "pointer": state.mapped.pointer,
-                    "accelerometer": state.mapped.accelerometer,
-                    "gyroscope": state.mapped.gyroscope,
-                }
-            }));
-        }
-        let routed = self
-            .route_ui_controls(next_controls)
-            .into_iter()
-            .filter_map(|(key, value)| control_event(&key, value))
-            .collect::<Vec<_>>();
-        let state_changed = serde_json::to_string(&devices)
-            .ok()
-            .map(|json| self.observe_published_state(&json));
-        InputPublication {
-            diagnostics,
-            sources: serde_json::Value::Array(devices),
-            routed,
-            state_changed,
-            priority: if ui_priority { "ui" } else { "game" },
-            api_state: self.observe_input_api_state(),
-        }
-    }
-
     pub fn add_mouse_delta(&self, delta_x: f64, delta_y: f64) {
-        if self.priority == InputPriority::Game
-            && let Some(provider) = self.provider()
-        {
-            provider.add_mouse_delta([delta_x, delta_y]);
+        if self.priority == InputPriority::Game {
+            self.transport.provider.add_mouse_delta([delta_x, delta_y]);
         }
     }
 
@@ -471,13 +194,10 @@ impl InputRouter {
     /// plane. Unmapped keys remain available for the coordinator to publish as
     /// neutral game input events.
     pub fn route_game_key(&self, key: &str, pressed: bool) -> bool {
-        let Some(provider) = self
-            .provider()
-            .filter(|provider| provider.is_key_mapped(key))
-        else {
+        if !self.transport.provider.is_key_mapped(key) {
             return false;
-        };
-        provider.set_key(key.to_owned(), pressed);
+        }
+        self.transport.provider.set_key(key.to_owned(), pressed);
         true
     }
 
@@ -560,9 +280,7 @@ impl InputRouter {
         ) {
             if phase == snowglass_input::mouse::PointerPhase::Move {
                 self.direct_input.reset_mouse_position();
-                self.provider().map(|provider| {
-                    provider.set_pointer(None);
-                });
+                self.transport.provider.set_pointer(None);
             }
             return;
         }
@@ -578,9 +296,12 @@ impl InputRouter {
                     sent.coordinate_width,
                     sent.coordinate_height,
                 );
-                if let Some(provider) = self.provider() {
-                    provider.set_pointer(Some(pointer_axes(sent.normalized_x, sent.normalized_y)));
-                }
+                self.transport
+                    .provider
+                    .set_pointer(GamepadState::normalized_pointer_axes(
+                        sent.normalized_x,
+                        sent.normalized_y,
+                    ));
             }
             snowglass_input::mouse::PointerPhase::ButtonDown
             | snowglass_input::mouse::PointerPhase::ButtonUp => self.direct_input.mouse_button(
@@ -609,24 +330,18 @@ impl InputRouter {
 
     pub fn prepare_priority_change(&mut self) {
         self.direct_input.reset_mouse_position();
-        if let Some(provider) = self.provider() {
-            provider.clear_keys();
-            provider.set_pointer(None);
-        }
+        self.transport.provider.clear_keys();
+        self.transport.provider.set_pointer(None);
     }
 
     pub fn set_provider_enabled(&self, enabled: bool) {
-        if let Some(provider) = self.provider() {
-            provider.set_enabled(enabled);
-        }
+        self.transport.provider.set_enabled(enabled);
     }
 
     pub fn clear_provider_state(&self) {
-        if let Some(provider) = self.provider() {
-            provider.clear_keys();
-            provider.set_pointer(None);
-            provider.set_enabled(false);
-        }
+        self.transport.provider.clear_keys();
+        self.transport.provider.set_pointer(None);
+        self.transport.provider.set_enabled(false);
     }
 
     pub fn focus_lost_buttons(&self) -> Vec<(u16, u8)> {
@@ -642,10 +357,8 @@ impl InputRouter {
             &mut self.dom_mouse_keys,
             &mut self.dom_alt_key,
         );
-        if let Some(provider) = self.provider() {
-            provider.clear_keys();
-            provider.set_pointer(None);
-        }
+        self.transport.provider.clear_keys();
+        self.transport.provider.set_pointer(None);
         self.direct_input.reset_mouse_position();
     }
 
@@ -720,73 +433,8 @@ impl InputRouter {
         machine: &str,
         topology: &ControllerTopology,
     ) -> Result<(), String> {
-        let mut ports = Vec::new();
-        let mut assignments = Vec::new();
-        for mapping in &topology.mappings {
-            let slot = mapping.gamepad;
-            let mut overrides = HashMap::new();
-            let layout = snowglass_input::layout::InputLayout::get(&mapping.layout)
-                .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
-            for (target, source) in mapping.mapping.iter() {
-                let binding = if let Some(source) = source {
-                    layout.custom_binding(*target, *source).ok_or_else(|| {
-                        format!("input source '{source}' is not a physical gamepad expression")
-                    })?
-                } else {
-                    InputBinding::Disabled { disabled: true }
-                };
-                overrides.insert(
-                    *target,
-                    match binding {
-                        InputBinding::Button { button } => BindingOverride::Button {
-                            source: SourceControl::GamepadButton { button },
-                        },
-                        InputBinding::Axis { axis, invert } => BindingOverride::Axis {
-                            source: SourceControl::GamepadAxis { axis },
-                            transform: snowglass_input::hub::AxisTransform {
-                                invert,
-                                ..Default::default()
-                            },
-                        },
-                        InputBinding::Disabled { .. } => BindingOverride::Disabled,
-                    },
-                );
-            }
-            let port_index = u8::try_from(mapping.target.port).map_err(|_| {
-                format!(
-                    "controller target {}:{} exceeds 255 ports",
-                    mapping.target.group, mapping.target.port
-                )
-            })?;
-            ports.push(PortConfiguration {
-                port: VirtualPort::new(&mapping.target.group, port_index),
-                layout: mapping.layout.clone(),
-                slot: Some(slot),
-                force_mouse: mapping.mouse,
-                overrides,
-            });
-            if let Some(source) = &mapping.source {
-                assignments.push(SourceAssignment {
-                    index: slot,
-                    source: source.clone(),
-                });
-            }
-        }
         let previous = self.transport.hub().snapshot();
-        let mut operations = vec![InputOperation::ReplacePorts {
-            machine: machine.to_owned(),
-            ports,
-        }];
-        operations.extend(assignments.into_iter().map(|assignment| {
-            InputOperation::SetAssignment {
-                index: assignment.index,
-                source: Some(assignment.source),
-            }
-        }));
-        let transaction = InputTransaction {
-            expected_revision: previous.revision,
-            operations,
-        };
+        let transaction = topology.input_transaction(machine, previous.revision)?;
         let next = self
             .transport
             .hub()
@@ -867,13 +515,6 @@ fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
     } else {
         *flags &= !flag;
     }
-}
-
-fn pointer_axes(x: f64, y: f64) -> [i16; 2] {
-    let axis = |value: f64| {
-        (value.clamp(0.0, 1.0) * f64::from(u16::MAX) + f64::from(i16::MIN)).round() as i16
-    };
-    [axis(x), axis(y)]
 }
 
 #[derive(Clone, Default)]
@@ -1035,10 +676,6 @@ impl InputTransport {
         Ok(())
     }
 
-    pub fn provider(&self) -> Option<&Sdl3Provider> {
-        Some(&self.provider)
-    }
-
     pub fn devices(&self) -> Vec<snowglass_input::provider::sdl3::PhysicalDeviceState> {
         let devices = self.provider.devices();
         self.sources.replace_connected(
@@ -1065,6 +702,18 @@ impl InputTransport {
 
     pub fn hub(&self) -> &InputHub {
         &self.hub
+    }
+
+    pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
+        self.controller_topology_for(&self.hub.snapshot())
+    }
+
+    pub fn controller_topology_for(
+        &self,
+        configuration: &InputConfiguration,
+    ) -> Result<ControllerTopology, String> {
+        self.controller_manager
+            .topology_for(configuration, &self.sources)
     }
 
     pub async fn apply_controller_command(
@@ -1125,9 +774,6 @@ impl InputTransport {
             match effect {
                 ControllerManagerEffect::SessionDiscovery(active) => {
                     self.bluetooth.set_session_active(active);
-                }
-                ControllerManagerEffect::AssignPlayers(players) => {
-                    self.bluetooth.assign_players(players);
                 }
                 ControllerManagerEffect::DisconnectSources(sources) => {
                     self.bluetooth.disconnect_sources(sources);

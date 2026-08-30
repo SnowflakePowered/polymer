@@ -61,12 +61,7 @@ pub struct EmulatorSetupInvocation {
     pub storage: crate::filesystem::StorageFactories,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmulatorPort {
-    pub group: String,
-    pub index: usize,
-    pub layouts: Vec<String>,
-}
+pub type EmulatorPort = snowglass_input::topology::ControllerPort;
 
 /// Emulator capability projected from a registered [`PluginInstance`].
 pub trait EmulatorPluginInstance: PluginInstance {

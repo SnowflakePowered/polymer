@@ -21,6 +21,7 @@ import {
 
 const handles = new WeakMap();
 const storageHandles = new WeakSet();
+const configurationMounts = [];
 
 function resource(description) {
   if (description == null) return undefined;
@@ -107,6 +108,20 @@ const filesystem = Object.freeze({
     }
   },
 
+  mountConfiguration(root, configuration, options) {
+    if (configuration == null || typeof configuration.render !== "function") {
+      throw new TypeError("mountConfiguration requires a configuration");
+    }
+    root = String(root).replace(/\/+$/, "");
+    const permissions = mode(options);
+    const rendered = configuration.render();
+    const names = Object.keys(rendered).sort();
+    for (const name of names) {
+      filesystem.mountFile(`${root}/${name}`, rendered[name], { mode: permissions });
+    }
+    configurationMounts.push({ root, configuration, permissions, names });
+  },
+
   mountStorage(target, source, options) {
     target = String(target);
     const permissions = mode(options);
@@ -136,12 +151,27 @@ const filesystem = Object.freeze({
   setProfile(profile) { op_vfs_set_profile(profile ?? {}); },
 });
 
+function refreshConfigurations() {
+  for (const mount of configurationMounts) {
+    const rendered = mount.configuration.render();
+    const names = Object.keys(rendered).sort();
+    if (names.length !== mount.names.length || names.some((name, index) => name !== mount.names[index])) {
+      throw new TypeError("a mounted configuration cannot change its rendered filename set");
+    }
+    for (const name of names) {
+      filesystem.mountFile(`${mount.root}/${name}`, rendered[name], { mode: mount.permissions });
+    }
+  }
+}
+
 Object.defineProperty(globalThis, "__snowglassFilesystem", {
   value: Object.freeze({
     filesystem,
     resources: namedResources,
     storage: storageResources,
     flush: op_vfs_flush,
+    hasConfigurationMounts: () => configurationMounts.length !== 0,
+    refreshConfigurations,
   }),
   configurable: false,
   enumerable: false,

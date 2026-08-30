@@ -115,11 +115,14 @@ impl ShellCoordinator {
                 return None;
             }
         };
-        let state = self.input.controller_api_snapshot();
-        match self
-            .game_host
-            .controller_change(prepared.candidate(), &state)
-        {
+        let topology = match self.input.controller_topology_for(prepared.candidate()) {
+            Ok(topology) => topology,
+            Err(error) => {
+                self.send_input_configuration_result(request_id, Err(error));
+                return None;
+            }
+        };
+        match self.game_host.controller_change(topology) {
             Ok(Some(response)) => Some(PendingInputChange {
                 request_id,
                 prepared,

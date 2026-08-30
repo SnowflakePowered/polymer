@@ -1,16 +1,33 @@
 //! Canonical controller topology shared by launch, host, and plugin layers.
 
-use crate::{hub::SourceSelector, layout::ProjectionMode};
+use crate::{
+    hub::{
+        BindingOverride, InputHub, InputOperation, InputTransaction, PortConfiguration,
+        SourceAssignment, SourceControl, SourceSelector, VirtualPort,
+    },
+    layout::{InputBinding, InputLayout, ProjectionMode},
+};
 use consolespec::input::BindingKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    str::FromStr,
+};
 
 /// An emulator-owned controller port.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControllerTarget {
     pub group: String,
     pub port: usize,
+}
+
+/// One emulator-owned port and the layouts it accepts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControllerPort {
+    pub group: String,
+    pub index: usize,
+    pub layouts: Vec<String>,
 }
 
 /// A typed logical-to-physical binding map.
@@ -35,6 +52,14 @@ impl ControllerBindings {
         self.0.is_empty()
     }
 
+    pub fn defaults(layout: &InputLayout) -> Self {
+        Self::new(
+            layout
+                .custom_binding_targets()
+                .filter_map(|target| layout.sdl_key(target).map(|source| (target, Some(source)))),
+        )
+    }
+
     pub fn try_from_strings(
         bindings: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, String> {
@@ -47,6 +72,28 @@ impl ControllerBindings {
                     _ => Some(BindingKey::from_str(&source).map_err(|error| error.to_string())?),
                 };
                 Ok((target, source))
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(Self::new)
+    }
+
+    pub fn from_overrides(
+        layout: &InputLayout,
+        overrides: &HashMap<BindingKey, BindingOverride>,
+    ) -> Result<Self, String> {
+        overrides
+            .iter()
+            .map(|(target, binding)| {
+                let binding = binding.sdl_binding().ok_or_else(|| {
+                    format!("input override for {target} is not a physical gamepad expression")
+                })?;
+                let source = match binding {
+                    InputBinding::Disabled { .. } => None,
+                    binding => Some(layout.custom_source(*target, &binding).ok_or_else(|| {
+                        format!("input override for {target} has no canonical gamepad expression")
+                    })?),
+                };
+                Ok((*target, source))
             })
             .collect::<Result<Vec<_>, String>>()
             .map(Self::new)
@@ -119,55 +166,270 @@ pub struct ControllerTopology {
 }
 
 impl ControllerTopology {
+    /// Completes a partial selection with disconnected mappings for every port.
+    pub fn complete(
+        ports: Vec<ControllerPort>,
+        selected: Vec<ControllerMapping>,
+    ) -> Result<Self, String> {
+        if ports.len() > usize::from(u8::MAX) + 1 {
+            return Err("an emulator cannot expose more than 256 virtual gamepads".to_owned());
+        }
+
+        let declared = ports
+            .iter()
+            .map(|port| {
+                (
+                    ControllerTarget {
+                        group: port.group.clone(),
+                        port: port.index,
+                    },
+                    port,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        if declared.len() != ports.len() {
+            return Err("an emulator declares a controller target more than once".to_owned());
+        }
+
+        let mut used_slots = HashSet::new();
+        let mut selected_by_target = HashMap::new();
+        for mapping in selected {
+            let port = declared.get(&mapping.target).ok_or_else(|| {
+                format!(
+                    "unknown emulator port {}:{}",
+                    mapping.target.group, mapping.target.port
+                )
+            })?;
+            if !port.layouts.contains(&mapping.layout) {
+                return Err(format!(
+                    "layout '{}' is not supported by {}:{}",
+                    mapping.layout, mapping.target.group, mapping.target.port
+                ));
+            }
+            if usize::from(mapping.gamepad) >= ports.len() || !used_slots.insert(mapping.gamepad) {
+                return Err(format!(
+                    "virtual gamepad {} is invalid or duplicated",
+                    mapping.gamepad
+                ));
+            }
+            if selected_by_target
+                .insert(mapping.target.clone(), mapping)
+                .is_some()
+            {
+                return Err("a controller target was selected more than once".to_owned());
+            }
+        }
+
+        let mut available_slots =
+            (0..ports.len()).filter(|slot| !used_slots.contains(&(*slot as u8)));
+        let mappings = ports
+            .into_iter()
+            .map(|port| {
+                let target = ControllerTarget {
+                    group: port.group,
+                    port: port.index,
+                };
+                if let Some(mapping) = selected_by_target.remove(&target) {
+                    return Ok(mapping);
+                }
+                let gamepad = available_slots
+                    .next()
+                    .expect("unselected ports have unused virtual gamepads")
+                    as u8;
+                let layout = port.layouts.into_iter().next().ok_or_else(|| {
+                    format!(
+                        "emulator port {}:{} declares no layouts",
+                        target.group, target.port
+                    )
+                })?;
+                Ok(ControllerMapping {
+                    target,
+                    gamepad,
+                    source: None,
+                    layout,
+                    connected: false,
+                    mouse: false,
+                    projection_mode: ProjectionMode::Position,
+                    mapping: ControllerBindings::default(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let topology = Self { mappings };
+        topology.validate()?;
+        Ok(topology)
+    }
+
     pub fn mapping_for_gamepad(&self, gamepad: u8) -> Option<&ControllerMapping> {
         self.mappings
             .iter()
             .find(|mapping| mapping.gamepad == gamepad)
     }
 
-    pub fn port_assignments(&self) -> Result<snowglass_config::ast::PortAssignments, String> {
-        let mut assignments = serde_json::Map::new();
-        let mut gamepads = std::collections::HashSet::new();
+    pub fn validate(&self) -> Result<(), String> {
+        let mut slots = HashSet::new();
+        let mut targets = HashSet::new();
         for mapping in &self.mappings {
-            if !gamepads.insert(mapping.gamepad) {
+            if !slots.insert(mapping.gamepad) {
                 return Err(format!(
                     "virtual gamepad {} is assigned more than once",
                     mapping.gamepad
                 ));
             }
-            let layouts = assignments
-                .entry(mapping.target.group.clone())
-                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
-                .as_array_mut()
-                .expect("controller assignment groups are arrays");
-            if layouts.len() <= mapping.target.port {
-                layouts.resize(mapping.target.port + 1, serde_json::Value::Null);
-            }
-            if !layouts[mapping.target.port].is_null() {
+            if !targets.insert(&mapping.target) {
                 return Err(format!(
                     "controller target {}:{} is assigned more than once",
                     mapping.target.group, mapping.target.port
                 ));
             }
-            layouts[mapping.target.port] = mapping.layout.clone().into();
+            let layout = InputLayout::get(&mapping.layout)
+                .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
+            let mut binding_targets = HashSet::new();
+            for (target, source) in mapping.mapping.iter() {
+                if !layout.has(*target) {
+                    return Err(format!(
+                        "input layout {} has no element {target}",
+                        layout.id
+                    ));
+                }
+                binding_targets.insert(*target);
+                if let Some(source) = source {
+                    layout.custom_binding(*target, *source).ok_or_else(|| {
+                        format!("input source '{source}' is not a physical gamepad expression")
+                    })?;
+                }
+            }
+            if mapping.projection_mode == ProjectionMode::Custom {
+                let missing = layout
+                    .custom_binding_targets()
+                    .filter(|target| !binding_targets.contains(target))
+                    .map(|target| target.to_string())
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "custom projection for {} must specify: {}",
+                        layout.id,
+                        missing.join(", ")
+                    ));
+                }
+            }
         }
-        if gamepads
+        if slots
             .iter()
             .max()
-            .is_some_and(|last| usize::from(*last) + 1 != gamepads.len())
+            .is_some_and(|last| usize::from(*last) + 1 != slots.len())
         {
             return Err("controller topology has a hole in its virtual gamepads".to_owned());
         }
-        if let Some((group, port)) = assignments.iter().find_map(|(group, layouts)| {
-            layouts
-                .as_array()
-                .and_then(|layouts| layouts.iter().position(serde_json::Value::is_null))
-                .map(|port| (group, port))
-        }) {
-            return Err(format!("controller topology omits target {group}:{port}"));
-        }
-        serde_json::from_value(serde_json::Value::Object(assignments))
+        Ok(())
+    }
+
+    pub fn validate_for_machine(&self, machine: &str) -> Result<(), String> {
+        let hub = InputHub::new(None, []).expect("an empty topology is valid");
+        hub.preview(&self.input_transaction(machine, 0)?)
+            .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    pub fn input_transaction(
+        &self,
+        machine: &str,
+        expected_revision: u64,
+    ) -> Result<InputTransaction, String> {
+        self.validate()?;
+        let mut ports = Vec::with_capacity(self.mappings.len());
+        let mut assignments = Vec::new();
+        for mapping in &self.mappings {
+            let layout = InputLayout::get(&mapping.layout)
+                .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
+            let overrides = mapping
+                .mapping
+                .iter()
+                .map(|(target, source)| {
+                    let binding = source
+                        .map_or(Some(InputBinding::Disabled { disabled: true }), |source| {
+                            layout.custom_binding(*target, *source)
+                        });
+                    let binding = binding.ok_or_else(|| {
+                        format!(
+                            "input source '{}' is not a physical gamepad expression",
+                            source.unwrap()
+                        )
+                    })?;
+                    let binding = match binding {
+                        InputBinding::Button { button } => BindingOverride::Button {
+                            source: SourceControl::GamepadButton { button },
+                        },
+                        InputBinding::Axis { axis, invert } => BindingOverride::Axis {
+                            source: SourceControl::GamepadAxis { axis },
+                            transform: crate::hub::AxisTransform {
+                                invert,
+                                ..Default::default()
+                            },
+                        },
+                        InputBinding::Disabled { .. } => BindingOverride::Disabled,
+                    };
+                    Ok((*target, binding))
+                })
+                .collect::<Result<HashMap<_, _>, String>>()?;
+            let port = u8::try_from(mapping.target.port).map_err(|_| {
+                format!(
+                    "controller target {}:{} exceeds 255 ports",
+                    mapping.target.group, mapping.target.port
+                )
+            })?;
+            ports.push(PortConfiguration {
+                port: VirtualPort::new(&mapping.target.group, port),
+                layout: mapping.layout.clone(),
+                slot: Some(mapping.gamepad),
+                force_mouse: mapping.mouse,
+                overrides,
+            });
+            if let Some(source) = &mapping.source {
+                assignments.push(SourceAssignment {
+                    index: mapping.gamepad,
+                    source: source.clone(),
+                });
+            }
+        }
+        Ok(InputTransaction {
+            expected_revision,
+            operations: vec![
+                InputOperation::ReplacePorts {
+                    machine: machine.to_owned(),
+                    ports,
+                },
+                InputOperation::ReplaceAssignments { assignments },
+            ],
+        })
+    }
+
+    pub fn port_assignments(&self) -> Result<snowglass_config::ast::PortAssignments, String> {
+        self.validate()?;
+        let mut assignments = BTreeMap::<String, BTreeMap<usize, String>>::new();
+        for mapping in &self.mappings {
+            assignments
+                .entry(mapping.target.group.clone())
+                .or_default()
+                .insert(mapping.target.port, mapping.layout.clone());
+        }
+        assignments
+            .into_iter()
+            .map(|(group, layouts)| {
+                let layouts = layouts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(expected, (port, layout))| {
+                        (port == expected)
+                            .then(|| layout.into_boxed_str())
+                            .ok_or_else(|| {
+                                format!("controller topology omits target {group}:{expected}")
+                            })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?
+                    .into_boxed_slice();
+                Ok((group.into_boxed_str(), layouts))
+            })
+            .collect()
     }
 }
 

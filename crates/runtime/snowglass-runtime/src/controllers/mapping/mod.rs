@@ -5,7 +5,7 @@ use snowglass_input::{
     layout::{InputBinding, InputLayout, ProjectionMode},
     router::GamepadRemap,
     source::{InputSourceDescriptor, InputSourceKind},
-    topology::ControllerBindings,
+    topology::{ControllerBindings, ControllerMapping, ControllerTarget, ControllerTopology},
 };
 use snowglass_library::{
     InputIdentityScope, InputMappingMode, InputMappingProfile as StoredMappingProfile,
@@ -75,6 +75,62 @@ impl MappingProfile {
 }
 
 impl ControllerManager {
+    pub fn topology_for(
+        &self,
+        configuration: &InputConfiguration,
+        sources: &snowglass_input::source::InputSourceCatalog,
+    ) -> Result<ControllerTopology, String> {
+        let resolved = self.resolve_configuration(configuration);
+        let mappings = configuration
+            .ports
+            .iter()
+            .map(|port| {
+                let gamepad = port.slot.ok_or_else(|| {
+                    format!(
+                        "runtime controller topology requires a virtual gamepad for {}",
+                        port.port
+                    )
+                })?;
+                let source = configuration.source_for(gamepad).cloned();
+                let device = match &source {
+                    Some(SourceSelector::Device { device_id }) => sources.get(device_id),
+                    Some(SourceSelector::KeyboardMouse) | None => None,
+                };
+                let layout = InputLayout::get(&port.layout)
+                    .ok_or_else(|| format!("unknown input layout {}", port.layout))?;
+                let resolved = resolved
+                    .slots
+                    .get(&gamepad)
+                    .expect("resolved configurations contain every assigned port");
+                let projection_mode = resolved.projection_mode;
+                let mapping = if matches!(source, Some(SourceSelector::Device { .. }))
+                    && projection_mode != ProjectionMode::Custom
+                {
+                    ControllerBindings::defaults(layout)
+                } else {
+                    ControllerBindings::from_overrides(layout, &resolved.overrides)?
+                };
+                Ok(ControllerMapping {
+                    target: ControllerTarget {
+                        group: port.port.group.clone(),
+                        port: usize::from(port.port.index),
+                    },
+                    gamepad,
+                    source: source.clone(),
+                    layout: port.layout.clone(),
+                    connected: device.is_some_and(|device| device.connected)
+                        || matches!(source, Some(SourceSelector::KeyboardMouse)),
+                    mouse: port.force_mouse,
+                    projection_mode,
+                    mapping,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let topology = ControllerTopology { mappings };
+        topology.validate()?;
+        Ok(topology)
+    }
+
     pub fn projection_mode(&self, device_id: &str, layout: &str) -> ProjectionMode {
         self.mappings
             .get(&self.mapping_identity(device_id), layout)
@@ -363,5 +419,50 @@ impl ControllerManager {
         } else {
             InputIdentityScope::Device
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ControllerProfiles;
+    use consolespec::input::key;
+    use snowglass_input::{
+        hub::{PortConfiguration, VirtualPort},
+        layout::SdlButton,
+        source::InputSourceCatalog,
+    };
+
+    #[test]
+    fn live_topology_preserves_port_overrides_without_a_physical_source() {
+        let configuration = InputConfiguration {
+            revision: 0,
+            machine: Some("MICROSOFT_XBOX".to_owned()),
+            ports: vec![PortConfiguration {
+                port: VirtualPort::new("controller", 0),
+                layout: "XBOX_CONTROLLER".to_owned(),
+                slot: Some(0),
+                force_mouse: false,
+                overrides: [(
+                    key!(button.a),
+                    BindingOverride::Button {
+                        source: SourceControl::GamepadButton {
+                            button: SdlButton::East,
+                        },
+                    },
+                )]
+                .into(),
+            }],
+            assignments: Vec::new(),
+        };
+        let manager = ControllerManager::with_profiles(ControllerProfiles::default());
+        let topology = manager
+            .topology_for(&configuration, &InputSourceCatalog::default())
+            .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&topology.mappings[0].mapping).unwrap()["button.a"],
+            "button.b"
+        );
     }
 }
