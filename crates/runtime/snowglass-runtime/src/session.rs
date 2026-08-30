@@ -69,7 +69,7 @@ impl SessionController {
         config: EmulatorLaunchConfig,
         mut filesystem: Option<snowglass_vfs::MountedFilesystem>,
         wake: impl Fn() + Send + Sync + 'static,
-        configure_input: impl FnOnce(crate::VirtualGamepadConnectionSender) -> Result<(), String>,
+        configure_input: impl FnOnce(snowglass_input_ipc::InputIpcListener) -> Result<(), String>,
     ) -> Result<(), String> {
         if self.active.is_some() {
             return Err("another emulator instance is active".to_owned());

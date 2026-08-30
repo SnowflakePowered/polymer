@@ -211,7 +211,7 @@ impl ExportInvocation {
 
 struct PreparedEmulatorLaunch {
     invocation: EmulatorLaunchInvocation,
-    topology: snowglass_input::topology::ControllerTopology,
+    topology: snowglass_controllers::ControllerTopology,
 }
 
 impl PreparedEmulatorLaunch {
@@ -245,7 +245,7 @@ impl PreparedEmulatorLaunch {
                 )
             })?
             .to_owned();
-        let topology = serde_json::from_value::<snowglass_input::topology::ControllerTopology>(
+        let topology = serde_json::from_value::<snowglass_controllers::ControllerTopology>(
             object.get("controllerTopology").cloned().ok_or_else(|| {
                 PluginInvocationError::new(
                     "TypeError",
@@ -509,7 +509,7 @@ impl PluginRuntimeHandle {
         invocation: EmulatorLaunchInvocation,
         cancellation: PluginCancellationToken,
         explicit_default: bool,
-        topology: snowglass_input::topology::ControllerTopology,
+        topology: snowglass_controllers::ControllerTopology,
     ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError>
     {
         let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
@@ -652,7 +652,7 @@ fn start_controller_session_worker(
     explicit_default: bool,
     filesystem: crate::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
-    topology: snowglass_input::topology::ControllerTopology,
+    topology: snowglass_controllers::ControllerTopology,
 ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError> {
     let entrypoint = invocation.plugin.entrypoint().to_string();
     let loader = invocation.plugin.module_loader().clone();
@@ -704,7 +704,7 @@ struct ControllerSessionWorkerArgs {
     control: Arc<InvocationControl>,
     invocation: EmulatorLaunchInvocation,
     explicit_default: bool,
-    topology: snowglass_input::topology::ControllerTopology,
+    topology: snowglass_controllers::ControllerTopology,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
     errors: Arc<Mutex<Vec<String>>>,
     started: std::sync::mpsc::SyncSender<Result<ControllerWorkerStartup, PluginInvocationError>>,
@@ -716,9 +716,7 @@ struct ControllerSessionWorker {
     plugin: Arc<dyn EmulatorPluginInstance>,
     console: String,
     configuration_id: crate::configuration::ConfigurationId,
-    previous_topology: snowglass_input::topology::ControllerTopology,
-    connections: Vec<bool>,
-    connection_sink: Option<crate::controller::ConnectionSink>,
+    previous_topology: snowglass_controllers::ControllerTopology,
     input_provider_sink: Option<crate::controller::InputProviderSink>,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
     errors: Arc<Mutex<Vec<String>>>,
@@ -764,7 +762,6 @@ impl ControllerSessionWorker {
                 return Ok(None);
             }
         };
-        let connections = Self::connections(&args.topology);
         let controller_changes = retained.controller_changes;
         let configuration_id = retained.configuration_id;
         let mut launch = retained.launch;
@@ -788,8 +785,6 @@ impl ControllerSessionWorker {
             console,
             configuration_id,
             previous_topology: args.topology,
-            connections,
-            connection_sink: None,
             input_provider_sink: None,
             commands: args.commands,
             errors: args.errors,
@@ -799,10 +794,6 @@ impl ControllerSessionWorker {
     fn run(mut self) {
         while let Ok(command) = self.commands.recv() {
             match command {
-                crate::controller::ControllerSessionCommand::Attach(sink, response) => {
-                    let result = self.attach(sink);
-                    self.record_attachment(result, response);
-                }
                 crate::controller::ControllerSessionCommand::AttachAutomation(
                     session,
                     response,
@@ -829,13 +820,13 @@ impl ControllerSessionWorker {
 
     fn change(
         &mut self,
-        topology: snowglass_input::topology::ControllerTopology,
+        topology: snowglass_controllers::ControllerTopology,
         response: tokio::sync::oneshot::Sender<Result<(), String>>,
     ) {
         let result = self.apply_change(&topology);
         match result {
-            Ok(()) => {
-                self.previous_topology = topology;
+            Ok(applied) => {
+                self.previous_topology = applied;
                 let _ = response.send(Ok(()));
             }
             Err(error) => {
@@ -849,8 +840,8 @@ impl ControllerSessionWorker {
 
     fn apply_change(
         &mut self,
-        topology: &snowglass_input::topology::ControllerTopology,
-    ) -> Result<(), PluginInvocationError> {
+        topology: &snowglass_controllers::ControllerTopology,
+    ) -> Result<snowglass_controllers::ControllerTopology, PluginInvocationError> {
         let checkpoint = crate::deno::checkpoint_configuration(
             self.runtime.js_runtime_mut(),
             self.configuration_id,
@@ -869,8 +860,8 @@ impl ControllerSessionWorker {
 
     fn apply_change_inner(
         &mut self,
-        topology: &snowglass_input::topology::ControllerTopology,
-    ) -> Result<(), PluginInvocationError> {
+        topology: &snowglass_controllers::ControllerTopology,
+    ) -> Result<snowglass_controllers::ControllerTopology, PluginInvocationError> {
         let assignments = topology
             .port_assignments()
             .map_err(PluginInvocationError::worker)?;
@@ -885,20 +876,20 @@ impl ControllerSessionWorker {
             topology,
         )
         .map_err(PluginInvocationError::worker)?;
-        let input_providers = self.execute_callback(topology)?;
+        let output = self.execute_callback(topology)?;
         if let Some(sink) = &self.input_provider_sink {
-            sink(input_providers).map_err(PluginInvocationError::worker)?;
+            sink(output.input_providers, output.controller_topology.clone())
+                .map_err(PluginInvocationError::worker)?;
         }
         crate::filesystem::flush_staged(self.runtime.js_runtime_mut())
             .map_err(PluginInvocationError::worker)?;
-        self.publish_connections(Self::connections(topology))
-            .map_err(PluginInvocationError::worker)
+        Ok(output.controller_topology)
     }
 
     fn execute_callback(
         &mut self,
-        topology: &snowglass_input::topology::ControllerTopology,
-    ) -> Result<Vec<crate::InputProvider>, PluginInvocationError> {
+        topology: &snowglass_controllers::ControllerTopology,
+    ) -> Result<crate::deno::ControllerChangeOutput, PluginInvocationError> {
         const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         const TIMEOUT_ERROR: &str = "onControllerChanged exceeded its 30 second deadline";
         let deadline = IsolateDeadline::start(
@@ -925,72 +916,6 @@ impl ControllerSessionWorker {
             return Err(PluginInvocationError::worker(TIMEOUT_ERROR));
         }
         callback
-    }
-
-    fn record_attachment(
-        &self,
-        result: Result<(), String>,
-        response: std::sync::mpsc::SyncSender<Result<(), String>>,
-    ) {
-        if let Err(error) = &result {
-            self.errors.lock().push(error.clone());
-        }
-        let _ = response.send(result);
-    }
-
-    fn attach(&mut self, sink: crate::controller::ConnectionSink) -> Result<(), String> {
-        for (index, connected) in self.connections.iter().copied().enumerate() {
-            Self::send_connection(&sink, index, connected)?;
-        }
-        self.connection_sink = Some(sink);
-        Ok(())
-    }
-
-    fn publish_connections(&mut self, next: Vec<bool>) -> Result<(), String> {
-        if next.len() != self.connections.len() {
-            return Err(format!(
-                "controller topology changed virtual gamepad count from {} to {}",
-                self.connections.len(),
-                next.len()
-            ));
-        }
-        if let Some(sink) = &self.connection_sink {
-            for (index, (&previous, &connected)) in self.connections.iter().zip(&next).enumerate() {
-                if previous != connected {
-                    Self::send_connection(sink, index, connected)?;
-                }
-            }
-        }
-        self.connections = next;
-        Ok(())
-    }
-
-    fn send_connection(
-        sink: &crate::controller::ConnectionSink,
-        index: usize,
-        connected: bool,
-    ) -> Result<(), String> {
-        let slot = u8::try_from(index)
-            .ok()
-            .and_then(snowglass_input::gamepad::GamepadSlot::new)
-            .ok_or_else(|| format!("virtual gamepad {index} is outside the wire range"))?;
-        sink(snowglass_input::gamepad::VirtualGamepadConnection { slot, connected })
-    }
-
-    fn connections(topology: &snowglass_input::topology::ControllerTopology) -> Vec<bool> {
-        let Some(last_gamepad) = topology
-            .mappings
-            .iter()
-            .map(|mapping| mapping.gamepad)
-            .max()
-        else {
-            return Vec::new();
-        };
-        let mut connections = vec![false; usize::from(last_gamepad) + 1];
-        for mapping in &topology.mappings {
-            connections[usize::from(mapping.gamepad)] = mapping.connected;
-        }
-        connections
     }
 }
 
@@ -1380,7 +1305,7 @@ mod tests {
         let filesystem = result.prepared_filesystem.unwrap();
         let session = result.controller_session.unwrap();
         filesystem.filesystem().materialize().unwrap();
-        session.attach(|_| Ok(())).unwrap();
+        session.attach_input_providers(|_, _| Ok(())).unwrap();
         let automation_calls = Arc::new(StdMutex::new(Vec::new()));
         let automation = snowglass_automation::AutomationSession::spawn(RecordingAutomation(
             automation_calls.clone(),
@@ -1388,7 +1313,7 @@ mod tests {
         .unwrap();
         session.attach_automation(automation).unwrap();
         session
-            .change(snowglass_input::topology::ControllerTopology::default())
+            .change(snowglass_controllers::ControllerTopology::default())
             .unwrap()
             .await
             .unwrap()
@@ -1443,7 +1368,7 @@ mod tests {
         let session = result.controller_session.unwrap();
         filesystem.filesystem().materialize().unwrap();
         session
-            .change(snowglass_input::topology::ControllerTopology::default())
+            .change(snowglass_controllers::ControllerTopology::default())
             .unwrap()
             .await
             .unwrap()

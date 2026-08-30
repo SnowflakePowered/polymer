@@ -345,6 +345,9 @@ impl ShellCoordinator {
         if !self.input.publication_due(Instant::now()) {
             return;
         }
+        let (presentation, plan) = self.pointer_presentation();
+        self.input
+            .route_device_pointers(&presentation, &plan, self.game_host.pointer_sender());
         let publication = self.input.build_publication(
             self.game_host.controller_mappings(),
             self.game_host.has_active_game(),
@@ -376,14 +379,6 @@ impl ShellCoordinator {
                 );
             }
         }
-        if !publication.state_changed.unwrap_or(false) && publication.routed.is_empty() {
-            return;
-        }
-        self.notify_snowglass(SnowglassNotification::InputStateChanged {
-            sources: publication.sources,
-            priority: publication.priority.to_owned(),
-            controls: serde_json::Value::Array(publication.routed),
-        });
         self.window.request_overlay_repaint();
     }
 

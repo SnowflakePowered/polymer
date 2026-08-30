@@ -2,7 +2,7 @@
 
 use crate::input::PointerEventSink;
 use dashmap::DashMap;
-use snowglass_input::mouse::PointerInput;
+use snowglass_protocol::input::PointerInput;
 use snowglass_runtime::{
     EmulatorInstance, PresentedFrameToken, SurfaceError, SurfaceEvent, SurfaceEventReceiver,
     SurfaceFrameReceiver, SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate,

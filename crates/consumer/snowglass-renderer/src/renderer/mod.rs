@@ -1,7 +1,7 @@
 use std::error::Error;
 
+use crate::layout::{Extent, Point, Rect};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use snowglass_input::mouse::layout::{Extent, Point, Rect};
 use snowglass_protocol::{FrameReady, PresentationMappingKind, ResizeWindow};
 use snowglass_runtime::SurfaceOffer;
 

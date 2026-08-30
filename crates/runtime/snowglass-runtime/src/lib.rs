@@ -5,9 +5,7 @@
 mod capture;
 mod configuration;
 mod consolestorage;
-mod controllers;
 mod frontend;
-mod input;
 mod instance;
 mod launch;
 mod scraping;
@@ -23,27 +21,25 @@ pub use configuration::{
     prepare_api as prepare_configuration,
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
-pub use controllers::{
-    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerProfiles,
-    DeviceMapping, ResolvedInputConfiguration, ResolvedSlotMapping,
-};
 pub use frontend::{
     CommandRuntimePlatform, CommandSink, EmulatorCommand, EmulatorCommandSink, FrontendServices,
     InputApiState, InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand,
     WebRtcCommandSink,
 };
-#[doc(hidden)]
-pub use input::ProtocolInputSender;
 pub use instance::{
     AudioState, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord, HotkeyKey, InstanceExit,
     InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken, ResizeDimensions,
     SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver, SurfaceFrameUpdate,
     SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig, TrackedSurfaceHandle,
-    TrackedSurfaceId, VirtualGamepadConnectionSender,
+    TrackedSurfaceId,
 };
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};
-pub use snowglass_input::topology::{ControllerMapping, ControllerTopology};
+pub use snowglass_controllers::{
+    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerProfiles,
+    DeviceMapping,
+};
+pub use snowglass_controllers::{ControllerMapping, ControllerTopology};
 pub use storage::launch_storage;
 pub use ui::{UiRequest, UiRequestReceiver};
 
@@ -71,13 +67,6 @@ pub enum HookBackend {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InputHookBackend {
     BluetoothApiWin32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BluetoothHidPipeConfig {
-    pub source_id: String,
-    pub port: u8,
-    pub product_id: u16,
 }
 
 impl HookBackend {

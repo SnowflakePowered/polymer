@@ -1,8 +1,5 @@
-use super::{DecodedInput, ReportDecoder, normalize_stick, set_button};
-use snowglass_input::{
-    gamepad::{GamepadButton, GamepadState},
-    router::PhysicalControllerRole,
-};
+use super::{DecodedInput, GamepadState, ReportDecoder, normalize_stick, set_button};
+use snowglass_input::{DeviceRole, GamepadButton};
 use std::time::Instant;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -42,7 +39,7 @@ struct SimpleReport {
 trait SwitchReportModel {
     const HAS_LEFT_STICK: bool;
     const HAS_RIGHT_STICK: bool;
-    const ROLE: PhysicalControllerRole;
+    const ROLE: DeviceRole;
 
     fn decode_report(report: &[u8]) -> Option<DecodedInput> {
         let mut state = GamepadState::default();
@@ -141,7 +138,7 @@ macro_rules! switch_decoder {
         impl SwitchReportModel for $decoder {
             const HAS_LEFT_STICK: bool = $left;
             const HAS_RIGHT_STICK: bool = $right;
-            const ROLE: PhysicalControllerRole = $role;
+            const ROLE: DeviceRole = $role;
         }
 
         impl ReportDecoder for $decoder {
@@ -152,28 +149,13 @@ macro_rules! switch_decoder {
     };
 }
 
-switch_decoder!(SwitchProDecoder, true, true, PhysicalControllerRole::Whole);
-switch_decoder!(
-    JoyConLeftDecoder,
-    true,
-    false,
-    PhysicalControllerRole::LeftHalf
-);
-switch_decoder!(
-    JoyConRightDecoder,
-    false,
-    true,
-    PhysicalControllerRole::RightHalf
-);
-switch_decoder!(NsoNesDecoder, false, false, PhysicalControllerRole::Whole);
-switch_decoder!(NsoSnesDecoder, false, false, PhysicalControllerRole::Whole);
-switch_decoder!(NsoN64Decoder, true, false, PhysicalControllerRole::Whole);
-switch_decoder!(
-    NsoGenesisDecoder,
-    false,
-    false,
-    PhysicalControllerRole::Whole
-);
+switch_decoder!(SwitchProDecoder, true, true, DeviceRole::Whole);
+switch_decoder!(JoyConLeftDecoder, true, false, DeviceRole::LeftHalf);
+switch_decoder!(JoyConRightDecoder, false, true, DeviceRole::RightHalf);
+switch_decoder!(NsoNesDecoder, false, false, DeviceRole::Whole);
+switch_decoder!(NsoSnesDecoder, false, false, DeviceRole::Whole);
+switch_decoder!(NsoN64Decoder, true, false, DeviceRole::Whole);
+switch_decoder!(NsoGenesisDecoder, false, false, DeviceRole::Whole);
 
 #[cfg(test)]
 mod tests {

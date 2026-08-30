@@ -1,13 +1,12 @@
 //! SDL3-only ABI and virtual joystick adapter.
 
-use snowglass_input::gamepad::{
-    GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadSlot, GamepadUpdate,
-    VirtualGamepadConnection,
+use snowglass_hook_input_sdl::Runtime;
+use snowglass_hook_input_sdl::{BackendError, SdlBackend};
+use snowglass_hook_input_sdl::{
+    ConnectionState, GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadFrame,
+    GamepadSlot,
 };
-use snowglass_input::layout::SdlOutputLayout;
-use snowglass_input::sdl::SdlSensor;
-use snowglass_input_sdl::Runtime;
-use snowglass_input_sdl::{BackendError, SdlBackend, effective_state};
+use snowglass_input_layout::{layout::SdlOutputLayout, sdl::SdlSensor};
 use std::{
     ffi::{CString, c_char, c_void},
     mem,
@@ -18,6 +17,7 @@ use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddr
 pub(crate) type JoystickId = u32;
 pub(crate) type DynapiEntryFn = unsafe extern "C" fn(u32, *mut c_void, u32) -> i32;
 type AttachVirtualFn = unsafe extern "C" fn(*const VirtualJoystickDesc) -> JoystickId;
+type DetachVirtualFn = unsafe extern "C" fn(JoystickId) -> bool;
 type OpenFn = unsafe extern "C" fn(JoystickId) -> *mut c_void;
 type SetAxisFn = unsafe extern "C" fn(*mut c_void, i32, i16) -> bool;
 type SetButtonFn = unsafe extern "C" fn(*mut c_void, i32, bool) -> bool;
@@ -128,7 +128,9 @@ impl VirtualJoystickDesc {
 }
 
 pub(crate) struct Api {
+    runtime: Arc<Runtime>,
     attach_virtual: AttachVirtualFn,
+    detach_virtual: DetachVirtualFn,
     open: OpenFn,
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
@@ -196,7 +198,9 @@ impl Api {
             .collect();
         let connected = vec![true; layouts.len()];
         Some(Self {
+            runtime,
             attach_virtual: unsafe { symbol(module, c"SDL_AttachVirtualJoystick")? },
+            detach_virtual: unsafe { symbol(module, c"SDL_DetachVirtualJoystick")? },
             open: unsafe { symbol(module, c"SDL_OpenJoystick")? },
             set_axis: unsafe { symbol(module, c"SDL_SetJoystickVirtualAxis")? },
             set_button: unsafe { symbol(module, c"SDL_SetJoystickVirtualButton")? },
@@ -243,6 +247,40 @@ impl Api {
 }
 
 impl SdlBackend for Api {
+    fn rebind(&mut self, layouts: &[SdlOutputLayout]) -> Result<(), BackendError> {
+        for id in self.ids.drain(..).filter(|id| *id != 0) {
+            unsafe { (self.detach_virtual)(id) };
+        }
+        self.layouts = layouts.to_vec();
+        self.names = layouts
+            .iter()
+            .map(|_| CString::new("Snowglass Virtual Gamepad").expect("static name is valid"))
+            .collect();
+        self.sensors = layouts
+            .iter()
+            .map(|layout| {
+                layout
+                    .sensors()
+                    .map(|sensor| VirtualJoystickSensorDesc {
+                        sensor_type: sdl_sensor_type(sensor),
+                        rate: 0.0,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .collect();
+        self.feedback = (0..layouts.len())
+            .map(|slot| FeedbackContext {
+                runtime: self.runtime.clone(),
+                slot: GamepadSlot::new(slot as u8).expect("topology is bounded to eight players"),
+            })
+            .collect();
+        self.ids = vec![0; layouts.len()];
+        self.handles = vec![0; layouts.len()];
+        self.connected = vec![false; layouts.len()];
+        Ok(())
+    }
+
     fn ensure_attached(&mut self, count: usize) -> Result<(), BackendError> {
         for slot in 0..count {
             if self.handles[slot] != 0 {
@@ -268,7 +306,7 @@ impl SdlBackend for Api {
         Ok(())
     }
 
-    fn set_connected(&mut self, connection: VirtualGamepadConnection) -> Result<(), BackendError> {
+    fn set_connected(&mut self, connection: ConnectionState) -> Result<(), BackendError> {
         let Some(connected) = self.connected.get_mut(connection.slot.index()) else {
             return Err(BackendError("SDL3 virtual gamepad slot is out of range"));
         };
@@ -279,13 +317,17 @@ impl SdlBackend for Api {
         Ok(())
     }
 
-    fn publish(&mut self, update: GamepadUpdate) -> Result<(), BackendError> {
-        let handle = self.handles[update.slot.index()] as *mut c_void;
+    fn publish(&mut self, frame: GamepadFrame) -> Result<(), BackendError> {
+        let handle = self.handles[frame.slot.index()] as *mut c_void;
         if handle.is_null() {
             return Err(BackendError("SDL3 virtual joystick is not attached"));
         }
-        let state = effective_state(update);
-        let layout = self.layouts[update.slot.index()];
+        let state = if frame.connected {
+            frame.state
+        } else {
+            Default::default()
+        };
+        let layout = self.layouts[frame.slot.index()];
         let axes = state.sdl_axes();
         for (semantic_axis, value) in axes[..SDL_GAMEPAD_AXIS_COUNT].iter().copied().enumerate() {
             let Some(raw_axis) = dense_mask_index(layout.axis_mask, semantic_axis) else {

@@ -1,23 +1,22 @@
 use crate::{
     HookBackend,
     capture::{self, ConsumerPreference, FrameRouter},
-    input::{InputTransport, ProtocolInputSender},
     ui::{UiRequestReceiver, UiTransport},
 };
 use crossfire::{MRx, MTx, mpmc, oneshot::TxOneshot};
 use dashmap::{DashMap, DashSet};
 use parking_lot::{Condvar, Mutex, RwLock};
-use snowglass_input::{
-    RawKeyInput,
-    gamepad::{GamepadUpdate, GamepadUpdateSink},
-    mouse::{PointerInput, PointerPhase, PointerSource},
-};
+use snowglass_input::{HostInputEvent, HostPointerInput};
+use snowglass_input_ipc::InputIpcListener;
 use snowglass_ipc::{Message, StreamReady};
 use snowglass_platform_windows::{
     NativeWindow, ProcessId, ProcessWaitHandle, TargetProcess, client_size, process_audio_state,
     process_tree_ids, set_process_audio,
 };
-use snowglass_protocol::{ExternalImageKind, FrameReady};
+use snowglass_protocol::{
+    ExternalImageKind, FrameReady,
+    input::{PointerPhase, PointerSource},
+};
 use std::{
     collections::HashSet,
     fmt,
@@ -52,7 +51,6 @@ pub struct EmulatorLaunchConfig {
     pub artifact_root: PathBuf,
     pub hooks: Vec<HookBackend>,
     pub input_hooks: Vec<crate::InputHookBackend>,
-    pub bluetooth_hid_pipes: Vec<crate::BluetoothHidPipeConfig>,
     pub consumer: ConsumerPreference,
     pub isolate: bool,
     pub tracked_surfaces: Vec<TrackedSurfaceConfig>,
@@ -60,7 +58,6 @@ pub struct EmulatorLaunchConfig {
     pub skip_surfaces: u32,
     pub graph_tracking: bool,
     pub force_keyed_mutex: bool,
-    pub gamepad_layouts: Vec<String>,
 }
 
 impl EmulatorLaunchConfig {
@@ -78,28 +75,6 @@ impl EmulatorLaunchConfig {
         if self.hooks.is_empty() {
             return Err(LaunchError::InvalidConfig(
                 "at least one graphics hook is required".to_owned(),
-            ));
-        }
-        if self.bluetooth_hid_pipes.iter().any(|pipe| pipe.port >= 4)
-            || self
-                .bluetooth_hid_pipes
-                .iter()
-                .map(|pipe| pipe.port)
-                .collect::<HashSet<_>>()
-                .len()
-                != self.bluetooth_hid_pipes.len()
-        {
-            return Err(LaunchError::InvalidConfig(
-                "Bluetooth HID pipes require unique ports 0..=3".to_owned(),
-            ));
-        }
-        if !self.bluetooth_hid_pipes.is_empty()
-            && !self
-                .input_hooks
-                .contains(&crate::InputHookBackend::BluetoothApiWin32)
-        {
-            return Err(LaunchError::InvalidConfig(
-                "Bluetooth HID pipes require their input hook".to_owned(),
             ));
         }
         let mut ids = HashSet::new();
@@ -310,7 +285,7 @@ struct SurfaceSnapshot {
 
 struct SurfaceShared {
     snapshot: RwLock<SurfaceSnapshot>,
-    input: InputTransport,
+    input: InputIpcListener,
     frames: RwLock<Watchable<Option<FrameReady>>>,
     sequence: AtomicU32,
     started: Instant,
@@ -363,28 +338,35 @@ impl TrackedSurfaceHandle {
     ) -> Result<(), SurfaceError> {
         let snapshot = self.snapshot();
         self.validate_active_generation(&snapshot, frame.generation)?;
+        let width = f64::from(update.coordinate_width.max(1));
+        let height = f64::from(update.coordinate_height.max(1));
         self.shared
             .input
-            .send(Message::PointerInput(PointerInput {
+            .publish_host(HostInputEvent::Pointer(HostPointerInput {
                 surface_id: snapshot.protocol_surface_id,
                 target_window: snapshot.target_window,
-                frame_number: frame.frame_number,
-                source: update.source,
-                phase: update.phase,
+                source: update.source as u8,
+                phase: update.phase as u8,
                 pointer_id: update.pointer_id,
                 x: update.x,
                 y: update.y,
                 coordinate_width: update.coordinate_width,
                 coordinate_height: update.coordinate_height,
                 button: update.button,
+                position: [f64::from(update.x) / width, f64::from(update.y) / height],
+                delta: [0.0; 2],
                 buttons: update.buttons,
                 wheel_horizontal: update.wheel_horizontal,
                 wheel_vertical: update.wheel_vertical,
-                timestamp: update.timestamp,
-                sequence: self.next_sequence(),
-            }))
-            .then_some(())
-            .ok_or(SurfaceError::Unavailable)
+                timestamp_ms: update.timestamp,
+            }));
+        if update.wheel_horizontal != 0 || update.wheel_vertical != 0 {
+            self.shared.input.publish_host(HostInputEvent::Wheel {
+                horizontal: update.wheel_horizontal,
+                vertical: update.wheel_vertical,
+            });
+        }
+        Ok(())
     }
 
     pub fn send_hotkey(&self, chord: &HotkeyChord) -> Result<(), SurfaceError> {
@@ -410,7 +392,7 @@ impl TrackedSurfaceHandle {
         self.validate_active_generation(&snapshot, snapshot.generation)?;
         self.shared
             .input
-            .send(Message::ResizeWindow(snowglass_protocol::ResizeWindow {
+            .send_control(Message::ResizeWindow(snowglass_protocol::ResizeWindow {
                 target_window: snapshot.target_window,
                 width: dimensions.width,
                 height: dimensions.height,
@@ -425,20 +407,18 @@ impl TrackedSurfaceHandle {
         key: HotkeyKey,
         pressed: bool,
     ) -> Result<(), SurfaceError> {
-        self.shared
-            .input
-            .send(Message::RawKeyInput(RawKeyInput {
-                target_window: snapshot.target_window,
-                virtual_key: key.virtual_key,
-                scan_code: key.scan_code,
-                extended: key.extended,
-                pressed,
-                repeat: false,
-                timestamp: self.shared.started.elapsed().as_millis() as u32,
-                sequence: self.next_sequence(),
-            }))
-            .then_some(())
-            .ok_or(SurfaceError::Unavailable)
+        self.shared.input.publish_host(HostInputEvent::Key {
+            code: snowglass_input::KeyCode::new("hotkey"),
+            virtual_key: key.virtual_key as u16,
+            scan_code: key.scan_code,
+            pressed,
+            repeat: false,
+            extended: key.extended,
+            target_window: snapshot.target_window,
+            timestamp_ms: self.shared.started.elapsed().as_millis() as u32,
+            sequence: self.next_sequence(),
+        });
+        Ok(())
     }
 
     fn snapshot(&self) -> SurfaceSnapshot {
@@ -575,20 +555,6 @@ pub struct EmulatorInstance {
     ui_requests: UiRequestReceiver,
 }
 
-#[derive(Clone)]
-pub struct VirtualGamepadConnectionSender(InputTransport);
-
-impl VirtualGamepadConnectionSender {
-    pub fn set_connected(
-        &self,
-        connection: snowglass_input::gamepad::VirtualGamepadConnection,
-    ) -> Result<(), String> {
-        self.0
-            .set_gamepad_connected(connection)
-            .map_err(|error| error.to_string())
-    }
-}
-
 impl EmulatorInstance {
     pub fn launch(config: EmulatorLaunchConfig) -> Result<Self, LaunchError> {
         Self::launch_with_waker(config, || {})
@@ -604,12 +570,12 @@ impl EmulatorInstance {
     pub fn launch_with_input(
         config: EmulatorLaunchConfig,
         wake: impl Fn() + Send + Sync + 'static,
-        configure_input: impl FnOnce(VirtualGamepadConnectionSender) -> Result<(), String>,
+        configure_input: impl FnOnce(InputIpcListener) -> Result<(), String>,
     ) -> Result<Self, LaunchError> {
         config.validate()?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
-        let input = InputTransport::bind(&config.session)?;
-        if let Err(error) = configure_input(VirtualGamepadConnectionSender(input.clone())) {
+        let input = InputIpcListener::bind(&config.session)?;
+        if let Err(error) = configure_input(input.clone()) {
             input.shutdown();
             return Err(LaunchError::InvalidConfig(error));
         }
@@ -709,8 +675,8 @@ impl EmulatorInstance {
         self.lifecycle.state.get()
     }
 
-    pub fn virtual_gamepad_connections(&self) -> VirtualGamepadConnectionSender {
-        VirtualGamepadConnectionSender(self.lifecycle.input.clone())
+    pub fn input(&self) -> InputIpcListener {
+        self.lifecycle.input.clone()
     }
 
     pub fn tracked_surface(&self, id: TrackedSurfaceId) -> Option<TrackedSurfaceHandle> {
@@ -739,31 +705,6 @@ impl EmulatorInstance {
 
     pub fn subscribe_ui_requests(&self) -> UiRequestReceiver {
         self.ui_requests.clone()
-    }
-
-    pub fn send_gamepad_update(&self, update: GamepadUpdate) -> Result<(), SurfaceError> {
-        self.lifecycle
-            .input
-            .publish_gamepad(update)
-            .map_err(SurfaceError::Io)
-    }
-
-    pub fn gamepad_input(&self) -> Arc<dyn GamepadUpdateSink> {
-        Arc::new(self.lifecycle.input.clone())
-    }
-
-    pub fn subscribe_gamepad_feedback(
-        &self,
-    ) -> std::sync::mpsc::Receiver<snowglass_input::gamepad::GamepadFeedback> {
-        self.lifecycle.input.subscribe_feedback()
-    }
-
-    /// Compatibility bridge for input encoders that already produce the
-    /// existing Snowglass protocol messages. The instance still owns the IPC
-    /// connection and writer lifecycle.
-    #[doc(hidden)]
-    pub fn protocol_input_sender(&self) -> ProtocolInputSender {
-        self.lifecycle.input.sender()
     }
 
     pub fn audio_state(&self) -> AudioState {
@@ -835,7 +776,7 @@ struct ActiveSurface {
 pub(crate) struct SurfaceManager {
     hooks: Arc<[HookBackend]>,
     tracked_surfaces: Arc<[TrackedSurfaceConfig]>,
-    input: InputTransport,
+    input: InputIpcListener,
     router: RwLock<Option<FrameRouter>>,
     events: SurfaceEventSender,
     active: DashMap<TrackedSurfaceId, ActiveSurface>,
@@ -850,7 +791,7 @@ pub(crate) struct SurfaceManager {
 impl SurfaceManager {
     fn new(
         config: &EmulatorLaunchConfig,
-        input: InputTransport,
+        input: InputIpcListener,
         events: SurfaceEventSender,
     ) -> Self {
         Self {
@@ -1311,7 +1252,7 @@ fn refresh_audio(shared: &AudioShared) {
 
 struct InstanceLifecycle {
     process: Mutex<Option<TargetProcess>>,
-    input: InputTransport,
+    input: InputIpcListener,
     ui: UiTransport,
     state: Watchable<InstanceState>,
     surfaces: Arc<SurfaceManager>,
@@ -1429,7 +1370,6 @@ mod tests {
             artifact_root: PathBuf::from("."),
             hooks: vec![HookBackend::D3d12],
             input_hooks: Vec::new(),
-            bluetooth_hid_pipes: Vec::new(),
             consumer: ConsumerPreference::D3d12,
             isolate: false,
             tracked_surfaces: vec![TrackedSurfaceConfig {
@@ -1441,7 +1381,6 @@ mod tests {
             skip_surfaces: 0,
             graph_tracking: false,
             force_keyed_mutex: false,
-            gamepad_layouts: Vec::new(),
         }
     }
 

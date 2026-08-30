@@ -9,9 +9,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 parking_lot.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 snowglass-hook.workspace = true
+snowglass-hook-input.workspace = true
+snowglass-input-layout.workspace = true
 snowglass-platform-windows.workspace = true
 tracing.workspace = true
 windows-sys = { workspace = true, features = [

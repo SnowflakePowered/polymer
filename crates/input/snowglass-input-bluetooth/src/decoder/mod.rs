@@ -1,10 +1,22 @@
 use snowglass_bluetooth::devices::ProfileId;
-use snowglass_input::{gamepad::GamepadState, router::PhysicalControllerRole};
+use snowglass_input::{DeviceRole, GamepadButton};
 use std::time::Instant;
 
 pub mod switch;
 pub mod switch2;
 pub mod wiimote;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GamepadState {
+    pub buttons: u32,
+    pub left_stick: [i16; 2],
+    pub right_stick: [i16; 2],
+    pub left_trigger: u16,
+    pub right_trigger: u16,
+    pub pointer: [i16; 2],
+    pub accelerometer: [f32; 3],
+    pub gyroscope: [f32; 3],
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerSource {
@@ -41,7 +53,7 @@ pub struct MotionFrame {
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedInput {
     pub state: GamepadState,
-    pub role: PhysicalControllerRole,
+    pub role: DeviceRole,
     pub battery_level: Option<u8>,
     pub charging: bool,
     pub pointer_source: Option<PointerSource>,
@@ -76,11 +88,7 @@ pub fn for_profile(profile: &ProfileId) -> Option<Box<dyn ReportDecoder>> {
     }
 }
 
-pub(crate) fn set_button(
-    state: &mut GamepadState,
-    pressed: bool,
-    button: snowglass_input::gamepad::GamepadButton,
-) {
+pub(crate) fn set_button(state: &mut GamepadState, pressed: bool, button: GamepadButton) {
     if pressed {
         state.buttons |= button.mask();
     }

@@ -168,6 +168,11 @@ enum Command {
     SetExternalOwnership(SessionId, bool, oneshot::Sender<Result<()>>),
     SetPlayerIndex(SessionId, u8, oneshot::Sender<Result<()>>),
     SetRumble(SessionId, u16, u16, oneshot::Sender<Result<()>>),
+    SetIrCamera(
+        SessionId,
+        crate::devices::IrCameraSetup,
+        oneshot::Sender<Result<()>>,
+    ),
     Disconnect(SessionId, bool, oneshot::Sender<Result<()>>),
     Forget(ControllerId, oneshot::Sender<Result<()>>),
     WakeDiscovered(ControllerRecord, BleDevice),
@@ -236,6 +241,14 @@ impl BluetoothManager {
         high_frequency: u16,
     ) -> Result<()> {
         self.call(|reply| Command::SetRumble(session_id, low_frequency, high_frequency, reply))
+            .await
+    }
+    pub async fn set_ir_camera(
+        &self,
+        session_id: SessionId,
+        setup: crate::devices::IrCameraSetup,
+    ) -> Result<()> {
+        self.call(|reply| Command::SetIrCamera(session_id, setup, reply))
             .await
     }
     pub async fn sleep(&self, session_id: SessionId) -> Result<()> {
@@ -774,6 +787,19 @@ impl BluetoothServer {
                                     low_frequency,
                                     high_frequency,
                                 )
+                                .await
+                        }
+                        Some(_) => Ok(()),
+                        None => Err(Error::Unsupported("controller session is not connected")),
+                    };
+                    let _ = reply.send(result);
+                }
+                Command::SetIrCamera(session_id, setup, reply) => {
+                    let result = match Self::session_mut(&mut sessions, session_id) {
+                        Some(session) if !session.externally_owned => {
+                            session
+                                .controller
+                                .set_ir_camera(session.transport.as_mut(), setup)
                                 .await
                         }
                         Some(_) => Ok(()),

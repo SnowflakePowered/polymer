@@ -1,4 +1,6 @@
 use crate::configuration::SyntheticWiimote;
+use parking_lot::RwLock;
+use snowglass_input_layout::topology::RawHidBinding;
 use windows_sys::{
     Win32::Devices::{
         DeviceAndDriverInstallation::{CONFIGRET, CR_BUFFER_SMALL, CR_SUCCESS},
@@ -8,20 +10,27 @@ use windows_sys::{
 };
 
 pub(crate) struct SyntheticEnumeration {
-    devices: Vec<SyntheticWiimote>,
+    devices: RwLock<Vec<SyntheticWiimote>>,
 }
 
 impl Default for SyntheticEnumeration {
     fn default() -> Self {
         Self {
-            devices: SyntheticWiimote::load(),
+            devices: RwLock::new(Vec::new()),
         }
     }
 }
 
 impl SyntheticEnumeration {
+    pub(crate) fn rebind(&self, bindings: &[RawHidBinding]) {
+        *self.devices.write() = bindings
+            .iter()
+            .map(SyntheticWiimote::from_binding)
+            .collect();
+    }
+
     pub(crate) unsafe fn extends(&self, interface: *const GUID) -> bool {
-        !self.devices.is_empty()
+        !self.devices.read().is_empty()
             && !interface.is_null()
             && unsafe {
                 let interface = &*interface;
@@ -34,6 +43,7 @@ impl SyntheticEnumeration {
 
     pub(crate) fn additional_len(&self) -> u32 {
         self.devices
+            .read()
             .iter()
             .map(|device| device.path.len() as u32)
             .sum()
@@ -54,7 +64,7 @@ impl SyntheticEnumeration {
             return CR_BUFFER_SMALL;
         }
         let mut offset = end;
-        for device in &self.devices {
+        for device in self.devices.read().iter() {
             buffer[offset..offset + device.path.len()].copy_from_slice(&device.path);
             offset += device.path.len();
         }
@@ -62,12 +72,16 @@ impl SyntheticEnumeration {
         CR_SUCCESS
     }
 
-    pub(crate) unsafe fn find_path(&self, path: *const u16) -> Option<&SyntheticWiimote> {
+    pub(crate) unsafe fn find_path(&self, path: *const u16) -> Option<SyntheticWiimote> {
         if path.is_null() {
             return None;
         }
         let length = (0..32_768).find(|offset| unsafe { *path.add(*offset) == 0 })?;
         let path = unsafe { std::slice::from_raw_parts(path, length) };
-        self.devices.iter().find(|device| device.path_matches(path))
+        self.devices
+            .read()
+            .iter()
+            .find(|device| device.path_matches(path))
+            .cloned()
     }
 }

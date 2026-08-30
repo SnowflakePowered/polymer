@@ -54,6 +54,15 @@ pub trait SnowglassHost: Send + Sync {
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn input_api_snapshot(&self) -> Value;
     fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
+    fn input_devices(&self) -> Value {
+        Value::Array(Vec::new())
+    }
+    fn input_get(&self, _index: u8) -> Option<Value> {
+        None
+    }
+    fn input_command(&self, _command: Value) -> Result<Value, String> {
+        Err("input is unavailable".to_owned())
+    }
     fn webrtc_start(
         &self,
         token: InstanceToken,
@@ -102,16 +111,24 @@ pub enum SnowglassNotification {
         configuration: Value,
         layouts: Value,
     },
-    InputStateChanged {
-        sources: Value,
-        priority: String,
-        controls: Value,
-    },
     InputConfigurationSettled {
         request_id: u64,
         result: Value,
     },
     InputApiStateChanged(Value),
+    InputDeviceConnected(Value),
+    InputDeviceDisconnected {
+        id: String,
+        index: Option<u8>,
+    },
+    InputDeviceAssigned {
+        id: String,
+        from: Option<u8>,
+        to: Option<u8>,
+    },
+    InputChanged {
+        index: u8,
+    },
     EmulatorInstance(Value),
     GameSaved {
         kind: String,
@@ -367,6 +384,30 @@ async fn op_input_api_command(
 }
 
 #[op2]
+#[serde]
+fn op_input_devices(state: &mut OpState) -> serde_json::Value {
+    state.borrow::<Arc<dyn SnowglassHost>>().input_devices()
+}
+
+#[op2]
+#[serde]
+fn op_input_get(state: &mut OpState, index: u8) -> Option<serde_json::Value> {
+    state.borrow::<Arc<dyn SnowglassHost>>().input_get(index)
+}
+
+#[op2]
+#[serde]
+fn op_input_command(
+    state: &mut OpState,
+    #[serde] command: serde_json::Value,
+) -> Result<serde_json::Value, JsErrorBox> {
+    state
+        .borrow::<Arc<dyn SnowglassHost>>()
+        .input_command(command)
+        .map_err(JsErrorBox::type_error)
+}
+
+#[op2]
 async fn op_webrtc_start(
     state: Rc<RefCell<OpState>>,
     token: u32,
@@ -422,6 +463,9 @@ deno_core::extension!(
         op_input_configure,
         op_input_api_snapshot,
         op_input_api_command,
+        op_input_devices,
+        op_input_get,
+        op_input_command,
         op_webrtc_start,
         op_webrtc_stop,
         op_snowglass_next_notification,

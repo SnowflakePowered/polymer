@@ -1,55 +1,25 @@
-//! Nintendo Bluetooth input provider layered above `snowglass-bluetooth`.
-//!
-//! The Bluetooth crate owns radios and controller lifecycle. This crate owns
-//! report decoding, motion units, pointer synthesis, and virtual-slot routing.
-
 #![forbid(unsafe_code)]
 
 pub mod airmouse;
 pub mod decoder;
-#[cfg(windows)]
-pub mod raw;
 
-use decoder::{MotionFrame, PointerSource, ReportDecoder};
-use parking_lot::RwLock;
+use decoder::{GamepadState, PointerSource, ReportDecoder};
+use parking_lot::{Mutex, RwLock};
 use snowglass_bluetooth::{
-    BluetoothManager, ConnectedController, ControllerId, ManagerConfig, ManagerEvent, Result,
-    SessionId, TransportKind,
+    BluetoothManager, ConnectedController, ControllerId, ManagerConfig, ManagerEvent, SessionId,
+    TransportKind,
 };
 use snowglass_input::{
-    gamepad::{GamepadFeedback, GamepadState},
-    router::{
-        PhysicalControllerRole, PhysicalGamepadUpdate, PhysicalInputRouter, PhysicalSourceId,
-    },
+    BackendError, BackendHandle, BackendId, BatteryState, Calibration, Capabilities,
+    DeviceDescriptor, DeviceId, DeviceRole, DeviceState, Feedback, InputBackend, PointerFlags,
+    PointerKind, PointerReport, PointerSample, SensorReport,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use tokio::{sync::broadcast, task::JoinHandle};
 
 #[derive(Clone, Debug)]
-pub struct BluetoothControllerState {
-    pub source_id: PhysicalSourceId,
-    pub controller_id: ControllerId,
-    pub session_id: SessionId,
-    pub name: String,
-    pub profile_id: String,
-    pub vendor_id: Option<u16>,
-    pub product_id: Option<u16>,
-    pub player_index: u8,
-    pub connected: bool,
-    pub role: PhysicalControllerRole,
-    pub state: GamepadState,
-    pub battery_level: Option<u8>,
-    pub charging: bool,
-    pub pointer_source: Option<PointerSource>,
-    pub motion: Option<MotionFrame>,
-    pub report_count: u64,
-}
-
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum BluetoothProviderEvent {
+pub enum DiscoveryEvent {
     Manager(ManagerEvent),
-    Input(Box<BluetoothControllerState>),
     UnsupportedReportFormat {
         controller_id: ControllerId,
         profile_id: String,
@@ -57,38 +27,34 @@ pub enum BluetoothProviderEvent {
 }
 
 struct LiveController {
-    snapshot: BluetoothControllerState,
+    device: DeviceId,
+    session: SessionId,
+    descriptor: DeviceDescriptor,
     decoder: Option<Box<dyn ReportDecoder>>,
+    calibration: Calibration,
+    previous_pointer: [i16; 2],
 }
 
-/// A running Bluetooth capture provider. The manager remains available for UI
-/// discovery/pairing controls while normalized reports flow through `router`.
-pub struct BluetoothInputProvider {
+pub struct BluetoothBackend {
     manager: BluetoothManager,
-    events: broadcast::Sender<BluetoothProviderEvent>,
+    events: broadcast::Sender<DiscoveryEvent>,
     controllers: Arc<RwLock<HashMap<ControllerId, LiveController>>>,
-    router: PhysicalInputRouter,
-    task: JoinHandle<()>,
+    handle: Arc<RwLock<Option<BackendHandle>>>,
+    task: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl BluetoothInputProvider {
-    pub async fn start(config: ManagerConfig, router: PhysicalInputRouter) -> Result<Self> {
-        let manager = BluetoothManager::start(config).await?;
-        let manager_events = manager.events();
-        let (events, _) = broadcast::channel(1024);
-        let controllers = Arc::new(RwLock::new(HashMap::new()));
-        let task = tokio::spawn(run_provider(
-            manager_events,
-            events.clone(),
-            controllers.clone(),
-            router.clone(),
-        ));
+impl BluetoothBackend {
+    pub async fn start(config: ManagerConfig) -> Result<Self, BackendError> {
+        let manager = BluetoothManager::start(config)
+            .await
+            .map_err(|error| BackendError::Unavailable(error.to_string()))?;
+        let (events, _) = broadcast::channel(128);
         Ok(Self {
             manager,
             events,
-            controllers,
-            router,
-            task,
+            controllers: Arc::new(RwLock::new(HashMap::new())),
+            handle: Arc::new(RwLock::new(None)),
+            task: Mutex::new(None),
         })
     }
 
@@ -96,220 +62,475 @@ impl BluetoothInputProvider {
         self.manager.clone()
     }
 
-    pub fn events(&self) -> broadcast::Receiver<BluetoothProviderEvent> {
+    pub fn discovery(&self) -> broadcast::Receiver<DiscoveryEvent> {
         self.events.subscribe()
     }
 
-    pub fn controllers(&self) -> Vec<BluetoothControllerState> {
+    pub fn descriptors(&self) -> Vec<DeviceDescriptor> {
         self.controllers
             .read()
             .values()
-            .map(|controller| controller.snapshot.clone())
+            .map(|controller| controller.descriptor.clone())
             .collect()
     }
 
-    pub fn recenter(&self, source: &PhysicalSourceId) -> bool {
-        let mut controllers = self.controllers.write();
-        let Some(controller) = controllers
-            .values_mut()
-            .find(|controller| &controller.snapshot.source_id == source)
-        else {
-            return false;
-        };
-        controller
-            .decoder
-            .as_mut()
-            .is_some_and(|decoder| decoder.recenter())
+    fn session_for(&self, device: &DeviceId) -> Option<SessionId> {
+        self.controllers
+            .read()
+            .values()
+            .find(|controller| &controller.device == device)
+            .map(|controller| controller.session)
+    }
+}
+
+impl InputBackend for BluetoothBackend {
+    fn id(&self) -> BackendId {
+        BackendId::BLUETOOTH
     }
 
-    /// Routes emulator rumble back to every physical source composing a slot.
-    pub async fn apply_feedback(&self, feedback: GamepadFeedback) -> Result<()> {
-        let sources = self.router.sources_for_slot(feedback.slot);
-        let sessions = {
-            let controllers = self.controllers.read();
-            sources
-                .iter()
-                .filter_map(|source| {
-                    controllers
-                        .values()
-                        .find(|controller| {
-                            controller.snapshot.connected
-                                && &controller.snapshot.source_id == source
-                        })
-                        .map(|controller| controller.snapshot.session_id)
-                })
-                .collect::<Vec<_>>()
-        };
-        for session_id in sessions {
-            self.manager
-                .set_rumble(session_id, feedback.low_frequency, feedback.high_frequency)
-                .await?;
+    fn start(&self, handle: BackendHandle) -> Result<(), BackendError> {
+        if self.task.lock().is_some() {
+            return Err(BackendError::Failed(
+                "Bluetooth backend is already running".to_owned(),
+            ));
+        }
+        *self.handle.write() = Some(handle.clone());
+        let manager_events = self.manager.events();
+        let events = self.events.clone();
+        let controllers = self.controllers.clone();
+        let task = tokio::spawn(Self::run(manager_events, events, controllers, handle));
+        *self.task.lock() = Some(task);
+        Ok(())
+    }
+
+    fn shutdown(&self) {
+        if let Some(task) = self.task.lock().take() {
+            task.abort();
+        }
+        let manager = self.manager.clone();
+        tokio::spawn(async move {
+            let _ = manager.shutdown().await;
+        });
+    }
+
+    fn apply_feedback(&self, device: &DeviceId, feedback: &Feedback) -> Result<(), BackendError> {
+        let session = self
+            .session_for(device)
+            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
+        let manager = self.manager.clone();
+        match feedback {
+            Feedback::Rumble {
+                low_frequency,
+                high_frequency,
+                ..
+            } => {
+                let low = *low_frequency;
+                let high = *high_frequency;
+                tokio::spawn(async move {
+                    let _ = manager.set_rumble(session, low, high).await;
+                });
+            }
+            Feedback::PlayerLed { index } => {
+                let index = *index;
+                tokio::spawn(async move {
+                    let _ = manager.set_player_index(session, index).await;
+                });
+            }
+            Feedback::Recenter => return self.recenter(device),
+            Feedback::Calibrate(calibration) => return self.set_calibration(device, calibration),
+            Feedback::HdRumble(_) | Feedback::HomeLed { .. } => {
+                return Err(BackendError::Unsupported);
+            }
         }
         Ok(())
     }
 
-    pub async fn shutdown(self) -> Result<()> {
-        self.task.abort();
-        self.manager.shutdown().await
-    }
-}
-
-impl Drop for BluetoothInputProvider {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-async fn run_provider(
-    mut manager_events: broadcast::Receiver<ManagerEvent>,
-    events: broadcast::Sender<BluetoothProviderEvent>,
-    controllers: Arc<RwLock<HashMap<ControllerId, LiveController>>>,
-    router: PhysicalInputRouter,
-) {
-    loop {
-        let event = match manager_events.recv().await {
-            Ok(event) => event,
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(broadcast::error::RecvError::Closed) => break,
-        };
-        match &event {
-            ManagerEvent::Connected(connected) => {
-                connect_controller(connected, &events, &controllers, &router);
-            }
-            ManagerEvent::RawReport {
-                controller_id,
-                session_id,
-                received_at,
-                bytes,
-            } => {
-                let snapshot = {
-                    let mut controllers = controllers.write();
-                    let Some(controller) = controllers.get_mut(controller_id) else {
-                        continue;
-                    };
-                    if controller.snapshot.session_id != *session_id {
-                        continue;
+    fn set_calibration(
+        &self,
+        device: &DeviceId,
+        calibration: &Calibration,
+    ) -> Result<(), BackendError> {
+        let mut controllers = self.controllers.write();
+        let controller = controllers
+            .values_mut()
+            .find(|controller| &controller.device == device)
+            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
+        controller.calibration = calibration.clone();
+        let session = controller.session;
+        let pointer = calibration.pointer;
+        drop(controllers);
+        if let Some(pointer) = pointer {
+            let setup = snowglass_bluetooth::devices::IrCameraSetup {
+                sensitivity: match pointer.sensitivity {
+                    snowglass_input::IrSensitivity::Level1 => {
+                        snowglass_bluetooth::devices::IrSensitivity::Level1
                     }
-                    let Some(decoded) = controller
-                        .decoder
-                        .as_mut()
-                        .and_then(|decoder| decoder.decode(bytes, *received_at))
-                    else {
-                        continue;
-                    };
-                    controller.snapshot.connected = true;
-                    controller.snapshot.role = decoded.role;
-                    controller.snapshot.state = decoded.state;
-                    controller.snapshot.battery_level = decoded.battery_level;
-                    controller.snapshot.charging = decoded.charging;
-                    controller.snapshot.pointer_source = decoded.pointer_source;
-                    controller.snapshot.motion = decoded.motion;
-                    controller.snapshot.report_count =
-                        controller.snapshot.report_count.wrapping_add(1);
-                    controller.snapshot.clone()
-                };
-                router.publish(PhysicalGamepadUpdate {
-                    source: snapshot.source_id.clone(),
-                    role: snapshot.role,
-                    connected: true,
-                    state: snapshot.state,
-                });
-                let _ = events.send(BluetoothProviderEvent::Input(Box::new(snapshot)));
-            }
-            ManagerEvent::Disconnected {
-                controller_id,
-                session_id,
-                ..
-            } => {
-                let snapshot = {
-                    let mut controllers = controllers.write();
-                    let Some(controller) = controllers.get_mut(controller_id) else {
-                        continue;
-                    };
-                    if controller.snapshot.session_id != *session_id {
-                        continue;
+                    snowglass_input::IrSensitivity::Level2 => {
+                        snowglass_bluetooth::devices::IrSensitivity::Level2
                     }
-                    controller.snapshot.connected = false;
-                    controller.snapshot.state = GamepadState::default();
-                    controller.snapshot.motion = None;
-                    controller.snapshot.clone()
-                };
-                router.publish(PhysicalGamepadUpdate {
-                    source: snapshot.source_id.clone(),
-                    role: snapshot.role,
-                    connected: false,
-                    state: GamepadState::default(),
-                });
-                let _ = events.send(BluetoothProviderEvent::Input(Box::new(snapshot)));
-            }
-            _ => {}
+                    snowglass_input::IrSensitivity::Level3 => {
+                        snowglass_bluetooth::devices::IrSensitivity::Level3
+                    }
+                    snowglass_input::IrSensitivity::Level4 => {
+                        snowglass_bluetooth::devices::IrSensitivity::Level4
+                    }
+                    snowglass_input::IrSensitivity::Level5 => {
+                        snowglass_bluetooth::devices::IrSensitivity::Level5
+                    }
+                },
+                mode: match pointer.mode {
+                    snowglass_input::IrMode::Basic => snowglass_bluetooth::devices::IrMode::Basic,
+                    snowglass_input::IrMode::Extended => {
+                        snowglass_bluetooth::devices::IrMode::Extended
+                    }
+                    snowglass_input::IrMode::Full => snowglass_bluetooth::devices::IrMode::Full,
+                },
+            };
+            let manager = self.manager.clone();
+            tokio::spawn(async move {
+                let _ = manager.set_ir_camera(session, setup).await;
+            });
         }
-        let _ = events.send(BluetoothProviderEvent::Manager(event));
+        Ok(())
     }
-}
 
-fn connect_controller(
-    connected: &ConnectedController,
-    events: &broadcast::Sender<BluetoothProviderEvent>,
-    controllers: &RwLock<HashMap<ControllerId, LiveController>>,
-    router: &PhysicalInputRouter,
-) {
-    let decoder = decoder::for_profile(&connected.profile_id);
-    let source_id = source_id(connected.controller_id);
-    let snapshot = BluetoothControllerState {
-        source_id: source_id.clone(),
-        controller_id: connected.controller_id,
-        session_id: connected.session_id,
-        name: connected
-            .identity
-            .name
-            .clone()
-            .unwrap_or_else(|| connected.profile_id.as_str().to_owned()),
-        profile_id: connected.profile_id.as_str().to_owned(),
-        vendor_id: connected.identity.pnp.as_ref().map(|pnp| pnp.vendor_id),
-        product_id: connected.identity.pnp.as_ref().map(|pnp| pnp.product_id),
-        player_index: connected.player_index,
-        connected: true,
-        role: role_for_profile(connected.profile_id.as_str()),
-        state: GamepadState::default(),
-        battery_level: None,
-        charging: false,
-        pointer_source: None,
-        motion: None,
-        report_count: 0,
-    };
-    if decoder.is_none() {
-        let _ = events.send(BluetoothProviderEvent::UnsupportedReportFormat {
-            controller_id: connected.controller_id,
-            profile_id: snapshot.profile_id.clone(),
+    fn send_raw_hid(&self, device: &DeviceId, report: &[u8]) -> Result<(), BackendError> {
+        let session = self
+            .session_for(device)
+            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
+        let manager = self.manager.clone();
+        let report = report.to_vec();
+        tokio::spawn(async move {
+            let _ = manager.send_raw(session, &report).await;
         });
+        Ok(())
     }
-    router.publish(PhysicalGamepadUpdate {
-        source: source_id,
-        role: snapshot.role,
-        connected: true,
-        state: GamepadState::default(),
-    });
-    controllers.write().insert(
-        connected.controller_id,
-        LiveController { snapshot, decoder },
-    );
+
+    fn set_raw_hid_capture(&self, device: &DeviceId, enabled: bool) -> Result<(), BackendError> {
+        let session = self
+            .session_for(device)
+            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
+        let manager = self.manager.clone();
+        tokio::spawn(async move {
+            let _ = manager.set_external_ownership(session, enabled).await;
+        });
+        Ok(())
+    }
+
+    fn raw_hid_filter(&self, device: &DeviceId) -> Option<Arc<dyn snowglass_input::RawHidFilter>> {
+        self.controllers
+            .read()
+            .values()
+            .find(|controller| &controller.device == device)
+            .and_then(|controller| {
+                controller
+                    .descriptor
+                    .profile
+                    .as_deref()
+                    .is_some_and(|profile| profile.contains("wiimote"))
+                    .then(|| {
+                        Arc::new(WiimoteRawHidFilter) as Arc<dyn snowglass_input::RawHidFilter>
+                    })
+            })
+    }
+
+    fn recenter(&self, device: &DeviceId) -> Result<(), BackendError> {
+        let mut controllers = self.controllers.write();
+        let controller = controllers
+            .values_mut()
+            .find(|controller| &controller.device == device)
+            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
+        if controller
+            .decoder
+            .as_mut()
+            .is_some_and(|decoder| decoder.recenter())
+        {
+            Ok(())
+        } else {
+            Err(BackendError::Unsupported)
+        }
+    }
 }
 
-pub fn source_id(controller: ControllerId) -> PhysicalSourceId {
-    let transport = match controller.transport {
-        TransportKind::Ble => "ble",
-        TransportKind::BrEdr => "br-edr",
-    };
-    PhysicalSourceId::new(format!("bt://{transport}/{}", controller.address))
+impl BluetoothBackend {
+    async fn run(
+        mut manager_events: broadcast::Receiver<ManagerEvent>,
+        events: broadcast::Sender<DiscoveryEvent>,
+        controllers: Arc<RwLock<HashMap<ControllerId, LiveController>>>,
+        handle: BackendHandle,
+    ) {
+        loop {
+            let event = match manager_events.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+            match &event {
+                ManagerEvent::Connected(connected) => {
+                    Self::connect(connected, &events, &controllers, &handle);
+                }
+                ManagerEvent::RawReport {
+                    controller_id,
+                    session_id,
+                    received_at,
+                    bytes,
+                } => {
+                    let published = {
+                        let mut controllers = controllers.write();
+                        let Some(controller) = controllers.get_mut(controller_id) else {
+                            continue;
+                        };
+                        if controller.session != *session_id {
+                            continue;
+                        }
+                        let Some(decoded) = controller
+                            .decoder
+                            .as_mut()
+                            .and_then(|decoder| decoder.decode(bytes, *received_at))
+                        else {
+                            continue;
+                        };
+                        controller.descriptor.role = decoded.role;
+                        let mut input = decoded.state;
+                        if decoded.pointer_source == Some(PointerSource::IrCamera)
+                            && controller.calibration.pointer.is_some_and(|setup| {
+                                setup.sensor_bar == snowglass_input::SensorBarPosition::Below
+                            })
+                        {
+                            input.pointer[1] = input.pointer[1].saturating_neg();
+                        }
+                        let (mut state, pointer) = Self::state(
+                            input,
+                            decoded.pointer_source,
+                            decoded.motion,
+                            decoded.battery_level,
+                            decoded.charging,
+                            controller.previous_pointer,
+                        );
+                        controller.previous_pointer = input.pointer;
+                        controller.calibration.correct(&mut state);
+                        controller.calibration.shape(&mut state);
+                        (controller.device.clone(), state, pointer)
+                    };
+                    handle.publish(&published.0, &published.1);
+                    handle.publish_pointer(&published.0, &published.2);
+                    handle.publish_raw_hid(&published.0, bytes);
+                }
+                ManagerEvent::Disconnected {
+                    controller_id,
+                    session_id,
+                    ..
+                } => {
+                    let device = controllers
+                        .read()
+                        .get(controller_id)
+                        .and_then(|controller| {
+                            (controller.session == *session_id).then(|| controller.device.clone())
+                        });
+                    if let Some(device) = device {
+                        handle.disconnected(&device);
+                    }
+                }
+                _ => {}
+            }
+            let _ = events.send(DiscoveryEvent::Manager(event));
+        }
+    }
+
+    fn connect(
+        connected: &ConnectedController,
+        events: &broadcast::Sender<DiscoveryEvent>,
+        controllers: &RwLock<HashMap<ControllerId, LiveController>>,
+        handle: &BackendHandle,
+    ) {
+        let decoder = decoder::for_profile(&connected.profile_id);
+        let device = Self::device_id(connected.controller_id);
+        let profile = connected.profile_id.as_str();
+        let pnp = connected.identity.pnp.as_ref();
+        let descriptor = DeviceDescriptor {
+            id: device.clone(),
+            name: Arc::from(connected.identity.name.as_deref().unwrap_or(profile)),
+            profile: Some(Arc::from(profile)),
+            vendor_id: pnp.map(|value| value.vendor_id),
+            product_id: pnp.map(|value| value.product_id),
+            serial: None,
+            role: Self::role_for_profile(profile),
+            capabilities: Self::capabilities(profile),
+        };
+        if decoder.is_none() {
+            let _ = events.send(DiscoveryEvent::UnsupportedReportFormat {
+                controller_id: connected.controller_id,
+                profile_id: profile.to_owned(),
+            });
+        }
+        controllers.write().insert(
+            connected.controller_id,
+            LiveController {
+                device,
+                session: connected.session_id,
+                descriptor: descriptor.clone(),
+                decoder,
+                calibration: Calibration::default(),
+                previous_pointer: [0; 2],
+            },
+        );
+        handle.connected(descriptor);
+    }
+
+    fn state(
+        input: GamepadState,
+        source: Option<PointerSource>,
+        motion: Option<decoder::MotionFrame>,
+        battery_level: Option<u8>,
+        charging: bool,
+        previous_pointer: [i16; 2],
+    ) -> (DeviceState, PointerSample) {
+        let kind = match source {
+            Some(PointerSource::IrCamera) => PointerKind::IrCamera,
+            Some(PointerSource::AirMouse) => PointerKind::AirMouse,
+            Some(PointerSource::Optical) => PointerKind::Optical,
+            None => PointerKind::None,
+        };
+        let flags = match source {
+            Some(PointerSource::Optical) => PointerFlags::NATIVE,
+            Some(_) => PointerFlags::DEVICE | PointerFlags::NATIVE,
+            None => PointerFlags::default(),
+        };
+        let delta = [
+            input.pointer[0].wrapping_sub(previous_pointer[0]),
+            input.pointer[1].wrapping_sub(previous_pointer[1]),
+        ];
+        let pointer = match source {
+            Some(PointerSource::Optical) => PointerSample::Relative {
+                delta: [f32::from(delta[0]), f32::from(delta[1])],
+                counts_per_unit: 4096.0,
+            },
+            Some(PointerSource::IrCamera) => PointerSample::Angular {
+                position: Self::normalized(input.pointer),
+                field_of_view: [33.0_f32.to_radians(), 23.0_f32.to_radians()],
+                confidence: 1.0,
+            },
+            Some(PointerSource::AirMouse) => PointerSample::Angular {
+                position: Self::normalized(input.pointer),
+                field_of_view: [1.0, 1.0],
+                confidence: 0.25,
+            },
+            None => PointerSample::None,
+        };
+        let mut sensor = SensorReport {
+            accelerometer: input.accelerometer,
+            gyroscope: input.gyroscope,
+            ..SensorReport::default()
+        };
+        if let Some(motion) = motion {
+            sensor.orientation = motion.orientation;
+            sensor.has_orientation = true;
+            sensor.sampled_at_ns = motion.orientation_sampled_at.elapsed().as_nanos() as u64;
+        }
+        (
+            DeviceState {
+                gamepad: snowglass_input::GamepadReport {
+                    buttons: input.buttons,
+                    left_stick: input.left_stick,
+                    right_stick: input.right_stick,
+                    left_trigger: input.left_trigger,
+                    right_trigger: input.right_trigger,
+                },
+                sensor,
+                pointer: PointerReport {
+                    position: input.pointer,
+                    delta,
+                    flags,
+                    kind,
+                },
+                battery: BatteryState {
+                    level: battery_level,
+                    charging,
+                },
+            },
+            pointer,
+        )
+    }
+
+    fn normalized(pointer: [i16; 2]) -> [f32; 2] {
+        [
+            (f32::from(pointer[0]) + 32768.0) / 65535.0,
+            (f32::from(pointer[1]) + 32768.0) / 65535.0,
+        ]
+    }
+
+    fn device_id(controller: ControllerId) -> DeviceId {
+        let transport = match controller.transport {
+            TransportKind::Ble => "ble",
+            TransportKind::BrEdr => "br-edr",
+        };
+        DeviceId::new(
+            BackendId::BLUETOOTH,
+            &format!("{transport}/{}", controller.address),
+        )
+    }
+
+    fn role_for_profile(profile: &str) -> DeviceRole {
+        if profile.ends_with("joycon-left") {
+            DeviceRole::LeftHalf
+        } else if profile.ends_with("joycon-right") {
+            DeviceRole::RightHalf
+        } else {
+            DeviceRole::Whole
+        }
+    }
+
+    fn capabilities(profile: &str) -> Capabilities {
+        let mut capabilities = Capabilities::RUMBLE
+            | Capabilities::PLAYER_LED
+            | Capabilities::BATTERY
+            | Capabilities::RAW_HID
+            | Capabilities::CALIBRATE_STICK_CENTER
+            | Capabilities::CALIBRATE_STICK_RANGE
+            | Capabilities::CALIBRATE_DEAD_ZONE;
+        if profile.contains("wiimote") {
+            capabilities |= Capabilities::ACCELEROMETER
+                | Capabilities::GYROSCOPE
+                | Capabilities::ORIENTATION
+                | Capabilities::RECENTER
+                | Capabilities::POINTER_ANGULAR
+                | Capabilities::CALIBRATE_MOTION_BIAS
+                | Capabilities::CALIBRATE_POINTER;
+        }
+        if profile.contains("switch2.joycon") {
+            capabilities |= Capabilities::POINTER_RELATIVE;
+        }
+        capabilities
+    }
 }
 
-fn role_for_profile(profile: &str) -> PhysicalControllerRole {
-    if profile.ends_with("joycon-left") {
-        PhysicalControllerRole::LeftHalf
-    } else if profile.ends_with("joycon-right") {
-        PhysicalControllerRole::RightHalf
-    } else {
-        PhysicalControllerRole::Whole
+impl Drop for BluetoothBackend {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.get_mut().take() {
+            task.abort();
+        }
+    }
+}
+
+struct WiimoteRawHidFilter;
+
+impl snowglass_input::RawHidFilter for WiimoteRawHidFilter {
+    fn filter_input(&self, report: &mut [u8], capture: bool) {
+        if let Some(metadata) = decoder::wiimote::ReportMetadata::inspect(report) {
+            metadata.filter_for_dolphin(report, capture);
+        }
+    }
+
+    fn filter_output<'a>(&self, report: &'a [u8], capture: bool) -> Cow<'a, [u8]> {
+        if capture && report.first() == Some(&0x18) {
+            Cow::Owned(vec![0x10, report.get(1).copied().unwrap_or_default() & 1])
+        } else {
+            Cow::Borrowed(report)
+        }
+    }
+
+    fn buttons_clear(&self, report: &[u8]) -> bool {
+        decoder::wiimote::ReportMetadata::inspect(report)
+            .is_none_or(|metadata| metadata.physical_buttons_clear(report))
     }
 }

@@ -9,14 +9,18 @@ use serde_json::Value;
 use snowglass_deno::snowglass::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
 };
-use snowglass_input::source::InputSourceCatalog;
+use snowglass_input::{
+    Calibration, CalibrationCapture, CalibrationKind, DeviceDescriptor, DeviceId, Feedback,
+    InputEvent, InputHub, InputListener, IrMode, IrSensitivity, ListenerHandle, MotionCalibration,
+    PointerSetup, SensorBarPosition, StickCalibration, TriggerCalibration,
+};
 use snowglass_library::StorageManager;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -98,7 +102,7 @@ pub enum InputCommand {
 pub struct InputApiState {
     state: Arc<RwLock<Value>>,
     controller_profiles: crate::ControllerProfiles,
-    controller_assignments: Arc<RwLock<crate::controllers::ControllerAssignmentSnapshot>>,
+    controller_assignments: Arc<RwLock<snowglass_controllers::ControllerAssignmentSnapshot>>,
 }
 
 impl Default for InputApiState {
@@ -136,7 +140,7 @@ impl InputApiState {
 
     pub(crate) fn controller_assignments(
         &self,
-    ) -> crate::controllers::ControllerAssignmentSnapshot {
+    ) -> snowglass_controllers::ControllerAssignmentSnapshot {
         self.controller_assignments.read().clone()
     }
 
@@ -146,7 +150,7 @@ impl InputApiState {
             return;
         }
         *self.controller_assignments.write() =
-            crate::controllers::ControllerAssignmentSnapshot::from_manager(manager);
+            snowglass_controllers::ControllerAssignmentSnapshot::from_manager(manager);
         let revision = state["revision"]
             .as_u64()
             .unwrap_or_default()
@@ -395,21 +399,369 @@ pub struct FrontendServices {
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
     controller_sessions: ControllerSessionStore,
-    input_sources: InputSourceCatalog,
+    input_sources: InputHub,
     input_api: InputApiState,
     platform: Arc<dyn RuntimePlatform>,
     notifications: SnowglassNotificationSender,
+    deno_input: Arc<DenoInputListener>,
+    input_listener: ListenerHandle,
+    calibration_captures: Mutex<HashMap<DeviceId, CalibrationCapture>>,
+}
+
+struct DenoInputListener {
+    hub: InputHub,
+    notifications: SnowglassNotificationSender,
+    dirty: [AtomicBool; 8],
+    connected: Mutex<HashMap<DeviceId, bool>>,
+}
+
+impl DenoInputListener {
+    fn new(hub: InputHub, notifications: SnowglassNotificationSender) -> Self {
+        Self {
+            hub,
+            notifications,
+            dirty: std::array::from_fn(|_| AtomicBool::new(false)),
+            connected: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn devices(&self) -> Value {
+        Value::Array(
+            self.hub
+                .devices()
+                .into_iter()
+                .map(|(index, device)| {
+                    let connected = self
+                        .connected
+                        .lock()
+                        .get(&device.id)
+                        .copied()
+                        .unwrap_or(false);
+                    self.device(index.map(|index| index.get()), connected, &device)
+                })
+                .collect(),
+        )
+    }
+
+    fn get(&self, index: u8) -> Option<Value> {
+        let index = snowglass_input::PlayerIndex::new(index);
+        let state = self.hub.state(index)?;
+        self.dirty[usize::from(index.get())].store(false, Ordering::Release);
+        Some(serde_json::json!({
+            "buttons": state.gamepad.buttons, "leftStick": state.gamepad.left_stick,
+            "rightStick": state.gamepad.right_stick, "leftTrigger": state.gamepad.left_trigger,
+            "rightTrigger": state.gamepad.right_trigger, "accelerometer": state.sensor.accelerometer,
+            "gyroscope": state.sensor.gyroscope, "orientation": state.sensor.has_orientation.then_some(state.sensor.orientation),
+            "pointer": { "position": state.pointer.position, "delta": state.pointer.delta, "flags": state.pointer.flags.bits(), "kind": format!("{:?}", state.pointer.kind) },
+            "battery": { "level": state.battery.level, "charging": state.battery.charging }
+        }))
+    }
+
+    fn device(&self, index: Option<u8>, connected: bool, device: &DeviceDescriptor) -> Value {
+        let typed = snowglass_controllers::ControllerDevice::from_descriptor(device);
+        let mut value = serde_json::to_value(typed).unwrap_or_default();
+        value["index"] = index.map_or(Value::Null, |index| serde_json::json!(index));
+        value["connected"] = Value::Bool(connected);
+        value["battery"] = index
+            .and_then(|index| self.hub.state(snowglass_input::PlayerIndex::new(index)))
+            .map_or(Value::Null, |state| {
+                serde_json::json!({ "level": state.battery.level, "charging": state.battery.charging })
+            });
+        value
+    }
+}
+
+impl InputListener for DenoInputListener {
+    fn on_input(&self, event: InputEvent<'_>) {
+        use snowglass_deno::snowglass::SnowglassNotification;
+        let notification = match event {
+            InputEvent::Connected { index, device } => {
+                self.connected.lock().insert(device.id.clone(), true);
+                SnowglassNotification::InputDeviceConnected(self.device(
+                    index.map(|index| index.get()),
+                    true,
+                    device,
+                ))
+            }
+            InputEvent::Disconnected { index, device } => {
+                self.connected.lock().insert(device.clone(), false);
+                SnowglassNotification::InputDeviceDisconnected {
+                    id: device.to_string(),
+                    index: index.map(|index| index.get()),
+                }
+            }
+            InputEvent::Assigned { device, from, to } => {
+                SnowglassNotification::InputDeviceAssigned {
+                    id: device.to_string(),
+                    from: from.map(|index| index.get()),
+                    to: to.map(|index| index.get()),
+                }
+            }
+            InputEvent::State { index, .. } => {
+                if self.dirty[usize::from(index.get())].swap(true, Ordering::AcqRel) {
+                    return;
+                }
+                SnowglassNotification::InputChanged { index: index.get() }
+            }
+            InputEvent::RawHid { .. } => return,
+        };
+        let _ = self.notifications.send(notification);
+    }
+}
+
+struct InputCommandDecoder(Value);
+
+impl InputCommandDecoder {
+    fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    fn execute(
+        &self,
+        hub: &InputHub,
+        listener: &ListenerHandle,
+        captures: &Mutex<HashMap<DeviceId, CalibrationCapture>>,
+    ) -> Result<Value, String> {
+        match self.string("type")? {
+            "rumble" => {
+                listener
+                    .feedback(
+                        self.index()?,
+                        Feedback::Rumble {
+                            low_frequency: self.u16("lowFrequency")?,
+                            high_frequency: self.u16("highFrequency")?,
+                            duration_ms: self.u32("durationMs")?,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(Value::Null)
+            }
+            "recenter" => {
+                listener
+                    .feedback(self.index()?, Feedback::Recenter)
+                    .map_err(|error| error.to_string())?;
+                Ok(Value::Null)
+            }
+            "getCalibration" => Ok(Self::calibration_value(
+                &hub.calibration(&self.device(hub)?),
+            )),
+            "calibrate" => {
+                let device = self.device(hub)?;
+                let calibration = Self::calibration(
+                    self.0
+                        .get("calibration")
+                        .ok_or_else(|| "calibration is required".to_owned())?,
+                )?;
+                hub.calibrate(&device, &calibration)
+                    .map_err(|error| error.to_string())?;
+                Ok(Self::calibration_value(&hub.calibration(&device)))
+            }
+            "resetCalibration" => {
+                let device = self.device(hub)?;
+                hub.reset_calibration(&device)
+                    .map_err(|error| error.to_string())?;
+                Ok(Self::calibration_value(&hub.calibration(&device)))
+            }
+            "beginCalibration" => {
+                let device = self.device(hub)?;
+                let kind = match self.string("kind")? {
+                    "stickCenter" => CalibrationKind::StickCenter,
+                    "stickRange" => CalibrationKind::StickRange,
+                    "triggerRange" => CalibrationKind::TriggerRange,
+                    "motionBias" => CalibrationKind::MotionBias,
+                    _ => return Err("unknown calibration kind".to_owned()),
+                };
+                let capture = hub
+                    .begin_calibration(&device, kind)
+                    .map_err(|error| error.to_string())?;
+                captures.lock().insert(device, capture);
+                Ok(serde_json::json!({ "progress": 0.0 }))
+            }
+            "calibrationProgress" => {
+                let device = self.device(hub)?;
+                Ok(
+                    serde_json::json!({ "progress": captures.lock().get(&device).map_or(0.0, CalibrationCapture::progress) }),
+                )
+            }
+            "finishCalibration" => {
+                let device = self.device(hub)?;
+                let capture = captures
+                    .lock()
+                    .remove(&device)
+                    .ok_or_else(|| "calibration capture is not active".to_owned())?;
+                capture.finish().map_err(|error| error.to_string())?;
+                Ok(Self::calibration_value(&hub.calibration(&device)))
+            }
+            "cancelCalibration" => {
+                let device = self.device(hub)?;
+                if let Some(capture) = captures.lock().remove(&device) {
+                    capture.cancel();
+                }
+                Ok(Value::Null)
+            }
+            _ => Err("unknown input command".to_owned()),
+        }
+    }
+
+    fn index(&self) -> Result<snowglass_input::PlayerIndex, String> {
+        Ok(snowglass_input::PlayerIndex::new(self.u8("index")?))
+    }
+
+    fn device(&self, hub: &InputHub) -> Result<DeviceId, String> {
+        let id = self.string("deviceId")?;
+        hub.devices()
+            .into_iter()
+            .map(|(_, device)| device.id)
+            .find(|device| device.as_str() == id)
+            .ok_or_else(|| format!("unknown input device {id}"))
+    }
+
+    fn string(&self, name: &str) -> Result<&str, String> {
+        self.0
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{name} must be a string"))
+    }
+
+    fn u8(&self, name: &str) -> Result<u8, String> {
+        u8::try_from(self.u64(name)?).map_err(|_| format!("{name} is out of range"))
+    }
+    fn u16(&self, name: &str) -> Result<u16, String> {
+        u16::try_from(self.u64(name)?).map_err(|_| format!("{name} is out of range"))
+    }
+    fn u32(&self, name: &str) -> Result<u32, String> {
+        u32::try_from(self.u64(name)?).map_err(|_| format!("{name} is out of range"))
+    }
+    fn u64(&self, name: &str) -> Result<u64, String> {
+        self.0
+            .get(name)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{name} must be an unsigned integer"))
+    }
+
+    fn calibration(value: &Value) -> Result<Calibration, String> {
+        let mut calibration = Calibration::default();
+        if let Some(sticks) = value.get("sticks").and_then(Value::as_array) {
+            for (index, stick) in sticks.iter().take(2).enumerate() {
+                if !stick.is_null() {
+                    calibration.sticks[index] = Some(Self::stick(stick)?);
+                }
+            }
+        }
+        if let Some(triggers) = value.get("triggers").and_then(Value::as_array) {
+            for (index, trigger) in triggers.iter().take(2).enumerate() {
+                if !trigger.is_null() {
+                    calibration.triggers[index] = Some(Self::trigger(trigger)?);
+                }
+            }
+        }
+        if let Some(motion) = value.get("motion").filter(|value| !value.is_null()) {
+            calibration.motion = Some(MotionCalibration {
+                accelerometer_bias: Self::array(motion, "accelerometerBias")?,
+                accelerometer_scale: Self::array(motion, "accelerometerScale")?,
+                gyroscope_bias: Self::array(motion, "gyroscopeBias")?,
+                gyroscope_scale: Self::array(motion, "gyroscopeScale")?,
+            });
+        }
+        if let Some(pointer) = value.get("pointer").filter(|value| !value.is_null()) {
+            calibration.pointer = Some(PointerSetup {
+                sensor_bar: match pointer
+                    .get("sensorBar")
+                    .and_then(Value::as_str)
+                    .unwrap_or("above")
+                {
+                    "below" => SensorBarPosition::Below,
+                    _ => SensorBarPosition::Above,
+                },
+                sensitivity: match pointer
+                    .get("sensitivity")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3)
+                {
+                    1 => IrSensitivity::Level1,
+                    2 => IrSensitivity::Level2,
+                    4 => IrSensitivity::Level4,
+                    5 => IrSensitivity::Level5,
+                    _ => IrSensitivity::Level3,
+                },
+                mode: match pointer
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("basic")
+                {
+                    "extended" => IrMode::Extended,
+                    "full" => IrMode::Full,
+                    _ => IrMode::Basic,
+                },
+            });
+        }
+        Ok(calibration)
+    }
+
+    fn stick(value: &Value) -> Result<StickCalibration, String> {
+        Ok(StickCalibration {
+            center: Self::array(value, "center")?,
+            min: Self::array(value, "min")?,
+            max: Self::array(value, "max")?,
+            dead_zone: Self::f32(value, "deadZone")?,
+            outer_dead_zone: Self::f32(value, "outerDeadZone")?,
+        })
+    }
+
+    fn trigger(value: &Value) -> Result<TriggerCalibration, String> {
+        Ok(TriggerCalibration {
+            min: Self::number(value, "min")?,
+            max: Self::number(value, "max")?,
+            dead_zone: Self::f32(value, "deadZone")?,
+        })
+    }
+
+    fn array<T: serde::de::DeserializeOwned>(value: &Value, name: &str) -> Result<T, String> {
+        serde_json::from_value(
+            value
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("{name} is required"))?,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn number<T: TryFrom<u64>>(value: &Value, name: &str) -> Result<T, String> {
+        value
+            .get(name)
+            .and_then(Value::as_u64)
+            .and_then(|value| T::try_from(value).ok())
+            .ok_or_else(|| format!("{name} is invalid"))
+    }
+
+    fn f32(value: &Value, name: &str) -> Result<f32, String> {
+        value
+            .get(name)
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("{name} is invalid"))
+    }
+
+    fn calibration_value(value: &Calibration) -> Value {
+        serde_json::json!({ "sticks": value.sticks.map(|value| value.map(|value| serde_json::json!({ "center": value.center, "min": value.min, "max": value.max, "deadZone": value.dead_zone, "outerDeadZone": value.outer_dead_zone }))), "triggers": value.triggers.map(|value| value.map(|value| serde_json::json!({ "min": value.min, "max": value.max, "deadZone": value.dead_zone }))), "motion": value.motion.map(|value| serde_json::json!({ "accelerometerBias": value.accelerometer_bias, "accelerometerScale": value.accelerometer_scale, "gyroscopeBias": value.gyroscope_bias, "gyroscopeScale": value.gyroscope_scale })), "pointer": value.pointer.map(|value| serde_json::json!({ "sensorBar": match value.sensor_bar { SensorBarPosition::Above => "above", SensorBarPosition::Below => "below" }, "sensitivity": match value.sensitivity { IrSensitivity::Level1 => 1, IrSensitivity::Level2 => 2, IrSensitivity::Level3 => 3, IrSensitivity::Level4 => 4, IrSensitivity::Level5 => 5 }, "mode": match value.mode { IrMode::Basic => "basic", IrMode::Extended => "extended", IrMode::Full => "full" } })) })
+    }
 }
 
 impl FrontendServices {
     pub fn new(
         plugins: Arc<snowglass_pluginhost::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
-        input_sources: InputSourceCatalog,
+        input_sources: InputHub,
         input_api: InputApiState,
         platform: Arc<dyn RuntimePlatform>,
         notifications: SnowglassNotificationSender,
     ) -> Self {
+        let deno_input = Arc::new(DenoInputListener::new(
+            input_sources.clone(),
+            notifications.clone(),
+        ));
+        let input_listener = input_sources.add_listener(deno_input.clone());
         Self {
             plugins,
             configuration,
@@ -420,6 +772,9 @@ impl FrontendServices {
             input_api,
             platform,
             notifications,
+            deno_input,
+            input_listener,
+            calibration_captures: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -478,6 +833,22 @@ impl SnowglassHost for FrontendServices {
 
     fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
         self.platform.input_api_command(command)
+    }
+
+    fn input_devices(&self) -> Value {
+        self.deno_input.devices()
+    }
+
+    fn input_get(&self, index: u8) -> Option<Value> {
+        self.deno_input.get(index)
+    }
+
+    fn input_command(&self, command: Value) -> Result<Value, String> {
+        InputCommandDecoder::new(command).execute(
+            &self.input_sources,
+            &self.input_listener,
+            &self.calibration_captures,
+        )
     }
 
     fn list_plugins(&self) -> Value {

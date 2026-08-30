@@ -1,6 +1,6 @@
 import { Dialog } from "@ark-ui/solid";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { ConnectionSession, ControllerDevice } from "../../../../../../js/snowglass";
+import type { ConnectionSession, ManagedControllerDevice } from "../../../../../../js/snowglass";
 import buttonA from "../../assets/switch/button-a.svg";
 import buttonB from "../../assets/switch/button-b.svg";
 import buttonL from "../../assets/switch/button-l.svg";
@@ -47,7 +47,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     revision();
     return session()?.discovery.active ?? false;
   };
-  const isPairing = (candidate: ControllerDevice) => candidate.metadata.pairing === true;
+  const isPairing = (candidate: ManagedControllerDevice) => candidate.pairing === true;
 
   const closeOverlay = () => {
     if (props.onClose) props.onClose();
@@ -71,7 +71,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     }
   };
 
-  const connect = async (candidate: ControllerDevice) => {
+  const connect = async (candidate: ManagedControllerDevice) => {
     setPending(true);
     setError("");
     try {

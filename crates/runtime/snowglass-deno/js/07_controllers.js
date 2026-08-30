@@ -1,9 +1,6 @@
 import { op_input_api_command } from "ext:core/ops";
 
-const freezeDevice = (device) => device ? Object.freeze({
-  ...device,
-  metadata: Object.freeze({ ...(device.metadata || {}) }),
-}) : null;
+const freezeDevice = (device) => device ? Object.freeze({ ...device }) : null;
 
 function freezePlayers(players) {
   return Object.freeze((players || []).map((player) => Object.freeze({

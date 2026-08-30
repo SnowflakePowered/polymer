@@ -1,12 +1,5 @@
 //! Snowglass control-plane IPC over a Windows AF_UNIX stream socket.
 
-use snowglass_input::{
-    DirectInputData, DirectInputDevice, RawKeyInput,
-    gamepad::{
-        GamepadFeedback, GamepadSlot, GamepadState, GamepadUpdate, VirtualGamepadConnection,
-    },
-    mouse::{PointerInput, PointerPhase, PointerSource},
-};
 use snowglass_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake, MAX_IMAGE_SLOTS,
     PresentationMappingKind, PresentationPoint, PresentationTransform, ResizeWindow, StreamId,
@@ -32,8 +25,22 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
-    byteorder::little_endian::{F32, I16, I32, I64, U16, U32, U64},
+    byteorder::little_endian::{I32, I64, U16, U32, U64},
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WireFeedback {
+    pub player: u8,
+    pub low_frequency: u16,
+    pub high_frequency: u16,
+    pub duration_ms: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum BlobKind {
+    Topology = 1,
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(1);
@@ -42,26 +49,20 @@ const MESSAGE_HELLO: u32 = 1;
 const MESSAGE_STREAM_READY: u32 = 2;
 const MESSAGE_FRAME_READY: u32 = 3;
 const MESSAGE_SHUTDOWN: u32 = 4;
-const MESSAGE_DIRECT_INPUT_DATA: u32 = 5;
 const MESSAGE_STREAM_ACCEPTED: u32 = 6;
-const MESSAGE_POINTER_INPUT: u32 = 7;
-const MESSAGE_GAMEPAD_UPDATE: u32 = 8;
+const MESSAGE_BLOB: u32 = 8;
 const MESSAGE_MAP_OFFER: u32 = 9;
 const MESSAGE_FRAME_AVAILABLE: u32 = 10;
 const MESSAGE_MAP_ACCEPTED: u32 = 11;
-const MESSAGE_RAW_KEY_INPUT: u32 = 12;
 const MESSAGE_RESIZE_WINDOW: u32 = 13;
 const MESSAGE_GAMEPAD_FEEDBACK: u32 = 14;
-const MESSAGE_VIRTUAL_GAMEPAD_CONNECTION: u32 = 15;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
     let stream = mem::size_of::<WireStreamReady>();
     let frame = mem::size_of::<WireFrameReady>();
-    let pointer = mem::size_of::<WirePointerInput>();
-    let gamepad = mem::size_of::<WireGamepadUpdate>();
     let map = mem::size_of::<WireMapOffer>();
-    max(max(stream, frame), max(max(pointer, gamepad), map))
+    max(max(stream, frame), map)
 }
 
 const fn max(left: usize, right: usize) -> usize {
@@ -117,13 +118,12 @@ pub enum Message {
     StreamReady(StreamReady),
     FrameReady(FrameReady),
     Shutdown,
-    DirectInputData(DirectInputData),
-    RawKeyInput(RawKeyInput),
     ResizeWindow(ResizeWindow),
-    PointerInput(PointerInput),
-    GamepadUpdate(GamepadUpdate),
-    GamepadFeedback(GamepadFeedback),
-    VirtualGamepadConnection(VirtualGamepadConnection),
+    GamepadFeedback(WireFeedback),
+    Blob {
+        kind: BlobKind,
+        len: u32,
+    },
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
     /// A file handle already duplicated into the receiving process.
@@ -194,29 +194,6 @@ struct WireFrameReady {
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct WireDirectInputData {
-    device: U32,
-    offset: U32,
-    data: U32,
-    timestamp: U32,
-    sequence: U32,
-}
-
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
-struct WireRawKeyInput {
-    target_window: I64,
-    virtual_key: U32,
-    scan_code: U16,
-    extended: U16,
-    pressed: U16,
-    repeat: U16,
-    timestamp: U32,
-    sequence: U32,
-}
-
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
 struct WireResizeWindow {
     target_window: I64,
     width: U32,
@@ -225,48 +202,8 @@ struct WireResizeWindow {
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct WirePointerInput {
-    surface_id: U64,
-    target_window: I64,
-    frame_number: U64,
-    source: U32,
-    phase: U32,
-    pointer_id: U32,
-    x: I32,
-    y: I32,
-    coordinate_width: U32,
-    coordinate_height: U32,
-    button: U32,
-    buttons: U32,
-    wheel_horizontal: I32,
-    wheel_vertical: I32,
-    timestamp: U32,
-    sequence: U32,
-}
-
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
-struct WireGamepadUpdate {
-    slot: U32,
-    sequence: U32,
-    connected: U32,
-    buttons: U32,
-    left_x: I16,
-    left_y: I16,
-    right_x: I16,
-    right_y: I16,
-    left_trigger: U16,
-    right_trigger: U16,
-    pointer_x: I16,
-    pointer_y: I16,
-    accelerometer: [F32; 3],
-    gyroscope: [F32; 3],
-}
-
-#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
 struct WireGamepadFeedback {
-    slot: U32,
+    player: U32,
     low_frequency: U16,
     high_frequency: U16,
     duration_ms: U32,
@@ -274,9 +211,9 @@ struct WireGamepadFeedback {
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct WireVirtualGamepadConnection {
-    slot: U32,
-    connected: U32,
+struct WireBlob {
+    kind: U32,
+    len: U32,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -453,6 +390,19 @@ impl LocalSocket {
         self.stream.write_all(encode(message).as_bytes())
     }
 
+    pub fn send_blob(&mut self, kind: BlobKind, bytes: &[u8]) -> io::Result<()> {
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "blob is too large"))?;
+        self.send(Message::Blob { kind, len })?;
+        self.stream.write_all(bytes)
+    }
+
+    pub fn receive_blob(&mut self, len: u32) -> io::Result<Vec<u8>> {
+        let mut bytes = vec![0; len as usize];
+        self.stream.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+
     pub fn enable_frame_channel(&mut self, peer_process_id: u32) -> io::Result<()> {
         let publisher = crate::frame::FramePublisher::new()?;
         publisher.offer(self, peer_process_id)?;
@@ -626,35 +576,6 @@ fn encode(message: Message) -> WireMessage {
         Message::Shutdown => {
             wire.kind = U32::new(MESSAGE_SHUTDOWN);
         }
-        Message::DirectInputData(value) => {
-            set_payload(
-                &mut wire,
-                MESSAGE_DIRECT_INPUT_DATA,
-                &WireDirectInputData {
-                    device: U32::new(value.device as u32),
-                    offset: U32::new(value.offset),
-                    data: U32::new(value.data),
-                    timestamp: U32::new(value.timestamp),
-                    sequence: U32::new(value.sequence),
-                },
-            );
-        }
-        Message::RawKeyInput(value) => {
-            set_payload(
-                &mut wire,
-                MESSAGE_RAW_KEY_INPUT,
-                &WireRawKeyInput {
-                    target_window: I64::new(value.target_window),
-                    virtual_key: U32::new(value.virtual_key),
-                    scan_code: U16::new(value.scan_code),
-                    extended: U16::new(value.extended as u16),
-                    pressed: U16::new(value.pressed as u16),
-                    repeat: U16::new(value.repeat as u16),
-                    timestamp: U32::new(value.timestamp),
-                    sequence: U32::new(value.sequence),
-                },
-            );
-        }
         Message::ResizeWindow(value) => {
             set_payload(
                 &mut wire,
@@ -666,71 +587,25 @@ fn encode(message: Message) -> WireMessage {
                 },
             );
         }
-        Message::PointerInput(value) => {
-            set_payload(
-                &mut wire,
-                MESSAGE_POINTER_INPUT,
-                &WirePointerInput {
-                    surface_id: U64::new(value.surface_id),
-                    target_window: I64::new(value.target_window),
-                    frame_number: U64::new(value.frame_number),
-                    source: U32::new(value.source as u32),
-                    phase: U32::new(value.phase as u32),
-                    pointer_id: U32::new(value.pointer_id),
-                    x: I32::new(value.x),
-                    y: I32::new(value.y),
-                    coordinate_width: U32::new(value.coordinate_width),
-                    coordinate_height: U32::new(value.coordinate_height),
-                    button: U32::new(value.button),
-                    buttons: U32::new(value.buttons),
-                    wheel_horizontal: I32::new(value.wheel_horizontal),
-                    wheel_vertical: I32::new(value.wheel_vertical),
-                    timestamp: U32::new(value.timestamp),
-                    sequence: U32::new(value.sequence),
-                },
-            );
-        }
-        Message::GamepadUpdate(value) => {
-            set_payload(
-                &mut wire,
-                MESSAGE_GAMEPAD_UPDATE,
-                &WireGamepadUpdate {
-                    slot: U32::new(u32::from(value.slot.get())),
-                    sequence: U32::new(value.sequence),
-                    connected: U32::new(value.connected as u32),
-                    buttons: U32::new(value.state.buttons),
-                    left_x: I16::new(value.state.left_stick[0]),
-                    left_y: I16::new(value.state.left_stick[1]),
-                    right_x: I16::new(value.state.right_stick[0]),
-                    right_y: I16::new(value.state.right_stick[1]),
-                    left_trigger: U16::new(value.state.left_trigger),
-                    right_trigger: U16::new(value.state.right_trigger),
-                    pointer_x: I16::new(value.state.pointer[0]),
-                    pointer_y: I16::new(value.state.pointer[1]),
-                    accelerometer: value.state.accelerometer.map(F32::new),
-                    gyroscope: value.state.gyroscope.map(F32::new),
-                },
-            );
-        }
         Message::GamepadFeedback(value) => {
             set_payload(
                 &mut wire,
                 MESSAGE_GAMEPAD_FEEDBACK,
                 &WireGamepadFeedback {
-                    slot: U32::new(u32::from(value.slot.get())),
+                    player: U32::new(u32::from(value.player)),
                     low_frequency: U16::new(value.low_frequency),
                     high_frequency: U16::new(value.high_frequency),
                     duration_ms: U32::new(value.duration_ms),
                 },
             );
         }
-        Message::VirtualGamepadConnection(value) => {
+        Message::Blob { kind, len } => {
             set_payload(
                 &mut wire,
-                MESSAGE_VIRTUAL_GAMEPAD_CONNECTION,
-                &WireVirtualGamepadConnection {
-                    slot: U32::new(u32::from(value.slot.get())),
-                    connected: U32::new(value.connected as u32),
+                MESSAGE_BLOB,
+                &WireBlob {
+                    kind: U32::new(kind as u32),
+                    len: U32::new(len),
                 },
             );
         }
@@ -836,39 +711,6 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
             }))
         }
         MESSAGE_SHUTDOWN => Ok(Message::Shutdown),
-        MESSAGE_DIRECT_INPUT_DATA => {
-            let value = payload::<WireDirectInputData>(wire)?;
-            let device = match value.device.get() {
-                1 => DirectInputDevice::Keyboard,
-                2 => DirectInputDevice::Mouse,
-                _ => return Err(invalid_data("unknown DirectInput device class")),
-            };
-            Ok(Message::DirectInputData(DirectInputData {
-                device,
-                offset: value.offset.get(),
-                data: value.data.get(),
-                timestamp: value.timestamp.get(),
-                sequence: value.sequence.get(),
-            }))
-        }
-        MESSAGE_RAW_KEY_INPUT => {
-            let value = payload::<WireRawKeyInput>(wire)?;
-            let flag = |value: u16| match value {
-                0 => Ok(false),
-                1 => Ok(true),
-                _ => Err(invalid_data("invalid raw-key boolean")),
-            };
-            Ok(Message::RawKeyInput(RawKeyInput {
-                target_window: value.target_window.get(),
-                virtual_key: value.virtual_key.get(),
-                scan_code: value.scan_code.get(),
-                extended: flag(value.extended.get())?,
-                pressed: flag(value.pressed.get())?,
-                repeat: flag(value.repeat.get())?,
-                timestamp: value.timestamp.get(),
-                sequence: value.sequence.get(),
-            }))
-        }
         MESSAGE_RESIZE_WINDOW => {
             let value = payload::<WireResizeWindow>(wire)?;
             Ok(Message::ResizeWindow(ResizeWindow {
@@ -878,85 +720,27 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
             }))
         }
         MESSAGE_STREAM_ACCEPTED => Ok(Message::StreamAccepted),
-        MESSAGE_POINTER_INPUT => {
-            let value = payload::<WirePointerInput>(wire)?;
-            let source = PointerSource::try_from(value.source.get())
-                .map_err(|()| invalid_data("invalid pointer source"))?;
-            let phase = PointerPhase::try_from(value.phase.get())
-                .map_err(|()| invalid_data("invalid pointer phase"))?;
-            Ok(Message::PointerInput(PointerInput {
-                surface_id: value.surface_id.get(),
-                target_window: value.target_window.get(),
-                frame_number: value.frame_number.get(),
-                source,
-                phase,
-                pointer_id: value.pointer_id.get(),
-                x: value.x.get(),
-                y: value.y.get(),
-                coordinate_width: value.coordinate_width.get(),
-                coordinate_height: value.coordinate_height.get(),
-                button: value.button.get(),
-                buttons: value.buttons.get(),
-                wheel_horizontal: value.wheel_horizontal.get(),
-                wheel_vertical: value.wheel_vertical.get(),
-                timestamp: value.timestamp.get(),
-                sequence: value.sequence.get(),
-            }))
-        }
-        MESSAGE_GAMEPAD_UPDATE => {
-            let value = payload::<WireGamepadUpdate>(wire)?;
-            let slot = u8::try_from(value.slot.get())
-                .ok()
-                .and_then(GamepadSlot::new)
-                .ok_or_else(|| invalid_data("invalid gamepad slot"))?;
-            let connected = match value.connected.get() {
-                0 => false,
-                1 => true,
-                _ => return Err(invalid_data("invalid gamepad connection state")),
-            };
-            Ok(Message::GamepadUpdate(GamepadUpdate {
-                slot,
-                sequence: value.sequence.get(),
-                connected,
-                state: GamepadState {
-                    buttons: value.buttons.get(),
-                    left_stick: [value.left_x.get(), value.left_y.get()],
-                    right_stick: [value.right_x.get(), value.right_y.get()],
-                    left_trigger: value.left_trigger.get(),
-                    right_trigger: value.right_trigger.get(),
-                    pointer: [value.pointer_x.get(), value.pointer_y.get()],
-                    accelerometer: value.accelerometer.map(F32::get),
-                    gyroscope: value.gyroscope.map(F32::get),
-                },
-            }))
-        }
         MESSAGE_GAMEPAD_FEEDBACK => {
             let value = payload::<WireGamepadFeedback>(wire)?;
-            let slot = u8::try_from(value.slot.get())
-                .ok()
-                .and_then(GamepadSlot::new)
-                .ok_or_else(|| invalid_data("invalid feedback gamepad slot"))?;
-            Ok(Message::GamepadFeedback(GamepadFeedback {
-                slot,
+            let player = u8::try_from(value.player.get())
+                .map_err(|_| invalid_data("invalid feedback player"))?;
+            Ok(Message::GamepadFeedback(WireFeedback {
+                player,
                 low_frequency: value.low_frequency.get(),
                 high_frequency: value.high_frequency.get(),
                 duration_ms: value.duration_ms.get(),
             }))
         }
-        MESSAGE_VIRTUAL_GAMEPAD_CONNECTION => {
-            let value = payload::<WireVirtualGamepadConnection>(wire)?;
-            let slot = u8::try_from(value.slot.get())
-                .ok()
-                .and_then(GamepadSlot::new)
-                .ok_or_else(|| invalid_data("invalid virtual gamepad slot"))?;
-            let connected = match value.connected.get() {
-                0 => false,
-                1 => true,
-                _ => return Err(invalid_data("invalid virtual gamepad connection state")),
+        MESSAGE_BLOB => {
+            let value = payload::<WireBlob>(wire)?;
+            let kind = match value.kind.get() {
+                1 => BlobKind::Topology,
+                _ => return Err(invalid_data("unknown blob kind")),
             };
-            Ok(Message::VirtualGamepadConnection(
-                VirtualGamepadConnection { slot, connected },
-            ))
+            Ok(Message::Blob {
+                kind,
+                len: value.len.get(),
+            })
         }
         MESSAGE_MAP_OFFER => {
             let value = payload::<WireMapOffer>(wire)?;
@@ -1008,23 +792,6 @@ pub(crate) fn decode_frame(bytes: &[u8]) -> io::Result<FrameReady> {
     match decode(&wire)? {
         Message::FrameReady(value) => Ok(value),
         _ => unreachable!(),
-    }
-}
-
-pub(crate) fn encode_input(value: Message) -> Vec<u8> {
-    debug_assert!(matches!(
-        value,
-        Message::GamepadUpdate(_) | Message::VirtualGamepadConnection(_)
-    ));
-    encode(value).as_bytes().to_vec()
-}
-
-pub(crate) fn decode_input(bytes: &[u8]) -> io::Result<Message> {
-    let wire = WireMessage::read_from_bytes(bytes)
-        .map_err(|_| invalid_data("invalid shared input event size"))?;
-    match decode(&wire)? {
-        event @ (Message::GamepadUpdate(_) | Message::VirtualGamepadConnection(_)) => Ok(event),
-        _ => Err(invalid_data("invalid shared input event kind")),
     }
 }
 
@@ -1080,63 +847,13 @@ mod tests {
                 timestamp_qpc: 102,
             }),
             Message::Shutdown,
-            Message::DirectInputData(DirectInputData {
-                device: DirectInputDevice::Keyboard,
-                offset: 30,
-                data: 0x80,
-                timestamp: 123,
-                sequence: 456,
-            }),
-            Message::RawKeyInput(RawKeyInput {
-                target_window: 8,
-                virtual_key: 0x70,
-                scan_code: 0x3b,
-                extended: false,
-                pressed: true,
-                repeat: false,
-                timestamp: 124,
-                sequence: 457,
-            }),
             Message::ResizeWindow(ResizeWindow {
                 target_window: 8,
                 width: 1280,
                 height: 720,
             }),
-            Message::PointerInput(PointerInput {
-                surface_id: 0x1234,
-                target_window: 8,
-                frame_number: 100,
-                source: PointerSource::Touch,
-                phase: PointerPhase::ButtonDown,
-                pointer_id: 7,
-                x: 320,
-                y: 240,
-                coordinate_width: 1920,
-                coordinate_height: 1080,
-                button: 1,
-                buttons: 1,
-                wheel_horizontal: 0,
-                wheel_vertical: 0,
-                timestamp: 123,
-                sequence: 457,
-            }),
-            Message::GamepadUpdate(GamepadUpdate {
-                slot: GamepadSlot::new(2).unwrap(),
-                sequence: 458,
-                connected: true,
-                state: GamepadState {
-                    buttons: 0x5,
-                    left_stick: [-123, 456],
-                    right_stick: [-789, 1_234],
-                    left_trigger: 12_345,
-                    right_trigger: 54_321,
-                    pointer: [-20_000, 20_000],
-                    accelerometer: [1.25, -2.5, 9.81],
-                    gyroscope: [0.1, -0.2, 0.3],
-                },
-            }),
-            Message::GamepadFeedback(GamepadFeedback {
-                slot: GamepadSlot::new(2).unwrap(),
+            Message::GamepadFeedback(WireFeedback {
+                player: 2,
                 low_frequency: 12_345,
                 high_frequency: 54_321,
                 duration_ms: 250,

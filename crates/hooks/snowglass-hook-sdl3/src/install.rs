@@ -3,9 +3,7 @@
 use crate::api;
 use parking_lot::Mutex;
 use snowglass_hook::config;
-use snowglass_input::layout::InputLayout;
-use snowglass_input::projection::Projection;
-use snowglass_input_sdl::Runtime;
+use snowglass_hook_input_sdl::Runtime;
 use std::{
     ffi::c_void,
     os::windows::ffi::OsStrExt,
@@ -90,25 +88,8 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     let module = dynamic_api_module()
         .or_else(|| loaded_module(SDL3_DLL))
         .ok_or("SDL3 module is not loaded")?;
-    let projection = Projection::embedded().map_err(|_| "the SDL projection is invalid")?;
-    let layouts = config::layouts()
-        .into_iter()
-        .map(|layout_id| {
-            InputLayout::get(&layout_id)
-                .ok_or("the requested input layout is unavailable")
-                .map(|layout| {
-                    (
-                        layout.sdl_output(&projection),
-                        "Snowglass Virtual Gamepad".to_owned(),
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if layouts.len() != config::sdl_gamepad_count() {
-        return Err("input layout count disagrees with virtual gamepad count");
-    }
-    let runtime = Arc::new(Runtime::new(config::sdl_gamepad_count()));
-    let backend = unsafe { api::Api::load(module, layouts, runtime.clone()) }
+    let runtime = Arc::new(Runtime::new());
+    let backend = unsafe { api::Api::load(module, Vec::new(), runtime.clone()) }
         .ok_or("SDL3 virtual joystick exports are unavailable")?;
     Ok(Sdl3TableState {
         backend: Mutex::new(backend),
@@ -401,7 +382,7 @@ fn prepare_export_gamepads(state: &Sdl3ExportState) {
     if prepare_enumeration(&state.table)
         && !state.table.logged_enumeration.swap(true, Ordering::AcqRel)
     {
-        let count = config::sdl_gamepad_count();
+        let count = state.table.runtime.topology_pad_count();
         tracing::debug!("enumerated {count} SDL3 gamepad(s) through frontend exports");
     }
 }

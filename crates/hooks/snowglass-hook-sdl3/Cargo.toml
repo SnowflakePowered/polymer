@@ -13,9 +13,12 @@ tracing.workspace = true
 parking_lot.workspace = true
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
-snowglass-input-sdl.workspace = true
+snowglass-ipc.workspace = true
+snowglass-input-layout.workspace = true
+snowglass-hook-input-sdl.workspace = true
 snowglass-platform-windows.workspace = true
 windows-sys.workspace = true
 
 [lints]
 workspace = true
+

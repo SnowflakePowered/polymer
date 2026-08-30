@@ -32,10 +32,14 @@ serde_json.workspace = true
 style = { package = "stylo", version = "0.20.0" }
 style_dom = { package = "stylo_dom", version = "0.20.0" }
 snowglass-input.workspace = true
+snowglass-input-layout.workspace = true
+snowglass-input-ipc.workspace = true
+snowglass-input-sdl3 = { path = "../../crates/input/snowglass-input-sdl3" }
+snowglass-controllers.workspace = true
 snowglass-automation.workspace = true
 snowglass-bluetooth = { path = "../../crates/input/snowglass-bluetooth" }
 snowglass-input-bluetooth = { path = "../../crates/input/snowglass-input-bluetooth" }
-snowglass-input-dinput.workspace = true
+snowglass-hook-input-dinput.workspace = true
 snowglass-ipc.workspace = true
 snowglass-library.workspace = true
 snowglass-platform-windows.workspace = true
@@ -97,3 +101,4 @@ webview2-com = "=0.38.2"
 
 [lints]
 workspace = true
+

@@ -12,10 +12,6 @@ pub const LAYER_LOG_FILE: &str = "SNOWGLASS_LOG_FILE";
 pub const DINPUT_LOG_FILE: &str = "SNOWGLASS_DINPUT_LOG_FILE";
 pub const WIN32_LOG_FILE: &str = "SNOWGLASS_WIN32_LOG_FILE";
 pub const SDL_LOG_FILE: &str = "SNOWGLASS_SDL_LOG_FILE";
-pub const SDL_GAMEPADS: &str = "SNOWGLASS_SDL_GAMEPADS";
-pub const BLUETOOTH_HID_PIPES: &str = "SNOWGLASS_BLUETOOTH_HID_PIPES";
-pub const LAYOUT: &str = "SNOWGLASS_LAYOUT";
-pub const LAYOUTS: &str = "SNOWGLASS_LAYOUTS";
 pub const DXGI_LOG_FILE: &str = "SNOWGLASS_DXGI_LOG_FILE";
 pub const D3D11_LOG_FILE: &str = "SNOWGLASS_D3D11_LOG_FILE";
 pub const D3D12_LOG_FILE: &str = "SNOWGLASS_D3D12_LOG_FILE";
@@ -50,31 +46,6 @@ pub fn win32_log_file() -> Option<PathBuf> {
 
 pub fn sdl_log_file() -> Option<PathBuf> {
     path(SDL_LOG_FILE)
-}
-
-/// Fixed virtual-pad topology exposed for the lifetime of the target process.
-pub fn sdl_gamepad_count() -> usize {
-    std::env::var(SDL_GAMEPADS)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1)
-        .clamp(1, u8::MAX as usize + 1)
-}
-
-pub fn bluetooth_hid_pipes() -> Option<String> {
-    std::env::var(BLUETOOTH_HID_PIPES).ok()
-}
-
-pub fn layout() -> String {
-    std::env::var(LAYOUT).unwrap_or_else(|_| "XBOX_CONTROLLER".to_owned())
-}
-
-pub fn layouts() -> Vec<String> {
-    std::env::var(LAYOUTS)
-        .ok()
-        .map(|layouts| layouts.split(',').map(str::to_owned).collect())
-        .filter(|layouts: &Vec<_>| !layouts.is_empty() && layouts.iter().all(|id| !id.is_empty()))
-        .unwrap_or_else(|| vec![layout()])
 }
 
 pub fn dxgi_log_file() -> Option<PathBuf> {

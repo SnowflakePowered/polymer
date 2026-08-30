@@ -1,14 +1,12 @@
-use crate::{CompositingPlan, MappedPointer, Presentation, ReceivedSurface};
-use snowglass_input::mouse::{
-    PointerInput, PointerPhase, PointerSource,
-    layout::{
-        AffineMapping, Extent, OutsideBehavior, Point, Rect, SurfaceLayout, VerticalOrder,
-        aspect_fit, vertical_surface_layout,
-    },
+use crate::layout::{
+    AffineMapping, Extent, OutsideBehavior, Point, Rect, SurfaceLayout, VerticalOrder, aspect_fit,
+    vertical_surface_layout,
 };
-#[cfg(test)]
-use snowglass_ipc::Message;
-use snowglass_protocol::{FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind};
+use crate::{CompositingPlan, MappedPointer, Presentation, ReceivedSurface};
+use snowglass_protocol::{
+    FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind,
+    input::{PointerInput, PointerPhase, PointerSource},
+};
 use std::time::Instant;
 
 pub trait PointerEventSink {
@@ -228,7 +226,24 @@ pub fn map_pointer(
     pointer_destination(
         point,
         captured_connection,
+        None,
         outside,
+        plan,
+        presentation.surfaces(),
+    )
+}
+
+pub(crate) fn map_pointer_to_surface(
+    presentation: &Presentation,
+    plan: &CompositingPlan,
+    point: Point,
+    selector: crate::pointer::SurfaceSelector,
+) -> Option<MappedPointer> {
+    pointer_destination(
+        point,
+        Some(selector.connection),
+        Some(selector),
+        OutsideBehavior::Clamp,
         plan,
         presentation.surfaces(),
     )
@@ -237,6 +252,7 @@ pub fn map_pointer(
 fn pointer_destination(
     point: Point,
     captured_connection: Option<u64>,
+    selector: Option<crate::pointer::SurfaceSelector>,
     outside: OutsideBehavior,
     plan: &CompositingPlan,
     surfaces: &[ReceivedSurface],
@@ -266,6 +282,14 @@ fn pointer_destination(
         .find_map(|(surface_index, placement, presentation_mapping)| {
             let surface = surfaces.get(surface_index)?;
             if captured_connection.is_some_and(|connection| connection != surface.connection) {
+                return None;
+            }
+            if selector.is_some_and(|selector| {
+                selector.connection != surface.connection
+                    || selector
+                        .surface_id
+                        .is_some_and(|id| id != surface.surface_id)
+            }) {
                 return None;
             }
             let (sample_position, normalized_position) =
@@ -421,17 +445,17 @@ mod tests {
     use std::{collections::VecDeque, sync::Arc};
 
     #[derive(Clone, Default)]
-    struct MessageCollector(Arc<Mutex<VecDeque<Message>>>);
+    struct MessageCollector(Arc<Mutex<VecDeque<PointerInput>>>);
 
     impl PointerEventSink for MessageCollector {
         fn send_pointer(&self, _connection: u64, event: PointerInput) -> bool {
-            self.0.lock().push_back(Message::PointerInput(event));
+            self.0.lock().push_back(event);
             true
         }
     }
 
     impl MessageCollector {
-        fn recv(&self) -> Message {
+        fn recv(&self) -> PointerInput {
             self.0.lock().pop_front().expect("expected message")
         }
     }
@@ -474,6 +498,7 @@ mod tests {
         let destination = pointer_destination(
             Point::new(200.0, 420.0),
             None,
+            None,
             OutsideBehavior::Reject,
             &plan([SurfacePlacement::new(
                 7,
@@ -507,6 +532,7 @@ mod tests {
         assert!(
             pointer_destination(
                 Point::new(200.0, 420.0),
+                None,
                 None,
                 OutsideBehavior::Reject,
                 &plan([SurfacePlacement::new(
@@ -550,6 +576,7 @@ mod tests {
         ];
         let destination = pointer_destination(
             Point::new(400.0, 720.0),
+            None,
             None,
             OutsideBehavior::Reject,
             &plan([
@@ -599,6 +626,7 @@ mod tests {
         let destination = pointer_destination(
             Point::new(400.0, 480.0),
             None,
+            None,
             OutsideBehavior::Reject,
             &plan([
                 SurfacePlacement::new(7, 99, Rect::new(0, 0, 800, 480), 0.0),
@@ -614,6 +642,7 @@ mod tests {
         // to the window center.
         let destination = pointer_destination(
             Point::new(400.0, 240.0),
+            None,
             None,
             OutsideBehavior::Reject,
             &plan([
@@ -657,9 +686,7 @@ mod tests {
             &plan,
             &sender,
         ));
-        let Message::PointerInput(down) = sender.recv() else {
-            panic!("expected pointer input");
-        };
+        let down = sender.recv();
         assert_eq!((down.x, down.y, down.buttons), (320, 552, 1));
         assert_eq!(routing.captured_connection, Some(7));
         let sent = routing.last_sent().expect("successful send is recorded");
@@ -671,9 +698,7 @@ mod tests {
 
         routing.set_cursor(-100.0, -100.0);
         assert!(routing.send(PointerPhase::Move, 0, 0, 0, &presentation, &plan, &sender,));
-        let Message::PointerInput(moved) = sender.recv() else {
-            panic!("expected pointer input");
-        };
+        let moved = sender.recv();
         assert_eq!((moved.x, moved.y), (80, 120));
 
         assert!(routing.send(
@@ -685,9 +710,7 @@ mod tests {
             &plan,
             &sender,
         ));
-        let Message::PointerInput(up) = sender.recv() else {
-            panic!("expected pointer input");
-        };
+        let up = sender.recv();
         assert_eq!(up.buttons, 0);
         assert_eq!(routing.captured_connection, None);
     }

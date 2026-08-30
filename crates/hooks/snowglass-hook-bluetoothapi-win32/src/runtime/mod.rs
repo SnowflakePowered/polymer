@@ -1,4 +1,9 @@
 use crate::{enumeration::SyntheticEnumeration, handles::SyntheticHandles};
+use snowglass_hook_input::HookInput;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 use windows_sys::{
     Win32::{
         Devices::{
@@ -12,10 +17,38 @@ use windows_sys::{
     core::{BOOL, GUID, PCWSTR, PWSTR},
 };
 
-#[derive(Default)]
 pub(crate) struct Runtime {
     pub(crate) enumeration: SyntheticEnumeration,
     pub(crate) handles: SyntheticHandles,
+    input: Option<Arc<HookInput>>,
+    revision: AtomicU32,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            enumeration: SyntheticEnumeration::default(),
+            handles: SyntheticHandles::default(),
+            input: snowglass_hook::config::session()
+                .ok()
+                .map(|session| HookInput::start(&session)),
+            revision: AtomicU32::new(u32::MAX),
+        }
+    }
+}
+
+impl Runtime {
+    fn synchronize_topology(&self) {
+        let Some(input) = &self.input else {
+            return;
+        };
+        let topology = input.topology();
+        if self.revision.load(Ordering::Acquire) == topology.revision() {
+            return;
+        }
+        self.enumeration.rebind(&topology.document().raw_hid);
+        self.revision.store(topology.revision(), Ordering::Release);
+    }
 }
 
 pub(crate) unsafe fn interface_list_size(
@@ -26,6 +59,7 @@ pub(crate) unsafe fn interface_list_size(
     mut next: crate::hooks::CmGetDeviceInterfaceListSizeWContext<'_>,
 ) -> CONFIGRET {
     let state = next.state.clone();
+    state.synchronize_topology();
     let result = snowglass_hook::next!(next, length, interface, device_id, flags);
     if result == CR_SUCCESS
         && device_id.is_null()
@@ -46,6 +80,7 @@ pub(crate) unsafe fn interface_list(
     mut next: crate::hooks::CmGetDeviceInterfaceListWContext<'_>,
 ) -> CONFIGRET {
     let state = next.state.clone();
+    state.synchronize_topology();
     let result = snowglass_hook::next!(next, interface, device_id, buffer, buffer_len, flags);
     if result == CR_SUCCESS
         && device_id.is_null()
@@ -68,6 +103,7 @@ pub(crate) unsafe fn create_file(
     mut next: crate::hooks::CreateFileWContext<'_>,
 ) -> HANDLE {
     let state = next.state.clone();
+    state.synchronize_topology();
     let Some(device) = (unsafe { state.enumeration.find_path(path) }) else {
         return snowglass_hook::next!(
             next,

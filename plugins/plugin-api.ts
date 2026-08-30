@@ -32,23 +32,32 @@ export type InputSourceSelector =
     | Readonly<{ kind: "keyboardMouse" }>
     | Readonly<{ kind: "device", deviceId: string }>;
 
+export type ControllerDevice = Readonly<{
+    id: string,
+    name: string,
+    profile: string | null,
+    vendorId: number | null,
+    productId: number | null,
+    serial: string | null,
+    role: "Whole" | "LeftHalf" | "RightHalf",
+    capabilities: readonly string[],
+}>;
+
 export type ControllerMapping = Readonly<{
     target: Readonly<{ group: string, port: number }>,
     gamepad: number,
     source: InputSourceSelector | null,
     layout: string,
     connected: boolean,
-    device?: Readonly<{
-        id: string,
-        source: "sdl" | "bt",
-        name: string,
-        connected: boolean,
-        metadata: Readonly<Record<string, unknown>>,
-    }>,
+    device?: ControllerDevice,
     mouse: boolean,
     projectionMode: "name" | "position" | "custom",
     mapping: Readonly<Record<string, string>>,
-}>;
+    pointer: Readonly<{
+        source: "none" | "deviceNative" | "hostMouse" | "deviceThenHostMouse",
+        mode: "none" | "relative" | "absoluteDevice" | "absoluteScreen",
+    }>,
+}>; 
 
 export type ControllerTopology = Readonly<{
     mappings: readonly ControllerMapping[],
@@ -56,7 +65,7 @@ export type ControllerTopology = Readonly<{
 
 export type InputHook = "bluetooth-api-win32";
 export type InputProvider = Readonly<{
-    type: "bluetoothHidPipe",
+    type: "rawHid",
     sourceId: string,
     port: number,
     productId: number,

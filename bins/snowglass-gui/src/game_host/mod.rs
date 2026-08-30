@@ -9,9 +9,9 @@ use crate::{
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
 };
-use snowglass_input::mouse::layout::Rect;
 use snowglass_platform_windows::performance_counter;
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
+use snowglass_renderer::layout::Rect;
 use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, Extent, Renderer, SurfaceCapture, SurfaceCaptureEvent,
     SurfaceContent, SurfacePlacement, SurfacePointerSender,
@@ -414,7 +414,7 @@ impl GameHost {
             .is_some_and(|active| active.controller_session.is_none())
     }
 
-    pub fn controller_mappings(&self) -> &[snowglass_input::topology::ControllerMapping] {
+    pub fn controller_mappings(&self) -> &[snowglass_controllers::ControllerMapping] {
         self.active
             .as_ref()
             .map(|active| active.options.controller_topology.mappings.as_slice())
@@ -423,7 +423,7 @@ impl GameHost {
 
     pub fn controller_change(
         &self,
-        topology: snowglass_input::topology::ControllerTopology,
+        topology: snowglass_controllers::ControllerTopology,
     ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
         let Some(active) = &self.active else {
             return Ok(None);
@@ -568,12 +568,6 @@ impl GameHost {
             .ok()
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
             .ok_or_else(|| "shell executable has no parent directory".to_owned())?;
-        let mut gamepad_layouts = options
-            .controller_topology
-            .mappings
-            .iter()
-            .collect::<Vec<_>>();
-        gamepad_layouts.sort_by_key(|mapping| mapping.gamepad);
         let automation_desktop = options.isolated.then(|| session.clone());
         let config = snowglass_runtime::EmulatorLaunchConfig {
             session,
@@ -586,21 +580,6 @@ impl GameHost {
                 .iter()
                 .copied()
                 .map(input_hook_backend)
-                .collect(),
-            bluetooth_hid_pipes: options
-                .input_providers
-                .iter()
-                .map(|provider| match provider {
-                    snowglass_pluginhost::InputProvider::BluetoothHidPipe {
-                        source_id,
-                        port,
-                        product_id,
-                    } => snowglass_runtime::BluetoothHidPipeConfig {
-                        source_id: source_id.clone(),
-                        port: *port,
-                        product_id: *product_id,
-                    },
-                })
                 .collect(),
             consumer: snowglass_runtime::ConsumerPreference::D3d12,
             isolate: options.isolated,
@@ -617,14 +596,9 @@ impl GameHost {
             skip_surfaces: 0,
             graph_tracking: options.graph_tracking,
             force_keyed_mutex: false,
-            gamepad_layouts: gamepad_layouts
-                .into_iter()
-                .map(|mapping| mapping.layout.clone())
-                .collect(),
         };
         let dirty = self.dirty.clone();
         let wake_pending = self.wake_pending.clone();
-        let input_controller_session = controller_session.clone();
         self.session.launch_with_input(
             token.0,
             config,
@@ -635,13 +609,7 @@ impl GameHost {
                     wake_pending.store(false, std::sync::atomic::Ordering::Release);
                 }
             },
-            move |connections| {
-                if let Some(controller_session) = input_controller_session {
-                    controller_session
-                        .attach(move |connection| connections.set_connected(connection))?;
-                }
-                Ok(())
-            },
+            move |_listener| Ok(()),
         )?;
         let automation = if let Some(controller_session) = &controller_session {
             let process_id = self
@@ -737,12 +705,9 @@ impl GameHost {
     }
 
     pub fn input_endpoint(&self) -> Option<crate::input::GameInputEndpoint> {
-        self.session.instance().map(|instance| {
-            crate::input::GameInputEndpoint::new(
-                instance.protocol_input_sender(),
-                instance.gamepad_input(),
-            )
-        })
+        self.session
+            .instance()
+            .map(|instance| crate::input::GameInputEndpoint::new(instance.input()))
     }
 
     pub fn request_close(&mut self, token: crate::shell_runtime::InstanceToken) -> bool {

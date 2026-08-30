@@ -48,7 +48,7 @@ pub(crate) struct DirectInputContext {
 
 pub(crate) struct DeviceContext {
     pub(crate) runtime: std::sync::Arc<crate::runtime::Runtime>,
-    pub(crate) device: snowglass_input::DirectInputDevice,
+    pub(crate) device: snowglass_protocol::input::DirectInputDevice,
 }
 
 snowglass_hook::impl_com_proxy! {

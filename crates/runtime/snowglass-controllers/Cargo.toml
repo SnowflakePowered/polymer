@@ -1,0 +1,19 @@
+[package]
+name = "snowglass-controllers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+consolespec.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+snowglass-config.workspace = true
+snowglass-input.workspace = true
+snowglass-input-bluetooth = { path = "../../input/snowglass-input-bluetooth" }
+snowglass-input-layout.workspace = true
+snowglass-library.workspace = true
+
+[lints]
+workspace = true

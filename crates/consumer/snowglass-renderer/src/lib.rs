@@ -3,16 +3,18 @@
 pub mod capture;
 pub mod cli;
 pub mod input;
+pub mod layout;
+pub mod pointer;
 pub mod renderer;
 pub mod webrtc;
 
 pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfacePointerSender};
+pub use layout::Extent;
 pub use renderer::{
     CompositingPlan, D3d12Compositor, D3d12RenderPass, MappedPointer, Presentation, RasterSurface,
     ReceivedSurface, RenderWindow, Renderer, SurfaceContent, SurfacePlacement, SwapchainMode,
     VideoSwapchain, VulkanCompositor, VulkanRenderPass, WebRtcCompositor,
 };
-pub use snowglass_input::mouse::layout::Extent;
 
 pub fn fit_inside(
     source_width: u32,

@@ -10,9 +10,10 @@ crate-type = ["cdylib"]
 [dependencies]
 tracing.workspace = true
 snowglass-hook.workspace = true
-snowglass-input-win32.workspace = true
+snowglass-hook-input-win32.workspace = true
 snowglass-platform-windows.workspace = true
 windows-sys.workspace = true
 
 [lints]
 workspace = true
+

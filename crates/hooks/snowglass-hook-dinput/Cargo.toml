@@ -11,8 +11,9 @@ crate-type = ["cdylib"]
 tracing.workspace = true
 snowglass-hook.workspace = true
 snowglass-input.workspace = true
-snowglass-input-dinput.workspace = true
+snowglass-hook-input-dinput.workspace = true
 snowglass-platform-windows.workspace = true
+snowglass-protocol.workspace = true
 windows = { workspace = true, features = ["Win32_Devices_HumanInterfaceDevice"] }
 windows-sys = { workspace = true, features = ["Win32_System_SystemServices"] }
 
@@ -21,3 +22,4 @@ snowglass-ipc.workspace = true
 
 [lints]
 workspace = true
+
