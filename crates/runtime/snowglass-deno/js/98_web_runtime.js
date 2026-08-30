@@ -47,7 +47,7 @@ const loadWebSocketStream = core.createLazyLoader(
 );
 let webStorage;
 const loadWebStorage = () =>
-  webStorage ??= core.loadExtScript("ext:deno_webstorage/01_webstorage.js");
+  webStorage ??= core.loadExtScript("ext:snowglass_webstorage/01_webstorage.js");
 const navigator = Object.freeze(Object.create(null, {
   userAgent: { value: ops.op_snowglass_user_agent(), enumerable: true },
   platform: { value: "Win32", enumerable: true },

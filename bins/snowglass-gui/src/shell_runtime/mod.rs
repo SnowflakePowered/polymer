@@ -27,6 +27,7 @@ pub(crate) struct ShellRuntimeOptions {
     pub input_commands: InputCommandSink,
     pub webrtc_commands: WebRtcCommandSink,
     pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    pub local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
     pub input_sources: snowglass_input::source::InputSourceCatalog,
     pub input_api: snowglass_runtime::InputApiState,
 }
@@ -47,6 +48,7 @@ impl ShellRuntime {
             input_commands,
             webrtc_commands,
             plugin_runtime,
+            local_storage,
             input_sources,
             input_api,
         } = options;
@@ -65,6 +67,7 @@ impl ShellRuntime {
                 input_commands,
                 webrtc_commands,
                 plugin_runtime,
+                local_storage,
                 input_sources,
                 input_api,
             ))

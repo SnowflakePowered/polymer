@@ -1,5 +1,5 @@
 import { useNavigate } from "@solidjs/router";
-import { createContext, createEffect, onCleanup, useContext, type ParentProps } from "solid-js";
+import { createContext, createEffect, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "../../../../../js/snowglass";
 import type { ControllerDevice } from "../../../../../js/snowglass";
@@ -25,9 +25,9 @@ window.Snowglass.scraping.addEventListener("request", (event: Event) => {
   else startupQueue.push(request);
 });
 
-function readRecent(): RecentGame[] {
+async function readRecent(): Promise<RecentGame[]> {
   try {
-    const stored = JSON.parse(localStorage.getItem(RECENT_KEY) || "null");
+    const stored = JSON.parse(await localStorage.getItem(RECENT_KEY) || "null");
     return stored?.version === 2 && Array.isArray(stored.entries)
       ? stored.entries.slice(0, RECENT_LIMIT)
       : [];
@@ -67,13 +67,20 @@ export function ShellProvider(props: ParentProps) {
     launch: window.Snowglass.emulator.activeLaunch,
     audio: { ...DEFAULT_AUDIO },
     error: "",
-    recent: readRecent(),
+    recent: [],
     selectedGame: null,
     gamepadOpen: false,
     pauseOpen: false,
     controllerToast: null,
   });
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
+  let recentLoaded = false;
+  onMount(() => {
+    void readRecent().then((recent) => {
+      recentLoaded = true;
+      setModel("recent", recent);
+    });
+  });
   let detection: AbortController | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -188,7 +195,11 @@ export function ShellProvider(props: ParentProps) {
   for (const request of startupQueue.splice(0)) acceptStartup(request);
 
   createEffect(() => {
-    localStorage.setItem(RECENT_KEY, JSON.stringify({ version: 2, entries: model.recent }));
+    const entries = model.recent;
+    if (recentLoaded) {
+      void Promise.resolve(localStorage.setItem(RECENT_KEY, JSON.stringify({ version: 2, entries })))
+        .catch(() => {});
+    }
   });
   onCleanup(() => {
     detection?.abort();

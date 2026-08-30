@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS input_mapping_profiles (
     revision       INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
     updated_at_ms  INTEGER NOT NULL,
     PRIMARY KEY (identity, layout_id)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS input_mapping_bindings (
     identity          TEXT NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS input_mapping_bindings (
     FOREIGN KEY (identity, layout_id)
         REFERENCES input_mapping_profiles (identity, layout_id)
         ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
+) STRICT;
 
 PRAGMA user_version = 1;
 "#;
@@ -128,10 +128,7 @@ impl InputStore {
                 .map_err(InputStoreError::CreateDirectory)?;
         }
         let path = path.to_str().ok_or(InputStoreError::InvalidPath)?;
-        let database = turso::Builder::new_local(path)
-            .experimental_without_rowid(true)
-            .build()
-            .await?;
+        let database = turso::Builder::new_local(path).build().await?;
         let connection = database.connect()?;
         connection.execute("PRAGMA foreign_keys = ON", ()).await?;
         let mut rows = connection.query("PRAGMA user_version", ()).await?;

@@ -639,7 +639,7 @@ fn create_worker_runtime(
                 crate::filesystem::extension(filesystem),
             ],
             user_agent: format!("SnowglassPluginHost/{}", env!("CARGO_PKG_VERSION")),
-            storage_dir: None,
+            local_storage: None,
             inspect: false,
         },
     ))

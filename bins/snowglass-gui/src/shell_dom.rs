@@ -276,6 +276,7 @@ impl ShellSession {
 pub(crate) struct ShellSessionFactory {
     document: ShellDocumentFactory,
     plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
     input_sources: snowglass_input::source::InputSourceCatalog,
     input_api: snowglass_runtime::InputApiState,
 }
@@ -283,6 +284,7 @@ pub(crate) struct ShellSessionFactory {
 impl ShellSessionFactory {
     pub(crate) fn new(
         plugin_registry: snowglass_pluginhost::PluginRegistry,
+        local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
         event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
     ) -> Self {
         Self {
@@ -291,6 +293,7 @@ impl ShellSessionFactory {
                 plugin_registry,
                 snowglass_pluginhost::PluginRuntimeOptions::default(),
             )),
+            local_storage,
             input_sources: snowglass_input::source::InputSourceCatalog::default(),
             input_api: snowglass_runtime::InputApiState::default(),
         }
@@ -340,6 +343,7 @@ impl ShellSessionFactory {
                 input_commands,
                 webrtc_commands,
                 plugin_runtime: self.plugin_runtime,
+                local_storage: self.local_storage,
                 input_sources: self.input_sources,
                 input_api: self.input_api,
             },

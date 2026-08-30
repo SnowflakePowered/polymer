@@ -47,13 +47,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let statistics_recorder = snowglass_statistics::install()?;
-    let options = cli::parse()?;
+    let options = cli::parse().await?;
     // Prepare native renderers before the shell document starts.
     let shell_rasterizer = shell_compositor::ShellRasterizer::new().await?;
     let _timer_resolution = TimerResolution::raise();
     let mut event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let shell_factory = shell_dom::ShellSessionFactory::new(options.plugins.clone(), proxy.clone());
+    let shell_factory = shell_dom::ShellSessionFactory::new(
+        options.plugins.clone(),
+        options.local_storage.clone(),
+        proxy.clone(),
+    );
     tracing::debug!("snowglass: shell renderers are ready");
     let mut application = Box::new(window_manager::EventLoopApplication::new(
         app::ShellApplication::new(
