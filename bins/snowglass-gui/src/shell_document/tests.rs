@@ -560,6 +560,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                             snowglass_pluginhost::PluginRegistry::new(),
                             snowglass_pluginhost::PluginRuntimeOptions::default(),
                         )),
+                        local_storage: None,
                         input_sources: snowglass_input::source::InputSourceCatalog::default(),
                         input_api: snowglass_runtime::InputApiState::default(),
                     },

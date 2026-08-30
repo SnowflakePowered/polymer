@@ -121,6 +121,7 @@ impl Runtime {
         input_commands: InputCommandSink,
         webrtc_commands: WebRtcCommandSink,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+        local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
         input_sources: snowglass_input::source::InputSourceCatalog,
         input_api: snowglass_runtime::InputApiState,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
@@ -131,7 +132,6 @@ impl Runtime {
         let document_url = ModuleSpecifier::parse(&source_name)?;
         let inspector_address = Self::start_inspector_server()?;
         let browser_loader = Rc::new(BrowserModuleLoader::new());
-        let storage_dir = crate::theme::web_storage_dir();
         let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
             emulator_commands,
             input_commands,
@@ -154,7 +154,7 @@ impl Runtime {
             module_loader: browser_loader.clone(),
             extensions: vec![snowglass_extension, snowglass_shell_runtime::init()],
             user_agent: format!("Snowglass/{}", env!("CARGO_PKG_VERSION")),
-            storage_dir,
+            local_storage,
             inspect: true,
         });
         worker

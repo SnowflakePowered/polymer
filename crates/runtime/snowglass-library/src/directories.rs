@@ -39,4 +39,8 @@ impl Directories {
     pub fn consolestorage(&self) -> PathBuf {
         self.storage.clone()
     }
+
+    pub fn webstorage(&self) -> PathBuf {
+        self.storage.join("webstorage.db")
+    }
 }

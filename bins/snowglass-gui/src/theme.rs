@@ -14,13 +14,6 @@ pub(crate) const STORAGE_KEY: &str = "Snowglass.theme";
 const DEBUG_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEBUG_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
-pub(crate) fn web_storage_dir() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|path| path.join("Snowglass").join("webstorage"))
-}
-
 pub(crate) struct SelectedTheme {
     plugin: Arc<dyn ThemePluginInstance>,
     debug: bool,

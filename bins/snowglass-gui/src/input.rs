@@ -631,7 +631,7 @@ impl InputTransport {
         let directories =
             snowglass_library::Directories::discover().map_err(|error| error.to_string())?;
         let controller_manager = ControllerManager::open(
-            directories.storage().join("input.sqlite3"),
+            directories.storage().join("input.db"),
             input_api.controller_profiles(),
         )
         .await?;

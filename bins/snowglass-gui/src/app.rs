@@ -89,7 +89,11 @@ impl ShellCoordinator {
         shell_factory: ShellSessionFactory,
         shell_rasterizer: ShellRasterizer,
     ) -> Result<Self, Box<dyn Error>> {
-        let ShellOptions { theme, plugins: _ } = options;
+        let ShellOptions {
+            theme,
+            plugins: _,
+            local_storage: _,
+        } = options;
 
         let window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
         let compositor = window.compositor();

@@ -10,44 +10,10 @@ use deno_core::{
     OpState, PollEventLoopOptions, RuntimeOptions as CoreRuntimeOptions, SourceMapData, op2,
 };
 use deno_permissions::{PermissionsContainer, RuntimePermissionDescriptorParser};
-use std::{
-    path::{Path, PathBuf},
-    rc::Rc,
-    sync::Arc,
-    time::Duration,
-};
-
-/// Reads one value from the SQLite database backing a runtime's persistent
-/// `localStorage` without creating the database when it does not yet exist.
-pub fn read_local_storage(
-    storage_dir: impl AsRef<Path>,
-    key: &str,
-) -> Result<Option<String>, deno_webstorage::rusqlite::Error> {
-    use deno_webstorage::rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-
-    let database = storage_dir.as_ref().join("local_storage");
-    if !database.is_file() {
-        return Ok(None);
-    }
-    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let has_table = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data')",
-        params![],
-        |row| row.get::<_, bool>(0),
-    )?;
-    if !has_table {
-        return Ok(None);
-    }
-    connection
-        .query_row(
-            "SELECT value FROM data WHERE key = ?",
-            params![key],
-            |row| row.get(0),
-        )
-        .optional()
-}
+use std::{path::Path, rc::Rc, sync::Arc, time::Duration};
 
 pub mod snowglass;
+pub mod webstorage;
 
 pub use deno_inspector_server::{InspectPublishUid, InspectorServerError, create_inspector_server};
 
@@ -136,10 +102,10 @@ pub struct RuntimeOptions {
     pub extensions: Vec<Extension>,
     /// Value used by the Fetch implementation for outgoing requests.
     pub user_agent: String,
-    /// Directory for persistent `localStorage`. With `None`, the global is
-    /// installed but reports that persistent storage is unavailable; ephemeral
-    /// `sessionStorage` remains available.
-    pub storage_dir: Option<PathBuf>,
+    /// Persistent storage exposed through the asynchronous `localStorage` API.
+    /// With `None`, the global reports that persistent storage is unavailable;
+    /// asynchronous, ephemeral `sessionStorage` remains available.
+    pub local_storage: Option<webstorage::LocalStorage>,
     /// Registers this isolate with an already-created Deno inspector server.
     pub inspect: bool,
 }
@@ -173,7 +139,7 @@ impl Runtime {
                 ..Default::default()
             }),
             deno_websocket::deno_websocket::init(),
-            deno_webstorage::deno_webstorage::init(options.storage_dir),
+            webstorage::extension(options.local_storage),
             snowglass_web_runtime::init(user_agent),
         ];
         extensions.append(&mut options.extensions);
@@ -265,37 +231,6 @@ mod tests {
 
     struct EmptyLoader;
 
-    #[test]
-    fn reads_existing_local_storage_without_creating_missing_storage() {
-        use deno_webstorage::rusqlite::{Connection, params};
-
-        let root = tempfile::TempDir::new().unwrap();
-        assert_eq!(
-            read_local_storage(root.path(), "Snowglass.theme").unwrap(),
-            None
-        );
-        assert!(!root.path().join("local_storage").exists());
-
-        let connection = Connection::open(root.path().join("local_storage")).unwrap();
-        connection
-            .execute(
-                "CREATE TABLE data (key VARCHAR UNIQUE, value VARCHAR)",
-                params![],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO data (key, value) VALUES (?, ?)",
-                params!["Snowglass.theme", "chipotle"],
-            )
-            .unwrap();
-        drop(connection);
-        assert_eq!(
-            read_local_storage(root.path(), "Snowglass.theme").unwrap(),
-            Some("chipotle".to_owned())
-        );
-    }
-
     impl ModuleLoader for EmptyLoader {
         fn resolve(
             &self,
@@ -325,7 +260,7 @@ mod tests {
             module_loader: Rc::new(EmptyLoader),
             extensions: Vec::new(),
             user_agent: "Snowglass/Test".to_owned(),
-            storage_dir: None,
+            local_storage: None,
             inspect: false,
         })
     }
@@ -341,7 +276,6 @@ mod tests {
                   let dispatched = false;
                   addEventListener("snowglass-test", () => dispatched = true);
                   dispatchEvent(new Event("snowglass-test"));
-                  sessionStorage.setItem("snowglass-test", "stored");
                   return JSON.stringify({
                     event: typeof EventTarget === "function" && dispatched,
                     url: new URL("child", "https://example.com/root/").href,
@@ -355,7 +289,8 @@ mod tests {
                     websocket: typeof WebSocket === "function",
                     navigator: navigator.userAgent === "Snowglass/Test",
                     storage: typeof Storage === "function" &&
-                      sessionStorage.getItem("snowglass-test") === "stored",
+                      sessionStorage instanceof Storage &&
+                      sessionStorage.setItem("snowglass-test", "stored") instanceof Promise,
                     deno: typeof Deno,
                     process: typeof process,
                     crypto: typeof crypto,
@@ -363,13 +298,39 @@ mod tests {
                 })()"#,
             )
             .unwrap();
-        deno_core::scope!(scope, runtime.js_runtime_mut());
-        let value = deno_core::v8::Local::new(scope, value);
-        let value = value.to_rust_string_lossy(scope);
+        let value = {
+            deno_core::scope!(scope, runtime.js_runtime_mut());
+            let value = deno_core::v8::Local::new(scope, value);
+            value.to_rust_string_lossy(scope)
+        };
         assert_eq!(
             value,
             r#"{"event":true,"url":"https://example.com/root/child","location":true,"channel":true,"timer":true,"fetch":true,"websocket":true,"navigator":true,"storage":true,"deno":"undefined","process":"undefined","crypto":"undefined"}"#
         );
+
+        runtime
+            .js_runtime_mut()
+            .execute_script(
+                "snowglass:test/storage.js",
+                r#"
+                    globalThis.storageResult = undefined;
+                    sessionStorage.setItem("snowglass-test", "stored")
+                      .then(() => sessionStorage.getItem("snowglass-test"))
+                      .then((value) => storageResult = value);
+                "#,
+            )
+            .unwrap();
+        runtime.run_up_to_duration(Duration::ZERO).await.unwrap();
+        let value = runtime
+            .js_runtime_mut()
+            .execute_script("snowglass:test/storage-result.js", "storageResult")
+            .unwrap();
+        let value = {
+            deno_core::scope!(scope, runtime.js_runtime_mut());
+            let value = deno_core::v8::Local::new(scope, value);
+            value.to_rust_string_lossy(scope)
+        };
+        assert_eq!(value, "stored");
     }
 
     #[tokio::test(flavor = "current_thread")]

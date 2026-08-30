@@ -21,11 +21,13 @@ deno_tls = "0.243.0"
 deno_web = "0.287.0"
 deno_webidl = "0.256.0"
 deno_websocket = "0.261.0"
-deno_webstorage = "0.251.0"
 serde.workspace = true
 serde_json.workspace = true
+snowglass-library.workspace = true
 sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
-tokio = { version = "1.53.0", features = ["sync", "time"] }
+thiserror.workspace = true
+tokio = { version = "1.53.0", features = ["fs", "sync", "time"] }
+turso.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -64,9 +64,9 @@ function navigateMemory(path: string, replace: boolean) {
   else shellHistory.set({ value: path, replace, scroll: false });
 }
 
-function readRecent(): RecentGame[] {
+async function readRecent(): Promise<RecentGame[]> {
   try {
-    const value = JSON.parse(localStorage.getItem(RECENT_KEY) || "null");
+    const value = JSON.parse(await localStorage.getItem(RECENT_KEY) || "null");
     return value?.version === 2 && Array.isArray(value.entries) ? value.entries.slice(0, RECENT_LIMIT) : [];
   } catch { return []; }
 }
@@ -270,10 +270,17 @@ function ShellProvider(props: ParentProps) {
     launch: window.Snowglass.emulator.activeLaunch,
     audio: DEFAULT_AUDIO,
     error: "",
-    recent: readRecent(),
+    recent: [],
     gamepadOpen: false,
   });
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
+  let recentLoaded = false;
+  onMount(() => {
+    void readRecent().then((recent) => {
+      recentLoaded = true;
+      setModel("recent", recent);
+    });
+  });
   void ensureDefaultWiiUNand().catch(() => {});
 
   let detection: AbortController | null = null;
@@ -328,7 +335,13 @@ function ShellProvider(props: ParentProps) {
     if (startupHandler === acceptStartup) startupHandler = null;
   });
 
-  createEffect(() => localStorage.setItem(RECENT_KEY, JSON.stringify({ version: 2, entries: model.recent })));
+  createEffect(() => {
+    const entries = model.recent;
+    if (recentLoaded) {
+      void Promise.resolve(localStorage.setItem(RECENT_KEY, JSON.stringify({ version: 2, entries })))
+        .catch(() => {});
+    }
+  });
 
   const start = () => {
     const game = model.draft;

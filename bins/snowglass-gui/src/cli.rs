@@ -17,9 +17,10 @@ struct ShellArguments {
 pub struct ShellOptions {
     pub theme: crate::theme::SelectedTheme,
     pub plugins: PluginRegistry,
+    pub local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
 }
 
-pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
+pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
     let arguments = ShellArguments::parse();
     let plugins = PluginRegistry::new();
     let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -33,13 +34,28 @@ pub fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             }
         }
     }
-    let theme = select_theme(
-        &plugins,
-        arguments.theme.as_deref(),
-        saved_theme().as_deref(),
-    )?;
+    let local_storage = match snowglass_library::Directories::discover() {
+        Ok(directories) => match snowglass_deno::webstorage::LocalStorage::open(&directories).await
+        {
+            Ok(storage) => Some(storage),
+            Err(error) => {
+                eprintln!("snowglass: could not open local storage: {error}");
+                None
+            }
+        },
+        Err(error) => {
+            eprintln!("snowglass: could not locate local storage: {error}");
+            None
+        }
+    };
+    let saved_theme = saved_theme(local_storage.as_ref()).await;
+    let theme = select_theme(&plugins, arguments.theme.as_deref(), saved_theme.as_deref())?;
     let theme = crate::theme::SelectedTheme::new(theme, arguments.debug);
-    Ok(ShellOptions { theme, plugins })
+    Ok(ShellOptions {
+        theme,
+        plugins,
+        local_storage,
+    })
 }
 
 fn plugin_manifests(root: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error> {
@@ -68,9 +84,9 @@ fn plugin_manifests(root: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Err
     Ok(manifests)
 }
 
-fn saved_theme() -> Option<String> {
-    let storage = crate::theme::web_storage_dir()?;
-    match snowglass_deno::read_local_storage(storage, crate::theme::STORAGE_KEY) {
+async fn saved_theme(storage: Option<&snowglass_deno::webstorage::LocalStorage>) -> Option<String> {
+    let storage = storage?;
+    match storage.get_item(crate::theme::STORAGE_KEY).await {
         Ok(theme) => theme,
         Err(error) => {
             eprintln!("snowglass: could not read saved theme selection: {error}");
