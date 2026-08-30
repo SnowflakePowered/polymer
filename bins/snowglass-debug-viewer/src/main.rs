@@ -1462,6 +1462,8 @@ fn start_target_session(
             arguments: target[1..].to_vec(),
             artifact_root: executable_dir.to_path_buf(),
             hooks: launcher.hooks.clone(),
+            input_hooks: Vec::new(),
+            bluetooth_hid_pipes: Vec::new(),
             consumer: match viewer_api {
                 ViewerApi::D3d12 => snowglass_runtime::ConsumerPreference::D3d12,
                 ViewerApi::Vulkan => snowglass_runtime::ConsumerPreference::Vulkan,

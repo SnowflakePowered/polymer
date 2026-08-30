@@ -8,7 +8,8 @@ license.workspace = true
 parking_lot.workspace = true
 snowglass-bluetooth = { path = "../snowglass-bluetooth" }
 snowglass-input.workspace = true
-tokio = { version = "1.53", features = ["rt", "sync", "time"] }
+tokio = { version = "1.53", features = ["io-util", "net", "rt", "sync", "time"] }
+tracing.workspace = true
 zerocopy.workspace = true
 
 [lints]

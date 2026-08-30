@@ -42,6 +42,16 @@ fn hook_backend(hook: snowglass_pluginhost::GraphicsHook) -> snowglass_runtime::
     }
 }
 
+fn input_hook_backend(
+    hook: snowglass_pluginhost::InputHook,
+) -> snowglass_runtime::InputHookBackend {
+    match hook {
+        snowglass_pluginhost::InputHook::BluetoothApiWin32 => {
+            snowglass_runtime::InputHookBackend::BluetoothApiWin32
+        }
+    }
+}
+
 /// Capture renderer state local to one D3D12 adapter. Shell rasterization and
 /// WUC composition are owned independently by `ShellCompositor`.
 struct RenderDevice {
@@ -571,6 +581,27 @@ impl GameHost {
             arguments: options.arguments.clone(),
             artifact_root,
             hooks: options.hook.iter().copied().map(hook_backend).collect(),
+            input_hooks: options
+                .input_hooks
+                .iter()
+                .copied()
+                .map(input_hook_backend)
+                .collect(),
+            bluetooth_hid_pipes: options
+                .input_providers
+                .iter()
+                .map(|provider| match provider {
+                    snowglass_pluginhost::InputProvider::BluetoothHidPipe {
+                        source_id,
+                        port,
+                        product_id,
+                    } => snowglass_runtime::BluetoothHidPipeConfig {
+                        source_id: source_id.clone(),
+                        port: *port,
+                        product_id: *product_id,
+                    },
+                })
+                .collect(),
             consumer: snowglass_runtime::ConsumerPreference::D3d12,
             isolate: options.isolated,
             tracked_surfaces: options

@@ -44,6 +44,23 @@ impl ShellCoordinator {
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);
         }
+        if let Err(error) = self
+            .input
+            .configure_native_input(&options.input_providers, &self.session)
+        {
+            self.emit_instance_event(token, "error", &instance_events::error(&error));
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+            return Err(error);
+        }
+        if let Some(controller_session) = &controller_session
+            && let Err(error) = self
+                .input
+                .attach_native_input_session(controller_session, &self.session)
+        {
+            self.emit_instance_event(token, "error", &instance_events::error(&error));
+            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+            return Err(error);
+        }
         self.publish_input_configuration();
         let wake_proxy = self.proxy.clone();
         match self.game_host.launch(
@@ -86,6 +103,7 @@ impl ShellCoordinator {
     }
 
     pub(super) fn finish_active_game(&mut self) {
+        self.input.clear_native_input();
         self.input.clear_provider_state();
         let Some(finished) = self.game_host.finish_active_game() else {
             return;

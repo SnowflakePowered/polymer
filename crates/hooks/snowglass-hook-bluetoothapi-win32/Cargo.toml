@@ -1,0 +1,27 @@
+[package]
+name = "snowglass-hook-bluetoothapi-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+snowglass-hook.workspace = true
+snowglass-platform-windows.workspace = true
+tracing.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

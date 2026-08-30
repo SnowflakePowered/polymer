@@ -84,7 +84,6 @@ WII_REMOTE_BINDINGS = {
     "button.1": "Buttons/2",
     "button.select": "Buttons/-",
     "button.start": "Buttons/+",
-    "button.guide": "Buttons/Home",
     "directional.n": "D-Pad/Up",
     "directional.s": "D-Pad/Down",
     "directional.w": "D-Pad/Left",

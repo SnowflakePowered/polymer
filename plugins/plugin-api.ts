@@ -38,6 +38,13 @@ export type ControllerMapping = Readonly<{
     source: InputSourceSelector | null,
     layout: string,
     connected: boolean,
+    device?: Readonly<{
+        id: string,
+        source: "sdl" | "bt",
+        name: string,
+        connected: boolean,
+        metadata: Readonly<Record<string, unknown>>,
+    }>,
     mouse: boolean,
     projectionMode: "name" | "position" | "custom",
     mapping: Readonly<Record<string, string>>,
@@ -45,6 +52,14 @@ export type ControllerMapping = Readonly<{
 
 export type ControllerTopology = Readonly<{
     mappings: readonly ControllerMapping[],
+}>;
+
+export type InputHook = "bluetooth-api-win32";
+export type InputProvider = Readonly<{
+    type: "bluetoothHidPipe",
+    sourceId: string,
+    port: number,
+    productId: number,
 }>;
 
 export type UiTextMatch =

@@ -314,6 +314,7 @@ mod tests {
         assert!(wiimote.contains("IR/Left=`Right X-`"), "{wiimote}");
         assert!(wiimote.contains("IR/Up=`Right Y+`"), "{wiimote}");
         assert!(wiimote.contains("IR/Down=`Right Y-`"), "{wiimote}");
+        assert!(!wiimote.contains("Buttons/Home="), "{wiimote}");
         assert!(wiimote.contains("IR/Relative Input=True"), "{wiimote}");
         assert!(
             wiimote.contains("IMUAccelerometer/Left=`Accel Left`"),

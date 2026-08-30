@@ -51,6 +51,8 @@ pub struct EmulatorLaunchConfig {
     pub arguments: Vec<String>,
     pub artifact_root: PathBuf,
     pub hooks: Vec<HookBackend>,
+    pub input_hooks: Vec<crate::InputHookBackend>,
+    pub bluetooth_hid_pipes: Vec<crate::BluetoothHidPipeConfig>,
     pub consumer: ConsumerPreference,
     pub isolate: bool,
     pub tracked_surfaces: Vec<TrackedSurfaceConfig>,
@@ -76,6 +78,28 @@ impl EmulatorLaunchConfig {
         if self.hooks.is_empty() {
             return Err(LaunchError::InvalidConfig(
                 "at least one graphics hook is required".to_owned(),
+            ));
+        }
+        if self.bluetooth_hid_pipes.iter().any(|pipe| pipe.port >= 4)
+            || self
+                .bluetooth_hid_pipes
+                .iter()
+                .map(|pipe| pipe.port)
+                .collect::<HashSet<_>>()
+                .len()
+                != self.bluetooth_hid_pipes.len()
+        {
+            return Err(LaunchError::InvalidConfig(
+                "Bluetooth HID pipes require unique ports 0..=3".to_owned(),
+            ));
+        }
+        if !self.bluetooth_hid_pipes.is_empty()
+            && !self
+                .input_hooks
+                .contains(&crate::InputHookBackend::BluetoothApiWin32)
+        {
+            return Err(LaunchError::InvalidConfig(
+                "Bluetooth HID pipes require their input hook".to_owned(),
             ));
         }
         let mut ids = HashSet::new();
@@ -1404,6 +1428,8 @@ mod tests {
             arguments: Vec::new(),
             artifact_root: PathBuf::from("."),
             hooks: vec![HookBackend::D3d12],
+            input_hooks: Vec::new(),
+            bluetooth_hid_pipes: Vec::new(),
             consumer: ConsumerPreference::D3d12,
             isolate: false,
             tracked_surfaces: vec![TrackedSurfaceConfig {

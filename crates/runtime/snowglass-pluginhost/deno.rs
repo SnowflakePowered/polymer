@@ -3,7 +3,7 @@
 use crate::automation::{AutomationState, op_ui_automation_request};
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorLaunchInvocation,
-    GraphicsHook, TrackedSurface,
+    GraphicsHook, InputHook, InputProvider, TrackedSurface,
     configuration::{ConfigurationCheckpoint, ConfigurationId, ConfigurationInstances},
 };
 use deno_core::{JsRuntime, OpState, op2, serde_v8, v8};
@@ -291,6 +291,8 @@ impl<'runtime> EmulatorWorker<'runtime> {
             argv: plan.argv,
             isolate: plan.isolate,
             hooks: plan.hooks,
+            input_hooks: plan.input_hooks,
+            input_providers: plan.input_providers,
             graph_tracking: plan.graph_tracking,
             surfaces: plan.surfaces,
             prepared_filesystem: None,
@@ -316,7 +318,7 @@ pub(crate) async fn execute_controller_change(
     runtime: &mut JsRuntime,
     topology: &snowglass_input::topology::ControllerTopology,
     previous_topology: &snowglass_input::topology::ControllerTopology,
-) -> Result<(), EmulatorHostError> {
+) -> Result<Vec<InputProvider>, EmulatorHostError> {
     let topology = serde_json::to_string(topology)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let previous = serde_json::to_string(previous_topology)
@@ -331,21 +333,24 @@ pub(crate) async fn execute_controller_change(
             active.configuration,
             __snowglassFilesystem.filesystem,
           );
-          if (typeof active.callback === "function") {{
-            await Reflect.apply(active.callback, active.receiver, [context]);
-          }}
+          const result = typeof active.callback === "function"
+            ? await Reflect.apply(active.callback, active.receiver, [context])
+            : undefined;
           __snowglassFilesystem.refreshConfigurations();
+          return result?.inputProviders ?? [];
         }})()"#
     );
     let promise = runtime
         .execute_script("snowglass:pluginhost/controller-changed.js", script)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     #[allow(deprecated)]
-    runtime
+    let value = runtime
         .resolve_value(promise)
         .await
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    Ok(())
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, value);
+    serde_v8::from_v8(scope, value).map_err(|error| EmulatorHostError::Runtime(error.to_string()))
 }
 
 pub(crate) struct RetainedEmulator {
@@ -408,6 +413,10 @@ struct EmulatorLaunchPlan {
     #[serde(default)]
     isolate: bool,
     hooks: Vec<GraphicsHook>,
+    #[serde(default)]
+    input_hooks: Vec<InputHook>,
+    #[serde(default)]
+    input_providers: Vec<InputProvider>,
     #[serde(default)]
     graph_tracking: bool,
     surfaces: Vec<TrackedSurface>,

@@ -6,6 +6,7 @@ use crate::{
         SourceAssignment, SourceSelector, VirtualPort,
     },
     layout::{InputBinding, InputLayout, ProjectionMode},
+    source::InputSourceDescriptor,
 };
 use consolespec::input::BindingKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
@@ -137,6 +138,11 @@ pub struct ControllerMapping {
     pub source: Option<SourceSelector>,
     pub layout: String,
     pub connected: bool,
+    /// Provider-owned identity metadata for the selected physical source.
+    /// Plugins may use this to select an emulator-native input backend, but
+    /// the opaque source selector remains the runtime routing authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<InputSourceDescriptor>,
     #[serde(default)]
     pub mouse: bool,
     #[serde(default)]
@@ -236,6 +242,7 @@ impl ControllerTopology {
                     source: None,
                     layout,
                     connected: false,
+                    device: None,
                     mouse: false,
                     projection_mode: ProjectionMode::Position,
                     mapping: ControllerBindings::default(),
@@ -435,6 +442,7 @@ mod tests {
             source: None,
             layout: "XBOX_CONTROLLER".to_owned(),
             connected: false,
+            device: None,
             mouse: false,
             projection_mode: ProjectionMode::Position,
             mapping: ControllerBindings::default(),

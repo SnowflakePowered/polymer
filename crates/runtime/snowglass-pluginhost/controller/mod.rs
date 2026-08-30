@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 pub(crate) type ConnectionSink =
     Arc<dyn Fn(VirtualGamepadConnection) -> Result<(), String> + Send + Sync>;
+pub(crate) type InputProviderSink =
+    Arc<dyn Fn(Vec<crate::InputProvider>) -> Result<(), String> + Send + Sync>;
 
 #[derive(Clone, Debug)]
 pub struct ControllerSession {
@@ -18,6 +20,10 @@ pub(crate) enum ControllerSessionCommand {
     ),
     AttachAutomation(
         snowglass_automation::AutomationSession,
+        std::sync::mpsc::SyncSender<Result<(), String>>,
+    ),
+    AttachInputProviders(
+        InputProviderSink,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
     Changed(
@@ -70,6 +76,22 @@ impl ControllerSession {
         response
             .recv()
             .map_err(|_| "controller plugin session closed while attaching automation".to_owned())?
+    }
+
+    pub fn attach_input_providers(
+        &self,
+        sink: impl Fn(Vec<crate::InputProvider>) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        let (result, response) = std::sync::mpsc::sync_channel(1);
+        self.commands
+            .send(ControllerSessionCommand::AttachInputProviders(
+                Arc::new(sink),
+                result,
+            ))
+            .map_err(|_| "controller plugin session is closed".to_owned())?;
+        response.recv().map_err(|_| {
+            "controller plugin session closed while attaching native input".to_owned()
+        })?
     }
 
     pub fn take_errors(&self) -> Vec<String> {

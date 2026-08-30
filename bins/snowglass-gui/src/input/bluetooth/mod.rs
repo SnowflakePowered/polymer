@@ -7,10 +7,12 @@ use snowglass_input::{
     source::{InputSourceCatalog, InputSourceDescriptor, InputSourceKind},
 };
 use snowglass_input_bluetooth::{
-    BluetoothControllerState, BluetoothInputProvider, BluetoothProviderEvent, source_id,
+    BluetoothControllerState, BluetoothInputProvider, BluetoothProviderEvent,
+    raw::{RawWiimotePipeConfig, RawWiimoteSession},
+    source_id,
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
     time::Duration,
 };
@@ -31,6 +33,10 @@ enum BluetoothCommand {
     SessionActive(bool),
     AssignPlayers(Vec<(String, u8)>),
     DisconnectSources(Vec<String>),
+    ConfigureRaw(Vec<RawWiimotePipeConfig>),
+    CaptureRaw(bool),
+    RawFailed(String),
+    ResetRawFailures,
 }
 
 struct BluetoothActor {
@@ -48,6 +54,10 @@ struct BluetoothActor {
     player_assignments: HashMap<String, u8>,
     applied_players: HashMap<u64, u8>,
     error: Option<String>,
+    raw_wiimotes: Option<RawWiimoteSession>,
+    raw_capture: bool,
+    raw_failures: HashSet<String>,
+    control: mpsc::UnboundedSender<BluetoothCommand>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -62,6 +72,7 @@ struct BluetoothDevice {
 impl BluetoothHandle {
     pub(super) fn start(router: PhysicalInputRouter, sources: InputSourceCatalog) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
+        let actor_control = commands.clone();
         let snapshot = Arc::new(RwLock::new(Self::unavailable_snapshot()));
         let controllers = Arc::new(RwLock::new(Vec::new()));
         let handle = Self {
@@ -87,6 +98,10 @@ impl BluetoothHandle {
                         player_assignments: HashMap::new(),
                         applied_players: HashMap::new(),
                         error: None,
+                        raw_wiimotes: None,
+                        raw_capture: false,
+                        raw_failures: HashSet::new(),
+                        control: actor_control,
                     }
                     .run()
                     .await;
@@ -126,6 +141,53 @@ impl BluetoothHandle {
         let _ = self
             .commands
             .send(BluetoothCommand::DisconnectSources(sources));
+    }
+
+    pub(super) fn configure_raw(
+        &self,
+        providers: &[snowglass_pluginhost::InputProvider],
+        namespace: &str,
+    ) -> Result<(), String> {
+        let controllers = self.controllers.read();
+        let pipes = providers
+            .iter()
+            .map(|provider| match provider {
+                snowglass_pluginhost::InputProvider::BluetoothHidPipe {
+                    source_id,
+                    port,
+                    product_id,
+                } => {
+                    let controller = controllers
+                        .iter()
+                        .find(|controller| {
+                            controller.connected
+                                && controller.source_id.as_str() == source_id
+                                && controller.profile_id.starts_with("nintendo.wiimote.")
+                        })
+                        .ok_or_else(|| {
+                            format!("raw Wii Remote source '{source_id}' is unavailable")
+                        })?;
+                    Ok(RawWiimotePipeConfig {
+                        source_id: source_id.clone(),
+                        session_id: controller.session_id,
+                        port: *port,
+                        product_id: *product_id,
+                        pipe_name: format!(r"\\.\pipe\{namespace}-wiimote-{port}"),
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.commands
+            .send(BluetoothCommand::ConfigureRaw(pipes))
+            .map_err(|_| "Bluetooth provider is closed".to_owned())
+    }
+
+    pub(super) fn reset_raw_failures(&self) {
+        let _ = self.commands.send(BluetoothCommand::ResetRawFailures);
+    }
+
+    pub(super) fn set_raw_capture(&self, capture: bool) {
+        let _ = self.commands.send(BluetoothCommand::CaptureRaw(capture));
     }
 
     pub(super) fn connect(&self, id: String) {
@@ -209,6 +271,52 @@ impl BluetoothActor {
                     {
                         let _ = manager.sleep(controller.session_id).await;
                     }
+                }
+            }
+            BluetoothCommand::ConfigureRaw(pipes) => {
+                self.raw_wiimotes = None;
+                if !pipes.is_empty() {
+                    let sources = pipes
+                        .iter()
+                        .map(|pipe| pipe.source_id.clone())
+                        .collect::<Vec<_>>();
+                    let control = self.control.clone();
+                    let failed = Arc::new(move |source_id| {
+                        let _ = control.send(BluetoothCommand::RawFailed(source_id));
+                    });
+                    match RawWiimoteSession::start(self.provider.manager(), pipes, failed).await {
+                        Ok(session) => {
+                            session.set_capture(self.raw_capture);
+                            self.raw_wiimotes = Some(session);
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "could not start raw Wii Remote providers");
+                            self.error = Some(error);
+                            for source_id in sources {
+                                self.raw_failures.insert(source_id.clone());
+                                self.refresh_raw_availability(&source_id);
+                            }
+                        }
+                    }
+                }
+            }
+            BluetoothCommand::CaptureRaw(capture) => {
+                self.raw_capture = capture;
+                if let Some(session) = &self.raw_wiimotes {
+                    session.set_capture(capture);
+                }
+            }
+            BluetoothCommand::RawFailed(source_id) => {
+                self.raw_failures.insert(source_id.clone());
+                self.error = Some(format!(
+                    "raw Wii Remote provider failed for {source_id}; using emulated input"
+                ));
+                self.refresh_raw_availability(&source_id);
+            }
+            BluetoothCommand::ResetRawFailures => {
+                let failed = self.raw_failures.drain().collect::<Vec<_>>();
+                for source_id in failed {
+                    self.refresh_raw_availability(&source_id);
                 }
             }
         }
@@ -405,6 +513,9 @@ impl BluetoothActor {
             connected: controller.connected,
             metadata: serde_json::json!({
                 "profileId": controller.profile_id,
+                "vendorId": controller.vendor_id,
+                "productId": controller.product_id,
+                "rawHidAvailable": !self.raw_failures.contains(&id),
                 "batteryLevel": controller.battery_level,
                 "charging": controller.charging,
             }),
@@ -454,6 +565,19 @@ impl BluetoothActor {
             "devices": self.devices.values().collect::<Vec<_>>(),
             "error": self.error,
         });
+    }
+
+    fn refresh_raw_availability(&self, source_id: &str) {
+        let Some(mut descriptor) = self.sources.get(source_id) else {
+            return;
+        };
+        if let Some(metadata) = descriptor.metadata.as_object_mut() {
+            metadata.insert(
+                "rawHidAvailable".to_owned(),
+                serde_json::Value::Bool(!self.raw_failures.contains(source_id)),
+            );
+        }
+        self.sources.upsert(descriptor);
     }
 
     fn start_scan(&self, transport: TransportKind) {

@@ -206,6 +206,9 @@ impl InputRouter {
     }
 
     pub fn replace_priority(&mut self, priority: InputPriority) -> InputPriority {
+        self.transport
+            .bluetooth
+            .set_raw_capture(priority == InputPriority::Ui);
         std::mem::replace(&mut self.priority, priority)
     }
 
@@ -446,6 +449,37 @@ impl InputRouter {
             .apply(transaction)
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    pub fn configure_native_input(
+        &self,
+        providers: &[snowglass_pluginhost::InputProvider],
+        namespace: &str,
+    ) -> Result<(), String> {
+        self.transport
+            .bluetooth
+            .configure_raw(providers, namespace)?;
+        self.transport
+            .bluetooth
+            .set_raw_capture(self.priority == InputPriority::Ui);
+        Ok(())
+    }
+
+    pub fn clear_native_input(&self) {
+        let _ = self.transport.bluetooth.configure_raw(&[], "unused");
+        self.transport.bluetooth.reset_raw_failures();
+    }
+
+    pub fn attach_native_input_session(
+        &self,
+        session: &snowglass_pluginhost::ControllerSession,
+        namespace: &str,
+    ) -> Result<(), String> {
+        let bluetooth = self.transport.bluetooth.clone();
+        let namespace = namespace.to_owned();
+        session.attach_input_providers(move |providers| {
+            bluetooth.configure_raw(&providers, &namespace)
+        })
     }
 
     pub fn prepare_configuration_transaction(

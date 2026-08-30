@@ -323,6 +323,7 @@ fn resolved_controller(
         source: gamepad.source.clone(),
         connected: device.as_ref().is_some_and(|device| device.connected)
             || matches!(gamepad.source, Some(SourceSelector::KeyboardMouse)),
+        device,
         mouse: gamepad.force_mouse,
         layout: gamepad.layout.clone(),
         projection_mode,
