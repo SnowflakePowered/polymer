@@ -248,6 +248,15 @@ pub struct InputConfiguration {
     pub assignments: Vec<SourceAssignment>,
 }
 
+impl InputConfiguration {
+    pub fn source_for(&self, index: u8) -> Option<&SourceSelector> {
+        self.assignments
+            .iter()
+            .find(|assignment| assignment.index == index)
+            .map(|assignment| &assignment.source)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum InputOperation {

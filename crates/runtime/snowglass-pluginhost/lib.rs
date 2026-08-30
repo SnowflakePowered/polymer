@@ -21,9 +21,10 @@ pub mod toml;
 
 pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
 pub use controller::ControllerSession;
+pub(crate) use emulator::EmulatorSetupInvocation;
 pub use emulator::{
-    EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort,
-    EmulatorSetupInvocation, GraphicsHook, TrackedSurface,
+    EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort, GraphicsHook,
+    TrackedSurface,
 };
 pub use filesystem::{StorageFactories, StorageFactory};
 pub use module_loader::PluginModuleLoader;

@@ -171,13 +171,8 @@ impl ControllerManager {
         &self,
         bluetooth: &serde_json::Value,
         assignments: Option<Vec<snowglass_input::hub::SourceAssignment>>,
-        mut effects: Vec<ControllerManagerEffect>,
+        effects: Vec<ControllerManagerEffect>,
     ) -> ControllerCommandOutcome {
-        if assignments.is_some() {
-            effects.push(ControllerManagerEffect::AssignPlayers(
-                self.player_sources(),
-            ));
-        }
         ControllerCommandOutcome {
             response: self.snapshot(bluetooth),
             assignments,

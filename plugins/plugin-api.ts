@@ -10,6 +10,7 @@ export type Filesystem = {
     mountHostFile(target: string, source: string, options: { mode: string }): void,
     mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
+    mountConfiguration(target: string, configuration: Configuration, options: { mode: string }): void,
     mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
     path(path: string): string,

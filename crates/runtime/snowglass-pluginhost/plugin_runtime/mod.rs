@@ -502,56 +502,6 @@ impl PluginRuntimeHandle {
         })
     }
 
-    /// Executes the emulator launch capability while keeping its mutable
-    /// configuration proxy invocation-scoped inside the worker.
-    pub async fn setup_emulator(
-        &self,
-        invocation: EmulatorSetupInvocation,
-    ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
-        let cancellation = self.cancellation_token();
-        self.setup_emulator_with_cancellation(invocation, cancellation)
-            .await
-    }
-
-    pub async fn setup_emulator_with_cancellation(
-        &self,
-        invocation: EmulatorSetupInvocation,
-        cancellation: PluginCancellationToken,
-    ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
-        self.setup_emulator_export_with_cancellation(invocation, cancellation, false)
-            .await
-    }
-
-    async fn setup_emulator_export_with_cancellation(
-        &self,
-        invocation: EmulatorSetupInvocation,
-        cancellation: PluginCancellationToken,
-        explicit_default: bool,
-    ) -> Result<EmulatorLaunchArguments, PluginInvocationError> {
-        let entrypoint = invocation.plugin.entrypoint().to_string();
-        let loader = invocation.plugin.module_loader().clone();
-        let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
-            .map_err(PluginInvocationError::worker)?;
-        self.run_with_control(cancellation.control, move |control| {
-            run_worker(
-                entrypoint,
-                loader,
-                filesystem,
-                control,
-                move |mut runtime| async move {
-                    crate::deno::execute_emulator(
-                        runtime.js_runtime_mut(),
-                        invocation,
-                        explicit_default,
-                    )
-                    .await
-                    .map_err(PluginInvocationError::worker)
-                },
-            )
-        })
-        .await
-    }
-
     async fn setup_launch_with_cancellation(
         &self,
         invocation: EmulatorSetupInvocation,
@@ -765,6 +715,8 @@ struct ControllerSessionWorker {
     console: String,
     configuration_id: crate::configuration::ConfigurationId,
     previous_topology: snowglass_input::topology::ControllerTopology,
+    connections: Vec<bool>,
+    connection_sink: Option<crate::controller::ConnectionSink>,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
     errors: Arc<Mutex<Vec<String>>>,
 }
@@ -809,7 +761,7 @@ impl ControllerSessionWorker {
                 return Ok(None);
             }
         };
-        crate::controller::configure(runtime.js_runtime_mut(), Self::connections(&args.topology));
+        let connections = Self::connections(&args.topology);
         let controller_changes = retained.controller_changes;
         let configuration_id = retained.configuration_id;
         let mut launch = retained.launch;
@@ -833,6 +785,8 @@ impl ControllerSessionWorker {
             console,
             configuration_id,
             previous_topology: args.topology,
+            connections,
+            connection_sink: None,
             commands: args.commands,
             errors: args.errors,
         }))
@@ -842,7 +796,7 @@ impl ControllerSessionWorker {
         while let Ok(command) = self.commands.recv() {
             match command {
                 crate::controller::ControllerSessionCommand::Attach(sink, response) => {
-                    let result = crate::controller::attach(self.runtime.js_runtime_mut(), sink);
+                    let result = self.attach(sink);
                     self.record_attachment(result, response);
                 }
                 crate::controller::ControllerSessionCommand::AttachAutomation(
@@ -865,23 +819,19 @@ impl ControllerSessionWorker {
     fn change(
         &mut self,
         topology: snowglass_input::topology::ControllerTopology,
-        response: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
     ) {
         let result = self.apply_change(&topology);
         match result {
             Ok(()) => {
                 self.previous_topology = topology;
-                if let Some(response) = response {
-                    let _ = response.send(Ok(()));
-                }
+                let _ = response.send(Ok(()));
             }
             Err(error) => {
-                crate::controller::discard(self.runtime.js_runtime_mut());
+                crate::filesystem::discard_staged(self.runtime.js_runtime_mut());
                 tracing::error!("snowglass: onControllerChanged failed: {error}");
                 self.errors.lock().push(error.to_string());
-                if let Some(response) = response {
-                    let _ = response.send(Err(error.to_string()));
-                }
+                let _ = response.send(Err(error.to_string()));
             }
         }
     }
@@ -925,9 +875,9 @@ impl ControllerSessionWorker {
         )
         .map_err(PluginInvocationError::worker)?;
         self.execute_callback(topology)?;
-        crate::controller::stage(self.runtime.js_runtime_mut(), Self::connections(topology))
+        crate::filesystem::flush_staged(self.runtime.js_runtime_mut())
             .map_err(PluginInvocationError::worker)?;
-        crate::controller::flush(self.runtime.js_runtime_mut())
+        self.publish_connections(Self::connections(topology))
             .map_err(PluginInvocationError::worker)
     }
 
@@ -972,6 +922,45 @@ impl ControllerSessionWorker {
             self.errors.lock().push(error.clone());
         }
         let _ = response.send(result);
+    }
+
+    fn attach(&mut self, sink: crate::controller::ConnectionSink) -> Result<(), String> {
+        for (index, connected) in self.connections.iter().copied().enumerate() {
+            Self::send_connection(&sink, index, connected)?;
+        }
+        self.connection_sink = Some(sink);
+        Ok(())
+    }
+
+    fn publish_connections(&mut self, next: Vec<bool>) -> Result<(), String> {
+        if next.len() != self.connections.len() {
+            return Err(format!(
+                "controller topology changed virtual gamepad count from {} to {}",
+                self.connections.len(),
+                next.len()
+            ));
+        }
+        if let Some(sink) = &self.connection_sink {
+            for (index, (&previous, &connected)) in self.connections.iter().zip(&next).enumerate() {
+                if previous != connected {
+                    Self::send_connection(sink, index, connected)?;
+                }
+            }
+        }
+        self.connections = next;
+        Ok(())
+    }
+
+    fn send_connection(
+        sink: &crate::controller::ConnectionSink,
+        index: usize,
+        connected: bool,
+    ) -> Result<(), String> {
+        let slot = u8::try_from(index)
+            .ok()
+            .and_then(snowglass_input::gamepad::GamepadSlot::new)
+            .ok_or_else(|| format!("virtual gamepad {index} is outside the wire range"))?;
+        sink(snowglass_input::gamepad::VirtualGamepadConnection { slot, connected })
     }
 
     fn connections(topology: &snowglass_input::topology::ControllerTopology) -> Vec<bool> {
@@ -1097,21 +1086,12 @@ async fn invoke_export(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snowglass_config::{
-        ConfigurationToml,
-        ast::{
-            ConfigurationDefinition, DefaultDefinition, DomainDefinition, RealizedDomain,
-            RealizedOption, Value as ConfigValue, ValueKind,
-        },
-    };
     use std::{
         collections::BTreeMap,
-        convert::Infallible,
         sync::{Arc, Mutex as StdMutex},
         time::Duration,
     };
     use tempfile::TempDir;
-    use toml_spanner::Arena;
 
     fn package() -> (TempDir, PluginRegistry) {
         let root = tempfile::tempdir().unwrap();
@@ -1246,31 +1226,28 @@ mod tests {
         (root, registry)
     }
 
-    fn configuration() -> snowglass_config::ast::ConfigurationInstance {
-        let source = std::fs::read_to_string(package().0.path().join("config.toml")).unwrap();
-        let arena = Arena::new();
-        let parsed =
-            ConfigurationToml::try_from_tomls(&arena, [source.as_str()].into_iter()).unwrap();
-        let definition = Arc::new(ConfigurationDefinition::from(parsed));
-        let realized = definition
-            .resolve_with(|_, option| -> Result<_, Infallible> {
-                Ok(RealizedOption {
-                    default: match &option.value.default {
-                        DefaultDefinition::Literal(value) => value.clone(),
-                        DefaultDefinition::None | DefaultDefinition::Resolver(_) => {
-                            ConfigValue::Null
-                        }
-                    },
-                    domain: match &option.value.kind {
-                        ValueKind::Select {
-                            domain: DomainDefinition::Static(_),
-                        } => RealizedDomain::Static,
-                        _ => RealizedDomain::None,
-                    },
-                })
-            })
-            .unwrap();
-        realized.instantiate("TEST", BTreeMap::new()).unwrap()
+    fn configuration_mount_package() -> (TempDir, PluginRegistry) {
+        let (root, _) = package();
+        std::fs::write(
+            root.path().join("plugin.js"),
+            r#"
+                export function setupLaunch(args) {
+                  args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
+                  args.filesystem.mountConfiguration("/Emulator/Config", args.configuration, { mode: "r" });
+                  return {
+                    command: args.filesystem.path("/Emulator/emulator.exe"),
+                    argv: [],
+                    hooks: [],
+                    graphTracking: false,
+                    surfaces: [],
+                  };
+                }
+            "#,
+        )
+        .unwrap();
+        let registry = PluginRegistry::new();
+        registry.load(root.path()).unwrap();
+        (root, registry)
     }
 
     struct RecordingAutomation(Arc<StdMutex<Vec<&'static str>>>);
@@ -1305,36 +1282,6 @@ mod tests {
                 )),
             }
         }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn realizes_configuration_before_discarding_the_worker() {
-        let (root, registry) = package();
-        let plugin = registry
-            .plugin::<dyn EmulatorPluginInstance>("worker-test")
-            .unwrap();
-        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
-        let result = runtime
-            .handle()
-            .setup_emulator(EmulatorSetupInvocation {
-                plugin,
-                arguments: serde_json::json!({
-                    "launchPath": root.path().join("game.iso"),
-                    "virtualize": true,
-                    "controllerTopology": { "mappings": [] }
-                }),
-                configuration: configuration(),
-                storage: BTreeMap::new(),
-            })
-            .await
-            .unwrap();
-        let filesystem = result
-            .filesystem
-            .as_ref()
-            .expect("plugin populated a VFS plan");
-        assert_eq!(filesystem.filesystem().compiled().bindings().len(), 4);
-        assert!(result.command.starts_with(r"\\Snowglass\"));
-        assert!(result.argv[0].ends_with(r"\Game\game.iso"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1457,6 +1404,52 @@ mod tests {
         };
         assert!(rendered.contains("Enabled=false"), "{rendered}");
         assert_eq!(*automation_calls.lock().unwrap(), ["window", "action"]);
+        assert!(session.take_errors().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configuration_mount_retains_a_controller_session_without_a_callback() {
+        let (root, registry) = configuration_mount_package();
+        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+        let result = runtime
+            .handle()
+            .invoke_with_storage_owned(
+                "worker-test",
+                &["setupLaunch".to_owned()],
+                vec![serde_json::json!({
+                    "launchPath": root.path().join("game.iso"),
+                    "console": "TEST",
+                    "controllerTopology": { "mappings": [] },
+                })],
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let filesystem = result.prepared_filesystem.unwrap();
+        let session = result.controller_session.unwrap();
+        filesystem.filesystem().materialize().unwrap();
+        session
+            .change(snowglass_input::topology::ControllerTopology::default())
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+
+        let path = "/Emulator/Config/settings.ini".parse().unwrap();
+        let file = filesystem
+            .filesystem()
+            .open(
+                &path,
+                snowglass_vfs::OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap();
+        let mut bytes = [0; 128];
+        let length = file.read(0, &mut bytes).unwrap();
+        assert!(String::from_utf8_lossy(&bytes[..length]).contains("Enabled=false"));
         assert!(session.take_errors().is_empty());
     }
 

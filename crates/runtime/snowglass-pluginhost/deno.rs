@@ -1,7 +1,6 @@
 //! Invocation-scoped Deno adapter used only by pluginhost-owned workers.
 
 use crate::automation::{AutomationState, op_ui_automation_request};
-use crate::controller::ControllerEffects;
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorSetupInvocation,
     GraphicsHook, TrackedSurface,
@@ -94,7 +93,6 @@ deno_core::extension!(
     esm = [dir "js", "configuration.js", "controller.js", "automation.js"],
     state = |state| {
         state.put(ConfigurationInstances::default());
-        state.put(ControllerEffects::default());
         state.put(AutomationState::default());
     },
 );
@@ -110,16 +108,6 @@ struct EmulatorWorker<'runtime> {
 impl<'runtime> EmulatorWorker<'runtime> {
     fn new(runtime: &'runtime mut JsRuntime) -> Self {
         Self { runtime }
-    }
-
-    pub async fn execute(
-        &mut self,
-        invocation: EmulatorSetupInvocation,
-        explicit_default: bool,
-    ) -> Result<EmulatorLaunchArguments, EmulatorHostError> {
-        let retained = self.execute_retained(invocation, explicit_default).await?;
-        self.discard_configuration(retained.configuration_id);
-        Ok(retained.launch)
     }
 
     pub async fn execute_retained(
@@ -216,7 +204,10 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       ? module
                       : receiver;
                     const onControllerChanged = controllerReceiver?.onControllerChanged;
-                    if (typeof onControllerChanged === "function") {{
+                    const result = await Reflect.apply(setupLaunch, receiver, [args]);
+                    const controllerChanges = typeof onControllerChanged === "function"
+                      || __snowglassFilesystem.hasConfigurationMounts();
+                    if (controllerChanges) {{
                       Object.defineProperty(globalThis, "__snowglassActiveControllerChange", {{
                         value: Object.freeze({{ receiver: controllerReceiver, callback: onControllerChanged, configuration }}),
                         configurable: false,
@@ -225,9 +216,9 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       }});
                     }}
                     return {{
-                      result: await Reflect.apply(setupLaunch, receiver, [args]),
+                      result,
                       configuration,
-                      controllerChanges: typeof onControllerChanged === "function",
+                      controllerChanges,
                     }};
                 }})()"#,
             entrypoint = entrypoint,
@@ -311,16 +302,6 @@ impl<'runtime> EmulatorWorker<'runtime> {
     }
 }
 
-pub(crate) async fn execute_emulator(
-    runtime: &mut JsRuntime,
-    invocation: EmulatorSetupInvocation,
-    explicit_default: bool,
-) -> Result<EmulatorLaunchArguments, EmulatorHostError> {
-    EmulatorWorker::new(runtime)
-        .execute(invocation, explicit_default)
-        .await
-}
-
 pub(crate) async fn execute_retained_emulator(
     runtime: &mut JsRuntime,
     invocation: EmulatorSetupInvocation,
@@ -350,7 +331,10 @@ pub(crate) async fn execute_controller_change(
             active.configuration,
             __snowglassFilesystem.filesystem,
           );
-          await Reflect.apply(active.callback, active.receiver, [context]);
+          if (typeof active.callback === "function") {{
+            await Reflect.apply(active.callback, active.receiver, [context]);
+          }}
+          __snowglassFilesystem.refreshConfigurations();
         }})()"#
     );
     let promise = runtime

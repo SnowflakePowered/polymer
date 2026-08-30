@@ -52,6 +52,7 @@
       <sourceFolder url="file://$MODULE_DIR$/bins/snowglass-watcher/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-input-bluetooth/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

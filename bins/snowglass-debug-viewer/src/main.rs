@@ -1,4 +1,5 @@
 use snowglass_input::{
+    gamepad::GamepadState,
     hub::SourceSelector,
     layout::{InputBinding, InputLayout, SdlAxis, SdlButton},
     mouse::{PointerPhase, layout::Extent},
@@ -60,7 +61,6 @@ use input::{
     },
     load_window, native_window,
     pointer::mouse_button,
-    pointer_axes,
 };
 
 type EventCallback = Box<dyn FnMut(Event<()>, &ActiveEventLoop)>;
@@ -712,7 +712,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ) {
                         if let Some(mapped) = pointer_routing.last_sent() {
                             if let Some(provider) = &gamepad_provider {
-                                provider.set_pointer(pointer_axes(
+                                provider.set_pointer(GamepadState::normalized_pointer_axes(
                                     mapped.normalized_x,
                                     mapped.normalized_y,
                                 ));

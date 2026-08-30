@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use consolespec::input::{Alignment, AnalogClass, BindingKey, Sign};
+use consolespec::input::{Alignment, AnalogClass, BindingKey, Component, Sign};
 
 use crate::projection::{Projection, Target};
 use crate::sdl::{self, SdlSensor, Wire};
@@ -230,6 +230,29 @@ impl InputLayout {
             }),
             Wire::RawAxis(_) | Wire::Sensor(_) => None,
         }
+    }
+
+    /// Finds the canonical physical expression which produces a custom binding.
+    pub fn custom_source(&self, target: BindingKey, binding: &InputBinding) -> Option<BindingKey> {
+        let buttons = sdl::BUTTONS.iter().map(|(_, source)| *source);
+        let axes = sdl::AXES.iter().flat_map(|(_, source)| {
+            let opposite = match *source {
+                BindingKey::Analog {
+                    class,
+                    alignment,
+                    component,
+                } => BindingKey::Analog {
+                    class,
+                    alignment,
+                    component: Component::new(component.axis, Sign::Negative),
+                },
+                source => source,
+            };
+            [*source, opposite]
+        });
+        buttons
+            .chain(axes)
+            .find(|source| self.custom_binding(target, *source).as_ref() == Some(binding))
     }
 
     fn negative(key: BindingKey) -> bool {

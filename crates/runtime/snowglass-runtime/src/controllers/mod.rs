@@ -26,7 +26,6 @@ const SESSION_PLAYERS: u8 = 8;
 #[derive(Clone, Debug)]
 pub enum ControllerManagerEffect {
     SessionDiscovery(bool),
-    AssignPlayers(Vec<(String, u8)>),
     DisconnectSources(Vec<String>),
     Connect(String),
     Forget(String),
@@ -346,18 +345,10 @@ impl ControllerManager {
         }
         let assignments =
             (previous != self.assignment_signature()).then(|| self.source_assignments());
-        let effects = assignments
-            .as_ref()
-            .map(|_| {
-                vec![ControllerManagerEffect::AssignPlayers(
-                    self.player_sources(),
-                )]
-            })
-            .unwrap_or_default();
         ControllerCommandOutcome {
             response: serde_json::Value::Null,
             assignments,
-            effects,
+            effects: Vec::new(),
         }
     }
 
@@ -633,27 +624,6 @@ impl ControllerManager {
                     },
                 })
             })
-            .collect()
-    }
-
-    fn player_sources(&self) -> Vec<(String, u8)> {
-        self.players
-            .iter()
-            .filter_map(|(index, controller)| {
-                controller
-                    .as_ref()
-                    .and_then(|id| self.controllers.get(id))
-                    .map(|controller| {
-                        controller
-                            .route
-                            .sources
-                            .iter()
-                            .cloned()
-                            .map(|source| (source, *index))
-                            .collect::<Vec<_>>()
-                    })
-            })
-            .flatten()
             .collect()
     }
 

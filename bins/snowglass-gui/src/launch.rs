@@ -1,4 +1,3 @@
-use snowglass_input::layout::{InputLayout, ProjectionMode};
 use snowglass_input::topology::ControllerTopology;
 pub use snowglass_pluginhost::GraphicsHook;
 use std::collections::HashSet;
@@ -68,67 +67,10 @@ impl AttachedLaunchPlan {
                     .map_err(|error| format!("invalid surface selector '{selector}': {error}"))?;
             }
         }
-        let mut slots = self
-            .controller_topology
-            .mappings
-            .iter()
-            .map(|mapping| mapping.gamepad)
-            .collect::<Vec<_>>();
-        slots.sort_unstable();
-        if slots
-            .iter()
-            .enumerate()
-            .any(|(expected, slot)| usize::from(*slot) != expected)
-        {
-            return Err("gamepad slots must be unique and contiguous from zero".to_owned());
-        }
-        validate_input_mappings(&self.controller_topology)?;
+        self.controller_topology
+            .validate_for_machine(&self.machine)?;
         Ok(())
     }
-}
-
-fn validate_input_mappings(topology: &ControllerTopology) -> Result<(), String> {
-    let mut targets = HashSet::new();
-    for mapping in &topology.mappings {
-        if !targets.insert((&mapping.target.group, mapping.target.port)) {
-            return Err(format!(
-                "controller target {}:{} is duplicated",
-                mapping.target.group, mapping.target.port
-            ));
-        }
-        let layout = InputLayout::get(&mapping.layout)
-            .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
-        let mut binding_targets = HashSet::new();
-        for (target, source) in mapping.mapping.iter() {
-            if !layout.has(*target) {
-                return Err(format!(
-                    "input layout {} has no element {target}",
-                    layout.id
-                ));
-            }
-            binding_targets.insert(*target);
-            if let Some(source) = source {
-                layout.custom_binding(*target, *source).ok_or_else(|| {
-                    format!("input source '{source}' is not a physical gamepad expression")
-                })?;
-            }
-        }
-        if mapping.projection_mode == ProjectionMode::Custom {
-            let missing = layout
-                .custom_binding_targets()
-                .filter(|target| !binding_targets.contains(target))
-                .map(|target| target.to_string())
-                .collect::<Vec<_>>();
-            if !missing.is_empty() {
-                return Err(format!(
-                    "custom projection for {} must specify: {}",
-                    layout.id,
-                    missing.join(", ")
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -1158,7 +1158,7 @@ fn refresh_devices(
         let has_touchpad = gamepad.touchpads_count() != 0;
         let layout = InputLayout::get(&slots[slot].layout_id).expect("validated slot layout");
         enable_layout_sensors(&gamepad, layout);
-        let mapping = compiled_with_overrides(
+        let mapping = CompiledMapping::new(
             &gamepad,
             &identity,
             layout,
@@ -1219,24 +1219,7 @@ fn update_touchpad_pointer(pads: &mut [Option<Pad>], event: Event) {
     }) else {
         return;
     };
-    pad.touchpad_pointer = normalized_pointer_axes(f64::from(x), f64::from(y));
-}
-
-fn normalized_pointer_axes(x: f64, y: f64) -> Option<[i16; 2]> {
-    fn axis(value: f64) -> Option<i16> {
-        if !value.is_finite() {
-            return None;
-        }
-        let value = value.clamp(0.0, 1.0);
-        let scaled = if value <= 0.5 {
-            value * 65_536.0 - 32_768.0
-        } else {
-            (value - 0.5) * 65_534.0
-        }
-        .round();
-        Some(scaled.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16)
-    }
-    Some([axis(x)?, axis(y)?])
+    pad.touchpad_pointer = GamepadState::normalized_pointer_axes(f64::from(x), f64::from(y));
 }
 
 fn select_device(
@@ -1265,7 +1248,7 @@ fn recompile_pad(
         return;
     };
     let layout = InputLayout::get(&pad.layout_id).expect("pinned layout remains available");
-    pad.mapping = compiled_with_overrides(
+    pad.mapping = CompiledMapping::new(
         &pad.gamepad,
         &pad.identity,
         layout,
@@ -1274,24 +1257,6 @@ fn recompile_pad(
         overrides,
     );
     pad.last.buttons = !pad.last.buttons;
-}
-
-fn compiled_with_overrides(
-    gamepad: &Gamepad,
-    identity: &DeviceIdentity,
-    layout: &InputLayout,
-    projection_mode: ProjectionMode,
-    remappings: &RemapDatabase,
-    overrides: &HashMap<BindingKey, InputBinding>,
-) -> CompiledMapping {
-    CompiledMapping::new(
-        gamepad,
-        identity,
-        layout,
-        projection_mode,
-        remappings,
-        overrides,
-    )
 }
 
 fn physical_state(pad: &Pad, mapped: GamepadState) -> PhysicalGamepadState {
@@ -1382,9 +1347,12 @@ impl CompiledMapping {
         let mut targets = HashMap::<BindingKey, InputBinding>::new();
         if projection_mode != ProjectionMode::Custom {
             for button in ALL_BUTTONS {
-                if let Some(target) =
-                    default_button_target(gamepad, button, layout, projection_mode)
-                {
+                if let Some(target) = default_button_target_for(
+                    gamepad.button_label_for_gamepad_type(to_sdl_button(button)),
+                    button,
+                    layout,
+                    projection_mode,
+                ) {
                     targets.insert(target, InputBinding::Button { button });
                 }
             }
@@ -1574,7 +1542,7 @@ fn projected_from(layout: &InputLayout, wire: Wire) -> Option<BindingKey> {
         .elements
         .iter()
         .map(|element| element.key)
-        .find(|key| element_wire(layout, *key) == Some(wire))
+        .find(|key| layout.sdl_wire(*key) == Some(wire))
 }
 
 /// The device control a *physically labelled* face button should drive.
@@ -1600,21 +1568,6 @@ fn labelled_face_target_for(label: ButtonLabel, layout: &InputLayout) -> Option<
         .iter()
         .find(|element| element.label.eq_ignore_ascii_case(label))
         .map(|element| element.key)
-}
-
-/// Which of the device's controls a physical button drives by default.
-fn default_button_target(
-    gamepad: &Gamepad,
-    source: SdlButton,
-    layout: &InputLayout,
-    projection_mode: ProjectionMode,
-) -> Option<BindingKey> {
-    default_button_target_for(
-        gamepad.button_label_for_gamepad_type(to_sdl_button(source)),
-        source,
-        layout,
-        projection_mode,
-    )
 }
 
 fn default_button_target_for(
@@ -1715,19 +1668,8 @@ fn profile_matches(
         && profile.layout.as_ref().is_none_or(|id| id == &layout.id)
 }
 
-/// Where a device control appears on the virtual pad.
-///
-/// The projection decides; this only asks it. The provider used to answer from
-/// a table of its own, which agreed with the projection for a plain pad and
-/// disagreed for every device the projection remaps — a GameCube Z reaches the
-/// right shoulder, and an N64 C-button the right stick, neither of which a
-/// key-shaped match could have known.
-fn element_wire(layout: &InputLayout, key: BindingKey) -> Option<Wire> {
-    layout.sdl_wire(key)
-}
-
 fn element_button(layout: &InputLayout, key: BindingKey) -> Option<GamepadButton> {
-    match element_wire(layout, key)? {
+    match layout.sdl_wire(key)? {
         Wire::Button(button) => GamepadButton::from_wire(button.index()),
         _ => None,
     }
@@ -1737,7 +1679,7 @@ fn element_button(layout: &InputLayout, key: BindingKey) -> Option<GamepadButton
 /// right, 4/5 the triggers. The pointer's raw axes are outside the gamepad
 /// mapping and are not one of them.
 fn element_axis_index(layout: &InputLayout, key: BindingKey) -> Option<usize> {
-    match element_wire(layout, key)? {
+    match layout.sdl_wire(key)? {
         // The pointer's raw axes are outside the gamepad mapping, and
         // `Wire::RawAxis` is how they say so.
         Wire::Axis(axis) => Some(usize::from(axis.index())),
@@ -1966,7 +1908,7 @@ mod tests {
                     layout.id
                 );
                 assert_eq!(
-                    element_wire(layout, key),
+                    layout.sdl_wire(key),
                     Some(Wire::Button(sdl)),
                     "{}: {key}",
                     layout.id
@@ -1982,7 +1924,7 @@ mod tests {
         for layout in InputLayout::all() {
             let mut seen: HashMap<SdlButton, BindingKey> = HashMap::new();
             for element in &layout.elements {
-                if let Some(Wire::Button(wire)) = element_wire(layout, element.key)
+                if let Some(Wire::Button(wire)) = layout.sdl_wire(element.key)
                     && let Some(other) = seen.insert(wire, element.key)
                 {
                     panic!(
@@ -2028,12 +1970,15 @@ mod tests {
     #[test]
     fn touchpad_coordinates_fill_pointer_axes() {
         assert_eq!(
-            normalized_pointer_axes(0.0, 0.0),
+            GamepadState::normalized_pointer_axes(0.0, 0.0),
             Some([i16::MIN, i16::MIN])
         );
-        assert_eq!(normalized_pointer_axes(0.5, 0.5), Some([0, 0]));
         assert_eq!(
-            normalized_pointer_axes(1.0, 1.0),
+            GamepadState::normalized_pointer_axes(0.5, 0.5),
+            Some([0, 0])
+        );
+        assert_eq!(
+            GamepadState::normalized_pointer_axes(1.0, 1.0),
             Some([i16::MAX, i16::MAX])
         );
     }

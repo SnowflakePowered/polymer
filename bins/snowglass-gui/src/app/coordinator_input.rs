@@ -352,8 +352,11 @@ impl ShellCoordinator {
         );
         self.window.set_input_diagnostics(publication.diagnostics);
         if let Some(state) = publication.api_state {
-            let configuration = self.input.configuration_snapshot();
-            if let Err(error) = self.game_host.controller_change(&configuration, &state)
+            let controller_change = self
+                .input
+                .controller_topology()
+                .and_then(|topology| self.game_host.controller_change(topology).map(|_| ()));
+            if let Err(error) = controller_change
                 && let Some(token) = self.game_host.active_token()
             {
                 self.emit_instance_event(
