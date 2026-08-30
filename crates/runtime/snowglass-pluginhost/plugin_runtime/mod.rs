@@ -1,6 +1,6 @@
 use crate::filesystem::StorageFactories;
 use crate::{
-    EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorSetupInvocation, PluginRegistry,
+    EmulatorLaunchArguments, EmulatorLaunchInvocation, EmulatorPluginInstance, PluginRegistry,
 };
 use deno_core::{serde_v8, v8};
 use parking_lot::Mutex;
@@ -182,7 +182,7 @@ struct RuntimeState {
 }
 
 enum ExportInvocation {
-    SetupLaunch { explicit_default: bool },
+    EmulatorLaunch { explicit_default: bool },
     Generic,
 }
 
@@ -196,23 +196,25 @@ impl ExportInvocation {
             ));
         }
         Ok(match path {
-            [name] if name == "setupLaunch" => Self::SetupLaunch {
+            [name] if name == "onEmulatorLaunch" => Self::EmulatorLaunch {
                 explicit_default: false,
             },
-            [root, name] if root == "default" && name == "setupLaunch" => Self::SetupLaunch {
-                explicit_default: true,
-            },
+            [root, name] if root == "default" && name == "onEmulatorLaunch" => {
+                Self::EmulatorLaunch {
+                    explicit_default: true,
+                }
+            }
             _ => Self::Generic,
         })
     }
 }
 
-struct PreparedSetupLaunch {
-    invocation: EmulatorSetupInvocation,
+struct PreparedEmulatorLaunch {
+    invocation: EmulatorLaunchInvocation,
     topology: snowglass_input::topology::ControllerTopology,
 }
 
-impl PreparedSetupLaunch {
+impl PreparedEmulatorLaunch {
     fn new(
         plugin: Arc<dyn EmulatorPluginInstance>,
         arguments: Vec<Value>,
@@ -222,14 +224,14 @@ impl PreparedSetupLaunch {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                "setupLaunch expects exactly one argument object",
+                "onEmulatorLaunch expects exactly one argument object",
             )
         })?;
         let object = arguments.as_object_mut().ok_or_else(|| {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                "setupLaunch expects exactly one argument object",
+                "onEmulatorLaunch expects exactly one argument object",
             )
         })?;
         let console = object
@@ -239,7 +241,7 @@ impl PreparedSetupLaunch {
                 PluginInvocationError::new(
                     "TypeError",
                     "INVALID_ARGUMENTS",
-                    "setupLaunch arguments require a string console",
+                    "onEmulatorLaunch arguments require a string console",
                 )
             })?
             .to_owned();
@@ -248,7 +250,7 @@ impl PreparedSetupLaunch {
                 PluginInvocationError::new(
                     "TypeError",
                     "INVALID_ARGUMENTS",
-                    "setupLaunch arguments require controllerTopology",
+                    "onEmulatorLaunch arguments require controllerTopology",
                 )
             })?,
         )
@@ -256,7 +258,7 @@ impl PreparedSetupLaunch {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                format!("invalid setupLaunch controllerTopology: {error}"),
+                format!("invalid onEmulatorLaunch controllerTopology: {error}"),
             )
         })?;
         let assignments = topology
@@ -273,7 +275,7 @@ impl PreparedSetupLaunch {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                "setupLaunch settings must be an object",
+                "onEmulatorLaunch settings must be an object",
             )
         })?;
         for (path, value) in settings {
@@ -281,7 +283,7 @@ impl PreparedSetupLaunch {
                 .map_err(PluginInvocationError::worker)?;
         }
         Ok(Self {
-            invocation: EmulatorSetupInvocation {
+            invocation: EmulatorLaunchInvocation {
                 plugin,
                 arguments,
                 configuration,
@@ -424,10 +426,10 @@ impl PluginRuntimeHandle {
                 )
             })?;
         match ExportInvocation::parse(export_path)? {
-            ExportInvocation::SetupLaunch { explicit_default } => {
-                let setup = PreparedSetupLaunch::new(plugin, arguments, storage)?;
+            ExportInvocation::EmulatorLaunch { explicit_default } => {
+                let setup = PreparedEmulatorLaunch::new(plugin, arguments, storage)?;
                 return self
-                    .invoke_setup_launch(setup, cancellation, explicit_default)
+                    .invoke_emulator_launch(setup, cancellation, explicit_default)
                     .await;
             }
             ExportInvocation::Generic => {}
@@ -436,14 +438,14 @@ impl PluginRuntimeHandle {
             .await
     }
 
-    async fn invoke_setup_launch(
+    async fn invoke_emulator_launch(
         &self,
-        setup: PreparedSetupLaunch,
+        setup: PreparedEmulatorLaunch,
         cancellation: PluginCancellationToken,
         explicit_default: bool,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let (mut result, session) = self
-            .setup_launch_with_cancellation(
+            .emulator_launch_with_cancellation(
                 setup.invocation,
                 cancellation,
                 explicit_default,
@@ -502,9 +504,9 @@ impl PluginRuntimeHandle {
         })
     }
 
-    async fn setup_launch_with_cancellation(
+    async fn emulator_launch_with_cancellation(
         &self,
-        invocation: EmulatorSetupInvocation,
+        invocation: EmulatorLaunchInvocation,
         cancellation: PluginCancellationToken,
         explicit_default: bool,
         topology: snowglass_input::topology::ControllerTopology,
@@ -646,7 +648,7 @@ fn create_worker_runtime(
 }
 
 fn start_controller_session_worker(
-    invocation: EmulatorSetupInvocation,
+    invocation: EmulatorLaunchInvocation,
     explicit_default: bool,
     filesystem: crate::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
@@ -700,7 +702,7 @@ struct ControllerSessionWorkerArgs {
     loader: crate::PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
     control: Arc<InvocationControl>,
-    invocation: EmulatorSetupInvocation,
+    invocation: EmulatorLaunchInvocation,
     explicit_default: bool,
     topology: snowglass_input::topology::ControllerTopology,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
@@ -1175,7 +1177,7 @@ mod tests {
                   throw new Error("worker-test-boom");
                 }
                 export const notCallable = 17;
-                export function setupLaunch(args) {
+                export function onEmulatorLaunch(args) {
                   args.configuration.options().general.enabled = true;
                   let command = "emulator.exe";
                   let argv = [];
@@ -1215,7 +1217,7 @@ mod tests {
                 export default {
                   fallback(value) { return `fallback:${value}`; },
                   nonFunction: 23,
-                  setupLaunch,
+                  onEmulatorLaunch,
                   onControllerChanged,
                 };
             "#,
@@ -1231,7 +1233,7 @@ mod tests {
         std::fs::write(
             root.path().join("plugin.js"),
             r#"
-                export function setupLaunch(args) {
+                export function onEmulatorLaunch(args) {
                   args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
                   args.filesystem.mountConfiguration("/Emulator/Config", args.configuration, { mode: "r" });
                   return {
@@ -1285,14 +1287,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn facade_setup_launch_materializes_its_invocation_configuration() {
+    async fn facade_on_emulator_launch_materializes_its_invocation_configuration() {
         let (_root, registry) = package();
         let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
         let result = runtime
             .handle()
             .invoke(
                 "worker-test",
-                &["setupLaunch".to_owned()],
+                &["onEmulatorLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": "game",
                     "console": "TEST",
@@ -1308,7 +1310,7 @@ mod tests {
             .handle()
             .invoke(
                 "worker-test",
-                &["default".to_owned(), "setupLaunch".to_owned()],
+                &["default".to_owned(), "onEmulatorLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": "game",
                     "console": "TEST",
@@ -1328,7 +1330,7 @@ mod tests {
         let result = handle
             .invoke_with_storage_owned(
                 "worker-test",
-                &["setupLaunch".to_owned()],
+                &["onEmulatorLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
@@ -1352,7 +1354,7 @@ mod tests {
             .handle()
             .invoke_with_storage_owned(
                 "worker-test",
-                &["setupLaunch".to_owned()],
+                &["onEmulatorLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
@@ -1415,7 +1417,7 @@ mod tests {
             .handle()
             .invoke_with_storage_owned(
                 "worker-test",
-                &["setupLaunch".to_owned()],
+                &["onEmulatorLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",

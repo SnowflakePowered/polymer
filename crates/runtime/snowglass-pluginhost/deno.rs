@@ -2,7 +2,7 @@
 
 use crate::automation::{AutomationState, op_ui_automation_request};
 use crate::{
-    ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorSetupInvocation,
+    ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorLaunchInvocation,
     GraphicsHook, TrackedSurface,
     configuration::{ConfigurationCheckpoint, ConfigurationId, ConfigurationInstances},
 };
@@ -112,11 +112,11 @@ impl<'runtime> EmulatorWorker<'runtime> {
 
     pub async fn execute_retained(
         &mut self,
-        invocation: EmulatorSetupInvocation,
+        invocation: EmulatorLaunchInvocation,
         explicit_default: bool,
     ) -> Result<RetainedEmulator, EmulatorHostError> {
         let pending = self
-            .setup(invocation, explicit_default)
+            .launch(invocation, explicit_default)
             .await
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
         self.validate_pending_configuration(&pending)
@@ -154,12 +154,12 @@ impl<'runtime> EmulatorWorker<'runtime> {
             .borrow_mut::<ConfigurationInstances>()
             .discard(id);
     }
-    async fn setup(
+    async fn launch(
         &mut self,
-        invocation: EmulatorSetupInvocation,
+        invocation: EmulatorLaunchInvocation,
         explicit_default: bool,
     ) -> Result<PendingDenoLaunch, DenoPluginError> {
-        let EmulatorSetupInvocation {
+        let EmulatorLaunchInvocation {
             plugin,
             arguments,
             configuration,
@@ -167,7 +167,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         } = invocation;
         if !arguments.is_object() {
             return Err(DenoPluginError::Adapter(
-                "setupLaunch arguments must be an object".to_owned(),
+                "onEmulatorLaunch arguments must be an object".to_owned(),
             ));
         }
         let topology = serde_json::from_value::<snowglass_input::topology::ControllerTopology>(
@@ -176,7 +176,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                 .cloned()
                 .ok_or_else(|| {
                     DenoPluginError::Adapter(
-                        "setupLaunch arguments require controllerTopology".to_owned(),
+                        "onEmulatorLaunch arguments require controllerTopology".to_owned(),
                     )
                 })?,
         )?;
@@ -187,12 +187,12 @@ impl<'runtime> EmulatorWorker<'runtime> {
             r#"(async () => {{
                     const module = await import({entrypoint});
                     const explicitDefault = {explicit_default};
-                    const receiver = !explicitDefault && typeof module.setupLaunch === "function"
+                    const receiver = !explicitDefault && typeof module.onEmulatorLaunch === "function"
                       ? module
                       : module.default;
-                    const setupLaunch = receiver?.setupLaunch;
-                    if (typeof setupLaunch !== "function") {{
-                      throw new TypeError("plugin export 'setupLaunch' is not a function");
+                    const onEmulatorLaunch = receiver?.onEmulatorLaunch;
+                    if (typeof onEmulatorLaunch !== "function") {{
+                      throw new TypeError("plugin export 'onEmulatorLaunch' is not a function");
                     }}
                     const args = {arguments};
                     const configuration = __snowglassPluginHost.configuration({configuration_id});
@@ -204,7 +204,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       ? module
                       : receiver;
                     const onControllerChanged = controllerReceiver?.onControllerChanged;
-                    const result = await Reflect.apply(setupLaunch, receiver, [args]);
+                    const result = await Reflect.apply(onEmulatorLaunch, receiver, [args]);
                     const controllerChanges = typeof onControllerChanged === "function"
                       || __snowglassFilesystem.hasConfigurationMounts();
                     if (controllerChanges) {{
@@ -229,7 +229,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         let result = async {
             let promise = self
                 .runtime
-                .execute_script("snowglass:pluginhost/setup-launch.js", script)?;
+                .execute_script("snowglass:pluginhost/emulator-launch.js", script)?;
             #[allow(deprecated)]
             let value = self.runtime.resolve_value(promise).await?;
             Ok(PendingDenoLaunch {
@@ -256,7 +256,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         deno_core::scope!(scope, self.runtime);
         let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
         let result_value = property(scope, wrapper, "result")?;
-        let _ = local_object_value(result_value, "plugin setupLaunch result")?;
+        let _ = local_object_value(result_value, "plugin onEmulatorLaunch result")?;
         Ok(())
     }
 
@@ -304,7 +304,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
 
 pub(crate) async fn execute_retained_emulator(
     runtime: &mut JsRuntime,
-    invocation: EmulatorSetupInvocation,
+    invocation: EmulatorLaunchInvocation,
     explicit_default: bool,
 ) -> Result<RetainedEmulator, EmulatorHostError> {
     EmulatorWorker::new(runtime)
