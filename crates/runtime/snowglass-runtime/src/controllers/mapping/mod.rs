@@ -1,7 +1,7 @@
 use super::{ControllerManager, DeviceMapping, ResolvedInputConfiguration, ResolvedSlotMapping};
 use consolespec::input::BindingKey;
 use snowglass_input::{
-    hub::{BindingOverride, InputConfiguration, SourceControl, SourceSelector},
+    hub::{InputConfiguration, SourceSelector},
     layout::{InputBinding, InputLayout, ProjectionMode},
     router::GamepadRemap,
     source::{InputSourceDescriptor, InputSourceKind},
@@ -31,12 +31,8 @@ impl MappingProfile {
         let mapping = InputLayout::get(layout_id)
             .map(|layout| {
                 layout
-                    .custom_binding_targets()
-                    .filter_map(|target| {
-                        layout
-                            .sdl_key(target)
-                            .map(|source| (target.to_string(), source.to_string()))
-                    })
+                    .default_gamepad_bindings()
+                    .map(|(target, source)| (target.to_string(), source.to_string()))
                     .collect()
             })
             .unwrap_or_default();
@@ -229,28 +225,12 @@ impl ControllerManager {
                 continue;
             }
             for (target, source) in profile.bindings().iter() {
-                let binding = if let Some(source) = source {
-                    layout.custom_binding(*target, *source)
-                } else {
-                    Some(InputBinding::Disabled { disabled: true })
+                let binding = match source {
+                    Some(source) => layout.custom_binding(*target, *source),
+                    None => Some(InputBinding::Disabled { disabled: true }),
                 };
                 if let Some(binding) = binding {
-                    resolved.overrides.insert(
-                        *target,
-                        match binding {
-                            InputBinding::Button { button } => BindingOverride::Button {
-                                source: SourceControl::GamepadButton { button },
-                            },
-                            InputBinding::Axis { axis, invert } => BindingOverride::Axis {
-                                source: SourceControl::GamepadAxis { axis },
-                                transform: snowglass_input::hub::AxisTransform {
-                                    invert,
-                                    ..Default::default()
-                                },
-                            },
-                            InputBinding::Disabled { .. } => BindingOverride::Disabled,
-                        },
-                    );
+                    resolved.overrides.insert(*target, binding.into());
                 }
             }
             slots.insert(slot, resolved);
@@ -428,7 +408,7 @@ mod tests {
     use crate::ControllerProfiles;
     use consolespec::input::key;
     use snowglass_input::{
-        hub::{PortConfiguration, VirtualPort},
+        hub::{BindingOverride, PortConfiguration, SourceControl, VirtualPort},
         layout::SdlButton,
         source::InputSourceCatalog,
     };

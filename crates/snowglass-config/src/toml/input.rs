@@ -54,14 +54,6 @@ pub struct PortTable<'de> {
     pub ports: PortGroups<'de>,
 }
 
-/// Port groups
-#[derive(Debug, Toml)]
-#[toml(FromToml)]
-pub struct PlatformPortsBlock<'de> {
-    #[toml(rename = "platforms")]
-    pub port_groups: BTreeMap<&'de str, PortTable<'de>>,
-}
-
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
 pub struct PortAssignment<'de> {
