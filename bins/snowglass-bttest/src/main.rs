@@ -1,4 +1,6 @@
+mod controller_model;
 mod input;
+mod motion_capture;
 mod worker;
 
 use std::{
@@ -8,19 +10,28 @@ use std::{
 };
 
 use crate::input::{
-    switch::{ControllerKind as SwitchControllerKind, Telemetry as SwitchTelemetry},
+    decoder::{DecodedInput, MotionFrame},
     wiimote::{
         Accelerometer, Gyroscope, Telemetry as WiiTelemetry,
         airmouse::{AirMouse, PointerPosition},
     },
 };
+use controller_model::GameCubeControllerModel;
 use eframe::egui;
-use snowglass_bluetooth::{
-    DeviceAddr, devices::nintendo::switch2::Switch2Device, transport::ble::BleDevice,
+use motion_capture::{
+    COMMON_REPORT, GAMECUBE_REPORT, MotionCapture, PHASES,
+    class_d::{ClassDExperiment, ClassDPacket},
+    lanes::{ClassCPacket, LaneExperiment},
+    quaternion::QuaternionExperiment,
+    rare_timing::RareTimingExperiment,
+    timing::{TimingExperiment, TimingPacket},
 };
+use snowglass_bluetooth::{DeviceAddr, transport::ble::BleDevice};
 use worker::{Command, DeviceView, Event, PinChoice, RadioKind};
 
 const DOUBLE_HOME_WINDOW: Duration = Duration::from_millis(700);
+const DUAL_REPORT_PROBE_DURATION: Duration = Duration::from_secs(3);
+const REPORT_ALTERNATION_INTERVAL: Duration = Duration::from_millis(250);
 
 fn main() -> eframe::Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -76,6 +87,16 @@ struct BluetoothTestApp {
     home_was_pressed: bool,
     last_home_press: Option<Instant>,
     logs: VecDeque<String>,
+    motion_capture: Option<MotionCapture>,
+    motion_experiment: MotionExperiment,
+    lane_experiment: LaneExperiment,
+    class_d_experiment: ClassDExperiment,
+    timing_experiment: TimingExperiment,
+    rare_timing_experiment: RareTimingExperiment,
+    quaternion_experiment: QuaternionExperiment,
+    motion_capture_phase: usize,
+    last_motion_capture_path: Option<std::path::PathBuf>,
+    controller_model: GameCubeControllerModel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,12 +105,48 @@ enum PointerSource {
     AirMouse,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum MotionExperiment {
+    Idle,
+    AwaitingDualSubscription,
+    Probing {
+        deadline: Instant,
+        common_start: u64,
+        native_start: u64,
+    },
+    Concurrent,
+    Alternating {
+        next_switch_at: Instant,
+        next_report: u8,
+        pending: bool,
+    },
+}
+
+impl MotionExperiment {
+    const fn is_active(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::AwaitingDualSubscription => "subscribing both characteristics…",
+            Self::Probing { .. } => "probing simultaneous notifications…",
+            Self::Concurrent => "both report streams are live",
+            Self::Alternating { pending: true, .. } => "alternating · switching…",
+            Self::Alternating { pending: false, .. } => "alternating reports every 250 ms",
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct ControllerInputView {
     report_count: u64,
     last_report: String,
     wii_telemetry: Option<WiiTelemetry>,
-    switch_telemetry: Option<SwitchTelemetry>,
+    decoded_input: Option<DecodedInput>,
+    motion: Option<MotionFrame>,
+    orientation_reference: Option<[f32; 4]>,
 }
 
 #[derive(Clone)]
@@ -141,6 +198,16 @@ impl BluetoothTestApp {
             home_was_pressed: false,
             last_home_press: None,
             logs: VecDeque::new(),
+            motion_capture: None,
+            motion_experiment: MotionExperiment::Idle,
+            lane_experiment: LaneExperiment::default(),
+            class_d_experiment: ClassDExperiment::default(),
+            timing_experiment: TimingExperiment::default(),
+            rare_timing_experiment: RareTimingExperiment::default(),
+            quaternion_experiment: QuaternionExperiment::default(),
+            motion_capture_phase: 0,
+            last_motion_capture_path: None,
+            controller_model: GameCubeControllerModel::new(),
         }
     }
 
@@ -191,18 +258,18 @@ impl BluetoothTestApp {
                     let automatic = (self.controller_order
                         && !self.connected.contains_key(&device.addr))
                     .then(|| {
-                        let is_wii_remote = device.name.starts_with("Nintendo RVL-CNT");
-                        let switch_kind = SwitchControllerKind::from_name(&device.name);
-                        (is_wii_remote || switch_kind.is_some()).then(|| Command::ConnectBr {
-                            device: device.inquiry.clone(),
-                            pin: if is_wii_remote {
-                                PinChoice::WiiSync
-                            } else {
-                                PinChoice::Ssp
-                            },
-                            is_wii_remote,
-                            switch_kind,
-                        })
+                        device
+                            .profile_id
+                            .as_ref()
+                            .map(|profile_id| Command::ConnectBr {
+                                device: device.inquiry.clone(),
+                                pin: if device.is_wii_remote() {
+                                    PinChoice::WiiSync
+                                } else {
+                                    PinChoice::Ssp
+                                },
+                                profile_id: Some(profile_id.clone()),
+                            })
                     });
                     if let Some(existing) = self
                         .devices
@@ -243,6 +310,14 @@ impl BluetoothTestApp {
                     radio,
                     slot,
                 } => {
+                    let resumed_capture_report = self.motion_capture.as_mut().and_then(|capture| {
+                        (capture.address() == addr).then(|| {
+                            let report_id = capture.selected_report();
+                            capture
+                                .mark_transport("transport_reconnected", None)
+                                .map(|()| report_id)
+                        })
+                    });
                     self.connected
                         .insert(addr.clone(), ConnectedSession { name, radio, slot });
                     self.controller_inputs.entry(addr.clone()).or_default();
@@ -254,8 +329,39 @@ impl BluetoothTestApp {
                         "HID channels ready for {addr} in player slot {}",
                         slot + 1
                     ));
+                    match resumed_capture_report {
+                        Some(Ok(report_id)) => {
+                            if let Ok(addr) = addr.parse() {
+                                self.send(Command::SelectSwitch2InputReport { addr, report_id });
+                            }
+                        }
+                        Some(Err(error)) => {
+                            self.log(format!("Motion capture reconnect marker failed: {error}"));
+                            self.finish_motion_capture(false);
+                        }
+                        None => {}
+                    }
                 }
                 Event::Disconnected { addr, reason } => {
+                    let is_capture_controller = self
+                        .motion_capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.address() == addr);
+                    let preserve_sleep_capture =
+                        is_capture_controller && self.lane_experiment.awaits_sleep_reconnect();
+                    if preserve_sleep_capture {
+                        let marker_error = self.motion_capture.as_mut().and_then(|capture| {
+                            capture
+                                .mark_transport("transport_disconnected", Some(&reason))
+                                .err()
+                        });
+                        if let Some(error) = marker_error {
+                            self.log(format!("Motion capture disconnect marker failed: {error}"));
+                            self.finish_motion_capture(false);
+                        }
+                    } else if is_capture_controller {
+                        self.finish_motion_capture(false);
+                    }
                     self.connected.remove(&addr);
                     self.controller_inputs.remove(&addr);
                     if self.selected_connection.as_deref() == Some(addr.as_str()) {
@@ -283,16 +389,171 @@ impl BluetoothTestApp {
                     input.report_count += 1;
                     input.last_report = hex(&bytes);
                 }
+                Event::BleReport {
+                    addr,
+                    characteristic,
+                    bytes,
+                    received_at,
+                } => {
+                    let input = self.controller_inputs.entry(addr.clone()).or_default();
+                    input.report_count += 1;
+                    input.last_report = hex(&bytes);
+                    let mut capture_error = self.motion_capture.as_mut().and_then(|capture| {
+                        capture
+                            .record_notification(&addr, &characteristic, &bytes, received_at)
+                            .err()
+                    });
+                    if capture_error.is_none()
+                        && let Some(packet) = ClassCPacket::parse(&characteristic, &bytes)
+                        && let Some(capture) = self.motion_capture.as_mut()
+                    {
+                        capture_error =
+                            self.lane_experiment.observe_class_c(capture, &packet).err();
+                    }
+                    if capture_error.is_none()
+                        && let Some(packet) = ClassDPacket::parse(&characteristic, &bytes)
+                        && let Some(capture) = self.motion_capture.as_mut()
+                    {
+                        capture_error = self.class_d_experiment.observe(capture, &packet).err();
+                    }
+                    if capture_error.is_none()
+                        && let Some(packet) = TimingPacket::parse(&characteristic, &bytes)
+                        && let Some(capture) = self.motion_capture.as_mut()
+                    {
+                        capture_error = self
+                            .timing_experiment
+                            .observe(capture, packet, received_at)
+                            .err();
+                        if capture_error.is_none() {
+                            capture_error = self
+                                .rare_timing_experiment
+                                .observe(capture, packet, received_at)
+                                .err();
+                        }
+                    }
+                    if let Some(error) = capture_error {
+                        self.log(format!("Motion capture write failed: {error}"));
+                        self.finish_motion_capture(false);
+                    }
+                }
+                Event::BleReportsDropped { addr, count } => {
+                    let capture_error = self
+                        .motion_capture
+                        .as_mut()
+                        .and_then(|capture| capture.record_drop(&addr, count).err());
+                    if let Some(error) = capture_error {
+                        self.log(format!("Motion capture drop marker failed: {error}"));
+                        self.finish_motion_capture(false);
+                    }
+                    self.log(format!("Dropped {count} raw BLE notifications from {addr}"));
+                }
+                Event::Switch2InputReportSelected { addr, report_id } => {
+                    let is_capture_controller = self
+                        .motion_capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.address() == addr);
+                    let capture_error = self.motion_capture.as_mut().and_then(|capture| {
+                        (capture.address() == addr)
+                            .then(|| capture.set_selected_report(report_id).err())
+                            .flatten()
+                    });
+                    if let Some(error) = capture_error {
+                        self.log(format!("Motion capture report marker failed: {error}"));
+                        self.finish_motion_capture(false);
+                    }
+                    if is_capture_controller
+                        && let MotionExperiment::Alternating {
+                            next_switch_at,
+                            next_report,
+                            pending,
+                        } = &mut self.motion_experiment
+                    {
+                        *next_report = if report_id == COMMON_REPORT {
+                            GAMECUBE_REPORT
+                        } else {
+                            COMMON_REPORT
+                        };
+                        *next_switch_at = Instant::now() + REPORT_ALTERNATION_INTERVAL;
+                        *pending = false;
+                    }
+                }
+                Event::Switch2InputReportSelectionFailed {
+                    addr,
+                    report_id,
+                    reason,
+                } => {
+                    if self
+                        .motion_capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.address() == addr)
+                        && let MotionExperiment::Alternating {
+                            next_switch_at,
+                            pending,
+                            ..
+                        } = &mut self.motion_experiment
+                    {
+                        *next_switch_at = Instant::now() + REPORT_ALTERNATION_INTERVAL;
+                        *pending = false;
+                        self.log(format!(
+                            "Automatic 0x{report_id:02X} switch failed and will retry: {reason}"
+                        ));
+                    }
+                }
+                Event::Switch2InputReportsSubscribed { addr, report_ids } => {
+                    if self
+                        .motion_capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.address() == addr)
+                        && matches!(
+                            self.motion_experiment,
+                            MotionExperiment::AwaitingDualSubscription
+                        )
+                    {
+                        let both_present = report_ids.contains(&COMMON_REPORT)
+                            && report_ids.contains(&GAMECUBE_REPORT);
+                        if both_present {
+                            let capture = self.motion_capture.as_ref().expect("checked above");
+                            self.motion_experiment = MotionExperiment::Probing {
+                                deadline: Instant::now() + DUAL_REPORT_PROBE_DURATION,
+                                common_start: capture.common_samples(),
+                                native_start: capture.native_samples(),
+                            };
+                            self.mark_motion_experiment("dual_subscription_active");
+                        } else {
+                            self.mark_motion_experiment("dual_subscription_incomplete");
+                            self.begin_motion_alternation();
+                        }
+                    }
+                }
+                Event::Switch2InputReportsSubscriptionFailed { addr, reason } => {
+                    if self
+                        .motion_capture
+                        .as_ref()
+                        .is_some_and(|capture| capture.address() == addr)
+                        && matches!(
+                            self.motion_experiment,
+                            MotionExperiment::AwaitingDualSubscription
+                        )
+                    {
+                        self.log(format!(
+                            "Dual-report subscription failed; using automatic alternation: {reason}"
+                        ));
+                        self.mark_motion_experiment("dual_subscription_failed");
+                        self.begin_motion_alternation();
+                    }
+                }
                 Event::WiiTelemetry {
                     addr,
                     telemetry,
                     received_at,
                 } => self.handle_wii_telemetry(addr, telemetry, received_at),
-                Event::SwitchTelemetry { addr, telemetry } => {
-                    self.controller_inputs
-                        .entry(addr)
-                        .or_default()
-                        .switch_telemetry = Some(telemetry);
+                Event::DecodedInput { addr, input } => {
+                    let view = self.controller_inputs.entry(addr).or_default();
+                    if let Some(motion) = input.motion {
+                        view.motion = Some(motion);
+                        view.orientation_reference.get_or_insert(motion.orientation);
+                    }
+                    view.decoded_input = Some(input);
                 }
                 Event::Log(message) => self.log(message),
                 Event::Error(message) => {
@@ -325,24 +586,12 @@ impl BluetoothTestApp {
         self.last_accelerometer = telemetry.accelerometer;
         self.last_gyroscope = telemetry.gyroscope;
 
-        let mut air_mouse_position = None;
-        if let (Some(accelerometer), Some(gyroscope)) =
-            (telemetry.accelerometer, telemetry.gyroscope)
-        {
-            air_mouse_position = Some(self.air_mouse.next_pointer_position(
-                accelerometer,
-                gyroscope,
-                received_at,
-            ));
-        }
-
         let home_pressed = telemetry.home_pressed();
         if home_pressed
             && !self.home_was_pressed
             && register_home_press(&mut self.last_home_press, received_at)
         {
             self.air_mouse.center();
-            air_mouse_position = Some(PointerPosition::CENTER);
             self.log("Double Home: air mouse recentered".into());
         }
         self.home_was_pressed = home_pressed;
@@ -350,10 +599,14 @@ impl BluetoothTestApp {
         if let Some(ir_position) = ir_pointer_position(telemetry) {
             self.pointer_position = ir_position;
             self.pointer_source = Some(PointerSource::IrCamera);
-            // Keep the fallback source at the last absolute coordinate so a
-            // lost sensor-bar point does not cause a cursor jump.
-            self.air_mouse.set_position(ir_position);
-        } else if let Some(position) = air_mouse_position {
+            self.air_mouse
+                .track_absolute_position(ir_position, received_at);
+        } else if let (Some(accelerometer), Some(gyroscope)) =
+            (telemetry.accelerometer, telemetry.gyroscope)
+        {
+            let position =
+                self.air_mouse
+                    .next_pointer_position(accelerometer, gyroscope, received_at);
             self.pointer_position = position;
             self.pointer_source = Some(PointerSource::AirMouse);
         }
@@ -363,7 +616,18 @@ impl BluetoothTestApp {
 impl eframe::App for BluetoothTestApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
-        context.request_repaint_after(Duration::from_millis(50));
+        self.tick_motion_experiment();
+        self.tick_quaternion_experiment();
+        let repaint_interval = if self
+            .controller_inputs
+            .values()
+            .any(|input| input.motion.is_some())
+        {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(50)
+        };
+        context.request_repaint_after(repaint_interval);
 
         egui::TopBottomPanel::top("status").show(context, |ui| {
             ui.horizontal(|ui| {
@@ -395,6 +659,7 @@ impl eframe::App for BluetoothTestApp {
                     self.discovery_ui(&mut columns[0]);
                     self.connection_ui(&mut columns[1]);
                 });
+                self.motion_capture_ui(ui);
                 if !self.controller_inputs.is_empty() {
                     ui.separator();
                     ui.heading("Controller inputs");
@@ -404,6 +669,11 @@ impl eframe::App for BluetoothTestApp {
                         .map(|(addr, input)| (addr.clone(), input.clone()))
                         .collect::<Vec<_>>();
                     for (addr, input) in inputs {
+                        let controller_name = self
+                            .connected
+                            .get(&addr)
+                            .map(|session| session.name.clone())
+                            .unwrap_or_else(|| "Switch 2 controller".into());
                         egui::CollapsingHeader::new(format!(
                             "{addr} · {} reports",
                             input.report_count
@@ -420,9 +690,19 @@ impl eframe::App for BluetoothTestApp {
                                 ui.separator();
                                 self.wii_telemetry_ui(ui, telemetry);
                             }
-                            if let Some(telemetry) = input.switch_telemetry {
+                            if let Some(decoded) = input.decoded_input {
                                 ui.separator();
-                                self.switch_telemetry_ui(ui, telemetry);
+                                self.decoded_input_ui(ui, decoded);
+                            }
+                            if let Some(motion) = input.motion {
+                                ui.separator();
+                                self.switch2_motion_ui(
+                                    ui,
+                                    &addr,
+                                    &controller_name,
+                                    motion,
+                                    input.orientation_reference,
+                                );
                             }
                         });
                     }
@@ -446,6 +726,398 @@ impl eframe::App for BluetoothTestApp {
 }
 
 impl BluetoothTestApp {
+    fn begin_motion_experiment(&mut self) {
+        let Some(addr) = self
+            .motion_capture
+            .as_ref()
+            .and_then(|capture| capture.address().parse().ok())
+        else {
+            return;
+        };
+        self.motion_experiment = MotionExperiment::AwaitingDualSubscription;
+        self.mark_motion_experiment("dual_subscription_requested");
+        self.send(Command::SubscribeAllSwitch2InputReports { addr });
+    }
+
+    fn begin_motion_alternation(&mut self) {
+        let Some(addr) = self
+            .motion_capture
+            .as_ref()
+            .and_then(|capture| capture.address().parse().ok())
+        else {
+            self.motion_experiment = MotionExperiment::Idle;
+            return;
+        };
+        self.motion_experiment = MotionExperiment::Alternating {
+            next_switch_at: Instant::now() + REPORT_ALTERNATION_INTERVAL,
+            next_report: GAMECUBE_REPORT,
+            pending: true,
+        };
+        self.mark_motion_experiment("automatic_alternation_started");
+        self.send(Command::SelectSwitch2InputReport {
+            addr,
+            report_id: COMMON_REPORT,
+        });
+    }
+
+    fn stop_motion_experiment(&mut self) {
+        if !self.motion_experiment.is_active() {
+            return;
+        }
+        self.mark_motion_experiment("experiment_stopped");
+        self.motion_experiment = MotionExperiment::Idle;
+        if let Some(addr) = self
+            .motion_capture
+            .as_ref()
+            .and_then(|capture| capture.address().parse().ok())
+        {
+            self.send(Command::SelectSwitch2InputReport {
+                addr,
+                report_id: GAMECUBE_REPORT,
+            });
+        }
+    }
+
+    fn mark_motion_experiment(&mut self, event: &str) {
+        let error = self
+            .motion_capture
+            .as_mut()
+            .and_then(|capture| capture.mark_experiment(event).err());
+        if let Some(error) = error {
+            self.log(format!("Could not write motion experiment marker: {error}"));
+            self.finish_motion_capture(false);
+        }
+    }
+
+    fn tick_motion_experiment(&mut self) {
+        let now = Instant::now();
+        let sample_counts = self
+            .motion_capture
+            .as_ref()
+            .map(|capture| (capture.common_samples(), capture.native_samples()));
+        let mut marker = None;
+        let mut requested_report = None;
+        match &mut self.motion_experiment {
+            MotionExperiment::Probing {
+                deadline,
+                common_start,
+                native_start,
+            } if now >= *deadline => {
+                let simultaneous = sample_counts.is_some_and(|(common, native)| {
+                    common > *common_start && native > *native_start
+                });
+                if simultaneous {
+                    self.motion_experiment = MotionExperiment::Concurrent;
+                    marker = Some("simultaneous_reports_confirmed");
+                } else {
+                    marker = Some("simultaneous_reports_not_observed");
+                }
+            }
+            MotionExperiment::Alternating {
+                next_switch_at,
+                next_report,
+                pending,
+            } if now >= *next_switch_at && !*pending => {
+                requested_report = Some(*next_report);
+                *pending = true;
+            }
+            _ => {}
+        }
+        if let Some(marker) = marker {
+            self.mark_motion_experiment(marker);
+            if marker == "simultaneous_reports_not_observed" {
+                self.begin_motion_alternation();
+            }
+        }
+        if let Some(report_id) = requested_report
+            && let Some(addr) = self
+                .motion_capture
+                .as_ref()
+                .and_then(|capture| capture.address().parse().ok())
+        {
+            self.send(Command::SelectSwitch2InputReport { addr, report_id });
+        }
+    }
+
+    fn motion_capture_ui(&mut self, ui: &mut egui::Ui) {
+        let selected_gamecube = self.selected_connection.as_ref().and_then(|addr| {
+            self.connected.get(addr).and_then(|session| {
+                (session.radio == RadioKind::Ble && session.name.contains("GameCube"))
+                    .then(|| addr.clone())
+            })
+        });
+        if selected_gamecube.is_none() && self.motion_capture.is_none() {
+            return;
+        }
+
+        ui.separator();
+        ui.heading("NSO GameCube motion capture");
+        ui.label("Capture packed native motion for the guided quaternion or class-C lane experiments, or use the freeform controls for report comparison.");
+
+        if self.motion_capture.is_none() {
+            let mut start_freeform = false;
+            let mut start_guided = false;
+            let mut start_lanes = false;
+            let mut start_class_d = false;
+            let mut start_timing = false;
+            let mut start_rare_timing = false;
+            let mut start_sleep = false;
+            ui.horizontal_wrapped(|ui| {
+                start_guided = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start guided quaternion capture…"),
+                    )
+                    .clicked();
+                start_lanes = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start class-C lane capture…"),
+                    )
+                    .clicked();
+                start_class_d = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start class-D capture…"),
+                    )
+                    .clicked();
+                start_timing = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start bit 287 + timing capture…"),
+                    )
+                    .clicked();
+                start_rare_timing = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start rare-span timing capture…"),
+                    )
+                    .clicked();
+                start_sleep = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start sleep/wake capture…"),
+                    )
+                    .clicked();
+                start_freeform = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start freeform capture…"),
+                    )
+                    .clicked();
+            });
+            if let Some(addr) = selected_gamecube.as_deref() {
+                if start_guided {
+                    self.start_motion_capture(addr, true);
+                } else if start_lanes {
+                    self.start_motion_capture(addr, false);
+                    self.begin_lane_experiment();
+                } else if start_class_d {
+                    self.start_motion_capture(addr, false);
+                    self.begin_class_d_experiment();
+                } else if start_timing {
+                    self.start_motion_capture(addr, false);
+                    self.begin_timing_experiment();
+                } else if start_rare_timing {
+                    self.start_motion_capture(addr, false);
+                    self.begin_rare_timing_experiment();
+                } else if start_sleep {
+                    self.start_motion_capture(addr, false);
+                    self.begin_sleep_experiment();
+                } else if start_freeform {
+                    self.start_motion_capture(addr, false);
+                }
+            }
+            if let Some(path) = &self.last_motion_capture_path {
+                ui.monospace(format!("Last capture: {}", path.display()));
+            }
+            return;
+        }
+
+        let capture = self.motion_capture.as_ref().expect("checked above");
+        let selected_report = capture.selected_report();
+        ui.monospace(capture.path().display().to_string());
+        ui.horizontal(|ui| {
+            ui.strong(format!("{} packets", capture.samples()));
+            ui.label(format!("0x05: {}", capture.common_samples()));
+            ui.label(format!("0x0A: {}", capture.native_samples()));
+            ui.label(format!("active: 0x{:02X}", capture.selected_report()));
+            match capture.observed_report() {
+                Some(report_id) if report_id == capture.selected_report() => {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_GREEN,
+                        format!("observed: 0x{report_id:02X}"),
+                    );
+                }
+                Some(report_id) => {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_RED,
+                        format!("observed: 0x{report_id:02X} (mismatch)"),
+                    );
+                }
+                None => {
+                    ui.weak("observed: waiting");
+                }
+            }
+        });
+        let primary_modes = capture.primary_mode_counts();
+        let secondary_modes = capture.secondary_mode_counts();
+        ui.monospace(format!(
+            "packed bits 0–1     v0 {} · v1 {} · v2 {} · v3 {}",
+            primary_modes[0], primary_modes[1], primary_modes[2], primary_modes[3]
+        ));
+        ui.monospace(format!(
+            "packed bits 128–129 v0 {} · v1 {} · v2 {} · v3 {}",
+            secondary_modes[0], secondary_modes[1], secondary_modes[2], secondary_modes[3]
+        ));
+
+        if self.rare_timing_capture_ui(ui)
+            || self.timing_capture_ui(ui)
+            || self.class_d_capture_ui(ui)
+            || self.lane_capture_ui(ui)
+            || self.quaternion_capture_ui(ui)
+        {
+            if ui.button("Stop and save capture").clicked() {
+                self.finish_motion_capture(true);
+            }
+            return;
+        }
+
+        let experiment_active = self.motion_experiment.is_active();
+        let mut start_experiment = false;
+        let mut stop_experiment = false;
+        ui.horizontal(|ui| {
+            if experiment_active {
+                if ui.button("Stop report experiment").clicked() {
+                    stop_experiment = true;
+                }
+            } else if ui.button("Run dual-report experiment").clicked() {
+                start_experiment = true;
+            }
+            ui.label(self.motion_experiment.label());
+        });
+        ui.weak("The test subscribes 0x05 and 0x0A together for three seconds. If both do not produce notifications, it automatically alternates them every 250 ms.");
+
+        let mut requested_report = None;
+        ui.add_enabled_ui(!experiment_active, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(selected_report == COMMON_REPORT, "Common 0x05")
+                    .clicked()
+                {
+                    requested_report = Some(COMMON_REPORT);
+                }
+                if ui
+                    .selectable_label(selected_report == GAMECUBE_REPORT, "Packed native 0x0A")
+                    .clicked()
+                {
+                    requested_report = Some(GAMECUBE_REPORT);
+                }
+            });
+        });
+
+        let previous_phase = self.motion_capture_phase;
+        egui::ComboBox::from_label("Manipulation phase")
+            .selected_text(PHASES[self.motion_capture_phase].label)
+            .show_ui(ui, |ui| {
+                for (index, phase) in PHASES.iter().enumerate() {
+                    ui.selectable_value(&mut self.motion_capture_phase, index, phase.label);
+                }
+            });
+        ui.colored_label(
+            egui::Color32::LIGHT_BLUE,
+            PHASES[self.motion_capture_phase].instruction,
+        );
+
+        let mut marker = None;
+        ui.horizontal(|ui| {
+            if ui.button("Mark trial start").clicked() {
+                marker = Some("trial_started");
+            }
+            if ui.button("Mark trial end").clicked() {
+                marker = Some("trial_finished");
+            }
+            if ui.button("Next phase").clicked() {
+                self.motion_capture_phase = (self.motion_capture_phase + 1).min(PHASES.len() - 1);
+            }
+        });
+
+        let phase_changed = previous_phase != self.motion_capture_phase;
+        let mut capture_error = None;
+        if phase_changed && let Some(capture) = self.motion_capture.as_mut() {
+            capture_error = capture
+                .set_label(PHASES[self.motion_capture_phase].label)
+                .err();
+        }
+        if let Some(event) = marker
+            && let Some(capture) = self.motion_capture.as_mut()
+        {
+            capture_error = capture.mark(event).err().or(capture_error);
+        }
+        if let Some(error) = capture_error {
+            self.log(format!("Could not write motion capture marker: {error}"));
+            self.finish_motion_capture(false);
+            return;
+        }
+
+        if start_experiment {
+            self.begin_motion_experiment();
+        } else if stop_experiment {
+            self.stop_motion_experiment();
+        }
+
+        if let Some(report_id) = requested_report
+            && let Some(addr) = self
+                .motion_capture
+                .as_ref()
+                .and_then(|capture| capture.address().parse().ok())
+        {
+            self.send(Command::SelectSwitch2InputReport { addr, report_id });
+        }
+
+        if ui.button("Stop and save capture").clicked() {
+            self.finish_motion_capture(true);
+        }
+    }
+
+    fn finish_motion_capture(&mut self, restore_native_report: bool) {
+        let Some(mut capture) = self.motion_capture.take() else {
+            return;
+        };
+        let rare_timing_error = self.rare_timing_experiment.finish(&mut capture).err();
+        self.motion_experiment = MotionExperiment::Idle;
+        self.lane_experiment.reset();
+        self.class_d_experiment.reset();
+        self.timing_experiment.reset();
+        self.rare_timing_experiment.reset();
+        self.quaternion_experiment.reset();
+        if let Some(error) = rare_timing_error {
+            self.log(format!(
+                "Could not write rare timing experiment summary: {error}"
+            ));
+        }
+        if restore_native_report && let Ok(addr) = capture.address().parse() {
+            self.send(Command::SelectSwitch2InputReport {
+                addr,
+                report_id: GAMECUBE_REPORT,
+            });
+        }
+        let fallback_path = capture.path().to_path_buf();
+        match capture.finish() {
+            Ok(path) => {
+                self.log(format!("Motion capture saved: {}", path.display()));
+                self.last_motion_capture_path = Some(path);
+            }
+            Err(error) => {
+                self.log(format!(
+                    "Motion capture close failed for {}: {error}",
+                    fallback_path.display()
+                ));
+                self.last_motion_capture_path = Some(fallback_path);
+            }
+        }
+    }
+
     fn controller_order_entry_ui(&mut self, ui: &mut egui::Ui) {
         let available = self.br_ready || !self.ble_adapters.is_empty();
         if ui
@@ -630,49 +1302,75 @@ impl BluetoothTestApp {
         }
     }
 
-    fn switch_telemetry_ui(&self, ui: &mut egui::Ui, telemetry: SwitchTelemetry) {
-        ui.heading(format!(
-            "{} · input report 0x{:02X}",
-            telemetry.kind.label(),
-            telemetry.report_id
-        ));
-        if telemetry.report_id == 0x3f {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                "Simple 0x3F report mode; waiting for native 0x30 initialization",
-            );
-        }
+    fn decoded_input_ui(&self, ui: &mut egui::Ui, input: DecodedInput) {
+        ui.heading(format!("Decoded input · {:?}", input.role));
         ui.horizontal_wrapped(|ui| {
             ui.strong("Buttons");
-            let pressed = telemetry.pressed_buttons().collect::<Vec<_>>();
-            if pressed.is_empty() {
+            if input.state.buttons == 0 {
                 ui.weak("None");
-            } else {
-                for name in pressed {
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, format!("[{name}]"));
-                }
             }
-            ui.monospace(format!("raw {:06X}", telemetry.buttons));
+            ui.monospace(format!("raw {:08X}", input.state.buttons));
         });
         ui.horizontal(|ui| {
             ui.strong("Battery");
-            if let Some(level) = telemetry.battery_level {
+            if let Some(level) = input.battery_level {
                 ui.label(format!("{level}/4"));
-                if telemetry.charging {
+                if input.charging {
                     ui.label("charging");
                 }
             } else {
-                ui.weak("not present in simple report");
+                ui.weak("not reported");
             }
         });
         ui.horizontal(|ui| {
-            if let Some(stick) = telemetry.left_stick {
-                ui.monospace(format!("Left stick  X {:4}  Y {:4}", stick.x, stick.y));
-            }
-            if let Some(stick) = telemetry.right_stick {
-                ui.monospace(format!("Right stick  X {:4}  Y {:4}", stick.x, stick.y));
-            }
+            ui.monospace(format!(
+                "Left stick  X {:6}  Y {:6}",
+                input.state.left_stick[0], input.state.left_stick[1]
+            ));
+            ui.monospace(format!(
+                "Right stick  X {:6}  Y {:6}",
+                input.state.right_stick[0], input.state.right_stick[1]
+            ));
         });
+        ui.monospace(format!(
+            "Triggers  L {:5}  R {:5} · accel {:?} · gyro {:?}",
+            input.state.left_trigger,
+            input.state.right_trigger,
+            input.state.accelerometer,
+            input.state.gyroscope,
+        ));
+    }
+
+    fn switch2_motion_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        address: &str,
+        controller_name: &str,
+        motion: MotionFrame,
+        orientation_reference: Option<[f32; 4]>,
+    ) {
+        ui.heading(format!("{controller_name} orientation"));
+        let recenter = ui
+            .button("Use current pose as face-up reference")
+            .on_hover_text("Only changes the viewer reference; decoded sensor data is untouched")
+            .clicked();
+        let reference = if recenter {
+            if let Some(view) = self.controller_inputs.get_mut(address) {
+                view.orientation_reference = Some(motion.orientation);
+            }
+            motion.orientation
+        } else {
+            orientation_reference.unwrap_or(motion.orientation)
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.monospace(format!(
+                "IMU {:.2} °C · timestamp {:04X} · elapsed {} ticks",
+                motion.temperature_celsius, motion.sensor_timestamp, motion.elapsed_ticks
+            ));
+            ui.weak("Quaternion is rendered directly; gyro is not re-integrated by the viewer.");
+        });
+        self.controller_model
+            .show(ui, motion.orientation, reference);
     }
 
     fn pointer_target_window(&mut self, context: &egui::Context) {
@@ -853,7 +1551,7 @@ impl BluetoothTestApp {
                 for (index, device) in self.devices.iter().enumerate() {
                     let title = format!(
                         "{}\n{} · RSSI {} · class {}",
-                        device.name,
+                        device.profile_name.unwrap_or(&device.name),
                         device.addr,
                         device.rssi.map_or("?".into(), |v| format!("{v} dBm")),
                         device.class
@@ -863,10 +1561,9 @@ impl BluetoothTestApp {
                         .clicked()
                     {
                         self.selected = Some(index);
-                        if device.name.starts_with("Nintendo RVL-CNT") && self.pin == PinChoice::Ssp
-                        {
+                        if device.is_wii_remote() && self.pin == PinChoice::Ssp {
                             self.pin = PinChoice::WiiSync;
-                        } else if SwitchControllerKind::from_name(&device.name).is_some() {
+                        } else if device.is_switch() {
                             self.pin = PinChoice::Ssp;
                         }
                     }
@@ -903,7 +1600,7 @@ impl BluetoothTestApp {
                         device
                             .name
                             .as_deref()
-                            .unwrap_or_else(|| Switch2Device::kind_for(device).label()),
+                            .unwrap_or("Unknown Switch 2 controller"),
                         device.addr,
                         device.rssi.map_or("?".into(), |v| format!("{v} dBm")),
                     );
@@ -963,7 +1660,7 @@ impl BluetoothTestApp {
         if self
             .selected
             .and_then(|index| self.devices.get(index))
-            .is_some_and(|device| device.name.starts_with("Nintendo RVL-CNT"))
+            .is_some_and(DeviceView::is_wii_remote)
             && self.pin == PinChoice::Ssp
         {
             ui.colored_label(
@@ -984,12 +1681,10 @@ impl BluetoothTestApp {
                 .and_then(|index| self.devices.get(index))
                 .cloned(),
         ) {
-            let switch_kind = SwitchControllerKind::from_name(&device.name);
             self.send(Command::ConnectBr {
                 device: device.inquiry,
                 pin: self.pin,
-                is_wii_remote: device.name.starts_with("Nintendo RVL-CNT"),
-                switch_kind,
+                profile_id: device.profile_id,
             });
         }
         let forget_clicked = ui

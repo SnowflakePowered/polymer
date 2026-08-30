@@ -31,7 +31,7 @@ export function OptionControl(props: { option: ConfigurationOption; onChange(val
   return <Show when={props.option.kind !== "boolean"} fallback={
     <Switch.Root class="horizon-switch" checked={Boolean(props.option.value)} onCheckedChange={(details: any) => props.onChange(details.checked)}>
       <Switch.Label>{props.option.title}</Switch.Label>
-      <Switch.Control><Switch.Thumb /></Switch.Control>
+      <Switch.Control onClick={() => props.onChange(!Boolean(props.option.value))}><Switch.Thumb /></Switch.Control>
     </Switch.Root>
   }>
     <Show when={props.option.kind === "select"} fallback={

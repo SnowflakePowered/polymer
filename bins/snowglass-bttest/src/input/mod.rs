@@ -1,2 +1,1 @@
-pub mod switch;
-pub mod wiimote;
+pub use snowglass_input_bluetooth::decoder::{self, wiimote};
