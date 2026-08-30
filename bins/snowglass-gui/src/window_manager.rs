@@ -8,6 +8,7 @@ use snowglass_platform_windows::{performance_counter, performance_frequency};
 use snowglass_renderer::{CompositingPlan, D3d12Compositor, Extent, Renderer};
 use snowglass_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
 use std::{
+    cell::Cell,
     collections::HashMap,
     error::Error,
     ffi::c_void,
@@ -33,7 +34,8 @@ use windows::{
             WinRT::{
                 Composition::{ICompositorDesktopInterop, ICompositorInterop},
                 CreateDispatcherQueueController, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT,
-                DispatcherQueueOptions, RO_INIT_SINGLETHREADED, RoInitialize, RoUninitialize,
+                DispatcherQueueOptions, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
+                RoInitialize, RoUninitialize,
             },
         },
     },
@@ -49,6 +51,32 @@ pub(crate) struct WinRtApartment {
 }
 
 struct RoApartment;
+
+thread_local! {
+    static WORKER_WINRT_INITIALIZED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct WorkerWinRtApartment;
+
+impl WorkerWinRtApartment {
+    pub(crate) fn initialize_current_thread() {
+        // SAFETY: Tokio calls this once on each new worker thread. The matching
+        // stop hook below balances every successful initialization.
+        let initialized = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
+        WORKER_WINRT_INITIALIZED.set(initialized);
+        if !initialized {
+            tracing::warn!("snowglass: could not initialize WinRT on a Tokio worker");
+        }
+    }
+
+    pub(crate) fn uninitialize_current_thread() {
+        if WORKER_WINRT_INITIALIZED.replace(false) {
+            // SAFETY: Tokio invokes its stop hook on the same worker thread
+            // whose successful initialization set this thread-local flag.
+            unsafe { RoUninitialize() };
+        }
+    }
+}
 
 impl WinRtApartment {
     pub(crate) fn initialize() -> windows::core::Result<Self> {

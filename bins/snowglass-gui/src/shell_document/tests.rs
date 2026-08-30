@@ -479,11 +479,9 @@ fn pointer_hit_finds_a_centered_dialog_action_over_a_surface() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_pointer_sequence_dispatches_a_delegated_click() {
-    tokio::task::LocalSet::new()
-            .run_until(async {
-                let html = r#"
+    let html = r#"
                     <style>
                       :root, body { width: 100%; height: 100%; margin: 0; }
                       .panel { position: fixed; left: 0; top: 0; width: 180px; height: 90px; transform: translate(300px, 100px); z-index: 20; }
@@ -504,108 +502,114 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
                       }
                     </script>
                 "#;
-                let mut document =
-                    blitz_html::HtmlDocument::from_html(html, blitz_dom::DocumentConfig::default());
-                document
-                    .as_mut()
-                    .set_viewport(blitz_traits::shell::Viewport::new(
-                        800,
-                        600,
-                        1.0,
-                        blitz_traits::shell::ColorScheme::Dark,
-                    ));
-                document.as_mut().resolve(0.0);
-                let script_to_dom = document
+    let mut document =
+        blitz_html::HtmlDocument::from_html(html, blitz_dom::DocumentConfig::default());
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            800,
+            600,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(0.0);
+    let script_to_dom = document
+        .as_ref()
+        .tree()
+        .iter()
+        .enumerate()
+        .map(|(index, (id, _))| (index + 1, id))
+        .collect::<HashMap<_, _>>();
+    let dom_to_script = script_to_dom
+        .iter()
+        .map(|(script, dom)| (*dom, *script))
+        .collect();
+    let (_, arrivals) = channel();
+    let mut layer = ShellDocument {
+        document,
+        dom_structure_revision: 1,
+        arrivals,
+        bands: vec![Scene::new()],
+        placements: Vec::new(),
+        width: 800,
+        height: 600,
+        scale_factor: 1.0,
+        dirty: true,
+        needs_resolve: true,
+        needs_geometry_sync: true,
+        animation_epoch: std::time::Instant::now(),
+        script_to_dom,
+        dom_to_script,
+        pointer_hover_path: Vec::new(),
+    };
+    let (mut runtime, _notifications) = ShellRuntime::start(
+        layer.document.as_ref(),
+        800,
+        600,
+        1.0,
+        &layer.dom_to_script,
+        crate::shell_runtime::ShellRuntimeOptions {
+            html: html.to_owned(),
+            source_name: "snowglass:///native-click-test.html".to_owned(),
+            emulator_commands: deno::EmulatorCommandSink::default(),
+            input_commands: deno::InputCommandSink::default(),
+            webrtc_commands: deno::WebRtcCommandSink::default(),
+            plugin_runtime: Arc::new(snowglass_pluginhost::PluginRuntime::new(
+                snowglass_pluginhost::PluginRegistry::new(),
+                snowglass_pluginhost::PluginRuntimeOptions::default(),
+            )),
+            local_storage: None,
+            input_sources: snowglass_input::source::InputSourceCatalog::default(),
+            input_api: snowglass_runtime::InputApiState::default(),
+        },
+    )
+    .await
+    .unwrap();
+    layer.apply_script_mutations(&mut runtime);
+    let hit = layer.hit_test(330.0, 130.0).unwrap();
+    let native_script_target = layer
+        .document
+        .as_ref()
+        .hit(330.0, 130.0)
+        .and_then(|native| {
+            std::iter::successors(Some(native.node_id), |node| {
+                layer
+                    .document
                     .as_ref()
-                    .tree()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (id, _))| (index + 1, id))
-                    .collect::<HashMap<_, _>>();
-                let dom_to_script = script_to_dom
-                    .iter()
-                    .map(|(script, dom)| (*dom, *script))
-                    .collect();
-                let (_, arrivals) = channel();
-                let mut layer = ShellDocument {
-                    document,
-                    dom_structure_revision: 1,
-                    arrivals,
-                    bands: vec![Scene::new()],
-                    placements: Vec::new(),
-                    width: 800,
-                    height: 600,
-                    scale_factor: 1.0,
-                    dirty: true,
-                    needs_resolve: true,
-                    needs_geometry_sync: true,
-                    animation_epoch: std::time::Instant::now(),
-                    script_to_dom,
-                    dom_to_script,
-                    pointer_hover_path: Vec::new(),
-                };
-                let (mut runtime, _notifications) = ShellRuntime::start(
-                    layer.document.as_ref(),
-                    800,
-                    600,
-                    1.0,
-                    &layer.dom_to_script,
-                    crate::shell_runtime::ShellRuntimeOptions {
-                        html: html.to_owned(),
-                        source_name: "snowglass:///native-click-test.html".to_owned(),
-                        emulator_commands: deno::EmulatorCommandSink::default(),
-                        input_commands: deno::InputCommandSink::default(),
-                        webrtc_commands: deno::WebRtcCommandSink::default(),
-                        plugin_runtime: Arc::new(snowglass_pluginhost::PluginRuntime::new(
-                            snowglass_pluginhost::PluginRegistry::new(),
-                            snowglass_pluginhost::PluginRuntimeOptions::default(),
-                        )),
-                        local_storage: None,
-                        input_sources: snowglass_input::source::InputSourceCatalog::default(),
-                        input_api: snowglass_runtime::InputApiState::default(),
-                    },
-                )
-                .await
-                .unwrap();
-                layer.apply_script_mutations(&mut runtime);
-                let hit = layer.hit_test(330.0, 130.0).unwrap();
-                let native_script_target = layer.document.as_ref().hit(330.0, 130.0).and_then(|native| {
-                    std::iter::successors(Some(native.node_id), |node| {
-                        layer.document.as_ref().get_node(*node).and_then(|node| node.parent)
-                    })
-                    .find_map(|node| layer.dom_to_script.get(&node).copied())
-                });
-                assert_ne!(
-                    native_script_target,
-                    layer.dom_to_script.get(&hit.node_id).copied(),
-                    "the fixture must exercise Snowglass's paint-order retargeting path",
-                );
-                let event = |kind, buttons| DomMouseEvent {
-                    kind,
-                    x: 330.0,
-                    y: 130.0,
-                    button: 0,
-                    buttons,
-                    ctrl_key: false,
-                    shift_key: false,
-                };
-                layer.mouse_event(&mut runtime, hit, event("mousedown", 1));
-                layer.mouse_event(&mut runtime, hit, event("mouseup", 0));
-
-                let sequence = layer.document.as_ref().tree().iter().find_map(|(_, node)| {
-                    node.element_data().and_then(|element| {
-                        (element.attr(local_name!("id")) == Some("action"))
-                            .then(|| element.attr(LocalName::from("data-event-sequence")))
-                            .flatten()
-                    })
-                });
-                assert_eq!(
-                    sequence,
-                    Some("pointerdown,mousedown,pointerup,mouseup,click"),
-                    "Blitz must own compatibility mouse events and click synthesis",
-                );
+                    .get_node(*node)
+                    .and_then(|node| node.parent)
             })
-            .await;
+            .find_map(|node| layer.dom_to_script.get(&node).copied())
+        });
+    assert_ne!(
+        native_script_target,
+        layer.dom_to_script.get(&hit.node_id).copied(),
+        "the fixture must exercise Snowglass's paint-order retargeting path",
+    );
+    let event = |kind, buttons| DomMouseEvent {
+        kind,
+        x: 330.0,
+        y: 130.0,
+        button: 0,
+        buttons,
+        ctrl_key: false,
+        shift_key: false,
+    };
+    layer.mouse_event(&mut runtime, hit, event("mousedown", 1));
+    layer.mouse_event(&mut runtime, hit, event("mouseup", 0));
+
+    let sequence = layer.document.as_ref().tree().iter().find_map(|(_, node)| {
+        node.element_data().and_then(|element| {
+            (element.attr(local_name!("id")) == Some("action"))
+                .then(|| element.attr(LocalName::from("data-event-sequence")))
+                .flatten()
+        })
+    });
+    assert_eq!(
+        sequence,
+        Some("pointerdown,mousedown,pointerup,mouseup,click"),
+        "Blitz must own compatibility mouse events and click synthesis",
+    );
 }
 
 #[test]

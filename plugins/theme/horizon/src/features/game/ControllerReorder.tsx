@@ -16,6 +16,8 @@ import { OverlayPortal } from "../../components/OverlayPortal";
 import { PauseDecorator } from "./PauseDecorator";
 import "./ControllerReorder.css";
 
+const DISCOVERED_CONTROLLER_LIMIT = 8;
+
 export function ControllerReorder(props: { onClose?: () => void }) {
   const shell = useShell();
   const [session, setSession] = createSignal<ConnectionSession | null>(null);
@@ -33,7 +35,9 @@ export function ControllerReorder(props: { onClose?: () => void }) {
   const candidates = createMemo(() => {
     revision();
     const assigned = new Set(players().flatMap((player) => player.controller ? [player.controller.id] : []));
-    return (session()?.candidates ?? []).filter((candidate) => !candidate.connected && !assigned.has(candidate.id));
+    return (session()?.candidates ?? [])
+      .filter((candidate) => !candidate.connected && !assigned.has(candidate.id))
+      .slice(0, DISCOVERED_CONTROLLER_LIMIT);
   });
   const availability = () => {
     revision();

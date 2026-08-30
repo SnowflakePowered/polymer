@@ -59,20 +59,21 @@ impl ShellRuntime {
             scale_factor,
             node_ids,
         ) {
-            Ok(initial_snapshot) => tokio::task::spawn_local(deno::Runtime::from_snapshot(
-                initial_snapshot,
-                html,
-                source_name,
-                emulator_commands,
-                input_commands,
-                webrtc_commands,
-                plugin_runtime,
-                local_storage,
-                input_sources,
-                input_api,
-            ))
-            .await
-            .unwrap_or_else(|error| Err(Box::new(error))),
+            Ok(initial_snapshot) => {
+                deno::Runtime::from_snapshot(
+                    initial_snapshot,
+                    html,
+                    source_name,
+                    emulator_commands,
+                    input_commands,
+                    webrtc_commands,
+                    plugin_runtime,
+                    local_storage,
+                    input_sources,
+                    input_api,
+                )
+                .await
+            }
             Err(error) => Err(Box::new(error) as Box<dyn Error>),
         };
         result.map(|(runtime, notifications)| (Self { runtime }, notifications))

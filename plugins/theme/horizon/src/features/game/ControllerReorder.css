@@ -222,10 +222,12 @@
 
 .horizon-order-unassigned {
   display: flex;
+  width: 100%;
   max-width: 100%;
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
+  overflow: hidden;
   color: #6e7175;
   font-size: 0.82rem;
 }
@@ -233,6 +235,7 @@
 .horizon-order-unassigned > button {
   display: flex;
   min-width: 0;
+  max-width: min(12rem, 12.5%);
   align-items: center;
   gap: 0.35rem;
   padding: 0.25rem 0.6rem;
@@ -240,6 +243,12 @@
   border-radius: 999px;
   color: #4d5054;
   background: white;
+}
+
+.horizon-order-unassigned > button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .horizon-order-unassigned img {

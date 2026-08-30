@@ -5,6 +5,7 @@
 //! here, but neither owns user configuration.
 
 use crate::layout::{InputLayout, SdlAxis, SdlButton};
+use crate::sdl::Wire;
 use consolespec::MachineSpec;
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
@@ -688,7 +689,9 @@ fn validate_ports(
                     target,
                 });
             }
-            if matches!(binding, BindingOverride::Axis { .. }) && !target.is_analog() {
+            if matches!(binding, BindingOverride::Axis { .. })
+                && !matches!(layout.sdl_wire(target), Some(Wire::Axis(_)))
+            {
                 return Err(InputConfigurationError::InvalidBinding(format!(
                     "element {target} does not accept an axis binding"
                 )));
@@ -871,6 +874,36 @@ mod tests {
                 axis: SdlAxis::RightX,
                 invert: true
             })
+        ));
+    }
+
+    #[test]
+    fn projected_gamecube_shoulders_accept_axis_bindings() {
+        let axis = |axis| BindingOverride::Axis {
+            source: SourceControl::GamepadAxis { axis },
+            transform: AxisTransform::default(),
+        };
+        let port = PortConfiguration {
+            port: VirtualPort::new("controller", 0),
+            layout: "GAMECUBE_CONTROLLER".to_owned(),
+            slot: Some(0),
+            force_mouse: false,
+            overrides: HashMap::from([
+                (key!(button.l), axis(SdlAxis::LeftTrigger)),
+                (key!(button.r), axis(SdlAxis::RightTrigger)),
+            ]),
+        };
+
+        InputHub::new(Some("NINTENDO_WII".to_owned()), [port]).unwrap();
+
+        let mut digital = port(0);
+        digital.overrides.insert(
+            key!(button.a),
+            axis(SdlAxis::RightTrigger),
+        );
+        assert!(matches!(
+            hub_with([digital]),
+            Err(InputConfigurationError::InvalidBinding(_))
         ));
     }
 

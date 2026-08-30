@@ -10,7 +10,15 @@ use bytes::Bytes;
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
     task::JoinHandle,
+    time,
 };
+
+const ADAPTER_INITIALIZATION_ATTEMPTS: usize = 3;
+const ADAPTER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(8);
+const ADAPTER_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(500);
+const COMMAND_QUEUE_ATTEMPTS: usize = 3;
+const COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
+const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 use crate::{
     DeviceAddr, Error, Result, Transport, TransportKind,
@@ -235,11 +243,25 @@ impl BluetoothManager {
         F: FnOnce(oneshot::Sender<Result<()>>) -> Command,
     {
         let (tx, rx) = oneshot::channel();
-        self.commands
-            .send(build(tx))
+        let mut permit = None;
+        for attempt in 1..=COMMAND_QUEUE_ATTEMPTS {
+            match time::timeout(COMMAND_QUEUE_TIMEOUT, self.commands.reserve()).await {
+                Ok(Ok(available)) => {
+                    permit = Some(available);
+                    break;
+                }
+                Ok(Err(_)) => return Err(Error::ChannelClosed),
+                Err(_) if attempt < COMMAND_QUEUE_ATTEMPTS => tokio::task::yield_now().await,
+                Err(_) => return Err(Error::Timeout("Bluetooth command queue")),
+            }
+        }
+        permit
+            .expect("a command permit is present after a successful reservation")
+            .send(build(tx));
+        time::timeout(COMMAND_RESPONSE_TIMEOUT, rx)
             .await
-            .map_err(|_| Error::ChannelClosed)?;
-        rx.await.map_err(|_| Error::ChannelClosed)?
+            .map_err(|_| Error::Timeout("Bluetooth command response"))?
+            .map_err(|_| Error::ChannelClosed)?
     }
 }
 
@@ -296,35 +318,39 @@ impl BluetoothServer {
             internal,
             events,
         } = self;
-        let bredr =
-            match HciHost::open_with_firmware(&config.bredr_adapter, config.firmware.clone()).await
-            {
-                Ok(host) => {
-                    let host = Arc::new(host);
-                    let info = host.info();
-                    if let Some(source) = &info.firmware_source {
-                        let _ = events.send(ManagerEvent::FirmwareLoaded {
-                            family: source.clone(),
-                        });
-                    }
-                    let _ = events.send(ManagerEvent::AdapterReady {
-                        transport: TransportKind::BrEdr,
-                        name: format!(
-                            "{:04x}:{:04x} ({})",
-                            info.usb_vendor_id, info.usb_product_id, info.address
-                        ),
+        let (bredr, ble_names) = tokio::join!(
+            Self::initialize_adapter("BR/EDR adapter", || {
+                HciHost::open_with_firmware(&config.bredr_adapter, config.firmware.clone())
+            }),
+            Self::initialize_adapter("BLE adapter", BleGatt::adapter_names),
+        );
+        let bredr = match bredr {
+            Ok(host) => {
+                let host = Arc::new(host);
+                let info = host.info();
+                if let Some(source) = &info.firmware_source {
+                    let _ = events.send(ManagerEvent::FirmwareLoaded {
+                        family: source.clone(),
                     });
-                    Some(host)
                 }
-                Err(error) => {
-                    let _ = events.send(ManagerEvent::AdapterUnavailable {
-                        transport: TransportKind::BrEdr,
-                        error: error.to_string(),
-                    });
-                    None
-                }
-            };
-        match BleGatt::adapter_names().await {
+                let _ = events.send(ManagerEvent::AdapterReady {
+                    transport: TransportKind::BrEdr,
+                    name: format!(
+                        "{:04x}:{:04x} ({})",
+                        info.usb_vendor_id, info.usb_product_id, info.address
+                    ),
+                });
+                Some(host)
+            }
+            Err(error) => {
+                let _ = events.send(ManagerEvent::AdapterUnavailable {
+                    transport: TransportKind::BrEdr,
+                    error: error.to_string(),
+                });
+                None
+            }
+        };
+        match ble_names {
             Ok(names) if config.ble_adapter_index < names.len() => {
                 let _ = events.send(ManagerEvent::AdapterReady {
                     transport: TransportKind::Ble,
@@ -699,6 +725,35 @@ impl BluetoothServer {
         if let Some(task) = pairing_task {
             task.abort();
         }
+    }
+
+    async fn initialize_adapter<T, F, Future>(label: &'static str, mut initialize: F) -> Result<T>
+    where
+        F: FnMut() -> Future,
+        Future: std::future::Future<Output = Result<T>>,
+    {
+        for attempt in 1..=ADAPTER_INITIALIZATION_ATTEMPTS {
+            let result = time::timeout(ADAPTER_INITIALIZATION_TIMEOUT, initialize()).await;
+            match result {
+                Ok(Ok(adapter)) => return Ok(adapter),
+                Ok(Err(error)) if attempt == ADAPTER_INITIALIZATION_ATTEMPTS => return Err(error),
+                Err(_) if attempt == ADAPTER_INITIALIZATION_ATTEMPTS => {
+                    return Err(Error::Timeout(label));
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(attempt, %error, label, "retrying Bluetooth adapter initialization");
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        attempt,
+                        label,
+                        "Bluetooth adapter initialization timed out; retrying"
+                    );
+                }
+            }
+            time::sleep(ADAPTER_INITIALIZATION_RETRY_DELAY).await;
+        }
+        unreachable!("adapter initialization attempts are nonzero")
     }
 
     fn arm_ble_wake(
