@@ -225,7 +225,7 @@ export type ConfigurationSelection = {
 export interface ConfigurationApi {
   describe(packageValue: ScrapedPackage, options?: { emulator?: string }): Promise<PackageConfiguration>;
   prepare(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<unknown>;
-  setupLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
+  onEmulatorLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard";

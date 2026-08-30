@@ -82,7 +82,7 @@ every section below is tagged:
 | `overrides` on a target | designed (§3.1) | — |
 | `enabled_when`, `when_disabled`, `repeat`, `repr` | designed (§3.2, §4) | — |
 | everything from `lower` onward | designed (§4, §5, §8) | — |
-| `setupLaunch` and the instance model | designed (§5.1) | — |
+| `onEmulatorLaunch` and the instance model | designed (§5.1) | — |
 
 **All four plugin packages parse completely**, and
 `toml/document.rs::every_plugin_package_parses` asserts it: it reads each
@@ -868,11 +868,11 @@ Actions (§7):
 ### 5.1 The launch flow
 
 The frontend drives a launch through one call, whose shape the rest of this
-section is written against. `setupLaunch` itself is **[designed]** — the
+section is written against. `onEmulatorLaunch` itself is **[designed]** — the
 signature below is settled, its implementation is not:
 
 ```ts
-Emulator.setupLaunch({
+Emulator.onEmulatorLaunch({
   launchPath: string,
   emulator: string,                      // selects the launch script
   configOverrides: { [path: string]: Value },   // flat option path → value

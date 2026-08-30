@@ -41,7 +41,7 @@ type Configuration = HostConfiguration<{
         },
         input_sources: { sdl: boolean },
 }>;
-type SetupLaunchArgs = {
+type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -63,7 +63,7 @@ function dirname(path: string): string {
     return normalized.slice(0, separator);
 }
 
-export const setupLaunch = (args: SetupLaunchArgs) => {
+export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
@@ -132,4 +132,4 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     };
 };
 
-export default { setupLaunch };
+export default { onEmulatorLaunch };

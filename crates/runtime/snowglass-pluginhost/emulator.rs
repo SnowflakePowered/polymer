@@ -54,7 +54,7 @@ pub struct TrackedSurface {
     pub pattern: Option<String>,
 }
 
-pub struct EmulatorSetupInvocation {
+pub struct EmulatorLaunchInvocation {
     pub plugin: Arc<dyn EmulatorPluginInstance>,
     pub arguments: Value,
     pub configuration: ConfigurationInstance,

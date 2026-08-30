@@ -3,7 +3,7 @@ import type { Configuration as HostConfiguration, Filesystem, Resource } from ".
 
 type Configuration = HostConfiguration;
 
-type SetupLaunchArgs = {
+type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -25,7 +25,7 @@ function dirname(path: string): string {
     return normalized.slice(0, separator);
 }
 
-export const setupLaunch = (args: SetupLaunchArgs) => {
+export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const discName = gameName.replace(/ \(Track \d+\)\.bin$/i, ".cue");
     const biosName = basename(config.plugin.config.bios);
@@ -85,4 +85,4 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     };
 };
 
-export default { setupLaunch };
+export default { onEmulatorLaunch };

@@ -38,7 +38,7 @@ type Configuration = HostConfiguration<{
         "emucore-gs": { renderer: number },
 }>;
 
-type SetupLaunchArgs = {
+type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -53,7 +53,7 @@ function basename(path: string): string {
     return name;
 }
 
-export const setupLaunch = (args: SetupLaunchArgs) => {
+export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
 
@@ -126,4 +126,4 @@ export const onControllerChanged = (context: ControllerChangeContext) => {
     }
 };
 
-export default { setupLaunch, onControllerChanged };
+export default { onEmulatorLaunch, onControllerChanged };

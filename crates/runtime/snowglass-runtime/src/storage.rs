@@ -185,9 +185,9 @@ fn watch_save_history(
     Arc::new(SaveWatchFactory::new(factory, saves, notification))
 }
 
-fn is_setup_launch(export_path: &[String]) -> bool {
-    matches!(export_path, [name] if name == "setupLaunch")
-        || matches!(export_path, [default, name] if default == "default" && name == "setupLaunch")
+fn is_emulator_launch(export_path: &[String]) -> bool {
+    matches!(export_path, [name] if name == "onEmulatorLaunch")
+        || matches!(export_path, [default, name] if default == "default" && name == "onEmulatorLaunch")
 }
 
 pub async fn launch_storage(
@@ -196,7 +196,7 @@ pub async fn launch_storage(
     arguments: &[Value],
     notifications: SnowglassNotificationSender,
 ) -> Result<StorageFactories, String> {
-    if !is_setup_launch(export_path) {
+    if !is_emulator_launch(export_path) {
         return Ok(BTreeMap::new());
     }
 
@@ -411,7 +411,7 @@ mod tests {
         let (notifications, mut saved) = tokio::sync::mpsc::unbounded_channel();
         let factories = launch_storage(
             Some(manager.clone()),
-            &["setupLaunch".to_owned()],
+            &["onEmulatorLaunch".to_owned()],
             &[arguments],
             notifications,
         )

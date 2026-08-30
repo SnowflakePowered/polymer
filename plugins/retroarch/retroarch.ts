@@ -3,7 +3,7 @@ import type { Configuration as HostConfiguration, Filesystem, Resource } from ".
 
 type Configuration = HostConfiguration<{ core: { placeholder: boolean } }>;
 
-type SetupLaunchArgs = {
+type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -28,7 +28,7 @@ function quoted(value: string): string {
     return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
-export const setupLaunch = (args: SetupLaunchArgs) => {
+export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
 
@@ -108,4 +108,4 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
     };
 };
 
-export default { setupLaunch };
+export default { onEmulatorLaunch };

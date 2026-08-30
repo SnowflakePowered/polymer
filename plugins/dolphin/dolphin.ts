@@ -45,7 +45,7 @@ type Package = Readonly<{
     titleId: string | null,
 }>;
 
-type SetupLaunchArgs = {
+type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
     package: Package,
@@ -84,10 +84,10 @@ function hasAnalogPointer(mapping: Pick<ControllerMapping, "mouse" | "mapping">)
     });
 }
 
-export const setupLaunch = (args: SetupLaunchArgs) => {
+export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const isWii = args.console === "NINTENDO_WII";
-    // Wii WADs are installed into the selected NAND before setupLaunch and
+    // Wii WADs are installed into the selected NAND before onEmulatorLaunch and
     // must continue to boot by title ID. Disc images instead need to remain
     // visible as files and be passed to Dolphin with -e.
     const launchesNandTitle = isWii && !isDiscImage(gameName);
@@ -210,6 +210,6 @@ export const onControllerChanged = (context: ControllerChangeContext) => {
 };
 
 export default {
-    setupLaunch,
+    onEmulatorLaunch,
     onControllerChanged,
 }

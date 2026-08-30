@@ -9,7 +9,7 @@ type Configuration = HostConfiguration<{
         },
 }>;
 
-type SetupLaunchArgs = {
+type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -23,7 +23,7 @@ type SetupLaunchArgs = {
     }>,
 }
 
-export const setupLaunch = (args: SetupLaunchArgs) => {
+export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     args.configuration.options().content.open_pad = true;
 
     // The package files are recursive read-only submounts over a writable,
@@ -67,5 +67,5 @@ export const setupLaunch = (args: SetupLaunchArgs) => {
 }
 
 export default {
-    setupLaunch
+    onEmulatorLaunch
 }

@@ -516,7 +516,7 @@ def build_gfx_backend_option(option: dict, backends: list[str], report: Report) 
     D3D is Windows-only, Metal is macOS-only, and any of them can be compiled
     out — while upstream computes the default at startup rather than storing it
     as a constant. The generator already reads the concrete build's backend
-    sources, so expose that set directly and let setupLaunch choose one.
+    sources, so expose that set directly and let onEmulatorLaunch choose one.
     """
     supported = [name for name in backends if name in SUPPORTED_BACKENDS]
     if not supported:
@@ -1244,7 +1244,7 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
     )
     # Cursor's relative-input setting belongs to the nested IR group rather
     # than Wiimote's constructor, so parse_controller cannot discover it.
-    # Keep it in the generated layout options because setupLaunch selects it
+    # Keep it in the generated layout options because onEmulatorLaunch selects it
     # from the already-resolved controller mapping.
     wiimote_settings.append({
         "key": "IR/Relative Input",
