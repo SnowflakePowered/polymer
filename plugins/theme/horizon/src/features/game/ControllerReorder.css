@@ -259,6 +259,20 @@
   background: #898e93;
 }
 
+.horizon-order-pairing-spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+  border: 2px solid #c5c8cb;
+  border-top-color: #4d5054;
+  border-radius: 50%;
+  animation: horizon-order-pairing-spin 0.75s linear infinite;
+}
+
+@keyframes horizon-order-pairing-spin {
+  to { transform: rotate(360deg); }
+}
+
 .horizon-order-loading,
 .horizon-order-error {
   margin: 0;

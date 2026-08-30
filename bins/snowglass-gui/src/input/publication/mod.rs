@@ -140,9 +140,7 @@ impl PublishedDevice {
             .into_iter()
             .map(|button| {
                 let pressed = controller.state.button(button);
-                if let Some((_, expression)) = snowglass_input::sdl::BUTTONS.get(button as usize) {
-                    controls.insert(format!("{id}\0{expression}"), i32::from(pressed));
-                }
+                controls.insert(format!("{id}\0{}", button.binding()), i32::from(pressed));
                 PublishedButton {
                     button: format!("{button:?}"),
                     pressed,

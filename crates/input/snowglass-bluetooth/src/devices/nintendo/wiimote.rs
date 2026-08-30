@@ -47,7 +47,10 @@ trait WiimoteModel: Send + Sync + 'static {
         ConnectionPolicy {
             pairing,
             reconnect: ReconnectPolicy::ControllerInitiated,
-            controller_opens_hid: true,
+            // Fresh Wii Remote pairing follows the host-initiated HID path.
+            // Button-wake reconnects are controller-initiated, but those enter
+            // through Manager::accept_inbound rather than this outbound policy.
+            controller_opens_hid: false,
             wait_for_encryption_before_inbound_hid: false,
             become_master: true,
             automatic_flush_slots: Some(0),

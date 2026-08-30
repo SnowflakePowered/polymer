@@ -4,6 +4,78 @@ use anyrender::Scene;
 use blitz_dom::LocalName;
 use std::sync::Arc;
 
+#[test]
+fn removing_a_focused_dialog_ignores_its_late_focus_request() {
+    let mut document = blitz_html::HtmlDocument::from_html(
+        r#"<main id="root"><section id="dialog"><button id="resume">Resume</button></section></main>"#,
+        blitz_dom::DocumentConfig::default(),
+    );
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            800,
+            600,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(0.0);
+
+    let find = |name| {
+        document
+            .as_ref()
+            .tree()
+            .iter()
+            .find_map(|(id, node)| (node.attr(local_name!("id")) == Some(name)).then_some(id))
+            .unwrap()
+    };
+    let root = find("root");
+    let dialog = find("dialog");
+    let resume = find("resume");
+    let mut script_to_dom = document
+        .as_ref()
+        .tree()
+        .iter()
+        .enumerate()
+        .map(|(index, (id, _))| (index + 1, id))
+        .collect::<HashMap<_, _>>();
+    let mut dom_to_script = script_to_dom
+        .iter()
+        .map(|(script, dom)| (*dom, *script))
+        .collect::<HashMap<_, _>>();
+    let root_script = dom_to_script[&root];
+    let dialog_script = dom_to_script[&dialog];
+    let resume_script = dom_to_script[&resume];
+
+    document.as_mut().set_focus_to(resume);
+    apply_dom_mutations(
+        &mut document,
+        &mut script_to_dom,
+        &mut dom_to_script,
+        vec![
+            deno::Mutation::RemoveChild {
+                parent: root_script,
+                child: dialog_script,
+            },
+            // A requestAnimationFrame scheduled by the dialog can arrive in
+            // the same bridge batch after Solid has removed the subtree.
+            deno::Mutation::Focus {
+                node: resume_script,
+            },
+        ],
+    );
+    document.as_mut().resolve(1.0);
+
+    assert!(
+        !document
+            .as_ref()
+            .get_node(resume)
+            .unwrap()
+            .flags
+            .is_in_document()
+    );
+    assert_ne!(document.as_ref().get_focussed_node_id(), Some(resume));
+}
+
 fn image_fill_count(scene: &anyrender::Scene) -> usize {
     scene
         .commands

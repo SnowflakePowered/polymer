@@ -149,8 +149,12 @@ pub enum AccelerationStage {
 enum State {
     #[default]
     Idle,
-    Positioning { action: usize, observed: u16 },
-    Capturing { action: usize, observed: u16 },
+    Positioning {
+        action: usize,
+    },
+    Capturing {
+        action: usize,
+    },
     Complete,
 }
 
@@ -240,9 +244,12 @@ pub struct ClassCAccelerationContext {
 pub struct AccelerationExperimentMarker {
     pub event: &'static str,
     pub action: &'static AccelerationAction,
+    pub action_number: usize,
+    pub action_count: usize,
     pub observed: u16,
     pub total_observed: u64,
     pub rejected: u64,
+    pub completed_by_action: [u16; ACTIONS.len()],
     pub context: Option<ClassCAccelerationContext>,
 }
 
@@ -251,6 +258,7 @@ pub struct ClassCAccelerationExperiment {
     state: State,
     previous_normal: Option<Observation<NormalAccelerationPacket>>,
     pending: Vec<PendingContext>,
+    completed_by_action: [u16; ACTIONS.len()],
     total_observed: u64,
     rejected: u64,
 }
@@ -258,30 +266,27 @@ pub struct ClassCAccelerationExperiment {
 impl ClassCAccelerationExperiment {
     pub fn start(&mut self, capture: &mut MotionCapture) -> io::Result<()> {
         self.reset();
-        self.state = State::Positioning {
-            action: 0,
-            observed: 0,
-        };
+        self.state = State::Positioning { action: 0 };
         self.set_label(capture, "positioning")?;
         self.mark(capture, "class_c_acceleration_experiment_started", None)
     }
 
     pub fn begin_action(&mut self, capture: &mut MotionCapture) -> io::Result<()> {
-        let State::Positioning { action, observed } = self.state else {
+        let State::Positioning { action } = self.state else {
             return Ok(());
         };
         self.clear_context_window();
-        self.state = State::Capturing { action, observed };
+        self.state = State::Capturing { action };
         self.set_label(capture, "capturing")?;
         self.mark(capture, "class_c_acceleration_action_started", None)
     }
 
     pub fn pause_action(&mut self, capture: &mut MotionCapture) -> io::Result<()> {
-        let State::Capturing { action, observed } = self.state else {
+        let State::Capturing { action } = self.state else {
             return Ok(());
         };
         self.clear_context_window();
-        self.state = State::Positioning { action, observed };
+        self.state = State::Positioning { action };
         self.set_label(capture, "positioning")?;
         self.mark(capture, "class_c_acceleration_action_paused", None)
     }
@@ -296,9 +301,7 @@ impl ClassCAccelerationExperiment {
             return Ok(());
         }
         match packet {
-            AccelerationPacket::Normal(packet) => {
-                self.observe_normal(capture, packet, received_at)
-            }
+            AccelerationPacket::Normal(packet) => self.observe_normal(capture, packet, received_at),
             AccelerationPacket::Precision(packet) => {
                 self.observe_precision(capture, packet, received_at);
                 Ok(())
@@ -308,6 +311,16 @@ impl ClassCAccelerationExperiment {
 
     pub fn restart(&mut self, capture: &mut MotionCapture) -> io::Result<()> {
         self.start(capture)
+    }
+
+    pub fn select_action(&mut self, capture: &mut MotionCapture, action: usize) -> io::Result<()> {
+        if action >= ACTIONS.len() || matches!(self.state, State::Idle) {
+            return Ok(());
+        }
+        self.clear_context_window();
+        self.state = State::Positioning { action };
+        self.set_label(capture, "positioning")?;
+        self.mark(capture, "class_c_acceleration_action_selected", None)
     }
 
     pub fn abort(&mut self, capture: &mut MotionCapture) -> io::Result<()> {
@@ -333,6 +346,7 @@ impl ClassCAccelerationExperiment {
         self.clear_context_window();
         self.total_observed = 0;
         self.rejected = 0;
+        self.completed_by_action = [0; ACTIONS.len()];
     }
 
     pub const fn stage(&self) -> AccelerationStage {
@@ -359,6 +373,14 @@ impl ClassCAccelerationExperiment {
         self.action_index().map(|action| &ACTIONS[action])
     }
 
+    pub const fn actions(&self) -> &'static [AccelerationAction] {
+        ACTIONS
+    }
+
+    pub fn completed_for_action(&self, action: usize) -> u16 {
+        self.completed_by_action.get(action).copied().unwrap_or(0)
+    }
+
     pub fn action_number(&self) -> Option<usize> {
         self.action_index().map(|action| action + 1)
     }
@@ -368,9 +390,9 @@ impl ClassCAccelerationExperiment {
     }
 
     pub const fn observed_in_action(&self) -> u16 {
-        match self.state {
-            State::Positioning { observed, .. } | State::Capturing { observed, .. } => observed,
-            State::Idle | State::Complete => 0,
+        match self.action_index() {
+            Some(action) => self.completed_by_action[action],
+            None => 0,
         }
     }
 
@@ -435,12 +457,12 @@ impl ClassCAccelerationExperiment {
         capture: &mut MotionCapture,
         context: ClassCAccelerationContext,
     ) -> io::Result<()> {
-        let State::Capturing { action, observed } = self.state else {
+        let State::Capturing { action } = self.state else {
             return Ok(());
         };
-        let observed = observed.saturating_add(1);
+        let observed = self.completed_by_action[action].saturating_add(1);
+        self.completed_by_action[action] = observed;
         self.total_observed += 1;
-        self.state = State::Capturing { action, observed };
         self.mark(capture, "class_c_acceleration_context", Some(context))?;
         if observed < ACTIONS[action].target {
             return Ok(());
@@ -459,7 +481,6 @@ impl ClassCAccelerationExperiment {
         } else {
             self.state = State::Positioning {
                 action: next_action,
-                observed: 0,
             };
             self.set_label(capture, "positioning")?;
         }
@@ -491,16 +512,19 @@ impl ClassCAccelerationExperiment {
         capture.mark_class_c_acceleration_experiment(AccelerationExperimentMarker {
             event,
             action: &ACTIONS[action],
+            action_number: action + 1,
+            action_count: ACTIONS.len(),
             observed: self.observed_in_action(),
             total_observed: self.total_observed,
             rejected: self.rejected,
+            completed_by_action: self.completed_by_action,
             context,
         })
     }
 
     const fn action_index(&self) -> Option<usize> {
         match self.state {
-            State::Positioning { action, .. } | State::Capturing { action, .. } => Some(action),
+            State::Positioning { action } | State::Capturing { action } => Some(action),
             State::Idle | State::Complete => None,
         }
     }

@@ -13,6 +13,7 @@ type ControllerAction =
   | { type: "activate" | "back" | "details" | "pause" };
 
 const InputContext = createContext<InputContextValue>();
+const controllerNavigationEvents = new WeakSet<Event>();
 const buttonActions: Partial<Record<string, ControllerAction>> = {
   "directional.w": { type: "move", direction: "left" },
   "directional.e": { type: "move", direction: "right" },
@@ -23,6 +24,17 @@ const buttonActions: Partial<Record<string, ControllerAction>> = {
   "button.x": { type: "details" },
   "button.guide": { type: "pause" },
 };
+
+export function dispatchControllerBack(target: EventTarget) {
+  const event = new KeyboardEvent("keydown", {
+    key: "Escape",
+    code: "Escape",
+    bubbles: true,
+    cancelable: true,
+  });
+  controllerNavigationEvents.add(event);
+  target.dispatchEvent(event);
+}
 const axisDirections: Partial<Record<string, readonly [InputDirection, InputDirection]>> = {
   "analog.stick.left.x+": ["left", "right"],
   "analog.stick.left.y+": ["up", "down"],
@@ -66,7 +78,8 @@ export function InputProvider(props: ParentProps) {
       if (action) emit({ ...action, sourceId: input.sourceId, event } as InputAction);
     };
     const keyboardInput = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (controllerNavigationEvents.has(event)
+        || event.defaultPrevented || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       const directions: Partial<Record<string, InputDirection>> = {
         ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
       };

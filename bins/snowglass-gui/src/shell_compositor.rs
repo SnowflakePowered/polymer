@@ -18,6 +18,7 @@ use snowglass_renderer::{Extent, RasterSurface};
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
+    sync::Arc,
 };
 use windows::{
     UI::Composition::{
@@ -130,11 +131,14 @@ struct RasterDomain {
 }
 
 impl RasterDomain {
-    fn new(rasterizer: ShellRasterizer) -> Result<Self, Box<dyn Error>> {
+    fn new(
+        rasterizer: ShellRasterizer,
+        publication_ready: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self, Box<dyn Error>> {
         let context = rasterizer.device_context()?;
         Ok(Self {
             context,
-            worker: ShellRasterWorker::spawn(rasterizer),
+            worker: ShellRasterWorker::spawn(rasterizer, publication_ready),
             surfaces: Vec::new(),
             slots: HashMap::new(),
             chunks: Vec::new(),
@@ -154,6 +158,7 @@ pub(crate) struct ShellCompositor {
     group_visuals: HashMap<u64, CompositionGroupVisual>,
     child_orders: HashMap<Option<u64>, Vec<CompositionNodeId>>,
     raster: RasterDomain,
+    publication_ready: Arc<dyn Fn() + Send + Sync>,
     content_dirty: bool,
     game_revision: u64,
 }
@@ -162,8 +167,10 @@ impl ShellCompositor {
     pub(crate) fn new(
         compositor: &Compositor,
         rasterizer: ShellRasterizer,
+        publication_ready: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, Box<dyn Error>> {
-        let raster = RasterDomain::new(rasterizer)?;
+        let publication_ready: Arc<dyn Fn() + Send + Sync> = Arc::new(publication_ready);
+        let raster = RasterDomain::new(rasterizer, publication_ready.clone())?;
         let root = compositor.CreateContainerVisual()?;
         root.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
         Ok(Self {
@@ -173,13 +180,14 @@ impl ShellCompositor {
             group_visuals: HashMap::new(),
             child_orders: HashMap::new(),
             raster,
+            publication_ready,
             content_dirty: true,
             game_revision: 0,
         })
     }
 
     fn replace_rasterizer(&mut self, rasterizer: ShellRasterizer) -> Result<(), Box<dyn Error>> {
-        self.raster = RasterDomain::new(rasterizer)?;
+        self.raster = RasterDomain::new(rasterizer, self.publication_ready.clone())?;
         self.content_dirty = true;
         Ok(())
     }

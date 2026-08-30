@@ -548,6 +548,10 @@ impl Transport for BleGatt {
         self.reports.subscribe()
     }
 
+    fn input_characteristic_uuid(&self) -> Option<Uuid> {
+        self.input.as_ref().map(|input| input.uuid)
+    }
+
     fn responses(&self) -> Option<ReportReceiver> {
         self.response.as_ref()?;
         Some(self.responses.subscribe())

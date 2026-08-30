@@ -60,6 +60,10 @@ pub(super) fn apply_dom_mutations(
     for mutation in focus {
         if let Mutation::Focus { node } = mutation
             && let Some(node) = script_to_dom.get(&node).copied()
+            && document
+                .as_ref()
+                .get_node(node)
+                .is_some_and(|node| node.flags.is_in_document())
         {
             document.as_mut().set_focus_to(node);
         }
@@ -75,6 +79,33 @@ fn apply_dom_mutation_batch(
 ) -> MutationEffect {
     let mut needs_resolve = false;
     let mut needs_geometry_sync = false;
+
+    // A conditional UI subtree can be removed while one of its controls owns
+    // focus. Blitz keeps focus independently from tree membership, so leaving
+    // that detached node focused makes a later blur or style resolve operate
+    // on a node which is no longer in the document. Pause dialogs exercise
+    // this whenever their focussed Resume button disappears. Clear focus
+    // before detaching any subtree which contains it.
+    if let Some(focused) = document.as_ref().get_focussed_node_id()
+        && mutations.iter().any(|mutation| {
+            let Mutation::RemoveChild { child, .. } = mutation else {
+                return false;
+            };
+            let Some(removed) = script_to_dom.get(child).copied() else {
+                return false;
+            };
+            std::iter::successors(Some(focused), |node| {
+                document
+                    .as_ref()
+                    .get_node(*node)
+                    .and_then(|node| node.parent)
+            })
+            .any(|node| node == removed)
+        })
+    {
+        document.as_mut().clear_focus();
+    }
+
     let mut mutator = document.as_mut().mutate();
     for mutation in mutations {
         match mutation {

@@ -232,6 +232,13 @@ pub trait ControllerDevice: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence>;
 
+    /// Whether this profile can establish its native protocol over a
+    /// transport. Classic HID controllers default to BR/EDR; profiles which
+    /// implement a BLE GATT data plane opt into BLE explicitly.
+    fn supports_transport(&self, transport: TransportKind) -> bool {
+        transport == TransportKind::BrEdr
+    }
+
     fn bonding_modes(&self) -> Vec<BondingMode> {
         Vec::new()
     }
@@ -257,6 +264,13 @@ pub trait ControllerDevice: Send + Sync {
     }
 
     fn preferred_input_report_id(&self) -> Option<u8> {
+        None
+    }
+
+    /// A model-specific BLE input characteristic which identifies this
+    /// controller after GATT discovery. Family fallback characteristics may
+    /// deliberately identify only the family profile.
+    fn input_characteristic_uuid(&self) -> Option<Uuid> {
         None
     }
 
@@ -305,6 +319,7 @@ impl ControllerRegistry {
         let mut matches = self
             .controllers
             .iter()
+            .filter(|controller| controller.supports_transport(identity.transport))
             .filter_map(|controller| {
                 controller
                     .matches(identity)
@@ -322,5 +337,73 @@ impl ControllerRegistry {
             return Err(crate::Error::AmbiguousProfile(identity.address));
         }
         Ok(Some(controller))
+    }
+
+    pub fn identify_input_characteristic(
+        &self,
+        uuid: Uuid,
+    ) -> Result<Option<Arc<dyn ControllerDevice>>> {
+        let mut matches = self
+            .controllers
+            .iter()
+            .filter(|controller| controller.input_characteristic_uuid() == Some(uuid));
+        let controller = matches.next().cloned();
+        if matches.next().is_some() {
+            return Err(crate::Error::Unsupported(
+                "BLE input characteristic matches multiple controller profiles",
+            ));
+        }
+        Ok(controller)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wiimote_identity(transport: TransportKind) -> DeviceIdentity {
+        DeviceIdentity {
+            address: DeviceAddr::public([1, 2, 3, 4, 5, 6]),
+            transport,
+            name: Some("Nintendo RVL-CNT-01".to_owned()),
+            class_of_device: None,
+            service_uuids: Vec::new(),
+            manufacturer_data: Vec::new(),
+            pnp: None,
+        }
+    }
+
+    #[test]
+    fn classic_only_profile_is_not_selected_from_ble_discovery() {
+        let registry = ControllerRegistry::standard();
+        assert!(
+            registry
+                .identify(&wiimote_identity(TransportKind::Ble))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .identify(&wiimote_identity(TransportKind::BrEdr))
+                .unwrap()
+                .unwrap()
+                .id()
+                .as_str(),
+            "nintendo.wiimote.original"
+        );
+    }
+
+    #[test]
+    fn fresh_wiimote_pairing_uses_host_initiated_hid_channels() {
+        let identity = wiimote_identity(TransportKind::BrEdr);
+        let controller = ControllerRegistry::standard()
+            .identify(&identity)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !controller
+                .connection_policy(&identity, &ConnectOptions::default())
+                .controller_opens_hid
+        );
     }
 }

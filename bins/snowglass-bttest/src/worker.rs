@@ -1098,7 +1098,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             }
                         }
                         let identity = BrIdentity::new(profile_id);
-                        if identity.is_switch() {
+                        if identity.is_switch() || identity.is_wii_remote() {
                             if let Err(error) = pairing.forget(device.addr) {
                                 let _ = events.send(Event::Error(format!(
                                     "could not clear the previous Nintendo bond: {error}"
@@ -1106,11 +1106,11 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                 continue;
                             }
                             diagnostic(&format!(
-                                "Forcing fresh SSP pairing for Nintendo controller {}",
+                                "Forcing fresh pairing for Nintendo controller {}",
                                 device.addr
                             ));
                             let _ = events.send(Event::Log(
-                                "Cleared the previous Nintendo bond for fresh SSP pairing".into(),
+                                "Cleared the previous Nintendo bond for fresh pairing".into(),
                             ));
                         }
                         if let Err(error) = configure_pin(pairing, device.addr, pin, &identity) {

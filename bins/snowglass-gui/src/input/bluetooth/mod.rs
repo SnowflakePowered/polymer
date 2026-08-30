@@ -47,6 +47,7 @@ struct BluetoothActor {
     identities: BTreeMap<String, ControllerId>,
     player_assignments: HashMap<String, u8>,
     applied_players: HashMap<u64, u8>,
+    error: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -55,6 +56,7 @@ struct BluetoothDevice {
     id: String,
     name: String,
     connected: bool,
+    pairing: bool,
 }
 
 impl BluetoothHandle {
@@ -84,6 +86,7 @@ impl BluetoothHandle {
                         identities: BTreeMap::new(),
                         player_assignments: HashMap::new(),
                         applied_players: HashMap::new(),
+                        error: None,
                     }
                     .run()
                     .await;
@@ -225,9 +228,21 @@ impl BluetoothActor {
                     })?;
                 self.provider
                     .manager()
-                    .connect(controller.address, ConnectOptions::default())
+                    .connect(
+                        controller.address,
+                        ConnectOptions {
+                            bonding_mode: value
+                                .get("bondingMode")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned),
+                            ..ConnectOptions::default()
+                        },
+                    )
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| {
+                        tracing::error!(address = %controller.address, %error, "Bluetooth connection failed");
+                        error.to_string()
+                    })?;
             }
             "bluetooth.disconnect" => {
                 let id = Self::device_id(&value)?;
@@ -317,6 +332,9 @@ impl BluetoothActor {
                 profile_id,
                 ..
             } => {
+                let Some(profile_id) = profile_id else {
+                    return;
+                };
                 let controller = ControllerId::new(identity.transport, identity.address);
                 let id = source_id(controller).as_str().to_owned();
                 self.identities.insert(id.clone(), controller);
@@ -324,22 +342,22 @@ impl BluetoothActor {
                     id.clone(),
                     BluetoothDevice {
                         id,
-                        name: identity
-                            .name
-                            .unwrap_or_else(|| "Bluetooth controller".to_owned()),
+                        name: identity.name.unwrap_or_else(|| profile_id.to_string()),
                         connected: false,
+                        pairing: false,
                     },
                 );
-                if self.session_active && profile_id.is_some() {
-                    let manager = self.provider.manager();
-                    tokio::spawn(async move {
-                        let _ = manager
-                            .connect(controller.address, ConnectOptions::default())
-                            .await;
-                    });
+            }
+            ManagerEvent::Connecting { controller_id, .. } => {
+                self.error = None;
+                self.active_scans[Self::transport_index(controller_id.transport)] = false;
+                let id = source_id(controller_id).as_str().to_owned();
+                if let Some(device) = self.devices.get_mut(&id) {
+                    device.pairing = true;
                 }
             }
             ManagerEvent::Connected(controller) => {
+                self.error = None;
                 let id = source_id(controller.controller_id).as_str().to_owned();
                 self.identities.insert(id.clone(), controller.controller_id);
                 self.devices.insert(
@@ -351,6 +369,7 @@ impl BluetoothActor {
                             .name
                             .unwrap_or_else(|| controller.profile_id.to_string()),
                         connected: true,
+                        pairing: false,
                     },
                 );
             }
@@ -358,6 +377,19 @@ impl BluetoothActor {
                 let id = source_id(controller_id).as_str().to_owned();
                 if let Some(device) = self.devices.get_mut(&id) {
                     device.connected = false;
+                    device.pairing = false;
+                }
+            }
+            ManagerEvent::Error { address, message } => {
+                tracing::error!(address = ?address, error = %message, "Bluetooth manager operation failed");
+                self.error = Some(message);
+                if let Some(address) = address
+                    && let Some(id) = self.identities.iter().find_map(|(id, controller)| {
+                        (controller.address == address).then(|| id.clone())
+                    })
+                    && let Some(device) = self.devices.get_mut(&id)
+                {
+                    device.pairing = false;
                 }
             }
             _ => {}
@@ -383,6 +415,7 @@ impl BluetoothActor {
                 id: id.clone(),
                 name: controller.name.clone(),
                 connected: controller.connected,
+                pairing: false,
             },
         );
         if controller.connected
@@ -419,16 +452,13 @@ impl BluetoothActor {
                 "active": self.active_scans.iter().any(|active| *active),
             },
             "devices": self.devices.values().collect::<Vec<_>>(),
+            "error": self.error,
         });
     }
 
     fn start_scan(&self, transport: TransportKind) {
         let manager = self.provider.manager();
         tokio::spawn(async move {
-            // ScanState(false) is broadcast just before the manager consumes
-            // its internal ScanFinished command. Yield briefly so a renewal
-            // cannot race that cleanup and be rejected as already active.
-            tokio::time::sleep(Duration::from_millis(10)).await;
             let request = match transport {
                 TransportKind::Ble => ScanRequest::Ble {
                     duration: Duration::from_secs(30),

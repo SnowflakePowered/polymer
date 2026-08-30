@@ -32,6 +32,15 @@ impl InputPublisher {
                 "expected input hello",
             ));
         };
+        if hello.protocol_version != PROTOCOL_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "input protocol mismatch: publisher uses {PROTOCOL_VERSION}, subscriber uses {}",
+                    hello.protocol_version
+                ),
+            ));
+        }
         let handle = self.shared.duplicate_for(hello.process_id)?;
         control.send(Message::MapOffer(MapOffer {
             channel: ChannelKind::Input,
@@ -162,6 +171,26 @@ mod tests {
         }
         server.join().unwrap();
         assert_eq!(received, Some(expected));
+    }
+
+    #[test]
+    fn rejects_a_subscriber_using_an_incompatible_protocol() {
+        let name = format!("snowglass-input-version-test-{}", std::process::id());
+        let listener = LocalSocketListener::bind(&name).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut publisher = InputPublisher::new().unwrap();
+            let mut control = listener.accept().unwrap();
+            publisher.accept(&mut control).unwrap_err().kind()
+        });
+        let mut client = LocalSocket::connect(&name).unwrap();
+        client
+            .send(Message::Hello(Handshake {
+                protocol_version: PROTOCOL_VERSION.wrapping_sub(1),
+                process_id: std::process::id(),
+                preferred_consumer: ConsumerApi::Vulkan,
+            }))
+            .unwrap();
+        assert_eq!(server.join().unwrap(), io::ErrorKind::InvalidData);
     }
 
     #[test]

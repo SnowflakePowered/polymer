@@ -546,6 +546,7 @@ struct RoutedGamepadSink(Arc<RwLock<RoutedGamepadState>>);
 struct RoutedGamepadState {
     target: Option<Arc<dyn GamepadUpdateSink>>,
     latest: BTreeMap<u8, GamepadUpdate>,
+    sequences: BTreeMap<u8, u32>,
 }
 
 impl RoutedGamepadSink {
@@ -563,34 +564,53 @@ impl RoutedGamepadSink {
     fn detach(&self) {
         let detached = {
             let mut state = self.0.write();
-            state
-                .target
-                .take()
-                .map(|target| (target, state.latest.values().copied().collect::<Vec<_>>()))
+            let target = state.target.take();
+            target.map(|target| {
+                let latest = state.latest.values().copied().collect::<Vec<_>>();
+                let updates = latest
+                    .into_iter()
+                    .map(|update| state.sequenced(update, false, GamepadState::default()))
+                    .collect::<Vec<_>>();
+                (target, updates)
+            })
         };
         if let Some((target, updates)) = detached {
             for update in updates {
-                target.publish(GamepadUpdate {
-                    sequence: update.sequence.wrapping_add(1),
-                    connected: false,
-                    state: GamepadState::default(),
-                    ..update
-                });
+                target.publish(update);
             }
+        }
+    }
+}
+
+impl RoutedGamepadState {
+    fn sequenced(
+        &mut self,
+        update: GamepadUpdate,
+        connected: bool,
+        state: GamepadState,
+    ) -> GamepadUpdate {
+        let sequence = self.sequences.entry(update.slot.get()).or_default();
+        *sequence = sequence.wrapping_add(1);
+        GamepadUpdate {
+            sequence: *sequence,
+            connected,
+            state,
+            ..update
         }
     }
 }
 
 impl GamepadUpdateSink for RoutedGamepadSink {
     fn publish(&self, update: GamepadUpdate) {
-        let target = {
+        let (target, update) = {
             let mut state = self.0.write();
+            let update = state.sequenced(update, update.connected, update.state);
             if update.connected {
                 state.latest.insert(update.slot.get(), update);
             } else {
                 state.latest.remove(&update.slot.get());
             }
-            state.target.clone()
+            (state.target.clone(), update)
         };
         if let Some(target) = target {
             target.publish(update);
@@ -844,10 +864,39 @@ mod tests {
         let updates = target.0.lock();
         assert_eq!(updates.len(), 2);
         assert!(updates[0].connected);
-        assert_eq!(updates[0].sequence, 7);
+        assert_eq!(updates[0].sequence, 1);
         assert!(!updates[1].connected);
-        assert_eq!(updates[1].sequence, 8);
+        assert_eq!(updates[1].sequence, 2);
         assert_eq!(updates[1].state, GamepadState::default());
+    }
+
+    #[test]
+    fn routed_sink_orders_updates_from_independent_producers() {
+        let routed = RoutedGamepadSink::default();
+        let target = Arc::new(RecordingSink::default());
+        routed.attach(target.clone());
+
+        for sequence in [90, 1, 2] {
+            routed.publish(GamepadUpdate {
+                slot: GamepadSlot::new(0).unwrap(),
+                sequence,
+                connected: true,
+                state: GamepadState {
+                    buttons: sequence,
+                    ..GamepadState::default()
+                },
+            });
+        }
+
+        let updates = target.0.lock();
+        assert_eq!(
+            updates
+                .iter()
+                .map(|update| update.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(updates[2].state.buttons, 2);
     }
 
     #[test]

@@ -146,6 +146,7 @@ pub(crate) use winit::{
 pub(crate) enum WindowCommand {
     WakeCapture,
     CompositorTick,
+    ShellRasterReady,
     RedrawShell,
     SetCursor(Option<cursor_icon::CursorIcon>),
     SetTitle(String),

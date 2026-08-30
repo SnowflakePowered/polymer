@@ -1,5 +1,6 @@
 //! API-neutral virtual gamepad topology and forwarded state.
 
+use consolespec::input::{BindingKey, key};
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::{sync::mpsc, time::Instant};
@@ -89,6 +90,36 @@ impl GamepadButton {
 
     pub const fn mask(self) -> u32 {
         1 << self as u8
+    }
+
+    /// The device-semantic name of this button.
+    ///
+    /// This is deliberately independent of where an output provider projects
+    /// the button in SDL, DirectInput, or another native data plane.
+    pub const fn binding(self) -> BindingKey {
+        match self {
+            Self::A => key!(button.a),
+            Self::B => key!(button.b),
+            Self::X => key!(button.x),
+            Self::Y => key!(button.y),
+            Self::Select => key!(button.select),
+            Self::Guide => key!(button.guide),
+            Self::Start => key!(button.start),
+            Self::LeftStick => key!(button.clickl),
+            Self::RightStick => key!(button.clickr),
+            Self::L => key!(button.l),
+            Self::R => key!(button.r),
+            Self::DpadUp => key!(directional.n),
+            Self::DpadDown => key!(directional.s),
+            Self::DpadLeft => key!(directional.w),
+            Self::DpadRight => key!(directional.e),
+            Self::Misc1 => key!(button.0),
+            Self::RightPaddle1 => key!(button.1),
+            Self::LeftPaddle1 => key!(button.2),
+            Self::RightPaddle2 => key!(button.3),
+            Self::LeftPaddle2 => key!(button.4),
+            Self::Touchpad => key!(button.5),
+        }
     }
 
     /// The button at a wire index.

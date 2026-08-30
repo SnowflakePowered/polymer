@@ -326,6 +326,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn core_a_and_home_reports_keep_distinct_semantic_buttons() {
+        let mut decoder = WiimoteDecoder::default();
+        let a = decoder
+            .decode(&[0x30, 0x00, 0x08], Instant::now())
+            .unwrap()
+            .state;
+        assert!(a.button(GamepadButton::A));
+        assert!(!a.button(GamepadButton::Guide));
+
+        let home = decoder
+            .decode(&[0x30, 0x00, 0x80], Instant::now())
+            .unwrap()
+            .state;
+        assert!(home.button(GamepadButton::Guide));
+        assert!(!home.button(GamepadButton::A));
+    }
+
+    #[test]
     fn mirrors_ir_x() {
         let position = ir_pointer_position([
             ir_point(0, 384),
