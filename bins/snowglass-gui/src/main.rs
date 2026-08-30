@@ -17,8 +17,17 @@ mod shell_runtime;
 mod theme;
 mod window_manager;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .on_thread_start(window_manager::WorkerWinRtApartment::initialize_current_thread)
+        .on_thread_stop(window_manager::WorkerWinRtApartment::uninitialize_current_thread)
+        .build()?;
+    runtime.block_on(run())
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
     use window_manager::{
         EventLoop, EventLoopExtPumpEvents, PumpStatus, TimerResolution, WinRtApartment,
@@ -68,26 +77,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             shell_rasterizer,
         ),
     ));
-    let tasks = tokio::task::LocalSet::new();
-    tasks
-        .run_until(async {
-            loop {
-                let status = event_loop
-                    .pump_app_events(Some(Duration::from_millis(100)), application.as_mut());
-                if matches!(status, PumpStatus::Exit(_)) {
-                    break;
-                }
-                application.run_async_tasks().await;
-                // Winit's pumped-event extension can return immediately after
-                // `AboutToWait` even when that callback selects a future
-                // `WaitUntil` deadline. A plain Tokio yield therefore spins
-                // this outer loop tens of thousands of times per second while
-                // idle. The process raises Windows timer resolution above, so
-                // a one-millisecond quantum preserves low-latency input and
-                // capture delivery without burning a core between messages.
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-            application.into_result()
-        })
-        .await
+    loop {
+        let status =
+            event_loop.pump_app_events(Some(Duration::from_millis(100)), application.as_mut());
+        if matches!(status, PumpStatus::Exit(_)) {
+            break;
+        }
+        application.run_async_tasks().await;
+        // Winit's pumped-event extension can return immediately after
+        // `AboutToWait` even when that callback selects a future
+        // `WaitUntil` deadline. A plain Tokio yield therefore spins
+        // this outer loop tens of thousands of times per second while
+        // idle. The process raises Windows timer resolution above, so
+        // a one-millisecond quantum preserves low-latency input and
+        // capture delivery without burning a core between messages.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    application.into_result()
 }

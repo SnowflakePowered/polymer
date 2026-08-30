@@ -89,8 +89,52 @@ deno_core::extension!(
     },
 );
 
+struct DenoRealm {
+    worker: Option<snowglass_deno::Runtime>,
+    executor: Option<tokio::runtime::Runtime>,
+}
+
+impl DenoRealm {
+    fn new(worker: snowglass_deno::Runtime, executor: tokio::runtime::Runtime) -> Self {
+        Self {
+            worker: Some(worker),
+            executor: Some(executor),
+        }
+    }
+
+    fn parts(&mut self) -> (&mut snowglass_deno::Runtime, &tokio::runtime::Runtime) {
+        (
+            self.worker.as_mut().expect("Deno worker is initialized"),
+            self.executor
+                .as_ref()
+                .expect("Deno executor is initialized"),
+        )
+    }
+
+    async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (worker, executor) = self.parts();
+        tokio::task::block_in_place(|| {
+            executor.block_on(worker.run_up_to_duration(std::time::Duration::ZERO))
+        })?;
+        Ok(())
+    }
+}
+
+impl Drop for DenoRealm {
+    fn drop(&mut self) {
+        let Some(executor) = self.executor.take() else {
+            return;
+        };
+        if let Some(worker) = self.worker.take() {
+            let _executor = executor.enter();
+            drop(worker);
+        }
+        executor.shutdown_background();
+    }
+}
+
 pub struct Runtime {
-    worker: snowglass_deno::Runtime,
+    realm: DenoRealm,
     inspector_address: std::net::SocketAddr,
     layout_cache: HashMap<usize, [f32; 4]>,
     layout_view_state: Option<(Option<usize>, u32, u32, u32)>,
@@ -129,63 +173,71 @@ impl Runtime {
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
         // requires the embedder to choose one before fetch creates a client.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let document_url = ModuleSpecifier::parse(&source_name)?;
         let inspector_address = Self::start_inspector_server()?;
-        let browser_loader = Rc::new(BrowserModuleLoader::new());
-        let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
-            emulator_commands,
-            input_commands,
-            input_api.clone(),
-            webrtc_commands,
-        ));
-        let (snowglass_extension, notifications) =
-            snowglass_deno::snowglass::init_with_notifications(|notifications| {
-                snowglass_runtime::FrontendServices::new(
-                    plugin_runtime.clone(),
-                    Some(snowglass_runtime::ConfigurationDefaults::default()),
-                    input_sources.clone(),
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (worker, notifications) = tokio::task::block_in_place(|| {
+            executor.block_on(async move {
+                let document_url = ModuleSpecifier::parse(&source_name)?;
+                let browser_loader = Rc::new(BrowserModuleLoader::new());
+                let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
+                    emulator_commands,
+                    input_commands,
                     input_api.clone(),
-                    platform,
-                    notifications,
-                )
-            });
-        let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
-            main_module: document_url.clone(),
-            module_loader: browser_loader.clone(),
-            extensions: vec![snowglass_extension, snowglass_shell_runtime::init()],
-            user_agent: format!("Snowglass/{}", env!("CARGO_PKG_VERSION")),
-            local_storage,
-            inspect: true,
-        });
-        worker
-            .js_runtime_mut()
-            .execute_script("snowglass:shell/event-dispatch.js", EVENT_DISPATCH)?;
-        worker
-            .js_runtime_mut()
-            .execute_script("snowglass:shell/runtime.js", BOOTSTRAP)?;
-        worker.js_runtime_mut().execute_script(
-            "snowglass:shell/document.js",
-            format!("__snowglassDom.install({initial_snapshot});"),
-        )?;
-        for (index, script) in document_scripts(&html).enumerate() {
-            let result = execute_document_script(
-                &mut worker,
-                browser_loader.as_ref(),
-                &document_url,
-                index,
-                script,
-            )
-            .await;
-            if let Err(error) = result {
-                // A browser reports an individual script error without
-                // discarding the document's realm or preventing later scripts.
-                tracing::error!("snowglass: shell script {index} failed: {error}");
-            }
-        }
-        worker.run_up_to_duration(std::time::Duration::ZERO).await?;
+                    webrtc_commands,
+                ));
+                let (snowglass_extension, notifications) =
+                    snowglass_deno::snowglass::init_with_notifications(|notifications| {
+                        snowglass_runtime::FrontendServices::new(
+                            plugin_runtime.clone(),
+                            Some(snowglass_runtime::ConfigurationDefaults::default()),
+                            input_sources.clone(),
+                            input_api.clone(),
+                            platform,
+                            notifications,
+                        )
+                    });
+                let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {
+                    main_module: document_url.clone(),
+                    module_loader: browser_loader.clone(),
+                    extensions: vec![snowglass_extension, snowglass_shell_runtime::init()],
+                    user_agent: format!("Snowglass/{}", env!("CARGO_PKG_VERSION")),
+                    local_storage,
+                    inspect: true,
+                });
+                worker
+                    .js_runtime_mut()
+                    .execute_script("snowglass:shell/event-dispatch.js", EVENT_DISPATCH)?;
+                worker
+                    .js_runtime_mut()
+                    .execute_script("snowglass:shell/runtime.js", BOOTSTRAP)?;
+                worker.js_runtime_mut().execute_script(
+                    "snowglass:shell/document.js",
+                    format!("__snowglassDom.install({initial_snapshot});"),
+                )?;
+                for (index, script) in document_scripts(&html).enumerate() {
+                    let result = execute_document_script(
+                        &mut worker,
+                        browser_loader.as_ref(),
+                        &document_url,
+                        index,
+                        script,
+                    )
+                    .await;
+                    if let Err(error) = result {
+                        // A browser reports an individual script error without
+                        // discarding the document's realm or preventing later scripts.
+                        tracing::error!("snowglass: shell script {index} failed: {error}");
+                    }
+                }
+                worker.run_up_to_duration(std::time::Duration::ZERO).await?;
+                Ok::<_, Box<dyn std::error::Error>>((worker, notifications))
+            })
+        })?;
         Ok((
             Self {
-                worker,
+                realm: DenoRealm::new(worker, executor),
                 inspector_address,
                 layout_cache: HashMap::new(),
                 layout_view_state: None,
@@ -217,13 +269,15 @@ impl Runtime {
             return Ok(());
         }
         self.layout_view_state = Some(view_state);
-        self.worker
+        let (worker, executor) = self.realm.parts();
+        let _executor = executor.enter();
+        worker
             .js_runtime_mut()
             .op_state()
             .borrow_mut()
             .borrow_mut::<BridgeState>()
             .layout = Some(layout);
-        self.worker
+        worker
             .js_runtime_mut()
             .execute_script("snowglass:shell/sync.js", "__snowglassDom.syncLayout();")?;
         Ok(())
@@ -235,7 +289,9 @@ impl Runtime {
         height: u32,
         device_pixel_ratio: f32,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker.js_runtime_mut().execute_script(
+        let (worker, executor) = self.realm.parts();
+        let _executor = executor.enter();
+        worker.js_runtime_mut().execute_script(
             "snowglass:shell/resize.js",
             format!("__snowglassDom.resize({width}, {height}, {device_pixel_ratio});"),
         )?;
@@ -251,13 +307,15 @@ impl Runtime {
         bubbles: bool,
         cancelable: bool,
     ) -> Result<EventResult, Box<dyn std::error::Error>> {
-        self.worker
+        let (worker, executor) = self.realm.parts();
+        let _executor = executor.enter();
+        worker
             .js_runtime_mut()
             .op_state()
             .borrow_mut()
             .borrow_mut::<BridgeState>()
             .event = EventResult::default();
-        self.worker.js_runtime_mut().execute_script(
+        worker.js_runtime_mut().execute_script(
             "snowglass:shell/dom-event.js",
             format!(
                 "__snowglassDom.dispatchDom({}, {target}, {}, {}, {bubbles}, {cancelable});",
@@ -266,8 +324,7 @@ impl Runtime {
                 serde_json::to_string(init)?,
             ),
         )?;
-        Ok(self
-            .worker
+        Ok(worker
             .js_runtime()
             .op_state()
             .borrow()
@@ -281,16 +338,14 @@ impl Runtime {
     /// indefinitely. The shell's event loop calls this regularly so those
     /// tasks progress without blocking the window thread.
     pub async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.worker
-            .run_up_to_duration(std::time::Duration::ZERO)
-            .await?;
-        Ok(())
+        self.realm.poll_event_loop().await
     }
 
     pub fn take_mutations(&mut self) -> Vec<Mutation> {
+        let (worker, executor) = self.realm.parts();
+        let _executor = executor.enter();
         std::mem::take(
-            &mut self
-                .worker
+            &mut worker
                 .js_runtime_mut()
                 .op_state()
                 .borrow_mut()

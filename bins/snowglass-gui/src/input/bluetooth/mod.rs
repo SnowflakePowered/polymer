@@ -67,7 +67,7 @@ impl BluetoothHandle {
             snapshot: snapshot.clone(),
             controllers: controllers.clone(),
         };
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             match BluetoothInputProvider::start(ManagerConfig::default(), router).await {
                 Ok(provider) => {
                     BluetoothActor {

@@ -18,7 +18,11 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
+
+const INPUT_API_RESPONSE_ATTEMPTS: usize = 3;
+const INPUT_API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Thread-affine mechanics retained by the native shell.
 ///
@@ -283,11 +287,23 @@ impl RuntimePlatform for CommandRuntimePlatform {
     fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
         let sink = self.input.clone();
         Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
+            let (result, mut response) = tokio::sync::oneshot::channel();
             sink.send(InputCommand::Api { command, result });
-            response
-                .await
-                .map_err(|_| "input host is unavailable".to_owned())?
+            for attempt in 1..=INPUT_API_RESPONSE_ATTEMPTS {
+                match tokio::time::timeout(INPUT_API_RESPONSE_TIMEOUT, &mut response).await {
+                    Ok(result) => {
+                        return result.map_err(|_| "input host is unavailable".to_owned())?;
+                    }
+                    Err(_) if attempt < INPUT_API_RESPONSE_ATTEMPTS => {
+                        tracing::warn!(
+                            attempt,
+                            "input API response is delayed; continuing to wait"
+                        );
+                    }
+                    Err(_) => return Err("input API command timed out".to_owned()),
+                }
+            }
+            unreachable!("input API response attempts are nonzero")
         })
     }
 
