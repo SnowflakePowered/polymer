@@ -68,6 +68,18 @@ pub enum HookBackend {
     Gdi,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum InputHookBackend {
+    BluetoothApiWin32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BluetoothHidPipeConfig {
+    pub source_id: String,
+    pub port: u8,
+    pub product_id: u16,
+}
+
 impl HookBackend {
     pub const ALL: [Self; 5] = [
         Self::Vulkan,

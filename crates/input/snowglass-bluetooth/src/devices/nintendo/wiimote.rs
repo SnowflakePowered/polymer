@@ -215,6 +215,21 @@ impl<M: WiimoteModel> ControllerSession for WiimoteSession<M> {
         M::synchronize(transport, self.player_index).await
     }
 
+    async fn set_external_ownership(
+        &mut self,
+        transport: &mut dyn Transport,
+        enabled: bool,
+    ) -> Result<()> {
+        let _ = transport
+            .set_automatic_flush_slots(if enabled { 96 } else { 0 })
+            .await;
+        if enabled {
+            Ok(())
+        } else {
+            self.synchronize(transport).await
+        }
+    }
+
     async fn set_player_led(&mut self, transport: &mut dyn Transport, slot: u8) -> Result<()> {
         M::set_led(transport, slot, self.rumble).await?;
         self.player_index = slot;

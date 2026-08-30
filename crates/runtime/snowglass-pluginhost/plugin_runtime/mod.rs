@@ -719,6 +719,7 @@ struct ControllerSessionWorker {
     previous_topology: snowglass_input::topology::ControllerTopology,
     connections: Vec<bool>,
     connection_sink: Option<crate::controller::ConnectionSink>,
+    input_provider_sink: Option<crate::controller::InputProviderSink>,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
     errors: Arc<Mutex<Vec<String>>>,
 }
@@ -789,6 +790,7 @@ impl ControllerSessionWorker {
             previous_topology: args.topology,
             connections,
             connection_sink: None,
+            input_provider_sink: None,
             commands: args.commands,
             errors: args.errors,
         }))
@@ -806,6 +808,13 @@ impl ControllerSessionWorker {
                     response,
                 ) => {
                     crate::automation::attach(self.runtime.js_runtime_mut(), session);
+                    let _ = response.send(Ok(()));
+                }
+                crate::controller::ControllerSessionCommand::AttachInputProviders(
+                    sink,
+                    response,
+                ) => {
+                    self.input_provider_sink = Some(sink);
                     let _ = response.send(Ok(()));
                 }
                 crate::controller::ControllerSessionCommand::Changed(topology, response) => {
@@ -876,7 +885,10 @@ impl ControllerSessionWorker {
             topology,
         )
         .map_err(PluginInvocationError::worker)?;
-        self.execute_callback(topology)?;
+        let input_providers = self.execute_callback(topology)?;
+        if let Some(sink) = &self.input_provider_sink {
+            sink(input_providers).map_err(PluginInvocationError::worker)?;
+        }
         crate::filesystem::flush_staged(self.runtime.js_runtime_mut())
             .map_err(PluginInvocationError::worker)?;
         self.publish_connections(Self::connections(topology))
@@ -886,7 +898,7 @@ impl ControllerSessionWorker {
     fn execute_callback(
         &mut self,
         topology: &snowglass_input::topology::ControllerTopology,
-    ) -> Result<(), PluginInvocationError> {
+    ) -> Result<Vec<crate::InputProvider>, PluginInvocationError> {
         const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         const TIMEOUT_ERROR: &str = "onControllerChanged exceeded its 30 second deadline";
         let deadline = IsolateDeadline::start(

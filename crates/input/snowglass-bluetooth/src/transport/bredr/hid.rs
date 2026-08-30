@@ -498,6 +498,20 @@ impl Transport for BrEdrHid {
         sender.send(transaction.freeze(), true).await
     }
 
+    async fn set_automatic_flush_slots(&mut self, slots: u16) -> Result<()> {
+        self.automatic_flush_slots = slots;
+        let Some(handle) = self.handle else {
+            return Ok(());
+        };
+        self.host
+            .execute_checked(
+                Command::write_automatic_flush_timeout(handle, slots),
+                "Write Automatic Flush Timeout",
+            )
+            .await
+            .map(|_| ())
+    }
+
     async fn disconnect(&mut self) -> Result<()> {
         let handle = self.handle;
         self.close_channels();

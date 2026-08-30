@@ -4,6 +4,7 @@ import type {
     ControllerMapping,
     ControllerTopology,
     Filesystem,
+    InputProvider,
     Resource,
 } from "../plugin-api.ts";
 
@@ -86,6 +87,40 @@ function hasAnalogPointer(mapping: Pick<ControllerMapping, "mouse" | "mapping">)
 
 const WIIMOTE_CONFIGURATION = "Config/WiimoteNew.ini";
 
+function rawWiimote(mapping: ControllerMapping): InputProvider | null {
+    const device = mapping.device;
+    if (!mapping.connected || device?.source !== "bt" || mapping.target.group !== "wii") {
+        return null;
+    }
+    const profile = typeof device.metadata.profileId === "string"
+        ? device.metadata.profileId
+        : "";
+    const recognized = profile.startsWith("nintendo.wiimote.")
+        || device.name.startsWith("Nintendo RVL-CNT");
+    if (!recognized || device.metadata.rawHidAvailable === false) return null;
+
+    const reportedProduct = device.metadata.productId;
+    const productId = typeof reportedProduct === "number"
+        && (reportedProduct === 0x0306 || reportedProduct === 0x0330)
+        ? reportedProduct
+        : profile === "nintendo.wiimote.plus" || device.name.endsWith("-TR")
+            ? 0x0330
+            : 0x0306;
+    return {
+        type: "bluetoothHidPipe",
+        sourceId: device.id,
+        port: mapping.target.port,
+        productId,
+    };
+}
+
+function rawWiimoteProviders(topology: ControllerTopology): InputProvider[] {
+    return topology.mappings.flatMap(mapping => {
+        const provider = rawWiimote(mapping);
+        return provider ? [provider] : [];
+    });
+}
+
 function renderedConfiguration(
     configuration: Configuration,
     topology: ControllerTopology,
@@ -94,10 +129,13 @@ function renderedConfiguration(
     const wiimoteConfiguration = files[WIIMOTE_CONFIGURATION];
     if (!wiimoteConfiguration) return files;
 
-    const connected = new Map(
+    const sources = new Map(
         topology.mappings
             .filter(mapping => mapping.target.group === "wii")
-            .map(mapping => [mapping.target.port, mapping.connected] as const),
+            .map(mapping => [
+                mapping.target.port,
+                rawWiimote(mapping) ? 2 : mapping.connected ? 1 : 0,
+            ] as const),
     );
     let port: number | null = null;
     const text = new TextDecoder().decode(wiimoteConfiguration);
@@ -113,7 +151,7 @@ function renderedConfiguration(
         }
         if (port === null || !/^Source=/.test(line)) return line;
         const ending = line.endsWith("\r") ? "\r" : "";
-        return `Source=${connected.get(port) === true ? 1 : 0}${ending}`;
+        return `Source=${sources.get(port) ?? 0}${ending}`;
     }).join("\n");
 
     return {
@@ -133,18 +171,24 @@ function mountConfiguration(
 }
 
 async function applyWiiConnectionChanges(context: ControllerChangeContext): Promise<void> {
+    const source = (mapping: ControllerMapping): number =>
+        rawWiimote(mapping) ? 2 : mapping.connected ? 1 : 0;
     const previous = new Map(
         context.previousTopology.mappings
             .filter(mapping => mapping.target.group === "wii")
-            .map(mapping => [mapping.target.port, mapping.connected] as const),
+            .map(mapping => [mapping.target.port, source(mapping)] as const),
     );
     const changed = context.topology.mappings
         .filter(mapping =>
             mapping.target.group === "wii"
-            && previous.get(mapping.target.port) !== mapping.connected
+            && previous.get(mapping.target.port) !== source(mapping)
         )
         .sort((left, right) => left.target.port - right.target.port);
     if (changed.length === 0) return;
+
+    const current = context.topology.mappings
+        .filter(mapping => mapping.target.group === "wii")
+        .sort((left, right) => left.target.port - right.target.port);
 
     const dolphin = await context.ui.waitForWindow({ title: { contains: "Dolphin" } });
     await dolphin.setLogicalFocus();
@@ -154,10 +198,19 @@ async function applyWiiConnectionChanges(context: ControllerChangeContext): Prom
     const settings = await context.ui.waitForWindow({ title: { equals: "Settings" } });
     try {
         const sources = settings.locator('group[name="Wii Remotes"] combo_box');
-        for (const mapping of changed) {
+        for (const mapping of context.previousTopology.mappings
+            .filter(mapping => mapping.target.group === "wii" && source(mapping) === 2)
+            .sort((left, right) => left.target.port - right.target.port)) {
+            await sources.nth(mapping.target.port + 1).selectOption("None");
+        }
+        for (const mapping of current) {
             await sources
                 .nth(mapping.target.port + 1)
-                .selectOption(mapping.connected ? "Emulated Wii Remote" : "None");
+                .selectOption(source(mapping) === 2
+                    ? "Real Wii Remote"
+                    : source(mapping) === 1
+                        ? "Emulated Wii Remote"
+                        : "None");
         }
     } finally {
         await settings.keyboard.press("Escape");
@@ -260,11 +313,14 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     }
     mountConfiguration(args.filesystem, args.configuration, args.controllerTopology);
 
+    const inputProviders = rawWiimoteProviders(args.controllerTopology);
     return {
         command: args.filesystem.path("/Dolphin/Dolphin.exe"),
         argv,
         isolate: false,
         hooks: ["d3d11"],
+        inputHooks: isWii ? ["bluetooth-api-win32"] : [],
+        inputProviders,
         graphTracking: true,
         surfaces: [
             { index: 0, pattern: "Dolphin" },
@@ -284,6 +340,7 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
     }
     mountConfiguration(context.filesystem, context.configuration, context.topology);
     await applyWiiConnectionChanges(context);
+    return { inputProviders: rawWiimoteProviders(context.topology) };
 };
 
 export default {

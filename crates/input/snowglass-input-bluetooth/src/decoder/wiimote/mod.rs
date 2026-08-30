@@ -7,7 +7,6 @@ use snowglass_input::{
 use std::time::{Duration, Instant};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-const REPORT_CORE_ACCEL_IR10_EXT6: u8 = 0x37;
 const BUTTON_MASK: u16 = !0x60e0;
 const DOUBLE_HOME_WINDOW: Duration = Duration::from_millis(500);
 
@@ -26,14 +25,44 @@ struct AccelerometerReport {
     accelerometer: [u8; 3],
 }
 
-#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
-struct FullReport37 {
-    _report_id: u8,
-    _buttons: [u8; 2],
-    accelerometer: [u8; 3],
-    ir: [u8; 10],
-    extension: [u8; 6],
+/// Protocol-shape metadata shared by normalized observation and the raw
+/// Dolphin bridge. It deliberately describes byte locations rather than
+/// decoding a second semantic controller state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReportMetadata {
+    pub report_id: u8,
+    pub core_buttons: bool,
+}
+
+impl ReportMetadata {
+    pub fn inspect(report: &[u8]) -> Option<Self> {
+        let report_id = *report.first()?;
+        let core_buttons =
+            matches!(report_id, 0x20..=0x22 | 0x30..=0x3c | 0x3e..=0x3f) && report.len() >= 3;
+        (core_buttons || report_id == 0x3d).then_some(Self {
+            report_id,
+            core_buttons,
+        })
+    }
+
+    pub fn filter_for_dolphin(self, report: &mut [u8], capture: bool) {
+        if !self.core_buttons {
+            return;
+        }
+        if capture {
+            report[1] &= 0xe0;
+            report[2] &= 0x60;
+        } else {
+            report[2] &= !0x80;
+        }
+    }
+
+    pub fn physical_buttons_clear(self, report: &[u8]) -> bool {
+        !self.core_buttons
+            || report
+                .get(1..3)
+                .is_some_and(|buttons| buttons[0] & 0x1f == 0 && buttons[1] & 0x9f == 0)
+    }
 }
 
 pub mod airmouse {
@@ -110,7 +139,7 @@ impl WiimoteInputProvider {
 pub fn parse_report(report: &[u8]) -> Option<Telemetry> {
     let (core, _) = CoreReport::ref_from_prefix(report).ok()?;
     let report_id = core.report_id;
-    if !(0x30..=0x37).contains(&report_id) {
+    if !(0x30..=0x3f).contains(&report_id) || report_id == 0x3d {
         return None;
     }
     let raw_buttons = u16::from_le_bytes(core.buttons);
@@ -122,14 +151,31 @@ pub fn parse_report(report: &[u8]) -> Option<Telemetry> {
                 .map(|(report, _)| decode_accelerometer(report.accelerometer, raw_buttons))
         })
         .flatten();
-    let (ir_points, gyroscope) = if report_id == REPORT_CORE_ACCEL_IR10_EXT6 {
-        let (report, _) = FullReport37::ref_from_prefix(report).ok()?;
-        (
-            Some(decode_basic_ir(&report.ir)),
-            decode_motion_plus(&report.extension),
-        )
-    } else {
-        (None, None)
+    let ir_points = match report_id {
+        0x33 => report
+            .get(6..18)
+            .and_then(|data| <&[u8; 12]>::try_from(data).ok())
+            .map(decode_extended_ir),
+        0x36 => report
+            .get(3..13)
+            .and_then(|data| <&[u8; 10]>::try_from(data).ok())
+            .map(decode_basic_ir),
+        0x37 => report
+            .get(6..16)
+            .and_then(|data| <&[u8; 10]>::try_from(data).ok())
+            .map(decode_basic_ir),
+        _ => None,
+    };
+    let gyroscope = match report_id {
+        0x35 => report
+            .get(6..12)
+            .and_then(|data| <&[u8; 6]>::try_from(data).ok())
+            .and_then(decode_motion_plus),
+        0x37 => report
+            .get(16..22)
+            .and_then(|data| <&[u8; 6]>::try_from(data).ok())
+            .and_then(decode_motion_plus),
+        _ => None,
     };
     Some(Telemetry {
         report_id,
@@ -145,11 +191,24 @@ pub struct WiimoteDecoder {
     air_mouse: AirMouse,
     last_home_press: Option<Instant>,
     home_was_pressed: bool,
+    interleaved_ir: [Option<[IrPoint; 2]>; 2],
 }
 
 impl WiimoteDecoder {
     pub fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput> {
-        let telemetry = parse_report(report)?;
+        let mut telemetry = parse_report(report)?;
+        if matches!(telemetry.report_id, 0x3e | 0x3f)
+            && let Some(data) = report
+                .get(4..22)
+                .and_then(|data| <&[u8; 18]>::try_from(data).ok())
+        {
+            self.interleaved_ir[usize::from(telemetry.report_id - 0x3e)] =
+                Some(decode_full_ir_half(data));
+            let hidden = [ir_point(1023, 1023); 2];
+            let first = self.interleaved_ir[0].unwrap_or(hidden);
+            let second = self.interleaved_ir[1].unwrap_or(hidden);
+            telemetry.ir_points = Some([first[0], first[1], second[0], second[1]]);
+        }
         let buttons = telemetry.buttons;
         let accelerometer = telemetry.accelerometer;
         let gyroscope = telemetry.gyroscope;
@@ -283,6 +342,26 @@ fn decode_basic_ir(data: &[u8; 10]) -> [IrPoint; 4] {
     [first[0], first[1], second[0], second[1]]
 }
 
+fn decode_extended_ir(data: &[u8; 12]) -> [IrPoint; 4] {
+    std::array::from_fn(|index| {
+        let point = &data[index * 3..index * 3 + 3];
+        ir_point(
+            u16::from(point[0]) | (u16::from((point[2] >> 4) & 3) << 8),
+            u16::from(point[1]) | (u16::from((point[2] >> 6) & 3) << 8),
+        )
+    })
+}
+
+fn decode_full_ir_half(data: &[u8; 18]) -> [IrPoint; 2] {
+    std::array::from_fn(|index| {
+        let point = &data[index * 9..index * 9 + 3];
+        ir_point(
+            u16::from(point[0]) | (u16::from((point[2] >> 4) & 3) << 8),
+            u16::from(point[1]) | (u16::from((point[2] >> 6) & 3) << 8),
+        )
+    })
+}
+
 fn ir_point(x: u16, y: u16) -> IrPoint {
     IrPoint {
         x,
@@ -353,5 +432,37 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(position.x, 1.0);
+    }
+
+    #[test]
+    fn observes_extended_ir_without_requiring_report_mode_37() {
+        let mut report = [0xff; 18];
+        report[0] = 0x33;
+        report[1..6].fill(0);
+        report[6..9].copy_from_slice(&[0x00, 0x80, 0x10]);
+        let telemetry = parse_report(&report).unwrap();
+        let points = telemetry.ir_points.unwrap();
+        assert_eq!(
+            (points[0].x, points[0].y, points[0].visible),
+            (256, 128, true)
+        );
+    }
+
+    #[test]
+    fn combines_interleaved_full_ir_reports() {
+        let mut decoder = WiimoteDecoder::default();
+        let mut first = [0xff; 22];
+        first[0] = 0x3e;
+        first[1..4].fill(0);
+        first[4..7].copy_from_slice(&[0x20, 0x80, 0x10]);
+        let observed = decoder.decode(&first, Instant::now()).unwrap();
+        assert_eq!(observed.pointer_source, Some(PointerSource::IrCamera));
+
+        let mut second = [0xff; 22];
+        second[0] = 0x3f;
+        second[1..4].fill(0);
+        second[4..7].copy_from_slice(&[0x40, 0x90, 0x10]);
+        let observed = decoder.decode(&second, Instant::now()).unwrap();
+        assert_eq!(observed.pointer_source, Some(PointerSource::IrCamera));
     }
 }

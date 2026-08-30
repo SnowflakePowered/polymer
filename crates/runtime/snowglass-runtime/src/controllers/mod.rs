@@ -397,6 +397,8 @@ impl ControllerManager {
                 InputSourceKind::Bt,
                 serde_json::json!({
                     "profileId": controller.profile_id,
+                    "vendorId": controller.vendor_id,
+                    "productId": controller.product_id,
                     "batteryLevel": controller.battery_level,
                     "charging": controller.charging,
                 }),

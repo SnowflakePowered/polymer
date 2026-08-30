@@ -11194,6 +11194,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "snowglass-hook-bluetoothapi-win32"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "snowglass-hook",
+ "snowglass-platform-windows",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "snowglass-hook-d3d11"
 version = "0.1.0"
 dependencies = [
@@ -11374,6 +11387,7 @@ dependencies = [
  "snowglass-bluetooth",
  "snowglass-input",
  "tokio",
+ "tracing",
  "zerocopy",
 ]
 

@@ -183,6 +183,20 @@ pub trait ControllerSession: Send {
         Ok(())
     }
 
+    /// Transfers protocol configuration authority while Snowglass retains the
+    /// physical Bluetooth link.
+    async fn set_external_ownership(
+        &mut self,
+        transport: &mut dyn Transport,
+        enabled: bool,
+    ) -> Result<()> {
+        if enabled {
+            Ok(())
+        } else {
+            self.synchronize(transport).await
+        }
+    }
+
     async fn set_player_led(&mut self, _transport: &mut dyn Transport, _slot: u8) -> Result<()> {
         Err(crate::Error::Unsupported(
             "controller does not expose player LEDs",

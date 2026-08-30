@@ -7,6 +7,8 @@
 
 pub mod airmouse;
 pub mod decoder;
+#[cfg(windows)]
+pub mod raw;
 
 use decoder::{MotionFrame, PointerSource, ReportDecoder};
 use parking_lot::RwLock;
@@ -30,6 +32,8 @@ pub struct BluetoothControllerState {
     pub session_id: SessionId,
     pub name: String,
     pub profile_id: String,
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
     pub player_index: u8,
     pub connected: bool,
     pub role: PhysicalControllerRole,
@@ -262,6 +266,8 @@ fn connect_controller(
             .clone()
             .unwrap_or_else(|| connected.profile_id.as_str().to_owned()),
         profile_id: connected.profile_id.as_str().to_owned(),
+        vendor_id: connected.identity.pnp.as_ref().map(|pnp| pnp.vendor_id),
+        product_id: connected.identity.pnp.as_ref().map(|pnp| pnp.product_id),
         player_index: connected.player_index,
         connected: true,
         role: role_for_profile(connected.profile_id.as_str()),

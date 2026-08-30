@@ -1,5 +1,6 @@
 use snowglass_input::topology::ControllerTopology;
 pub use snowglass_pluginhost::GraphicsHook;
+pub use snowglass_pluginhost::{InputHook, InputProvider};
 use std::collections::HashSet;
 
 // Native game-host launch contracts and their shell adapters.
@@ -15,6 +16,10 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub isolated: bool,
     pub hook: Vec<GraphicsHook>,
+    #[serde(default)]
+    pub input_hooks: Vec<InputHook>,
+    #[serde(default)]
+    pub input_providers: Vec<InputProvider>,
     /// Enables presentation dependency-graph traversal for every tracked
     /// surface in this process. The hook exposes this as a process-wide mode.
     #[serde(default)]
@@ -50,6 +55,46 @@ impl AttachedLaunchPlan {
         }
         if self.hook.iter().collect::<HashSet<_>>().len() != self.hook.len() {
             return Err("graphics hooks must be unique".to_owned());
+        }
+        if self.input_hooks.iter().collect::<HashSet<_>>().len() != self.input_hooks.len() {
+            return Err("input hooks must be unique".to_owned());
+        }
+        let mut native_ports = HashSet::new();
+        for provider in &self.input_providers {
+            match provider {
+                InputProvider::BluetoothHidPipe {
+                    source_id,
+                    port,
+                    product_id,
+                } => {
+                    if source_id.is_empty() || *port >= 4 || !native_ports.insert(*port) {
+                        return Err("Bluetooth HID providers require unique ports 0..=3".to_owned());
+                    }
+                    if !matches!(*product_id, 0x0306 | 0x0330) {
+                        return Err(format!(
+                            "unsupported Wii Remote product ID 0x{product_id:04x}"
+                        ));
+                    }
+                    let mapped = self.controller_topology.mappings.iter().any(|mapping| {
+                        mapping.target.group == "wii"
+                            && mapping.target.port == usize::from(*port)
+                            && mapping
+                                .device
+                                .as_ref()
+                                .is_some_and(|device| device.id == *source_id)
+                    });
+                    if !mapped {
+                        return Err(format!(
+                            "Bluetooth HID provider for port {port} does not match its topology source"
+                        ));
+                    }
+                }
+            }
+        }
+        if !self.input_providers.is_empty()
+            && !self.input_hooks.contains(&InputHook::BluetoothApiWin32)
+        {
+            return Err("Bluetooth HID providers require the Bluetooth API input hook".to_owned());
         }
         if self.surfaces.is_empty() || self.surfaces.len() > 16 {
             return Err("surfaces must contain 1..=16 entries".to_owned());

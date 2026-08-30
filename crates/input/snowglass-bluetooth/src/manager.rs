@@ -165,6 +165,7 @@ enum Command {
         reconnect: Option<ControllerRecord>,
     },
     Send(SessionId, Vec<u8>, oneshot::Sender<Result<()>>),
+    SetExternalOwnership(SessionId, bool, oneshot::Sender<Result<()>>),
     SetPlayerIndex(SessionId, u8, oneshot::Sender<Result<()>>),
     SetRumble(SessionId, u16, u16, oneshot::Sender<Result<()>>),
     Disconnect(SessionId, bool, oneshot::Sender<Result<()>>),
@@ -218,6 +219,10 @@ impl BluetoothManager {
     }
     pub async fn send_raw(&self, session_id: SessionId, bytes: &[u8]) -> Result<()> {
         self.call(|reply| Command::Send(session_id, bytes.to_vec(), reply))
+            .await
+    }
+    pub async fn set_external_ownership(&self, session_id: SessionId, enabled: bool) -> Result<()> {
+        self.call(|reply| Command::SetExternalOwnership(session_id, enabled, reply))
             .await
     }
     pub async fn set_player_index(&self, session_id: SessionId, index: u8) -> Result<()> {
@@ -296,6 +301,7 @@ struct Session {
     transport: Box<dyn Transport>,
     controller: Box<dyn ControllerSession>,
     report_task: JoinHandle<()>,
+    externally_owned: bool,
 }
 
 #[derive(Clone)]
@@ -719,9 +725,25 @@ impl BluetoothServer {
                     };
                     let _ = reply.send(result);
                 }
-                Command::SetPlayerIndex(session_id, player_index, reply) => {
+                Command::SetExternalOwnership(session_id, enabled, reply) => {
                     let result = match Self::session_mut(&mut sessions, session_id) {
                         Some(session) => {
+                            let result = session
+                                .controller
+                                .set_external_ownership(session.transport.as_mut(), enabled)
+                                .await;
+                            if result.is_ok() {
+                                session.externally_owned = enabled;
+                            }
+                            result
+                        }
+                        None => Err(Error::Unsupported("controller session is not connected")),
+                    };
+                    let _ = reply.send(result);
+                }
+                Command::SetPlayerIndex(session_id, player_index, reply) => {
+                    let result = match Self::session_mut(&mut sessions, session_id) {
+                        Some(session) if !session.externally_owned => {
                             let result = session
                                 .controller
                                 .set_player_led(session.transport.as_mut(), player_index)
@@ -737,13 +759,14 @@ impl BluetoothServer {
                             }
                             result
                         }
+                        Some(_) => Ok(()),
                         None => Err(Error::Unsupported("controller session is not connected")),
                     };
                     let _ = reply.send(result);
                 }
                 Command::SetRumble(session_id, low_frequency, high_frequency, reply) => {
                     let result = match Self::session_mut(&mut sessions, session_id) {
-                        Some(session) => {
+                        Some(session) if !session.externally_owned => {
                             session
                                 .controller
                                 .set_rumble(
@@ -753,6 +776,7 @@ impl BluetoothServer {
                                 )
                                 .await
                         }
+                        Some(_) => Ok(()),
                         None => Err(Error::Unsupported("controller session is not connected")),
                     };
                     let _ = reply.send(result);
@@ -1338,6 +1362,7 @@ impl BluetoothServer {
             transport,
             controller: controller_session,
             report_task,
+            externally_owned: false,
         };
         let _ = events.send(ManagerEvent::Connected(ConnectedController {
             controller_id,
@@ -1462,6 +1487,7 @@ impl BluetoothServer {
             transport,
             controller: controller_session,
             report_task,
+            externally_owned: false,
         })
     }
 

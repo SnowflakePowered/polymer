@@ -48,7 +48,7 @@ pub(crate) fn launch(config: &EmulatorLaunchConfig) -> Result<TargetProcess, Lau
         ));
     }
 
-    let libraries = hook_libraries(&config.hooks, config.isolate);
+    let libraries = hook_libraries(&config.hooks, &config.input_hooks, config.isolate);
     let mut process = TargetProcess::launch(
         &command_line,
         &config.artifact_root,
@@ -164,6 +164,29 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
+    if runtime
+        .input_hooks
+        .contains(&crate::InputHookBackend::BluetoothApiWin32)
+    {
+        let pipes = (0..4u8)
+            .map(|port| {
+                let active = runtime
+                    .bluetooth_hid_pipes
+                    .iter()
+                    .find(|pipe| pipe.port == port);
+                serde_json::json!({
+                    "sourceId": active.map_or("", |pipe| pipe.source_id.as_str()),
+                    "port": port,
+                    "productId": active.map_or(0x0306, |pipe| pipe.product_id),
+                    "pipe": format!(r"\\.\pipe\{}-wiimote-{}", runtime.session, port),
+                })
+            })
+            .collect::<Vec<_>>();
+        environment.push((
+            OsString::from(config::BLUETOOTH_HID_PIPES),
+            OsString::from(serde_json::to_string(&pipes).expect("pipe configuration serializes")),
+        ));
+    }
     if runtime.tracking_enabled {
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGET),
@@ -246,7 +269,11 @@ fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::T
     Ok(directory)
 }
 
-fn hook_libraries(hooks: &[HookBackend], isolate: bool) -> Vec<InjectionLibrary> {
+fn hook_libraries(
+    hooks: &[HookBackend],
+    input_hooks: &[crate::InputHookBackend],
+    isolate: bool,
+) -> Vec<InjectionLibrary> {
     let mut libraries = Vec::new();
     if hooks
         .iter()
@@ -296,6 +323,13 @@ fn hook_libraries(hooks: &[HookBackend], isolate: bool) -> Vec<InjectionLibrary>
         "snowglass_hook_win32.dll",
         c"SnowglassInstallWin32Hook",
     ));
+    if input_hooks.contains(&crate::InputHookBackend::BluetoothApiWin32) {
+        libraries.push(InjectionLibrary::new(
+            "Bluetooth HID API",
+            "snowglass_hook_bluetoothapi_win32.dll",
+            c"SnowglassInstallBluetoothApiWin32Hook",
+        ));
+    }
     if isolate {
         libraries.push(InjectionLibrary::new(
             "UI",

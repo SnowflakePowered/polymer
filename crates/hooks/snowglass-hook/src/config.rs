@@ -13,6 +13,7 @@ pub const DINPUT_LOG_FILE: &str = "SNOWGLASS_DINPUT_LOG_FILE";
 pub const WIN32_LOG_FILE: &str = "SNOWGLASS_WIN32_LOG_FILE";
 pub const SDL_LOG_FILE: &str = "SNOWGLASS_SDL_LOG_FILE";
 pub const SDL_GAMEPADS: &str = "SNOWGLASS_SDL_GAMEPADS";
+pub const BLUETOOTH_HID_PIPES: &str = "SNOWGLASS_BLUETOOTH_HID_PIPES";
 pub const LAYOUT: &str = "SNOWGLASS_LAYOUT";
 pub const LAYOUTS: &str = "SNOWGLASS_LAYOUTS";
 pub const DXGI_LOG_FILE: &str = "SNOWGLASS_DXGI_LOG_FILE";
@@ -58,6 +59,10 @@ pub fn sdl_gamepad_count() -> usize {
         .and_then(|value| value.parse().ok())
         .unwrap_or(1)
         .clamp(1, u8::MAX as usize + 1)
+}
+
+pub fn bluetooth_hid_pipes() -> Option<String> {
+    std::env::var(BLUETOOTH_HID_PIPES).ok()
 }
 
 pub fn layout() -> String {

@@ -40,6 +40,11 @@ pub trait Transport: Send {
         None
     }
     async fn send(&mut self, data: &[u8]) -> Result<()>;
+    async fn set_automatic_flush_slots(&mut self, _slots: u16) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "transport does not expose automatic flush control",
+        ))
+    }
     async fn disconnect(&mut self) -> Result<()>;
     fn state(&self) -> ConnectionState;
 }

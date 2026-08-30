@@ -114,8 +114,9 @@ impl ControllerManager {
                     gamepad,
                     source: source.clone(),
                     layout: port.layout.clone(),
-                    connected: device.is_some_and(|device| device.connected)
+                    connected: device.as_ref().is_some_and(|device| device.connected)
                         || matches!(source, Some(SourceSelector::KeyboardMouse)),
+                    device,
                     mouse: port.force_mouse,
                     projection_mode,
                     mapping,

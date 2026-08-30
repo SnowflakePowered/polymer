@@ -3,7 +3,6 @@ use serde::Serialize;
 use snowglass_egui::{InputAxisDiagnostics, InputSlotDiagnostics};
 use snowglass_input::{
     gamepad::GamepadButton,
-    layout::SdlButton,
     provider::sdl3::{PhysicalDeviceState, PhysicalGamepadState},
     router::SlotRoute,
 };
@@ -66,12 +65,10 @@ impl PublishedDevice {
             .buttons
             .into_iter()
             .map(|(button, pressed)| {
-                let global = button == SdlButton::Guide;
-                let mapped = global
-                    || mapped_states
-                        .iter()
-                        .any(|state| state.mapped_buttons.contains(&button));
-                if (global || ui_priority || !mapped)
+                let mapped = mapped_states
+                    .iter()
+                    .any(|state| state.mapped_buttons.contains(&button));
+                if (ui_priority || !mapped)
                     && let Some((_, expression)) = snowglass_input::sdl::BUTTONS
                         .iter()
                         .find(|(source, _)| source == &button)
