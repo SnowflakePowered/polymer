@@ -7,6 +7,7 @@ use std::{
 
 use serde_json::json;
 
+pub mod class_c_acceleration;
 pub mod class_d;
 pub mod lanes;
 pub mod quaternion;
@@ -309,6 +310,62 @@ impl MotionCapture {
                 "unresolved_prefix_82_bits": encode_hex(&packet.unresolved_prefix),
                 "unresolved_interleaved_bytes": packet.unresolved_interleaved,
                 "body": encode_hex(&packet.body),
+            })),
+        }))
+    }
+
+    pub fn mark_class_c_acceleration_experiment(
+        &mut self,
+        marker: class_c_acceleration::AccelerationExperimentMarker,
+    ) -> io::Result<()> {
+        self.write_json(&json!({
+            "type": "class_c_acceleration_experiment",
+            "t_ns": self.started_at.elapsed().as_nanos(),
+            "event": marker.event,
+            "label": self.label,
+            "selected_report": format!("0x{:02x}", self.selected_report),
+            "action": marker.action.id,
+            "action_title": marker.action.title,
+            "action_number": marker.action_number,
+            "action_count": marker.action_count,
+            "observed": marker.observed,
+            "target": marker.action.target,
+            "total_observed": marker.total_observed,
+            "rejected": marker.rejected,
+            "completed_by_action": marker.completed_by_action,
+            "context": marker.context.map(|context| json!({
+                "previous": {
+                    "notification_sequence": context.previous.notification_sequence,
+                    "sensor_timestamp": context.previous.packet.sensor_timestamp,
+                    "elapsed_ticks": context.previous.packet.elapsed_ticks,
+                    "range_flags": context.previous.packet.range_flags,
+                    "accelerometer_earlier": context.previous.packet.earlier,
+                    "accelerometer_middle": context.previous.packet.middle,
+                    "accelerometer_terminal": context.previous.packet.terminal,
+                },
+                "focus": {
+                    "notification_sequence": context.focus.notification_sequence,
+                    "sensor_timestamp": context.focus.packet.sensor_timestamp,
+                    "elapsed_ticks": context.focus.packet.elapsed_ticks,
+                    "accelerometer_q16_16": context.focus.packet.accelerometer_q16_16,
+                    "temperature_raw": context.focus.packet.temperature_raw,
+                },
+                "next": {
+                    "notification_sequence": context.next.notification_sequence,
+                    "sensor_timestamp": context.next.packet.sensor_timestamp,
+                    "elapsed_ticks": context.next.packet.elapsed_ticks,
+                    "range_flags": context.next.packet.range_flags,
+                    "accelerometer_earlier": context.next.packet.earlier,
+                    "accelerometer_middle": context.next.packet.middle,
+                    "accelerometer_terminal": context.next.packet.terminal,
+                },
+                "normal_span_ticks": context.normal_span_ticks,
+                "first_sample_tick": context.first_sample_tick,
+                "second_sample_tick": context.second_sample_tick,
+                "previous_to_focus_sensor_ticks": context.previous_to_focus_sensor_ticks,
+                "focus_to_next_sensor_ticks": context.focus_to_next_sensor_ticks,
+                "previous_to_focus_host_ns": context.previous_to_focus_host_ns,
+                "focus_to_next_host_ns": context.focus_to_next_host_ns,
             })),
         }))
     }

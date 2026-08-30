@@ -245,7 +245,17 @@ fn spawn_acceptor(
                 }
                 *pending_socket.lock() = socket.try_clone().ok();
                 let _ = socket.set_read_timeout(Some(Duration::from_secs(1)));
-                let accepted = gamepads.lock().accept(&mut socket).is_ok();
+                let accepted = match gamepads.lock().accept(&mut socket) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        if !stopping.load(Ordering::Acquire) {
+                            tracing::error!(
+                                "snowglass: input IPC handshake rejected: {error}"
+                            );
+                        }
+                        false
+                    }
+                };
                 pending_socket.lock().take();
                 if accepted && !stopping.load(Ordering::Acquire) {
                     let _ = socket.set_read_timeout(None);

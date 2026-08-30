@@ -20,6 +20,7 @@ use controller_model::GameCubeControllerModel;
 use eframe::egui;
 use motion_capture::{
     COMMON_REPORT, GAMECUBE_REPORT, MotionCapture, PHASES,
+    class_c_acceleration::{AccelerationPacket, ClassCAccelerationExperiment},
     class_d::{ClassDExperiment, ClassDPacket},
     lanes::{ClassCPacket, LaneExperiment},
     quaternion::QuaternionExperiment,
@@ -90,6 +91,7 @@ struct BluetoothTestApp {
     motion_capture: Option<MotionCapture>,
     motion_experiment: MotionExperiment,
     lane_experiment: LaneExperiment,
+    class_c_acceleration_experiment: ClassCAccelerationExperiment,
     class_d_experiment: ClassDExperiment,
     timing_experiment: TimingExperiment,
     rare_timing_experiment: RareTimingExperiment,
@@ -201,6 +203,7 @@ impl BluetoothTestApp {
             motion_capture: None,
             motion_experiment: MotionExperiment::Idle,
             lane_experiment: LaneExperiment::default(),
+            class_c_acceleration_experiment: ClassCAccelerationExperiment::default(),
             class_d_experiment: ClassDExperiment::default(),
             timing_experiment: TimingExperiment::default(),
             rare_timing_experiment: RareTimingExperiment::default(),
@@ -415,6 +418,15 @@ impl BluetoothTestApp {
                         && let Some(capture) = self.motion_capture.as_mut()
                     {
                         capture_error = self.class_d_experiment.observe(capture, &packet).err();
+                    }
+                    if capture_error.is_none()
+                        && let Some(packet) = AccelerationPacket::parse(&characteristic, &bytes)
+                        && let Some(capture) = self.motion_capture.as_mut()
+                    {
+                        capture_error = self
+                            .class_c_acceleration_experiment
+                            .observe(capture, packet, received_at)
+                            .err();
                     }
                     if capture_error.is_none()
                         && let Some(packet) = TimingPacket::parse(&characteristic, &bytes)
@@ -858,6 +870,7 @@ impl BluetoothTestApp {
             let mut start_freeform = false;
             let mut start_guided = false;
             let mut start_lanes = false;
+            let mut start_class_c_acceleration = false;
             let mut start_class_d = false;
             let mut start_timing = false;
             let mut start_rare_timing = false;
@@ -873,6 +886,12 @@ impl BluetoothTestApp {
                     .add_enabled(
                         selected_gamecube.is_some(),
                         egui::Button::new("Start class-C lane capture…"),
+                    )
+                    .clicked();
+                start_class_c_acceleration = ui
+                    .add_enabled(
+                        selected_gamecube.is_some(),
+                        egui::Button::new("Start class-C acceleration filter capture…"),
                     )
                     .clicked();
                 start_class_d = ui
@@ -912,6 +931,9 @@ impl BluetoothTestApp {
                 } else if start_lanes {
                     self.start_motion_capture(addr, false);
                     self.begin_lane_experiment();
+                } else if start_class_c_acceleration {
+                    self.start_motion_capture(addr, false);
+                    self.begin_class_c_acceleration_experiment();
                 } else if start_class_d {
                     self.start_motion_capture(addr, false);
                     self.begin_class_d_experiment();
@@ -971,7 +993,8 @@ impl BluetoothTestApp {
             secondary_modes[0], secondary_modes[1], secondary_modes[2], secondary_modes[3]
         ));
 
-        if self.rare_timing_capture_ui(ui)
+        if self.class_c_acceleration_capture_ui(ui)
+            || self.rare_timing_capture_ui(ui)
             || self.timing_capture_ui(ui)
             || self.class_d_capture_ui(ui)
             || self.lane_capture_ui(ui)
@@ -1084,13 +1107,23 @@ impl BluetoothTestApp {
         let Some(mut capture) = self.motion_capture.take() else {
             return;
         };
+        let class_c_acceleration_error = self
+            .class_c_acceleration_experiment
+            .finish(&mut capture)
+            .err();
         let rare_timing_error = self.rare_timing_experiment.finish(&mut capture).err();
         self.motion_experiment = MotionExperiment::Idle;
         self.lane_experiment.reset();
+        self.class_c_acceleration_experiment.reset();
         self.class_d_experiment.reset();
         self.timing_experiment.reset();
         self.rare_timing_experiment.reset();
         self.quaternion_experiment.reset();
+        if let Some(error) = class_c_acceleration_error {
+            self.log(format!(
+                "Could not write class-C acceleration experiment summary: {error}"
+            ));
+        }
         if let Some(error) = rare_timing_error {
             self.log(format!(
                 "Could not write rare timing experiment summary: {error}"

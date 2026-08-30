@@ -205,6 +205,7 @@ impl ShellApplication {
             // into `about_to_wait`.
             UserEvent::Window(WindowCommand::WakeCapture) => state.process_capture(),
             UserEvent::Window(WindowCommand::CompositorTick) => state.handle_compositor_tick(),
+            UserEvent::Window(WindowCommand::ShellRasterReady) => state.draw_pending_chrome(),
             UserEvent::Window(WindowCommand::RedrawShell) => state.refresh_shell(),
             UserEvent::Window(WindowCommand::SetCursor(icon)) => state.window.set_cursor(icon),
             UserEvent::Window(WindowCommand::SetTitle(title)) => state.window.set_title(&title),

@@ -47,6 +47,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     revision();
     return session()?.discovery.active ?? false;
   };
+  const isPairing = (candidate: ControllerDevice) => candidate.metadata.pairing === true;
 
   const closeOverlay = () => {
     if (props.onClose) props.onClose();
@@ -154,8 +155,15 @@ export function ControllerReorder(props: { onClose?: () => void }) {
             <Show when={candidates().length > 0}>
               <section class="horizon-order-unassigned" aria-label="Discovered controllers">
                 <span>Discovered:</span>
-                <For each={candidates()}>{(candidate) => <button type="button" disabled={pending()} onClick={() => void connect(candidate)}>
+                <For each={candidates()}>{(candidate) => <button
+                  type="button"
+                  classList={{ pairing: isPairing(candidate) }}
+                  aria-busy={isPairing(candidate)}
+                  disabled={pending() || isPairing(candidate)}
+                  onClick={() => void connect(candidate)}
+                >
                   <img src={controllerPro} alt="" /><span>{candidate.name}</span>
+                  <Show when={isPairing(candidate)}><i class="horizon-order-pairing-spinner" aria-hidden="true" /></Show>
                 </button>}</For>
               </section>
             </Show>

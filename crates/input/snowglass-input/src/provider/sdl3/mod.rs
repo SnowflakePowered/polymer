@@ -933,6 +933,16 @@ impl SdlProviderWorker {
         let now = Instant::now();
         let mut snapshots = self.states.lock();
         for slot in 0..self.pads.len() {
+            // Bluetooth devices are sampled by PhysicalInputRouter. Publishing
+            // an SDL-owned disconnected snapshot for the same virtual slot can
+            // otherwise race and neutralize the Bluetooth update.
+            if matches!(
+                &self.config.slots[slot].source,
+                Some(SourceSelector::Device { device_id }) if device_id.starts_with("bt://")
+            ) {
+                snapshots[slot] = None;
+                continue;
+            }
             let connected = self.keyboard_mappings[slot].is_some() || self.pads[slot].is_some();
             let mut state = if let Some(mapping) = &self.keyboard_mappings[slot] {
                 mapping.state(&self.pressed_keys)

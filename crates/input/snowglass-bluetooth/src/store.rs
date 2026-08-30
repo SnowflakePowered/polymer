@@ -76,21 +76,37 @@ pub struct FileControllerStore {
 
 pub struct ControllerLinkKeyStore {
     store: Arc<dyn ControllerStore>,
+    updates: Mutex<()>,
 }
 
 impl ControllerLinkKeyStore {
     pub fn new(store: Arc<dyn ControllerStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            updates: Mutex::new(()),
+        }
+    }
+
+    pub fn register(&self, mut record: ControllerRecord) -> Result<()> {
+        let _update = self.updates.lock().map_err(|_| Error::ChannelClosed)?;
+        if let Some(existing) = self.store.records()?.into_iter().find(|existing| {
+            existing.address == record.address && existing.transport == record.transport
+        }) {
+            record.link_key = existing.link_key;
+            record.link_key_type = existing.link_key_type;
+        }
+        self.store.put(record)
     }
 }
 
 impl LinkKeyStore for ControllerLinkKeyStore {
     fn get(&self, addr: DeviceAddr) -> Result<Option<LinkKey>> {
+        let _update = self.updates.lock().map_err(|_| Error::ChannelClosed)?;
         Ok(self
             .store
             .records()?
             .into_iter()
-            .find(|record| record.address == addr)
+            .find(|record| record.address == addr && record.transport == TransportKind::BrEdr)
             .and_then(|record| {
                 Some(LinkKey {
                     value: record.link_key?,
@@ -99,11 +115,12 @@ impl LinkKeyStore for ControllerLinkKeyStore {
             }))
     }
     fn put(&self, addr: DeviceAddr, key: LinkKey) -> Result<()> {
+        let _update = self.updates.lock().map_err(|_| Error::ChannelClosed)?;
         let mut record = self
             .store
             .records()?
             .into_iter()
-            .find(|record| record.address == addr)
+            .find(|record| record.address == addr && record.transport == TransportKind::BrEdr)
             .unwrap_or(ControllerRecord {
                 address: addr,
                 transport: TransportKind::BrEdr,
@@ -111,7 +128,7 @@ impl LinkKeyStore for ControllerLinkKeyStore {
                 link_key: None,
                 link_key_type: None,
                 adapter_index: None,
-                auto_reconnect: true,
+                auto_reconnect: false,
                 player_index: 0,
             });
         record.link_key = Some(key.value);
@@ -119,6 +136,7 @@ impl LinkKeyStore for ControllerLinkKeyStore {
         self.store.put(record)
     }
     fn remove(&self, addr: DeviceAddr) -> Result<()> {
+        let _update = self.updates.lock().map_err(|_| Error::ChannelClosed)?;
         self.store.remove(addr)
     }
 }
@@ -202,6 +220,8 @@ fn key(address: DeviceAddr, transport: TransportKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::bredr::LinkKey;
+
     #[test]
     fn round_trips_versioned_registry() {
         let dir = tempfile::tempdir().unwrap();
@@ -227,5 +247,40 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn registering_identified_controller_replaces_provisional_profile_and_preserves_key() {
+        let address = "00:11:22:33:44:55".parse().unwrap();
+        let store = Arc::new(MemoryControllerStore::default());
+        let keys = ControllerLinkKeyStore::new(store.clone());
+        LinkKeyStore::put(
+            &keys,
+            address,
+            LinkKey {
+                value: [0x5a; 16],
+                key_type: 4,
+            },
+        )
+        .unwrap();
+
+        keys.register(ControllerRecord {
+            address,
+            transport: TransportKind::BrEdr,
+            profile_id: ProfileId::new("nintendo.wiimote.original"),
+            link_key: None,
+            link_key_type: None,
+            adapter_index: None,
+            auto_reconnect: true,
+            player_index: 2,
+        })
+        .unwrap();
+
+        let record = store.records().unwrap().pop().unwrap();
+        assert_eq!(record.profile_id.as_str(), "nintendo.wiimote.original");
+        assert_eq!(record.link_key, Some([0x5a; 16]));
+        assert_eq!(record.link_key_type, Some(4));
+        assert!(record.auto_reconnect);
+        assert_eq!(record.player_index, 2);
     }
 }

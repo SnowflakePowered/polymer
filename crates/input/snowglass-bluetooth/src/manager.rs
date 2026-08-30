@@ -19,6 +19,7 @@ const ADAPTER_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 const COMMAND_QUEUE_ATTEMPTS: usize = 3;
 const COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECTION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(55);
 
 use crate::{
     DeviceAddr, Error, Result, Transport, TransportKind,
@@ -31,7 +32,7 @@ use crate::{
     transport::{
         ble::{BleDevice, BleGatt, default_adapter_address, scan as scan_ble, stop_scan},
         bredr::{
-            BrEdrHid, LinkKeyStore, PairingAgent, PinCode,
+            BrEdrHid, PairingAgent, PinCode,
             hci::{AdapterSelector, Event as HciEvent, HciHost, InquiryResult},
             l2cap::Link,
             sdp,
@@ -151,7 +152,18 @@ enum Command {
         reply: oneshot::Sender<Result<()>>,
     },
     StopScan(TransportKind, oneshot::Sender<Result<()>>),
-    Connect(DeviceAddr, ConnectOptions, oneshot::Sender<Result<()>>),
+    Connect {
+        address: DeviceAddr,
+        options: ConnectOptions,
+        reply: Option<oneshot::Sender<Result<()>>>,
+    },
+    ConnectFinished {
+        address: DeviceAddr,
+        transport: TransportKind,
+        result: Result<Session>,
+        reply: Option<oneshot::Sender<Result<()>>>,
+        reconnect: Option<ControllerRecord>,
+    },
     Send(SessionId, Vec<u8>, oneshot::Sender<Result<()>>),
     SetPlayerIndex(SessionId, u8, oneshot::Sender<Result<()>>),
     SetRumble(SessionId, u16, u16, oneshot::Sender<Result<()>>),
@@ -197,8 +209,12 @@ impl BluetoothManager {
         self.call(|reply| Command::StopScan(transport, reply)).await
     }
     pub async fn connect(&self, address: DeviceAddr, options: ConnectOptions) -> Result<()> {
-        self.call(|reply| Command::Connect(address, options, reply))
-            .await
+        self.call(|reply| Command::Connect {
+            address,
+            options,
+            reply: Some(reply),
+        })
+        .await
     }
     pub async fn send_raw(&self, session_id: SessionId, bytes: &[u8]) -> Result<()> {
         self.call(|reply| Command::Send(session_id, bytes.to_vec(), reply))
@@ -265,6 +281,7 @@ impl BluetoothManager {
     }
 }
 
+#[derive(Clone)]
 struct Discovered {
     identity: DeviceIdentity,
     bredr: Option<InquiryResult>,
@@ -281,12 +298,13 @@ struct Session {
     report_task: JoinHandle<()>,
 }
 
-struct ConnectContext<'a> {
-    config: &'a ManagerConfig,
-    host: Option<&'a Arc<HciHost>>,
-    pairing: Option<&'a Arc<PairingAgent>>,
-    keys: &'a ControllerLinkKeyStore,
-    events: &'a broadcast::Sender<ManagerEvent>,
+#[derive(Clone)]
+struct ConnectContext {
+    config: ManagerConfig,
+    host: Option<Arc<HciHost>>,
+    pairing: Option<Arc<PairingAgent>>,
+    keys: Arc<ControllerLinkKeyStore>,
+    events: broadcast::Sender<ManagerEvent>,
 }
 
 struct BluetoothServer {
@@ -381,18 +399,27 @@ impl BluetoothServer {
         let mut discovered = HashMap::<DeviceAddr, Discovered>::new();
         let mut active_scans = HashSet::<TransportKind>::new();
         let mut scan_tasks = HashMap::<TransportKind, JoinHandle<()>>::new();
+        let mut connect_tasks = HashMap::<DeviceAddr, JoinHandle<()>>::new();
+        let mut connecting_transports = HashSet::<TransportKind>::new();
+        let mut suspended_scans = HashSet::<TransportKind>::new();
+        let mut next_wii_liac = true;
         let mut sessions = HashMap::<DeviceAddr, Session>::new();
         let mut next_session_id = 1_u64;
         let mut hci_events = bredr.as_ref().map(|host| host.events());
         let wake_gate = Arc::new(tokio::sync::Mutex::new(()));
         let mut wake_tasks = HashMap::<DeviceAddr, JoinHandle<()>>::new();
         for record in config.store.records().unwrap_or_default() {
-            if config.controllers.get(&record.profile_id).is_none() {
+            let controller = config.controllers.get(&record.profile_id);
+            if controller.is_none() {
                 let _ = events.send(ManagerEvent::Error {
                     address: Some(record.address),
                     message: Error::MissingProfile(record.profile_id.to_string()).to_string(),
                 });
-            } else if record.transport == TransportKind::Ble && record.auto_reconnect {
+            } else if record.transport == TransportKind::Ble
+                && record.auto_reconnect
+                && controller
+                    .is_some_and(|controller| controller.supports_transport(TransportKind::Ble))
+            {
                 Self::arm_ble_wake(
                     record,
                     config.controllers.clone(),
@@ -409,7 +436,7 @@ impl BluetoothServer {
                 event = Self::receive_hci(&mut hci_events) => {
                     match event {
                         Some(Ok(HciEvent::ConnectionRequest { addr, .. })) => {
-                            if sessions.contains_key(&addr) { continue; }
+                            if sessions.contains_key(&addr) || connect_tasks.contains_key(&addr) { continue; }
                             let session_id = SessionId(next_session_id);
                             next_session_id = next_session_id.wrapping_add(1).max(1);
                             match Self::accept_inbound(
@@ -419,6 +446,7 @@ impl BluetoothServer {
                                 session_id,
                                 &events,
                                 internal.clone(),
+                                discovered.get(&addr),
                             ).await {
                                 Ok(session) => { sessions.insert(addr, session); }
                                 Err(error) => {
@@ -444,24 +472,37 @@ impl BluetoothServer {
                         ScanRequest::Ble { .. } => TransportKind::Ble,
                         ScanRequest::BrEdr { .. } => TransportKind::BrEdr,
                     };
+                    if connecting_transports.contains(&transport) {
+                        let _ = reply.send(Err(Error::Unsupported(
+                            "discovery is suspended while a controller is connecting",
+                        )));
+                        continue;
+                    }
                     if !active_scans.insert(transport) {
                         let _ = reply.send(Err(Error::Unsupported(
                             "a scan is already active on this transport",
                         )));
                         continue;
                     }
+                    let _ = events.send(ManagerEvent::ScanState {
+                        transport,
+                        active: true,
+                    });
                     let scan_config = config.clone();
                     let scan_host = bredr.clone();
-                    let scan_events = events.clone();
                     let scan_gate = wake_gate.clone();
                     let commands = internal.clone();
+                    let wii_liac = transport == TransportKind::BrEdr && next_wii_liac;
+                    if transport == TransportKind::BrEdr {
+                        next_wii_liac = !next_wii_liac;
+                    }
                     let task = tokio::spawn(async move {
                         let mut found = HashMap::new();
                         let result = Self::scan(
                             &scan_config,
                             scan_host.as_ref(),
                             request,
-                            &scan_events,
+                            wii_liac,
                             &mut found,
                             &scan_gate,
                         )
@@ -483,12 +524,65 @@ impl BluetoothServer {
                     result,
                     reply,
                 } => {
-                    active_scans.remove(&transport);
+                    if !active_scans.remove(&transport) {
+                        let _ = reply.send(Err(Error::Unsupported(
+                            "discovery was suspended for a controller connection",
+                        )));
+                        continue;
+                    }
                     scan_tasks.remove(&transport);
-                    discovered.extend(found);
+                    let mut result = result;
+                    let mut recognized = Vec::new();
+                    for (_, device) in found {
+                        let address = device.identity.address;
+                        match Self::publish_discovery(
+                            &config,
+                            device.identity,
+                            device.bredr,
+                            device.ble,
+                            &events,
+                            &mut discovered,
+                        ) {
+                            Ok(true) => recognized.push(address),
+                            Ok(false) => {}
+                            Err(error) if result.is_ok() => result = Err(error),
+                            Err(_) => {}
+                        }
+                    }
+                    let _ = events.send(ManagerEvent::ScanState {
+                        transport,
+                        active: false,
+                    });
                     let _ = reply.send(result);
+                    for address in recognized {
+                        if internal
+                            .try_send(Command::Connect {
+                                address,
+                                options: ConnectOptions::default(),
+                                reply: None,
+                            })
+                            .is_err()
+                        {
+                            let _ = events.send(ManagerEvent::Error {
+                                address: Some(address),
+                                message: "automatic connection could not be queued".into(),
+                            });
+                        }
+                    }
                 }
                 Command::StopScan(kind, reply) => {
+                    if suspended_scans.remove(&kind) {
+                        let _ = events.send(ManagerEvent::ScanState {
+                            transport: kind,
+                            active: false,
+                        });
+                        let _ = reply.send(Ok(()));
+                        continue;
+                    }
+                    if !active_scans.contains(&kind) {
+                        let _ = reply.send(Ok(()));
+                        continue;
+                    }
                     let result = match kind {
                         TransportKind::Ble => stop_scan(config.ble_adapter_index).await,
                         TransportKind::BrEdr => match &bredr {
@@ -498,26 +592,120 @@ impl BluetoothServer {
                     };
                     let _ = reply.send(result);
                 }
-                Command::Connect(address, options, reply) => {
+                Command::Connect {
+                    address,
+                    options,
+                    reply,
+                } => {
+                    if sessions.contains_key(&address) {
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Ok(()));
+                        }
+                        continue;
+                    }
+                    if connect_tasks.contains_key(&address) {
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Err(Error::Unsupported(
+                                "a connection attempt is already active for this controller",
+                            )));
+                        }
+                        continue;
+                    }
+                    let Some(device) = discovered.get(&address).cloned() else {
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Err(Error::Unsupported(
+                                "device must be discovered before connecting",
+                            )));
+                        }
+                        continue;
+                    };
+                    let transport = device.identity.transport;
+                    if !connecting_transports.insert(transport) {
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Err(Error::Unsupported(
+                                "another controller connection is active on this transport",
+                            )));
+                        }
+                        continue;
+                    }
+                    if active_scans.remove(&transport) {
+                        if let Some(task) = scan_tasks.remove(&transport) {
+                            task.abort();
+                            let _ = task.await;
+                        }
+                        match transport {
+                            TransportKind::Ble => {
+                                let _ = stop_scan(config.ble_adapter_index).await;
+                            }
+                            TransportKind::BrEdr => {
+                                if let Some(host) = &bredr {
+                                    let _ = host.cancel_inquiry().await;
+                                }
+                            }
+                        }
+                        suspended_scans.insert(transport);
+                    }
                     let session_id = SessionId(next_session_id);
                     next_session_id = next_session_id.wrapping_add(1).max(1);
-                    let result = Self::connect(
+                    let task = Self::spawn_connect(
                         ConnectContext {
-                            config: &config,
-                            host: bredr.as_ref(),
-                            pairing: pairing.as_ref(),
-                            keys: keys.as_ref(),
-                            events: &events,
+                            config: config.clone(),
+                            host: bredr.clone(),
+                            pairing: pairing.clone(),
+                            keys: keys.clone(),
+                            events: events.clone(),
                         },
                         address,
                         session_id,
                         options,
-                        &discovered,
-                        &mut sessions,
+                        device,
                         internal.clone(),
-                    )
-                    .await;
-                    let _ = reply.send(result);
+                        reply,
+                        None,
+                    );
+                    connect_tasks.insert(address, task);
+                }
+                Command::ConnectFinished {
+                    address,
+                    transport,
+                    result,
+                    reply,
+                    reconnect,
+                } => {
+                    connect_tasks.remove(&address);
+                    connecting_transports.remove(&transport);
+                    let result = match result {
+                        Ok(session) => {
+                            sessions.insert(address, session);
+                            Ok(())
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = events.send(ManagerEvent::Error {
+                                address: Some(address),
+                                message: message.clone(),
+                            });
+                            if let Some(record) = reconnect {
+                                Self::arm_ble_wake(
+                                    record,
+                                    config.controllers.clone(),
+                                    internal.clone(),
+                                    wake_gate.clone(),
+                                    &mut wake_tasks,
+                                );
+                            }
+                            Err(error)
+                        }
+                    };
+                    if let Some(reply) = reply {
+                        let _ = reply.send(result);
+                    }
+                    if suspended_scans.remove(&transport) {
+                        let _ = events.send(ManagerEvent::ScanState {
+                            transport,
+                            active: false,
+                        });
+                    }
                 }
                 Command::Send(session_id, bytes, reply) => {
                     let result = match Self::session_mut(&mut sessions, session_id) {
@@ -616,46 +804,43 @@ impl BluetoothServer {
                 Command::WakeDiscovered(record, device) => {
                     wake_tasks.remove(&record.address);
                     let identity = Self::ble_identity(&device);
-                    let publish = Self::publish_discovery(
+                    let recognized = match Self::publish_discovery(
                         &config,
                         identity,
                         None,
                         Some(device),
                         &events,
                         &mut discovered,
-                    );
+                    ) {
+                        Ok(recognized) => recognized,
+                        Err(error) => {
+                            let _ = events.send(ManagerEvent::Error {
+                                address: Some(record.address),
+                                message: format!("automatic reconnect failed: {error}"),
+                            });
+                            Self::arm_ble_wake(
+                                record,
+                                config.controllers.clone(),
+                                internal.clone(),
+                                wake_gate.clone(),
+                                &mut wake_tasks,
+                            );
+                            continue;
+                        }
+                    };
                     let options = ConnectOptions {
                         bonding_mode: None,
                         player_index: record.player_index,
                         auto_reconnect: true,
                     };
-                    let result = match publish {
-                        Ok(()) => {
-                            Self::connect(
-                                ConnectContext {
-                                    config: &config,
-                                    host: bredr.as_ref(),
-                                    pairing: pairing.as_ref(),
-                                    keys: keys.as_ref(),
-                                    events: &events,
-                                },
-                                record.address,
-                                SessionId(next_session_id),
-                                options,
-                                &discovered,
-                                &mut sessions,
-                                internal.clone(),
-                            )
-                            .await
-                        }
-                        Err(error) => Err(error),
-                    };
-                    next_session_id = next_session_id.wrapping_add(1).max(1);
-                    if let Err(error) = result {
+                    if !recognized {
                         let _ = events.send(ManagerEvent::Error {
                             address: Some(record.address),
-                            message: format!("automatic reconnect failed: {error}"),
+                            message: "automatic reconnect advertisement does not match a BLE-capable controller profile".into(),
                         });
+                    } else if sessions.contains_key(&record.address)
+                        || connect_tasks.contains_key(&record.address)
+                    {
                         Self::arm_ble_wake(
                             record,
                             config.controllers.clone(),
@@ -663,6 +848,37 @@ impl BluetoothServer {
                             wake_gate.clone(),
                             &mut wake_tasks,
                         );
+                    } else if let Some(device) = discovered.get(&record.address).cloned() {
+                        let address = record.address;
+                        let transport = device.identity.transport;
+                        if !connecting_transports.insert(transport) {
+                            Self::arm_ble_wake(
+                                record,
+                                config.controllers.clone(),
+                                internal.clone(),
+                                wake_gate.clone(),
+                                &mut wake_tasks,
+                            );
+                            continue;
+                        }
+                        let task = Self::spawn_connect(
+                            ConnectContext {
+                                config: config.clone(),
+                                host: bredr.clone(),
+                                pairing: pairing.clone(),
+                                keys: keys.clone(),
+                                events: events.clone(),
+                            },
+                            address,
+                            SessionId(next_session_id),
+                            options,
+                            device,
+                            internal.clone(),
+                            None,
+                            Some(record),
+                        );
+                        connect_tasks.insert(address, task);
+                        next_session_id = next_session_id.wrapping_add(1).max(1);
                     }
                 }
                 Command::SessionEnded {
@@ -711,6 +927,9 @@ impl BluetoothServer {
                         task.abort();
                     }
                     for (_, task) in wake_tasks.drain() {
+                        task.abort();
+                    }
+                    for (_, task) in connect_tasks.drain() {
                         task.abort();
                     }
                     for (_, mut session) in sessions.drain() {
@@ -803,19 +1022,11 @@ impl BluetoothServer {
         config: &ManagerConfig,
         bredr: Option<&Arc<HciHost>>,
         request: ScanRequest,
-        events: &broadcast::Sender<ManagerEvent>,
+        wii_liac: bool,
         discovered: &mut HashMap<DeviceAddr, Discovered>,
         wake_gate: &Arc<tokio::sync::Mutex<()>>,
     ) -> Result<()> {
-        let kind = match request {
-            ScanRequest::Ble { .. } => TransportKind::Ble,
-            ScanRequest::BrEdr { .. } => TransportKind::BrEdr,
-        };
-        let _ = events.send(ManagerEvent::ScanState {
-            transport: kind,
-            active: true,
-        });
-        let result = match request {
+        match request {
             ScanRequest::Ble { duration } => {
                 let devices = {
                     let _guard = wake_gate.lock().await;
@@ -823,20 +1034,25 @@ impl BluetoothServer {
                 };
                 for device in devices {
                     let identity = Self::ble_identity(&device);
-                    Self::publish_discovery(
-                        config,
-                        identity,
-                        None,
-                        Some(device),
-                        events,
-                        discovered,
-                    )?;
+                    discovered.insert(
+                        identity.address,
+                        Discovered {
+                            identity,
+                            bredr: None,
+                            ble: Some(device),
+                        },
+                    );
                 }
                 Ok(())
             }
             ScanRequest::BrEdr { duration_units } => {
                 let host = bredr.ok_or(Error::AdapterNotFound)?;
-                for inquiry in host.inquiry(duration_units, 0).await? {
+                let inquiries = if wii_liac {
+                    host.limited_inquiry(duration_units, 0).await?
+                } else {
+                    host.inquiry(duration_units, 0).await?
+                };
+                for inquiry in inquiries {
                     let name = host.remote_name(&inquiry).await.ok();
                     let identity = DeviceIdentity {
                         address: inquiry.addr,
@@ -852,23 +1068,18 @@ impl BluetoothServer {
                         manufacturer_data: Vec::new(),
                         pnp: None,
                     };
-                    Self::publish_discovery(
-                        config,
-                        identity,
-                        Some(inquiry),
-                        None,
-                        events,
-                        discovered,
-                    )?;
+                    discovered.insert(
+                        identity.address,
+                        Discovered {
+                            identity,
+                            bredr: Some(inquiry),
+                            ble: None,
+                        },
+                    );
                 }
                 Ok(())
             }
-        };
-        let _ = events.send(ManagerEvent::ScanState {
-            transport: kind,
-            active: false,
-        });
-        result
+        }
     }
 
     fn ble_identity(device: &BleDevice) -> DeviceIdentity {
@@ -894,40 +1105,83 @@ impl BluetoothServer {
         ble: Option<BleDevice>,
         events: &broadcast::Sender<ManagerEvent>,
         discovered: &mut HashMap<DeviceAddr, Discovered>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let profile_id = config
             .controllers
             .identify(&identity)?
             .map(|controller| controller.id());
+        let recognized = profile_id.is_some();
         let rssi = ble
             .as_ref()
             .and_then(|device| device.rssi)
             .or_else(|| bredr.as_ref().and_then(|device| device.rssi).map(i16::from));
-        let _ = events.send(ManagerEvent::Discovered {
+        let event = ManagerEvent::Discovered {
             identity: identity.clone(),
             profile_id,
             rssi,
-        });
-        discovered.insert(
-            identity.address,
-            Discovered {
-                identity,
-                bredr,
-                ble,
-            },
-        );
-        Ok(())
+        };
+        let replace = recognized
+            || discovered.get(&identity.address).is_none_or(|existing| {
+                config
+                    .controllers
+                    .identify(&existing.identity)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            });
+        if replace {
+            discovered.insert(
+                identity.address,
+                Discovered {
+                    identity,
+                    bredr,
+                    ble,
+                },
+            );
+        }
+        let _ = events.send(event);
+        Ok(recognized)
     }
 
-    async fn connect(
-        context: ConnectContext<'_>,
+    fn spawn_connect(
+        context: ConnectContext,
         address: DeviceAddr,
         session_id: SessionId,
         options: ConnectOptions,
-        discovered: &HashMap<DeviceAddr, Discovered>,
-        sessions: &mut HashMap<DeviceAddr, Session>,
+        device: Discovered,
         internal: mpsc::Sender<Command>,
-    ) -> Result<()> {
+        reply: Option<oneshot::Sender<Result<()>>>,
+        reconnect: Option<ControllerRecord>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let transport = device.identity.transport;
+            let completion = internal.clone();
+            let result = time::timeout(
+                CONNECTION_ATTEMPT_TIMEOUT,
+                Self::connect(context, address, session_id, options, device, internal),
+            )
+            .await
+            .unwrap_or(Err(Error::Timeout("controller connection")));
+            let _ = completion
+                .send(Command::ConnectFinished {
+                    address,
+                    transport,
+                    result,
+                    reply,
+                    reconnect,
+                })
+                .await;
+        })
+    }
+
+    async fn connect(
+        context: ConnectContext,
+        address: DeviceAddr,
+        session_id: SessionId,
+        options: ConnectOptions,
+        device: Discovered,
+        internal: mpsc::Sender<Command>,
+    ) -> Result<Session> {
         let ConnectContext {
             config,
             host,
@@ -935,12 +1189,6 @@ impl BluetoothServer {
             keys,
             events,
         } = context;
-        if sessions.contains_key(&address) {
-            return Ok(());
-        }
-        let device = discovered.get(&address).ok_or(Error::Unsupported(
-            "device must be discovered before connecting",
-        ))?;
         let mut identity = device.identity.clone();
         let mut identified_handle = None;
         if identity.transport == TransportKind::BrEdr {
@@ -949,7 +1197,7 @@ impl BluetoothServer {
                 .as_ref()
                 .is_none_or(|controller| controller.id().as_str() == "generic.hid")
             {
-                let host = host.ok_or(Error::AdapterNotFound)?;
+                let host = host.as_ref().ok_or(Error::AdapterNotFound)?;
                 let inquiry = device
                     .bredr
                     .as_ref()
@@ -967,23 +1215,32 @@ impl BluetoothServer {
                 identified_handle = Some(handle);
             }
         }
-        let controller = config
+        let mut controller = config
             .controllers
             .identify(&identity)?
             .ok_or(Error::Unsupported(
                 "no controller profile matched the device",
             ))?;
-        let profile_id = controller.id();
+        keys.register(ControllerRecord {
+            address,
+            transport: identity.transport,
+            profile_id: controller.id(),
+            link_key: None,
+            link_key_type: None,
+            adapter_index: (identity.transport == TransportKind::Ble)
+                .then_some(config.ble_adapter_index),
+            auto_reconnect: options.auto_reconnect,
+            player_index: options.player_index,
+        })?;
         let controller_id = ControllerId::new(identity.transport, address);
         let _ = events.send(ManagerEvent::Connecting {
             controller_id,
-            profile_id: profile_id.clone(),
+            profile_id: controller.id(),
         });
         let policy = controller.connection_policy(&identity, &options);
-        let mut controller_session = controller.connect(&options);
         let mut transport: Box<dyn Transport> = match device.identity.transport {
             TransportKind::BrEdr => {
-                let host = host.ok_or(Error::AdapterNotFound)?;
+                let host = host.as_ref().ok_or(Error::AdapterNotFound)?;
                 let inquiry = device
                     .bredr
                     .as_ref()
@@ -993,7 +1250,7 @@ impl BluetoothServer {
                     policy.host_identity.class_of_device,
                 )
                 .await?;
-                if let Some(pairing) = pairing {
+                if let Some(pairing) = pairing.as_ref() {
                     let pin = match policy.pairing {
                         PairingPolicy::FixedPin(pin) => Some(PinCode::Fixed(pin.to_vec())),
                         PairingPolicy::RemoteAddressPin => Some(PinCode::RemoteAddress),
@@ -1043,14 +1300,23 @@ impl BluetoothServer {
                 Box::new(gatt)
             }
         };
+        if let Some(uuid) = transport.input_characteristic_uuid()
+            && let Some(refined) = config.controllers.identify_input_characteristic(uuid)?
+        {
+            controller = refined;
+        }
+        identity
+            .name
+            .get_or_insert_with(|| controller.display_name().to_owned());
+        let profile_id = controller.id();
+        let mut controller_session = controller.connect(&options);
         controller_session.synchronize(transport.as_mut()).await?;
-        let stored_key = keys.get(address)?;
-        config.store.put(ControllerRecord {
+        keys.register(ControllerRecord {
             address,
             transport: identity.transport,
             profile_id: profile_id.clone(),
-            link_key: stored_key.map(|key| key.value),
-            link_key_type: stored_key.map(|key| key.key_type),
+            link_key: None,
+            link_key_type: None,
             adapter_index: (identity.transport == TransportKind::Ble)
                 .then_some(config.ble_adapter_index),
             auto_reconnect: options.auto_reconnect,
@@ -1064,18 +1330,15 @@ impl BluetoothServer {
             events.clone(),
             internal,
         );
-        sessions.insert(
-            address,
-            Session {
-                id: session_id,
-                controller_id,
-                identity: identity.clone(),
-                player_index: options.player_index,
-                transport,
-                controller: controller_session,
-                report_task,
-            },
-        );
+        let session = Session {
+            id: session_id,
+            controller_id,
+            identity: identity.clone(),
+            player_index: options.player_index,
+            transport,
+            controller: controller_session,
+            report_task,
+        };
         let _ = events.send(ManagerEvent::Connected(ConnectedController {
             controller_id,
             session_id,
@@ -1083,7 +1346,7 @@ impl BluetoothServer {
             profile_id,
             player_index: options.player_index,
         }));
-        Ok(())
+        Ok(session)
     }
 
     async fn accept_inbound(
@@ -1093,8 +1356,9 @@ impl BluetoothServer {
         session_id: SessionId,
         events: &broadcast::Sender<ManagerEvent>,
         internal: mpsc::Sender<Command>,
+        discovered: Option<&Discovered>,
     ) -> Result<Session> {
-        let record = config
+        let mut record = config
             .store
             .records()?
             .into_iter()
@@ -1106,19 +1370,33 @@ impl BluetoothServer {
             .ok_or(Error::Unsupported(
                 "inbound connection is not from a persisted controller",
             ))?;
-        let controller = config
-            .controllers
-            .get(&record.profile_id)
-            .ok_or_else(|| Error::MissingProfile(record.profile_id.to_string()))?;
-        let identity = DeviceIdentity {
-            address,
-            transport: TransportKind::BrEdr,
-            name: None,
-            class_of_device: None,
-            service_uuids: Vec::new(),
-            manufacturer_data: Vec::new(),
-            pnp: None,
+        let controller = match config.controllers.get(&record.profile_id) {
+            Some(controller) => controller,
+            None => {
+                let identity = &discovered
+                    .ok_or_else(|| Error::MissingProfile(record.profile_id.to_string()))?
+                    .identity;
+                let controller = config
+                    .controllers
+                    .identify(identity)?
+                    .ok_or_else(|| Error::MissingProfile(record.profile_id.to_string()))?;
+                record.profile_id = controller.id();
+                config.store.put(record.clone())?;
+                controller
+            }
         };
+        let identity = discovered.map_or_else(
+            || DeviceIdentity {
+                address,
+                transport: TransportKind::BrEdr,
+                name: None,
+                class_of_device: None,
+                service_uuids: Vec::new(),
+                manufacturer_data: Vec::new(),
+                pnp: None,
+            },
+            |device| device.identity.clone(),
+        );
         let options = ConnectOptions {
             bonding_mode: None,
             player_index: record.player_index,
@@ -1317,5 +1595,57 @@ impl BluetoothServer {
             reconnecting: false,
         });
         disconnect_result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wiimote_identity(address: DeviceAddr, transport: TransportKind) -> DeviceIdentity {
+        DeviceIdentity {
+            address,
+            transport,
+            name: Some("Nintendo RVL-CNT-01".to_owned()),
+            class_of_device: None,
+            service_uuids: Vec::new(),
+            manufacturer_data: Vec::new(),
+            pnp: None,
+        }
+    }
+
+    #[test]
+    fn unrecognized_ble_observation_does_not_replace_classic_controller() {
+        let config = ManagerConfig::default();
+        let (events, _) = broadcast::channel(8);
+        let address = DeviceAddr::public([1, 2, 3, 4, 5, 6]);
+        let mut discovered = HashMap::new();
+
+        assert!(
+            BluetoothServer::publish_discovery(
+                &config,
+                wiimote_identity(address, TransportKind::BrEdr),
+                None,
+                None,
+                &events,
+                &mut discovered,
+            )
+            .unwrap()
+        );
+        assert!(
+            !BluetoothServer::publish_discovery(
+                &config,
+                wiimote_identity(address, TransportKind::Ble),
+                None,
+                None,
+                &events,
+                &mut discovered,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            discovered.get(&address).unwrap().identity.transport,
+            TransportKind::BrEdr
+        );
     }
 }

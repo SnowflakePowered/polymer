@@ -47,10 +47,38 @@ export type ControllerTopology = Readonly<{
     mappings: readonly ControllerMapping[],
 }>;
 
+export type UiTextMatch =
+    | Readonly<{ equals: string, caseSensitive?: boolean }>
+    | Readonly<{ contains: string, caseSensitive?: boolean }>;
+
+export type UiLocator = {
+    nth(index: number): UiLocator,
+    press(): Promise<void>,
+    selectOption(name: string): Promise<void>,
+};
+
+export type UiWindow = {
+    readonly keyboard: {
+        press(
+            code: string,
+            options?: { modifiers?: readonly string[], repeat?: boolean },
+        ): Promise<void>,
+    },
+    locator(selector: string): UiLocator,
+    setLogicalFocus(): Promise<void>,
+};
+
+export type UiAutomation = {
+    waitForWindow(
+        query: { title?: UiTextMatch, className?: UiTextMatch, visible?: boolean },
+        options?: { timeoutMs?: number },
+    ): Promise<UiWindow>,
+};
+
 export type ControllerChangeContext<Options = unknown> = Readonly<{
     topology: ControllerTopology,
     previousTopology: ControllerTopology,
     configuration: Configuration<Options>,
     filesystem: Filesystem,
-    ui: unknown,
+    ui: UiAutomation,
 }>;

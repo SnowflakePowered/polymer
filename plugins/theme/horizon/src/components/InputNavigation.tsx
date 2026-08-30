@@ -1,5 +1,5 @@
 import { onCleanup, onMount } from "solid-js";
-import { useInputActions, type InputDirection } from "../app/InputProvider";
+import { dispatchControllerBack, useInputActions, type InputDirection } from "../app/InputProvider";
 
 const focusable = "button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex='-1']), [data-part='item']:not([data-disabled])";
 const scopeSelector = ".horizon-input-scope";
@@ -75,12 +75,7 @@ function activate() {
 
 function back() {
   const target = document.activeElement instanceof HTMLElement ? document.activeElement : window;
-  target.dispatchEvent(new KeyboardEvent("keydown", {
-    key: "Escape",
-    code: "Escape",
-    bubbles: true,
-    cancelable: true,
-  }));
+  dispatchControllerBack(target);
 }
 
 export function InputNavigation() {
@@ -96,6 +91,7 @@ export function InputNavigation() {
         action.event.preventDefault();
         activate();
       } else if (action.type === "back" && action.sourceId !== null) {
+        action.event.preventDefault();
         back();
       }
     });

@@ -453,7 +453,10 @@ pub(crate) struct ShellRasterWorker {
 }
 
 impl ShellRasterWorker {
-    pub(crate) fn spawn(mut rasterizer: ShellRasterizer) -> Self {
+    pub(crate) fn spawn(
+        mut rasterizer: ShellRasterizer,
+        publication_ready: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
         let state = Arc::new(Mutex::new(ShellRasterWorkerState::default()));
         let worker_state = Arc::clone(&state);
         let wake = Arc::new(Condvar::new());
@@ -503,6 +506,7 @@ impl ShellRasterWorker {
                     {
                         break;
                     }
+                    publication_ready();
                 }
             })
             .expect("failed to create the Blitz raster worker");

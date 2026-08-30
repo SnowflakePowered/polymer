@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 use crate::{DeviceAddr, Result};
 
@@ -22,6 +23,12 @@ pub enum ConnectionState {
 pub trait Transport: Send {
     async fn connect(&mut self, addr: DeviceAddr) -> Result<()>;
     fn reports(&self) -> ReportReceiver;
+    /// The active BLE input characteristic, when the transport has one.
+    /// Controller discovery can use this to refine a family-level match after
+    /// GATT services become available.
+    fn input_characteristic_uuid(&self) -> Option<Uuid> {
+        None
+    }
     /// Optional device-command response stream, distinct from raw HID input.
     fn responses(&self) -> Option<ReportReceiver> {
         None

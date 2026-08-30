@@ -444,13 +444,27 @@ temperature_C    = sign_extend_16(t) / 128 + 25
 
 The Q16.16 accelerometer values correlate with an interpolation of the adjacent
 normal-packet acceleration samples at greater than `0.99994` on every axis. The
-best direct fits have slopes within `0.11%` of one. Across the completed guided
-capture, their effective interpolation point is approximately two 800 Hz ticks
-after the immediately preceding normal packet's terminal sample. The median
-absolute component error is about one raw accelerometer count around that point,
-but the error minimum is broad from roughly two to three ticks. Treat this as a
-filtered or resampled acceleration vector, not as an ADC sample with a proven
-integer timestamp.
+best direct fits have slopes within `0.11%` of one. Reanalysis of 8,379 usable
+`E -> C -> E` windows places the dynamic subset's effective point roughly
+1.5-1.8 ticks after the immediately preceding normal packet's terminal sample.
+Only 674 windows contain meaningful acceleration change and 165 contain strong
+excitation, however. Class-C packets emitted one and two sensor ticks after that
+terminal converge near the same effective point rather than their respective
+header timestamps. Treat this as a filtered or resampled acceleration vector,
+not as an ADC sample with a proven fractional timestamp.
+
+bttest's dedicated **class-C acceleration filter capture** separates frequency
+from physical axis. It records a stationary baseline, slow/medium/fast
+fixed-orientation translations on X/Y/Z, and isolated impulses on all three
+axes. Each accepted marker is a complete `E -> C -> E` window containing the
+decoded previous terminal, all three following normal acceleration samples, the
+Q16.16 class-C vector, sensor-clock sample positions, and host-time gaps. The
+stationary action targets 12 contexts and each dynamic action targets 24,
+pooling 72 contexts per translation frequency while keeping individual actions
+manageable. Trials are directly selectable and retain their per-trial progress,
+so a focused follow-up can skip completed or low-priority motions. Comparing
+amplitude and phase across rates will distinguish a constant fractional
+resampling point from a frequency-dependent filter.
 
 The high-precision quaternion describes an older point in the same stream. With
 normal quaternion keyframes assigned to the preceding normal packet terminal as

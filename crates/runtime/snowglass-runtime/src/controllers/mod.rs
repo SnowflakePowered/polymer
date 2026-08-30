@@ -230,7 +230,9 @@ impl ControllerManager {
                     "name": candidate["name"],
                     "connected": candidate["connected"],
                     "playerIndex": self.player_for(id),
-                    "metadata": {},
+                    "metadata": {
+                        "pairing": candidate["pairing"].as_bool().unwrap_or(false),
+                    },
                 })
             })
             .collect::<Vec<_>>();

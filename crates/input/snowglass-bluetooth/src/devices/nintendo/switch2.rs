@@ -17,7 +17,7 @@ use crate::devices::{
     DeviceIdentity, HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy,
 };
 use crate::transport::ble::{BleDevice, GattProfile};
-use crate::{DeviceAddr, Error, Result, Transport};
+use crate::{DeviceAddr, Error, Result, Transport, TransportKind};
 
 pub const SERVICE_UUID: Uuid = Uuid::from_u128(0xab7de9be_89fe_49ad_828f_118f09df7fd0);
 pub const COMMON_INPUT_UUID: Uuid = Uuid::from_u128(0xab7de9be_89fe_49ad_828f_118f09df7fd2);
@@ -43,6 +43,14 @@ trait Switch2Model: Send + Sync + 'static {
     const NATIVE_REPORT_ID: u8;
     const FEATURE_MASK: u8;
 
+    fn input_candidates() -> Vec<Uuid> {
+        if Self::INPUT_UUID == COMMON_INPUT_UUID {
+            vec![COMMON_INPUT_UUID]
+        } else {
+            vec![Self::INPUT_UUID, COMMON_INPUT_UUID]
+        }
+    }
+
     fn matches_switch2(identity: &DeviceIdentity) -> Option<MatchConfidence> {
         let product_match = identity
             .manufacturer_data(NINTENDO_MANUFACTURER_ID)
@@ -61,10 +69,14 @@ trait Switch2Model: Send + Sync + 'static {
     }
 
     fn gatt_profile() -> GattProfile {
+        let mut inputs = Self::input_candidates().into_iter();
+        let input = inputs
+            .next()
+            .expect("Switch 2 models declare at least one input characteristic");
         GattProfile {
             service: SERVICE_UUID,
-            input: Self::INPUT_UUID,
-            input_fallbacks: vec![COMMON_INPUT_UUID],
+            input,
+            input_fallbacks: inputs.collect(),
             additional_inputs: (Self::NATIVE_REPORT_ID == 0x0a)
                 .then_some(COMMON_INPUT_UUID)
                 .into_iter()
@@ -276,6 +288,10 @@ where
         M::matches_switch2(identity)
     }
 
+    fn supports_transport(&self, _transport: TransportKind) -> bool {
+        true
+    }
+
     fn bonding_modes(&self) -> Vec<BondingMode> {
         vec![BondingMode::new("pseudo-oob", "Nintendo pseudo-OOB")]
     }
@@ -308,6 +324,10 @@ where
 
     fn preferred_input_report_id(&self) -> Option<u8> {
         Some(M::NATIVE_REPORT_ID)
+    }
+
+    fn input_characteristic_uuid(&self) -> Option<Uuid> {
+        Some(M::INPUT_UUID)
     }
 
     fn connect(&self, options: &ConnectOptions) -> Box<dyn ControllerSession> {
@@ -407,6 +427,16 @@ controller_model! {
             (manufacturer || identity.has_service(SERVICE_UUID) || name)
                 .then_some(MatchConfidence::Family)
         }
+
+        fn input_candidates() -> Vec<Uuid> {
+            vec![
+                JOYCON_LEFT_INPUT_UUID,
+                JOYCON_RIGHT_INPUT_UUID,
+                PRO_INPUT_UUID,
+                GAMECUBE_INPUT_UUID,
+                COMMON_INPUT_UUID,
+            ]
+        }
     }
 }
 
@@ -420,5 +450,27 @@ impl Switch2Device<UnknownSwitch2Model> {
 
     pub fn bonded_host_for(device: &BleDevice) -> Option<DeviceAddr> {
         UnknownSwitch2Model::bonded_host(device.manufacturer_data.get(&NINTENDO_MANUFACTURER_ID)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::ControllerRegistry;
+
+    #[test]
+    fn native_characteristic_refines_a_family_level_match() {
+        let profile = UnknownSwitch2Model::gatt_profile();
+        assert_eq!(profile.input, JOYCON_LEFT_INPUT_UUID);
+        assert!(profile.input_fallbacks.contains(&GAMECUBE_INPUT_UUID));
+        assert_eq!(
+            ControllerRegistry::standard()
+                .identify_input_characteristic(GAMECUBE_INPUT_UUID)
+                .unwrap()
+                .unwrap()
+                .id()
+                .as_str(),
+            "nintendo.switch2.nso-gamecube"
+        );
     }
 }

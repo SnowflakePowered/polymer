@@ -562,9 +562,30 @@ impl HciHost {
 
     async fn connect_with_clock(&self, addr: DeviceAddr, clock_offset: u16) -> Result<u16> {
         let mut events = self.events.subscribe();
+        match self.cancel_inquiry().await {
+            Ok(())
+            | Err(Error::HciStatus {
+                operation: "Inquiry Cancel",
+                status: 0x0c,
+            }) => {}
+            Err(error) => return Err(error),
+        }
         // DM1/DH1/DM3/DH3/DM5/DH5, with the mandatory reserved bits used by HCI.
-        self.execute(Command::create_connection(addr, 0xcc18, clock_offset))
-            .await?;
+        for attempt in 1..=3 {
+            match self
+                .execute_with_operation(
+                    Command::create_connection(addr, 0xcc18, clock_offset),
+                    "Create Connection",
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(Error::HciStatus { status: 0x0c, .. }) if attempt < 3 => {
+                    time::sleep(Duration::from_millis(250 * attempt)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         wait_connection_complete(&mut events, addr).await
     }
 

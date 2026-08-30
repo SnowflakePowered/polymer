@@ -10,6 +10,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
+
+const IPC_RECONNECT_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BackendError(pub &'static str);
@@ -212,21 +215,27 @@ impl Runtime {
     }
 
     fn receive(self: Arc<Self>, socket_name: String) {
-        let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
-            return;
-        };
-        *self.feedback.lock() = input.control.try_clone().ok();
-        while input
-            .drain_events(|event| match event {
-                Message::GamepadUpdate(update) => self.apply(update),
-                Message::VirtualGamepadConnection(connection) => self.apply_connection(connection),
-                _ => unreachable!("input shared memory admits only input events"),
-            })
-            .is_ok()
-        {
-            std::thread::yield_now();
+        loop {
+            let Ok(mut input) = InputSubscriber::connect(&socket_name) else {
+                std::thread::sleep(IPC_RECONNECT_DELAY);
+                continue;
+            };
+            *self.feedback.lock() = input.control.try_clone().ok();
+            while input
+                .drain_events(|event| match event {
+                    Message::GamepadUpdate(update) => self.apply(update),
+                    Message::VirtualGamepadConnection(connection) => {
+                        self.apply_connection(connection)
+                    }
+                    _ => unreachable!("input shared memory admits only input events"),
+                })
+                .is_ok()
+            {
+                std::thread::yield_now();
+            }
+            *self.feedback.lock() = None;
+            std::thread::sleep(IPC_RECONNECT_DELAY);
         }
-        *self.feedback.lock() = None;
     }
 }
 

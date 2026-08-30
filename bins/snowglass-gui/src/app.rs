@@ -99,7 +99,12 @@ impl ShellCoordinator {
         let compositor = window.compositor();
         let (game_host, shell_compositor) = {
             // Prepare the retained Vello renderer before the first shell frame.
-            let mut shell_compositor = ShellCompositor::new(&compositor, shell_rasterizer)?;
+            let raster_proxy = proxy.clone();
+            let mut shell_compositor =
+                ShellCompositor::new(&compositor, shell_rasterizer, move || {
+                    let _ =
+                        raster_proxy.send_event(UserEvent::Window(WindowCommand::ShellRasterReady));
+                })?;
             let game_host = GameHost::new(shell_compositor.device_context())?;
             shell_compositor.reconcile(&game_host)?;
             (game_host, shell_compositor)
