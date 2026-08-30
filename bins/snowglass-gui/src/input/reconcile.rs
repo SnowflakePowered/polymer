@@ -89,27 +89,20 @@ impl InputReconciler {
         binding: &BindingOverride,
         source: Option<&SourceSelector>,
     ) -> bool {
-        if matches!(
-            binding,
+        match binding {
             BindingOverride::Axis {
                 source: SourceControl::MouseDelta { .. } | SourceControl::MousePosition { .. },
                 ..
+            } => true,
+            BindingOverride::Button {
+                source: SourceControl::Key { .. },
             }
-        ) {
-            return true;
+            | BindingOverride::Axis {
+                source: SourceControl::Key { .. },
+                ..
+            } => matches!(source, Some(SourceSelector::KeyboardMouse)),
+            _ => binding.sdl_binding().is_some(),
         }
-        if matches!(source, Some(SourceSelector::KeyboardMouse)) {
-            return matches!(
-                binding,
-                BindingOverride::Button {
-                    source: SourceControl::Key { .. }
-                } | BindingOverride::Axis {
-                    source: SourceControl::Key { .. },
-                    ..
-                } | BindingOverride::Disabled
-            );
-        }
-        binding.sdl_binding().is_some()
     }
 
     pub(super) fn slots(configuration: &ResolvedInputConfiguration) -> Vec<SlotConfig> {
@@ -194,7 +187,17 @@ impl InputReconciler {
         } = binding
         {
             provider.set_mouse_axis_binding(slot, *target, pointer.clone(), *transform);
-        } else if matches!(source, Some(SourceSelector::KeyboardMouse)) {
+        } else if matches!(source, Some(SourceSelector::KeyboardMouse))
+            && matches!(
+                binding,
+                BindingOverride::Button {
+                    source: SourceControl::Key { .. }
+                } | BindingOverride::Axis {
+                    source: SourceControl::Key { .. },
+                    ..
+                } | BindingOverride::Disabled
+            )
+        {
             let key = match binding {
                 BindingOverride::Button {
                     source: SourceControl::Key { code },
@@ -210,5 +213,25 @@ impl InputReconciler {
         } else if let Some(binding) = binding.sdl_binding() {
             provider.set_binding(slot, *target, binding);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use snowglass_input::layout::SdlButton;
+
+    #[test]
+    fn gamepad_binding_survives_keyboard_mouse_fallback() {
+        let binding = BindingOverride::Button {
+            source: SourceControl::GamepadButton {
+                button: SdlButton::DpadDown,
+            },
+        };
+
+        assert!(InputReconciler::binding_supported(
+            &binding,
+            Some(&SourceSelector::KeyboardMouse),
+        ));
     }
 }

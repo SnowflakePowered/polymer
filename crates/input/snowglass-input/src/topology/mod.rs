@@ -3,7 +3,7 @@
 use crate::{
     hub::{
         BindingOverride, InputHub, InputOperation, InputTransaction, PortConfiguration,
-        SourceAssignment, SourceControl, SourceSelector, VirtualPort,
+        SourceAssignment, SourceSelector, VirtualPort,
     },
     layout::{InputBinding, InputLayout, ProjectionMode},
 };
@@ -55,8 +55,8 @@ impl ControllerBindings {
     pub fn defaults(layout: &InputLayout) -> Self {
         Self::new(
             layout
-                .custom_binding_targets()
-                .filter_map(|target| layout.sdl_key(target).map(|source| (target, Some(source)))),
+                .default_gamepad_bindings()
+                .map(|(target, source)| (target, Some(source))),
         )
     }
 
@@ -73,8 +73,8 @@ impl ControllerBindings {
                 };
                 Ok((target, source))
             })
-            .collect::<Result<Vec<_>, String>>()
-            .map(Self::new)
+            .collect::<Result<HashMap<_, _>, String>>()
+            .map(Self)
     }
 
     pub fn from_overrides(
@@ -95,8 +95,8 @@ impl ControllerBindings {
                 };
                 Ok((*target, source))
             })
-            .collect::<Result<Vec<_>, String>>()
-            .map(Self::new)
+            .collect::<Result<HashMap<_, _>, String>>()
+            .map(Self)
     }
 }
 
@@ -124,19 +124,7 @@ impl<'de> Deserialize<'de> for ControllerBindings {
         D: Deserializer<'de>,
     {
         let bindings = HashMap::<String, String>::deserialize(deserializer)?;
-        bindings
-            .into_iter()
-            .map(|(target, source)| {
-                let target = BindingKey::from_str(&target).map_err(D::Error::custom)?;
-                let source = if source == "none" {
-                    None
-                } else {
-                    Some(BindingKey::from_str(&source).map_err(D::Error::custom)?)
-                };
-                Ok((target, source))
-            })
-            .collect::<Result<Vec<_>, D::Error>>()
-            .map(Self::new)
+        Self::try_from_strings(bindings).map_err(D::Error::custom)
     }
 }
 
@@ -341,36 +329,22 @@ impl ControllerTopology {
         for mapping in &self.mappings {
             let layout = InputLayout::get(&mapping.layout)
                 .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
-            let overrides = mapping
-                .mapping
-                .iter()
-                .map(|(target, source)| {
-                    let binding = source
-                        .map_or(Some(InputBinding::Disabled { disabled: true }), |source| {
-                            layout.custom_binding(*target, *source)
-                        });
-                    let binding = binding.ok_or_else(|| {
-                        format!(
-                            "input source '{}' is not a physical gamepad expression",
-                            source.unwrap()
-                        )
-                    })?;
-                    let binding = match binding {
-                        InputBinding::Button { button } => BindingOverride::Button {
-                            source: SourceControl::GamepadButton { button },
-                        },
-                        InputBinding::Axis { axis, invert } => BindingOverride::Axis {
-                            source: SourceControl::GamepadAxis { axis },
-                            transform: crate::hub::AxisTransform {
-                                invert,
-                                ..Default::default()
-                            },
-                        },
-                        InputBinding::Disabled { .. } => BindingOverride::Disabled,
+            let overrides =
+                mapping
+                    .mapping
+                    .iter()
+                    .map(|(target, source)| {
+                        let binding = match source {
+                        Some(source) => layout.custom_binding(*target, *source).ok_or_else(|| {
+                            format!(
+                                "input source '{source}' is not a physical gamepad expression"
+                            )
+                        })?,
+                        None => InputBinding::Disabled { disabled: true },
                     };
-                    Ok((*target, binding))
-                })
-                .collect::<Result<HashMap<_, _>, String>>()?;
+                        Ok((*target, binding.into()))
+                    })
+                    .collect::<Result<HashMap<_, _>, String>>()?;
             let port = u8::try_from(mapping.target.port).map_err(|_| {
                 format!(
                     "controller target {}:{} exceeds 255 ports",

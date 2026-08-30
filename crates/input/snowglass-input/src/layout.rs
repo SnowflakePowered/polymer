@@ -220,6 +220,10 @@ impl InputLayout {
         }
     }
 
+    pub fn accepts_axis_binding(&self, key: BindingKey) -> bool {
+        self.sdl_key(key).is_some_and(|target| target.is_analog())
+    }
+
     /// Resolves a canonical physical expression into this layout's target.
     pub fn custom_binding(&self, target: BindingKey, source: BindingKey) -> Option<InputBinding> {
         match sdl::wire(source)? {
@@ -279,6 +283,12 @@ impl InputLayout {
             )
             .then_some(element.key)
         })
+    }
+
+    /// The semantic target/source pairs supplied by the layout projection.
+    pub fn default_gamepad_bindings(&self) -> impl Iterator<Item = (BindingKey, BindingKey)> + '_ {
+        self.custom_binding_targets()
+            .filter_map(|target| self.sdl_key(target).map(|source| (target, source)))
     }
 
     pub fn same_topology(&self, other: &Self) -> bool {

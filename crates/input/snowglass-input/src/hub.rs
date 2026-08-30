@@ -4,8 +4,7 @@
 //! sinks remain data-plane implementations: they consume snapshots produced
 //! here, but neither owns user configuration.
 
-use crate::layout::{InputLayout, SdlAxis, SdlButton};
-use crate::sdl::Wire;
+use crate::layout::{InputBinding, InputLayout, SdlAxis, SdlButton};
 use consolespec::MachineSpec;
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
@@ -185,20 +184,61 @@ pub enum BindingOverride {
 
 impl BindingOverride {
     /// Projects the subset supported by today's SDL-to-SDL data plane.
-    pub fn sdl_binding(&self) -> Option<crate::layout::InputBinding> {
+    pub fn sdl_binding(&self) -> Option<InputBinding> {
         match self {
             Self::Button {
                 source: SourceControl::GamepadButton { button },
-            } => Some(crate::layout::InputBinding::Button { button: *button }),
+            } => Some(InputBinding::Button { button: *button }),
             Self::Axis {
                 source: SourceControl::GamepadAxis { axis },
                 transform,
-            } => Some(crate::layout::InputBinding::Axis {
+            } => Some(InputBinding::Axis {
                 axis: *axis,
                 invert: transform.invert,
             }),
-            Self::Disabled => Some(crate::layout::InputBinding::Disabled { disabled: true }),
+            Self::Disabled => Some(InputBinding::Disabled { disabled: true }),
             _ => None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), InputConfigurationError> {
+        if let Self::Axis { transform, .. } = self {
+            if !transform.scale.is_finite() || transform.scale < 0.0 {
+                return Err(InputConfigurationError::InvalidBinding(
+                    "axis scale must be finite and non-negative".to_owned(),
+                ));
+            }
+            if !transform.dead_zone.is_finite() || !(0.0..1.0).contains(&transform.dead_zone) {
+                return Err(InputConfigurationError::InvalidBinding(
+                    "axis deadZone must be finite and in 0..1".to_owned(),
+                ));
+            }
+        }
+        match self {
+            Self::Button {
+                source: SourceControl::Key { code },
+            } if code.trim().is_empty() => Err(InputConfigurationError::InvalidBinding(
+                "key binding code must not be empty".to_owned(),
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl From<InputBinding> for BindingOverride {
+    fn from(binding: InputBinding) -> Self {
+        match binding {
+            InputBinding::Button { button } => Self::Button {
+                source: SourceControl::GamepadButton { button },
+            },
+            InputBinding::Axis { axis, invert } => Self::Axis {
+                source: SourceControl::GamepadAxis { axis },
+                transform: AxisTransform {
+                    invert,
+                    ..AxisTransform::default()
+                },
+            },
+            InputBinding::Disabled { .. } => Self::Disabled,
         }
     }
 }
@@ -422,7 +462,7 @@ impl HubState {
                 target,
                 binding,
             } => {
-                validate_binding(&binding)?;
+                binding.validate()?;
                 port_mut(&mut self.ports, port)?
                     .overrides
                     .insert(target, binding);
@@ -690,43 +730,16 @@ fn validate_ports(
                 });
             }
             if matches!(binding, BindingOverride::Axis { .. })
-                && !matches!(layout.sdl_wire(target), Some(Wire::Axis(_)))
+                && !layout.accepts_axis_binding(target)
             {
                 return Err(InputConfigurationError::InvalidBinding(format!(
                     "element {target} does not accept an axis binding"
                 )));
             }
-            validate_binding(binding)?;
+            binding.validate()?;
         }
     }
     Ok(())
-}
-
-fn validate_binding(binding: &BindingOverride) -> Result<(), InputConfigurationError> {
-    let transform = match binding {
-        BindingOverride::Axis { transform, .. } => Some(transform),
-        BindingOverride::Button { .. } | BindingOverride::Disabled => None,
-    };
-    if let Some(transform) = transform {
-        if !transform.scale.is_finite() || transform.scale < 0.0 {
-            return Err(InputConfigurationError::InvalidBinding(
-                "axis scale must be finite and non-negative".to_owned(),
-            ));
-        }
-        if !transform.dead_zone.is_finite() || !(0.0..1.0).contains(&transform.dead_zone) {
-            return Err(InputConfigurationError::InvalidBinding(
-                "axis deadZone must be finite and in 0..1".to_owned(),
-            ));
-        }
-    }
-    match binding {
-        BindingOverride::Button {
-            source: SourceControl::Key { code },
-        } if code.trim().is_empty() => Err(InputConfigurationError::InvalidBinding(
-            "key binding code must not be empty".to_owned(),
-        )),
-        _ => Ok(()),
-    }
 }
 
 #[cfg(test)]
@@ -883,8 +896,8 @@ mod tests {
             source: SourceControl::GamepadAxis { axis },
             transform: AxisTransform::default(),
         };
-        let port = PortConfiguration {
-            port: VirtualPort::new("controller", 0),
+        let gamecube = PortConfiguration {
+            port: VirtualPort::new("gamecube", 0),
             layout: "GAMECUBE_CONTROLLER".to_owned(),
             slot: Some(0),
             force_mouse: false,
@@ -894,13 +907,12 @@ mod tests {
             ]),
         };
 
-        InputHub::new(Some("NINTENDO_WII".to_owned()), [port]).unwrap();
+        InputHub::new(Some("NINTENDO_WII".to_owned()), [gamecube]).unwrap();
 
         let mut digital = port(0);
-        digital.overrides.insert(
-            key!(button.a),
-            axis(SdlAxis::RightTrigger),
-        );
+        digital
+            .overrides
+            .insert(key!(button.a), axis(SdlAxis::RightTrigger));
         assert!(matches!(
             hub_with([digital]),
             Err(InputConfigurationError::InvalidBinding(_))

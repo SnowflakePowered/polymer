@@ -11,12 +11,6 @@ pub use path::TargetPath;
 
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
-pub struct TargetsBlock<'de> {
-    pub targets: BTreeMap<&'de str, Target<'de>>,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml)]
 pub struct Target<'de> {
     pub output: Option<TargetOutput<'de>>,
     #[toml(default)]
