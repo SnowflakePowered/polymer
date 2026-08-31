@@ -1,6 +1,7 @@
 use consolespec::input::{Alignment, AnalogClass, BindingKey, Component, Direction, Sign, key};
 
 use crate::layout::{SdlAxis, SdlButton};
+use snowglass_input::GamepadButton;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Wire {
@@ -65,6 +66,10 @@ pub static AXES: [(SdlAxis, BindingKey); 6] = [
 ];
 
 pub static POINTER: [(u8, BindingKey); 2] = [(6, key!(pointer.x+)), (7, key!(pointer.y+))];
+
+pub fn binding_of(button: GamepadButton) -> BindingKey {
+    BUTTONS[button as usize].1
+}
 
 pub fn decompose(key: BindingKey) -> Option<[BindingKey; 2]> {
     match key {

@@ -396,10 +396,14 @@ impl BluetoothBackend {
             Some(_) => PointerFlags::DEVICE | PointerFlags::NATIVE,
             None => PointerFlags::default(),
         };
-        let delta = [
-            input.pointer[0].wrapping_sub(previous_pointer[0]),
-            input.pointer[1].wrapping_sub(previous_pointer[1]),
-        ];
+        let delta = if source == Some(PointerSource::Optical) {
+            input.pointer
+        } else {
+            std::array::from_fn(|axis| {
+                (i32::from(input.pointer[axis]) - i32::from(previous_pointer[axis]))
+                    .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+            })
+        };
         let pointer = match source {
             Some(PointerSource::Optical) => PointerSample::Relative {
                 delta: [f32::from(delta[0]), f32::from(delta[1])],
@@ -438,7 +442,11 @@ impl BluetoothBackend {
                 },
                 sensor,
                 pointer: PointerReport {
-                    position: input.pointer,
+                    position: if source == Some(PointerSource::Optical) {
+                        [0; 2]
+                    } else {
+                        input.pointer
+                    },
                     delta,
                     flags,
                     kind,

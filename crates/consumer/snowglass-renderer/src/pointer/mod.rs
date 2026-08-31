@@ -139,14 +139,16 @@ impl PointerProjector {
                 counts_per_unit,
             } => {
                 let scale = f64::from(self.sensitivity / counts_per_unit.max(1.0));
-                self.cursor.x = (self.cursor.x + f64::from(delta[0]) * scale).clamp(
-                    f64::from(bounds.x),
-                    f64::from(bounds.x) + f64::from(bounds.width),
-                );
-                self.cursor.y = (self.cursor.y + f64::from(delta[1]) * scale).clamp(
-                    f64::from(bounds.y),
-                    f64::from(bounds.y) + f64::from(bounds.height),
-                );
+                self.cursor.x =
+                    (self.cursor.x + f64::from(delta[0]) * scale * f64::from(bounds.width)).clamp(
+                        f64::from(bounds.x),
+                        f64::from(bounds.x) + f64::from(bounds.width),
+                    );
+                self.cursor.y =
+                    (self.cursor.y + f64::from(delta[1]) * scale * f64::from(bounds.height)).clamp(
+                        f64::from(bounds.y),
+                        f64::from(bounds.y) + f64::from(bounds.height),
+                    );
             }
             PointerSample::Angular {
                 position,

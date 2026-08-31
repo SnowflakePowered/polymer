@@ -10,7 +10,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use snowglass_input_layout::layout::{InputLayout, ProjectionMode};
 use snowglass_input_layout::topology::{
-    InputTopology, PointerBinding, PointerMode, PortBinding, RemapMode,
+    InputTopology, PointerBinding, PointerMode, PointerSource, PortBinding, RemapMode,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -306,6 +306,36 @@ impl ControllerTopology {
                     ));
                 }
             }
+            if mapping.pointer.mode == PointerMode::AbsoluteDevice {
+                match mapping.pointer.source {
+                    PointerSource::HostMouse => {
+                        return Err(format!(
+                            "host mouse cannot provide absolute-device input for {}:{}",
+                            mapping.target.group, mapping.target.port
+                        ));
+                    }
+                    PointerSource::DeviceNative | PointerSource::DeviceThenHostMouse
+                        if mapping.device.as_ref().is_some_and(|device| {
+                            device
+                                .capabilities
+                                .iter()
+                                .any(|capability| capability == "pointerRelative")
+                                && !device.capabilities.iter().any(|capability| {
+                                    matches!(
+                                        capability.as_str(),
+                                        "pointerAngular" | "pointerSurface"
+                                    )
+                                })
+                        }) =>
+                    {
+                        return Err(format!(
+                            "relative-only device cannot provide absolute-device input for {}:{}",
+                            mapping.target.group, mapping.target.port
+                        ));
+                    }
+                    _ => {}
+                }
+            }
         }
         if slots
             .iter()
@@ -351,13 +381,17 @@ impl ControllerTopology {
                     port,
                     layout: mapping.layout.clone(),
                     mode,
-                    bindings: mapping
-                        .mapping
-                        .iter()
-                        .map(|(target, source)| {
-                            (target.to_string(), source.map(ToString::to_string))
-                        })
-                        .collect(),
+                    bindings: if mode == RemapMode::Custom {
+                        mapping
+                            .mapping
+                            .iter()
+                            .map(|(target, source)| {
+                                (target.to_string(), source.map(ToString::to_string))
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
                     pointer: mapping.pointer,
                 })
             })

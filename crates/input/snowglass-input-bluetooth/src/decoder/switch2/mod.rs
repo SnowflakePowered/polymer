@@ -1,6 +1,5 @@
 use super::{
-    DecodedInput, GamepadState, PointerSource, ReportDecoder, normalize_stick, pointer_axis,
-    set_button,
+    DecodedInput, GamepadState, PointerSource, ReportDecoder, normalize_stick, set_button,
 };
 use snowglass_input::{DeviceRole, GamepadButton};
 use std::time::Instant;
@@ -106,18 +105,9 @@ trait Switch2ReportModel {
     }
 }
 
+#[derive(Default)]
 pub struct JoyCon2LeftDecoder {
-    optical_position: [f32; 2],
     motion_decoder: NativeMotionDecoder,
-}
-
-impl Default for JoyCon2LeftDecoder {
-    fn default() -> Self {
-        Self {
-            optical_position: [0.5, 0.5],
-            motion_decoder: NativeMotionDecoder::default(),
-        }
-    }
 }
 
 impl Switch2ReportModel for JoyCon2LeftDecoder {
@@ -159,16 +149,7 @@ impl JoyCon2LeftDecoder {
         let (report, _) = HalfReport::ref_from_prefix(report).ok()?;
         let dx = i16::from_le_bytes(report.optical_dx);
         let dy = i16::from_le_bytes(report.optical_dy);
-        if dx != 0 || dy != 0 {
-            self.optical_position[0] =
-                (self.optical_position[0] + f32::from(dx) / 4096.0).clamp(0.0, 1.0);
-            self.optical_position[1] =
-                (self.optical_position[1] + f32::from(dy) / 4096.0).clamp(0.0, 1.0);
-        }
-        state.pointer = [
-            pointer_axis(self.optical_position[0]),
-            pointer_axis(self.optical_position[1]),
-        ];
+        state.pointer = [dx, dy];
         Some(PointerSource::Optical)
     }
 }
@@ -186,18 +167,9 @@ impl ReportDecoder for JoyCon2LeftDecoder {
     }
 }
 
+#[derive(Default)]
 pub struct JoyCon2RightDecoder {
-    optical_position: [f32; 2],
     motion_decoder: NativeMotionDecoder,
-}
-
-impl Default for JoyCon2RightDecoder {
-    fn default() -> Self {
-        Self {
-            optical_position: [0.5, 0.5],
-            motion_decoder: NativeMotionDecoder::default(),
-        }
-    }
 }
 
 impl Switch2ReportModel for JoyCon2RightDecoder {
@@ -230,16 +202,7 @@ impl Switch2ReportModel for JoyCon2RightDecoder {
         let (report, _) = HalfReport::ref_from_prefix(report).ok()?;
         let dx = i16::from_le_bytes(report.optical_dx);
         let dy = i16::from_le_bytes(report.optical_dy);
-        if dx != 0 || dy != 0 {
-            self.optical_position[0] =
-                (self.optical_position[0] + f32::from(dx) / 4096.0).clamp(0.0, 1.0);
-            self.optical_position[1] =
-                (self.optical_position[1] + f32::from(dy) / 4096.0).clamp(0.0, 1.0);
-        }
-        state.pointer = [
-            pointer_axis(self.optical_position[0]),
-            pointer_axis(self.optical_position[1]),
-        ];
+        state.pointer = [dx, dy];
         Some(PointerSource::Optical)
     }
 }

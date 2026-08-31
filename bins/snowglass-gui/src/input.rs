@@ -90,6 +90,7 @@ pub(crate) struct InputRouter {
     mouse_buttons: u8,
     pointer_routing: PointerRoutingState,
     pointer_projectors: Vec<PointerProjector>,
+    pointer_revisions: Vec<Option<u64>>,
     priority: InputPriority,
     cursor: PointerPosition,
     dom_mouse_keys: u32,
@@ -158,6 +159,7 @@ impl InputRouter {
             pointer_projectors: (0..8)
                 .map(|_| PointerProjector::new(Instant::now()))
                 .collect(),
+            pointer_revisions: vec![None; 8],
             priority: InputPriority::Ui,
             cursor: PointerPosition::default(),
             dom_mouse_keys: 0,
@@ -348,16 +350,21 @@ impl InputRouter {
                 )
             {
                 self.hub.set_pointer_override(index, None);
+                self.pointer_revisions[usize::from(player)] = None;
                 continue;
             }
-            let Some(sample) = self.hub.pointer_sample(index) else {
+            let Some((revision, sample)) = self.hub.pointer_snapshot(index) else {
                 self.hub.set_pointer_override(index, None);
+                self.pointer_revisions[usize::from(player)] = None;
                 continue;
             };
             let Some(projector) = self.pointer_projectors.get_mut(usize::from(player)) else {
                 continue;
             };
-            projector.accept(&sample, bounds, Instant::now());
+            if self.pointer_revisions[usize::from(player)] != Some(revision) {
+                projector.accept(&sample, bounds, Instant::now());
+                self.pointer_revisions[usize::from(player)] = Some(revision);
+            }
             let Some(projected) = projector.project(presentation, plan) else {
                 self.hub.set_pointer_override(index, None);
                 continue;
@@ -709,14 +716,8 @@ impl InputRouter {
         let providers = self.native_providers.lock().clone();
         if providers == self.applied_native_providers
             && (!self.raw_hid.is_empty() || providers.is_empty())
+            && !topology_changed
         {
-            if topology_changed
-                && let (Some(listener), Some(topology)) = (&self.listener, &self.topology)
-            {
-                listener
-                    .publish_topology(topology)
-                    .map_err(|error| error.to_string())?;
-            }
             return Ok(());
         }
         let Some(topology) = &mut self.topology else {
@@ -751,6 +752,19 @@ impl InputRouter {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        for binding in &topology.raw_hid {
+            if let Some(port) = topology
+                .ports
+                .iter_mut()
+                .find(|port| port.player == binding.player)
+            {
+                port.mode = snowglass_input_layout::topology::RemapMode::Passthrough;
+                port.pointer = snowglass_input_layout::topology::PointerBinding {
+                    source: snowglass_input_layout::topology::PointerSource::None,
+                    mode: snowglass_input_layout::topology::PointerMode::None,
+                };
+            }
+        }
         self.raw_hid.clear();
         if let Some(listener) = &self.listener {
             for binding in &topology.raw_hid {

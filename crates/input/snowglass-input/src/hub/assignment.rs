@@ -131,6 +131,7 @@ impl HubInner {
                 if let Some(index) = state.index_of(member) {
                     state.assignments.remove(&index);
                 }
+                state.individual_devices.remove(member);
             }
             state.devices.insert(
                 composite.clone(),
@@ -138,6 +139,9 @@ impl HubInner {
                     descriptor: descriptor.clone(),
                     state: state_value,
                     pointer: Self::composite_pointer(&entries),
+                    pointer_revision: self
+                        .next_pointer_revision
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                     connected,
                 },
             );
@@ -180,6 +184,9 @@ impl HubInner {
             }
             state.devices.remove(composite);
             state.decomposed.insert(composite.clone());
+            state
+                .individual_devices
+                .extend(value.members.iter().cloned());
             (
                 value.members,
                 index,
@@ -212,7 +219,8 @@ impl HubInner {
                     && matches!(
                         entry.descriptor.role,
                         DeviceRole::LeftHalf | DeviceRole::RightHalf
-                    ))
+                    )
+                    && !state.individual_devices.contains(device))
             {
                 return;
             }
@@ -224,8 +232,8 @@ impl HubInner {
     }
 
     pub(crate) fn try_auto_compose(&self) {
-        let members = {
-            let state = self.state.lock();
+        let (members, individuals) = {
+            let mut state = self.state.lock();
             if !state.policy.auto_compose {
                 return;
             }
@@ -249,13 +257,20 @@ impl HubInner {
             let left = eligible(DeviceRole::LeftHalf);
             let right = eligible(DeviceRole::RightHalf);
             if left.len() == 1 && right.len() == 1 {
-                Some(vec![left[0].clone(), right[0].clone()])
+                (Some(vec![left[0].clone(), right[0].clone()]), Vec::new())
+            } else if !left.is_empty() || !right.is_empty() {
+                let individuals = left.into_iter().chain(right).collect::<Vec<_>>();
+                state.individual_devices.extend(individuals.iter().cloned());
+                (None, individuals)
             } else {
-                None
+                (None, Vec::new())
             }
         };
         if let Some(members) = members {
             let _ = self.compose(&members, CompositionMode::ByRole, true);
+        }
+        for device in individuals {
+            self.try_auto_assign(&device);
         }
     }
 
@@ -288,6 +303,11 @@ impl HubInner {
             let connected = entries.iter().all(|entry| entry.connected);
             let value = Self::composite_state(&entries, composite.mode);
             let pointer = Self::composite_pointer(&entries);
+            let pointer_revision = entries
+                .iter()
+                .map(|entry| entry.pointer_revision)
+                .max()
+                .unwrap_or_default();
             let Some(entry) = state.devices.get_mut(id) else {
                 return;
             };
@@ -295,6 +315,7 @@ impl HubInner {
             entry.connected = connected;
             entry.state = value;
             entry.pointer = pointer;
+            entry.pointer_revision = pointer_revision;
             let index = state.index_of(id);
             let sequence = index.map(|index| {
                 let sequence = state.sequences.entry(index).or_default();
