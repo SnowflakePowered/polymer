@@ -445,13 +445,19 @@ temperature_C    = sign_extend_16(t) / 128 + 25
 The Q16.16 accelerometer values correlate with an interpolation of the adjacent
 normal-packet acceleration samples at greater than `0.99994` on every axis. The
 best direct fits have slopes within `0.11%` of one. Reanalysis of 8,379 usable
-`E -> C -> E` windows places the dynamic subset's effective point roughly
-1.5-1.8 ticks after the immediately preceding normal packet's terminal sample.
-Only 674 windows contain meaningful acceleration change and 165 contain strong
-excitation, however. Class-C packets emitted one and two sensor ticks after that
-terminal converge near the same effective point rather than their respective
-header timestamps. Treat this as a filtered or resampled acceleration vector,
-not as an ADC sample with a proven fractional timestamp.
+`E -> C -> E` windows initially placed the dynamic subset's effective point
+roughly 1.5-1.8 ticks after the immediately preceding normal packet's terminal
+sample, but only 165 of those windows contained strong excitation.
+
+A frequency-controlled follow-up resolves the placement at **1.5 sensor ticks
+after the preceding normal terminal**. Gain-and-offset-calibrated cubic fits put
+X slow at 1.463 ticks, X fast at 1.470, isolated X impulses at 1.486, and Y
+medium at 1.539. The fast-X action supplied the strongest signal: its ten
+contexts had a median 1,406-count span and a fitted slope of 1.0019. The packet
+header advanced by either one or two ticks in the wider corpus, but the vector's
+effective point remained fixed at 1.5 ticks rather than following the header
+timestamp. Treat it as a filtered/resampled acceleration sample at that
+fractional position, not as a new ADC sample.
 
 bttest's dedicated **class-C acceleration filter capture** separates frequency
 from physical axis. It records a stationary baseline, slow/medium/fast
@@ -462,9 +468,11 @@ Q16.16 class-C vector, sensor-clock sample positions, and host-time gaps. The
 stationary action targets 12 contexts and each dynamic action targets 24,
 pooling 72 contexts per translation frequency while keeping individual actions
 manageable. Trials are directly selectable and retain their per-trial progress,
-so a focused follow-up can skip completed or low-priority motions. Comparing
-amplitude and phase across rates will distinguish a constant fractional
-resampling point from a frequency-dependent filter.
+so a focused follow-up can skip completed or low-priority motions. The completed
+focused run collected 10 X-fast, 9 X-impulse, and 18 Y-medium contexts. Combined
+with the earlier 24 X-slow contexts, it distinguished the constant fractional
+position above from a frequency-dependent delay without requiring every trial
+to reach its nominal quota.
 
 The high-precision quaternion describes an older point in the same stream. With
 normal quaternion keyframes assigned to the preceding normal packet terminal as
@@ -476,10 +484,10 @@ Median interpolation error is below `0.001` degrees. This explains why the
 packet is closer to the following normal quaternion even though it is emitted
 immediately after the preceding normal report.
 
-The quaternion and filtered acceleration therefore do not share one defensible
-sample timestamp. A consumer may use the quaternion as a precision fusion
-keyframe at the two-thirds point, but should not expose the acceleration as a
-new raw timed sample until its filter delay is understood.
+The quaternion and filtered acceleration therefore do not share a sample
+timestamp. A consumer may use the quaternion as a precision fusion keyframe at
+the two-thirds point and expose the acceleration separately as a filtered sample
+1.5 sensor ticks after the preceding normal terminal.
 
 #### Bonded sleep/wake reset
 
@@ -703,13 +711,11 @@ bias learned from one Joy-Con or controller cannot affect another.
 The normal-class IMU and quaternion codec is solved for the observed 11-13 tick
 normal stream. Remaining work is limited to:
 
-1. Whether the class-`0xC` Q16.16 acceleration's broad two-to-three-tick
-   effective point is an intentional filter delay or a fractional sample time.
-2. Verification of the integer sample-position rule for normal elapsed values
+1. Verification of the integer sample-position rule for normal elapsed values
    outside 11-13, should such packets occur without a stream discontinuity.
-3. The purpose of reserved body bit 4. It has remained zero and does not block
+2. The purpose of reserved body bit 4. It has remained zero and does not block
    decoding.
-4. Independent confirmation on Joy-Con 2 (L) report `0x07`.
+3. Independent confirmation on Joy-Con 2 (L) report `0x07`.
 No additional physical capture is needed to implement the shared normal decoder
 or the decoded class-`0xC` quaternion body. Bonded sleep/wake session reset and
 the rare class-`0xF` orientation bands have also been confirmed.

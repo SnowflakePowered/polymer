@@ -19,6 +19,7 @@ const NORMAL_ORIENTATION_AGE_TICKS: u16 = 12;
 const SENSOR_TICKS_PER_SECOND: f64 = 800.0;
 const MAX_CONTINUOUS_INTERVAL_TICKS: u16 = 100;
 const MAX_PRECISION_DELAY_TICKS: u16 = 8;
+const PRECISION_ACCELERATION_OFFSET_TICKS: f64 = 1.5;
 pub(super) const GRAVITY_METERS_PER_SECOND_SQUARED: f32 = 9.80665;
 
 #[derive(Clone, Copy)]
@@ -133,7 +134,10 @@ impl NativeMotionDecoder {
             self.reset_session(input);
             return;
         }
-        let filtered_accelerometer = packet.filtered_accelerometer();
+        let filtered_accelerometer = TimedMotionVector {
+            value: packet.filtered_accelerometer(),
+            sampled_at: timing.precision_acceleration_sampled_at(),
+        };
         motion.orientation = packet.orientation();
         motion.orientation_sampled_at = timing.precision_orientation_sampled_at();
         motion.filtered_accelerometer = Some(filtered_accelerometer);
@@ -142,7 +146,7 @@ impl NativeMotionDecoder {
         motion.sensor_timestamp = packet.header.sensor_timestamp();
         motion.elapsed_ticks = packet.header.elapsed_ticks();
         motion.orientation = self.orientation_tracker.update(motion);
-        input.state.accelerometer = filtered_accelerometer;
+        input.state.accelerometer = filtered_accelerometer.value;
         input.state.gyroscope = motion.gyroscope[1].value;
         input.motion = Some(motion);
         self.last_motion = Some(motion);
@@ -180,6 +184,7 @@ impl NativeMotionDecoder {
         };
         input.state.accelerometer = motion
             .filtered_accelerometer
+            .map(|sample| sample.value)
             .unwrap_or(motion.accelerometer[2].value);
         input.state.gyroscope = motion.gyroscope[1].value;
         input.motion = Some(motion);
@@ -217,6 +222,14 @@ impl NormalTiming {
         self.terminal_at
             .checked_sub(Duration::from_secs_f64(
                 f64::from(self.interval_ticks) / 3.0 / SENSOR_TICKS_PER_SECOND,
+            ))
+            .unwrap_or(self.terminal_at)
+    }
+
+    fn precision_acceleration_sampled_at(self) -> Instant {
+        self.terminal_at
+            .checked_add(Duration::from_secs_f64(
+                PRECISION_ACCELERATION_OFFSET_TICKS / SENSOR_TICKS_PER_SECOND,
             ))
             .unwrap_or(self.terminal_at)
     }
